@@ -2,16 +2,17 @@
  * Builtin workflow: open-claude-design
  *
  * Adapts Atomic SDK's Claude Design workflow to the local workflow SDK:
- * combined discovery/init, design-system/reference research, generation, bounded
- * refinement, export, and final display run through ctx.task()/ctx.parallel().
+ * combined discovery/init, design-system/reference research, generation, one
+ * live review session, export, and final display run through
+ * ctx.task()/ctx.parallel().
  *
  * Every stage prompt invokes the specific impeccable sub-skill that maps to
  * its role (see https://github.com/pbakaus/impeccable/tree/main/site/content/skills):
  *
  *   onboarding     → impeccable `document` / `extract` / `audit`
  *   import         → impeccable `extract`
- *   generate-N     → impeccable `craft` / `polish` (HTML preview)
- *   user-feedback  → impeccable `live` (browser review + user notes)
+ *   generate-N     → impeccable `craft` (HTML preview)
+ *   user-feedback  → impeccable `live` (unbounded browser review session)
  *   exporter       → impeccable `document` (rich HTML spec)
  *   final-display  → opens/surfaces the exported HTML spec
  */
@@ -42,7 +43,7 @@ export default workflow({
     }),
     max_refinements: Type.Number({
       default: DEFAULT_MAX_REFINEMENTS,
-      description: `Maximum generate/user-feedback loop iterations (default ${DEFAULT_MAX_REFINEMENTS}).`,
+      description: `Maximum fresh regenerations from the brief after the first design (default ${DEFAULT_MAX_REFINEMENTS}). The live review session itself is unbounded.`,
     }),
   },
   outputs: {

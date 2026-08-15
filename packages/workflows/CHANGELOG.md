@@ -6,16 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `open-claude-design`'s live-review feedback schema replaces the `approve`/`revise` decision introduced earlier in this cycle with `export`/`regenerate`. `export` means the user wants the preview exported as it now stands; `regenerate` means they want a fresh pass designed from the brief. Anything reading `<artifact_dir>/feedback/iteration-N.json` must handle the new values ([#2411](https://github.com/bastani-inc/atomic/issues/2411)).
+
 ### Changed
 
 - `open-claude-design` review rounds now use a schema-backed two-outcome record: `decision` is `approve` or `revise`, with one entry per user note, one entry per accepted live change, and an optional annotated screenshot path. Every round is written to `<artifact_dir>/feedback/iteration-N.json` with the schema fields plus `meta.iteration`, `meta.stage_name`, and `meta.captured_at`; the readable `iteration-N.md` copy and annotated-snapshot copies remain available ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 - The refinement loop consumes the structured feedback result in memory, while passing the durable JSON path to the next `generate-*` stage in `reads` and naming it as the authoritative review record ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- `open-claude-design` now runs one live review session per generated design instead of a bounded generate/review loop. The `live` session is already unbounded — accepted variants and steered edits land in `preview.html` in place — so a session that only accepted variants no longer triggers a whole-file rewrite whose real job was to avoid undoing that work ([#2411](https://github.com/bastani-inc/atomic/issues/2411)).
+- `max_refinements` now bounds regenerations rather than review rounds: the default of `3` allows `generate-1` plus at most three fresh passes, while each review session between them is unbounded. A regeneration prompt is a fresh pass from the brief, design context, references, and the user's notes rather than an in-place revision, and it still receives the durable feedback record in `reads` ([#2411](https://github.com/bastani-inc/atomic/issues/2411)).
+- The live-review stage prompt and the run-level review gate state the new model: accepted variants and steered edits are already applied and are never a reason to regenerate, `user_notes` is the brief for a regeneration, and the gate names the sessions run so far and the regenerations left ([#2411](https://github.com/bastani-inc/atomic/issues/2411)).
 
 ### Fixed
 
 - Fixed `open-claude-design` exporting a stale preview after a live review that asked for changes. The stage's schema-backed structured answer now drives the next `generate-*` round, and a finalized structured result is protected from continuation displacement ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 - An approval carrying user notes or accepted live changes is treated as `revise`, so captured work is never discarded. A failed feedback-record write clears any stale record and surfaces the error instead of allowing an earlier outcome to be reused ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 - A revision requested in the final review round is applied before export. `max_refinements` bounds review rounds, not the work those reviews request, and `approved_for_export` remains `false` when that final requested revision is applied ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- An explicit `export` is no longer second-guessed. Under the old bounded loop an approval carrying notes was rewritten to `revise`; with one live session, notes the user still wanted applied are exactly why they would choose `regenerate`, and `export` is the user's own decision about an artifact they were just editing ([#2411](https://github.com/bastani-inc/atomic/issues/2411)).
+- A regeneration the budget cannot run is stated in the returned design summary rather than dropped silently, and `approved_for_export` stays `false` in that case ([#2411](https://github.com/bastani-inc/atomic/issues/2411)).
 
 ## [0.9.14-alpha.1] - 2026-08-14
 

@@ -151,7 +151,7 @@ describe("open-claude-design setup", () => {
 	});
 
 	describe("buildLivePreviewDisplayPrompt", () => {
-		test("initial preview prompt drives /skill:impeccable live and keeps the feedback labels", () => {
+		test("first-session prompt drives /skill:impeccable live and keeps the feedback labels", () => {
 			const prompt = buildLivePreviewDisplayPrompt({
 				previewPath: "/tmp/run/preview.html",
 				previewFileUrl: "file:///tmp/run/preview.html",
@@ -168,42 +168,38 @@ describe("open-claude-design setup", () => {
 			assert.match(prompt, /BEFORE starting any long-poll wait/);
 			assert.match(prompt, /print the exact review URL/i);
 			assert.ok(prompt.includes("/tmp/run/preview.html"));
+			// One unbounded session, decided by `export` or `regenerate` alone.
+			assert.match(prompt, /this session is not capped/i);
+			assert.match(prompt, /`decision`: `export`/);
+			assert.match(prompt, /`regenerate`/);
+			assert.match(prompt, /ALREADY applied to the preview in place/);
+			assert.match(prompt, /never a reason to regenerate/);
+			assert.match(prompt, /brief for the fresh pass/);
+			assert.doesNotMatch(prompt, /`approve`|`revise`/);
 		});
 
-		test("per-iteration prompt does not leak the iteration counter", () => {
+		test("a later session's prompt names the regenerated preview without an iteration counter", () => {
 			const prompt = buildLivePreviewDisplayPrompt({
 				previewPath: "/tmp/run/preview.html",
 				previewFileUrl: "file:///tmp/run/preview.html",
 				browserBootstrapRules: "rules",
 				iteration: 2,
-				maxRefinements: 3,
 			});
-			assert.match(prompt, /the revised preview/);
+			assert.match(prompt, /the regenerated preview/);
 			assert.doesNotMatch(prompt, /iteration \d+\/\d+/);
+			assert.doesNotMatch(prompt, /FINAL refinement pass/);
 		});
 
-		test("final-mode prompt is read-only: it does not solicit actionable feedback", () => {
-			const prompt = buildLivePreviewDisplayPrompt({
-				previewPath: "/tmp/run/preview.html",
-				previewFileUrl: "file:///tmp/run/preview.html",
-				browserBootstrapRules: "rules",
-				iteration: 3,
-				maxRefinements: 3,
-				final: true,
-			});
-			assert.match(prompt, /FINAL refinement pass/);
-			assert.match(prompt, /re-run/i);
-			assert.match(prompt, /do NOT (solicit|collect)/i);
-		});
-
-		test("live-review gate message names the preview, round, and connect affordance", () => {
+		test("live-review gate message names the preview, session, budget, and connect affordance", () => {
 			const message = buildLiveReviewGateMessage({
-				iteration: 2,
-				maxRefinements: 3,
+				round: 2,
+				regenerationsLeft: 3,
 				previewPath: "/tmp/run/preview.html",
 				previewFileUrl: "file:///tmp/run/preview.html",
 			});
-			assert.match(message, /review round 2 of 3/i);
+			assert.match(message, /review session 2 /i);
+			assert.match(message, /unbounded/i);
+			assert.match(message, /3 of those are left/);
 			assert.ok(message.includes("/tmp/run/preview.html"));
 			assert.ok(message.includes("file:///tmp/run/preview.html"));
 			assert.ok(message.includes("/workflow connect"));

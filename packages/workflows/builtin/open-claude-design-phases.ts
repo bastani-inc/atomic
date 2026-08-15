@@ -6,12 +6,11 @@ import {
   taggedPrompt,
 } from "./open-claude-design-utils.js";
 import {
-  assertUserAnnotationsThreaded,
   feedbackArtifactPath,
   persistPreviewFeedback,
   previewFeedbackSchema,
   toPreviewFeedback,
-  userAnnotationsBlock,
+  userNotesBrief,
   type PreviewFeedback,
 } from "./open-claude-design-feedback.js";
 import {
@@ -49,6 +48,7 @@ type RefineOptions = {
   readonly designContext: DesignContext;
   readonly prompt: string;
   readonly outputType: string;
+  /** Maximum fresh regenerations after `generate-1` (issue #2411). */
   readonly maxRefinements: number;
   readonly previewPath: string;
   readonly previewFileUrl: string;
@@ -64,81 +64,91 @@ type RefineOptions = {
   readonly ui: LiveReviewGateUi;
 };
 
+/** A fresh pass a live review asked for, with the record it was asked in. */
+type PendingRegeneration = {
+  readonly feedback: PreviewFeedback;
+  readonly artifactFile: string;
+};
+
+/**
+ * Stated in the returned design summary when a live review asked for a fresh
+ * pass the budget could not run. A dropped request is never silent (#2411).
+ */
+function regenerationBudgetNote(maxRefinements: number): string {
+  return `Note: the live review asked for a fresh design pass, but the regeneration budget was already spent (max_refinements: ${maxRefinements}). This preview is exported as it stands; re-run \`/workflow open-claude-design\` to start another pass.`;
+}
+
+/**
+ * Generate a design, then review it in one live session.
+ *
+ * The live session is itself unbounded: the user picks elements, accepts
+ * on-brand variants written into `preview.html` in place, and steers, until
+ * they leave. So the session's own work needs no follow-up generate round.
+ * The outer loop survives only for what live cannot do — starting over from
+ * the brief, design context, and references when the user rejects the
+ * direction rather than the details — and `maxRefinements` bounds exactly
+ * those regenerations. cross-ref: issue #2411.
+ */
 export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ readonly latestDesign: string; readonly approvedForExport: boolean; readonly refinementCount: number; }> {
   const { designContext, prompt, outputType, maxRefinements, previewPath, previewFileUrl, artifactDir, browserBootstrapRules, designContextFile, referencesFile, designModelConfig, workflowCwd } = options;
   const importContext = options.importContext ?? "";
   let latestDesign = "";
   let latestGenerateSessionFile: string | undefined;
-  let latestUserFeedbackSessionFile: string | undefined;
-  /** Captured work waiting for a `generate-*` round to apply it (issue #2401). */
-  let pendingFeedback: PreviewFeedback | undefined;
-  /** Durable artifact the pending feedback was reloaded from (issue #2401). */
-  let pendingFeedbackArtifact: string | undefined;
+  let latestReviewSessionFile: string | undefined;
   let approvedForExport = false;
-  let refinementCount = 0;
+  let generateRounds = 0;
+  let regenerations = 0;
+  let budgetExhausted = false;
 
-  /**
-   * Run one `generate-*` round, applying whatever revision is pending. The
-   * pending revision is cleared once the round that applies it has run, so
-   * `pendingFeedback` always names captured work no generate round has seen
-   * yet — which is what lets the loop's exit check find a revision the last
-   * review round requested. cross-ref: issue #2401.
-   */
-  const runGenerateRound = async (iteration: number): Promise<void> => {
-    const feedback = pendingFeedback;
-    const feedbackArtifactFile = pendingFeedbackArtifact;
-    const generateStageName = `generate-${iteration}`;
-    const generatePrompt = feedback === undefined
-      ? buildInitialGeneratePrompt({
-          prompt,
-          outputType,
-          previewPath,
-          designContextFile,
-          referencesFile,
-          importContext,
-        })
-      : buildGenerateRevisionPrompt({
-          prompt,
-          outputType,
-          previewPath,
-          designContextFile,
-          referencesFile,
-          latestDesign,
-          importContext,
-          feedback,
-          feedbackArtifactFile,
-        });
-    if (feedback !== undefined) {
-      assertUserAnnotationsThreaded(generatePrompt, [feedback], generateStageName);
-    }
+  /** Run `generate-1`, or the fresh pass a review session asked for. */
+  const runGenerateRound = async (regeneration?: PendingRegeneration): Promise<void> => {
+    const round = generateRounds + 1;
+    const generateStageName = `generate-${round}`;
 
     // Large research context travels by artifact file (`reads` + explicit
     // read instructions in the prompt), not as an inline `previous` payload,
     // so a single oversized research result cannot become a single oversized
-    // prompt message (issue #2121). Only the revision loop threads the small,
-    // word-capped prior design summary inline.
+    // prompt message (issue #2121). Only the word-capped prior design summary
+    // travels inline.
     const generated = await designContext.task(generateStageName, {
-      prompt: generatePrompt,
+      prompt: regeneration === undefined
+        ? buildInitialGeneratePrompt({
+            prompt,
+            outputType,
+            previewPath,
+            designContextFile,
+            referencesFile,
+            importContext,
+          })
+        : buildRegeneratePrompt({
+            prompt,
+            outputType,
+            previewPath,
+            designContextFile,
+            referencesFile,
+            previousDesign: latestDesign,
+            importContext,
+            feedback: regeneration.feedback,
+            feedbackArtifactFile: regeneration.artifactFile,
+          }),
       reads:
-        feedbackArtifactFile === undefined
+        regeneration === undefined
           ? [designContextFile, referencesFile]
-          : [designContextFile, referencesFile, feedbackArtifactFile],
-      ...(feedback === undefined
+          : [designContextFile, referencesFile, regeneration.artifactFile],
+      ...(regeneration === undefined
         ? {}
-        : { previous: { name: "current-design", text: latestDesign } }),
+        : { previous: { name: "previous-design", text: latestDesign } }),
       ...designModelConfig,
       ...forkContinuationOptions(latestGenerateSessionFile),
     });
     latestDesign = generated.text;
     latestGenerateSessionFile = generated.sessionFile ?? latestGenerateSessionFile;
-    refinementCount = iteration;
-    pendingFeedback = undefined;
-    pendingFeedbackArtifact = undefined;
+    generateRounds = round;
   };
 
-  for (let iteration = 1; iteration <= maxRefinements; iteration += 1) {
-    await runGenerateRound(iteration);
+  await runGenerateRound();
 
+  for (;;) {
     // Deterministic live-review gate (issue #2060): the user-feedback stage
     // waits on a browser long-poll that never sets `awaiting_input`, so raise
     // a run-level `ctx.ui` prompt first. It fires the needs-attention badge,
@@ -148,7 +158,12 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     // or a failed durable checkpoint must propagate and stop the workflow.
     const gateChoice = await options.ui
       .select(
-        buildLiveReviewGateMessage({ iteration, maxRefinements, previewPath, previewFileUrl }),
+        buildLiveReviewGateMessage({
+          round: generateRounds,
+          regenerationsLeft: maxRefinements - regenerations,
+          previewPath,
+          previewFileUrl,
+        }),
         LIVE_REVIEW_GATE_OPTIONS,
       )
       .catch((error: unknown) => {
@@ -166,53 +181,53 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     // early when the browser is unavailable, and the stage prompt requires a
     // degraded non-empty report instead of failing. What rejects here is
     // model/infra failure — provider errors, fallback exhaustion, broken
-    // session forks — and that must never be laundered into approval.
+    // session forks — and that must never be laundered into an export.
     //
-    // The stage declares `previewFeedbackSchema`, so the round finalizes as a
-    // schema-validated structured answer that a later resume-continuation turn
-    // cannot displace (issue #2401).
-    const feedbackStageName = `user-feedback-${iteration}`;
+    // The stage declares `previewFeedbackSchema`, so the session finalizes as
+    // a schema-validated structured answer that a later resume-continuation
+    // turn cannot displace (issue #2401).
+    const round = generateRounds;
+    const feedbackStageName = `user-feedback-${round}`;
     const userFeedbackResult = await designContext.task(feedbackStageName, {
       prompt: buildLivePreviewDisplayPrompt({
         previewPath,
         previewFileUrl,
         browserBootstrapRules,
-        iteration,
-        maxRefinements,
+        ...(round === 1 ? {} : { iteration: round }),
       }),
       schema: previewFeedbackSchema,
       ...designModelConfig,
-      ...forkContinuationOptions(latestUserFeedbackSessionFile),
+      ...forkContinuationOptions(latestReviewSessionFile),
     });
 
-    latestUserFeedbackSessionFile =
-      userFeedbackResult.sessionFile ?? latestUserFeedbackSessionFile;
-    const feedback = toPreviewFeedback({ iteration, stageName: feedbackStageName, result: userFeedbackResult });
-    const artifactPath = feedbackArtifactPath(artifactDir, iteration);
-    persistPreviewFeedback({
-      artifactDir,
-      workflowCwd,
-      feedback,
-    });
+    latestReviewSessionFile = userFeedbackResult.sessionFile ?? latestReviewSessionFile;
+    const feedback = toPreviewFeedback({ iteration: round, stageName: feedbackStageName, result: userFeedbackResult });
+    persistPreviewFeedback({ artifactDir, workflowCwd, feedback });
 
     // The structured result drives this loop in memory. The durable artifact
     // remains the authoritative record the next generate stage reads.
-    if (feedback.decision === "approve") {
+    if (feedback.decision === "export") {
       approvedForExport = true;
       break;
     }
-    pendingFeedback = feedback;
-    pendingFeedbackArtifact = artifactPath;
+    if (regenerations >= maxRefinements) {
+      budgetExhausted = true;
+      break;
+    }
+    regenerations += 1;
+    await runGenerateRound({
+      feedback,
+      artifactFile: feedbackArtifactPath(artifactDir, round),
+    });
   }
 
-  // A revision the final review round asked for still has to be applied. The
-  // loop bound caps review rounds, not the work they requested: returning here
-  // would export the preview the user just asked to change (issue #2401).
-  if (pendingFeedback !== undefined) {
-    await runGenerateRound(maxRefinements + 1);
-  }
-
-  return { latestDesign, approvedForExport, refinementCount };
+  return {
+    latestDesign: budgetExhausted
+      ? [latestDesign, regenerationBudgetNote(maxRefinements)].join("\n\n")
+      : latestDesign,
+    approvedForExport,
+    refinementCount: generateRounds,
+  };
 }
 
 function buildInitialGeneratePrompt(args: {
@@ -270,65 +285,61 @@ function buildInitialGeneratePrompt(args: {
   ]);
 }
 
-function buildGenerateRevisionPrompt(args: {
+function buildRegeneratePrompt(args: {
   readonly prompt: string;
   readonly outputType: string;
   readonly previewPath: string;
   readonly designContextFile: string;
   readonly referencesFile: string;
-  readonly latestDesign: string;
+  readonly previousDesign: string;
   readonly importContext: string;
   readonly feedback: PreviewFeedback;
-  /** Durable per-round feedback deliverable this brief was rendered from (issue #2401). */
-  readonly feedbackArtifactFile?: string;
+  /** Durable record of the review session that asked for this pass (#2401). */
+  readonly feedbackArtifactFile: string;
 }): string {
-  const annotations = userAnnotationsBlock([args.feedback]);
   return taggedPrompt([
+    ["design_brief", args.prompt],
     [
       "design_context_file",
-      `Read the file at ${args.designContextFile} for the project design context (PRODUCT.md/DESIGN.md summary) and the ds-* design-system evidence.`,
-    ],
-    [
-      "reference_inspiration_file",
-      `Read the file at ${args.referencesFile} for the curated reference inspiration.`,
+      `Read the file at ${args.designContextFile} for the project design context (PRODUCT.md/DESIGN.md summary) and the ds-* design-system evidence before designing.`,
     ],
     ["reference_context", args.importContext],
+    [
+      "reference_inspiration_file",
+      `Read the file at ${args.referencesFile} for the curated reference inspiration to heavily emulate.`,
+    ],
     ["reference_precedence", REFERENCE_PRECEDENCE],
     ["preview_artifact_path", args.previewPath],
-    ...(args.feedbackArtifactFile === undefined
-      ? []
-      : ([
-          [
-            "user_feedback_record",
-            `Read the file at ${args.feedbackArtifactFile}. It is the authoritative record of this review round — the durable deliverable the feedback stage returned — and <user_feedback> below is rendered from it. Where the two ever disagree, the file wins.`,
-          ],
-        ] as const)),
-    ["user_feedback", annotations.text],
-    ["current_design_summary", args.latestDesign],
+    [
+      "user_feedback_record",
+      `Read the file at ${args.feedbackArtifactFile}. It is the authoritative record of the live review session that asked for this fresh pass — the durable deliverable the feedback stage returned — and <user_notes> below is rendered from it. Where the two ever disagree, the file wins.`,
+    ],
+    ["user_notes", userNotesBrief(args.feedback)],
+    ["previous_attempt_summary", args.previousDesign],
     ["html_rules", HTML_PREVIEW_RULES],
     ["anti_design_slop_rules", ANTI_SLOP_RULES],
     ["role", "You are an opinionated staff design engineer."],
     [
       "objective",
-      `Revise the ${args.outputType} for: ${args.prompt}. Update the preview in place from only the latest live-review feedback, applying impeccable \`craft\` and \`polish\` with restraint rather than adding an internal critique.`,
+      `Design a fresh ${args.outputType} for: ${args.prompt}. The user reviewed the previous one live and rejected its direction, so design this one again from the brief, design context, references, and <user_notes>, applying impeccable \`craft\`.`,
     ],
     [
       "instructions",
       [
-        "Read the current HTML at preview_artifact_path. Treat <user_feedback> and the user_feedback_record file as the only refinement brief; do not invent critique, screenshot, audit, or gate findings.",
-        "Address every user note and accepted live change visibly, or identify its DESIGN.md/reference-precedence conflict in the summary.",
-        `Overwrite ${args.previewPath} with one revised self-contained HTML file; do not branch or create extra previews.`,
-        "Preserve strong decisions unless feedback requires change; add no unrelated features or abstractions.",
+        "First read the design-context, reference-inspiration, and user_feedback_record files named above. <user_notes> is the brief for this pass; the brief, design context, and references are the rest of it.",
+        "This is a new pass, not an edit pass. You may read the current HTML at preview_artifact_path for continuity, but do not treat it as the thing to revise, and do not carry the rejected direction forward.",
+        `Write this pass to ${args.previewPath} as one self-contained HTML file; do not branch or create extra previews.`,
+        "Address every user note visibly, or identify its DESIGN.md/reference-precedence conflict in the summary. Add no features or abstractions beyond the brief and those notes.",
       ].join("\n"),
     ],
     [
       "output_format",
       [
         "In at most 400 words, return Markdown, not the HTML body:",
-        "1. Revised artifact (path only)",
-        "2. User feedback addressed (each note/live change and its application or conflict)",
-        "3. Changes applied",
-        "4. Trade-offs / unresolved user feedback",
+        "1. Artifact written (path only)",
+        "2. User notes addressed (each note and its application or conflict)",
+        "3. How this pass differs from the rejected one",
+        "4. Trade-offs / unresolved user notes",
         GROUNDED_REPORTING,
       ].join("\n"),
     ],

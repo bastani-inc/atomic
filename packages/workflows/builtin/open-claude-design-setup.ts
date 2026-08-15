@@ -244,67 +244,52 @@ export function persistDesignContext(artifactDir: string, content: string): void
 }
 
 // ---------------------------------------------------------------------------
-// 2. Live interactive QA prompt (user-feedback display/review stages)
+// 2. Live interactive QA prompt (the user-feedback review session)
 // ---------------------------------------------------------------------------
 
 /**
- * Build the interactive-QA prompt for the `user-feedback-*` stages. Drives
+ * Build the interactive-QA prompt for the `user-feedback-*` stage. Drives
  * `/skill:impeccable live` against the static preview so the user can pick
- * elements in the browser, annotate, and accept on-brand variants; degrades to
- * `playwright-cli show --annotate` and finally to a manual file path. The output
- * labels (`user_notes`, `annotated_snapshot`, `live_changes`) are parsed by the
- * generate/user-feedback loop.
+ * elements in the browser, annotate, accept on-brand variants, and steer;
+ * degrades to `playwright-cli show --annotate` and finally to a manual file
+ * path. The session is unbounded and its accepted variants land in the preview
+ * in place, so the structured answer decides only between exporting what now
+ * exists and regenerating from the brief (issue #2411).
  */
 export function buildLivePreviewDisplayPrompt(args: {
   readonly previewPath: string;
   readonly previewFileUrl: string;
   readonly browserBootstrapRules: string;
   readonly iteration?: number;
-  readonly maxRefinements?: number;
-  readonly final?: boolean;
 }): string {
-  const isInitial = args.iteration === undefined;
-  const isFinal = args.final === true;
-  const label = isInitial
+  const label = args.iteration === undefined
     ? "the just-generated HTML artifact"
-    : "the revised preview";
-  const objective = isFinal
-    ? `Show the user ${label} as the FINAL refinement pass and let them review it in the browser. This is the last automated iteration, so do NOT solicit change requests this run cannot apply — if the user wants further changes, tell them to re-run \`/workflow open-claude-design\`. Drive \`/skill:impeccable live\` for viewing/QA when possible; degrade gracefully.`
-    : `Make ${label} visible to the user, run an interactive design-QA session against it, then capture the user's feedback for the refinement loop. Drive \`/skill:impeccable live\` against the static preview when possible; degrade gracefully when browser automation is unavailable.`;
-  const interactiveQa = isFinal
-    ? [
-        `1. Open the preview for a final review: run \`/skill:impeccable live\` (or \`playwright-cli open ${args.previewFileUrl}\`) so the user can inspect ${label} in the browser.`,
-        "2. Make clear this is the final automated refinement pass. Do NOT promise to apply further annotations; instead, tell the user exactly how to re-run the workflow to iterate again.",
-      ].join("\n")
-    : [
-        `1. Run \`/skill:impeccable live\` targeted at the preview file so the user can pick elements in the browser, annotate them, and compare on-brand variants. The preview is a single static HTML file at ${args.previewPath}; point live at it (configure \`.impeccable/live/config.json\` for that file or pass \`--target ${args.previewPath}\` per the live reference) and open ${args.previewFileUrl} in the browser.`,
-        `2. The moment the live review is reachable — and BEFORE starting any long-poll wait — print the exact review URL in plain text: the live \`http://\` URL when the live server is up, plus ${args.previewFileUrl} as the manual fallback. Anyone attaching to this stage mid-run must see where the review is happening from your first lines of output.`,
-        "3. For each element the user picks, follow the live contract: read any annotation screenshot, extract the page identity FIRST, then generate three DISTINCT on-brand variants and let the user accept one. Accepted variants are written into the preview HTML in place; do NOT branch the artifact.",
-        "4. Also handle the live `steer` path for page-level direction the user types/speaks, and treat any freeform prompt as the ceiling on direction.",
-        "5. Keep iterating until the user signals they are done with this round.",
-      ].join("\n");
-  const outputFormat = isFinal
-    ? [
-        "Markdown with: `display_method` (live | playwright-annotate | manual), `preview_path`, and `next_action_hint` (how to re-run the workflow for further changes).",
-        "Do NOT collect `user_notes` or `live_changes`: this final pass cannot apply them, so don't invite feedback that would go nowhere.",
-      ].join("\n")
-    : [
-        "Markdown with these exact labels so the review stays readable in the transcript. This report is a human-readable record only; the structured answer below is what the workflow acts on.",
-        "`display_method` (live | playwright-annotate | manual)",
-        "`preview_path`",
-        "`live_changes` (summary of every element/variant the user ACCEPTED in the live session; `none` when no live edits were made)",
-        "`annotated_snapshot` (path to any annotated screenshot, if captured)",
-        "`user_notes` (the user's verbatim notes/annotations for the next iteration; `none` when the user gave no notes)",
-        "`next_action_hint`",
-        "",
-        "Then finish the stage with the STRUCTURED final answer this stage's schema declares — that structured value, not this message, is what the refinement loop reads (issue #2401):",
-        "`decision`: `revise` whenever the user asked for ANYTHING at all — any note, any accepted variant, any steer. `approve` only when the user wants this preview exported unchanged.",
-        "`user_notes`: one entry per note, verbatim; empty when the user gave none.",
-        "`live_changes`: one entry per variant/edit the user accepted; empty when there were none.",
-        "`annotated_snapshot`: the screenshot path when one was captured; omit it otherwise.",
-        "An `approve` carrying notes or live changes is a contradiction and is read as `revise`: approval never discards work the user asked for. Never approve merely to end the round — `approve` reports the user's actual approval and nothing else.",
-        "The markdown report can never approve: the structured answer is the only place a decision counts, so always return it.",
-      ].join("\n");
+    : "the regenerated preview";
+  const objective = `Make ${label} visible to the user and run the interactive design-QA session against it until they are done, then report what the session decided. Drive \`/skill:impeccable live\` against the static preview when possible; degrade gracefully when browser automation is unavailable.`;
+  const interactiveQa = [
+    `1. Run \`/skill:impeccable live\` targeted at the preview file so the user can pick elements in the browser, annotate them, and compare on-brand variants. The preview is a single static HTML file at ${args.previewPath}; point live at it (configure \`.impeccable/live/config.json\` for that file or pass \`--target ${args.previewPath}\` per the live reference) and open ${args.previewFileUrl} in the browser.`,
+    `2. The moment the live review is reachable — and BEFORE starting any long-poll wait — print the exact review URL in plain text: the live \`http://\` URL when the live server is up, plus ${args.previewFileUrl} as the manual fallback. Anyone attaching to this stage mid-run must see where the review is happening from your first lines of output.`,
+    "3. For each element the user picks, follow the live contract: read any annotation screenshot, extract the page identity FIRST, then generate three DISTINCT on-brand variants and let the user accept one. Accepted variants are written into the preview HTML in place; do NOT branch the artifact.",
+    "4. Also handle the live `steer` path for page-level direction the user types/speaks, and treat any freeform prompt as the ceiling on direction.",
+    "5. Keep iterating with the user for as long as they want; this session is not capped. It ends when they say they are done.",
+  ].join("\n");
+  const outputFormat = [
+    "Markdown with these exact labels so the review stays readable in the transcript. This report is a human-readable record only; the structured answer below is what the workflow acts on.",
+    "`display_method` (live | playwright-annotate | manual)",
+    "`preview_path`",
+    "`live_changes` (summary of every element/variant the user ACCEPTED in the live session; `none` when no live edits were made)",
+    "`annotated_snapshot` (path to any annotated screenshot, if captured)",
+    "`user_notes` (the user's verbatim notes/annotations; `none` when the user gave no notes)",
+    "`next_action_hint`",
+    "",
+    "Then finish the stage with the STRUCTURED final answer this stage's schema declares — that structured value, not this message, is what the workflow acts on (issue #2401):",
+    "`decision`: `export` when the user wants this preview exported as it now stands; `regenerate` only when they want a fresh take designed from the brief.",
+    "Everything the user accepted or steered during this session is ALREADY applied to the preview in place, so it is never a reason to regenerate. Notes you applied here are done too. Choose `regenerate` only when the user rejects the DIRECTION and wants it designed again from the brief, design context, and references — the one thing this session cannot do.",
+    "`user_notes`: one entry per note, verbatim; empty when the user gave none. On `regenerate` these notes are the brief for the fresh pass, so write down what the user actually wants instead.",
+    "`live_changes`: one entry per variant/edit the user accepted; empty when there were none.",
+    "`annotated_snapshot`: the screenshot path when one was captured; omit it otherwise.",
+    "The markdown report can never decide: the structured answer is the only place a decision counts, so always return it.",
+  ].join("\n");
   return taggedPrompt([
     ["preview_path", args.previewPath],
     ["preview_file_url", args.previewFileUrl],
@@ -318,7 +303,7 @@ export function buildLivePreviewDisplayPrompt(args: {
     [
       "graceful_degradation",
       [
-        `If \`/skill:impeccable live\` cannot boot, open the preview with \`playwright-cli open ${args.previewFileUrl}\`, then run \`playwright-cli snapshot\`${isFinal ? "" : " and `playwright-cli show --annotate` for user notes"}. If the browser executable is missing, follow the bootstrap rules and retry once.`,
+        `If \`/skill:impeccable live\` cannot boot, open the preview with \`playwright-cli open ${args.previewFileUrl}\`, then run \`playwright-cli snapshot\` and \`playwright-cli show --annotate\` for user notes. If the browser executable is missing, follow the bootstrap rules and retry once.`,
         `If \`playwright-cli\` is unavailable, tell the user to open ${args.previewPath} or ${args.previewFileUrl} manually.`,
         "Unavailable tooling must not block the workflow; return a non-empty status.",
       ].join("\n"),
@@ -342,7 +327,7 @@ export type LiveReviewGateUi = {
 
 /**
  * Choices for the deterministic gate raised before every `user-feedback-*`
- * stage. The first entry starts the browser review round; the second accepts
+ * stage. The first entry starts the live review session; the second accepts
  * the current design and skips straight to export.
  */
 export const LIVE_REVIEW_GATE_OPTIONS = [
@@ -357,20 +342,26 @@ export const LIVE_REVIEW_GATE_OPTIONS = [
  * active compute while it waits on a human (issue #2060). Raising a `ctx.ui`
  * prompt sets the run-level pending prompt, which fires the needs-attention
  * badge and carries the preview URL to the root session deterministically.
+ *
+ * The session itself is unbounded, so the message counts sessions and states
+ * the regeneration budget rather than pretending the review is capped
+ * (issue #2411).
  */
 export function buildLiveReviewGateMessage(args: {
-  readonly iteration: number;
-  readonly maxRefinements: number;
+  readonly round: number;
+  readonly regenerationsLeft: number;
   readonly previewPath: string;
   readonly previewFileUrl: string;
 }): string {
   return [
-    `Design review round ${args.iteration} of ${args.maxRefinements} is ready for your browser review.`,
+    `Design review session ${args.round} is ready for your browser review.`,
     "",
     `Preview file: ${args.previewPath}`,
     `Preview URL: ${args.previewFileUrl}`,
     "",
     `"${LIVE_REVIEW_GATE_OPTIONS[0]}" opens an interactive browser session; the user-feedback stage prints the live http:// review URL as soon as its server is up (attach with /workflow connect to see it, or open the preview URL above directly).`,
+    "The session is unbounded: pick elements, accept variants, and steer for as long as you like, and everything you accept lands in the preview as you go.",
+    `Asking for a fresh design from the brief instead ends the session and starts one more generate round; ${args.regenerationsLeft} of those are left.`,
     `"${LIVE_REVIEW_GATE_OPTIONS[1]}" accepts the current design and proceeds to export.`,
   ].join("\n");
 }

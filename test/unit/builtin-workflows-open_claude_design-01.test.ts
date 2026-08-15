@@ -19,12 +19,13 @@ import {
 } from "./builtin-workflows-helpers.js";
 
 /**
- * The structured final answer a `user-feedback-*` stage returns when the user
- * approves the preview as-is. The stage declares `previewFeedbackSchema`, so
- * the mock parses this into `result.structured` and the loop reads the durable
- * artifact built from it. cross-ref: issue #2401.
+ * The structured final answer the `user-feedback-*` stage returns when the
+ * user wants the preview exported as it now stands. The stage declares
+ * `previewFeedbackSchema`, so the mock parses this into `result.structured`
+ * and the loop reads the durable artifact built from it.
+ * cross-ref: issues #2401, #2411.
  */
-const STRUCTURED_APPROVAL = JSON.stringify({ decision: "approve", user_notes: [], live_changes: [] });
+const STRUCTURED_EXPORT = JSON.stringify({ decision: "export", user_notes: [], live_changes: [] });
 
 describe("open-claude-design", () => {
 	test("loads and has correct shape", async () => {
@@ -74,7 +75,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Design a landing page", max_refinements: 1 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -128,7 +129,7 @@ describe("open-claude-design", () => {
 				{ prompt: "Design a dashboard", max_refinements: 1 },
 				{
 					task: (name) => {
-						if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+						if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 						return undefined;
 					},
 				},
@@ -164,7 +165,7 @@ describe("open-claude-design", () => {
 			},
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -182,7 +183,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Design a dashboard", max_refinements: 1 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -234,7 +235,7 @@ describe("open-claude-design", () => {
 							output_type: "component",
 							references: ["https://example.com/reference"],
 						});
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -288,7 +289,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Design a dashboard" },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -313,7 +314,7 @@ describe("open-claude-design", () => {
 							output_type: "page",
 							references: ["https://example.com/reference"],
 						});
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -353,13 +354,13 @@ describe("open-claude-design", () => {
 		"Make the overall vibe more polished, closer to the Apple website.",
 	];
 	const structuredAnnotations = JSON.stringify({
-		decision: "revise",
+		decision: "regenerate",
 		user_notes: annotationNotes,
 		live_changes: [],
 		annotated_snapshot: ".playwright-cli/annotations-test.png",
 	});
 
-	test("threads captured user-feedback annotations into the next generate stage", async () => {
+	test("threads the review session's notes into the regeneration it asked for", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -367,7 +368,7 @@ describe("open-claude-design", () => {
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") return structuredAnnotations;
-					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
+					if (name === "user-feedback-2") return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -391,7 +392,7 @@ describe("open-claude-design", () => {
 		assert.ok(existsSync(mdPath));
 		assert.match(readFileSync(mdPath, "utf8"), /I don't like this background/);
 		const persisted = JSON.parse(readFileSync(jsonPath, "utf8"));
-		assert.equal(persisted.decision, "revise");
+		assert.equal(persisted.decision, "regenerate");
 		assert.match(persisted.user_notes.join("\n"), /Apple website/);
 
 		// generate-2 consumes that artifact: it is in `reads` and the prompt names
@@ -409,7 +410,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Design a dashboard", max_refinements: 1 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -417,8 +418,8 @@ describe("open-claude-design", () => {
 
 		const result = await d.run(ctx);
 
-		// No notes means no second generate stage, but the round is still
-		// persisted as a durable artifact (#2401).
+		// An export means no second generate stage, but the session is still
+		// persisted as a durable artifact (#2401, #2411).
 		assert.equal(ctx.calls.task.includes("generate-2"), false);
 		assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
 		assert.equal(typeof result.handoff, "string");

@@ -162,7 +162,8 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 				kind: "boolean",
 			},
 			max_refinements: {
-				description: "Maximum generate/user-feedback loop iterations (default 3).",
+				description:
+					"Maximum fresh regenerations from the brief after the first design (default 3). The live review session itself is unbounded.",
 				kind: "number",
 			},
 		},

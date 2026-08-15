@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import { feedbackArtifactPath } from "../../packages/workflows/builtin/open-claude-design-feedback.js";
@@ -9,15 +9,16 @@ import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import { makeMockCtx, readPathEndsWith } from "./builtin-workflows-helpers.js";
 
 /**
- * The structured final answer a `user-feedback-*` stage returns when the user
- * approves the preview as-is. The stage declares `previewFeedbackSchema`, so
- * the mock parses this into `result.structured`. cross-ref: issue #2401.
+ * The structured final answer the `user-feedback-*` stage returns when the
+ * user wants the preview exported as it now stands. The stage declares
+ * `previewFeedbackSchema`, so the mock parses this into `result.structured`.
+ * cross-ref: issues #2401, #2411.
  */
-const STRUCTURED_APPROVAL = JSON.stringify({ decision: "approve", user_notes: [], live_changes: [] });
+const STRUCTURED_EXPORT = JSON.stringify({ decision: "export", user_notes: [], live_changes: [] });
 
-describe("open-claude-design — generate/user-feedback refinement loop (#1464)", () => {
+describe("open-claude-design — one live review session per design (#1464, #2411)", () => {
 	const previewWithAnnotations = JSON.stringify({
-		decision: "revise",
+		decision: "regenerate",
 		user_notes: [
 			"I don't like this background; simplify it to a black to grey gradient.",
 			"Make the overall vibe more polished, closer to the Apple website.",
@@ -26,7 +27,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 		annotated_snapshot: ".playwright-cli/annotations-test.png",
 	});
 
-	test("threads user feedback directly into the next generate stage", async () => {
+	test("a regenerate session runs exactly one generate-2 carrying the notes, then reviews again", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -34,7 +35,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
-					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
+					if (name === "user-feedback-2") return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -42,10 +43,10 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 
 		const result = await d.run(ctx);
 
-		assert.ok(ctx.calls.task.includes("generate-1"));
-		assert.ok(ctx.calls.task.includes("user-feedback-1"));
-		assert.ok(ctx.calls.task.includes("generate-2"));
-		assert.ok(ctx.calls.task.includes("user-feedback-2"));
+		assert.deepEqual(
+			ctx.calls.task.filter((name) => name.startsWith("generate-") || name.startsWith("user-feedback-")),
+			["generate-1", "user-feedback-1", "generate-2", "user-feedback-2"],
+		);
 		assert.equal(ctx.calls.task.includes("critique-1"), false);
 		assert.equal(ctx.calls.task.includes("screenshot-1"), false);
 		assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
@@ -72,7 +73,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
-					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
+					if (name === "user-feedback-2") return STRUCTURED_EXPORT;
 					return undefined;
 				},
 				sessionFile: (name) => `/tmp/${name}.jsonl`,
@@ -103,7 +104,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
 					if (name === "user-feedback-2") return previewWithAnnotations;
-					if (name === "user-feedback-3") return STRUCTURED_APPROVAL;
+					if (name === "user-feedback-3") return STRUCTURED_EXPORT;
 					return undefined;
 				},
 				sessionFile: (name) => (name.startsWith("generate-") ? `/tmp/${name}.jsonl` : undefined),
@@ -127,14 +128,14 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
-	test("exports after user feedback reports no changes", async () => {
+	test("a session that returns export runs no generate-2 and reaches the exporter", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
 			{ prompt: "Design a dashboard", max_refinements: 2 },
 			{
 				task: (name) => {
-					if (name === "user-feedback-1") return STRUCTURED_APPROVAL;
+					if (name === "user-feedback-1") return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -157,7 +158,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 
 describe("open-claude-design — deterministic live-review gate (#2060)", () => {
 	const previewWithAnnotations = JSON.stringify({
-		decision: "revise",
+		decision: "regenerate",
 		user_notes: ["Tighten the hero spacing."],
 		live_changes: [],
 	});
@@ -170,7 +171,7 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
-					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
+					if (name === "user-feedback-2") return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -180,12 +181,12 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 
 		assert.equal(ctx.calls.uiSelects.length, 2);
 		const gate = ctx.calls.uiSelects[0];
-		assert.match(gate.message, /review round 1 of 2/i);
+		assert.match(gate.message, /review session 1 /i);
 		assert.ok(gate.message.includes(result.preview_path as string));
 		assert.ok(gate.message.includes(result.preview_file_url as string));
 		assert.ok(gate.message.includes("/workflow connect"));
 		assert.deepEqual([...gate.options], ["Start live review", "Skip remaining review rounds and export as-is"]);
-		assert.match(ctx.calls.uiSelects[1].message, /review round 2 of 2/i);
+		assert.match(ctx.calls.uiSelects[1].message, /review session 2 /i);
 		assert.ok(ctx.calls.task.includes("user-feedback-1"));
 		assert.ok(ctx.calls.task.includes("user-feedback-2"));
 		const artifactDir = result.artifact_dir as string;
@@ -224,7 +225,7 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 			{ prompt: "Design a dashboard", max_refinements: 2 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 				uiSelect: () => {
@@ -285,7 +286,7 @@ describe("open-claude-design — rejected feedback stage is not approval (#2123)
 		assert.equal(ctx.calls.task.includes("final-display"), false);
 	});
 
-	test("a resolved degraded feedback round that declares approval still approves", async () => {
+	test("a resolved degraded review session that returns export still exports", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -293,8 +294,8 @@ describe("open-claude-design — rejected feedback stage is not approval (#2123)
 			{
 				task: (name) => {
 					// A manual/degraded review still finalizes the declared structured
-					// answer; it is the `decision`, not the prose, that approves.
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+					// answer; it is the `decision`, not the prose, that exports.
+					if (name.startsWith("user-feedback-")) return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -315,14 +316,14 @@ describe("open-claude-design — rejected feedback stage is not approval (#2123)
  * cross-ref: issue #2401.
  */
 describe("open-claude-design — structured feedback deliverable (#2401)", () => {
-	const STRUCTURED_REVISION = {
-		decision: "revise",
+	const STRUCTURED_REGENERATION = {
+		decision: "regenerate",
 		user_notes: ["The hero background is too busy; simplify it to a black-to-grey gradient."],
 		live_changes: ["Accepted variant 2 for the pricing table."],
 	};
 	const CONTINUATION_WRAP_UP = "All set — the live review session is closed and the preview is ready.";
 
-	test("a revise round starts generate-2 even when a continuation replaced the final text", async () => {
+	test("a regenerate session starts generate-2 even when a continuation replaced the final text", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -330,9 +331,9 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") {
-						return { text: CONTINUATION_WRAP_UP, structured: STRUCTURED_REVISION };
+						return { text: CONTINUATION_WRAP_UP, structured: STRUCTURED_REGENERATION };
 					}
-					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
+					if (name === "user-feedback-2") return STRUCTURED_EXPORT;
 					return undefined;
 				},
 			},
@@ -347,28 +348,27 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 		const artifactDir = result.artifact_dir as string;
 		const artifactPath = feedbackArtifactPath(artifactDir, 1);
 		const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
-		assert.equal(artifact.decision, "revise");
-		assert.deepEqual(artifact.user_notes, STRUCTURED_REVISION.user_notes);
-		assert.deepEqual(artifact.live_changes, STRUCTURED_REVISION.live_changes);
+		assert.equal(artifact.decision, "regenerate");
+		assert.deepEqual(artifact.user_notes, STRUCTURED_REGENERATION.user_notes);
+		assert.deepEqual(artifact.live_changes, STRUCTURED_REGENERATION.live_changes);
 		assert.deepEqual(Object.keys(artifact.meta).sort(), ["captured_at", "iteration", "stage_name"]);
 
 		const generatePrompt = ctx.calls.prompts["generate-2"]?.[0] ?? "";
-		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.user_notes[0]));
-		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.live_changes[0]));
+		assert.ok(generatePrompt.includes(STRUCTURED_REGENERATION.user_notes[0]));
 		assert.ok(generatePrompt.includes(artifactPath));
 		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
-	test("a revise in the final review round is applied before the export", async () => {
+	test("a second regenerate past the budget exports and says the request was dropped", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
 			{ prompt: "Redesign the Atomic website", max_refinements: 1 },
 			{
 				task: (name) => {
-					if (name === "user-feedback-1") {
-						return { text: CONTINUATION_WRAP_UP, structured: STRUCTURED_REVISION };
+					if (name.startsWith("user-feedback-")) {
+						return { text: CONTINUATION_WRAP_UP, structured: STRUCTURED_REGENERATION };
 					}
 					return undefined;
 				},
@@ -377,17 +377,24 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 
 		const result = await d.run(ctx);
 
+		// One regeneration is budgeted, so the second request stops the loop
+		// rather than starting an unbounded chain.
 		assert.deepEqual(
 			ctx.calls.task.filter(
 				(name) => name.startsWith("generate-") || name.startsWith("user-feedback-") || name === "exporter",
 			),
-			["generate-1", "user-feedback-1", "generate-2", "exporter"],
+			["generate-1", "user-feedback-1", "generate-2", "user-feedback-2", "exporter"],
 		);
-		const generatePrompt = ctx.calls.prompts["generate-2"]?.[0] ?? "";
-		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.user_notes[0]));
-		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.live_changes[0]));
-		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
 		assert.equal(result.approved_for_export, false);
-		rmSync(result.artifact_dir as string, { recursive: true, force: true });
+		// The dropped regeneration is stated rather than silently discarded.
+		assert.match(result.artifact as string, /regeneration budget was already spent \(max_refinements: 1\)/);
+
+		// Every session is still persisted, and the one that asked for the
+		// regeneration reached generate-2's `reads`.
+		const artifactDir = result.artifact_dir as string;
+		assert.ok(existsSync(feedbackArtifactPath(artifactDir, 1)));
+		assert.ok(existsSync(feedbackArtifactPath(artifactDir, 2)));
+		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
+		rmSync(artifactDir, { recursive: true, force: true });
 	});
 });

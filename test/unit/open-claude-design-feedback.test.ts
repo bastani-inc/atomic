@@ -7,13 +7,11 @@ import { join } from "node:path";
 import { Value } from "typebox/value";
 import { afterEach, describe, test } from "vitest";
 import {
-	assertUserAnnotationsThreaded,
-	buildUserAnnotationsSection,
 	feedbackArtifactPath,
 	persistPreviewFeedback,
 	previewFeedbackSchema,
 	toPreviewFeedback,
-	userAnnotationsBlock,
+	userNotesBrief,
 } from "../../packages/workflows/builtin/open-claude-design-feedback.js";
 
 function structuredResult(payload: object, text = "stage prose is not feedback data") {
@@ -25,7 +23,7 @@ function declaredTopLevel(artifactPath: string): Record<string, unknown> {
 	return declared;
 }
 
-describe("open-claude-design feedback threading (#1464)", () => {
+describe("open-claude-design live-review feedback (#1464, #2411)", () => {
 	const tempDirs: string[] = [];
 	afterEach(() => {
 		while (tempDirs.length > 0) {
@@ -34,98 +32,46 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		}
 	});
 
-	test("threads structured user notes and accepted live changes into the next generate stage", () => {
+	test("renders the user's notes as the brief for the regeneration they asked for", () => {
 		const feedback = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
 			result: structuredResult({
-				decision: "revise",
+				decision: "regenerate",
 				user_notes: ["Simplify the hero background.", "Match the Apple website polish."],
 				live_changes: ["Accepted variant 2 for the hero."],
+				annotated_snapshot: ".playwright-cli/annotations-1.png",
 			}),
 		});
-		const block = userAnnotationsBlock([feedback]);
-		assert.equal(block.hasNotes, true);
-		assert.match(block.text, /Simplify the hero background/);
-		assert.match(block.text, /Apple website/);
-		assert.match(block.text, /Accepted live variants\/edits/);
-		assert.match(block.text, /Accepted variant 2 for the hero/);
-
-		assert.doesNotThrow(() =>
-			assertUserAnnotationsThreaded(
-				"brief includes: Simplify the hero background.\nMatch the Apple website polish.\nAccepted variant 2 for the hero.",
-				[feedback],
-				"generate-2",
-			),
-		);
-		assert.throws(
-			() => assertUserAnnotationsThreaded("nothing relevant", [feedback], "generate-2"),
-			/were not threaded into the refinement context/,
-		);
+		const brief = userNotesBrief(feedback);
+		assert.match(brief, /Simplify the hero background/);
+		assert.match(brief, /Apple website/);
+		assert.match(brief, /Annotated snapshot: \.playwright-cli\/annotations-1\.png/);
+		// Accepted variants are already in the preview, so a fresh pass is not
+		// told to preserve them; the durable record still carries them (#2411).
+		assert.doesNotMatch(brief, /Accepted variant 2/);
 	});
 
-	test("buildUserAnnotationsSection orders latest feedback first", () => {
-		const first = toPreviewFeedback({
-			iteration: 0,
-			stageName: "user-feedback-1",
-			result: structuredResult({
-				decision: "revise",
-				user_notes: ["Simplify the hero background."],
-				live_changes: [],
-			}),
-		});
-		const second = toPreviewFeedback({
-			iteration: 1,
-			stageName: "user-feedback-1",
-			result: structuredResult({ decision: "revise", user_notes: ["Fix the footer spacing."], live_changes: [] }),
-		});
-		const section = buildUserAnnotationsSection([first, second]);
-		assert.ok(section.toLowerCase().indexOf("footer spacing") < section.toLowerCase().indexOf("simplify the hero"));
-	});
-
-	test("userAnnotationsBlock falls back when no annotations are captured", () => {
-		const empty = userAnnotationsBlock([
+	test("userNotesBrief states the absence when the user wrote no notes", () => {
+		const brief = userNotesBrief(
 			toPreviewFeedback({
-				iteration: 0,
+				iteration: 1,
 				stageName: "user-feedback-1",
-				result: structuredResult({ decision: "approve", user_notes: [], live_changes: [] }),
+				result: structuredResult({ decision: "regenerate", user_notes: [], live_changes: [] }),
 			}),
-		]);
-		assert.equal(empty.hasNotes, false);
-		assert.match(empty.text, /No interactive user annotations were captured/);
+		);
+		assert.match(brief, /without writing notes/);
+		assert.match(brief, /materially different/);
 	});
 
-	test("assertUserAnnotationsThreaded enforces accepted live-change threading", () => {
-		const feedback = toPreviewFeedback({
-			iteration: 1,
-			stageName: "user-feedback-1",
-			result: structuredResult({
-				decision: "revise",
-				user_notes: [],
-				live_changes: ["Accepted variant 2 for the hero (committed accent)."],
-			}),
-		});
-		assert.doesNotThrow(() =>
-			assertUserAnnotationsThreaded(
-				"brief includes: Accepted variant 2 for the hero (committed accent).",
-				[feedback],
-				"generate-2",
-			),
-		);
-		assert.throws(
-			() => assertUserAnnotationsThreaded("nothing relevant", [feedback], "generate-2"),
-			/accepted live variants .* were not threaded/,
-		);
-	});
-
-	test("persistPreviewFeedback writes the durable record on every round", () => {
+	test("persistPreviewFeedback writes the durable record for every session", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-feedback-"));
 		tempDirs.push(dir);
 		const withNotes = toPreviewFeedback({
 			iteration: 0,
 			stageName: "user-feedback-1",
 			result: structuredResult({
-				decision: "revise",
+				decision: "regenerate",
 				user_notes: ["Simplify the hero background."],
 				live_changes: [],
 			}),
@@ -138,22 +84,22 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		const json = JSON.parse(readFileSync(jsonPath, "utf8"));
 		assert.deepEqual(json.user_notes, ["Simplify the hero background."]);
 		assert.deepEqual(json.live_changes, []);
-		assert.equal(json.decision, "revise");
+		assert.equal(json.decision, "regenerate");
 		assert.deepEqual(Object.keys(json.meta).sort(), ["captured_at", "iteration", "stage_name"]);
 		assert.equal(json.meta.stage_name, "user-feedback-1");
 		assert.equal(Value.Check(previewFeedbackSchema, declaredTopLevel(jsonPath)), true);
 
-		const approval = toPreviewFeedback({
+		const exported = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
-			result: structuredResult({ decision: "approve", user_notes: [], live_changes: [] }),
+			result: structuredResult({ decision: "export", user_notes: [], live_changes: [] }),
 		});
-		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: approval });
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: exported });
 		assert.ok(existsSync(join(dir, "feedback", "iteration-1.md")));
-		const approvalJson = JSON.parse(readFileSync(feedbackArtifactPath(dir, 1), "utf8"));
-		assert.equal(approvalJson.decision, "approve");
-		assert.deepEqual(approvalJson.user_notes, []);
-		assert.deepEqual(approvalJson.live_changes, []);
+		const exportedJson = JSON.parse(readFileSync(feedbackArtifactPath(dir, 1), "utf8"));
+		assert.equal(exportedJson.decision, "export");
+		assert.deepEqual(exportedJson.user_notes, []);
+		assert.deepEqual(exportedJson.live_changes, []);
 		assert.equal(Value.Check(previewFeedbackSchema, declaredTopLevel(feedbackArtifactPath(dir, 1))), true);
 	});
 
@@ -164,7 +110,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
 			iteration: 2,
 			stageName: "user-feedback-2",
 			result: structuredResult({
-				decision: "revise",
+				decision: "regenerate",
 				user_notes: [],
 				live_changes: ["Accepted variant 1 for the pricing table."],
 			}),
@@ -185,7 +131,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
 			iteration: 0,
 			stageName: "user-feedback-1",
 			result: structuredResult({
-				decision: "revise",
+				decision: "regenerate",
 				user_notes: ["Simplify the hero."],
 				live_changes: [],
 				annotated_snapshot: snapshot,
@@ -206,7 +152,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
 			iteration: 0,
 			stageName: "user-feedback-1",
 			result: structuredResult({
-				decision: "revise",
+				decision: "regenerate",
 				user_notes: ["Simplify the hero."],
 				live_changes: [],
 				annotated_snapshot: snapshot,
@@ -227,6 +173,10 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			"live_changes",
 			"user_notes",
 		]);
+		assert.deepEqual(
+			previewFeedbackSchema.properties.decision.anyOf.map((option) => option.const),
+			["export", "regenerate"],
+		);
 		for (const property of Object.values(previewFeedbackSchema.properties)) {
 			assert.equal(typeof property.description, "string");
 		}
@@ -239,7 +189,7 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			stageName: "user-feedback-1",
 			result: structuredResult(
 				{
-					decision: "revise",
+					decision: "regenerate",
 					user_notes: ["The hero background is too busy."],
 					live_changes: ["Accepted variant 2 for the pricing table."],
 					annotated_snapshot: ".playwright-cli/annotations-1.png",
@@ -247,53 +197,45 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 				"The stage's final prose does not determine the review outcome.",
 			),
 		});
-		assert.equal(feedback.decision, "revise");
+		assert.equal(feedback.decision, "regenerate");
 		assert.equal(feedback.userNotes, "The hero background is too busy.");
 		assert.equal(feedback.liveChanges, "Accepted variant 2 for the pricing table.");
 		assert.equal(feedback.annotatedSnapshot, ".playwright-cli/annotations-1.png");
 		assert.doesNotMatch(feedback.text, /final prose/);
 	});
 
-	test("coerces approval carrying captured work to revise", () => {
-		const notes = toPreviewFeedback({
+	test("takes the session's decision as given rather than second-guessing it", () => {
+		// The live session applies accepted variants and steered edits in place,
+		// so an `export` carrying captured work is the user's own decision about
+		// an artifact they were just editing (#2411).
+		const exportWithNotes = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
 			result: structuredResult({
-				decision: "approve",
-				user_notes: ["Fix the masthead contrast."],
-				live_changes: [],
-			}),
-		});
-		assert.equal(notes.decision, "revise");
-		assert.equal(notes.userNotes, "Fix the masthead contrast.");
-
-		const liveOnly = toPreviewFeedback({
-			iteration: 1,
-			stageName: "user-feedback-1",
-			result: structuredResult({
-				decision: "approve",
-				user_notes: [],
+				decision: "export",
+				user_notes: ["Nice — the masthead contrast is fixed."],
 				live_changes: ["Accepted the tighter density."],
 			}),
 		});
-		assert.equal(liveOnly.decision, "revise");
-		assert.equal(liveOnly.liveChanges, "Accepted the tighter density.");
+		assert.equal(exportWithNotes.decision, "export");
+		assert.equal(exportWithNotes.userNotes, "Nice — the masthead contrast is fixed.");
+		assert.equal(exportWithNotes.liveChanges, "Accepted the tighter density.");
 
-		const clean = toPreviewFeedback({
+		const regenerate = toPreviewFeedback({
 			iteration: 2,
 			stageName: "user-feedback-2",
-			result: structuredResult({ decision: "approve", user_notes: [], live_changes: [] }),
+			result: structuredResult({ decision: "regenerate", user_notes: [], live_changes: [] }),
 		});
-		assert.equal(clean.decision, "approve");
+		assert.equal(regenerate.decision, "regenerate");
 	});
 
-	test("writes only schema fields plus the small round metadata block", () => {
+	test("writes only schema fields plus the small session metadata block", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
 		const feedback = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
 			result: structuredResult({
-				decision: "revise",
+				decision: "regenerate",
 				user_notes: ["The hero background is too busy.", "Tighten the footer."],
 				live_changes: ["Accepted variant 2 for the pricing table."],
 			}),
@@ -307,24 +249,24 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	test("persistPreviewFeedback throws instead of leaving a stale round readable", () => {
+	test("persistPreviewFeedback throws instead of leaving a stale session readable", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
 		const artifactPath = feedbackArtifactPath(dir, 1);
-		const approval = toPreviewFeedback({
+		const exported = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
-			result: structuredResult({ decision: "approve", user_notes: [], live_changes: [] }),
+			result: structuredResult({ decision: "export", user_notes: [], live_changes: [] }),
 		});
-		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: approval });
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: exported });
 		assert.equal(existsSync(artifactPath), true);
 
-		const revise = toPreviewFeedback({
+		const regenerate = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
-			result: structuredResult({ decision: "revise", user_notes: ["The hero needs work."], live_changes: [] }),
+			result: structuredResult({ decision: "regenerate", user_notes: ["The hero needs work."], live_changes: [] }),
 		});
 		const unwritable = {
-			...revise,
+			...regenerate,
 			get decision(): never {
 				throw new Error("simulated durable-write failure");
 			},
@@ -336,11 +278,11 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 				error.message.includes(artifactPath) &&
 				error.message.includes("user-feedback-1"),
 		);
-		assert.equal(existsSync(artifactPath), false, "the stale approval must not survive a failed write");
+		assert.equal(existsSync(artifactPath), false, "the stale export must not survive a failed write");
 
 		mkdirSync(artifactPath, { recursive: true });
 		assert.throws(
-			() => persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: revise }),
+			() => persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: regenerate }),
 			(error: Error) =>
 				/failed to write the feedback deliverable/.test(error.message) && error.message.includes(artifactPath),
 		);

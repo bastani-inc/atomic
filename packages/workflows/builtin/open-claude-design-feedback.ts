@@ -1,15 +1,16 @@
 /**
- * open-claude-design feedback threading.
+ * open-claude-design live-review feedback.
  *
- * The `user-feedback-*` stages capture Playwright annotation feedback (user
- * notes + annotated snapshot) from the user. This module is the durable carrier
- * for that feedback: it persists the structured stage result as a workflow
- * artifact and renders the user annotations that the next `generate-*` stage
- * must honor. cross-ref: issue #1464.
+ * One `user-feedback-*` stage runs the whole live review session: the user
+ * picks elements, accepts on-brand variants that are written into
+ * `preview.html` in place, steers the page, and leaves when done. This module
+ * is the durable carrier for what that session decided: it persists the
+ * structured stage result as a workflow artifact and renders the user's notes
+ * as the brief for a regeneration. cross-ref: issues #1464, #2411.
  *
  * The stage declares `previewFeedbackSchema` as its structured output, so the
- * feedback round finalizes as a schema-validated value rather than as prose a
- * later resume-continuation turn can replace. Every round is persisted as
+ * session finalizes as a schema-validated value rather than as prose a later
+ * resume-continuation turn can replace. Every session is persisted as
  * `<artifactDir>/feedback/iteration-N.json`.
  * cross-ref: issue #2401.
  */
@@ -20,21 +21,23 @@ import { Type, type Static } from "typebox";
 import type { WorkflowSerializableValue } from "../src/shared/types.js";
 
 /**
- * The structured final answer the `user-feedback-*` stages must return. Used as
+ * The structured final answer the `user-feedback-*` stage must return. Used as
  * the stage `schema`, which both finalizes the stage result and shapes the
- * durable per-round artifact.
+ * durable per-session artifact.
  */
 export const previewFeedbackSchema = Type.Object(
   {
-    decision: Type.Union([Type.Literal("approve"), Type.Literal("revise")], {
+    decision: Type.Union([Type.Literal("export"), Type.Literal("regenerate")], {
       description:
-        "`revise` whenever the user asked for anything at all; `approve` only when the user wants the preview exported unchanged.",
+        "`export` when the user wants this preview exported as it now stands; `regenerate` only when they want a fresh pass designed from the brief.",
     }),
     user_notes: Type.Array(Type.String(), {
-      description: "Every note the user typed or dictated, verbatim, one entry per note. Empty when the user typed nothing.",
+      description:
+        "Every note the user typed or dictated, verbatim, one entry per note. Empty when the user typed nothing. On `regenerate` these notes are the brief for the fresh pass.",
     }),
     live_changes: Type.Array(Type.String(), {
-      description: "Every variant or edit the user accepted during the live review, one entry per accepted change.",
+      description:
+        "Every variant or edit the user accepted during the live review, one entry per accepted change. These are already applied to the preview in place.",
     }),
     annotated_snapshot: Type.Optional(
       Type.String({ description: "Path to the annotated screenshot captured during the review, when one exists." }),
@@ -43,11 +46,11 @@ export const previewFeedbackSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** The validated structured payload a `user-feedback-*` stage returns. */
+/** The validated structured payload the `user-feedback-*` stage returns. */
 export type PreviewFeedbackPayload = Static<typeof previewFeedbackSchema>;
 
-/** The only outcomes a structured feedback round can produce. */
-export type PreviewFeedbackDecision = "approve" | "revise";
+/** The only outcomes a live review session can produce. */
+export type PreviewFeedbackDecision = "export" | "regenerate";
 
 /** Per-entry captured values plus the joined block consumers read. */
 type CapturedEntries = {
@@ -55,15 +58,15 @@ type CapturedEntries = {
   readonly joined: string;
 };
 
-/** A single captured user-feedback round. */
+/** A single captured live review session. */
 export type PreviewFeedback = {
-  /** 1..N for generate/user-feedback loop iterations. */
+  /** 1..N for live review sessions. */
   readonly iteration: number;
   /** Originating stage name, e.g. `user-feedback-1`. */
   readonly stageName: string;
   /** Human-readable structured feedback written beside the durable record. */
   readonly text: string;
-  /** Explicit round outcome; drives the refinement loop. */
+  /** Explicit session outcome; only `regenerate` runs another generate round. */
   readonly decision: PreviewFeedbackDecision;
   /** Captured user annotation notes when the user actually annotated. */
   readonly userNotes?: string;
@@ -105,7 +108,7 @@ function capturedFields(args: {
   };
 }
 
-/** Render the structured answer as the human-readable per-round transcript copy. */
+/** Render the structured answer as the human-readable per-session transcript copy. */
 function structuredFeedbackText(payload: PreviewFeedbackPayload): string {
   const lines = [`decision: ${payload.decision}`, "user_notes:"];
   lines.push(...payload.user_notes.map((note) => `- ${note}`));
@@ -122,8 +125,9 @@ function structuredFeedbackText(payload: PreviewFeedbackPayload): string {
  *
  * The stage runner guarantees that a resolved schema-backed stage has called
  * `structured_output` with a schema-valid value. The structured payload is the
- * sole source for this record; no prose fallback or second validation path is
- * needed. cross-ref: issue #2401.
+ * sole source for this record; no prose fallback, no second validation path,
+ * and no second-guessing of the decision the user just made about an artifact
+ * they were editing. cross-ref: issues #2401, #2411.
  */
 export function toPreviewFeedback(input: {
   readonly iteration: number;
@@ -131,112 +135,40 @@ export function toPreviewFeedback(input: {
   readonly result: PreviewResultLike;
 }): PreviewFeedback {
   const payload = input.result.structured as PreviewFeedbackPayload;
-  const notes = captureEntries(payload.user_notes);
-  const changes = captureEntries(payload.live_changes);
-  const snapshot = payload.annotated_snapshot;
-  const capturedWork = payload.user_notes.length > 0 || payload.live_changes.length > 0;
 
   return {
     iteration: input.iteration,
     stageName: input.stageName,
     text: structuredFeedbackText(payload),
-    decision: payload.decision === "approve" && capturedWork ? "revise" : payload.decision,
+    decision: payload.decision,
     capturedAt: new Date().toISOString(),
     ...capturedFields({
-      notes,
-      changes,
-      annotatedSnapshot: snapshot,
+      notes: captureEntries(payload.user_notes),
+      changes: captureEntries(payload.live_changes),
+      annotatedSnapshot: payload.annotated_snapshot,
     }),
   };
 }
 
-export function hasMeaningfulUserNotes(feedback: PreviewFeedback): boolean {
-  return typeof feedback.userNotes === "string" && feedback.userNotes.length > 0;
-}
-
-export function hasMeaningfulLiveChanges(feedback: PreviewFeedback): boolean {
-  return typeof feedback.liveChanges === "string" && feedback.liveChanges.length > 0;
-}
-
-function feedbackLabel(feedback: PreviewFeedback): string {
-  return feedback.iteration === 0 ? "the initial preview" : "the live design review";
-}
-
 /**
- * Render the captured user annotations (latest first) as a markdown section.
- * Returns "" when no iteration captured meaningful user notes.
+ * The user's notes rendered as the brief for a regeneration pass. Accepted
+ * live variants are deliberately absent: they are already in the preview, and
+ * a regeneration is a fresh take rather than a rewrite that has to preserve
+ * them. The durable record named in the same prompt still carries them
+ * (issue #2411).
  */
-export function buildUserAnnotationsSection(history: readonly PreviewFeedback[]): string {
-  const withFeedback = history.filter(
-    (feedback) => hasMeaningfulUserNotes(feedback) || hasMeaningfulLiveChanges(feedback),
-  );
-  if (withFeedback.length === 0) return "";
-  return [...withFeedback]
-    .reverse()
-    .map((feedback) => {
-      const lines = [`### User annotations from ${feedbackLabel(feedback)}`, ""];
-      if (hasMeaningfulUserNotes(feedback)) {
-        lines.push(feedback.userNotes ?? "");
-      }
-      if (hasMeaningfulLiveChanges(feedback)) {
-        lines.push("", "Accepted live variants/edits:", feedback.liveChanges ?? "");
-      }
-      if (feedback.annotatedSnapshot !== undefined) {
-        lines.push("", `Annotated snapshot: ${feedback.annotatedSnapshot}`);
-      }
-      return lines.join("\n");
-    })
-    .join("\n\n");
-}
-
-/**
- * The user-annotations block injected into refinement prompts, plus whether any
- * real annotations exist. When none exist, downstream stages are told to fall
- * back to an impeccable critique rather than fabricating user feedback.
- */
-export function userAnnotationsBlock(history: readonly PreviewFeedback[]): {
-  readonly hasNotes: boolean;
-  readonly text: string;
-} {
-  const section = buildUserAnnotationsSection(history);
-  if (section.length === 0) {
-    return {
-      hasNotes: false,
-      text: "No interactive user annotations were captured in the user-feedback stage. There is no user feedback to honor for this refinement.",
-    };
+export function userNotesBrief(feedback: PreviewFeedback): string {
+  const notes = (feedback.userNotes ?? "").trim();
+  const lines =
+    notes.length > 0
+      ? [notes]
+      : [
+          "The user asked for a fresh pass without writing notes. They rejected the direction, not a detail: take a materially different one from the brief, design context, and references.",
+        ];
+  if (feedback.annotatedSnapshot !== undefined) {
+    lines.push("", `Annotated snapshot: ${feedback.annotatedSnapshot}`);
   }
-  return { hasNotes: true, text: section };
-}
-
-/**
- * Guardrail: every captured user annotation must be present verbatim in the
- * next generate prompt. If a `user-feedback-*` stage captured `user_notes` but
- * they did not thread through, fail loudly instead of silently generating
- * without user feedback. cross-ref: issue #1464 fix (6).
- */
-export function assertUserAnnotationsThreaded(
-  prompt: string,
-  history: readonly PreviewFeedback[],
-  stageName: string,
-): void {
-  for (const feedback of history) {
-    if (hasMeaningfulUserNotes(feedback)) {
-      const notes = (feedback.userNotes ?? "").trim();
-      if (notes.length > 0 && !prompt.includes(notes)) {
-        throw new Error(
-          `open-claude-design ${stageName}: user annotations captured in ${feedback.stageName} were not threaded into the refinement context. Refusing to refine without user feedback (see issue #1464).`,
-        );
-      }
-    }
-    if (hasMeaningfulLiveChanges(feedback)) {
-      const changes = (feedback.liveChanges ?? "").trim();
-      if (changes.length > 0 && !prompt.includes(changes)) {
-        throw new Error(
-          `open-claude-design ${stageName}: accepted live variants captured in ${feedback.stageName} were not threaded into the refinement context. Refusing to refine without user feedback.`,
-        );
-      }
-    }
-  }
+  return lines.join("\n");
 }
 
 /** Whether `childPath` resolves to `parentDir` itself or somewhere beneath it. */
@@ -286,7 +218,7 @@ function copyAnnotationArtifacts(
   }
 }
 
-/** Path of the durable per-round feedback artifact. */
+/** Path of the durable per-session feedback artifact. */
 export function feedbackArtifactPath(artifactDir: string, iteration: number): string {
   return join(artifactDir, "feedback", `iteration-${iteration}.json`);
 }
@@ -329,11 +261,12 @@ function discardStaleFile(path: string): void {
 }
 
 /**
- * Persist the round as durable workflow artifacts under `<artifactDir>/feedback/`.
- * The JSON record is written on every round, including approvals. A failed JSON
- * write clears the path and throws, so an earlier round cannot remain readable
- * as this round's outcome. The markdown transcript and annotated-snapshot
- * copies remain best-effort. cross-ref: issue #1464 fix (5), issue #2401.
+ * Persist the session as durable workflow artifacts under `<artifactDir>/feedback/`.
+ * The JSON record is written for every session, exports included. A failed JSON
+ * write clears the path and throws, so an earlier session cannot remain
+ * readable as this session's outcome. The markdown transcript and
+ * annotated-snapshot copies remain best-effort.
+ * cross-ref: issue #1464 fix (5), issue #2401.
  */
 export function persistPreviewFeedback(input: {
   readonly artifactDir: string;
