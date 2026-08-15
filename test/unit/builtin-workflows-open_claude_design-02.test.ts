@@ -46,7 +46,14 @@ describe("open-claude-design — one live review session per design (#1464, #241
 
 		assert.deepEqual(
 			ctx.calls.task.filter((name) => name.startsWith("generate-") || name.startsWith("user-feedback-")),
-			["generate-1", "user-feedback-1", "generate-2", "user-feedback-2"],
+			[
+				"generate-1",
+				"user-feedback-1-start",
+				"user-feedback-1",
+				"generate-2",
+				"user-feedback-2-start",
+				"user-feedback-2",
+			],
 		);
 		assert.equal(ctx.calls.task.includes("critique-1"), false);
 		assert.equal(ctx.calls.task.includes("screenshot-1"), false);
@@ -83,15 +90,21 @@ describe("open-claude-design — one live review session per design (#1464, #241
 
 		const result = await d.run(ctx);
 
+		// The first review session opens fresh; its summary stage forks from the
+		// session the `-start` stage established.
+		const startOneOptions = ctx.calls.taskOptions["user-feedback-1-start"]?.[0];
+		assert.equal(startOneOptions?.context, undefined);
+		assert.equal(startOneOptions?.forkFromSessionFile, undefined);
 		const feedbackOneOptions = ctx.calls.taskOptions["user-feedback-1"]?.[0];
-		assert.equal(feedbackOneOptions?.context, undefined);
-		assert.equal(feedbackOneOptions?.forkFromSessionFile, undefined);
+		assert.equal(feedbackOneOptions?.context, "fork");
+		assert.equal(feedbackOneOptions?.forkFromSessionFile, "/tmp/user-feedback-1-start.jsonl");
 		const generateTwoOptions = ctx.calls.taskOptions["generate-2"]?.[0];
 		assert.equal(generateTwoOptions?.context, "fork");
 		assert.equal(generateTwoOptions?.forkFromSessionFile, "/tmp/generate-1.jsonl");
-		const feedbackTwoOptions = ctx.calls.taskOptions["user-feedback-2"]?.[0];
-		assert.equal(feedbackTwoOptions?.context, "fork");
-		assert.equal(feedbackTwoOptions?.forkFromSessionFile, "/tmp/user-feedback-1.jsonl");
+		// The next session continues the same review lineage.
+		const startTwoOptions = ctx.calls.taskOptions["user-feedback-2-start"]?.[0];
+		assert.equal(startTwoOptions?.context, "fork");
+		assert.equal(startTwoOptions?.forkFromSessionFile, "/tmp/user-feedback-1.jsonl");
 		const artifactDir = result.artifact_dir as string;
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
@@ -384,7 +397,15 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 			ctx.calls.task.filter(
 				(name) => name.startsWith("generate-") || name.startsWith("user-feedback-") || name === "exporter",
 			),
-			["generate-1", "user-feedback-1", "generate-2", "user-feedback-2", "exporter"],
+			[
+				"generate-1",
+				"user-feedback-1-start",
+				"user-feedback-1",
+				"generate-2",
+				"user-feedback-2-start",
+				"user-feedback-2",
+				"exporter",
+			],
 		);
 		assert.equal(result.approved_for_export, false);
 		// The dropped regeneration is stated rather than silently discarded.
@@ -451,30 +472,6 @@ describe("open-claude-design — the workflow owns the live poll loop (#2401 fol
 			assert.equal(ctx.calls.tool.includes("live-reply-1-2"), true);
 			// Four polls: generate, steer, accept, then exit.
 			assert.equal(ctx.calls.tool.filter((name) => name.startsWith("live-poll-")).length, 4);
-			assert.equal(ctx.calls.task.includes("user-feedback-1"), true);
-			assert.equal(ctx.calls.task.includes("exporter"), true);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
-	test("a project without the impeccable scripts falls back to the single review stage", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const cwd = mkdtempSync(join(tmpdir(), "ocd-nolive-"));
-		try {
-			const ctx = makeMockCtx(
-				{ prompt: "Redesign the Atomic website", max_refinements: 1 },
-				{ cwd, task: (name) => (name === "user-feedback-1" ? STRUCTURED_EXPORT_LOOP : undefined) },
-			);
-
-			await d.run(ctx);
-
-			assert.equal(
-				ctx.calls.tool.some((name) => name.startsWith("live-poll-")),
-				false,
-			);
-			assert.equal(ctx.calls.task.includes("user-feedback-1-start"), false);
 			assert.equal(ctx.calls.task.includes("user-feedback-1"), true);
 			assert.equal(ctx.calls.task.includes("exporter"), true);
 		} finally {

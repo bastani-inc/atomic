@@ -242,6 +242,12 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 			calls.tool.push(name);
 			const override = responders.tool?.(name, args, calls);
 			if (override !== undefined) return override as T;
+			// open-claude-design's review loop polls the impeccable live helper
+			// through these nodes. Running them for real would spawn a ten-minute
+			// long-poll against a server no test starts, so a test that cares
+			// supplies its own events and every other test sees an ended session.
+			if (name.startsWith("live-poll-")) return { type: "exit", raw: '{"type":"exit"}' } as unknown as T;
+			if (name.startsWith("live-reply-")) return { code: 0, stdout: "", stderr: "" } as unknown as T;
 			return fn({ signal: new AbortController().signal });
 		},
 	};

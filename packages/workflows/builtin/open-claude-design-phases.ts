@@ -16,7 +16,6 @@ import {
 import {
   LIVE_REVIEW_GATE_OPTIONS,
   buildLiveReviewGateMessage,
-  buildLivePreviewDisplayPrompt,
   isUiUnavailableRejection,
   type LiveReviewGateUi,
 } from "./open-claude-design-setup.js";
@@ -29,7 +28,6 @@ import {
   pollLiveEvent,
   replyLiveEvent,
   replyTokenFor,
-  resolveLiveScript,
 } from "./open-claude-design-live-protocol.js";
 
 const GROUNDED_REPORTING =
@@ -38,12 +36,8 @@ const GROUNDED_REPORTING =
 type DesignContext = {
   task(name: string, options: object): Promise<WorkflowTaskResult>;
   parallel(steps: readonly object[], options: { readonly task: string }): Promise<WorkflowTaskResult[]>;
-  /**
-   * Durable tool node. Optional so the workflow still loads on a host that
-   * predates `ctx.tool`; the live review falls back to the single-stage path
-   * when it is missing.
-   */
-  tool?<T>(name: string, args: object, fn: (handle: { readonly signal: AbortSignal }) => Promise<T>): Promise<T>;
+  /** Durable tool node; the live review loop is built from these. */
+  tool<T>(name: string, args: object, fn: (handle: { readonly signal: AbortSignal }) => Promise<T>): Promise<T>;
 };
 
 type ModelConfig = Record<string, object | string | readonly string[]>;
@@ -285,23 +279,6 @@ async function runLiveReviewSession(options: LiveReviewSessionOptions): Promise<
   };
 
   const tool = designContext.tool;
-  const canDriveLive = tool !== undefined && resolveLiveScript(workflowCwd, "live-poll.mjs") !== undefined;
-
-  if (tool === undefined || !canDriveLive) {
-    return remember(
-      await designContext.task(feedbackStageName, {
-        prompt: buildLivePreviewDisplayPrompt({
-          previewPath,
-          previewFileUrl,
-          browserBootstrapRules,
-          ...(round === 1 ? {} : { iteration: round }),
-        }),
-        schema: previewFeedbackSchema,
-        ...designModelConfig,
-        ...forkContinuationOptions(sessionFile),
-      }),
-    );
-  }
 
   remember(
     await designContext.task(`${feedbackStageName}-start`, {

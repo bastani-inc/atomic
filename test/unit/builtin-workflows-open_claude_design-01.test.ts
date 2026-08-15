@@ -194,8 +194,9 @@ describe("open-claude-design", () => {
 		const discoveryPrompt = ctx.calls.prompts.discovery?.[0] ?? "";
 		assert.match(discoveryPrompt, /\/skill:impeccable shape/);
 		assert.match(discoveryPrompt, /\/skill:impeccable init/);
+		const startPrompt = ctx.calls.prompts["user-feedback-1-start"]?.[0] ?? "";
+		assert.match(startPrompt, /\/skill:impeccable live/);
 		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
-		assert.match(feedbackPrompt, /\/skill:impeccable live/);
 		assert.match(feedbackPrompt, /`live_changes`/);
 	});
 
@@ -273,8 +274,9 @@ describe("open-claude-design", () => {
 			"live_changes",
 			"user_notes",
 		]);
+		const startPrompt = ctx.calls.prompts["user-feedback-1-start"]?.[0] ?? "";
+		assert.match(startPrompt, /\/skill:impeccable live/);
 		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
-		assert.match(feedbackPrompt, /\/skill:impeccable live/);
 		assert.match(feedbackPrompt, /`user_notes`/);
 		assert.match(feedbackPrompt, /STRUCTURED final answer/);
 		assert.equal(result.output_type, "component");
@@ -322,7 +324,9 @@ describe("open-claude-design", () => {
 
 		await d.run(ctx);
 
-		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
+		// The browser bootstrap rules belong to the stage that opens the browser,
+		// which is now the review session's `-start` stage.
+		const feedbackPrompt = ctx.calls.prompts["user-feedback-1-start"]?.[0] ?? "";
 		const finalPrompt = ctx.calls.prompts["final-display"]?.[0] ?? "";
 		for (const displayPrompt of [
 			ctx.calls.prompts["ds-locator"]?.[0] ?? "",

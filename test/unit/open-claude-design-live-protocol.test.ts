@@ -78,12 +78,19 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 		assert.equal(runner.calls.length, 3, "polled through both timeouts");
 	});
 
-	test("a project without the impeccable scripts reports exit rather than hanging", async () => {
-		const bare = mkdtempSync(join(tmpdir(), "live-bare-"));
-		dirs.push(bare);
-		assert.equal(resolveLiveScript(bare, "live-poll.mjs"), undefined);
-		const event = await pollLiveEvent({ workflowCwd: bare });
-		assert.equal(event.type, "exit");
+	test("the bundled skill resolves from any cwd, and a project copy wins", () => {
+		// impeccable ships inside this package, so the live scripts are always
+		// present: `packages/workflows/skills/impeccable/scripts` in the repo and
+		// `dist/builtin/workflows/skills/impeccable/scripts` once bundled.
+		const bundled = resolveLiveScript(mkdtempSync(join(tmpdir(), "live-bare-")), "live-poll.mjs");
+		assert.ok(bundled !== undefined, "the bundled skill must resolve without a project copy");
+		assert.match(bundled, /skills[/\\]impeccable[/\\]scripts[/\\]live-poll\.mjs$/);
+
+		const vendored = makeProjectWithScripts();
+		assert.equal(
+			resolveLiveScript(vendored, "live-poll.mjs"),
+			join(vendored, ".agents", "skills", "impeccable", "scripts", "live-poll.mjs"),
+		);
 	});
 
 	test("only generate, steer, and manual_edit_apply call the model back", () => {

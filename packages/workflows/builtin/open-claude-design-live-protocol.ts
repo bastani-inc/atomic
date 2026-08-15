@@ -20,6 +20,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** Events the live helper delivers. Anything unknown is treated as ignorable. */
 export type LiveEventType =
@@ -55,15 +56,25 @@ export function replyTokenFor(event: LiveEvent): string {
 	return "done";
 }
 
-const SCRIPT_CANDIDATES = [
-	join(".agents", "skills", "impeccable", "scripts"),
-	join(".claude", "skills", "impeccable", "scripts"),
-] as const;
+/**
+ * Where the impeccable live scripts live, in resolution order.
+ *
+ * The skill ships inside this package — `packages/workflows/skills/impeccable`
+ * in the repository, `dist/builtin/workflows/skills/impeccable` once bundled —
+ * and sits one level up from this module in both layouts, so `import.meta.url`
+ * finds it without the host telling us where it is. A project that vendors its
+ * own copy under `.agents/skills` wins, so a fork can be driven without
+ * rebuilding Atomic.
+ */
+function scriptDirs(workflowCwd: string): readonly string[] {
+	const bundled = fileURLToPath(new URL("../skills/impeccable/scripts/", import.meta.url));
+	return [join(workflowCwd, ".agents", "skills", "impeccable", "scripts"), bundled];
+}
 
-/** Absolute path to a live script, or undefined when the skill is not installed here. */
+/** Absolute path to a live script. The bundled skill makes this effectively total. */
 export function resolveLiveScript(workflowCwd: string, script: string): string | undefined {
-	for (const dir of SCRIPT_CANDIDATES) {
-		const candidate = join(workflowCwd, dir, script);
+	for (const dir of scriptDirs(workflowCwd)) {
+		const candidate = join(dir, script);
 		if (existsSync(candidate)) return candidate;
 	}
 	return undefined;
@@ -238,7 +249,7 @@ export function buildLiveSessionStartPrompt(input: {
 		].join("\n"),
 		[
 			"<instructions>",
-			"1. Run `live.mjs` (with `--target` pointed at the preview file, or the equivalent `.impeccable/live/config.json` entry) and open the URL that serves it.",
+			"1. Drive `/skill:impeccable live` against the static preview: run `live.mjs` with `--target` pointed at the preview file, or the equivalent `.impeccable/live/config.json` entry, and open the URL that serves it.",
 			"2. Print the live `http://` review URL in plain text, plus the preview file URL as the manual fallback, so anyone attaching to this run can find the review.",
 			"3. Do NOT start a poll loop. The workflow owns polling and will call you back for each event that needs you. Ending your turn does not end the review.",
 			"</instructions>",
@@ -261,7 +272,7 @@ export function buildLiveSessionSummaryPrompt(input: { readonly previewPath: str
 		].join("\n"),
 		[
 			"<output_format>",
-			"Markdown for the transcript with `display_method`, `preview_path`, `live_changes`, `annotated_snapshot`, and `user_notes`, then finish with the STRUCTURED answer this stage's schema declares — that structured value, not the prose, is what the workflow reads (issue #2401):",
+			"Markdown for the transcript with `display_method`, `preview_path`, `live_changes`, `annotated_snapshot`, and `user_notes`, then finish with the STRUCTURED final answer this stage's schema declares — that structured value, not the prose, is what the workflow reads (issue #2401):",
 			"`decision`: `export` when this preview should go to the exporter as it stands; `regenerate` when the user wants a fresh pass from the brief.",
 			"`user_notes`: one entry per note, verbatim; empty when there were none.",
 			"`live_changes`: one entry per variant or edit the user accepted; empty when there were none.",

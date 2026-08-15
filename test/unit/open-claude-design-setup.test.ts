@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
-	buildLivePreviewDisplayPrompt,
 	buildLiveReviewGateMessage,
 	buildReferenceDiscoveryPrompt,
 	isUiUnavailableRejection,
@@ -150,46 +149,7 @@ describe("open-claude-design setup", () => {
 		});
 	});
 
-	describe("buildLivePreviewDisplayPrompt", () => {
-		test("first-session prompt drives /skill:impeccable live and keeps the feedback labels", () => {
-			const prompt = buildLivePreviewDisplayPrompt({
-				previewPath: "/tmp/run/preview.html",
-				previewFileUrl: "file:///tmp/run/preview.html",
-				browserBootstrapRules:
-					"which playwright-cli ... @playwright/cli ... missing browser executable ... screenshot --filename",
-			});
-			assert.match(prompt, /\/skill:impeccable live/);
-			assert.match(prompt, /<browser_use_guidelines>/);
-			assert.match(prompt, /playwright-cli show --annotate/);
-			assert.match(prompt, /`user_notes`/);
-			assert.match(prompt, /`annotated_snapshot`/);
-			assert.match(prompt, /`live_changes`/);
-			assert.match(prompt, /the just-generated HTML artifact/);
-			assert.match(prompt, /BEFORE starting any long-poll wait/);
-			assert.match(prompt, /print the exact review URL/i);
-			assert.ok(prompt.includes("/tmp/run/preview.html"));
-			// One unbounded session, decided by `export` or `regenerate` alone.
-			assert.match(prompt, /this session is not capped/i);
-			assert.match(prompt, /`decision`: `export`/);
-			assert.match(prompt, /`regenerate`/);
-			assert.match(prompt, /ALREADY applied to the preview in place/);
-			assert.match(prompt, /never a reason to regenerate/);
-			assert.match(prompt, /brief for the fresh pass/);
-			assert.doesNotMatch(prompt, /`approve`|`revise`/);
-		});
-
-		test("a later session's prompt names the regenerated preview without an iteration counter", () => {
-			const prompt = buildLivePreviewDisplayPrompt({
-				previewPath: "/tmp/run/preview.html",
-				previewFileUrl: "file:///tmp/run/preview.html",
-				browserBootstrapRules: "rules",
-				iteration: 2,
-			});
-			assert.match(prompt, /the regenerated preview/);
-			assert.doesNotMatch(prompt, /iteration \d+\/\d+/);
-			assert.doesNotMatch(prompt, /FINAL refinement pass/);
-		});
-
+	describe("live review gate", () => {
 		test("live-review gate message names the preview, session, budget, and connect affordance", () => {
 			const message = buildLiveReviewGateMessage({
 				round: 2,
