@@ -80,6 +80,7 @@ function boundaryMessageFromResult(
 		parameters: result.parameters,
 		stats: result.stats,
 		rung: result.rung,
+		tokensBefore: result.tokensBefore,
 		// Preserve the borrowed-planner identity; the event-only path is otherwise
 		// the one place it is lost.
 		...(result.plannerModel === undefined ? {} : { plannerModel: result.plannerModel }),

@@ -7,9 +7,11 @@ import type {
 	CompactedTranscript,
 	CompactionPlannerModel,
 	CompactionUrgency,
+	NumberedRegion,
 	PlannerAuth,
 	RawLineRange,
 	VerbatimCompactionPreparation,
+	VerbatimCompactionStats,
 } from "./compaction-types.js";
 import { MIN_COMPACTABLE_REGION_LINES } from "./compaction-types.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
@@ -88,17 +90,38 @@ function hardInputLimitFor(model: Model<Api>): number {
 	return model.contextWindow > 0 ? model.contextWindow : Number.POSITIVE_INFINITY;
 }
 
-function withWholeContextStats(
-	result: CompactedTranscript,
-	preparation: VerbatimCompactionPreparation,
+/**
+ * Widen region-scoped stats to a whole-context symmetric heuristic pair.
+ *
+ * Both `tokensBefore` and `tokensAfter` are computed with the same estimator:
+ * a region term (char/4 heuristic from `region.tokenEstimate` and the compacted
+ * text) plus an explicit tail estimate from the same heuristic family. When the
+ * tail survives compaction it appears on both sides and cancels in the ratio;
+ * when the fresh rung drops the tail it correctly does not cancel, because the
+ * tail really is gone.
+ *
+ * This does **not** clamp the percentage: a genuine expansion may still be
+ * negative.
+ *
+ * Centralized here so planned, fresh, and extension results all use one
+ * widening/ratio path.
+ */
+export function computeWholeContextStats(
+	regionStats: VerbatimCompactionStats,
+	region: NumberedRegion,
+	tailEstimate: number,
 	keptTail: boolean,
-): CompactedTranscript {
-	const tokensAfter = result.stats.tokensAfter + (keptTail ? getKeptTailTokenEstimate(preparation) : 0);
-	const percentReduction =
-		preparation.tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10;
+): VerbatimCompactionStats {
+	const beforeTail = region.tokenEstimate;
+	const afterTail = keptTail ? tailEstimate : 0;
+	const tokensBefore = beforeTail + (keptTail ? tailEstimate : 0);
+	const tokensAfter = regionStats.tokensAfter + afterTail;
+	const percentReduction = tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / tokensBefore) * 1000) / 10;
 	return {
-		...result,
-		stats: { ...result.stats, tokensBefore: preparation.tokensBefore, tokensAfter, percentReduction },
+		...regionStats,
+		tokensBefore,
+		tokensAfter,
+		percentReduction,
 	};
 }
 
@@ -156,8 +179,12 @@ function plannedResult(
 		preparation.region,
 		validateDeletedRanges(ranges, preparation.region),
 	);
+	const tailEstimate = getKeptTailTokenEstimate(preparation);
 	return {
-		...withWholeContextStats(reconstructed, preparation, true),
+		text: reconstructed.text,
+		ranges: reconstructed.ranges,
+		keptRanges: reconstructed.keptRanges,
+		stats: computeWholeContextStats(reconstructed.stats, preparation.region, tailEstimate, true),
 		rung: "planned",
 		...(plannerModel ? { plannerModel } : {}),
 		keptTail: true,
@@ -268,8 +295,12 @@ async function resolvePlannerAuth(
 
 function freshResult(preparation: VerbatimCompactionPreparation, hardInputLimit: number): CompactionRungResult {
 	const fresh = buildFreshContextWindow(preparation, hardInputLimit);
+	const tailEstimate = getKeptTailTokenEstimate(preparation);
 	return {
-		...withWholeContextStats(fresh.transcript, preparation, fresh.keptTail),
+		text: fresh.transcript.text,
+		ranges: fresh.transcript.ranges,
+		keptRanges: fresh.transcript.keptRanges,
+		stats: computeWholeContextStats(fresh.transcript.stats, preparation.region, tailEstimate, fresh.keptTail),
 		rung: "fresh",
 		keptTail: fresh.keptTail,
 	};

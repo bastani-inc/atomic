@@ -11,7 +11,14 @@ import {
 } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import type { CompactedTranscript } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
-import { preparation, region, runRequest, scriptedStream, testModel } from "./compaction-rung-support.js";
+import {
+	preparation,
+	region,
+	runRequest,
+	scriptedStream,
+	setKeptTailTokenEstimate,
+	testModel,
+} from "./compaction-rung-support.js";
 
 const MARKER = /^\(filtered \d+ lines\)$/;
 
@@ -78,8 +85,12 @@ test("the preserve_recent tail is kept when it fits under the hard input limit",
 });
 
 test("the tail is dropped only when keeping it would still exceed the hard input limit", async () => {
-	// tokensBefore far exceeds the region estimate, so the tail alone is huge.
+	// Set a large tail estimate so the tail alone exceeds the hard input limit.
+	// Previously this test relied on `tokensBefore - region.tokenEstimate` as the
+	// tail estimate, which mixed authoritative and heuristic counts (issue #2052).
+	// Now the tail estimate is set explicitly through the same path production uses.
 	const prep = preparation({ region: region(40), tokensBefore: 500_000 });
+	setKeptTailTokenEstimate(prep, 500_000);
 	const stream = scriptedStream({ default: [{ errorMessage: "429 Too Many Requests" }] });
 	const result = await runVerbatimCompaction(
 		prep,
@@ -117,8 +128,10 @@ test("load-bearing urgency reaches the fresh rung when every model fails", async
 
 test("a load-bearing fresh rung reports the dropped tail so persistence clears the boundary", async () => {
 	const stream = scriptedStream({ default: [{ errorMessage: "insufficient_quota" }] });
+	const prep = preparation({ tokensBefore: 500_000 });
+	setKeptTailTokenEstimate(prep, 500_000);
 	const result = await runVerbatimCompaction(
-		preparation({ tokensBefore: 500_000 }),
+		prep,
 		testModel({ contextWindow: 1_000 }),
 		runRequest({ streamFn: stream.streamFn, urgency: "load_bearing" }),
 	);
