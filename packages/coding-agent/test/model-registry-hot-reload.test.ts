@@ -58,6 +58,7 @@ describe("model config hot reload", () => {
 			getAvailableSnapshot: () => [],
 			getModel: () => undefined,
 			isNetworkRefreshEnabled: () => false,
+			getCredentialGeneration: () => 0,
 			refresh,
 		} as unknown as ModelRuntime;
 		const tui = { requestRender: vi.fn() } as unknown as TUI;

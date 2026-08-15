@@ -7,7 +7,11 @@ import { refreshModelCatalogs } from "../src/modes/interactive/model-catalog-ref
 
 interface Harness {
 	mode: InteractiveModeBase;
-	modelRuntime: { refresh: ReturnType<typeof vi.fn>; isNetworkRefreshEnabled: () => boolean };
+	modelRuntime: {
+		refresh: ReturnType<typeof vi.fn>;
+		isNetworkRefreshEnabled: () => boolean;
+		getCredentialGeneration: () => number;
+	};
 	refreshSignals: AbortSignal[];
 	refreshCalls: () => number;
 	providerCounts: number[];
@@ -23,6 +27,7 @@ function createStalledHarness(): Harness {
 	const modelRuntime = {
 		refresh,
 		isNetworkRefreshEnabled: () => true,
+		getCredentialGeneration: () => 0,
 		getAvailableSnapshot: () => [{ provider: "anthropic" }, { provider: "openai" }],
 	};
 	const providerCounts: number[] = [];

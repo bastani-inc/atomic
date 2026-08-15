@@ -119,6 +119,7 @@ export class ModelRuntime implements Models {
 	private config: ModelConfig;
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
+	private credentialGeneration = 0;
 	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
 	private availabilityRefreshSeq = 0;
 	private availabilityErrorSeq = 0;
@@ -421,9 +422,30 @@ export class ModelRuntime implements Models {
 			overrides,
 		);
 	}
+	/**
+	 * Count of credential mutations this runtime has applied.
+	 *
+	 * A catalog refresh resolves credentials as it runs, so its result belongs to
+	 * the credential state it started under. Callers that share one in-flight pass
+	 * read this to tell a pass that predates a login, logout, or key change from
+	 * one that can answer for the current credentials.
+	 */
+	getCredentialGeneration(): number {
+		return this.credentialGeneration;
+	}
+
+	/**
+	 * Record that stored, runtime, or external credentials changed. Every catalog
+	 * pass started before this call answers for credentials that no longer exist.
+	 */
+	private markCredentialsChanged(): void {
+		this.credentialGeneration += 1;
+	}
+
 	/** Reload credentials changed by the authoritative isolated engine and update auth status snapshots. */
 	async reloadCredentials(options: { refreshAvailability?: boolean } = {}): Promise<void> {
 		await this.credentials.reload();
+		this.markCredentialsChanged();
 		if (options.refreshAvailability === false) {
 			const credentials = await this.credentials.list();
 			for (const credential of credentials) this.externalProviderAuthStatuses.delete(credential.providerId);
@@ -505,6 +527,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(undefined);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.credentials.modify(providerId, async () => credential);
+			this.markCredentialsChanged();
 			await this.synchronizeCredentialState(providerId, "saveCredential", credential, async () => {
 				const result = await this.refresh({ providers: [providerId] });
 				this.assertCredentialRefreshSucceeded(providerId, result);
@@ -521,6 +544,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.setRuntimeApiKey(providerId, apiKey);
+			this.markCredentialsChanged();
 			await this.synchronizeCredentialState(providerId, "setRuntimeApiKey", { type: "api_key", key: apiKey }, () => {
 				this.snapshot = addRuntimeApiKeyProvider(this.snapshot, providerId);
 			});
@@ -531,6 +555,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.removeRuntimeApiKey(providerId);
+			this.markCredentialsChanged();
 			await this.synchronizeCredentialState(providerId, "removeRuntimeApiKey", undefined, async () => {
 				const result = await this.refresh({ allowNetwork: this.modelNetworkEnabled, signal });
 				this.assertCredentialRefreshSucceeded(providerId, result, signal);
@@ -559,6 +584,7 @@ export class ModelRuntime implements Models {
 
 	/** Apply authoritative auth state returned by an isolated engine mutation. */
 	applyExternalProviderAuthStatus(providerId: string, status: AuthStatus): void {
+		this.markCredentialsChanged();
 		this.snapshotGeneration += 1;
 		const remainingAuth =
 			status.configured && status.source === "environment"
@@ -608,6 +634,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(interaction.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			const credential = await this.models.login(providerId, type, { ...interaction, signal });
+			this.markCredentialsChanged();
 			await this.synchronizeCredentialState(providerId, "login", credential, () => {
 				// Credential acquisition and persistence are the login transaction. Publish
 				// the provider against the current snapshot immediately; catalog restoration,
@@ -625,6 +652,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(options.signal);
 		const logoutGeneration = await this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.models.logout(providerId, { signal });
+			this.markCredentialsChanged();
 			let generation = 0;
 			await this.synchronizeCredentialState(providerId, "logout", undefined, () => {
 				// Reset credential-dependent compatibility projections, then publish the

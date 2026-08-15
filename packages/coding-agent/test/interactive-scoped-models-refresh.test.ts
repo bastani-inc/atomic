@@ -55,6 +55,7 @@ async function openSelector(initialModels: readonly Model<Api>[], options: OpenS
 					return snapshot;
 				},
 				refresh,
+				getCredentialGeneration: () => 0,
 			},
 			setScopedModels,
 		},

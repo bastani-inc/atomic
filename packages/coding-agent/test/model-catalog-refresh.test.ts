@@ -19,12 +19,24 @@ function successfulRefresh(): ModelsRefreshResult {
 	return { aborted: false, errors: new Map() };
 }
 
-/** A runtime stub carrying the network policy an omitted `allowNetwork` resolves to. */
+/**
+ * A runtime stub carrying the network policy an omitted `allowNetwork` resolves to
+ * and the credential generation a real `ModelRuntime` bumps on every login, logout,
+ * or key change.
+ */
 function createRuntime(
 	refresh: (options?: ModelsRefreshOptions) => Promise<ModelsRefreshResult>,
 	networkEnabled = true,
 ) {
-	return { refresh: vi.fn(refresh), isNetworkRefreshEnabled: () => networkEnabled };
+	let credentialGeneration = 0;
+	return {
+		refresh: vi.fn(refresh),
+		isNetworkRefreshEnabled: () => networkEnabled,
+		getCredentialGeneration: () => credentialGeneration,
+		mutateCredentials: () => {
+			credentialGeneration += 1;
+		},
+	};
 }
 
 describe("interactive model catalog refresh", () => {
@@ -63,7 +75,7 @@ describe("interactive model catalog refresh", () => {
 		await expect(second).resolves.toEqual(successfulRefresh());
 	});
 
-	it("aborts an abandoned refresh in the aborting tick and allows a later refresh to start", async () => {
+	it("starts new work for a caller that retries in the aborting tick", async () => {
 		const refreshSignals: AbortSignal[] = [];
 		const runtime = createRuntime((options?: ModelsRefreshOptions) => {
 			if (options?.signal) refreshSignals.push(options.signal);
@@ -76,6 +88,30 @@ describe("interactive model catalog refresh", () => {
 		// Synchronous: a closing selector cancels the network work it started
 		// before the next render, exactly as a direct runtime.refresh() did.
 		expect(refreshSignals[0]?.aborted).toBe(true);
+
+		// Same tick, before the abandoned entry's own cleanup microtask runs. A
+		// reopened selector must start a refresh rather than join a dead one.
+		const secondController = new AbortController();
+		const second = refreshModelCatalogs(runtime, { signal: secondController.signal });
+		expect(runtime.refresh).toHaveBeenCalledTimes(2);
+		expect(refreshSignals[1]?.aborted).toBe(false);
+
+		await expect(first).rejects.toMatchObject({ name: "AbortError" });
+		secondController.abort();
+		await expect(second).rejects.toMatchObject({ name: "AbortError" });
+	});
+
+	it("aborts an abandoned refresh in the aborting tick and allows a later refresh to start", async () => {
+		const refreshSignals: AbortSignal[] = [];
+		const runtime = createRuntime((options?: ModelsRefreshOptions) => {
+			if (options?.signal) refreshSignals.push(options.signal);
+			return new Promise<ModelsRefreshResult>(() => {});
+		});
+		const firstController = new AbortController();
+		const first = refreshModelCatalogs(runtime, { signal: firstController.signal });
+
+		firstController.abort();
+		expect(refreshSignals[0]?.aborted).toBe(true);
 		await expect(first).rejects.toMatchObject({ name: "AbortError" });
 
 		const secondController = new AbortController();
@@ -83,6 +119,47 @@ describe("interactive model catalog refresh", () => {
 		expect(runtime.refresh).toHaveBeenCalledTimes(2);
 		secondController.abort();
 		await expect(second).rejects.toMatchObject({ name: "AbortError" });
+	});
+
+	it("refuses to answer a post-credential-change request with a pass that predates it", async () => {
+		const beforeLoginPass = createDeferred<ModelsRefreshResult>();
+		const afterLoginPass = createDeferred<ModelsRefreshResult>();
+		let starts = 0;
+		const runtime = createRuntime(() => (starts++ === 0 ? beforeLoginPass.promise : afterLoginPass.promise));
+		const controller = new AbortController();
+
+		// The pre-login pass is still in flight when the credential lands, which is
+		// exactly what Atomic's API-key login produces: it skips its own refresh and
+		// leaves the catalog to the selector that opens next.
+		const beforeLogin = refreshModelCatalogs(runtime, { signal: controller.signal });
+		runtime.mutateCredentials();
+		const afterLogin = refreshModelCatalogs(runtime, { signal: controller.signal });
+
+		expect(runtime.refresh).toHaveBeenCalledTimes(2);
+
+		// The abandoned pre-login waiter still gets the answer it asked for.
+		beforeLoginPass.resolve(successfulRefresh());
+		afterLoginPass.resolve(successfulRefresh());
+		await expect(beforeLogin).resolves.toEqual(successfulRefresh());
+		await expect(afterLogin).resolves.toEqual(successfulRefresh());
+	});
+
+	it("still shares one pass between callers on the same credential generation", async () => {
+		const deferred = createDeferred<ModelsRefreshResult>();
+		const runtime = createRuntime(() => deferred.promise);
+		const controller = new AbortController();
+
+		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
+		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
+		expect(runtime.refresh).toHaveBeenCalledOnce();
+
+		runtime.mutateCredentials();
+		const third = refreshModelCatalogs(runtime, { signal: controller.signal });
+		const fourth = refreshModelCatalogs(runtime, { signal: controller.signal });
+		expect(runtime.refresh).toHaveBeenCalledTimes(2);
+
+		deferred.resolve(successfulRefresh());
+		await Promise.all([first, second, third, fourth]);
 	});
 
 	it("refuses to answer a different catalog request with an in-flight one", async () => {

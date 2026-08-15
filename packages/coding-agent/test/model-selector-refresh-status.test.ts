@@ -31,6 +31,7 @@ function createSelector(refresh: ModelRuntime["refresh"]): ModelSelectorComponen
 	const runtime = {
 		refresh,
 		isNetworkRefreshEnabled: () => true,
+		getCredentialGeneration: () => 0,
 		getError: () => undefined,
 		getAvailableSnapshot: () => [model],
 		getModel: () => model,

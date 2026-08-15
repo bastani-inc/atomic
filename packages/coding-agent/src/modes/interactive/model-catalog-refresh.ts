@@ -2,7 +2,7 @@ import type { ModelsRefreshOptions, ModelsRefreshResult } from "@earendil-works/
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 
-type ModelCatalogRuntime = Pick<ModelRuntime, "refresh" | "isNetworkRefreshEnabled">;
+type ModelCatalogRuntime = Pick<ModelRuntime, "refresh" | "isNetworkRefreshEnabled" | "getCredentialGeneration">;
 
 /**
  * The whole-catalog options interactive refreshes vary. `providers` and `force`
@@ -28,9 +28,17 @@ interface ActiveModelCatalogRefresh {
  * option and lets the runtime decide; on an online runtime those are one pass, and
  * keying the spelling started two. An explicit value that disagrees with the
  * runtime's own policy is still different work and still keys apart.
+ *
+ * The credential generation is part of the key because a catalog pass resolves
+ * credentials as it runs. A refresh started before an API-key login answers for
+ * credentials that no longer exist, and Atomic's login path deliberately leaves
+ * the post-login catalog refresh to the selector (`interactive-auth-login.ts`).
+ * Without the generation the selector joined the pre-login pass and showed no
+ * models for the provider the user had just authenticated.
  */
 function refreshKey(modelRuntime: ModelCatalogRuntime, options: ModelCatalogRefreshOptions): string {
-	return (options.allowNetwork ?? modelRuntime.isNetworkRefreshEnabled()) ? "network" : "cache";
+	const policy = (options.allowNetwork ?? modelRuntime.isNetworkRefreshEnabled()) ? "network" : "cache";
+	return `${policy}:${modelRuntime.getCredentialGeneration()}`;
 }
 
 class ModelCatalogRefreshCoordinator {
@@ -72,9 +80,13 @@ class ModelCatalogRefreshCoordinator {
 			released = true;
 			signal.removeEventListener("abort", release);
 			joined.waiters--;
-			if (joined.waiters === 0 && active.get(key) === joined) {
-				joined.controller.abort();
-			}
+			if (joined.waiters > 0) return;
+			if (active.get(key) !== joined) return;
+			// Evict before aborting. The abort is synchronous while the shared promise's
+			// own cleanup is a microtask, so a caller retrying in this same tick would
+			// otherwise join an entry that is already aborted and reject without work.
+			active.delete(key);
+			joined.controller.abort();
 		};
 		signal.addEventListener("abort", release);
 		return raceWithAbortSignal(joined.promise, signal).finally(release);
