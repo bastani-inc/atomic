@@ -204,10 +204,8 @@ export function highlightSearchMatchRow(
 		cursor = endCol;
 	}
 	if (cursor === 0) return line;
-	pieces.push(
-		cursor < lineWidth
-			? sliceByColumn(line, cursor, lineWidth - cursor, true)
-			: (TRAILING_ANSI.exec(line)?.[0] ?? ""),
-	);
+	const trailingAnsi = TRAILING_ANSI.exec(line)?.[0] ?? "";
+	const suffix = cursor < lineWidth ? sliceByColumn(line, cursor, lineWidth - cursor, true) : "";
+	pieces.push(suffix.endsWith(trailingAnsi) ? suffix : suffix + trailingAnsi);
 	return pieces.join("");
 }

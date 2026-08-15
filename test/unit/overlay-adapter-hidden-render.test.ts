@@ -39,6 +39,7 @@ async function registerIsolatedTests(): Promise<void> {
 		Editor: TestComponent,
 		// The stage-chat find box edits its query with pi-tui's own input.
 		Input,
+		getKeybindings: () => ({ matches: () => false }),
 		ScrollView,
 		VStack,
 		SelectList: TestComponent,

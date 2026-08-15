@@ -332,8 +332,9 @@ export class ScrollableComponentViewport implements Component {
 	 * withdraws the request.
 	 */
 	scrollTo(row: number): void {
-		this.pendingScrollRow = Math.max(0, Math.floor(row));
-		const target = Math.min(this.maxScroll, this.pendingScrollRow);
+		const requestedRow = Number.isNaN(row) ? 0 : Math.max(0, Math.floor(row));
+		this.pendingScrollRow = requestedRow;
+		const target = Math.min(this.maxScroll, requestedRow);
 		this.scrollFromBottom = this.maxScroll - target;
 		this.clampScroll();
 	}

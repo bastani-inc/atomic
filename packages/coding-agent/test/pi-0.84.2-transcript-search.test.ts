@@ -111,6 +111,15 @@ describe("transcript search highlighting", () => {
 
 		assert.equal(highlighted, "\x1b[1m<m>needle</m>\x1b[22m");
 	});
+	test("preserves trailing ANSI sequences after a middle highlight", () => {
+		const highlighted = highlightSearchMatchRow(
+			"\x1b[31malpha needle omega\x1b[39m",
+			[{ startCol: 6, endCol: 12, current: false }],
+			STYLES,
+		);
+
+		assert.equal(highlighted, "\x1b[31malpha \x1b[31m<m>needle</m>\x1b[31m omega\x1b[39m");
+	});
 
 	test("a range past the end of the line is clipped rather than padded onto it", () => {
 		assert.equal(highlightSearchMatchRow("short", [{ startCol: 10, endCol: 20, current: true }], STYLES), "short");
@@ -163,6 +172,15 @@ describe("ScrollableComponentViewport absolute row access", () => {
 
 		view.scrollTo(9_000);
 		assert.equal(view.getScrollFromBottom(), 0);
+	});
+	test("scrollTo treats NaN as the first row", () => {
+		const view = viewport(50, 5);
+		view.render(20);
+
+		view.scrollTo(Number.NaN);
+
+		assert.equal(view.getScrollFromBottom(), view.getMaxScroll());
+		assert.equal(view.render(20)[0]?.trim(), "row 1");
 	});
 
 	/**

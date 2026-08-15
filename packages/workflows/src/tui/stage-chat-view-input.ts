@@ -1,4 +1,5 @@
 import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+import { getKeybindings } from "@earendil-works/pi-tui";
 
 import { APP_ACTION, isKeybindingsLike, matchesAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
@@ -93,7 +94,15 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	// one of them — a normal remap, and one the keybindings manager reports as
 	// search and nothing else — would watch the chat scroll and never get a find
 	// box. A bound action outranks a key the viewport recognises by shape.
-	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearch) && !isBlocked(ctx) && !readOnlyPromptArchive) {
+	// Search is the one fullscreen action this component must handle even in a
+	// small host or test harness that did not inject its keybinding manager. Use
+	// pi-tui's global manager in that case, which is also what the find input uses.
+	const searchKeybindings = stageSearchKeybindings(ctx);
+	if (
+		matchesAction(searchKeybindings, data, TUI_ACTION.altScreenSearch) &&
+		!isBlocked(ctx) &&
+		!readOnlyPromptArchive
+	) {
 		openStageChatSearch(ctx);
 		return true;
 	}
@@ -133,10 +142,9 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
  * exactly as pi-tui routes them for the fullscreen transcript
  * (`tui-alt-screen.js` handleViewportInput). A reader who moves `searchNext`
  * onto Ctrl+N has unbound Enter, and Enter must then type into the query
- * rather than quietly keep its old job here. The physical defaults are used
- * only when no keybindings manager is wired at all, which is the one case
- * where the actions cannot answer and a host would otherwise get a find box it
- * cannot navigate or close.
+ * The fallback manager is pi-tui's global manager, which owns the same default
+ * bindings as the find input, so small hosts without an injected manager keep
+ * the normal search controls.
  *
  * Escape is the contended key: the ladder in `handleStageChatInput` maps it to
  * interrupt-the-stage or close-the-pane, and both are the wrong answer for a
@@ -149,7 +157,7 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
  * is query text.
  */
 function handleStageChatSearchKeys(ctx: StageChatViewContext, data: string): boolean {
-	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	const keybindings = stageSearchKeybindings(ctx);
 	if (isStageChatSearchCloseInput(ctx, data)) {
 		closeStageChatSearch(ctx);
 		return true;
@@ -163,10 +171,7 @@ function handleStageChatSearchKeys(ctx: StageChatViewContext, data: string): boo
 		navigateStageChatSearch(ctx, -1);
 		return true;
 	}
-	if (
-		matchesAction(keybindings, data, TUI_ACTION.altScreenSearchNext) ||
-		(!keybindings && matchesKey(data, Key.enter))
-	) {
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearchNext)) {
 		navigateStageChatSearch(ctx, 1);
 		return true;
 	}
@@ -185,8 +190,7 @@ function handleStageChatSearchKeys(ctx: StageChatViewContext, data: string): boo
  * them to.
  */
 function isStageChatSearchAction(ctx: StageChatViewContext, data: string): boolean {
-	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	if (!keybindings) return false;
+	const keybindings = stageSearchKeybindings(ctx);
 	return (
 		matchesAction(keybindings, data, TUI_ACTION.altScreenSearch) ||
 		matchesAction(keybindings, data, TUI_ACTION.altScreenSearchNext) ||
@@ -196,14 +200,16 @@ function isStageChatSearchAction(ctx: StageChatViewContext, data: string): boole
 }
 
 /**
- * What dismisses an open find box: the bound `tui.altScreen.searchClose`, and
- * — only for a host that wired no keybindings manager — the physical Escape
- * that action defaults to.
+ * What dismisses an open find box: the bound `tui.altScreen.searchClose`
+ * action. The fallback manager is pi-tui's global manager, which owns the same
+ * default Escape binding as the find input.
  */
 function isStageChatSearchCloseInput(ctx: StageChatViewContext, data: string): boolean {
-	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	if (!keybindings) return matchesKey(data, Key.escape);
-	return matchesAction(keybindings, data, TUI_ACTION.altScreenSearchClose);
+	return matchesAction(stageSearchKeybindings(ctx), data, TUI_ACTION.altScreenSearchClose);
+}
+
+function stageSearchKeybindings(ctx: StageChatViewContext) {
+	return isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : getKeybindings();
 }
 
 function handleStageChatJumpToBottom(ctx: StageChatViewContext, data: string): boolean {

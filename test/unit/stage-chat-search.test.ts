@@ -106,10 +106,11 @@ function makeSearchableChat(
 		streaming?: boolean;
 		piTheme?: unknown;
 		piKeybindings?: unknown;
+		withoutKeybindings?: boolean;
 		leadMessages?: number;
 		messages?: string[];
 		/** Overlay height, for the frames where the body budget is the question. */
-		viewportRows?: number;
+		viewportRows?: number | (() => number | undefined);
 	} = {},
 ): ChatFixture {
 	const store = createStore();
@@ -150,7 +151,7 @@ function makeSearchableChat(
 		},
 		piTui: makeTestTui(options.viewportRows ?? VIEWPORT_ROWS),
 		piTheme: options.piTheme,
-		piKeybindings: options.piKeybindings ?? new KeybindingsManager({}),
+		piKeybindings: options.withoutKeybindings ? undefined : (options.piKeybindings ?? new KeybindingsManager({})),
 		stageUiBroker: broker,
 	});
 	const chatHost = (view as unknown as { chatHost: { interrupt(options?: unknown): Promise<void> } }).chatHost;
@@ -489,6 +490,31 @@ describe("stage chat search", () => {
 		chat.render();
 		chat.render();
 		assert.match(chat.visible(), /2\/2/, "repaints walked the selection with no key pressed");
+	});
+	test("a zero-row navigation reveals its selected match when the body returns", () => {
+		let viewportRows = 8;
+		const chat = makeSearchableChat({
+			viewportRows: () => viewportRows,
+			messages: ["twin alpha", "twin beta"],
+		});
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, "twin");
+		chat.render();
+		chat.view.handleInput(ENTER);
+		assert.match(chat.visible(), /2\/2/);
+
+		viewportRows = VIEWPORT_ROWS;
+		const frame = chat.visible();
+		assert.match(frame, /twin beta/, "a selection made with no body rows must be revealed later");
+		assert.match(frame, /2\/2/);
+	});
+	test("stage-chat search uses the default actions without an injected manager", () => {
+		const chat = makeSearchableChat({ withoutKeybindings: true });
+
+		assert.equal(chat.view.handleInput(CTRL_SHIFT_F), true);
+		assert.match(chat.visible(), /Find in stage chat/);
+		assert.equal(chat.view.handleInput(ESCAPE), true);
+		assert.doesNotMatch(chat.visible(), /Find in stage chat/);
 	});
 
 	/**

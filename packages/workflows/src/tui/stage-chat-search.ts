@@ -58,6 +58,12 @@ export interface StageChatSearchState {
 	 * matched". See `resolveAnchorRow`.
 	 */
 	anchorRow: number | undefined;
+	/**
+	 * True when a selection changed while the body had no rows to reveal onto.
+	 * It survives the one-frame `next`/`previous` step without repeating that
+	 * step on every repaint, then lets the first positive body budget reveal it.
+	 */
+	revealPending: boolean;
 }
 
 /**
@@ -89,6 +95,7 @@ export function openStageChatSearch(ctx: StageChatViewContext): void {
 		selectedKey: undefined,
 		selectionMode: "query",
 		anchorRow: undefined,
+		revealPending: false,
 	};
 	ctx.chatHost.setStreamingTailWindowEnabled(false);
 	ctx.requestRender?.();
@@ -122,6 +129,7 @@ export function setStageChatSearchQuery(ctx: StageChatViewContext, query: string
 	search.query = query;
 	search.selectionMode = "query";
 	search.selectedIndex = -1;
+	search.revealPending = false;
 	ctx.requestRender?.();
 }
 
@@ -184,12 +192,13 @@ export function refreshStageChatSearch(
 ): void {
 	const search = ctx.search;
 	if (!search) return;
-	const revealSelection = search.selectionMode !== "retain";
+	const revealSelection = search.selectionMode !== "retain" || search.revealPending;
 	if (!search.query.trim()) {
 		search.matches = [];
 		search.selectedIndex = -1;
 		search.selectedKey = undefined;
 		search.selectionMode = "retain";
+		search.revealPending = false;
 		return;
 	}
 	let rowCount = ctx.chatHost.bodyRowCount(width);
@@ -227,13 +236,16 @@ export function refreshStageChatSearch(
 		// gone (an overlay shrunk to a few rows, or a callout that ate the
 		// whole body). A pending `query` keeps its mode so the first frame that
 		// paints the transcript anchors and reveals against rows the reader can
-		// actually see; a `next`/`previous` step is applied once here instead,
-		// or every repaint would walk the selection forward on its own.
+		// actually see. A `next`/`previous` step is applied once here, then the
+		// mode becomes `retain`; `revealPending` carries the reveal to that
+		// first positive frame without walking again on repaint.
+		search.revealPending = revealSelection;
 		if (search.selectionMode !== "query") search.selectionMode = "retain";
 		return;
 	}
 	search.selectionMode = "retain";
 	if (revealSelection) revealSelectedMatch(ctx, search, rowCount, layout);
+	search.revealPending = false;
 }
 
 function selectMatchIndex(search: StageChatSearchState, matches: readonly TranscriptSearchMatch[]): number {
