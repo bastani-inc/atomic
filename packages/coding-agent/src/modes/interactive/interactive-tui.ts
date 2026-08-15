@@ -8,6 +8,7 @@ import {
 	type TuiInputListener,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
+import { copyToClipboard } from "../../utils/clipboard.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
 import { theme } from "./theme/theme.ts";
@@ -111,6 +112,24 @@ export interface InteractiveTuiOptions {
 	) => boolean;
 	/** Handle an unconsumed overlay input before replaying it to the viewport. */
 	onOverlayUnhandledInput?: (data: string) => boolean;
+	/**
+	 * Copy selected text to the system clipboard; resolve false when the host
+	 * clipboard never received it. Defaults to Atomic's `copyToClipboard` with
+	 * its platform fallbacks, so pi-tui flashes "Copy failed" on a terminal
+	 * whose clipboard stayed untouched (upstream #8110) instead of the old
+	 * unconditional "Copied!". Injectable so hosts and tests observe the write.
+	 */
+	copySelection?: (text: string) => Promise<boolean>;
+}
+
+/** The default selection-copy route: Atomic's host clipboard write. */
+async function copySelectionToHostClipboard(text: string): Promise<boolean> {
+	try {
+		await copyToClipboard(text);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export interface UrlActivationHandlers {
@@ -557,6 +576,7 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 					openUrl: openBrowser,
 				}),
 			onRightClickPaste: options.onRightClickPaste,
+			copySelection: options.copySelection ?? copySelectionToHostClipboard,
 		},
 		options.shouldHandleViewportInput,
 		options.onOverlayUnhandledInput,

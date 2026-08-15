@@ -75,6 +75,9 @@ export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
 
+/** What the terminal keeps when Atomic's fullscreen session exits. */
+export type FullscreenExitOutput = "transcript" | "resume-hint";
+
 /**
  * Package source for npm/git packages.
  * - String form: load all resources from the package
@@ -145,6 +148,7 @@ export interface Settings {
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"
+	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow

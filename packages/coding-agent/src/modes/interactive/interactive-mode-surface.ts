@@ -2,6 +2,8 @@
 
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
+import type { FullscreenExitOutput } from "../../core/settings-manager.ts";
+import type { ToolStatus } from "../../utils/tools-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import type {
@@ -242,6 +244,10 @@ declare module "./interactive-mode-base.ts" {
 		handleEvent(event: AgentSessionEvent | JsonAgentSessionEvent): Promise<void>;
 		getUserMessageText(message: Message): string;
 		showStatus(message: string): void;
+		/** Report a managed-tool (fd/rg) readiness update inside the transcript. */
+		showManagedToolStatus(status: ToolStatus): void;
+		/** Bring fd/rg to readiness after first paint; progress lands in the transcript. */
+		ensureManagedToolsReady(): Promise<void>;
 		chatMessageRenderOptions(): ChatMessageRenderOptions;
 		addRenderedChatEntry(entry: ChatMessageEntry): Component;
 		addCompactionBoundaryToChat(result: VerbatimCompactionResult): void;
@@ -375,6 +381,6 @@ declare module "./interactive-mode-base.ts" {
 		checkDaxnutsEasterEgg(model: { provider: string; id: string }): void;
 		handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 		handleCompactCommand(): Promise<void>;
-		stop(): void;
+		stop(fullscreenExitOutput?: FullscreenExitOutput): void;
 	}
 }

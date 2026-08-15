@@ -68,6 +68,8 @@ type HostComponent = Omit<Component, "handleInput"> & {
 interface Bridge {
 	readonly child: EngineCustomUiService;
 	readonly childCommands: InteractiveEngineCommand[];
+	/** Text each completed selection handed to the host clipboard, in order. */
+	readonly selectionCopies: string[];
 	readonly tui?: TuiAltScreen;
 	readonly terminal?: RecordingTerminal;
 	hostComponent: HostComponent | undefined;
@@ -92,6 +94,10 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 	const childCommands: InteractiveEngineCommand[] = [];
 	const mainEditor: Component = { render: () => [], invalidate: () => {} };
 	const keybindings = options.keybindings ?? new KeybindingsManager();
+	// Selection copies are recorded rather than observed through the clipboard
+	// module: the renderer routes its default through `copyToClipboard`
+	// (upstream #8110), and an injected `copySelection` is the same door.
+	const selectionCopies: string[] = [];
 	const terminal = options.fullscreen ? new RecordingTerminal() : undefined;
 	if (terminal) {
 		terminal.columns = 40;
@@ -103,6 +109,10 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
+			copySelection: async (text) => {
+				selectionCopies.push(text);
+				return true;
+			},
 			shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay): boolean =>
 				shouldHandleFullscreenViewportInput(
 					tui?.getFocusedComponent() ?? null,
@@ -117,7 +127,7 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 			onInternalUiAction: options.onInternalUiAction,
 		}) as TuiAltScreen;
 	}
-	const bridge = { hostComponent: undefined, childCommands, terminal, tui } as unknown as Bridge;
+	const bridge = { hostComponent: undefined, childCommands, terminal, tui, selectionCopies } as unknown as Bridge;
 
 	const child = new EngineCustomUiService((line) => {
 		const message = parseInteractiveEngineMessage(line);
@@ -392,7 +402,7 @@ test("fullscreen forwards workflow node click press and release through the remo
 });
 
 test("fullscreen keeps pi-tui selection active while a workflow overlay owns focus", async () => {
-	const { host, overlay, tui, terminal } = await makeFullscreenGraphFixture();
+	const { host, overlay, tui, terminal, bridge } = await makeFullscreenGraphFixture();
 	try {
 		const lines = host.render(terminal.columns).map((line) => stripTerminalSequences(line));
 		const targetRow = lines.findIndex((line) => line.includes("stage-0"));
@@ -410,17 +420,17 @@ test("fullscreen keeps pi-tui selection active while a workflow overlay owns foc
 		assert.equal(Reflect.get(tui, "selectionPressActive"), false, "overlay drag selection did not complete");
 		assert.equal(Reflect.get(tui, "selectionDragged"), true, "overlay consumed the drag selection");
 		assert.ok(
-			terminal.writes.some((write) => write.includes("\x1b]52;c;")),
+			bridge.selectionCopies.some((text) => text.includes("stage")),
 			"pi-tui did not copy a selection made over the workflow overlay",
 		);
 
-		const writesBeforeMultiClick = terminal.writes.length;
+		const copiesBeforeMultiClick = bridge.selectionCopies.length;
 		for (const final of ["M", "m", "M", "m"] as const) {
 			terminal.input(sgrMouse(0, targetCol, targetRow, final));
 			await flush();
 		}
 		assert.ok(
-			terminal.writes.slice(writesBeforeMultiClick).some((write) => write.includes("\x1b]52;c;")),
+			bridge.selectionCopies.length > copiesBeforeMultiClick,
 			"pi-tui did not copy a multi-click selection over the overlay",
 		);
 	} finally {
@@ -577,10 +587,7 @@ test("fullscreen keeps transcript mouse selection with a focused non-overlay com
 		terminal.input(sgrMouse(0, 5, 2, "m"));
 		assert.equal(Reflect.get(tui, "selectionPressActive"), false, "transcript selection did not complete");
 		assert.equal(Reflect.get(tui, "selectionDragged"), true, "focused inline input stole selection drag events");
-		assert.ok(
-			terminal.writes.some((write) => write.includes("\x1b]52;c;")),
-			"transcript did not copy the dragged selection",
-		);
+		assert.ok(bridge.selectionCopies.length > 0, "transcript did not copy the dragged selection");
 	} finally {
 		tui.stop();
 	}

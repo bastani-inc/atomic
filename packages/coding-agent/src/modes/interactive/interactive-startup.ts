@@ -1,6 +1,7 @@
 import { ScrollView, VStack } from "@earendil-works/pi-tui";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import type { ToolStatus } from "../../utils/tools-manager.ts";
 import {
 	onInteractiveEngineRemoteCommandsChanged,
 	waitForInteractiveEngineBound,
@@ -126,6 +127,36 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 	this.ui.requestRender();
 };
 
+/** Bring fd and rg to readiness, reporting progress into the transcript. */
+InteractiveModeBase.prototype.ensureManagedToolsReady = function (this: InteractiveModeBase): Promise<void> {
+	return Promise.all([
+		ensureTool("fd", (status) => this.showManagedToolStatus(status)),
+		ensureTool("rg", (status) => this.showManagedToolStatus(status)),
+	])
+		.then(([fdPath]) => {
+			this.fdPath = fdPath;
+			this.setupAutocompleteProvider();
+		})
+		.catch((error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			this.showManagedToolStatus({ type: "warning", message: `Tool readiness check failed: ${message}` });
+		});
+};
+
+/** Show a managed-tool status update in the chat, never on the console. */
+InteractiveModeBase.prototype.showManagedToolStatus = function (this: InteractiveModeBase, status: ToolStatus): void {
+	if (!this.managedToolStatusStarted) {
+		this.chatContainer.addChild(new Spacer(1));
+		this.managedToolStatusStarted = true;
+	}
+	const message = status.type === "warning" ? `Warning: ${status.message}` : status.message;
+	const color = status.type === "warning" ? "warning" : "dim";
+	this.chatContainer.addChild(new Text(theme.fg(color, message), 1, 0));
+	this.lastStatusSpacer = undefined;
+	this.lastStatusText = undefined;
+	this.ui.requestRender();
+};
+
 InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase): Promise<void> {
 	if (this.isInitialized) return;
 
@@ -223,15 +254,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	}
 	this.ui.requestRender();
 
-	void Promise.all([ensureTool("fd"), ensureTool("rg")])
-		.then(([fdPath]) => {
-			this.fdPath = fdPath;
-			this.setupAutocompleteProvider();
-		})
-		.catch((error) => {
-			const message = error instanceof Error ? error.message : String(error);
-			console.error(`Tool readiness check failed: ${message}`);
-		});
+	// fd/rg readiness runs after first paint so slow downloads never make
+	// startup appear frozen. Progress reports land in the transcript: a console
+	// write here lands in the alternate screen and corrupts the frame.
+	void this.ensureManagedToolsReady();
 
 	// When startup resources are deferred, keep the already-painted editor responsive.
 	// Extension UI bindings are installed at the deferred reload boundary, not here,

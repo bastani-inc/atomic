@@ -1,3 +1,4 @@
+import type { FullscreenExitOutput } from "../../core/settings-manager.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { BashExecutionComponent, type TruncationResult } from "./interactive-mode-deps.ts";
 import { isEngineSendFailure } from "./interactive-prompt-restore.ts";
@@ -147,7 +148,10 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 	}
 };
 
-InteractiveModeBase.prototype.stop = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.stop = function (
+	this: InteractiveModeBase,
+	fullscreenExitOutput: FullscreenExitOutput = this.settingsManager.getFullscreenExitOutput(),
+): void {
 	this.disposeActiveSelector();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};
@@ -166,7 +170,7 @@ InteractiveModeBase.prototype.stop = function (this: InteractiveModeBase): void 
 		this.unsubscribe();
 	}
 	if (this.isInitialized) {
-		this.stopInteractiveTui();
+		this.stopInteractiveTui(fullscreenExitOutput);
 		this.isInitialized = false;
 	}
 	this.unregisterSignalHandlers();

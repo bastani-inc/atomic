@@ -11,6 +11,7 @@ export type {
 	CodexFastModeSettings,
 	CompactionSettings,
 	DefaultProjectTrust,
+	FullscreenExitOutput,
 	ImageSettings,
 	MarkdownSettings,
 	MermaidRenderingMode,

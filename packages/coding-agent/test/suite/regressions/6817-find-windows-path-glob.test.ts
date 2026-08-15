@@ -7,7 +7,7 @@ import { spawn } from "child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	ensureTool: vi.fn<(tool: "fd" | "rg", silent?: boolean) => Promise<string | undefined>>(),
+	ensureTool: vi.fn<(tool: "fd" | "rg", onStatus?: (status: ToolStatus) => void) => Promise<string | undefined>>(),
 	loadNativeSearchBinding: vi.fn(),
 	spawn: vi.fn(),
 }));
@@ -26,6 +26,7 @@ vi.mock("../../../src/utils/tools-manager.ts", () => ({
 }));
 
 import { createFindToolDefinition } from "../../../src/core/tools/find.ts";
+import type { ToolStatus } from "../../../src/utils/tools-manager.ts";
 
 const mockedSpawn = vi.mocked(spawn);
 
@@ -65,7 +66,7 @@ describe("issue #6817: Windows find path globs", () => {
 		}
 
 		const args = mockedSpawn.mock.calls[0]?.[1];
-		expect(mocks.ensureTool).toHaveBeenCalledWith("fd", true);
+		expect(mocks.ensureTool).toHaveBeenCalledWith("fd");
 		expect(args).toContain("--full-path");
 		expect(args?.at((args?.indexOf("--") ?? -1) + 1)).toBe(String.raw`**[/\\]lib[/\\]*.spec.ts`);
 	});

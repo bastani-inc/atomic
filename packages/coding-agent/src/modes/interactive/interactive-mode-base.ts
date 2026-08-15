@@ -6,7 +6,7 @@ import { isKeyRelease, isViewportTUI, type ScrollView, type TuiInputListener } f
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
-import type { MermaidRenderingMode } from "../../core/settings-manager.ts";
+import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/settings-manager.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.ts";
 import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
@@ -363,6 +363,9 @@ export class InteractiveModeBase {
 
 	lastStatusText: Text | undefined = undefined;
 
+	/** Leading spacer added once for the managed-tool startup status block. */
+	managedToolStatusStarted = false;
+
 	// Streaming message tracking
 	streamingComponent: AssistantMessageComponent | undefined = undefined;
 
@@ -566,9 +569,22 @@ export class InteractiveModeBase {
 		}
 	}
 
-	stopInteractiveTui(): void {
-		while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
-		this.ui.stop();
+	stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
+		const isFullscreen = this.renderer.mode === "fullscreen";
+		if (isFullscreen && fullscreenExitOutput === "transcript") {
+			// Atomic has no regular renderer to switch into, so pi-tui's own
+			// exit paint is the only painter: its stop renders the layout root
+			// at natural height onto the main screen. The docked fullscreen
+			// layout squeezes its scroll view to `basis` (one row) at natural
+			// height, so hand it the document container directly — the exit
+			// paint then carries the whole transcript. Drop overlays first so
+			// what gets painted is the transcript, not the focused dialog.
+			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
+			if (isViewportTUI(this.renderer)) this.renderer.setLayoutRoot(this.documentContainer);
+		}
+		// `resume-hint` keeps whatever the alternate screen held: the prior
+		// shell contents reappear and shutdown prints only the resume line.
+		this.ui.stop({ preserveScreen: isFullscreen && fullscreenExitOutput === "resume-hint" });
 	}
 
 	declare options: InteractiveModeOptions;

@@ -171,6 +171,7 @@ describe("Group 5 parity", () => {
 				treeFilterMode: "default",
 				showHardwareCursor: false,
 				fullscreenScrollbar: "auto",
+				fullscreenExitOutput: "transcript",
 				editorPaddingX: 0,
 				outputPad: 1,
 				showCacheMissNotices: false,

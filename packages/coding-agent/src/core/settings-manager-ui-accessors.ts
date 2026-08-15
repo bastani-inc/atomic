@@ -2,7 +2,7 @@ import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
-import type { MermaidRenderingMode, WarningSettings } from "./settings-types.ts";
+import type { FullscreenExitOutput, MermaidRenderingMode, WarningSettings } from "./settings-types.ts";
 
 interface SettingsManagerUiAccessors {
 	getShowImages(): boolean;
@@ -42,6 +42,8 @@ interface SettingsManagerUiAccessors {
 	setCodexFastModeSettings(settings: Partial<{ chat: boolean; workflow: boolean }>): void;
 	getFullscreenScrollbar(): ScrollViewScrollbar;
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void;
+	getFullscreenExitOutput(): FullscreenExitOutput;
+	setFullscreenExitOutput(output: FullscreenExitOutput): void;
 }
 
 declare module "./settings-manager-core.ts" {
@@ -197,6 +199,17 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.fullscreenScrollbar = mode;
 		state.markModified("fullscreenScrollbar");
+		state.save();
+	},
+
+	getFullscreenExitOutput() {
+		return settingsInternals(this).settings.fullscreenExitOutput === "resume-hint" ? "resume-hint" : "transcript";
+	},
+
+	setFullscreenExitOutput(output) {
+		const state = settingsInternals(this);
+		state.globalSettings.fullscreenExitOutput = output;
+		state.markModified("fullscreenExitOutput");
 		state.save();
 	},
 

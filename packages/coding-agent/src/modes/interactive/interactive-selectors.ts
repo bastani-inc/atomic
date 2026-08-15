@@ -107,6 +107,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				treeFilterMode: this.settingsManager.getTreeFilterMode(),
 				showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 				fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
+				fullscreenExitOutput: this.settingsManager.getFullscreenExitOutput(),
 				editorPaddingX: this.settingsManager.getEditorPaddingX(),
 				outputPad: this.settingsManager.getOutputPad(),
 				showCacheMissNotices: this.settingsManager.getShowCacheMissNotices(),
@@ -221,6 +222,9 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 					this.settingsManager.setFullscreenScrollbar(mode);
 					this.transcriptScrollView?.setScrollbar(mode);
 					this.ui.requestRender();
+				},
+				onFullscreenExitOutputChange: (output) => {
+					this.settingsManager.setFullscreenExitOutput(output);
 				},
 				onEditorPaddingXChange: (padding) => {
 					this.settingsManager.setEditorPaddingX(padding);

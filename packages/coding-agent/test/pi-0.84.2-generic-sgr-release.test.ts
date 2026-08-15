@@ -7,12 +7,19 @@ import {
 	type TuiAltScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "../src/modes/interactive/components/transcript-follow-indicator.ts";
 import { shouldHandleFullscreenViewportInput } from "../src/modes/interactive/interactive-mode-base.ts";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
+
+const clipboardMocks = vi.hoisted(() => ({
+	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
+	readClipboardText: vi.fn<() => Promise<string | null>>(),
+}));
+
+vi.mock("../src/utils/clipboard.ts", () => clipboardMocks);
 
 /**
  * Upstream #7963 (`83aed2ba`): terminals that report a release with the generic
@@ -61,12 +68,21 @@ interface Fixture {
 	overlay: ClaimingOverlay;
 	/** Internal-UI URLs `handleUrlActivation` routed, in order. */
 	internalUiActions: string[];
-	/** Text pi-tui copied through OSC 52, one entry per completed selection. */
+	/**
+	 * Text handed to the host clipboard, one entry per completed selection.
+	 * Selection copy is routed through `copyToClipboard` (upstream #8110), so
+	 * this is the channel a completed — or refused — copy is observed on.
+	 */
 	copiedText: () => string[];
 	/** The rendered screen pi-tui itself reads for selection text and OSC 8 links. */
 	screen: () => string[];
 	stop: () => void;
 }
+
+beforeEach(() => {
+	clipboardMocks.copyToClipboard.mockReset();
+	clipboardMocks.readClipboardText.mockReset();
+});
 
 function createFixture(): Fixture {
 	const keybindings = new KeybindingsManager({});
@@ -122,10 +138,7 @@ function createFixture(): Fixture {
 		terminal,
 		overlay,
 		internalUiActions,
-		copiedText: () =>
-			terminal.writes
-				.flatMap((write) => [...write.matchAll(/\x1b\]52;c;([A-Za-z0-9+/=]*)\x07/g)])
-				.map((match) => Buffer.from(match[1] ?? "", "base64").toString("utf8")),
+		copiedText: () => clipboardMocks.copyToClipboard.mock.calls.map(([text]) => text),
 		// pi-tui reads its own `previousScreen` for both the copied text and the
 		// pressed OSC 8 link, so the test locates cells the same way.
 		screen: () => (Reflect.get(tui, "previousScreen") as string[] | undefined) ?? [],
