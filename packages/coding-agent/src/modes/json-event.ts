@@ -10,6 +10,7 @@ type ToJsonEvent<T> = T extends {
 	? {
 			type: "message_update";
 			usage: Usage;
+			endTurn?: boolean;
 			assistantMessageEvent: WithoutPartial<TAssistantMessageEvent>;
 		}
 	: T;
@@ -24,7 +25,8 @@ type JsonMessageUpdateEvent = Extract<JsonAgentSessionEvent, { type: "message_up
  * Remove cumulative assistant snapshots from streaming wire events.
  * `message_start` provides the initial message, deltas build it, and
  * `message_end` provides the final authoritative message. Cumulative usage
- * remains available because its size is constant.
+ * and the provider's end-of-turn signal remain available because their size
+ * is constant.
  */
 export function toJsonEvent(event: MessageUpdateEvent): JsonMessageUpdateEvent;
 export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent;
@@ -37,10 +39,22 @@ export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent {
 	}
 
 	const assistantMessageEvent = event.assistantMessageEvent;
+	const usage = event.message.usage;
+	const endTurn = event.message.endTurn;
 	if (!("partial" in assistantMessageEvent)) {
-		return { type: "message_update", usage: event.message.usage, assistantMessageEvent };
+		return withEndTurn({ type: "message_update", usage, assistantMessageEvent }, endTurn);
 	}
 
 	const { partial: _partial, ...deltaEvent } = assistantMessageEvent;
-	return { type: "message_update", usage: event.message.usage, assistantMessageEvent: deltaEvent };
+	return withEndTurn({ type: "message_update", usage, assistantMessageEvent: deltaEvent }, endTurn);
+}
+
+/**
+ * Carry the provider's end-of-turn signal only when the provider reported one.
+ * A present-but-undefined key would make "the provider said nothing" look like
+ * a reported value, so an unreported signal leaves the key off the frame.
+ */
+function withEndTurn(update: JsonMessageUpdateEvent, endTurn: boolean | undefined): JsonMessageUpdateEvent {
+	if (endTurn === undefined) return update;
+	return { ...update, endTurn };
 }
