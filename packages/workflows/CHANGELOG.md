@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- `open-claude-design` review rounds are now a durable deliverable rather than the feedback stage's final prose. Each `user-feedback-*` stage declares a structured output schema — `decision` (`approve` or `revise`), one entry per user note, one entry per accepted live change, and the annotated screenshot path when one exists — and every round, approvals included, is written to `<artifact_dir>/feedback/iteration-N.json`, whose top level is exactly that schema plus a nested `meta` block. The readable `iteration-N.md` copy and the annotated-snapshot copies are unchanged. The loop reloads that file and drives itself from it, and the next `generate-*` stage receives the artifact path in its `reads` and is told the file is the authoritative record of the round ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+
+### Fixed
+
+- Fixed `open-claude-design` exporting a stale preview after a live review that asked for changes. A synthetic `Continue where you left off...` turn could land moments after the feedback stage emitted its labeled report, and the short wrap-up that followed replaced the report as the stage result; the workflow then found no feedback, treated that as approval, skipped the next `generate-*` round, and exported a preview the user had asked to change. The stage's schema-validated structured answer is now what the workflow reads, and a finalized structured result is already protected from continuation displacement ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- The refinement loop fails closed. `revise` runs another `generate-*` round; `approve` exports only when the round captured no notes and no live changes, and an approval that still carries captured work is read as `revise` rather than discarding it; a round that returns neither a valid structured answer nor parseable feedback labels stops the run with an error naming the stage and the persisted artifact instead of approving a preview whose review outcome is unknown. Missing or unreadable feedback never approves an export ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- Fixed decorated feedback labels being missed or over-captured. Fenced, bolded, bulleted, backticked, and parenthetically annotated labels now parse, and any recognized label ends the value being collected — including a repeat of the same label — so one field can no longer swallow the block that follows it ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+
 ## [0.9.14-alpha.1] - 2026-08-14
 
 ### Added
