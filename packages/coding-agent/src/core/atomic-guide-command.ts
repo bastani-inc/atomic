@@ -29,7 +29,7 @@ Atomic turns non-trivial work into executable, inspectable workflows. Default to
 | Research → spec → implementation | Use \`/skill:research-codebase\`, then \`/skill:create-spec\`, then a named or custom implementation workflow with explicit validation and review |
 | Testing / regression hardening | Use a workflow for test/fix loops so retries, evidence, and the passing stop condition are tracked |
 | Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns"\`, or use repository-focused \`fan-out-and-synthesize\` branches plus a synthesis barrier |
-| UI / product polish | Run \`/skill:impeccable\` for interface critique and refinement, or \`/workflow open-claude-design\` for generation + refinement loops |
+| UI / product polish | Run \`/skill:impeccable\` for interface critique and refinement, or \`/workflow open-claude-design\` for one generated preview plus a live review session and export |
 
 ## Built-in workflows
 
@@ -43,7 +43,7 @@ Atomic turns non-trivial work into executable, inspectable workflows. Default to
 | \`loop-until-done\` | iterate until explicit evidence passes or the bound is exhausted | \`/workflow loop-until-done prompt="Repair failures until tests pass"\` |
 | \`goal\` | ledger-backed autonomous work with receipts and reviewer-gated completion | \`/workflow goal objective="Update CLI docs and validate the docs build"\` |
 | \`ralph\` | research-first delegated implementation with bounded multi-model review | \`/workflow ralph prompt="Implement specs/rate-limit.md"\` |
-| \`open-claude-design\` | UI and design-system generation and refinement | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
+| \`open-claude-design\` | UI and design-system generation with one live review session and export | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
 Use \`/workflow list\` to see what is available and \`/workflow inputs <name>\` to inspect inputs in your environment.
 

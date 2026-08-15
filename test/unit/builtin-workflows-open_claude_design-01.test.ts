@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
@@ -18,45 +18,30 @@ import {
 	readPathEndsWith,
 } from "./builtin-workflows-helpers.js";
 
-/**
- * The structured final answer a `user-feedback-*` stage returns when the user
- * approves the preview as-is. The stage declares `previewFeedbackSchema`, so
- * the mock parses this into `result.structured` and the loop reads the durable
- * artifact built from it. cross-ref: issue #2401.
- */
-const STRUCTURED_APPROVAL = JSON.stringify({ decision: "approve", user_notes: [], live_changes: [] });
-
 describe("open-claude-design", () => {
-	test("loads and has correct shape", async () => {
+	test("loads and declares only the remaining workflow contract", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		assertWorkflowDefinition(mod.default);
 		assert.equal(mod.default.name, "open-claude-design");
-	});
-
-	test("has design workflow inputs without compatibility aliases", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default;
-		for (const inputName of ["prompt", "discover_references", "max_refinements"]) {
-			assert.notEqual(d.inputs[inputName], undefined, inputName);
-		}
-		// Removed inputs: reference, output_type, design_system are now gathered
-		// by the discovery interview rather than passed as parameters.
-		assert.equal(d.inputs.reference, undefined);
-		assert.equal(d.inputs.output_type, undefined);
-		assert.equal(d.inputs.design_system, undefined);
-		assert.equal(d.inputs["output-type"], undefined);
-		assert.equal(d.inputs["design-system"], undefined);
-		assert.equal(fieldRequired(d.inputs.prompt), true);
-	});
-
-	test("discovery decision schema offers the canonical output types", async () => {
-		const utils = await import("../../packages/workflows/builtin/open-claude-design-utils.js");
-		const schema = (utils.discoveryDecisionSchema as { properties: Record<string, unknown> }).properties.output_type;
-		assert.equal(fieldKind(schema), "select");
-		const choices = fieldChoices(schema);
-		for (const choice of ["prototype", "wireframe", "page", "component", "theme", "tokens"]) {
-			assert.ok(choices.includes(choice), choice);
-		}
+		assert.deepEqual(Object.keys(mod.default.inputs).sort(), ["discover_references", "prompt"]);
+		assert.equal(mod.default.inputs.max_refinements, undefined);
+		assert.equal(fieldRequired(mod.default.inputs.prompt), true);
+		assertOutputTypes(mod.default.outputs, {
+			artifact: "text",
+			artifact_dir: "text",
+			design_system: "text",
+			handoff: "text",
+			import_context: "text",
+			output_type: "text",
+			preview_file_url: "text",
+			preview_path: "text",
+			run_id: "text",
+			spec_file_url: "text",
+			spec_path: "text",
+			playwright_cli_status: "text",
+		});
+		assert.equal(mod.default.outputs.approved_for_export, undefined);
+		assert.equal(mod.default.outputs.refinements_completed, undefined);
 	});
 
 	test("declares discover_references boolean input defaulting true", async () => {
@@ -67,372 +52,113 @@ describe("open-claude-design", () => {
 		assert.ok(fieldDescription(schema).length > 0);
 	});
 
-	test("runs reference-discovery by default and hands research context to the generator by file", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{ prompt: "Design a landing page", max_refinements: 1 },
-			{
-				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
-					return undefined;
-				},
-			},
-		);
-		const result = await d.run(ctx);
-		assert.ok(ctx.calls.task.includes("reference-discovery"));
-		assert.ok(ctx.calls.parallel.some((names) => names.includes("ds-locator")));
-		assert.equal(
-			ctx.calls.parallel.some((names) => names.includes("reference-discovery")),
-			false,
-		);
-		assert.ok(ctx.calls.task.indexOf("ds-patterns") < ctx.calls.task.indexOf("reference-discovery"));
-		const refPrompt = ctx.calls.prompts["reference-discovery"]?.[0] ?? "";
-		assert.match(refPrompt, /awwwards\.com\/websites/);
-		assert.match(refPrompt, /motionsites\.ai/);
-		assert.match(refPrompt, /ask_user_question/);
-		assert.match(refPrompt, /reference image, screenshot, URL, or local file path/i);
-
-		// Research context travels by artifact file + reads, never inline (#2121).
-		const artifactDir = result.artifact_dir as string;
-		const designContext = readFileSync(join(artifactDir, "design-context.md"), "utf8");
-		assert.match(designContext, /\[mock-task:ds-locator\]/);
-		assert.doesNotMatch(refPrompt, /\[mock-task:ds-locator\]/);
-		assert.match(refPrompt, /Read the file at .*design-context\.md/);
-		assert.ok(readPathEndsWith(ctx.calls.taskOptions["reference-discovery"]?.[0], "design-context.md"));
-		assert.equal(ctx.calls.taskOptions["reference-discovery"]?.[0]?.previous, undefined);
-
-		assert.ok(existsSync(join(artifactDir, "references.md")));
-		const genPrompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
-		assert.match(genPrompt, /<reference_inspiration_file>/);
-		assert.match(genPrompt, /<design_context_file>/);
-		assert.doesNotMatch(genPrompt, /\[mock-task:ds-locator\]/);
-		const generateOptions = ctx.calls.taskOptions["generate-1"]?.[0];
-		assert.ok(readPathEndsWith(generateOptions, "design-context.md"));
-		assert.ok(readPathEndsWith(generateOptions, "references.md"));
-		assert.equal(generateOptions?.previous, undefined);
-
-		const exporterOptions = ctx.calls.taskOptions.exporter?.[0];
-		assert.ok(readPathEndsWith(exporterOptions, "design-context.md"));
-		assert.ok(readPathEndsWith(exporterOptions, "references.md"));
-		assert.match(ctx.calls.prompts.exporter?.[0] ?? "", /<reference_inspiration_file>/);
-		rmSync(artifactDir, { recursive: true, force: true });
+	test("discovery decision schema retains the canonical output types", async () => {
+		const utils = await import("../../packages/workflows/builtin/open-claude-design-utils.js");
+		const schema = (utils.discoveryDecisionSchema as { properties: Record<string, unknown> }).properties.output_type;
+		assert.equal(fieldKind(schema), "select");
+		for (const choice of ["prototype", "wireframe", "page", "component", "theme", "tokens"]) {
+			assert.ok(fieldChoices(schema).includes(choice), choice);
+		}
 	});
 
-	test("runs /skill:impeccable shape and init in one discovery stage", async () => {
+	test("runs one generation, one live session, and export after helper exit", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
-		const dir = mkdtempSync(join(tmpdir(), "ocd-run-init-"));
+		const cwd = mkdtempSync(join(tmpdir(), "ocd-live-one-shot-"));
 		try {
 			const ctx = makeMockCtx(
-				{ prompt: "Design a dashboard", max_refinements: 1 },
+				{ prompt: "Design a kanban board" },
 				{
+					cwd,
 					task: (name) => {
-						if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
+						if (name === "discovery") {
+							return JSON.stringify({
+								brief: "A kanban board component.",
+								output_type: "component",
+								references: ["https://example.com/reference"],
+							});
+						}
 						return undefined;
+					},
+					tool: (name) => {
+						if (name === "live-poll-1-1")
+							return { type: "generate", id: "g1", raw: '{"type":"generate","id":"g1"}' };
+						if (name === "live-poll-1-2") return { type: "steer", id: "s1", raw: '{"type":"steer","id":"s1"}' };
+						if (name === "live-poll-1-3")
+							return { type: "manual_edit_apply", id: "m1", raw: '{"type":"manual_edit_apply","id":"m1"}' };
+						if (name === "live-poll-1-4") return { type: "accept", id: "a1", raw: '{"type":"accept","id":"a1"}' };
+						if (name === "live-poll-1-5")
+							return { type: "discard", id: "d1", raw: '{"type":"discard","id":"d1"}' };
+						if (name === "live-poll-1-6")
+							return { type: "prefetch", id: "p1", raw: '{"type":"prefetch","id":"p1"}' };
+						return { type: "exit", raw: '{"type":"exit"}' };
 					},
 				},
 			);
-			(ctx as { cwd?: string }).cwd = dir;
+
 			const result = await d.run(ctx);
-			assert.equal(ctx.calls.task.includes("init"), false);
-			const discoveryPrompt = ctx.calls.prompts.discovery?.[0] ?? "";
-			assert.match(discoveryPrompt, /\/skill:impeccable shape/);
-			assert.match(discoveryPrompt, /\/skill:impeccable init/);
-			assert.match(discoveryPrompt, /Let impeccable init perform its own PRODUCT\.md\/DESIGN\.md detection/);
-			assert.equal(ctx.calls.task.includes("design-system-builder"), false);
-			const genPrompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
-			assert.match(genPrompt, /Read the file at .*design-context\.md/);
-			const runArtifactDir = result.artifact_dir as string;
-			const designContext = readFileSync(join(runArtifactDir, "design-context.md"), "utf8");
-			assert.match(designContext, /shape.*init/s);
-			const artifactDir = result.artifact_dir as string | undefined;
-			if (artifactDir) rmSync(artifactDir, { recursive: true, force: true });
+
+			assert.ok(ctx.calls.task.includes("discovery"));
+			assert.ok(ctx.calls.task.includes("reference-discovery"));
+			assert.ok(ctx.calls.task.includes("generate-1"));
+			assert.ok(ctx.calls.task.includes("user-feedback-1-start"));
+			assert.ok(ctx.calls.task.includes("live-generate-1-1"));
+			assert.ok(ctx.calls.task.includes("live-steer-1-2"));
+			assert.ok(ctx.calls.task.includes("live-manual_edit_apply-1-3"));
+			assert.equal(ctx.calls.task.includes("user-feedback-1"), false);
+			assert.equal(
+				ctx.calls.task.some((name) => name.startsWith("generate-2")),
+				false,
+			);
+			assert.equal(
+				ctx.calls.task.some((name) => name.startsWith("user-feedback-2")),
+				false,
+			);
+			assert.equal(ctx.calls.task.includes("exporter"), true);
+			assert.equal(ctx.calls.task.includes("final-display"), true);
+			assert.deepEqual(
+				ctx.calls.tool.filter((name) => name.startsWith("live-poll-")),
+				[
+					"live-poll-1-1",
+					"live-poll-1-2",
+					"live-poll-1-3",
+					"live-poll-1-4",
+					"live-poll-1-5",
+					"live-poll-1-6",
+					"live-poll-1-7",
+				],
+			);
+			assert.deepEqual(
+				ctx.calls.tool.filter((name) => name.startsWith("live-reply-")),
+				["live-reply-1-1", "live-reply-1-2", "live-reply-1-3"],
+			);
+			assert.equal(existsSync(join(result.artifact_dir as string, "feedback")), false);
+			assert.equal(typeof result.artifact, "string");
+			assert.equal(typeof result.handoff, "string");
+			assert.equal(result.output_type, "component");
+			assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-1"]?.[0], "design-context.md"));
+			assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-1"]?.[0], "references.md"));
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
-	test("skips reference-discovery when discover_references=false", async () => {
+	test("keeps the exporter and final-display browser guidance", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{
-				prompt: "Design a landing page",
-				discover_references: false,
-				max_refinements: 1,
-			},
-			{
-				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
-					return undefined;
-				},
-			},
-		);
+		const ctx = makeMockCtx({ prompt: "Design a dashboard" });
 		await d.run(ctx);
-		assert.equal(ctx.calls.task.includes("reference-discovery"), false);
-	});
-
-	test("combined discovery/init drives /skill:impeccable live in user-feedback", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		// Discovery now includes init in the same stage; there is no separate
-		// init task even when PRODUCT.md/DESIGN.md already exist.
-		const ctx = makeMockCtx(
-			{ prompt: "Design a dashboard", max_refinements: 1 },
-			{
-				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
-					return undefined;
-				},
-			},
-		);
-		await d.run(ctx);
-		assert.equal(ctx.calls.task.includes("init"), false);
-		assert.ok(ctx.calls.task.includes("discovery"));
-		const discoveryPrompt = ctx.calls.prompts.discovery?.[0] ?? "";
-		assert.match(discoveryPrompt, /\/skill:impeccable shape/);
-		assert.match(discoveryPrompt, /\/skill:impeccable init/);
-		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
-		assert.match(feedbackPrompt, /\/skill:impeccable live/);
-		assert.match(feedbackPrompt, /`live_changes`/);
-	});
-
-	test("declares child workflow output contract", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		assertOutputTypes(mod.default.outputs, {
-			approved_for_export: "boolean",
-			artifact: "text",
-			artifact_dir: "text",
-			design_system: "text",
-			handoff: "text",
-			import_context: "text",
-			output_type: "text",
-			preview_file_url: "text",
-			preview_path: "text",
-			refinements_completed: "number",
-			run_id: "text",
-			spec_file_url: "text",
-			spec_path: "text",
-			playwright_cli_status: "text",
-		});
-	});
-
-	test("runs context gathering, generate/user-feedback loop, and export", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{
-				prompt: "Design a kanban board",
-				max_refinements: 2,
-			},
-			{
-				task: (name) => {
-					if (name === "discovery")
-						return JSON.stringify({
-							brief: "Confirmed: a kanban board component.",
-							output_type: "component",
-							references: ["https://example.com/reference"],
-						});
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
-					return undefined;
-				},
-			},
-		);
-
-		const result = await d.run(ctx);
-
-		assert.deepEqual(ctx.calls.stage, []);
-		assert.ok(ctx.calls.task.includes("discovery"));
-		assert.ok(ctx.calls.parallel.some((names) => names.includes("ds-locator") && names.includes("ds-patterns")));
-		assert.equal(
-			ctx.calls.parallel.some((names) => names.includes("reference-discovery")),
-			false,
-		);
-		assert.equal(ctx.calls.task.includes("web-capture-1"), false);
-		assert.equal(ctx.calls.task.includes("file-parser-1"), false);
-		assert.equal(ctx.calls.task.includes("design-system-builder"), false);
-		assert.ok(ctx.calls.task.includes("generate-1"));
-		assert.match(ctx.calls.prompts["ds-locator"]?.[0] ?? "", /https:\/\/example\.com\/reference/);
-		assert.match(ctx.calls.prompts["generate-1"]?.[0] ?? "", /<reference_context>/);
-		assert.ok(ctx.calls.task.includes("user-feedback-1"));
-		assert.equal(ctx.calls.task.includes("pre-export-scan"), false);
-		assert.equal(ctx.calls.task.includes("forced-fix"), false);
-		assert.ok(ctx.calls.task.includes("exporter"));
-		assert.ok(ctx.calls.task.includes("final-display"));
-		// The feedback stage declares the structured-output schema, so its round
-		// finalizes as a schema-validated value a later continuation turn cannot
-		// replace, and the loop reads that value rather than the prose (#2401).
-		const feedbackOptions = ctx.calls.taskOptions["user-feedback-1"]?.[0];
-		const feedbackSchema = feedbackOptions?.schema as { properties?: Record<string, unknown> } | undefined;
-		assert.notEqual(feedbackSchema, undefined);
-		assert.deepEqual(Object.keys(feedbackSchema?.properties ?? {}).sort(), [
-			"annotated_snapshot",
-			"decision",
-			"live_changes",
-			"user_notes",
-		]);
-		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
-		assert.match(feedbackPrompt, /\/skill:impeccable live/);
-		assert.match(feedbackPrompt, /`user_notes`/);
-		assert.match(feedbackPrompt, /STRUCTURED final answer/);
-		assert.equal(result.output_type, "component");
-		assert.equal(typeof result.artifact, "string");
-		assert.equal(typeof result.handoff, "string");
-	});
-
-	test("uses default output_type 'prototype' when not provided", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{ prompt: "Design a dashboard" },
-			{
-				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
-					return undefined;
-				},
-			},
-		);
-		const result = await d.run(ctx);
-		assert.equal(result.output_type, "prototype");
-	});
-
-	test("browser-capable prompts use playwright-cli bootstrap rules", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{
-				prompt: "Design a dashboard",
-				max_refinements: 1,
-			},
-			{
-				task: (name) => {
-					if (name === "discovery")
-						return JSON.stringify({
-							brief: "A dashboard.",
-							output_type: "page",
-							references: ["https://example.com/reference"],
-						});
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
-					return undefined;
-				},
-			},
-		);
-
-		await d.run(ctx);
-
-		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
-		const finalPrompt = ctx.calls.prompts["final-display"]?.[0] ?? "";
-		for (const displayPrompt of [
-			ctx.calls.prompts["ds-locator"]?.[0] ?? "",
-			ctx.calls.prompts["ds-analyzer"]?.[0] ?? "",
-			ctx.calls.prompts["ds-patterns"]?.[0] ?? "",
-			feedbackPrompt,
-			finalPrompt,
-		]) {
-			assert.match(displayPrompt, /<browser_use_guidelines>/);
-			assert.match(displayPrompt, /<\/browser_use_guidelines>/);
-			assert.match(displayPrompt, /which playwright-cli/);
-			assert.match(displayPrompt, /@playwright\/cli/);
-			assert.match(displayPrompt, /Do not add project dependencies/);
-			assert.match(displayPrompt, /missing browser executable/);
-			assert.match(displayPrompt, /screenshot --filename/);
-			assert.doesNotMatch(displayPrompt, /playwright_browser_bootstrap/);
-			assert.doesNotMatch(displayPrompt, /which browse/);
-			assert.doesNotMatch(displayPrompt, /npm install -g browse/);
-			assert.doesNotMatch(displayPrompt, /browser-use/);
-			assert.doesNotMatch(displayPrompt, /browser goto/);
+		for (const name of ["user-feedback-1-start", "final-display"]) {
+			const prompt = ctx.calls.prompts[name]?.[0] ?? "";
+			assert.match(prompt, /<browser_use_guidelines>/);
+			assert.match(prompt, /which playwright-cli/);
+			assert.match(prompt, /missing browser executable/);
 		}
 	});
 
-	const annotationNotes = [
-		"I don't like this background; simplify it to a black to grey gradient with solid texture.",
-		"The top-left masthead text is too light on this background; ensure WCAG/a11y standards across the page.",
-		"The copy button font is too generic; make it less generic with better design craft.",
-		"Good call to action on the Start a loop CTA; keep it.",
-		"Make the overall vibe more polished, closer to the Apple website.",
-	];
-	const structuredAnnotations = JSON.stringify({
-		decision: "revise",
-		user_notes: annotationNotes,
-		live_changes: [],
-		annotated_snapshot: ".playwright-cli/annotations-test.png",
-	});
-
-	test("threads captured user-feedback annotations into the next generate stage", async () => {
+	test("definition is frozen", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{ prompt: "Redesign the Atomic website", max_refinements: 2 },
-			{
-				task: (name) => {
-					if (name === "user-feedback-1") return structuredAnnotations;
-					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
-					return undefined;
-				},
-			},
-		);
-
-		const result = await d.run(ctx);
-
-		assert.equal(ctx.calls.task.includes("preview-display-initial"), false);
-		assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
-		assert.ok(ctx.calls.task.includes("generate-2"));
-		const generatePrompt = ctx.calls.prompts["generate-2"]?.[0] ?? "";
-		assert.ok(generatePrompt.includes("I don't like this background"));
-		assert.ok(generatePrompt.includes("Apple website"));
-		assert.doesNotMatch(generatePrompt, /Impeccable critique findings/);
-		assert.doesNotMatch(generatePrompt, /screenshot-validated/);
-
-		// Annotations persisted as durable workflow artifacts.
-		const artifactDir = result.artifact_dir as string;
-		const mdPath = join(artifactDir, "feedback", "iteration-1.md");
-		const jsonPath = join(artifactDir, "feedback", "iteration-1.json");
-		assert.ok(existsSync(mdPath));
-		assert.match(readFileSync(mdPath, "utf8"), /I don't like this background/);
-		const persisted = JSON.parse(readFileSync(jsonPath, "utf8"));
-		assert.equal(persisted.decision, "revise");
-		assert.match(persisted.user_notes.join("\n"), /Apple website/);
-
-		// generate-2 consumes that artifact: it is in `reads` and the prompt names
-		// it as the authoritative record of the round (#2401).
-		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
-		assert.match(generatePrompt, /<user_feedback_record>/);
-		assert.ok(generatePrompt.includes(jsonPath));
-		rmSync(artifactDir, { recursive: true, force: true });
-	});
-
-	test("falls back gracefully and does not block when no annotations were captured", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{ prompt: "Design a dashboard", max_refinements: 1 },
-			{
-				task: (name) => {
-					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
-					return undefined;
-				},
-			},
-		);
-
-		const result = await d.run(ctx);
-
-		// No notes means no second generate stage, but the round is still
-		// persisted as a durable artifact (#2401).
-		assert.equal(ctx.calls.task.includes("generate-2"), false);
-		assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
-		assert.equal(typeof result.handoff, "string");
-		const artifactDir = result.artifact_dir as string;
-		const persisted = JSON.parse(readFileSync(join(artifactDir, "feedback", "iteration-1.json"), "utf8"));
-		assert.deepEqual(persisted.user_notes, []);
-		assert.deepEqual(persisted.live_changes, []);
-		rmSync(artifactDir, { recursive: true, force: true });
-	});
-
-	test("definition is frozen (immutable)", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default;
-		assert.equal(Object.isFrozen(d), true);
-		assert.equal(Object.isFrozen(d.inputs), true);
+		assert.equal(Object.isFrozen(mod.default), true);
+		assert.equal(Object.isFrozen(mod.default.inputs), true);
 	});
 });

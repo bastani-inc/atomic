@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
-	buildLivePreviewDisplayPrompt,
 	buildLiveReviewGateMessage,
 	buildReferenceDiscoveryPrompt,
 	isUiUnavailableRejection,
@@ -150,63 +149,25 @@ describe("open-claude-design setup", () => {
 		});
 	});
 
-	describe("buildLivePreviewDisplayPrompt", () => {
-		test("initial preview prompt drives /skill:impeccable live and keeps the feedback labels", () => {
-			const prompt = buildLivePreviewDisplayPrompt({
-				previewPath: "/tmp/run/preview.html",
-				previewFileUrl: "file:///tmp/run/preview.html",
-				browserBootstrapRules:
-					"which playwright-cli ... @playwright/cli ... missing browser executable ... screenshot --filename",
-			});
-			assert.match(prompt, /\/skill:impeccable live/);
-			assert.match(prompt, /<browser_use_guidelines>/);
-			assert.match(prompt, /playwright-cli show --annotate/);
-			assert.match(prompt, /`user_notes`/);
-			assert.match(prompt, /`annotated_snapshot`/);
-			assert.match(prompt, /`live_changes`/);
-			assert.match(prompt, /the just-generated HTML artifact/);
-			assert.match(prompt, /BEFORE starting any long-poll wait/);
-			assert.match(prompt, /print the exact review URL/i);
-			assert.ok(prompt.includes("/tmp/run/preview.html"));
-		});
-
-		test("per-iteration prompt does not leak the iteration counter", () => {
-			const prompt = buildLivePreviewDisplayPrompt({
-				previewPath: "/tmp/run/preview.html",
-				previewFileUrl: "file:///tmp/run/preview.html",
-				browserBootstrapRules: "rules",
-				iteration: 2,
-				maxRefinements: 3,
-			});
-			assert.match(prompt, /the revised preview/);
-			assert.doesNotMatch(prompt, /iteration \d+\/\d+/);
-		});
-
-		test("final-mode prompt is read-only: it does not solicit actionable feedback", () => {
-			const prompt = buildLivePreviewDisplayPrompt({
-				previewPath: "/tmp/run/preview.html",
-				previewFileUrl: "file:///tmp/run/preview.html",
-				browserBootstrapRules: "rules",
-				iteration: 3,
-				maxRefinements: 3,
-				final: true,
-			});
-			assert.match(prompt, /FINAL refinement pass/);
-			assert.match(prompt, /re-run/i);
-			assert.match(prompt, /do NOT (solicit|collect)/i);
-		});
-
-		test("live-review gate message names the preview, round, and connect affordance", () => {
+	describe("live review gate", () => {
+		test("live-review gate message names the preview, session, and connect affordance", () => {
 			const message = buildLiveReviewGateMessage({
-				iteration: 2,
-				maxRefinements: 3,
+				round: 1,
 				previewPath: "/tmp/run/preview.html",
 				previewFileUrl: "file:///tmp/run/preview.html",
 			});
-			assert.match(message, /review round 2 of 3/i);
+			assert.match(message, /review session 1 /i);
+			assert.match(message, /unbounded/i);
+			assert.doesNotMatch(message, /regeneration|budget|max_refinements/i);
 			assert.ok(message.includes("/tmp/run/preview.html"));
 			assert.ok(message.includes("file:///tmp/run/preview.html"));
 			assert.ok(message.includes("/workflow connect"));
+			// The user is the only thing that ends the review, so the gate they read
+			// beforehand has to say how, and what it costs them.
+			assert.match(message, /YOU end the review/);
+			assert.match(message, /closing the browser tab/);
+			assert.match(message, /exit live/);
+			assert.match(message, /exported/);
 			for (const option of LIVE_REVIEW_GATE_OPTIONS) {
 				assert.ok(message.includes(option), option);
 			}

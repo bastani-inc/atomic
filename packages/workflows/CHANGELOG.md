@@ -6,16 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `open-claude-design` removes the `max_refinements` input, the `approved_for_export` and `refinements_completed` outputs, and the `<artifact_dir>/feedback/` feedback artifact. A run now performs one `generate-1`, an optional live review, and export; callers must stop supplying, reading, or expecting those fields and artifacts ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+
 ### Changed
 
-- `open-claude-design` review rounds now use a schema-backed two-outcome record: `decision` is `approve` or `revise`, with one entry per user note, one entry per accepted live change, and an optional annotated screenshot path. Every round is written to `<artifact_dir>/feedback/iteration-N.json` with the schema fields plus `meta.iteration`, `meta.stage_name`, and `meta.captured_at`; the readable `iteration-N.md` copy and annotated-snapshot copies remain available ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
-- The refinement loop consumes the structured feedback result in memory, while passing the durable JSON path to the next `generate-*` stage in `reads` and naming it as the authoritative review record ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- The `open-claude-design` run-level review gate and the session-start stage now state how a review ends — exit in the Impeccable overlay, closing the browser tab, or `exit live` — that the session waits indefinitely until then, and that ending it exports the design as it stands with no further round ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 
-### Fixed
+- The live review session is the final review boundary: the workflow-owned poll loop dispatches only `generate`, `steer`, and `manual_edit_apply` model stages, ends on the helper's `exit` event, and exports the preview as it stands without a summary, second opinion, decision, or later review session ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- The run-level gate retains `Start live review` and `Skip remaining review rounds and export as-is`; the skip choice exports immediately without opening the session ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 
-- Fixed `open-claude-design` exporting a stale preview after a live review that asked for changes. The stage's schema-backed structured answer now drives the next `generate-*` round, and a finalized structured result is protected from continuation displacement ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
-- An approval carrying user notes or accepted live changes is treated as `revise`, so captured work is never discarded. A failed feedback-record write clears any stale record and surfaces the error instead of allowing an earlier outcome to be reused ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
-- A revision requested in the final review round is applied before export. `max_refinements` bounds review rounds, not the work those reviews request, and `approved_for_export` remains `false` when that final requested revision is applied ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+### Removed
+
+- Removed the live-review feedback module and all `<artifact_dir>/feedback/` artifacts, including the JSON record, `iteration-N.md` copy, and annotated-snapshot copies. No feedback directory is written during a run ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 
 ## [0.9.14-alpha.1] - 2026-08-14
 

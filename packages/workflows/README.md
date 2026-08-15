@@ -820,23 +820,24 @@ For either workflow, keep PR/MR creation out of the task text and pass the origi
 
 ### `open-claude-design`
 
-Combined discovery/init → design-system/reference research → curated reference discovery with user preference check → separate forked generate and user-feedback chains → export/handoff pipeline. The `discovery` stage asks for output type and references, then runs impeccable init in the same stage so PRODUCT.md/DESIGN.md are detected, created, or reconciled. `ds-*` stages handle user-provided URL/file reference extraction directly, then `reference-discovery` uses that context and asks which curated direction you prefer (or asks for a reference image/path/URL if none fit). Export is only `exporter` plus `final-display`.
+Combined discovery/init → design-system/reference research → curated reference discovery with user preference check → one generation → one live review session → export/handoff pipeline. The `discovery` stage asks for output type and references, then runs impeccable init in the same stage so PRODUCT.md/DESIGN.md are detected, created, or reconciled. `ds-*` stages handle user-provided URL/file reference extraction directly, then `reference-discovery` uses that context and asks which curated direction you prefer (or asks for a reference image/path/URL if none fit). Export is only `exporter` plus `final-display`.
 
-Each refinement round pauses at a deterministic run-level prompt before its `user-feedback-*` stage starts (the stage's browser long-poll never sets `awaiting_input`, so the gate is where the wait surfaces). The prompt fires the needs-attention badge and names the preview path and `file://` URL; choose `Start live review` to open the browser session (the stage prints the live `http://` review URL first — see it with `/workflow connect`), or `Skip remaining review rounds and export as-is` to accept the current design. Headless runs skip the gate. A feedback stage that fails outright fails the run; only a completed review with no requested changes counts as approval.
+The live session is unbounded: accepted variants and steered edits are written into `preview.html` in place as you go. A deterministic run-level gate offers `Start live review` or `Skip remaining review rounds and export as-is`; the latter exports without opening a session. The workflow-owned poll loop ends on the helper's `exit` event, and the exporter receives the preview exactly as it stands. There is no second opinion, decision stage, or later review session.
 
-Research context moves between stages as artifact files, not inline prompt payloads: the project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery` reads the design context, and the generate and exporter stages read both files via `reads`. Only verbatim user annotations and the word-capped prior design summary travel inline.
+The session starts at `user-feedback-N-start`; durable `live-poll-N-M` and `live-reply-N-M` tool nodes own polling and acknowledgements, while only `live-generate-*`, `live-steer-*`, and `live-manual_edit_apply-*` mint model stages. `accept`, `discard`, and `prefetch` mint no model stage, and `timeout` is absorbed in the poll node. No `<artifact_dir>/feedback/` directory or per-session record is written.
+
+Research context moves between stages as artifact files, not inline prompt payloads: the project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery`, `generate-1`, and `exporter` read the required files via `reads`.
 
 ```text
 /workflow open-claude-design prompt="Design a kanban board component"
 ```
 
 | Input                 | Type      | Required | Default | Description                                                                 |
-| --------------------- | --------- | -------- | ------- | --------------------------------------------------------------------------- |
+| --------------------- | --------- | -------- | ------- | ------------------------------------------------------------------------- |
 | `prompt`              | `text`    | ✓        | —       | Design brief or description.                                                |
 | `discover_references` | `boolean` | —        | `true`  | Discover current gallery references with browser tooling; set false to skip. |
-| `max_refinements`     | `number`  | —        | `3`     | Maximum generate/user-feedback loop iterations.                              |
 
-Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
+Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
 
 ---
 
