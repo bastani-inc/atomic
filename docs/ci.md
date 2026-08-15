@@ -218,6 +218,20 @@ bun run scripts/cut-release.ts 0.9.10-alpha.1 --base main --push
 
 The tag push is the publication signal. Do not bump package versions directly on a release base.
 
+### npm registration preflight
+
+Before it touches anything, `scripts/cut-release.ts` asks npm whether every package the publisher publishes already exists. The payload is read from the `packages=(…)` array in `.github/workflows/publish.yml`, so the check follows the publisher rather than a second list, and each name is probed with `npm view` against `npm_config_registry` (default `https://registry.npmjs.org`).
+
+An unregistered name aborts the cut with nothing to unwind — no prune, no worktree, no version stamp, no tag. `publish.yml`'s own `npm view` call is an idempotency check that runs after the binaries are built, so without this preflight a name npm has never seen fails at the very end of a release.
+
+A genuine first publish is still possible, but only deliberately:
+
+```sh
+bun run scripts/cut-release.ts 0.9.10 --base main --push --allow-new
+```
+
+`--allow-new` covers only "npm has never heard of this name". A registry that cannot answer — unreachable, unauthorized, or no npm at all — stops the cut regardless, because an unreadable answer is not evidence that a package is new.
+
 ## Build and validation jobs
 
 ### Native NAPI matrix

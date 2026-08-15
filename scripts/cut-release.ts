@@ -12,20 +12,22 @@
  *
  * Mechanically:
  *   1. validate the version + a clean working tree
- *   2. resolve the current attached branch (or `--base`) to its exact remote branch SHA
- *   3. stamp the real version into the worktree via scripts/bump-version.ts
+ *   2. verify every package publish.yml publishes is already registered on npm,
+ *      before anything in the repository is touched (see --allow-new)
+ *   3. resolve the current attached branch (or `--base`) to its exact remote branch SHA
+ *   4. stamp the real version into the worktree via scripts/bump-version.ts
  *      (including package-lock.json's workspace entries: `npm ci` refuses to
  *      install when the lockfile and a package.json disagree)
- *   4. regenerate release artifacts that must carry the stamped version, including
+ *   5. regenerate release artifacts that must carry the stamped version, including
  *      packages/coding-agent/npm-shrinkwrap.json
- *   5. commit `Release <version>` and tag `<version>` inside the worktree
- *   6. remove the worktree — the tag (and its commit) persist in the repo
+ *   6. commit `Release <version>` and tag `<version>` inside the worktree
+ *   7. remove the worktree — the tag (and its commit) persist in the repo
  *
  * Pushing the version tag directly starts publish.yml, which verifies the tag
  * commit identity before building and publishing the release.
  *
  * Usage:
- *   bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes]
+ *   bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes] [--allow-new]
  *
  * Examples:
  *   bun run scripts/cut-release.ts 0.8.31
@@ -38,6 +40,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { $ } from "bun";
 import { canonicalReleaseBaseRef } from "./release-base.js";
+import {
+	classifyNpmViewOutcome,
+	type NpmRegistrationProbe,
+	type RegistrationPreflightResult,
+	readReleasePayloadPackages,
+	resolveNpmRegistry,
+	verifyReleasePackagesRegistered,
+} from "./release-npm-preflight.js";
 
 const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
 const PLACEHOLDER_VERSIONS = new Set(["0.0.0", "0.0.0-dev"]);
@@ -49,6 +59,7 @@ interface Options {
 	base: string | undefined;
 	push: boolean;
 	yes: boolean;
+	allowNew: boolean;
 }
 
 function parseArgs(): Options {
@@ -57,6 +68,7 @@ function parseArgs(): Options {
 	let base: string | undefined;
 	let push = false;
 	let yes = false;
+	let allowNew = false;
 
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i] as string;
@@ -66,6 +78,8 @@ function parseArgs(): Options {
 			base = candidate;
 		} else if (arg === "--push") {
 			push = true;
+		} else if (arg === "--allow-new") {
+			allowNew = true;
 		} else if (arg === "--yes" || arg === "-y") {
 			yes = true;
 		} else if (arg.startsWith("-")) {
@@ -78,10 +92,10 @@ function parseArgs(): Options {
 	}
 
 	if (!version) {
-		fail("Usage: bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes]");
+		fail("Usage: bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes] [--allow-new]");
 	}
 
-	return { version: version as string, base, push, yes };
+	return { version: version as string, base, push, yes, allowNew };
 }
 
 function fail(message: string): never {
@@ -104,8 +118,55 @@ async function gitText(args: string[], cwd: string = ROOT): Promise<string> {
 	return (await $`git -C ${cwd} ${args}`.text()).trim();
 }
 
+/**
+ * Ask npm whether it knows a package name.
+ *
+ * `--registry` is pinned to the registry publish.yml publishes to, unless npm's
+ * own `npm_config_registry` points somewhere else. Any answer that is neither
+ * "yes" nor a 404 throws rather than counting as a new package.
+ */
+function createNpmRegistrationProbe(registry: string): NpmRegistrationProbe {
+	return async (packageName) => {
+		const result = await $`npm view ${packageName} name --registry ${registry}`.nothrow().quiet();
+		return classifyNpmViewOutcome(packageName, {
+			exitCode: result.exitCode,
+			stdout: result.stdout.toString(),
+			stderr: result.stderr.toString(),
+		});
+	};
+}
+
+/**
+ * The registration preflight, run before the first repository mutation.
+ *
+ * publish.yml publishes ten npm packages from one tag and its own `npm view`
+ * call only skips versions that already exist — a name npm has never seen is
+ * discovered at the end of the release, after the tag is pushed and the
+ * binaries are built. Checking here costs one concurrent registry round-trip
+ * and fails with nothing to unwind.
+ */
+async function preflightNpmRegistration(allowNew: boolean): Promise<RegistrationPreflightResult> {
+	const registry = resolveNpmRegistry();
+	try {
+		const packages = readReleasePayloadPackages(ROOT);
+		const registration = await verifyReleasePackagesRegistered({
+			packages,
+			isRegistered: createNpmRegistrationProbe(registry),
+			allowNew,
+		});
+		if (registration.unregistered.length > 0) {
+			console.log(`--allow-new: first publish for ${registration.unregistered.length} package(s):`);
+			for (const name of registration.unregistered) console.log(`  + ${name}`);
+			console.log("");
+		}
+		return registration;
+	} catch (error) {
+		return fail((error as Error).message);
+	}
+}
+
 async function main(): Promise<void> {
-	const { version, base, push, yes } = parseArgs();
+	const { version, base, push, yes, allowNew } = parseArgs();
 	validateVersion(version);
 
 	// Refuse to operate on a dirty tree — the worktree is created from committed
@@ -120,6 +181,11 @@ async function main(): Promise<void> {
 	if (existingTag.trim()) {
 		fail(`Tag ${version} already exists.`);
 	}
+
+	// Every mutation below this line — the prune, the worktree, the stamp, the
+	// tag — is preceded by the registry check, so an unregistered package name
+	// aborts a release that has changed nothing.
+	const registration = await preflightNpmRegistration(allowNew);
 
 	await $`git -C ${ROOT} worktree prune`.quiet();
 
@@ -148,8 +214,10 @@ async function main(): Promise<void> {
 	const email =
 		(await $`git -C ${ROOT} config user.email`.nothrow().text()).trim() || "atomic-release@users.noreply.github.com";
 
+	const registered = registration.checked.length - registration.unregistered.length;
 	console.log(`Cutting release ${version}`);
 	console.log(`  base:   ${baseRef} (${baseSha.slice(0, 9)})`);
+	console.log(`  npm:    ${registered}/${registration.checked.length} publish-payload packages registered`);
 	console.log(`  branch: ${branch} (left untouched)\n`);
 
 	if (!yes) console.log("Proceeding immediately; pass --yes to suppress this notice.\n");
