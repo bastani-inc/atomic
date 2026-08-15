@@ -227,10 +227,18 @@ export function isMouseWheelInput(data: string): boolean {
 
 function isLeftMouseButton(sequence: ParsedMouseSequence): boolean {
 	const { button } = sequence;
-	// Shift, Meta/Option, and Ctrl are application-bypass gestures on press and
-	// motion. SGR releases can retain those bits and still need to close a
-	// selection. Legacy X10 release is button 3, which pi-tui cannot identify.
-	return (button & (3 | 64)) === 0 && (sequence.isRelease || (button & LEFT_MOUSE_MODIFIER_MASK) === 0);
+	if ((button & 64) !== 0) return false;
+	const held = button & 3;
+	// A release carries no button identity on the terminals upstream #7963
+	// describes: they report the generic SGR code 3 rather than 0. pi-tui 0.84.2
+	// ends a selection on `release && (button & 3) === 3`
+	// (`dist/tui-alt-screen.js:796`), so a release Atomic drops here leaves the
+	// press it already forwarded open — the selection never closes and the OSC 8
+	// link under the press never activates. Shift, Meta/Option, and Ctrl are
+	// application-bypass gestures on press and motion, but a release can retain
+	// those bits and still has to close a selection.
+	if (sequence.isRelease) return held === 0 || held === 3;
+	return held === 0 && (button & LEFT_MOUSE_MODIFIER_MASK) === 0;
 }
 
 /** Whether a mouse chunk contains a left-button selection gesture. */
