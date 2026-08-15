@@ -2,6 +2,7 @@
 export interface ParsedSkillBlock {
 	name: string;
 	location: string;
+	candidateId?: string;
 	content: string;
 	userMessage: string | undefined;
 }
@@ -20,12 +21,25 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 	if (!name) return null;
 
 	const locationStart = nameEnd + '" location="'.length;
-	const locationEnd = text.indexOf('">\n', locationStart);
+	const locationEnd = text.indexOf('"', locationStart);
 	if (locationEnd === -1) return null;
 	const location = text.slice(locationStart, locationEnd);
 	if (!location) return null;
 
-	const contentStart = locationEnd + '">\n'.length;
+	let tagEnd = locationEnd + 1;
+	let candidateId: string | undefined;
+	const candidatePrefix = ' candidate="';
+	if (text.startsWith(candidatePrefix, tagEnd)) {
+		const candidateStart = tagEnd + candidatePrefix.length;
+		const candidateEnd = text.indexOf('"', candidateStart);
+		if (candidateEnd === -1) return null;
+		candidateId = text.slice(candidateStart, candidateEnd);
+		if (!candidateId) return null;
+		tagEnd = candidateEnd + 1;
+	}
+	if (!text.startsWith(">\n", tagEnd)) return null;
+
+	const contentStart = tagEnd + ">\n".length;
 	const closing = "\n</skill>";
 	const contentEnd = text.indexOf(closing, contentStart);
 	if (contentEnd === -1) return null;
@@ -36,6 +50,7 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 	return {
 		name,
 		location,
+		...(candidateId ? { candidateId } : {}),
 		content: text.slice(contentStart, contentEnd),
 		userMessage: afterClosing ? afterClosing.slice(2).trim() || undefined : undefined,
 	};

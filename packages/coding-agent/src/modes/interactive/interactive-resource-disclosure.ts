@@ -31,15 +31,17 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 		lines.push(
 			theme.fg(
 				"dim",
-				`    ${theme.fg("success", "✓")} ${this.formatPathWithSource(first.winnerPath, this.findSourceInfoForPath(first.winnerPath, sourceInfos))}`,
+				`    ${theme.fg("success", "✓")} ${this.formatPathWithSource(first.winnerPath, this.findSourceInfoForPath(first.winnerPath, sourceInfos))} (/${name})`,
 			),
 		);
 		for (const d of collisionList) {
 			if (d.collision) {
+				const loserSource = this.findSourceInfoForPath(d.collision.loserPath, sourceInfos);
+				const label = loserSource?.scope ?? loserSource?.source ?? "path";
 				lines.push(
 					theme.fg(
 						"dim",
-						`    ${theme.fg("warning", "✗")} ${this.formatPathWithSource(d.collision.loserPath, this.findSourceInfoForPath(d.collision.loserPath, sourceInfos))} (skipped)`,
+						`    ${theme.fg("warning", "✗")} ${this.formatPathWithSource(d.collision.loserPath, loserSource)} (/skill:${name}@${label})`,
 					),
 				);
 			}

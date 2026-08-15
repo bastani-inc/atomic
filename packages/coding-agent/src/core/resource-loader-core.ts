@@ -51,8 +51,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private systemPromptSource?: string;
 	private appendSystemPromptSource?: string[];
 	private extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
-	private skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
+	private skillsOverride?: (base: { skills: Skill[]; shadowedSkills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
 		skills: Skill[];
+		shadowedSkills: Skill[];
 		diagnostics: ResourceDiagnostic[];
 	};
 	private promptsOverride?: (base: { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] }) => {
@@ -70,6 +71,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private appendSystemPromptOverride?: (base: string[]) => string[];
 	private extensionsResult: LoadExtensionsResult;
 	private skills: Skill[];
+	private shadowedSkills: Skill[];
 	private skillDiagnostics: ResourceDiagnostic[];
 	private prompts: PromptTemplate[];
 	private promptDiagnostics: ResourceDiagnostic[];
@@ -152,6 +154,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPromptOverride = options.appendSystemPromptOverride;
 		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
 		this.skills = [];
+		this.shadowedSkills = [];
 		this.skillDiagnostics = [];
 		this.prompts = [];
 		this.promptDiagnostics = [];
@@ -180,8 +183,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return this.extensionsResult;
 	}
 
-	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] } {
-		return { skills: this.skills, diagnostics: this.skillDiagnostics };
+	getSkills(): { skills: Skill[]; shadowedSkills: Skill[]; diagnostics: ResourceDiagnostic[] } {
+		return { skills: this.skills, shadowedSkills: this.shadowedSkills, diagnostics: this.skillDiagnostics };
 	}
 
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] } {

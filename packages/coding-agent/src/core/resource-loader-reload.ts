@@ -176,8 +176,11 @@ export async function reloadDefaultResourceLoader(
 		state.workflowResources = [];
 		state.resourceMetadataByPath = new Map();
 		state.lastSkillPaths = [];
-		const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
+		const emptySkills = state.skillsOverride
+			? state.skillsOverride({ skills: [], shadowedSkills: [], diagnostics: [] })
+			: undefined;
 		state.skills = emptySkills?.skills ?? [];
+		state.shadowedSkills = emptySkills?.shadowedSkills ?? [];
 		state.skillDiagnostics = emptySkills?.diagnostics ?? [];
 		state.lastPromptPaths = [];
 		const emptyPrompts = state.promptsOverride ? state.promptsOverride({ prompts: [], diagnostics: [] }) : undefined;

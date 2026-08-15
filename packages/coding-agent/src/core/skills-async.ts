@@ -197,6 +197,7 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 	const realPathSet = new Set<string>();
 	const allDiagnostics: ResourceDiagnostic[] = [];
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
+	const shadowedSkills: Skill[] = [];
 	const userSkillsDir = join(resolvedAgentDir, "skills");
 	const projectSkillsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "skills");
 	const addSkills = (result: LoadSkillsResult) => {
@@ -217,6 +218,7 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 						loserPath: skill.filePath,
 					},
 				});
+				shadowedSkills.push(skill);
 			} else {
 				skillMap.set(skill.name, skill);
 				realPathSet.add(realPath);
@@ -266,5 +268,9 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 			allDiagnostics.push({ type: "warning", message, path: resolvedPath });
 		}
 	}
-	return { skills: Array.from(skillMap.values()), diagnostics: [...allDiagnostics, ...collisionDiagnostics] };
+	return {
+		skills: Array.from(skillMap.values()),
+		shadowedSkills,
+		diagnostics: [...allDiagnostics, ...collisionDiagnostics],
+	};
 }

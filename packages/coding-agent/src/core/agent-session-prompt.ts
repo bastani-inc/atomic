@@ -20,6 +20,7 @@ import {
 } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
+import { getSkillCatalog } from "./skill-catalog.ts";
 
 type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
 
@@ -351,25 +352,34 @@ export function _expandSkillCommand(this: AgentSession, text: string): string {
 	if (!text.startsWith("/skill:")) return text;
 
 	const spaceIndex = text.indexOf(" ");
-	const skillName = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
+	const selector = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
 	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
 
-	const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
-	if (!skill) return text; // Unknown skill, pass through
+	const resolution = getSkillCatalog(this.resourceLoader).resolve(selector);
+	if (!resolution.ok) {
+		if (selector.includes("@")) {
+			this._extensionRunner.emitError({
+				extensionPath: `skill:${selector}`,
+				event: "skill_expansion",
+				error: resolution.message,
+			});
+		}
+		return text;
+	}
 
+	const { skill, id } = resolution.candidate;
 	try {
 		const content = readFileSync(skill.filePath, "utf-8");
 		const body = stripFrontmatter(content).trim();
-		const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+		const skillBlock = `<skill name="${selector}" location="${skill.filePath}" candidate="${id}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
 		return args ? `${skillBlock}\n\n${args}` : skillBlock;
 	} catch (err) {
-		// Emit error like extension commands do
 		this._extensionRunner.emitError({
 			extensionPath: skill.filePath,
 			event: "skill_expansion",
 			error: err instanceof Error ? err.message : String(err),
 		});
-		return text; // Return original on error
+		return text;
 	}
 }
 

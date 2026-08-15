@@ -245,6 +245,7 @@ export {
 	SettingsManager,
 	type SettingsManagerCreateOptions,
 } from "./core/settings-manager.ts";
+export { getSkillCatalog, type SkillCandidate, type SkillCatalog } from "./core/skill-catalog.ts";
 // Skills
 export {
 	formatSkillsForPrompt,

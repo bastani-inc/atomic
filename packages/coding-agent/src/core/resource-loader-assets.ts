@@ -27,17 +27,20 @@ async function existsAsync(path: string): Promise<boolean> {
 
 function applySkillsResult(
 	loader: DefaultResourceLoader,
-	skillsResult: { skills: Skill[]; diagnostics: ResourceDiagnostic[] },
+	skillsResult: { skills: Skill[]; shadowedSkills?: Skill[]; diagnostics: ResourceDiagnostic[] },
 	metadataByPath?: Map<string, PathMetadata>,
 ): void {
 	const state = resourceInternals(loader);
-	const resolvedSkills = state.skillsOverride ? state.skillsOverride(skillsResult) : skillsResult;
-	state.skills = resolvedSkills.skills.map((skill) => ({
+	const normalizedResult = { ...skillsResult, shadowedSkills: skillsResult.shadowedSkills ?? [] };
+	const resolvedSkills = state.skillsOverride ? state.skillsOverride(normalizedResult) : normalizedResult;
+	const sourceInfoFor = (skill: Skill) =>
+		findSourceInfoForPath(loader, skill.filePath, state.extensionSkillSourceInfos, metadataByPath) ??
+		skill.sourceInfo ??
+		getDefaultSourceInfoForPath(loader, skill.filePath);
+	state.skills = resolvedSkills.skills.map((skill) => ({ ...skill, sourceInfo: sourceInfoFor(skill) }));
+	state.shadowedSkills = (resolvedSkills.shadowedSkills ?? []).map((skill) => ({
 		...skill,
-		sourceInfo:
-			findSourceInfoForPath(loader, skill.filePath, state.extensionSkillSourceInfos, metadataByPath) ??
-			skill.sourceInfo ??
-			getDefaultSourceInfoForPath(loader, skill.filePath),
+		sourceInfo: sourceInfoFor(skill),
 	}));
 	state.skillDiagnostics = resolvedSkills.diagnostics;
 }
@@ -50,7 +53,7 @@ export async function updateSkillsFromPathsAsync(
 	const state = resourceInternals(loader);
 	const skillsResult =
 		state.noSkills && skillPaths.length === 0
-			? { skills: [], diagnostics: [] }
+			? { skills: [], shadowedSkills: [], diagnostics: [] }
 			: await loadSkillsAsync({ cwd: state.cwd, agentDir: state.agentDir, skillPaths, includeDefaults: false });
 	applySkillsResult(loader, skillsResult, metadataByPath);
 }

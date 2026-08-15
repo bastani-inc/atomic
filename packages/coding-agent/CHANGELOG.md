@@ -16,6 +16,7 @@
 ### Added
 
 - Added an **experimental** `@bastani/atomic/client` entrypoint with `RemoteSession` lifecycle management and transcript projection helpers for remote protocol sessions.
+- Same-name skills stay independently selectable. `/skill:name` still uses the current project/user-over-package winner, and Atomic now keeps every distinct file as a source-qualified command such as `/skill:tdd@user` and `/skill:tdd@builtin`. Autocomplete, `pi.getCommands()`, RPC `get_commands`, the model-visible skill list, collision diagnostics, and the `ctx.getSkillCatalog()` extension API share those identities. A qualified selector is exact: unknown or ambiguous aliases error instead of falling back to the winner ([#2328](https://github.com/bastani-inc/atomic/issues/2328)).
 - Added the fullscreen interactive TUI layout. Wheel and trackpad gestures reach focused workflow overlays before the transcript viewport, and events those overlays do not consume fall through to the fullscreen transcript.
 - Fullscreen sessions keep the editor, status line, extension widgets, usage meter, and footer in a sticky dock while the transcript scrolls independently; terminal resizes preserve that layout.
 - Fullscreen mode now supports a draggable transcript scrollbar configured as `auto`, `always`, or `hidden` through `/settings`; themes can set `scrollbarThumb`, which falls back to `selectedBg` for existing custom themes.

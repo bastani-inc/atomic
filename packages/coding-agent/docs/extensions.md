@@ -1186,6 +1186,22 @@ pi.on("before_agent_start", (event, ctx) => {
 });
 ```
 
+### ctx.getSkillCatalog()
+
+Returns the current loader-owned skill catalog when the host provides one. Use it to resolve exact skill selectors, including source-qualified names such as `tdd@builtin`, without falling back to the bare precedence winner.
+
+```typescript
+pi.on("session_start", (_event, ctx) => {
+  const catalog = ctx.getSkillCatalog?.();
+  const resolved = catalog?.resolve("tdd@builtin");
+  if (resolved?.ok) {
+    ctx.ui.notify(`Using ${resolved.candidate.selector}`, "info");
+  }
+});
+```
+
+`pi.getCommands()` already includes the same advertised `/skill:name` and `/skill:name@source` names. See [Skill Commands](/skills#skill-commands).
+
 ## ExtensionCommandContext
 
 Command handlers receive `ExtensionCommandContext`, which extends `ExtensionContext` with session control methods. These are only available in commands because they can deadlock if called from event handlers.

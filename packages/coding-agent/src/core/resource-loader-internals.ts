@@ -30,8 +30,9 @@ export interface ResourceLoaderInternals {
 	systemPromptSource?: string;
 	appendSystemPromptSource?: string[];
 	extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
-	skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
+	skillsOverride?: (base: { skills: Skill[]; shadowedSkills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
 		skills: Skill[];
+		shadowedSkills: Skill[];
 		diagnostics: ResourceDiagnostic[];
 	};
 	promptsOverride?: (base: { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] }) => {
@@ -49,6 +50,7 @@ export interface ResourceLoaderInternals {
 	appendSystemPromptOverride?: (base: string[]) => string[];
 	extensionsResult: LoadExtensionsResult;
 	skills: Skill[];
+	shadowedSkills: Skill[];
 	skillDiagnostics: ResourceDiagnostic[];
 	prompts: PromptTemplate[];
 	promptDiagnostics: ResourceDiagnostic[];

@@ -82,6 +82,8 @@ export interface Skill {
 
 export interface LoadSkillsResult {
 	skills: Skill[];
+	/** Skills that lost a name collision and are retained for qualified selection. */
+	shadowedSkills?: Skill[];
 	diagnostics: ResourceDiagnostic[];
 }
 
@@ -395,6 +397,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	const realPathSet = new Set<string>();
 	const allDiagnostics: ResourceDiagnostic[] = [];
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
+	const shadowedSkills: Skill[] = [];
 
 	function addSkills(result: LoadSkillsResult) {
 		allDiagnostics.push(...result.diagnostics);
@@ -420,6 +423,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 						loserPath: skill.filePath,
 					},
 				});
+				shadowedSkills.push(skill);
 			} else {
 				skillMap.set(skill.name, skill);
 				realPathSet.add(realPath);
@@ -482,6 +486,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	return {
 		skills: Array.from(skillMap.values()),
+		shadowedSkills,
 		diagnostics: [...allDiagnostics, ...collisionDiagnostics],
 	};
 }
