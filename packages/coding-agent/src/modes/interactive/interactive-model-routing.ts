@@ -11,6 +11,7 @@ import {
 	UserMessageSelectorComponent,
 } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
+import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
 
 InteractiveModeBase.prototype.handleModelCommand = async function (
 	this: InteractiveModeBase,
@@ -69,9 +70,10 @@ InteractiveModeBase.prototype.getModelCandidates = async function (this: Interac
 	}
 
 	const allowNetwork = !isOfflineModeEnabled();
-	await boundedInteractiveModelRefresh((refreshOptions) => this.session.modelRuntime.refresh(refreshOptions), {
-		allowNetwork,
-	});
+	await boundedInteractiveModelRefresh(
+		(refreshOptions) => refreshModelCatalogs(this.session.modelRuntime, refreshOptions),
+		{ allowNetwork },
+	);
 	try {
 		return [...this.session.modelRuntime.getAvailableSnapshot()];
 	} catch {
@@ -232,7 +234,7 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 			},
 		);
 		void boundedInteractiveModelRefresh(
-			(options) => this.session.modelRuntime.refresh(options),
+			(options) => refreshModelCatalogs(this.session.modelRuntime, options),
 			{ allowNetwork: !isOfflineModeEnabled() },
 			refreshAbortController.signal,
 		)

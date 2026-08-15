@@ -27,6 +27,7 @@ import {
 } from "@earendil-works/pi-ai";
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
+import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
 import { POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS } from "./model-refresh-timeout.ts";
@@ -101,20 +102,6 @@ export class CredentialSynchronizationError extends Error {
 			configurable: true,
 		});
 	}
-}
-
-function operationSignal(signal: AbortSignal | undefined): AbortSignal {
-	return signal ?? new AbortController().signal;
-}
-
-function raceWithAbortSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-	if (signal.aborted)
-		return Promise.reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
-	return new Promise<T>((resolve, reject) => {
-		const onAbort = () => reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
-		signal.addEventListener("abort", onAbort, { once: true });
-		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-	});
 }
 
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */

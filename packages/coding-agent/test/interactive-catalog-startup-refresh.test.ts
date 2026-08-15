@@ -4,7 +4,7 @@ import type { InteractiveModeBase } from "../src/modes/interactive/interactive-m
 import { refreshCatalogsAfterTuiStartup } from "../src/modes/interactive/interactive-model-catalog-startup.ts";
 
 interface FakeCalls {
-	refreshOptions: Array<{ allowNetwork?: boolean }>;
+	refreshOptions: Array<{ allowNetwork?: boolean; signal?: AbortSignal }>;
 	providerCounts: number[];
 }
 
@@ -14,7 +14,7 @@ function fakeMode(overrides?: { refreshRejects?: boolean }): { mode: Interactive
 		session: {
 			scopedModels: [],
 			modelRuntime: {
-				refresh: async (options: { allowNetwork?: boolean } = {}) => {
+				refresh: async (options: { allowNetwork?: boolean; signal?: AbortSignal } = {}) => {
 					calls.refreshOptions.push(options);
 					if (overrides?.refreshRejects) throw new Error("network refresh failed");
 					return { aborted: false, errors: new Map() };
@@ -34,7 +34,11 @@ function fakeMode(overrides?: { refreshRejects?: boolean }): { mode: Interactive
 test("post-TUI startup refresh performs a network registry refresh", async () => {
 	const { mode, calls } = fakeMode();
 	await refreshCatalogsAfterTuiStartup(mode);
-	assert.deepEqual(calls.refreshOptions, [{ allowNetwork: true }]);
+	assert.equal(calls.refreshOptions.length, 1);
+	assert.equal(calls.refreshOptions[0]?.allowNetwork, true);
+	// The refresh joins the shared coordinator, which supplies its own signal so
+	// a selector opened during startup reuses this pass instead of starting one.
+	assert.ok(calls.refreshOptions[0]?.signal instanceof AbortSignal);
 	assert.deepEqual(calls.providerCounts, [2]);
 });
 

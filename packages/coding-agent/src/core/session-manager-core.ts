@@ -1,6 +1,7 @@
 import type { ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import { existsSync, statSync } from "fs";
 import { resolve } from "path";
+import { APP_TITLE } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
@@ -93,11 +94,11 @@ export class SessionManager {
 		if (existsSync(this.sessionFile)) {
 			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
 
-			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as an Atomic session, fail without modifying it.
+			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as a session, fail without modifying it.
 			if (this.fileEntries.length === 0) {
 				const explicitPath = this.sessionFile;
 				if (statSync(explicitPath).size > 0) {
-					throw new Error(`Session file is not a valid Atomic session: ${explicitPath}`);
+					throw new Error(`Session file is not a valid ${APP_TITLE} session: ${explicitPath}`);
 				}
 				this.newSession();
 				this.sessionFile = explicitPath;

@@ -52,7 +52,7 @@ export async function commitAdmittedCustomMessage<T>(
 		);
 	} else if (self.isStreaming && options?.persistWhenStreaming === true) {
 		self._appendCustomMessage(appMessage);
-	} else if (self.isStreaming) {
+	} else if (self.isStreaming && options?.triggerTurn !== false) {
 		self._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 	} else if (options?.triggerTurn) {
 		const promptMessage = useProtectedReconciliation
@@ -129,7 +129,7 @@ export async function commitAdmittedCustomMessages<T>(
 		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
 	} else if (self.isStreaming && options?.persistWhenStreaming === true) {
 		for (const item of appMessages) self._appendCustomMessage(item);
-	} else if (self.isStreaming) {
+	} else if (self.isStreaming && options?.triggerTurn !== false) {
 		for (const item of appMessages) self._queueAgentMessage(item, delivery);
 	} else if (options?.triggerTurn) {
 		if (useProtectedReconciliation) {

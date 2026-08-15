@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { APP_TITLE } from "../../src/config.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 
 describe("SessionManager.open rejects invalid non-empty session files", () => {
@@ -12,7 +13,7 @@ describe("SessionManager.open rejects invalid non-empty session files", () => {
 		writeFileSync(sessionFile, originalContent);
 
 		expect(() => SessionManager.open(sessionFile, tempDir)).toThrow(
-			`Session file is not a valid Atomic session: ${sessionFile}`,
+			`Session file is not a valid ${APP_TITLE} session: ${sessionFile}`,
 		);
 		// The invalid file must not be modified or truncated.
 		expect(readFileSync(sessionFile, "utf8")).toBe(originalContent);
