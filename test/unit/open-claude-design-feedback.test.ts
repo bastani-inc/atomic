@@ -699,6 +699,28 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 				"an approval carrying live changes",
 				{ decision: "approve", user_notes: [], live_changes: ["Accepted variant 2."], meta },
 			],
+			// The same contradiction hidden in metadata: the top level records the
+			// captured work as a revision while `meta.decision` claims approval. The
+			// restored decision is what the loop acts on, so it clears the same bar
+			// the top level does and the record is malformed either way.
+			[
+				"meta approving over captured notes",
+				{
+					decision: "revise",
+					user_notes: ["Fix the hero"],
+					live_changes: [],
+					meta: { ...meta, decision: "approve" },
+				},
+			],
+			[
+				"meta approving over captured live changes",
+				{
+					decision: "revise",
+					user_notes: [],
+					live_changes: ["Accepted variant 2."],
+					meta: { ...meta, decision: "approve" },
+				},
+			],
 			// `indeterminate` is not a value the declared schema admits, so a record
 			// carrying it at the top level did not come from this module.
 			["a top-level indeterminate decision", { decision: "indeterminate", user_notes: [], live_changes: [], meta }],
@@ -738,6 +760,7 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
 		tempDirs.push(dir);
 		const artifactPath = feedbackArtifactPath(dir, 1);
+		const load = () => loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" });
 
 		const approve = toPreviewFeedback({
 			iteration: 1,
@@ -745,15 +768,8 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			result: { text: "decision: approve", structured: { decision: "approve", user_notes: [], live_changes: [] } },
 		});
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: approve });
-		assert.equal(
-			loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" })?.decision,
-			"approve",
-		);
+		assert.equal(load()?.decision, "approve");
 
-		// Block the durable write for the next round. Swallowing the failure would
-		// leave the approval above as round 1's answer for the next durable read.
-		rmSync(artifactPath, { force: true });
-		mkdirSync(artifactPath, { recursive: true });
 		const revise = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
@@ -762,18 +778,39 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 				structured: { decision: "revise", user_notes: ["The hero background is too busy."], live_changes: [] },
 			},
 		});
+
+		// A failure raised before the write opens the file — the shape of EACCES,
+		// EPERM, or EROFS — leaves the approval above on disk, whole and readable.
+		// Swallowing it, or reporting it without clearing the path, would leave
+		// that approval as round 1's answer for the next durable read.
+		const unwritable = {
+			...revise,
+			get text(): string {
+				throw new Error("simulated durable-write failure");
+			},
+		};
 		assert.throws(
-			() => persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: revise }),
+			() => persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: unwritable }),
 			(error: Error) =>
 				/failed to write the feedback deliverable/.test(error.message) &&
 				error.message.includes(artifactPath) &&
 				error.message.includes("user-feedback-1"),
 		);
-		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" }), undefined);
+		assert.equal(existsSync(artifactPath), false, "the stale approval must not survive a failed write");
+		assert.equal(load(), undefined);
+
+		// A write the filesystem itself rejects surfaces the same way.
+		mkdirSync(artifactPath, { recursive: true });
+		assert.throws(
+			() => persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: revise }),
+			(error: Error) =>
+				/failed to write the feedback deliverable/.test(error.message) && error.message.includes(artifactPath),
+		);
+		assert.equal(load(), undefined);
 
 		// With the path clear the same round persists and reloads as the revision.
 		rmSync(artifactPath, { recursive: true, force: true });
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: revise });
-		assert.deepEqual(loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" }), revise);
+		assert.deepEqual(load(), revise);
 	});
 });

@@ -841,6 +841,8 @@ The workflow establishes or loads project design context, extracts user-provided
 
 **The loop fails closed.** `revise` runs another `generate-*` round. `approve` exports only when the round captured no notes and no live changes — an approval that still carries captured work is read as `revise`, because exporting would discard what the user asked for. A round that returns neither a valid structured answer nor parseable feedback labels is *indeterminate*: the run stops with an error naming the stage and the persisted artifact rather than approving a preview whose review outcome is unknown. Missing or malformed feedback never approves; only an explicit `decision: "approve"` with nothing captured, or the run-level `Skip remaining review rounds and export as-is` choice, approves an export.
 
+**`max_refinements` bounds review rounds, not the work they ask for.** A `revise` in the final review round still gets a `generate-*` round to apply it before the export, so the exported preview is never the one the last review asked to change. That round is counted in `refinements_completed`, and `approved_for_export` stays `false` because nobody approved.
+
 Declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. It has no implicit `result` output.
 
 ```text

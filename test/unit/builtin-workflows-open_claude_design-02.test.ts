@@ -391,6 +391,41 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
+	test("a revise in the final review round is applied before the export", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Redesign the Atomic website", max_refinements: 1 },
+			{
+				task: (name) => {
+					if (name === "user-feedback-1") {
+						return { text: CONTINUATION_WRAP_UP, structured: STRUCTURED_REVISION };
+					}
+					return undefined;
+				},
+			},
+		);
+
+		const result = await d.run(ctx);
+
+		// The loop bound caps review rounds, not the work they asked for: the
+		// requested revision runs one more generate round rather than exporting
+		// the preview the user just asked to change.
+		assert.deepEqual(
+			ctx.calls.task.filter(
+				(name) => name.startsWith("generate-") || name.startsWith("user-feedback-") || name === "exporter",
+			),
+			["generate-1", "user-feedback-1", "generate-2", "exporter"],
+		);
+		const generatePrompt = ctx.calls.prompts["generate-2"]?.[0] ?? "";
+		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.user_notes[0]));
+		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.live_changes[0]));
+		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
+		// The user approved nothing, so the export is not an approved one.
+		assert.equal(result.approved_for_export, false);
+		rmSync(result.artifact_dir as string, { recursive: true, force: true });
+	});
+
 	test("a structured payload the schema rejects stops the run instead of exporting", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;

@@ -671,8 +671,11 @@ function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedback
  *
  * An `approve` record carrying notes or live changes is malformed too:
  * `toPreviewFeedback` coerces that contradiction to `revise` before it is ever
- * written, so on disk it means the record was rewritten. Approval never
- * restores over captured work. cross-ref: issue #2401 items A.3 and A.6.
+ * written, so on disk it means the record was rewritten. That bar applies to
+ * the restored decision, not only to the top level: `meta.decision` is what the
+ * caller acts on, so metadata may not approve a round whose top level recorded
+ * captured work. Approval never restores over captured work.
+ * cross-ref: issue #2401 items A.3 and A.6.
  */
 export function loadPreviewFeedback(input: {
   readonly artifactDir: string;
@@ -688,17 +691,20 @@ export function loadPreviewFeedback(input: {
     if (!Value.Check(previewFeedbackSchema, declared)) return undefined;
     const notes = captureEntries(declared.user_notes);
     const changes = captureEntries(declared.live_changes);
-    if (declared.decision === "approve" && (notes !== undefined || changes !== undefined)) return undefined;
+    const captured = notes !== undefined || changes !== undefined;
+    if (declared.decision === "approve" && captured) return undefined;
     const meta = readMeta(rawMeta);
     if (meta === undefined) return undefined;
     if (meta.iteration !== input.iteration) return undefined;
     if (meta.stageName.trim() !== input.stageName.trim()) return undefined;
+    const decision = meta.decision ?? declared.decision;
+    if (decision === "approve" && captured) return undefined;
     const snapshot = declared.annotated_snapshot?.trim();
     return {
       iteration: meta.iteration,
       stageName: meta.stageName,
       text: meta.text,
-      decision: meta.decision ?? declared.decision,
+      decision,
       source: meta.source,
       capturedAt: meta.capturedAt,
       ...capturedFields({

@@ -8,6 +8,8 @@ import {
 import {
   assertUserAnnotationsThreaded,
   feedbackArtifactPath,
+  hasMeaningfulLiveChanges,
+  hasMeaningfulUserNotes,
   loadPreviewFeedback,
   persistPreviewFeedback,
   previewFeedbackSchema,
@@ -71,15 +73,25 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
   let latestDesign = "";
   let latestGenerateSessionFile: string | undefined;
   let latestUserFeedbackSessionFile: string | undefined;
+  /** Captured work waiting for a `generate-*` round to apply it (issue #2401). */
   let pendingFeedback: PreviewFeedback | undefined;
   /** Durable artifact the pending feedback was reloaded from (issue #2401). */
   let pendingFeedbackArtifact: string | undefined;
   let approvedForExport = false;
   let refinementCount = 0;
 
-  for (let iteration = 1; iteration <= maxRefinements; iteration += 1) {
+  /**
+   * Run one `generate-*` round, applying whatever revision is pending. The
+   * pending revision is cleared once the round that applies it has run, so
+   * `pendingFeedback` always names captured work no generate round has seen
+   * yet — which is what lets the loop's exit check find a revision the last
+   * review round requested. cross-ref: issue #2401.
+   */
+  const runGenerateRound = async (iteration: number): Promise<void> => {
+    const feedback = pendingFeedback;
+    const feedbackArtifactFile = pendingFeedbackArtifact;
     const generateStageName = `generate-${iteration}`;
-    const generatePrompt = pendingFeedback === undefined
+    const generatePrompt = feedback === undefined
       ? buildInitialGeneratePrompt({
           prompt,
           outputType,
@@ -96,11 +108,11 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
           referencesFile,
           latestDesign,
           importContext,
-          feedback: pendingFeedback,
-          feedbackArtifactFile: pendingFeedbackArtifact,
+          feedback,
+          feedbackArtifactFile,
         });
-    if (pendingFeedback !== undefined) {
-      assertUserAnnotationsThreaded(generatePrompt, [pendingFeedback], generateStageName);
+    if (feedback !== undefined) {
+      assertUserAnnotationsThreaded(generatePrompt, [feedback], generateStageName);
     }
 
     // Large research context travels by artifact file (`reads` + explicit
@@ -111,10 +123,10 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     const generated = await designContext.task(generateStageName, {
       prompt: generatePrompt,
       reads:
-        pendingFeedbackArtifact === undefined
+        feedbackArtifactFile === undefined
           ? [designContextFile, referencesFile]
-          : [designContextFile, referencesFile, pendingFeedbackArtifact],
-      ...(pendingFeedback === undefined
+          : [designContextFile, referencesFile, feedbackArtifactFile],
+      ...(feedback === undefined
         ? {}
         : { previous: { name: "current-design", text: latestDesign } }),
       ...designModelConfig,
@@ -123,6 +135,12 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     latestDesign = generated.text;
     latestGenerateSessionFile = generated.sessionFile ?? latestGenerateSessionFile;
     refinementCount = iteration;
+    pendingFeedback = undefined;
+    pendingFeedbackArtifact = undefined;
+  };
+
+  for (let iteration = 1; iteration <= maxRefinements; iteration += 1) {
+    await runGenerateRound(iteration);
 
     // Deterministic live-review gate (issue #2060): the user-feedback stage
     // waits on a browser long-poll that never sets `awaiting_input`, so raise
@@ -194,12 +212,24 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
         `open-claude-design ${feedbackStageName}: ${reason}. Feedback deliverable: ${artifactPath}. Refusing to approve or export a preview whose review outcome is unknown (see issue #2401).`,
       );
     }
-    if (durableFeedback.decision === "approve") {
+    // Approval may never discard captured work: an artifact that approves
+    // while carrying notes or live changes is a contradiction the loader
+    // already rejects, so if one ever reaches here it runs another round
+    // rather than exporting over the review (issue #2401 items A.3 and B.3).
+    const capturedWork = hasMeaningfulUserNotes(durableFeedback) || hasMeaningfulLiveChanges(durableFeedback);
+    if (durableFeedback.decision === "approve" && !capturedWork) {
       approvedForExport = true;
       break;
     }
     pendingFeedback = durableFeedback;
     pendingFeedbackArtifact = artifactPath;
+  }
+
+  // A revision the final review round asked for still has to be applied. The
+  // loop bound caps review rounds, not the work they requested: returning here
+  // would export the preview the user just asked to change (issue #2401).
+  if (pendingFeedback !== undefined) {
+    await runGenerateRound(maxRefinements + 1);
   }
 
   return { latestDesign, approvedForExport, refinementCount };
