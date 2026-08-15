@@ -313,20 +313,25 @@ function readStructuredPayload(value: WorkflowSerializableValue | undefined): Pr
 
 /**
  * Whether the prose report contradicts itself: more than one
- * `decision`/`review_decision` label, or a field label repeated with a
- * different value. Neither is resolvable — taking the first value is exactly
- * how a placeholder `user_notes: none` came to outrank a real note filed under
- * a repeat of the same label — so the round is left unknown.
+ * `decision`/`review_decision` label, or ANY recognized field label repeated
+ * with a different value. Neither is resolvable — taking the first value is
+ * exactly how a placeholder `user_notes: none` came to outrank a real note
+ * filed under a repeat of the same label — so the round is left unknown.
+ *
+ * Every label the parser recognizes counts, not just the three fields the
+ * round captures. A report that says `display_method: live` and
+ * `display_method: manual` describes two different reviews, so the notes it
+ * carries cannot be attributed to either one, and the round stops rather than
+ * feeding a contradictory report into the next generate round.
  * cross-ref: issue #2401 amendment 3.
  */
 function textIsConflicted(text: string): boolean {
   const decisionLabels = fieldOccurrences(text, "decision").length + fieldOccurrences(text, "review_decision").length;
   if (decisionLabels > 1) return true;
-  return (
-    hasConflictingOccurrences(fieldOccurrences(text, "user_notes")) ||
-    hasConflictingOccurrences(fieldOccurrences(text, "live_changes")) ||
-    hasConflictingOccurrences(fieldOccurrences(text, "annotated_snapshot"))
-  );
+  for (const label of FIELD_LABELS) {
+    if (hasConflictingOccurrences(fieldOccurrences(text, label))) return true;
+  }
+  return false;
 }
 
 /**
@@ -685,33 +690,69 @@ function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedback
 }
 
 /**
+ * Structural equality for the JSON an artifact holds. Key order is how a value
+ * was written down rather than part of the value, so it is not compared.
+ */
+function deepEquals(left: WorkflowSerializableValue, right: WorkflowSerializableValue): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((entry, index) => deepEquals(entry, right[index]));
+  }
+  if (isRecord(left) && isRecord(right)) {
+    const keys = Object.keys(left);
+    if (keys.length !== Object.keys(right).length) return false;
+    return keys.every((key) => Object.hasOwn(right, key) && deepEquals(left[key], right[key]));
+  }
+  return false;
+}
+
+/**
+ * The canonical round-trip invariant: the file must be exactly what
+ * `toArtifact` emits for the record restored from it.
+ *
+ * This is one check rather than a list of rejected shapes, and it is the write
+ * path's own serializer that decides. Anything `persistPreviewFeedback` could
+ * not have produced fails it, whatever combination of fields it holds — a
+ * `meta.decision` contradicting the top level, a stray key inside `meta`, a
+ * blank or untrimmed note entry, an empty `annotated_snapshot` — without this
+ * module having to enumerate those shapes and grow the list every time a new
+ * one is found. Serialization goes through JSON exactly as the write path
+ * does, so what is compared is what would land on disk.
+ * cross-ref: issue #2401 amendment 2 item 1.
+ */
+function isEmittableArtifact(restored: PreviewFeedback, parsed: WorkflowSerializableValue): boolean {
+  const emitted = JSON.parse(JSON.stringify(toArtifact(restored))) as WorkflowSerializableValue;
+  return deepEquals(emitted, parsed);
+}
+
+/**
  * Read the durable per-round artifact back into a `PreviewFeedback`. Returns
  * undefined when the file is missing or malformed; never throws, so the caller
  * decides what an unreadable deliverable means. cross-ref: issue #2401.
  *
- * Fail-closed on the whole record, not on the fields it happens to read: the
- * top level minus `meta` must itself validate against `previewFeedbackSchema`,
- * every metadata field must be present and well-typed, and the artifact must
- * name the round the caller asked for. Because the schema declares
- * `additionalProperties: false`, an unknown top-level key, a missing declared
- * field, and a decision outside the union are each rejected by that one check:
- * a partial file — `{"decision":"approve"}`, say — is malformed, not an
- * approval, and so is a record that smuggles an extra top-level field.
+ * Three things must hold, and the last one carries the weight:
  *
- * The restored decision is `meta.decision`, which is required, so a round that
- * was indeterminate reloads as `indeterminate` rather than as the fail-closed
- * `revise` the schema forced onto the top level.
+ * 1. The top level minus `meta` validates against `previewFeedbackSchema` and
+ *    the metadata block is complete, so there is a candidate to restore at all.
+ *    The restored decision is `meta.decision`, which is required: a round that
+ *    was indeterminate reloads as `indeterminate` rather than as the
+ *    fail-closed `revise` the schema forced onto the top level.
+ * 2. The artifact names the round the caller asked for.
+ * 3. Re-serializing the restored record reproduces the parsed file exactly.
+ *    A record no writer could emit is malformed, however well-formed the
+ *    fields it shares look, so this one rule replaces enumerating the shapes
+ *    that are wrong.
  *
- * The two decisions must also pair the way `toArtifact` writes them: `approve`
- * at the top level for an approving round, `revise` for every other. A record
- * pairing them any other way — top-level `revise` under `meta.decision:
- * "approve"`, say — is one this module could not have written, so it is
- * malformed rather than an approval.
- *
- * An `approve` record carrying notes or live changes is malformed too:
- * `toPreviewFeedback` coerces that contradiction to `revise` before it is ever
- * written, so on disk it means the record was rewritten. Approval never
- * restores over captured work. cross-ref: issue #2401 items A.3 and A.6.
+ * Approval is the one outcome the invariant cannot police on its own, because
+ * an artifact that approves over captured work re-serializes to itself. It is
+ * therefore checked directly, and against its origin: only a structured round
+ * that captured nothing may restore as `approve`. Prose can never approve
+ * (amendment 1), so `meta.source: "text"` with an approving decision is a
+ * pairing `toPreviewFeedback` refuses to produce, and `toPreviewFeedback`
+ * coerces approval-over-captured-work to `revise` before it is ever written.
+ * Approval never restores over a review. cross-ref: issue #2401 items A.3 and
+ * A.6 and amendment 2 items 1 and 2.
  */
 export function loadPreviewFeedback(input: {
   readonly artifactDir: string;
@@ -725,22 +766,20 @@ export function loadPreviewFeedback(input: {
     if (!isRecord(parsed)) return undefined;
     const { meta: rawMeta, ...declared } = parsed;
     if (!Value.Check(previewFeedbackSchema, declared)) return undefined;
-    const notes = captureEntries(declared.user_notes);
-    const changes = captureEntries(declared.live_changes);
-    const captured = notes !== undefined || changes !== undefined;
     const meta = readMeta(rawMeta);
     if (meta === undefined) return undefined;
     if (meta.iteration !== input.iteration) return undefined;
     if (meta.stageName.trim() !== input.stageName.trim()) return undefined;
-    const decision = meta.decision;
-    if (declared.decision !== (decision === "approve" ? "approve" : "revise")) return undefined;
-    if (decision === "approve" && captured) return undefined;
+    const notes = captureEntries(declared.user_notes);
+    const changes = captureEntries(declared.live_changes);
+    const captured = notes !== undefined || changes !== undefined;
+    if (meta.decision === "approve" && (meta.source !== "structured" || captured)) return undefined;
     const snapshot = declared.annotated_snapshot?.trim();
-    return {
+    const restored: PreviewFeedback = {
       iteration: meta.iteration,
       stageName: meta.stageName,
       text: meta.text,
-      decision,
+      decision: meta.decision,
       source: meta.source,
       capturedAt: meta.capturedAt,
       ...capturedFields({
@@ -749,6 +788,7 @@ export function loadPreviewFeedback(input: {
         annotatedSnapshot: snapshot !== undefined && snapshot.length > 0 ? snapshot : undefined,
       }),
     };
+    return isEmittableArtifact(restored, parsed) ? restored : undefined;
   } catch {
     return undefined;
   }

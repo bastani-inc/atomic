@@ -564,6 +564,59 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		assert.equal(echoed.userNotes, "Fix the hero.");
 	});
 
+	test("any recognized label repeated with a different value is indeterminate (amendment 3)", () => {
+		// The reviewer's probe: the contradiction sits in a label the round does
+		// not capture. Checking only the captured fields read this as a plain
+		// revision, so the workflow carried on from a report that describes two
+		// different reviews — one live, one manual — and cannot say which review
+		// produced the note.
+		const contradictoryMethod = ["display_method: live", "display_method: manual", "user_notes: Fix the hero."].join(
+			"\n",
+		);
+		assert.equal(
+			toPreviewFeedback({ iteration: 1, stageName: "user-feedback-1", result: { text: contradictoryMethod } })
+				.decision,
+			"indeterminate",
+		);
+
+		// Every other label the parser recognizes reads the same way: a repeat
+		// that changes the value is a contradiction wherever it sits.
+		for (const label of [
+			"preview_path",
+			"preview_file_url",
+			"next_action_hint",
+			"manual_open_instructions",
+			"spec_path",
+		]) {
+			assert.equal(
+				toPreviewFeedback({
+					iteration: 1,
+					stageName: "user-feedback-1",
+					result: { text: [`${label}: first`, `**${label}:** second`, "user_notes: Fix the hero."].join("\n") },
+				}).decision,
+				"indeterminate",
+				`a repeated ${label} with a different value must be indeterminate`,
+			);
+		}
+
+		// A report that repeats those labels consistently still says one thing, so
+		// the captured note is a revision rather than an unusable round.
+		const consistent = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: {
+				text: [
+					"display_method: live",
+					"preview_path: .atomic/preview.html",
+					"display_method: live",
+					"user_notes: Fix the hero.",
+				].join("\n"),
+			},
+		});
+		assert.equal(consistent.decision, "revise");
+		assert.equal(consistent.userNotes, "Fix the hero.");
+	});
+
 	test("decorated labels parse without over-capturing the next field", () => {
 		const decorated = [
 			"```user_notes```",
@@ -905,6 +958,123 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		// With the decision present and the pair consistent, the same record loads.
 		write({ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, decision: "approve" } });
 		assert.equal(load()?.decision, "approve");
+	});
+
+	test("approval requires a structured origin (amendment 2 item 2)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
+		tempDirs.push(dir);
+		mkdirSync(join(dir, "feedback"), { recursive: true });
+		const load = () => loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" });
+		const meta = {
+			iteration: 1,
+			stage_name: "user-feedback-1",
+			captured_at: new Date().toISOString(),
+			decision: "approve",
+			text: "decision: approve",
+		};
+		const write = (body: object): void => writeFileSync(feedbackArtifactPath(dir, 1), JSON.stringify(body));
+
+		// The reviewer's probe: a schema-valid top level with empty arrays, over a
+		// `meta` block that approves from a text round. Prose can never approve,
+		// so `toPreviewFeedback` could not have produced this record and the
+		// durable path must not become the way a prose approval gets in.
+		write({ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, source: "text" } });
+		assert.equal(load(), undefined);
+
+		// The outcomes a text round can actually reach still reload, so the fix
+		// rejects the impossible pairing rather than the source.
+		write({
+			decision: "revise",
+			user_notes: ["Fix the hero."],
+			live_changes: [],
+			meta: { ...meta, source: "text", decision: "revise" },
+		});
+		assert.equal(load()?.decision, "revise");
+		write({
+			decision: "revise",
+			user_notes: [],
+			live_changes: [],
+			meta: { ...meta, source: "text", decision: "indeterminate" },
+		});
+		assert.equal(load()?.decision, "indeterminate");
+
+		// The same approving record from a structured round is the one approval
+		// this module can write, and it still loads.
+		write({ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, source: "structured" } });
+		assert.equal(load()?.decision, "approve");
+	});
+
+	test("an artifact no writer could emit never loads (amendment 2 item 1)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
+		tempDirs.push(dir);
+		mkdirSync(join(dir, "feedback"), { recursive: true });
+		const load = () => loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" });
+		const write = (body: object): void => writeFileSync(feedbackArtifactPath(dir, 1), JSON.stringify(body));
+		const meta = {
+			iteration: 1,
+			stage_name: "user-feedback-1",
+			captured_at: new Date().toISOString(),
+			source: "structured",
+			decision: "revise",
+			text: "user_notes: Fix the hero.",
+		};
+		const emittable = { decision: "revise", user_notes: ["Fix the hero."], live_changes: [], meta };
+
+		// The invariant is one check, not a list: whatever the record holds, it
+		// must be exactly what `toArtifact` emits for the value restored from it.
+		// Each of these is a record `persistPreviewFeedback` could not have
+		// written, so none of them is a round's outcome.
+		const nonEmittable: readonly (readonly [string, object])[] = [
+			["meta contradicting the top level", { ...emittable, meta: { ...meta, decision: "approve" } }],
+			["a stray key inside meta", { ...emittable, meta: { ...meta, reviewer: "someone" } }],
+			["a blank note entry", { ...emittable, user_notes: ["Fix the hero.", "   "] }],
+			["an untrimmed note entry", { ...emittable, user_notes: [" Fix the hero. "] }],
+			["an untrimmed live change", { ...emittable, live_changes: ["Accepted variant 2.  "] }],
+			["an empty annotated_snapshot", { ...emittable, annotated_snapshot: "" }],
+			["an untrimmed annotated_snapshot", { ...emittable, annotated_snapshot: " shot.png " }],
+		];
+		for (const [label, body] of nonEmittable) {
+			write(body);
+			assert.equal(load(), undefined, `${label} must not load`);
+		}
+
+		// The positive control: the record a writer does emit loads, and so does
+		// the same value with its keys written in another order — key order is how
+		// a value was written down, not part of the value.
+		write(emittable);
+		assert.equal(load()?.userNotes, "Fix the hero.");
+		write({
+			meta: {
+				text: meta.text,
+				decision: "revise",
+				source: "structured",
+				captured_at: meta.captured_at,
+				stage_name: "user-feedback-1",
+				iteration: 1,
+			},
+			live_changes: [],
+			user_notes: ["Fix the hero."],
+			decision: "revise",
+		});
+		assert.equal(load()?.userNotes, "Fix the hero.");
+
+		// And the bytes `persistPreviewFeedback` actually writes clear the
+		// invariant, so the check cannot be satisfied only by hand-built records.
+		const feedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: {
+				text: "the wrap-up that replaced the report",
+				structured: {
+					decision: "revise",
+					user_notes: ["Fix the hero."],
+					live_changes: ["Accepted variant 2."],
+					annotated_snapshot: "shot.png",
+				},
+			},
+		});
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback });
+		assert.deepEqual(load(), feedback);
 	});
 
 	test("persistPreviewFeedback throws instead of leaving a stale round readable", () => {
