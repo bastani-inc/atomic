@@ -122,7 +122,8 @@ export class ModelRuntime implements Models {
 	private config: ModelConfig;
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
-	private credentialGeneration = 0;
+	private catalogInputsGeneration = 0;
+	private observedModelsFileToken: string | undefined;
 	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
 	private availabilityRefreshSeq = 0;
 	private availabilityErrorSeq = 0;
@@ -426,29 +427,77 @@ export class ModelRuntime implements Models {
 		);
 	}
 	/**
-	 * Count of credential mutations this runtime has applied.
+	 * Monotonic count of changes to any input a catalog refresh reads.
 	 *
-	 * A catalog refresh resolves credentials as it runs, so its result belongs to
-	 * the credential state it started under. Callers that share one in-flight pass
-	 * read this to tell a pass that predates a login, logout, or key change from
-	 * one that can answer for the current credentials.
+	 * `refresh()` reloads models.json, recomposes every provider from it, the
+	 * extension registrations, and the builtin catalog, resolves credentials as
+	 * it runs, and publishes ONE snapshot at the end. So a pass belongs to the
+	 * inputs it started under, and joining a pass across a bump is unsound in
+	 * both directions: the joiner reads models and credentials the user has
+	 * already replaced, and the pass's late publish overwrites the newer state
+	 * with them.
+	 *
+	 * Every mutation source bumps this counter, which is why callers need only
+	 * this one number rather than a growing tuple of per-input keys:
+	 *
+	 * - credential writes — `login`, `logout`, `saveCredential`,
+	 *   `setRuntimeApiKey`, `removeRuntimeApiKey`, an external
+	 *   `reloadCredentials`, and an applied external auth status;
+	 * - provider registrations — `registerProvider`, `registerNativeProvider`,
+	 *   and `unregisterProvider`, through the refresh they schedule;
+	 * - models.json content — provider `baseUrl`, `apiKey`, `api`, headers,
+	 *   model definitions, and overrides, which every pass reloads.
+	 *
+	 * The first two are this runtime's own writes and bump where they happen.
+	 * The third is an external edit nothing here observes, so reading the
+	 * generation samples the file and bumps when its content moved since the
+	 * last sample. That read is synchronous so the answer belongs to the same
+	 * tick as the decision that depends on it, and it hashes content rather
+	 * than trusting an mtime: a same-size rewrite inside one filesystem
+	 * timestamp tick — an edited key, a renamed model — is exactly the change a
+	 * shared pass must not hide.
 	 */
-	getCredentialGeneration(): number {
-		return this.credentialGeneration;
+	getCatalogInputsGeneration(): number {
+		this.observeModelsFile();
+		return this.catalogInputsGeneration;
 	}
 
 	/**
-	 * Record that stored, runtime, or external credentials changed. Every catalog
-	 * pass started before this call answers for credentials that no longer exist.
+	 * Record that an input a catalog refresh reads changed. Every pass started
+	 * before this call answers for inputs that no longer exist.
 	 */
-	private markCredentialsChanged(): void {
-		this.credentialGeneration += 1;
+	private markCatalogInputsChanged(): void {
+		this.catalogInputsGeneration += 1;
+	}
+
+	/** Bump the generation when models.json changed since the last observation. */
+	private observeModelsFile(): void {
+		const token = this.readModelsFileToken();
+		if (this.observedModelsFileToken === token) return;
+		const first = this.observedModelsFileToken === undefined;
+		this.observedModelsFileToken = token;
+		// The first observation is a baseline, not a change: no pass can predate it.
+		if (!first) this.markCatalogInputsChanged();
+	}
+
+	private readModelsFileToken(): string {
+		if (!this.modelsPath) return "none";
+		try {
+			return createHash("sha1")
+				.update(readFileSync(normalizePath(this.modelsPath)))
+				.digest("hex");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			// An absent file is a stable state passes can share; any other read
+			// failure keys on its own code rather than pretending the file is empty.
+			return code === "ENOENT" ? "absent" : `unreadable:${code ?? "unknown"}`;
+		}
 	}
 
 	/** Reload credentials changed by the authoritative isolated engine and update auth status snapshots. */
 	async reloadCredentials(options: { refreshAvailability?: boolean } = {}): Promise<void> {
 		await this.credentials.reload();
-		this.markCredentialsChanged();
+		this.markCatalogInputsChanged();
 		if (options.refreshAvailability === false) {
 			const credentials = await this.credentials.list();
 			for (const credential of credentials) this.externalProviderAuthStatuses.delete(credential.providerId);
@@ -530,7 +579,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(undefined);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.credentials.modify(providerId, async () => credential);
-			this.markCredentialsChanged();
+			this.markCatalogInputsChanged();
 			await this.synchronizeCredentialState(providerId, "saveCredential", credential, async () => {
 				const result = await this.refresh({ providers: [providerId] });
 				this.assertCredentialRefreshSucceeded(providerId, result);
@@ -547,7 +596,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.setRuntimeApiKey(providerId, apiKey);
-			this.markCredentialsChanged();
+			this.markCatalogInputsChanged();
 			await this.synchronizeCredentialState(providerId, "setRuntimeApiKey", { type: "api_key", key: apiKey }, () => {
 				this.snapshot = addRuntimeApiKeyProvider(this.snapshot, providerId);
 			});
@@ -558,7 +607,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.removeRuntimeApiKey(providerId);
-			this.markCredentialsChanged();
+			this.markCatalogInputsChanged();
 			await this.synchronizeCredentialState(providerId, "removeRuntimeApiKey", undefined, async () => {
 				const result = await this.refresh({ allowNetwork: this.modelNetworkEnabled, signal });
 				this.assertCredentialRefreshSucceeded(providerId, result, signal);
@@ -587,7 +636,7 @@ export class ModelRuntime implements Models {
 
 	/** Apply authoritative auth state returned by an isolated engine mutation. */
 	applyExternalProviderAuthStatus(providerId: string, status: AuthStatus): void {
-		this.markCredentialsChanged();
+		this.markCatalogInputsChanged();
 		this.snapshotGeneration += 1;
 		const remainingAuth =
 			status.configured && status.source === "environment"
@@ -637,7 +686,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(interaction.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			const credential = await this.models.login(providerId, type, { ...interaction, signal });
-			this.markCredentialsChanged();
+			this.markCatalogInputsChanged();
 			await this.synchronizeCredentialState(providerId, "login", credential, () => {
 				// Credential acquisition and persistence are the login transaction. Publish
 				// the provider against the current snapshot immediately; catalog restoration,
@@ -655,7 +704,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(options.signal);
 		const logoutGeneration = await this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.models.logout(providerId, { signal });
-			this.markCredentialsChanged();
+			this.markCatalogInputsChanged();
 			let generation = 0;
 			await this.synchronizeCredentialState(providerId, "logout", undefined, () => {
 				// Reset credential-dependent compatibility projections, then publish the
@@ -681,38 +730,6 @@ export class ModelRuntime implements Models {
 	isNetworkRefreshEnabled(): boolean {
 		return this.modelNetworkEnabled;
 	}
-
-	/**
-	 * Identity of the models.json content the next refresh would load.
-	 *
-	 * Every refresh reloads models.json and applies it, so a pass that started
-	 * before that file changed answers for provider `apiKey`s and model
-	 * definitions that no longer exist. Callers that share one in-flight pass
-	 * read this to tell a pass that predates an edit from one that can answer
-	 * for the current file, which is what keeps hot reload honest when a shared
-	 * refresh is already running.
-	 *
-	 * The token is the file's content hash, read synchronously so the answer
-	 * belongs to the same tick as the decision to share. An mtime is not enough:
-	 * a same-size rewrite inside one filesystem timestamp tick — an edited key or
-	 * a renamed model — is exactly the change a shared pass must not hide, and
-	 * models.json is a small user-authored file that `runRefresh` reads in full
-	 * on every pass anyway.
-	 */
-	getModelConfigFingerprint(): string {
-		if (!this.modelsPath) return "none";
-		try {
-			return createHash("sha1")
-				.update(readFileSync(normalizePath(this.modelsPath)))
-				.digest("hex");
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			// An absent file is a stable state a refresh can share; any other read
-			// failure keys on its own code rather than pretending the file is empty.
-			return code === "ENOENT" ? "absent" : `unreadable:${code ?? "unknown"}`;
-		}
-	}
-
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
 		return this.runRefresh(options, ++this.refreshSequence);
 	}
@@ -720,8 +737,13 @@ export class ModelRuntime implements Models {
 	/**
 	 * A registration's offline catalog pass must not publish after a newer refresh
 	 * that resolves configured credentials.
+	 *
+	 * The registration is also a catalog-input change: it adds, replaces, or drops
+	 * a provider every later pass composes from, so no pass that predates it can
+	 * answer for the provider set a caller now sees.
 	 */
 	private scheduleRegistrationRefresh(): void {
+		this.markCatalogInputsChanged();
 		const sequence = ++this.refreshSequence;
 		void this.runRefresh({ allowNetwork: false }, sequence, true);
 	}

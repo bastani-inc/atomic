@@ -10,8 +10,7 @@ interface Harness {
 	modelRuntime: {
 		refresh: ReturnType<typeof vi.fn>;
 		isNetworkRefreshEnabled: () => boolean;
-		getCredentialGeneration: () => number;
-		getModelConfigFingerprint: () => string;
+		getCatalogInputsGeneration: () => number;
 	};
 	refreshSignals: AbortSignal[];
 	refreshCalls: () => number;
@@ -28,8 +27,7 @@ function createStalledHarness(): Harness {
 	const modelRuntime = {
 		refresh,
 		isNetworkRefreshEnabled: () => true,
-		getCredentialGeneration: () => 0,
-		getModelConfigFingerprint: () => "models",
+		getCatalogInputsGeneration: () => 0,
 		getAvailableSnapshot: () => [{ provider: "anthropic" }, { provider: "openai" }],
 	};
 	const providerCounts: number[] = [];

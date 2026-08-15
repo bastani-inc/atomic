@@ -37,8 +37,7 @@ function createMode(
 			modelRuntime: {
 				refresh,
 				getAvailableSnapshot,
-				getCredentialGeneration: () => 0,
-				getModelConfigFingerprint: () => "models",
+				getCatalogInputsGeneration: () => 0,
 			},
 		},
 	};

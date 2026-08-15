@@ -51,8 +51,7 @@ function createHarness(networkEnabled = true): Harness {
 	const modelRuntime = {
 		refresh,
 		isNetworkRefreshEnabled: () => networkEnabled,
-		getCredentialGeneration: () => 0,
-		getModelConfigFingerprint: () => "models",
+		getCatalogInputsGeneration: () => 0,
 		getError: () => undefined,
 		getAvailableSnapshot: () => [model],
 		getModel: () => model,

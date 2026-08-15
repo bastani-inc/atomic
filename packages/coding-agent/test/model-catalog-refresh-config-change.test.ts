@@ -62,6 +62,24 @@ afterEach(() => {
 });
 
 describe("model catalog refresh across a models.json change", () => {
+	it("counts an external models.json edit as a catalog-input change", async () => {
+		const modelsPath = createModelsPath();
+		writeModels(modelsPath, "old-key", "old-model");
+		const runtime = await createRuntime(modelsPath);
+		const start = runtime.getCatalogInputsGeneration();
+
+		// Nothing in the runtime writes this file, so the generation samples it. A
+		// same-length rewrite is the case an mtime or a size would miss.
+		expect(runtime.getCatalogInputsGeneration()).toBe(start);
+		writeModels(modelsPath, "new-key", "new-model");
+		const afterEdit = runtime.getCatalogInputsGeneration();
+		expect(afterEdit).toBeGreaterThan(start);
+
+		// Rewriting the same content is not a change, so repeated reads keep sharing.
+		writeModels(modelsPath, "new-key", "new-model");
+		expect(runtime.getCatalogInputsGeneration()).toBe(afterEdit);
+	});
+
 	it("does not answer a post-edit request with the pass that loaded the old models.json", async () => {
 		const modelsPath = createModelsPath();
 		writeModels(modelsPath, "old-key", "old-model");

@@ -2,10 +2,7 @@ import type { ModelsRefreshOptions, ModelsRefreshResult } from "@earendil-works/
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 
-type ModelCatalogRuntime = Pick<
-	ModelRuntime,
-	"refresh" | "isNetworkRefreshEnabled" | "getCredentialGeneration" | "getModelConfigFingerprint"
->;
+type ModelCatalogRuntime = Pick<ModelRuntime, "refresh" | "isNetworkRefreshEnabled" | "getCatalogInputsGeneration">;
 
 /**
  * The whole-catalog options interactive refreshes vary. `providers` and `force`
@@ -26,29 +23,28 @@ interface ActiveModelCatalogRefresh {
 }
 
 /**
- * Key on the policy the runtime will actually apply, not on how the caller spelled
+ * A key names WHICH work a caller is asking for, plus WHEN the inputs that work
+ * reads last changed. Both halves are needed and neither grows a third term.
+ *
+ * Which: the policy the runtime will actually apply, not how the caller spelled
  * it. Startup asks for `allowNetwork: true` while the `/model` selector omits the
  * option and lets the runtime decide; on an online runtime those are one pass, and
  * keying the spelling started two. An explicit value that disagrees with the
  * runtime's own policy is still different work and still keys apart.
  *
- * The credential generation is part of the key because a catalog pass resolves
- * credentials as it runs. A refresh started before an API-key login answers for
- * credentials that no longer exist, and Atomic's login path deliberately leaves
- * the post-login catalog refresh to the selector (`interactive-auth-login.ts`).
- * Without the generation the selector joined the pre-login pass and showed no
- * models for the provider the user had just authenticated.
- *
- * The models.json fingerprint is part of the key for the same reason in the
- * other direction: every pass reloads that file and applies it, so a pass that
- * started before an edit answers with the provider keys and model definitions
- * the user just replaced. Without it, a `/model` picker opened after an edit
- * joined the older pass and the edit did not take effect until a third refresh,
- * silently revoking the hot reload `model-registry-hot-reload.test.ts` states.
+ * When: `ModelRuntime.getCatalogInputsGeneration()` — one monotonic counter over
+ * every input a pass reads (credential writes, provider registrations, and
+ * models.json content; see its doc comment). A pass publishes one snapshot built
+ * from the inputs it started under, so joining across a bump serves the joiner
+ * models and credentials the user already replaced and then overwrites the newer
+ * state with them. Keying on the generation makes a request that arrives after
+ * any such change start its own pass, and it is deliberately ONE number: this
+ * coordinator previously keyed input by input — first the network policy, then
+ * credentials, then models.json — and each round left the next input unkeyed.
  */
 function refreshKey(modelRuntime: ModelCatalogRuntime, options: ModelCatalogRefreshOptions): string {
 	const policy = (options.allowNetwork ?? modelRuntime.isNetworkRefreshEnabled()) ? "network" : "cache";
-	return `${policy}:${modelRuntime.getCredentialGeneration()}:${modelRuntime.getModelConfigFingerprint()}`;
+	return `${policy}:${modelRuntime.getCatalogInputsGeneration()}`;
 }
 
 class ModelCatalogRefreshCoordinator {

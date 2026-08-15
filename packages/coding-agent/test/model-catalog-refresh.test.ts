@@ -20,30 +20,31 @@ function successfulRefresh(): ModelsRefreshResult {
 }
 
 /**
- * A runtime stub carrying the network policy an omitted `allowNetwork` resolves to,
- * the credential generation a real `ModelRuntime` bumps on every login, logout,
- * or key change, and the models.json fingerprint a real `ModelRuntime` derives
- * from the file every refresh reloads.
+ * A runtime stub carrying the network policy an omitted `allowNetwork` resolves
+ * to and the single catalog-inputs generation a real `ModelRuntime` bumps for
+ * every input a pass reads. The mutators below stand for the three sources that
+ * bump it — a credential write, a provider registration, and a models.json edit
+ * — and the coordinator cannot tell them apart, which is the point.
  */
 function createRuntime(
 	refresh: (options?: ModelsRefreshOptions) => Promise<ModelsRefreshResult>,
 	networkEnabled = true,
 ) {
-	let credentialGeneration = 0;
-	let modelConfigFingerprint = "models-a";
+	let catalogInputsGeneration = 0;
+	const bump = () => {
+		catalogInputsGeneration += 1;
+	};
 	return {
 		refresh: vi.fn(refresh),
 		isNetworkRefreshEnabled: () => networkEnabled,
-		getCredentialGeneration: () => credentialGeneration,
-		getModelConfigFingerprint: () => modelConfigFingerprint,
-		mutateCredentials: () => {
-			credentialGeneration += 1;
-		},
-		editModelsJson: (fingerprint: string) => {
-			modelConfigFingerprint = fingerprint;
-		},
+		getCatalogInputsGeneration: () => catalogInputsGeneration,
+		mutateCredentials: bump,
+		registerProvider: bump,
+		editModelsJson: bump,
 	};
 }
+
+type CatalogRuntimeStub = ReturnType<typeof createRuntime>;
 
 describe("interactive model catalog refresh", () => {
 	it("shares one runtime refresh between concurrent callers", async () => {
@@ -150,60 +151,43 @@ describe("interactive model catalog refresh", () => {
 		await expect(afterLogin).resolves.toEqual(successfulRefresh());
 	});
 
-	it("still shares one pass between callers on the same credential generation", async () => {
-		const deferred = createDeferred<ModelsRefreshResult>();
-		const runtime = createRuntime(() => deferred.promise);
-		const controller = new AbortController();
-
-		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
-		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
-		expect(runtime.refresh).toHaveBeenCalledOnce();
-
-		runtime.mutateCredentials();
-		const third = refreshModelCatalogs(runtime, { signal: controller.signal });
-		const fourth = refreshModelCatalogs(runtime, { signal: controller.signal });
-		expect(runtime.refresh).toHaveBeenCalledTimes(2);
-
-		deferred.resolve(successfulRefresh());
-		await Promise.all([first, second, third, fourth]);
-	});
-
-	it("refuses to answer a post-models.json-edit request with a pass that predates the edit", async () => {
-		const beforeEditPass = createDeferred<ModelsRefreshResult>();
-		const afterEditPass = createDeferred<ModelsRefreshResult>();
+	it.each([
+		["a credential write", (runtime: CatalogRuntimeStub) => runtime.mutateCredentials()],
+		["a provider registration", (runtime: CatalogRuntimeStub) => runtime.registerProvider()],
+		["a models.json edit", (runtime: CatalogRuntimeStub) => runtime.editModelsJson()],
+	])("refuses to answer a request made after %s with a pass that predates it", async (_label, mutate) => {
+		const beforeChange = createDeferred<ModelsRefreshResult>();
+		const afterChange = createDeferred<ModelsRefreshResult>();
 		let starts = 0;
-		const runtime = createRuntime(() => (starts++ === 0 ? beforeEditPass.promise : afterEditPass.promise));
+		const runtime = createRuntime(() => (starts++ === 0 ? beforeChange.promise : afterChange.promise));
 		const controller = new AbortController();
 
-		// Every pass reloads models.json and applies it, so the in-flight pass carries
-		// the provider key and model list the user just replaced.
-		const beforeEdit = refreshModelCatalogs(runtime, { signal: controller.signal });
-		runtime.editModelsJson("models-b");
-		const afterEdit = refreshModelCatalogs(runtime, { signal: controller.signal });
+		// One counter covers all three, so the coordinator needs no case analysis
+		// and cannot be left blind to the next input someone adds.
+		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
+		mutate(runtime);
+		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
 
 		expect(runtime.refresh).toHaveBeenCalledTimes(2);
 
-		beforeEditPass.resolve(successfulRefresh());
-		afterEditPass.resolve(successfulRefresh());
-		await expect(beforeEdit).resolves.toEqual(successfulRefresh());
-		await expect(afterEdit).resolves.toEqual(successfulRefresh());
+		beforeChange.resolve(successfulRefresh());
+		afterChange.resolve(successfulRefresh());
+		await expect(first).resolves.toEqual(successfulRefresh());
+		await expect(second).resolves.toEqual(successfulRefresh());
 	});
 
-	it("still shares one pass between callers reading the same models.json", async () => {
+	it("still shares one pass while the catalog inputs hold still", async () => {
 		const deferred = createDeferred<ModelsRefreshResult>();
 		const runtime = createRuntime(() => deferred.promise);
 		const controller = new AbortController();
 
 		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
 		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
-		expect(runtime.refresh).toHaveBeenCalledOnce();
-
-		// An edit that restores the previous content is the same work again, so a
-		// caller after it still joins rather than paying for a duplicate pass.
-		runtime.editModelsJson("models-a");
 		const third = refreshModelCatalogs(runtime, { signal: controller.signal });
 		expect(runtime.refresh).toHaveBeenCalledOnce();
 
+		// Only a change bumps the generation, so the startup pass a selector opens
+		// against still answers it — the dedupe this coordinator exists for.
 		deferred.resolve(successfulRefresh());
 		await Promise.all([first, second, third]);
 	});
