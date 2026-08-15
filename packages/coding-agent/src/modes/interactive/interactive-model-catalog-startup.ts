@@ -1,3 +1,4 @@
+import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
 
@@ -18,11 +19,15 @@ export function updateProviderCountFromSnapshot(mode: InteractiveModeBase): void
  * (the caller already gates on offline mode). It joins the shared coordinator
  * so a model selector opened during startup reuses this pass instead of
  * starting a second one.
+ *
+ * The join is bounded by the same deadline every other interactive refresh
+ * uses. An unbounded startup waiter would hold the shared entry open for the
+ * lifetime of a stalled pass, so a selector that timed out and reopened would
+ * rejoin the stall instead of starting a fresh refresh.
  */
 export function refreshCatalogsAfterTuiStartup(mode: InteractiveModeBase): Promise<void> {
-	return refreshModelCatalogs(mode.session.modelRuntime, {
+	return boundedInteractiveModelRefresh((options) => refreshModelCatalogs(mode.session.modelRuntime, options), {
 		allowNetwork: true,
-		signal: new AbortController().signal,
 	})
 		.catch(() => {})
 		.then(() => updateProviderCountFromSnapshot(mode))
