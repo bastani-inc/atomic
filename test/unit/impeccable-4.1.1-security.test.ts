@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -243,7 +252,16 @@ describe("Impeccable 4.1.1 security boundaries", () => {
 		assert.doesNotMatch(hostile, /DO NOT TRUST THIS/u);
 		assert.doesNotMatch(hostile, /reference\/\.\./u);
 		assert.doesNotMatch(hostile, /\u001b|`/u);
-		assert.match(hostile, /'id'\\'';echo PWNED;# /u);
+		// instructions.mjs quotes per platform: POSIX wraps in single quotes and
+		// rewrites each embedded quote as '\'', while win32 wraps in double quotes
+		// and backslash-escapes. Assert the property that matters on both — the
+		// injected `;echo PWNED;#` stays inside one quoted argument and never
+		// becomes a second command — rather than one platform's quoting syntax.
+		assert.match(
+			hostile,
+			process.platform === "win32" ? /"id';echo PWNED;# /u : /'id'\\'';echo PWNED;# /u,
+			`hostile id was not quoted into a single argument. Input: ${hostile}`,
+		);
 		const trusted = instructions.instructionsForEvent(
 			{ type: "generate", id: "safe", action: "audit", count: 1 },
 			{ scriptsPath: "/tmp/skill path" },
@@ -338,6 +356,50 @@ describe("Impeccable 4.1.1 security boundaries", () => {
 			JSON.stringify({ ...manifest, appRoot: link, sessionRoot: join(link, ".impeccable/live") }),
 		);
 		assert.throws(() => roots.resolveLiveRoots(link), /appRoot is invalid|symbolic link|symlink/u);
+	});
+
+	// Upstream 4.1.1 ships an opt-out choice ping and a daily update check.
+	// Atomic removes both. A future sync that takes either file wholesale would
+	// silently restore an outbound call users never agreed to, and nothing else
+	// in the suite would fail, so assert their absence directly.
+	test("no bundled script performs telemetry or update-check network calls", async () => {
+		const seed = readFileSync(join(skillRoot, "scripts/concept-seed.mjs"), "utf8");
+		assert.doesNotMatch(seed, /fetch\([^)]*\/chosen/u, "choice ping POST returned to concept-seed.mjs");
+		// The opt-out names may still appear in the comment explaining the removal,
+		// so match the call rather than the words.
+		assert.doesNotMatch(seed, /process\.env\.IMPECCABLE_NO_TELEMETRY/u, "telemetry opt-out gate returned");
+
+		// pingChosen stays exported so upstream callers keep working, but it must
+		// resolve false without touching the network.
+		const seedModule = (await import(join(skillRoot, "scripts/concept-seed.mjs"))) as {
+			pingChosen: (payload?: Record<string, unknown>) => Promise<boolean>;
+		};
+		const originalFetch = globalThis.fetch;
+		let fetched: string | null = null;
+		// Keep fetch's own shape (it carries a `preconnect` property) and replace
+		// only the call behaviour, so the cast stays honest.
+		const trap: typeof globalThis.fetch = Object.assign(
+			(input: Parameters<typeof globalThis.fetch>[0]) => {
+				fetched = String(input);
+				throw new Error(`unexpected network call to ${fetched}`);
+			},
+			{ preconnect: originalFetch.preconnect },
+		);
+		globalThis.fetch = trap;
+		try {
+			assert.equal(await seedModule.pingChosen({ chosenId: "x", kind: "challenger" }), false);
+			assert.equal(fetched, null, "pingChosen made a network call");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+
+		const context = readFileSync(join(skillRoot, "scripts/context.mjs"), "utf8");
+		const updateBody = context.slice(context.indexOf("async function computeUpdateDirective"));
+		assert.doesNotMatch(
+			updateBody.slice(0, updateBody.indexOf("\n}")),
+			/fetchLatestSkillVersion\(/u,
+			"context.mjs update check reached the network again",
+		);
 	});
 });
 

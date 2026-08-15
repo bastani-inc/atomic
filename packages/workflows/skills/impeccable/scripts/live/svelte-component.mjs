@@ -787,9 +787,16 @@ export function inlineSvelteComponentAccept(manifest, variantNum, paramValues = 
   // alone, and removing it would strip styling from markup this accept never
   // touched. Keeping it risks a visible re-attachment quirk on the accepted
   // region; deleting it breaks the rest of the route. Keep it.
-  const outsideMarkup = [...sourceLines.slice(0, start), ...sourceLines.slice(end + 1)]
-    .join('\n')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, '');
+  // Atomic hardening: a single-pass regex cannot strip `<style>` blocks safely.
+  // One replacement over nested or malformed openers leaves style text behind,
+  // and that text then feeds the class scan below as if it were live markup
+  // (CodeQL js/incomplete-multi-character-sanitization). Reuse the scanner that
+  // already backs parseSvelteComponentFile: it consumes each block to its real
+  // closer and repeats until none remain, so partial matches cannot survive.
+  const outsideMarkup = stripNamedBlocks(
+    [...sourceLines.slice(0, start), ...sourceLines.slice(end + 1)].join('\n'),
+    ['style'],
+  );
   const outsideClasses = new Set();
   {
     const attrRe = /class\s*=\s*(["'])(.*?)\1/g;

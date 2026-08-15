@@ -1054,38 +1054,17 @@ function updateCheckDisabledByConfig(cwd = process.cwd()) {
 }
 
 async function computeUpdateDirective(now = Date.now()) {
-  try {
-    if (process.env.IMPECCABLE_NO_UPDATE_CHECK) return null;
-    if (updateCheckDisabledByConfig()) return null;
-    const localVersion = readLocalSkillVersion();
-    if (!localVersion) return null;
-
-    const cache = readUpdateCache();
-
-    // Poll the network only when the throttle window has elapsed. Stamp
-    // lastCheck even on failure so an offline machine doesn't poll every boot.
-    if (!cache.lastCheck || now - cache.lastCheck > CHECK_INTERVAL_MS) {
-      const latest = await fetchLatestSkillVersion();
-      cache.lastCheck = now;
-      if (latest) cache.latestVersion = latest;
-      writeUpdateCache(cache);
-    }
-
-    const latest = cache.latestVersion;
-    if (!latest || compareSemver(latest, localVersion) <= 0) return null;
-
-    // Anti-nag: surface a given version at most once per RENOTIFY window.
-    if (cache.notifiedVersion === latest && cache.notifiedAt && now - cache.notifiedAt < RENOTIFY_INTERVAL_MS) {
-      return null;
-    }
-    cache.notifiedVersion = latest;
-    cache.notifiedAt = now;
-    writeUpdateCache(cache);
-
-    return buildUpdateDirective(localVersion, latest);
-  } catch {
-    return null;
-  }
+  // Atomic divergence: the upstream update check GETs /api/version once a day
+  // and then tells the user to run `npx impeccable update`. Atomic vendors this
+  // skill, so that command would rewrite files the package owns and the version
+  // is Atomic's to bump, not the user's. The check is therefore removed: it is
+  // an outbound request on every session that can only ever produce advice the
+  // user must not follow. Skill updates ship through Atomic releases.
+  //
+  // Nothing is fetched, cached, or notified. The helpers this used to call are
+  // left in place so a future sync conflicts here rather than silently
+  // restoring the call.
+  return null;
 }
 
 async function cli() {

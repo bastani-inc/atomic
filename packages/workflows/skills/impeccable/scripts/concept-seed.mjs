@@ -74,19 +74,18 @@
  * Challenger data resolves in order: a local catalog directory (the private
  * service repo, evals, and tests set IMPECCABLE_CATALOG_DIR), then the roll
  * API at impeccable.style, then a degraded assignment-only seed when both are
- * unavailable. The anonymous choice ping fires once per resolved attended
- * round on API-dealt rolls: --kind names which card class won (assigned,
- * pick, challenger, canon) so share metrics have a denominator, --chosen
- * carries the catalog id when a dealt challenger won, and --register rides
- * along when the round came from a steered hand. Grounded candidates' names
- * never leave the machine. DO_NOT_TRACK or IMPECCABLE_NO_TELEMETRY disables
- * the ping entirely.
+ * unavailable.
+ *
+ * Atomic ships no choice ping. Upstream 4.1.1 posts one per resolved attended
+ * round; that POST and its DO_NOT_TRACK / IMPECCABLE_NO_TELEMETRY opt-outs are
+ * removed here. The only outbound request this script can make is the roll GET
+ * below, which carries scope, mode, an eight-hex seed key, and a re-roll
+ * counter, and no project files, prompts, code, or conversation context.
  *
  * Env vars:
  *   IMPECCABLE_CONCEPT_SEED — same as --from; for reproducible eval runs.
  *   IMPECCABLE_CATALOG_DIR  — directory holding the four catalog JSON files.
  *   IMPECCABLE_API_URL      — roll API base (default https://impeccable.style/api).
- *   IMPECCABLE_NO_TELEMETRY — disables the choice ping (DO_NOT_TRACK also honored).
  */
 
 import crypto from 'node:crypto';
@@ -185,47 +184,18 @@ async function fetchRoll({ scope, key, mode, grain, platform, reroll }) {
   }
 }
 
-function telemetryDisabled() {
-  return Boolean(process.env.IMPECCABLE_NO_TELEMETRY || process.env.DO_NOT_TRACK);
-}
-
-// Anonymous choice ping: one per resolved attended direction round. kind
-// says which card class won (assigned / pick / challenger / canon), so
-// pick-share and canon-share have a denominator; chosenId rides along only
-// when a dealt catalog world won, and register only when the round came from
-// a steered hand. Grounded candidates' names never leave the machine: they
-// are derived from the user's project, so the ping carries the kind alone.
-// Fire-and-forget; never fails the caller.
-const PING_KINDS = new Set(['assigned', 'pick', 'challenger', 'canon']);
-export async function pingChosen({ chosenId, key, scope, mode, kind, register }) {
-  if (telemetryDisabled()) return false;
-  if (kind && !PING_KINDS.has(kind)) return false;
-  if (register && register !== 'safer' && register !== 'bolder') return false;
-  // Legacy shape: a bare challenger id with no kind stays a valid ping.
-  if (!chosenId && !kind) return false;
-  if ((kind === 'challenger' || !kind) && !chosenId) return false;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), apiBudgetMs());
-  try {
-    await fetch(`${API_BASE}/chosen`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...(chosenId ? { chosenId } : {}),
-        key,
-        scope,
-        mode,
-        ...(kind ? { kind } : {}),
-        ...(register ? { register } : {}),
-      }),
-      signal: controller.signal,
-    });
-    return true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
+// Atomic divergence: upstream 4.1.1 posts an anonymous "choice ping" to
+// /chosen once per resolved attended round, opt-out only through
+// IMPECCABLE_NO_TELEMETRY or DO_NOT_TRACK. Atomic does not ship outbound
+// telemetry that is on by default in a bundled skill, so the ping and its
+// opt-out switches are removed outright rather than defaulted off: a switch
+// users must find is still collection they did not choose.
+//
+// pingChosen is kept as an explicit no-op so an upstream caller that still
+// invokes it degrades to "skipped" instead of throwing, and so the removal
+// stays visible at the call site on the next sync.
+export async function pingChosen() {
+  return false;
 }
 
 const CARD_BASE = process.env.IMPECCABLE_CARD_BASE || 'https://impeccable.style/worlds/cards';
@@ -613,16 +583,11 @@ rivals to your habitual layout, and keep only what makes this product clearer.${
   assignment by deal order, so the dice still choose. Verdicts and donations
   apply between the challengers, weighed against the leader. The pick card
   sits out; the canon stays, as always.`;
-  const telemetryBlock = data.source === 'api'
-    ? `TELEMETRY: after the user's choice resolves, rerun this script once with
-  --kind <assigned|pick|challenger|canon> --from ${key} --scope ${scope}${mode ? ` --mode ${mode}` : ''},
-  adding --chosen <challenger-id> when a dealt challenger won and keeping
-  --register <safer|bolder> when the resolved round came from a steered hand.
-  One ping per resolved attended round. The ping is anonymous, the card kind
-  plus the catalog id when one won; your grounded candidates' names never
-  leave the machine, and the ping is skipped automatically when DO_NOT_TRACK
-  or IMPECCABLE_NO_TELEMETRY is set.\n`
-    : '';
+  // Atomic divergence: upstream emits a TELEMETRY block here instructing the
+  // agent to rerun this script after the user chooses, so the choice reaches
+  // /chosen. With the ping removed the instruction would ask for a rerun that
+  // does nothing, so it is not emitted at all.
+  const telemetryBlock = '';
   const assignedBlock = register === null
     ? `${scope === 'direction' ? `ASSIGNED INDEX: ${buildIndex}` : `DEALT INDICES: ${dealtIndices.join(', ')} (index ${buildIndex} leads)`}
   ${promotedInstruction}
@@ -680,18 +645,12 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const kindIdx = args.indexOf('--kind');
   try {
     if (chosenIdx !== -1 || kindIdx !== -1) {
-      // Choice ping: always exits 0, telemetry must never fail a design flow.
-      // --kind alone pings a non-challenger outcome (assigned/pick/canon);
-      // --chosen alone stays the legacy challenger-win ping.
-      const sent = await pingChosen({
-        chosenId: chosenIdx !== -1 ? args[chosenIdx + 1] : undefined,
-        key: fromIdx !== -1 ? args[fromIdx + 1] : undefined,
-        scope: scopeIdx !== -1 ? args[scopeIdx + 1] : undefined,
-        mode: modeIdx !== -1 ? args[modeIdx + 1] : undefined,
-        kind: kindIdx !== -1 ? args[kindIdx + 1] : undefined,
-        register: registerIdx !== -1 ? args[registerIdx + 1] : undefined,
-      });
-      process.stdout.write(sent ? 'choice recorded\n' : 'choice ping skipped\n');
+      // Atomic divergence: --chosen / --kind used to POST the choice ping.
+      // The flags stay accepted and still exit 0 so an agent following an
+      // older instruction, or a cached reference doc, cannot fail a design
+      // flow; they simply record nothing now.
+      await pingChosen();
+      process.stdout.write('choice ping skipped: telemetry is not shipped in Atomic\n');
     } else {
       // Mechanical init gate: prose alone does not keep a model from dealing
       // before init, and fresh repos produced exactly that skip (the model
