@@ -34,6 +34,12 @@ AGENT_DIR_NAME = "agent"
 ARTIFACTS_DIR_NAME = "artifacts"
 OUTPUT_FILENAME = "atomic.txt"
 MODEL_PATCH_FILENAME = "model.patch"
+TRIAL_LOG_FILENAME = "trial.log"
+TRIAL_CONFIG_FILENAME = "config.json"
+TRIAL_RESULT_FILENAME = "result.json"
+
+JOB_METADATA_DIR_NAMES = frozenset({".critiques"})
+"""Job-level directories that are not trials, named by pier's critique runner."""
 
 STATUS_OK = "ok"
 STATUS_FAILED = "failed"
@@ -44,6 +50,7 @@ REASON_MALFORMED_SESSION_LOG = "malformed-session-jsonl"
 REASON_MISSING_MODEL_PATCH = "missing-model.patch"
 REASON_EMPTY_MODEL_PATCH = "empty-model.patch"
 REASON_MANIFEST_NOT_WRITTEN = "manifest-not-written"
+REASON_UNRESOLVED_VERSION = "unresolved-atomic-version"
 
 _REASON_TEXT: Mapping[str, str] = {
     REASON_MISSING_OUTPUT: "the agent produced no atomic.txt",
@@ -55,6 +62,10 @@ _REASON_TEXT: Mapping[str, str] = {
     REASON_EMPTY_MODEL_PATCH: "artifacts/model.patch is empty: the agent changed nothing",
     REASON_MANIFEST_NOT_WRITTEN: (
         "the run manifest could not be written, so this run cannot be compared with another"
+    ),
+    REASON_UNRESOLVED_VERSION: (
+        "the installed Atomic version could not be resolved, and the requested version is a "
+        "moving tag, so this run cannot be attributed to a build"
     ),
 }
 
@@ -213,11 +224,38 @@ def require_trial_artifacts(trial_dir: Path) -> TrialAudit:
     return audit
 
 
+def _is_trial_root(path: Path) -> bool:
+    """True when ``path`` is a pier trial directory, judged by its own files.
+
+    Pier writes ``config.json`` before setup and ``result.json`` from its
+    finalization path, and logs the whole trial to ``trial.log``. A trial that
+    fails during environment setup therefore exists, and has a result, while
+    owning neither ``agent/`` nor ``artifacts/``.
+
+    ``trial.log`` alone is decisive: the job directory carries ``config.json``
+    and ``result.json`` under the same names but logs to ``job.log``.
+    """
+    if not path.is_dir() or path.name in JOB_METADATA_DIR_NAMES:
+        return False
+    if (path / TRIAL_LOG_FILENAME).is_file():
+        return True
+    return (path / TRIAL_CONFIG_FILENAME).is_file() and (path / TRIAL_RESULT_FILENAME).is_file()
+
+
 def find_trial_dirs(job_dir: Path) -> list[Path]:
     """Return every trial directory under ``job_dir``, in sorted order.
 
-    A trial directory is one that owns an ``agent/`` or ``artifacts/``
-    subdirectory, which is what pier's ``TrialPaths`` creates.
+    Two discoveries, unioned. A trial that owns an ``agent/`` or ``artifacts/``
+    subdirectory is found by that directory, which is what pier's ``TrialPaths``
+    creates and where a multi-step trial's per-step output lives. A trial that
+    owns neither — a setup or environment failure that still wrote a result — is
+    found by its own root-level markers.
+
+    Discovery by markers used to be absent, so such a trial was omitted from the
+    audit entirely: a job holding one healthy trial and one failed one reported
+    ``ok`` and named only the healthy one. A root already containing a
+    discovered directory is not added again, so a multi-step trial is audited at
+    its steps rather than twice.
     """
     if not job_dir.is_dir():
         return []
@@ -226,6 +264,11 @@ def find_trial_dirs(job_dir: Path) -> list[Path]:
         for path in job_dir.rglob(name):
             if path.is_dir():
                 found.add(path.parent)
+    for child in sorted(job_dir.iterdir()):
+        if _is_trial_root(child) and not any(
+            discovered == child or child in discovered.parents for discovered in found
+        ):
+            found.add(child)
     return sorted(found)
 
 

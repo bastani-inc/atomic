@@ -1,200 +1,73 @@
 # Atomic Evals
 
-Utilities and adapters for running Atomic against evaluation suites such as Deep SWE through Pier.
+Run Atomic against the Deep SWE benchmark through [Pier](https://github.com/datacurve-ai/pier).
 
-## Setup from a fresh clone
+Every command runs from this `evals/` directory unless it says otherwise.
+Maintainer material — submodule pinning, the preflight internals, the network
+and artifact contracts, the Harbor path — lives in [DEV_SETUP.md](DEV_SETUP.md).
 
-Every command in this file runs from this `evals/` directory unless it says otherwise. A fresh
-clone has both submodules **uninitialized** — `evals/deep-swe/` and `evals/vendor/pier/` are empty
-directories — and nothing here works until they are checked out.
+## 1. Set up
+
+A fresh clone leaves `evals/deep-swe/` and `evals/vendor/pier/` empty. Nothing
+here works until they are checked out.
 
 ```bash
 # from the repository root
-git submodule sync --recursive        # only needed when a submodule URL changed
 git submodule update --init --recursive
 
 cd evals
 uv sync
-uv run python -c 'import pier, pathlib; print(pathlib.Path(pier.__file__).resolve())'
 uv run pier --help
 ```
 
-The `import pier` line must print `…/evals/vendor/pier/src/pier/__init__.py`. If it prints a path
-under `site-packages`, the editable install is stale — see below.
+If you have cloned before, run `git submodule sync --recursive` first: an
+existing clone keeps the old URL in `.git/config`, and `evals/vendor/pier` moved
+to `bastani-inc/pier`.
 
-`git submodule sync --recursive` matters after a pull that changes a submodule's URL: an existing
-clone keeps the old URL in `.git/config`, and `git submodule update` silently keeps fetching from
-it. `evals/vendor/pier` moved to `bastani-inc/pier` (see [Submodules](#submodules)), so run it once.
+## 2. Check your machine
 
-After any change to a submodule pointer, or any local edit inside `evals/vendor/pier`, refresh the
-editable install:
-
-```bash
-uv sync --reinstall-package datacurve-pier
-```
-
-## Submodules
-
-| Path | Remote | Why |
-|---|---|---|
-| `evals/deep-swe` | [`datacurve-ai/deep-swe`](https://github.com/datacurve-ai/deep-swe) | The Deep SWE task corpus: 113 tasks, each with a `[[verifier.collect]]` hook that writes `/logs/artifacts/model.patch`. |
-| `evals/vendor/pier` | [`bastani-inc/pier`](https://github.com/bastani-inc/pier) | Org-owned fork of [`datacurve-ai/pier`](https://github.com/datacurve-ai/pier), branch `atomic/v0.3.1-extra-forbid`. Pinned to upstream `v0.3.1` plus Atomic commits that (a) set `extra="forbid"` on the task-config models, so a `task.toml` key pier cannot model raises a `ValidationError` naming it instead of being silently dropped, and (b) fail a trial whose declared artifact never arrived, or whose `model.patch` arrived empty, instead of recording it as a completed trial. |
-
-Both are pinned by SHA. Read a pin from the superproject gitlink:
-
-```bash
-git -C .. rev-parse HEAD:evals/deep-swe
-git -C .. rev-parse HEAD:evals/vendor/pier
-```
-
-Do **not** use `git -C evals/deep-swe rev-parse HEAD` to check a pin: in an uninitialized submodule
-it prints the *superproject* SHA rather than failing, so it silently reports the wrong corpus.
-
-## Tests
-
-Run the eval bootstrap and adapter regression tests from this directory:
-
-```bash
-uv run pytest
-```
-
-The shell-level bootstrap tests execute the generated NVM setup command with
-isolated fake NVM installations, so they do not modify the host Node setup.
-
-Tests that need the Deep SWE corpus **skip** with an explicit message when `evals/deep-swe` is
-uninitialized, so the suite passes in a fresh clone for contributors who never touch evals.
-
-## Preflight
-
-Before a long run, check the corpus, the submodules, Docker, and credentials:
+Before a long run, confirm the corpus, submodules, Docker, and credentials:
 
 ```bash
 uv run python -c 'from prerequisites import run_preflight; r = run_preflight(); print(r.describe()); raise SystemExit(0 if r.ok else 1)'
 ```
 
-It parses every `task.toml` with the standard library's `tomllib` (so it still works when
-`vendor/pier` is missing) and asserts 113 tasks, 113 `[[verifier.collect]]` hooks — counted per
-hook, not per task — and zero compose files. It also checks that each submodule's checked-out SHA
-matches its recorded gitlink, so a working tree that drifted off the pin is reported instead of
-silently benchmarked.
+A non-zero exit means the run would not be trustworthy: a mis-shaped corpus, a
+submodule that drifted off its pin or has uncommitted edits, an unreachable
+Docker daemon, or no usable provider credential. Fix what it names before
+running anything below.
 
-A corpus is a **skip** only while `evals/deep-swe` is **uninitialized** — decided from the
-submodule's own state, so a checked-out corpus whose `tasks/` directory is missing fails rather
-than skipping. A corpus that is present but empty or mis-shaped, a submodule that drifted, an
-unreachable Docker daemon, or the absence of any usable provider credential is a **failure**.
+## 3. Export a credential
 
-A credential means a satisfied provider from the adapter's provider map, or an `auth.json` holding
-a valid `api_key`/`oauth` entry — an empty `{}` file does not count. Most providers are satisfied
-by any one of their keys (`anthropic` takes an API key *or* an OAuth token); `amazon-bedrock` needs
-**both** of its keys, so a lone `AWS_ACCESS_KEY_ID` fails and the message names the companion key
-still missing.
-
-The same numbers are checkable by hand:
+Pick one provider and export its key. The adapter forwards it into the sandbox.
 
 ```bash
-find deep-swe/tasks -name task.toml | wc -l                  # 113
-grep -rl '\[\[verifier.collect\]\]' deep-swe/tasks | wc -l   # 113
-grep -rh 'network_mode' deep-swe/tasks --include='*.toml' | sort | uniq -c   # 226 no-network
-find deep-swe/tasks -iname 'docker-compose.y*ml' | wc -l     # 0
-uv run python -c "from pier.models.task.config import VerifierConfig; print('collect' in VerifierConfig.model_fields)"
+export OPENAI_API_KEY="..."          # or
+export ANTHROPIC_API_KEY="..."       # or ANTHROPIC_OAUTH_TOKEN
+export OPENROUTER_API_KEY="..."      # or
+export COPILOT_GITHUB_TOKEN="..."
 ```
 
-## Network policy
+`openai-codex/...` models use OAuth instead: log in on the host so
+`~/.atomic/agent/auth.json` holds an `openai-codex` entry, and the adapter
+copies it into the sandbox.
 
-Every Deep SWE task declares `network_mode = "no-network"` under both `[agent]` and `[verifier]`,
-which pier resolves onto `allow_internet=False`. The agent keeps filtered egress through a Squid
-overlay built from the adapter's allowlist; the verifier gets none.
+The main chat walks a fallback chain — Codex runs go `openai-codex` →
+`openai` → `openrouter`, Anthropic runs go `anthropic` → `openrouter` — so
+exporting the later keys too lets a session survive a rate limit mid-run.
 
-That overlay is only applied while the allowlist is **non-empty**. An empty one silently falls back
-to the no-network overlay, and the model call then fails as a generic connection error that reads
-like a bad credential. The adapter therefore raises `EmptyEgressAllowlistError`
-(`evals/network_policy.py`) instead of returning an empty allowlist. If you see it, pass `--model`
-as `provider/model`.
+## 4. Smoke check (1 task)
 
-## Run status, artifacts, and manifests
-
-Each trial directory carries three things worth reading after a run:
-
-- `agent/atomic-status.json` — the adapter's own verdict. `failed` names a reason such as
-  `missing-atomic.txt` or `malformed-session-jsonl` instead of leaving a dead trial looking
-  complete.
-- `artifacts/model.patch` — written by the task's `[[verifier.collect]]` hook. A missing or empty
-  patch fails the trial **in the run path** on the Pier side: the pinned pier records a
-  `MissingArtifactError` in `TrialResult.exception_info`, so `result.json` reports
-  `n_errored_trials: 1` and lists the trial under `exception_stats`, rather than counting it as an
-  ordinary completed trial. Emptiness is fatal for `model.patch` only — any other declared artifact
-  that arrives empty is recorded as `empty` in the artifacts manifest and left informational,
-  because a task may legitimately declare a log a given run leaves empty. A download that *failed*
-  is fatal whatever it was fetching. On the **Harbor** path this enforcement does not exist; run
-  `audit_job` as shown in the Harbor section and read its exit code instead.
-- `agent/atomic-manifest.json` — run ID, seed, model, resolved Atomic version, deep-swe SHA, and
-  Pier SHA. Both adapters write it, `atomic_pier:Atomic` and `atomic_harbor:Atomic`. Every field
-  records what actually **ran**, not what was asked for:
-  - the two SHAs are the commits checked out inside each submodule, falling back to the gitlink when
-    a submodule is uninitialized, so a run against a drifted working tree records the code it used;
-  - `model` is the provider/model that answered, read from the agent's own stream, falling back to
-    the candidate the session launched on and then to the requested `--model` — a fallback run does
-    not silently record the model it was asked for;
-  - `atomic_version` is what the container reported after install, so a moving `--agent-kwarg
-    version=next` cannot make two different builds compare as equal.
-
-  If the manifest cannot be written, `atomic-status.json` records `manifest-not-written` and the
-  trial fails: a run that cannot be compared with another is not a usable result.
-
-Audit a finished job, and compare two runs:
+Always do this before a full run. It validates credentials, the sandbox install,
+and log capture on a single task:
 
 ```bash
-uv run python -c 'from trial_audit import audit_job; import pathlib; a = audit_job(pathlib.Path("jobs/atomic-smoke")); print(a.describe()); raise SystemExit(0 if a.ok else 1)'
-
-uv run python -c '
-from run_manifest import compare_manifests, read_manifest
-import pathlib
-compare_manifests(read_manifest(pathlib.Path("jobs/run-a/<trial>/agent")), read_manifest(pathlib.Path("jobs/run-b/<trial>/agent")))
-print("comparable")
-'
-```
-
-`compare_manifests` raises `ManifestMismatchError` naming every field two runs disagree on. It
-first raises `IncompleteManifestError` when either side is absent, unreadable, or missing a
-required field, so two empty manifests can never compare as equal. Runs recorded against different
-corpus SHAs, Pier SHAs, models, seeds, or Atomic versions are not comparable — including runs from
-before `network_mode` was honored, which had unrestricted agent internet access.
-
-Harbor has no seed concept at all (`harbor run` has no `--sample-seed`, and its `JobConfig`
-declares no seed field), so a Harbor manifest records `seed: null` and two Harbor runs refuse to
-compare, naming `seed`. An unrecorded seed cannot be proven equal. `pier_sha` in a Harbor manifest
-is the pier checkout this repository pins, not a claim that Harbor used pier.
-
-## Run Pier with Atomic
-
-Run commands from this `evals/` directory. Choose one provider configuration below, then pass `atomic_pier:Atomic` as the agent import path.
-
-Common options:
-
-- `--agent-kwarg version=next` installs `@bastani/atomic@next` inside the sandbox. Omit it for `@latest`, or pass a concrete npm version/tag without the leading `@` (for example `--agent-kwarg version=0.9.3-alpha.1`).
-- `--force-build` rebuilds the task image so the `npm install -g @bastani/atomic@...` layer re-runs. Without it, Docker layer caching reuses a previously installed Atomic even after a new version is published to the tag, so benchmark runs can silently test a stale build. All commands below include it.
-- `--agent-kwarg thinking=xhigh` configures Atomic's reasoning level for models that support it.
-- `--agent-kwarg disallowed_subscriptions=github-copilot` excludes matching providers from copied local subscription auth. The default is empty: every valid local entry remains eligible unless explicitly denied, with no known-provider allowlist. Pass multiple names as a comma-separated string or JSON list.
-- `--n-tasks` and `--include-task-name` control which Deep SWE tasks run.
-
-## Timeouts
-
-Deep SWE tasks set `[agent] timeout_sec = 5400.0` (1.5 hours) in each `task.toml`. Pass `--agent-timeout-multiplier 16` to raise the agent deadline to 1 day (5400 × 16 = 86,400 s) without modifying the tasks; the commands below include it. The multiplier only scales the agent execution timeout — verifier, agent-setup, and environment-build timeouts are unaffected. Pier has no flag to disable the timeout entirely (a multiplier of `0` times out immediately), so a large multiplier is the supported way to run effectively untimed. The same flag works for Harbor runs with `atomic_harbor:Atomic`.
-
-## Smoke check (1 task, full debug logging)
-
-Use this before a long run to validate provider credentials, the sandbox install, and log capture. It runs a single deterministic task serially with Pier's debug logging enabled (`--debug` is Pier's only log-verbosity flag; `--n-concurrent 1` keeps the console output readable, and `--job-name` pins a predictable output directory). `--no-delete` persists the trial containers after completion so you can inspect the sandbox state post-mortem (remove them manually with `docker rm` when done):
-
-```bash
-export COPILOT_GITHUB_TOKEN="..."  # or ANTHROPIC_API_KEY / OPENAI_API_KEY / ANTHROPIC_OAUTH_TOKEN / OPENROUTER_API_KEY="..."
-
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
-  --model MODEL_NAME \
-  --agent-kwarg thinking=THINKING_LEVEL \
-  --agent-kwarg version=VERSION \
-  --agent-kwarg disallowed_subscriptions=github-copilot \
+  --model openai-codex/gpt-5.6-sol \
+  --agent-kwarg thinking=xhigh \
+  --agent-kwarg version=0.9.13 \
   --agent-timeout-multiplier 16 \
   --job-name atomic-smoke \
   --n-tasks 1 \
@@ -205,87 +78,34 @@ uv run pier run \
   --debug
 ```
 
-Inspect the results under `jobs/atomic-smoke/`: each trial directory contains the agent logs (including Atomic's full JSON stream in `agent/atomic.txt` and session transcripts in `agent/atomic-sessions/`), `trajectory.json`, verifier output, and any exception message. Swap the model/provider flags per the Providers section below.
-
-## Full benchmark
-
-Run every Deep SWE task (omit `--n-tasks` to run all tasks in the path):
-
-Add `--n-attempts <k>` for pass@k-style repeats. Sizing `--n-concurrent`: each trial's containers are capped at 2 CPUs / 8 GB but typically peak at 2–4 GB, so give the Docker VM at least **4 GB of memory and 2 CPUs per concurrent trial** (e.g. `--n-concurrent 4` wants a ≥ 16 GB / 8-CPU Docker VM); Pier does not schedule against host capacity, and overcommitting memory surfaces as confusing mid-run OOM kills. A single Copilot token also tends to rate-limit beyond ~4–6 concurrent agents. Interrupted jobs resume where they left off: re-run the same command with the same `--job-name` (the config must match), or use `uv run pier job resume -p jobs/atomic-deep-swe`.
-
-## Run Harbor with Atomic
-
-`atomic_harbor:Atomic` is the Harbor twin of the Pier adapter. Harbor is installed as a transitive
-dependency of pier, so no extra setup is needed. Harbor takes the adapter as `-a/--agent`, not
-`--agent-import-path`, and it has **no `--sample-seed`** — that flag is Pier's.
-
-Two Harbor-specific facts decide the shape of the command below.
-
-**Harbor has no adapter-side allowlist.** Its `BaseInstalledAgent` exposes no `network_allowlist`
-hook, so nothing corresponds to the Squid overlay Pier builds from the Pier adapter's provider
-domains. Harbor resolves each Deep SWE task to a `public` environment baseline with a
-**`no-network` agent-phase override**, and applies that phase policy only around `agent.run()` —
-so the Atomic install still has network, but the agent's provider call has none. The remedy is
-`--allow-agent-host`, which Harbor merges into the agent-phase allowlist (turning the phase policy
-into `allowlist` mode). Pass every provider host the run may reach; the list below mirrors the
-domains the Pier adapter allows.
-
-**Harbor cannot enforce the `model.patch` contract in its run path.** Harbor is a PyPI dependency,
-not a submodule, and offers no post-collect adapter hook, so its `result.json` will report a trial
-as completed even when the patch is missing. Harbor's trial layout is the same
-`trial_dir/{agent,artifacts}` as Pier's, so run the host-side audit as part of the command and
-treat *its* exit code as the verdict.
+Then audit it. The audit's exit code is the verdict, not the console output:
 
 ```bash
-uv run harbor run \
-  -p deep-swe/tasks \
-  -a atomic_harbor:Atomic \
-  -m openai-codex/gpt-5.6-sol \
-  --agent-kwarg thinking=xhigh \
-  --agent-kwarg disallowed_subscriptions=github-copilot \
-  --agent-timeout-multiplier 16 \
-  --job-name atomic-harbor-smoke \
-  --allow-agent-host api.openai.com \
-  --allow-agent-host chatgpt.com \
-  --allow-agent-host auth.openai.com \
-  --allow-agent-host api.anthropic.com \
-  --allow-agent-host console.anthropic.com \
-  --allow-agent-host openrouter.ai \
-  --allow-agent-host api.githubcopilot.com \
-  -l 1 \
-  -n 1 \
-  --force-build \
-  --no-delete \
-  --debug \
-&& uv run python -c 'from trial_audit import audit_job; import pathlib; a = audit_job(pathlib.Path("jobs/atomic-harbor-smoke")); print(a.describe()); raise SystemExit(0 if a.ok else 1)'
+uv run python -c 'from trial_audit import audit_job; import pathlib; a = audit_job(pathlib.Path("jobs/atomic-smoke")); print(a.describe()); raise SystemExit(0 if a.ok else 1)'
 ```
 
-`-l/--n-tasks` bounds the task count and `-k/--n-attempts` sets pass@k repeats. The provider
-configuration below applies unchanged; add an `--allow-agent-host` for any provider host it
-introduces.
+Each trial directory under `jobs/atomic-smoke/` holds the agent's JSON stream
+(`agent/atomic.txt`), session transcripts (`agent/atomic-sessions/`), the patch
+the task collected (`artifacts/model.patch`), and two files worth reading when
+something looks wrong:
 
-> **Unexecuted.** This Harbor command has not been run end to end on this host. The flags and the
-> policy behavior above were read from Harbor 0.16's sources (`trial/trial.py`,
-> `trial/network_policy.py`, `cli/jobs.py`) and from a static parse of a corpus task; the Pier
-> commands in this file are the ones with live evidence behind them.
+- `agent/atomic-status.json` — the adapter's own verdict. `failed` names a
+  reason, such as `missing-atomic.txt`, rather than leaving a dead trial looking
+  complete.
+- `agent/atomic-manifest.json` — run ID, seed, model, Atomic version, and both
+  submodule SHAs. It records what actually ran, so two runs can be compared.
 
-## Providers
+## 5. Full benchmark
 
-### Default (Used for official Atomic Deep SWE run)
-
-Note: the main chat walks a fallback chain. Codex runs go `openai-codex` -> `openai` -> `openrouter`; Anthropic runs go `anthropic` -> `openrouter`. The adapters start the session on the first candidate whose credential is present and write the rest to `settings.fallbackModels` in the sandbox, so the running session advances on rate limits, quota exhaustion, and provider errors.
+Omit `--n-tasks` to run all 113 tasks:
 
 ```bash
-export OPENAI_API_KEY="..."      # first fallback for Codex runs
-export OPENROUTER_API_KEY="..."  # last fallback, relies on OpenAI Codex and Claude Code subscriptions
-
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
   --model openai-codex/gpt-5.6-sol \
   --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=0.9.5 \
-  --agent-kwarg disallowed_subscriptions=github-copilot \
+  --agent-kwarg version=0.9.13 \
   --agent-timeout-multiplier 16 \
   --job-name atomic-deep-swe \
   --sample-seed 0 \
@@ -293,127 +113,50 @@ uv run pier run \
   --force-build
 ```
 
-### GitHub Copilot
+Give the Docker VM **4 GB of memory and 2 CPUs per concurrent trial** —
+`--n-concurrent 4` wants a ≥ 16 GB / 8-CPU VM. Pier does not schedule against
+host capacity, so overcommitting surfaces as mid-run OOM kills. A single Copilot
+token also rate-limits beyond ~4–6 concurrent agents.
 
-Export a Copilot token and use the `github-copilot/` provider prefix:
+An interrupted job resumes: re-run the same command with the same `--job-name`,
+or `uv run pier job resume -p jobs/atomic-deep-swe`.
 
-```bash
-export COPILOT_GITHUB_TOKEN="..."
+## Options worth knowing
 
-uv run pier run \
-  -p deep-swe/tasks \
-  --agent-import-path atomic_pier:Atomic \
-  --model github-copilot/gpt-5.6-sol \
-  --agent-kwarg thinking=xhigh \
-  --agent-kwarg disallowed_subscriptions=github-copilot \
-  --agent-timeout-multiplier 16 \
-  --job-name atomic-deep-swe \
-  --sample-seed 0 \
-  --n-concurrent 4 \
-  --force-build
-```
+| Flag | Why |
+|---|---|
+| `--agent-kwarg version=0.9.13` | Installs that exact npm version in the sandbox. Prefer a pinned, current version over `next` or `latest`: a moving tag cannot be attributed to a build, and the manifest refuses to record one it could not resolve. |
+| `--force-build` | Rebuilds the task image so the `npm install -g @bastani/atomic@…` layer re-runs. Without it Docker reuses a cached install and you silently benchmark a stale build. |
+| `--agent-timeout-multiplier 16` | Tasks set a 1.5 h agent timeout; ×16 makes it a day. Pier cannot disable the timeout, so a large multiplier is how you run effectively untimed. |
+| `--agent-kwarg thinking=xhigh` | Atomic's reasoning level, for models that support it. |
+| `--agent-kwarg disallowed_subscriptions=github-copilot` | Excludes providers from the local subscription auth copied into the sandbox. |
+| `--n-tasks`, `--include-task-name` | Choose which tasks run. |
+| `--n-attempts` | pass@k repeats. |
 
-The Atomic Pier adapter reads `COPILOT_GITHUB_TOKEN` from the Pier process environment and passes it into the sandbox for Atomic. If your launcher does not inherit shell exports, pass it explicitly with `--agent-env COPILOT_GITHUB_TOKEN=...` instead.
+## Troubleshooting
 
-Atomic resolves the Copilot endpoint for `COPILOT_GITHUB_TOKEN` env auth, highest precedence first: `COPILOT_API_TARGET` / `GITHUB_COPILOT_BASE_URL`, then the token's embedded `proxy-ep` segment, then `GITHUB_SERVER_URL` (`<tenant>.ghe.com` → `copilot-api.<tenant>.ghe.com`, other non-`github.com` hosts → `https://api.enterprise.githubcopilot.com`), then the public routing hub `https://api.githubcopilot.com`. Pi's `https://api.individual.githubcopilot.com` default now applies only to OAuth logins, which the sandbox never performs.
+**`Error: Unknown option: --` in `agent/atomic.txt`** — the sandbox installed an
+Atomic older than the CLI the adapter targets, so it read the prompt terminator
+as a flag and started with no task. The trial finishes with an empty
+`model.patch`. Pin a current version.
 
-Pier forwards only provider credential keys into the container, so the routing variables above are not visible to the agent inside the sandbox. For enterprise or GHE runs the adapter therefore keeps a harness-level pin: when either variable below is set it writes a `providers.github-copilot.baseUrl` override into the container's `models.json`, which outranks the agent's own resolution.
+**`EmptyEgressAllowlistError`** — pass `--model` as `provider/model`. The agent
+runs behind a filtered proxy built from the model's provider; with no provider
+the allowlist is empty, and the model call would otherwise fail as a generic
+connection error that reads like a bad credential.
 
-1. `COPILOT_API_TARGET` if provided (host or URL)
-2. `GITHUB_COPILOT_BASE_URL` if provided (host or URL)
+**`421 Misdirected Request` on Copilot** — force the endpoint:
+`--agent-env COPILOT_API_TARGET=api.githubcopilot.com` (GHES:
+`api.enterprise.githubcopilot.com`; GHEC: your tenant's Copilot host).
 
-When neither is set the adapter writes no override, so the container routes the token exactly as a normal Atomic user does — the public hub resolves the plan-specific host server-side. If `GITHUB_SERVER_URL` names a GHE.com tenant, the adapter also adds `copilot-api.<tenant>.ghe.com` to the restricted-egress allowlist so the host Atomic resolves is reachable.
+**A key is exported but the agent cannot authenticate** — your launcher may not
+inherit shell exports. Pass it explicitly: `--agent-env OPENROUTER_API_KEY=...`.
 
-If you see `421 Misdirected Request`, force the target explicitly:
+**`import pier` resolves to `site-packages`** — the editable install is stale:
+`uv sync --reinstall-package datacurve-pier`. Do this after any change to a
+submodule pointer or any local edit under `evals/vendor/pier`.
 
-```bash
-export COPILOT_GITHUB_TOKEN="..."
-
-uv run pier run \
-  -p deep-swe/tasks \
-  --agent-import-path atomic_pier:Atomic \
-  --model github-copilot/gpt-5.6-sol \
-  --agent-kwarg thinking=xhigh \
-  --agent-kwarg disallowed_subscriptions=github-copilot \
-  --agent-timeout-multiplier 16 \
-  --agent-env COPILOT_API_TARGET=api.githubcopilot.com \
-  --job-name atomic-deep-swe \
-  --sample-seed 0 \
-  --n-concurrent 4 \
-  --force-build
-```
-
-For GHES use `COPILOT_API_TARGET=api.enterprise.githubcopilot.com`; for GHEC use the tenant-specific GHE Copilot routing host.
-
-### Anthropic subscription with API-key and OpenRouter fallback
-
-Export `ANTHROPIC_OAUTH_TOKEN` to run Anthropic models through the subscription OAuth path. Atomic cannot tell a subscription apart from an API key — both route through the `anthropic` provider — so `ANTHROPIC_API_KEY` keeps `anthropic` as the primary candidate. Also export `OPENROUTER_API_KEY` if you want a fallback to the equivalent `openrouter/anthropic/...` model when no Anthropic credential is present:
-
-```bash
-export ANTHROPIC_OAUTH_TOKEN="..."
-export ANTHROPIC_API_KEY="..."   # optional; same `anthropic` provider
-export OPENROUTER_API_KEY="..."  # optional fallback
-
-uv run pier run \
-  -p deep-swe/tasks \
-  --agent-import-path atomic_pier:Atomic \
-  --model anthropic/claude-fable-5 \
-  --agent-kwarg thinking=high \
-  --agent-kwarg disallowed_subscriptions=github-copilot \
-  --agent-timeout-multiplier 16 \
-  --job-name atomic-deep-swe \
-  --sample-seed 0 \
-  --n-concurrent 4 \
-  --force-build
-```
-
-The native Anthropic provider uses dash-form model ids such as `claude-opus-4-8`; when falling back, the adapters translate version suffixes to OpenRouter's matching dot-form slugs such as `openrouter/anthropic/claude-opus-4.8`.
-
-### OpenAI Codex subscription with OpenAI and OpenRouter fallback
-
-For `openai-codex/...` models, Atomic uses OAuth credentials stored in the agent auth file rather than an environment variable. Log in on the host so `~/.atomic/agent/auth.json` (or legacy `~/.pi/agent/auth.json`) contains an `openai-codex` entry. The Pier and Harbor adapters merge valid local entries with Atomic taking precedence over legacy Pi, remove denied providers and providers shadowed by explicit environment credentials, then write the remainder to the sandbox user's `~/.atomic/agent/auth.json` with `0600` permissions. Export `OPENAI_API_KEY` and `OPENROUTER_API_KEY` for the `openai` and `openrouter` rungs behind the subscription; each is used only when its key is exported, both as the pre-launch selection when the subscription is missing and as a main-chat `fallbackModels` entry when it is not.
-
-```bash
-export OPENAI_API_KEY="..."      # optional first fallback
-export OPENROUTER_API_KEY="..."  # optional last fallback
-
-uv run pier run \
-  -p deep-swe/tasks \
-  --agent-import-path atomic_pier:Atomic \
-  --model openai-codex/gpt-5.6-sol \
-  --agent-kwarg thinking=xhigh \
-  --agent-kwarg disallowed_subscriptions=github-copilot \
-  --agent-timeout-multiplier 16 \
-  --job-name atomic-deep-swe \
-  --sample-seed 0 \
-  --n-concurrent 4 \
-  --force-build
-```
-
-The adapters do not introduce Codex-specific auth environment variables and do not print copied credential contents.
-
-### OpenRouter
-
-Export an OpenRouter API key and use an OpenRouter model slug after the `openrouter/` provider prefix:
-
-```bash
-export OPENROUTER_API_KEY="..."
-
-uv run pier run \
-  -p deep-swe/tasks \
-  --agent-import-path atomic_pier:Atomic \
-  --model openrouter/openai/gpt-5.6-sol \
-  --agent-kwarg thinking=xhigh \
-  --agent-kwarg disallowed_subscriptions=github-copilot \
-  --agent-timeout-multiplier 16 \
-  --job-name atomic-deep-swe \
-  --sample-seed 0 \
-  --n-concurrent 4 \
-  --force-build
-```
-
-The Atomic Pier adapter reads `OPENROUTER_API_KEY` from the Pier process environment and passes it into the sandbox for Atomic. If your launcher does not inherit shell exports, pass it explicitly with `--agent-env OPENROUTER_API_KEY=...` instead.
-
-The Pier network allowlist automatically includes `openrouter.ai` when the model provider is `openrouter`. To use a custom OpenRouter-compatible endpoint, pass it with `--agent-env OPENROUTER_BASE_URL=...`.
-
-Kimi/Moonshot and ZAI are supported both as top-level `--model` providers and as nested workflow/subagent model assignments: the adapter forwards `KIMI_API_KEY`, `MOONSHOT_API_KEY`, `ZAI_API_KEY`, and `ZAI_CODING_CN_API_KEY` from the Pier process environment into the sandbox (alongside every other supported provider credential), and the restricted-egress allowlist includes their pi-ai base-URL domains (`api.kimi.com`, `api.moonshot.ai`, `api.moonshot.cn`, `api.z.ai`, `open.bigmodel.cn`). A stored `kimi-coding` entry in the local Atomic `auth.json` is copied into the sandbox like any other subscription credential.
+**The preflight fails on a submodule** — `git submodule update --init
+--recursive --force` from the repository root returns both to their pins. It
+reports uncommitted edits too, because results produced by modified code cannot
+be attributed to the pinned SHA.

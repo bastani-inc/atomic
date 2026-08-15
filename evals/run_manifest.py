@@ -9,7 +9,9 @@ The submodule SHAs are the revisions that actually **ran**: the commit checked
 out inside each submodule, falling back to the superproject's gitlink when the
 submodule is uninitialized. A manifest exists to say which corpus and which pier
 produced a number, so a working tree sitting off its pin must be recorded as
-what it is rather than as the pin it drifted from.
+what it is rather than as the pin it drifted from, and a working tree carrying
+uncommitted changes is recorded with a ``-dirty`` suffix so it can never compare
+equal to the clean revision whose SHA it still reports.
 
 Note what is *not* used: ``git -C evals/deep-swe rev-parse HEAD``. In an
 uninitialized submodule that silently prints the *superproject* SHA, which would
@@ -21,6 +23,7 @@ verifies the repository's own toplevel before trusting a HEAD, so it answers
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +33,7 @@ from prerequisites import (
     PIER_SUBMODULE_PATH,
     submodule_pin,
     submodule_worktree_head,
+    submodule_worktree_status,
 )
 
 MANIFEST_FILENAME = "atomic-manifest.json"
@@ -50,6 +54,36 @@ Harbor manifest's ``seed`` is ``None`` and two Harbor runs refuse to compare,
 naming ``seed``. That is the honest answer: an unrecorded seed cannot be proven
 equal.
 """
+
+
+_PINNED_VERSION = re.compile(r"^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?$")
+
+
+def is_pinned_version(spec: str | None) -> bool:
+    """True when ``spec`` names exactly one immutable published build.
+
+    Everything else — ``next``, ``latest``, a dist-tag, a range such as
+    ``^0.9``, or nothing at all — resolves to a different build tomorrow.
+    """
+    return bool(spec) and _PINNED_VERSION.match(spec.strip()) is not None
+
+
+def recorded_atomic_version(resolved: str | None, requested: str | None) -> str | None:
+    """The Atomic version a manifest may record, or ``None`` when it has none.
+
+    ``resolved`` is what the container reported after install; ``requested`` is
+    the ``--version`` spec. Recording ``requested`` unconditionally was the
+    defect: with ``version=next`` and a failed version probe, two runs of
+    different builds both recorded ``next`` and compared as equal. A moving
+    request that could not be resolved therefore records nothing, which makes
+    the manifest incomplete and refuses the comparison rather than inventing one.
+    """
+    if resolved:
+        return resolved
+    if is_pinned_version(requested):
+        return requested
+    return None
+
 
 COMPARABLE_FIELDS: tuple[str, ...] = (
     "model",
@@ -144,16 +178,27 @@ def _read_json(path: Path) -> object | None:
         return None
 
 
-def submodule_revision(path: str, *, repo_root: Path | None = None) -> str | None:
-    """The SHA that actually ran: the checked-out head, else the gitlink pin.
+DIRTY_SUFFIX = "-dirty"
 
-    Preflight reports a drifted working tree as a failure; the manifest has to
-    record what that tree contained, because a number produced by drifted code
-    was not produced by the pin.
+
+def submodule_revision(path: str, *, repo_root: Path | None = None) -> str | None:
+    """The revision that actually ran: the checked-out head, else the gitlink pin.
+
+    Preflight reports a drifted or dirty working tree as a failure; the manifest
+    has to record what that tree contained, because a number produced by
+    modified code was not produced by the pin.
+
+    A dirty tree still reports its clean ``HEAD``, so the SHA alone would let an
+    edited corpus or pier compare equal to an untouched run. Appending
+    :data:`DIRTY_SUFFIX` keeps the SHA legible and makes that comparison fail,
+    which is what a manifest is for.
     """
-    return submodule_worktree_head(path, repo_root=repo_root) or submodule_pin(
-        path, repo_root=repo_root
-    )
+    head = submodule_worktree_head(path, repo_root=repo_root)
+    if head is None:
+        return submodule_pin(path, repo_root=repo_root)
+    if submodule_worktree_status(path, repo_root=repo_root):
+        return f"{head}{DIRTY_SUFFIX}"
+    return head
 
 
 def build_manifest(

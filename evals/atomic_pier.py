@@ -48,6 +48,7 @@ from run_manifest import (
     MANIFEST_FILENAME,
     RunManifest,
     manifest_for_agent_logs_dir,
+    recorded_atomic_version,
     write_manifest,
 )
 from trial_audit import (
@@ -55,6 +56,7 @@ from trial_audit import (
     REASON_MALFORMED_SESSION_LOG,
     REASON_MANIFEST_NOT_WRITTEN,
     REASON_MISSING_OUTPUT,
+    REASON_UNRESOLVED_VERSION,
     AgentRunStatus,
     explain,
     write_agent_status,
@@ -205,6 +207,9 @@ class Atomic(BaseInstalledAgent):
         self._resolved_version: str | None = None
         self._selected_model: str | None = None
         self._manifest_write_failed = False
+        # True when the manifest could not name a build: the version probe
+        # failed and the requested spec is a moving tag.
+        self._version_unresolved = False
         super().__init__(  # pyright: ignore[reportUnknownMemberType]
             logs_dir=logs_dir,
             prompt_template_path=prompt_template_path,
@@ -1171,13 +1176,16 @@ class Atomic(BaseInstalledAgent):
         handlers, where raising would replace the in-flight exception. The
         post-run auditor turns a non-``ok`` status into a failed trial.
 
-        A manifest that could not be persisted is folded in here, on every path,
-        because ``_record_run_manifest`` runs first and cannot report anything
-        itself.
+        A manifest that could not be persisted, or a version that could not be
+        resolved, is folded in here, on every path, because
+        ``_record_run_manifest`` runs first and cannot report anything itself.
         """
         if self._manifest_write_failed and REASON_MANIFEST_NOT_WRITTEN not in reasons:
             reasons = [*reasons, REASON_MANIFEST_NOT_WRITTEN]
             details = {**details, "manifest_path": str(self.logs_dir / MANIFEST_FILENAME)}
+        if self._version_unresolved and REASON_UNRESOLVED_VERSION not in reasons:
+            reasons = [*reasons, REASON_UNRESOLVED_VERSION]
+            details = {**details, "requested_version": self.version()}
         status = AgentRunStatus.from_reasons(reasons, details)
         _ = write_agent_status(self.logs_dir, status)
         context.metadata = {**(context.metadata or {}), "atomic_status": status.to_json()}
@@ -1213,14 +1221,18 @@ class Atomic(BaseInstalledAgent):
 
         Model precedence: what answered (from the stream) > the candidate the
         session launched on > the requested ``--model``. Version precedence: what
-        the container reported after install > the requested spec. Recording the
-        request would let two runs of different builds, or of different fallback
-        candidates, compare as equal.
+        the container reported after install > the requested spec, and only when
+        that spec is pinned. Recording the request would let two runs of
+        different builds, or of different fallback candidates, compare as equal;
+        recording a moving request such as ``next`` after a failed version probe
+        would do exactly that, so it records nothing and the run is incomplete.
         """
+        version = recorded_atomic_version(self._resolved_version, self.version())
+        self._version_unresolved = version is None
         manifest = manifest_for_agent_logs_dir(
             self.logs_dir,
             model=self._observed_model() or self._selected_model or self.model_name,
-            atomic_version=self._resolved_version or self.version(),
+            atomic_version=version,
         )
         written = write_manifest(self.logs_dir, manifest)
         # write_manifest never raises — it also runs on pier's cancel and

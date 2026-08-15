@@ -172,20 +172,24 @@ PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
     "zai": ("ZAI_API_KEY",),
     "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
 }
-"""Canonical provider → credential env keys for the **Pier** run path.
+"""Canonical provider → credential env keys for both run paths.
 
-``atomic_pier.Atomic._PROVIDER_AUTH_ENV_KEYS`` *is* this dict, so the preflight
-and the Pier adapter cannot disagree. The import direction is one-way — the
-adapters import this module, so this module must never import an adapter.
+``atomic_pier.Atomic._PROVIDER_AUTH_ENV_KEYS`` *is* this dict, and
+``atomic_harbor.Atomic`` builds its two maps from it, so the preflight and
+both adapters cannot disagree about which providers are supported. The import
+direction is one-way — the adapters import this module, so this module must
+never import an adapter.
 
-``atomic_harbor.Atomic`` keeps its own literal, which diverges in both
-directions: it carries ``huggingface: ("HF_TOKEN",)`` and omits the Kimi,
-Moonshot and ZAI providers. That divergence is deliberate and left alone.
-``huggingface`` is not added here because the Pier adapter's ``_PROVIDER_DOMAINS``
-deliberately disables it under restricted egress (huggingface.co also serves git
-repos and datasets), so admitting the credential would imply an egress rule the
-adapter refuses to grant. The credential preflight exists for the Deep SWE run
-path, which is Pier's.
+Harbor adds one provider it does not share: ``huggingface``. ``huggingface`` is
+not added here because the Pier adapter's ``_PROVIDER_DOMAINS`` deliberately
+disables it under restricted egress (huggingface.co also serves git repos and
+datasets), so admitting the credential would imply an egress rule the adapter
+refuses to grant. Harbor builds no such overlay, so the credential costs it
+nothing.
+
+Harbor used to keep an unrelated literal that omitted the Kimi, Moonshot and
+ZAI providers, which made `evals/README.md`'s promise that provider setup works
+the same on both paths false for exactly those three.
 """
 
 CREDENTIAL_ENV_KEYS: tuple[str, ...] = tuple(
@@ -319,6 +323,31 @@ def submodule_worktree_head(path: str, *, repo_root: Path | None = None) -> str 
     if head.returncode != 0:
         return None
     return head.stdout.strip() or None
+
+
+def submodule_worktree_status(path: str, *, repo_root: Path | None = None) -> str | None:
+    """Return the porcelain working-tree status inside ``path``, or ``None``.
+
+    ``None`` means the question could not be asked — the submodule is
+    uninitialized, or is not its own repository. An empty string means clean;
+    any other string is the verbatim ``git status --porcelain`` output.
+
+    Untracked files count. ``git status`` already honours ``.gitignore``, so
+    build output and virtualenvs stay invisible, while an untracked task file
+    dropped into the corpus or an untracked module added to pier does change
+    what runs and must not be reported as a clean pin.
+    """
+    root = repo_root or repository_root()
+    target = root / path
+    if not target.is_dir() or submodule_worktree_head(path, repo_root=root) is None:
+        return None
+    try:
+        completed = _run(["git", "status", "--porcelain"], cwd=target)
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
 
 
 def is_submodule_initialized(path: str, *, repo_root: Path | None = None) -> bool:
@@ -455,38 +484,69 @@ def check_corpus(
 
 
 def check_submodules(*, repo_root: Path | None = None) -> CheckResult:
-    """Prove the gitlink pin and the checked-out working tree agree.
+    """Prove the gitlink pin, the checked-out commit, and the working tree agree.
 
-    ``FAILED`` when any submodule is checked out at a commit other than its
-    pin — drift the run must not silently benchmark against. ``SKIPPED`` only
-    when nothing drifted and a submodule is genuinely uninitialized, which is a
-    fresh clone. Drift is evaluated **first**: a report that skipped on one
-    uninitialized submodule used to swallow another submodule's drift, and a
-    skip never makes ``PreflightReport.ok`` false.
+    ``FAILED`` when any submodule is checked out at a commit other than its pin,
+    or is at the pin with local modifications — both are code the run must not
+    silently benchmark against while reporting the pinned SHA. ``SKIPPED`` only
+    when nothing drifted, nothing is dirty, and a submodule is genuinely
+    uninitialized, which is a fresh clone. Failures are evaluated **first**: a
+    report that skipped on one uninitialized submodule used to swallow another
+    submodule's drift, and a skip never makes ``PreflightReport.ok`` false.
+
+    A dirty tree is its own failure rather than a variant of drift, because
+    ``HEAD`` still equals the pin: checking only ``HEAD`` let an edited pier or
+    corpus produce results whose manifest compared equal to a clean run.
     """
     root = repo_root or repository_root()
     details: dict[str, object] = {}
     missing: list[str] = []
     drifted: list[str] = []
+    dirty: list[str] = []
     for path in (DEEP_SWE_SUBMODULE_PATH, PIER_SUBMODULE_PATH):
         pin = submodule_pin(path, repo_root=root)
         head = submodule_worktree_head(path, repo_root=root)
-        details[path] = {"pin": pin, "head": head, "initialized": head is not None}
+        status = submodule_worktree_status(path, repo_root=root)
+        entry: dict[str, object] = {
+            "pin": pin,
+            "head": head,
+            "initialized": head is not None,
+            "dirty": bool(status),
+        }
+        if status:
+            entry["status"] = status.splitlines()[:10]
+        details[path] = entry
         if head is None:
             missing.append(path)
-        elif pin is not None and head != pin:
+            continue
+        if pin is not None and head != pin:
             drifted.append(f"{path}: pinned {pin}, checked out {head}")
-    if drifted:
-        message = (
-            "submodule working tree does not match its pin — "
-            + "; ".join(drifted)
-            + ". Run `git submodule update --init --recursive` to return to the pin."
+        elif status:
+            first = status.splitlines()[0].strip()
+            extra = len(status.splitlines()) - 1
+            dirty.append(f"{path}: {first}" + (f" (+{extra} more)" if extra > 0 else ""))
+    if drifted or dirty:
+        parts: list[str] = []
+        if drifted:
+            parts.append(
+                "submodule working tree does not match its pin — " + "; ".join(drifted) + "."
+            )
+        if dirty:
+            parts.append(
+                "submodule working tree has uncommitted changes — "
+                + "; ".join(dirty)
+                + ". Results would be attributed to the pinned SHA that did not run."
+            )
+        parts.append(
+            "Run `git submodule update --init --recursive --force` to return to the pin."
         )
         if missing:
             # Keep the fresh-clone guidance in the same message rather than
             # losing it behind the failure.
-            message += f" Also uninitialized: {', '.join(missing)}."
-        return CheckResult(name="submodules", status=FAILED, message=message, details=details)
+            parts.append(f"Also uninitialized: {', '.join(missing)}.")
+        return CheckResult(
+            name="submodules", status=FAILED, message=" ".join(parts), details=details
+        )
     if missing:
         return CheckResult(
             name="submodules",
@@ -500,7 +560,7 @@ def check_submodules(*, repo_root: Path | None = None) -> CheckResult:
     return CheckResult(
         name="submodules",
         status=OK,
-        message="evals/deep-swe and evals/vendor/pier match their pinned SHAs",
+        message="evals/deep-swe and evals/vendor/pier are clean at their pinned SHAs",
         details=details,
     )
 
