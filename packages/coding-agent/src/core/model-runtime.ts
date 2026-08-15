@@ -640,6 +640,17 @@ export class ModelRuntime implements Models {
 		await this.refreshRemainingAuthAfterLogout(providerId, logoutGeneration);
 	}
 
+	/**
+	 * The network policy a refresh with an omitted `allowNetwork` resolves to.
+	 *
+	 * Callers that share one in-flight refresh key on the effective policy, so
+	 * they need the same answer `runRefresh` computes rather than a second guess
+	 * at the offline setting this runtime was created under.
+	 */
+	isNetworkRefreshEnabled(): boolean {
+		return this.modelNetworkEnabled;
+	}
+
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
 		return this.runRefresh(options, ++this.refreshSequence);
 	}
@@ -668,7 +679,7 @@ export class ModelRuntime implements Models {
 			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
 			this.updateModelSnapshot();
 		} else this.rebuildProviders();
-		const refreshOptions = { ...options, allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled };
+		const refreshOptions = { ...options, allowNetwork: options.allowNetwork ?? this.isNetworkRefreshEnabled() };
 		const result = await this.models.refresh(refreshOptions);
 		const errors = new Map(result.errors);
 		this.updateModelSnapshot();

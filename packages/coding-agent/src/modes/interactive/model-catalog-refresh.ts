@@ -2,7 +2,7 @@ import type { ModelsRefreshOptions, ModelsRefreshResult } from "@earendil-works/
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 
-type ModelCatalogRuntime = Pick<ModelRuntime, "refresh">;
+type ModelCatalogRuntime = Pick<ModelRuntime, "refresh" | "isNetworkRefreshEnabled">;
 
 /**
  * The whole-catalog options interactive refreshes vary. `providers` and `force`
@@ -23,12 +23,14 @@ interface ActiveModelCatalogRefresh {
 }
 
 /**
- * `allowNetwork: undefined` resolves to the runtime's own network policy, which
- * is not the same request as an explicit `true` or `false`, so it keys apart.
+ * Key on the policy the runtime will actually apply, not on how the caller spelled
+ * it. Startup asks for `allowNetwork: true` while the `/model` selector omits the
+ * option and lets the runtime decide; on an online runtime those are one pass, and
+ * keying the spelling started two. An explicit value that disagrees with the
+ * runtime's own policy is still different work and still keys apart.
  */
-function refreshKey(options: ModelCatalogRefreshOptions): string {
-	if (options.allowNetwork === undefined) return "runtime-default";
-	return options.allowNetwork ? "network" : "cache";
+function refreshKey(modelRuntime: ModelCatalogRuntime, options: ModelCatalogRefreshOptions): string {
+	return (options.allowNetwork ?? modelRuntime.isNetworkRefreshEnabled()) ? "network" : "cache";
 }
 
 class ModelCatalogRefreshCoordinator {
@@ -44,7 +46,7 @@ class ModelCatalogRefreshCoordinator {
 			this.activeByRuntime.set(modelRuntime, byKey);
 		}
 		const active = byKey;
-		const key = refreshKey(options);
+		const key = refreshKey(modelRuntime, options);
 
 		let shared = active.get(key);
 		if (!shared) {

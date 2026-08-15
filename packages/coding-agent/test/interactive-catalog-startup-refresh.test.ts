@@ -19,6 +19,7 @@ function fakeMode(overrides?: { refreshRejects?: boolean }): { mode: Interactive
 					if (overrides?.refreshRejects) throw new Error("network refresh failed");
 					return { aborted: false, errors: new Map() };
 				},
+				isNetworkRefreshEnabled: () => true,
 				getAvailableSnapshot: () => [{ provider: "anthropic" }, { provider: "openai" }, { provider: "openai" }],
 			},
 		},

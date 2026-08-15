@@ -30,6 +30,7 @@ function createSelector(refresh: ModelRuntime["refresh"]): ModelSelectorComponen
 	initTheme("dark");
 	const runtime = {
 		refresh,
+		isNetworkRefreshEnabled: () => true,
 		getError: () => undefined,
 		getAvailableSnapshot: () => [model],
 		getModel: () => model,
