@@ -43,27 +43,13 @@ export function hexBg(hex: string): string {
 
 export const RESET = "\x1b[0m";
 export const BOLD = "\x1b[1m";
-export const UNDERLINE = "\x1b[4m";
-export const INVERSE = "\x1b[7m";
 
 /**
  * Combine a foreground hex + optional background hex into a single
  * styled ANSI run. Pass `bold: true` for the emphasised pill style.
- *
- * `underline` and `inverse` exist for one reason: the fullscreen transcript
- * search paints an ordinary match underlined and the selected one inverse and
- * bold (`interactive-tui.ts` createFullscreenTui, through chalk's SGR 4 and
- * 7). A stage-chat match is meant to be indistinguishable from a transcript
- * match, so it needs the same two attributes and not only the same two colors.
  */
-export function paint(
-	text: string,
-	fg: string,
-	opts: { bg?: string; bold?: boolean; underline?: boolean; inverse?: boolean } = {},
-): string {
+export function paint(text: string, fg: string, opts: { bg?: string; bold?: boolean } = {}): string {
 	const bgSeq = opts.bg ? hexBg(opts.bg) : "";
 	const boldSeq = opts.bold ? BOLD : "";
-	const inverseSeq = opts.inverse ? INVERSE : "";
-	const underlineSeq = opts.underline ? UNDERLINE : "";
-	return `${bgSeq}${hexToAnsi(fg)}${boldSeq}${inverseSeq}${underlineSeq}${text}${RESET}`;
+	return `${bgSeq}${hexToAnsi(fg)}${boldSeq}${text}${RESET}`;
 }

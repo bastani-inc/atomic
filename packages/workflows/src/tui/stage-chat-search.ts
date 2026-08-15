@@ -29,7 +29,7 @@ import {
 } from "@bastani/atomic";
 import { Input, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { paint } from "./color-utils.js";
-import { searchMatchColors } from "./graph-theme.js";
+import { paintSearchMatch, searchMatchAnsi } from "./stage-chat-search-theme.js";
 import { blankLine } from "./stage-chat-view-render-helpers.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
@@ -164,7 +164,9 @@ export interface StageChatSearchBodyLayout {
  * the body so the selected match is on screen.
  *
  * Called once per frame *before* the body is painted, with the rows that frame
- * will give the transcript.
+ * will give the transcript. Once per frame means *every* frame an open search
+ * is on: `transcriptRows` sizes the reveal, never the corpus, so a frame that
+ * can spare no rows at all still re-matches and still reports an honest count.
  *
  * The match run is not cached. A stage that is streaming rewrites the rows it
  * already has — a token appended to the last line changes no row count and no
@@ -208,17 +210,28 @@ export function refreshStageChatSearch(
 	}
 	const lines = ctx.chatHost.renderBodyRows(width, 0, rowCount);
 	const matches = findSearchMatches(lines, search.query);
+	const transcriptRows = Math.max(0, Math.floor(layout.transcriptRows));
 	// A query typed but not yet anchored is anchored *here*, against the rows
 	// this frame measured. Anywhere earlier is a different corpus: opening the
 	// search dropped the streaming tail window, and a live stage grows between
 	// renders, so a row number recorded before this point names a row the
-	// reader is not on.
-	if (search.selectionMode === "query" && search.anchorRow === undefined) {
-		search.anchorRow = predictedFirstVisibleBodyRow(ctx, rowCount, Math.max(1, Math.floor(layout.transcriptRows)));
+	// reader is not on. A frame with no rows to paint cannot name one either.
+	if (search.selectionMode === "query" && search.anchorRow === undefined && transcriptRows > 0) {
+		search.anchorRow = predictedFirstVisibleBodyRow(ctx, rowCount, transcriptRows);
 	}
 	search.selectedIndex = selectMatchIndex(search, matches);
 	search.matches = matches;
 	search.selectedKey = search.selectedIndex >= 0 ? getSearchMatchKey(matches[search.selectedIndex]!) : undefined;
+	if (transcriptRows <= 0) {
+		// Counted, but with nowhere to reveal onto: this frame's body budget is
+		// gone (an overlay shrunk to a few rows, or a callout that ate the
+		// whole body). A pending `query` keeps its mode so the first frame that
+		// paints the transcript anchors and reveals against rows the reader can
+		// actually see; a `next`/`previous` step is applied once here instead,
+		// or every repaint would walk the selection forward on its own.
+		if (search.selectionMode !== "query") search.selectionMode = "retain";
+		return;
+	}
 	search.selectionMode = "retain";
 	if (revealSelection) revealSelectedMatch(ctx, search, rowCount, layout);
 }
@@ -351,10 +364,10 @@ export function highlightStageChatSearchRows(
  * behind it sees one feature rather than two that resemble each other.
  */
 export function stageChatSearchStyles(ctx: StageChatViewContext): TranscriptSearchHighlightStyles {
-	const colors = searchMatchColors(ctx.piTheme, ctx.theme);
+	const colors = searchMatchAnsi(ctx.piTheme, ctx.theme);
 	return {
-		match: (text) => paint(text, colors.text, { bg: colors.bg, underline: true }),
-		currentMatch: (text) => paint(text, colors.text, { bg: colors.bg, bold: true, inverse: true }),
+		match: (text) => paintSearchMatch(text, colors, { underline: true }),
+		currentMatch: (text) => paintSearchMatch(text, colors, { bold: true, inverse: true }),
 	};
 }
 

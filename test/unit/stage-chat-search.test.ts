@@ -26,8 +26,8 @@ import { loadThemeFromContent } from "../../packages/coding-agent/src/modes/inte
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
 import type { PiCustomComponent } from "../../packages/workflows/src/extension/ui-surface.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
-import { searchMatchColors } from "../../packages/workflows/src/tui/graph-theme.js";
 import { stageChatSearchStyles } from "../../packages/workflows/src/tui/stage-chat-search.js";
+import { searchMatchAnsi } from "../../packages/workflows/src/tui/stage-chat-search-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import type { StageChatViewContext } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
 import {
@@ -108,6 +108,8 @@ function makeSearchableChat(
 		piKeybindings?: unknown;
 		leadMessages?: number;
 		messages?: string[];
+		/** Overlay height, for the frames where the body budget is the question. */
+		viewportRows?: number;
 	} = {},
 ): ChatFixture {
 	const store = createStore();
@@ -146,7 +148,7 @@ function makeSearchableChat(
 		onClose: () => {
 			closes += 1;
 		},
-		piTui: makeTestTui(VIEWPORT_ROWS),
+		piTui: makeTestTui(options.viewportRows ?? VIEWPORT_ROWS),
 		piTheme: options.piTheme,
 		piKeybindings: options.piKeybindings ?? new KeybindingsManager({}),
 		stageUiBroker: broker,
@@ -335,6 +337,23 @@ function type(view: StageChatView, text: string): void {
 	for (const character of text) view.handleInput(character);
 }
 
+/**
+ * Rows of the stage transcript this frame actually painted, counted by a marker
+ * only a transcript row can carry. Zero means the body budget is gone, which is
+ * the whole point of the two tests that use it: matching is owed to the reader
+ * on those frames too.
+ */
+function transcriptRowsPainted(chat: ChatFixture, marker: RegExp): number {
+	return chat.render().filter((line) => marker.test(plain(line))).length;
+}
+
+/** The open find box's own state, for the counts the bar renders from. */
+function searchState(chat: ChatFixture): NonNullable<StageChatViewContext["search"]> {
+	const search = (chat.view as unknown as StageChatViewContext).search;
+	assert.ok(search, "the find box must be open");
+	return search;
+}
+
 describe("stage chat search", () => {
 	/**
 	 * `TuiAltScreen.handleViewportInput` matches `tui.altScreen.search` before
@@ -419,6 +438,60 @@ describe("stage chat search", () => {
 	});
 
 	/**
+	 * §5.5's corpus is the whole stage transcript, and the frame plan gives the
+	 * find bar its rows before the body gets any. Shrink the overlay far enough
+	 * — eight rows is a real terminal after a window drag — and the body budget
+	 * reaches zero: the transcript is not painted, so a refresh that only ran
+	 * alongside a painted transcript never ran at all and the bar reported the
+	 * previous frame's empty array. A reader who could see the match one row
+	 * ago was told `No matches`.
+	 */
+	test("a body squeezed to nothing still counts matches in the whole transcript", () => {
+		const tall = makeSearchableChat();
+		assert.match(tall.visible(), /filler line 80/, "fixture is wrong: a normal frame paints no transcript");
+		assert.doesNotMatch(tall.visible(), needlePattern, "fixture is wrong: the needle starts on screen");
+
+		const squeezed = makeSearchableChat({ viewportRows: 8 });
+		squeezed.view.handleInput(CTRL_SHIFT_F);
+		type(squeezed.view, NEEDLE);
+
+		const frame = squeezed.visible();
+		assert.match(frame, /Find in stage chat/, "fixture is wrong: the find bar is not on this frame");
+		assert.equal(
+			transcriptRowsPainted(squeezed, /(?:filler|lead) line \d+/),
+			0,
+			"fixture is wrong: this frame still paints transcript rows",
+		);
+		assert.doesNotMatch(frame, /No matches/, "a match outside every painted row was reported as absent");
+		assert.match(frame, /1\/1/, "the whole-transcript corpus must be counted with no body rows to show it in");
+		assert.equal(searchState(squeezed).matches.length, 1);
+	});
+
+	/**
+	 * The frames above re-match without revealing, because there is nowhere to
+	 * reveal onto. That must not turn into a selection that walks on its own:
+	 * a repaint is not a keystroke, and a pending `next` re-applied every frame
+	 * would step through the matches while the reader touched nothing.
+	 */
+	test("a zero-row frame steps the selection once per key, not once per repaint", () => {
+		const chat = makeSearchableChat({ viewportRows: 8, messages: ["twin alpha", "twin beta"] });
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, "twin");
+		assert.equal(
+			transcriptRowsPainted(chat, /twin (?:alpha|beta)/),
+			0,
+			"fixture is wrong: this frame still paints transcript rows",
+		);
+		assert.match(chat.visible(), /1\/2/);
+
+		chat.view.handleInput(ENTER);
+		assert.match(chat.visible(), /2\/2/, "one searchNext must advance exactly one match");
+		chat.render();
+		chat.render();
+		assert.match(chat.visible(), /2\/2/, "repaints walked the selection with no key pressed");
+	});
+
+	/**
 	 * The highlight is painted with the host theme's `searchMatchBg` /
 	 * `searchMatchText` — the same two tokens the fullscreen transcript search
 	 * uses (L8) — so the two surfaces look alike under any theme.
@@ -468,8 +541,8 @@ describe("stage chat search", () => {
 	test("a real host Theme supplies the search-match colors", () => {
 		const piTheme = themeWithSearchColors("#141516", "#111213");
 		assert.deepEqual(
-			searchMatchColors(piTheme, deriveGraphTheme({})),
-			{ bg: "#141516", text: "#111213" },
+			searchMatchAnsi(piTheme, deriveGraphTheme({})),
+			{ bg: "\x1b[48;2;20;21;22m", text: "\x1b[38;2;17;18;19m" },
 			"a real Theme must reach the highlight, not the overlay fallback",
 		);
 

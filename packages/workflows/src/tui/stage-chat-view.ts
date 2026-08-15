@@ -196,7 +196,9 @@ export class StageChatView implements Component, Focusable {
 		 * here — live, paused, and archived alike — so none of them can accept
 		 * the search key and then answer `No matches` for a row on the screen.
 		 */
+		let searchRefreshed = false;
 		const renderSearchableTranscript = (rows: number, indicatorSharesRows: boolean): string[] => {
+			searchRefreshed = true;
 			refreshStageChatSearch(ctx, w, {
 				transcriptRows: rows,
 				indicatorSharesTranscriptRows: indicatorSharesRows,
@@ -257,6 +259,18 @@ export class StageChatView implements Component, Focusable {
 				? bodyLines.slice(0, bodyBudget - 1)
 				: bodyLines.slice(1, bodyBudget)
 			: bodyLines.slice(0, bodyBudget);
+		// The find bar outranks the body in the frame plan, so a chat squeezed
+		// hard enough — an eight-row overlay, or a paused body whose callout
+		// takes the whole budget — paints a search box above no transcript at
+		// all and never reaches the refresh above. Matching is a property of
+		// the transcript rather than of the rows this frame can spare for it,
+		// so re-match here with a zero row budget: the same whole-transcript
+		// corpus, and no reveal, because there is nowhere to reveal onto. Left
+		// out, the bar reports the previous frame's empty array as `No
+		// matches` for a match that is really there.
+		if (searchActive && !searchRefreshed) {
+			refreshStageChatSearch(ctx, w, { transcriptRows: 0, indicatorSharesTranscriptRows: false });
+		}
 
 		const searchLines = searchActive ? renderStageChatSearchBar(ctx, w).slice(0, plan.searchRows) : [];
 		const lines = [

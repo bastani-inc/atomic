@@ -197,30 +197,22 @@ function parsePiAnsiToHex(ansi: string | undefined): string | undefined {
  * Pi's `Theme.getFgAnsi` throws when the requested key is missing from
  * the current theme; we want feature detection without surfacing the
  * throw to overlay mount.
- *
- * The accessor is called **on the theme**. Pi's `Theme` reads instance
- * fields through `this` (`theme-class.ts:158-171`), so a detached
- * `theme.getFgAnsi` handed around as a plain function throws `TypeError`
- * on every call and lands in the `catch` below — which reads as "this
- * theme has no such token" and quietly returns the fallback palette for
- * a real host theme that has every token.
  */
-function tryPiAccessor(theme: PiRuntimeTheme, accessor: "getFgAnsi" | "getBgAnsi", color: string): string | undefined {
-	const fn = theme[accessor];
+function tryPiAccessor(fn: ((color: string) => string) | undefined, color: string): string | undefined {
 	if (typeof fn !== "function") return undefined;
 	try {
-		return fn.call(theme, color);
+		return fn(color);
 	} catch {
 		return undefined;
 	}
 }
 
 function fgHex(theme: PiRuntimeTheme, color: string): string | undefined {
-	return parsePiAnsiToHex(tryPiAccessor(theme, "getFgAnsi", color));
+	return parsePiAnsiToHex(tryPiAccessor(theme.getFgAnsi, color));
 }
 
 function bgHex(theme: PiRuntimeTheme, color: string): string | undefined {
-	return parsePiAnsiToHex(tryPiAccessor(theme, "getBgAnsi", color));
+	return parsePiAnsiToHex(tryPiAccessor(theme.getBgAnsi, color));
 }
 
 /**
@@ -279,31 +271,4 @@ export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 		}
 	}
 	return deriveGraphTheme(cleaned);
-}
-
-/** Foreground and background a search match is painted with. */
-export interface SearchMatchColors {
-	bg: string;
-	text: string;
-}
-
-/**
- * Search-match colors for a stage chat, read from the host's live Pi theme.
- *
- * `searchMatchBg` and `searchMatchText` are the same two tokens the fullscreen
- * transcript search paints with, so a stage-chat match looks identical to a
- * transcript match under any theme. A theme that omits them resolves them from
- * `selectedBg`/`text` inside Pi's own `Theme`; a host with no theme at all —
- * or a token this terminal reports as a default reset — falls back to the
- * overlay's own palette so the highlight is never invisible.
- */
-export function searchMatchColors(piTheme: unknown, fallback: GraphTheme): SearchMatchColors {
-	if (!piTheme || typeof piTheme !== "object") {
-		return { bg: fallback.selection, text: fallback.text };
-	}
-	const t = piTheme as PiRuntimeTheme;
-	return {
-		bg: bgHex(t, "searchMatchBg") ?? bgHex(t, "selectedBg") ?? fallback.selection,
-		text: fgHex(t, "searchMatchText") ?? fgHex(t, "text") ?? fallback.text,
-	};
 }
