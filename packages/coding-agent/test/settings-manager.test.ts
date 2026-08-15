@@ -454,14 +454,32 @@ describe("SettingsManager", () => {
 
 			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["read", "bash"]);
 
-			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["grep"] }));
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["find"] }));
 
-			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["grep"]);
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["find"]);
 		});
 
 		it("preserves an empty tool list", () => {
 			expect(SettingsManager.inMemory({ defaultTools: [] }).getDefaultTools()).toEqual([]);
 			expect(SettingsManager.inMemory().getDefaultTools()).toBeUndefined();
+		});
+
+		it("reads a non-array value as unset instead of throwing or splitting it", () => {
+			// Settings load unvalidated from disk; a malformed value must read as
+			// unset rather than spread a string into characters or throw.
+			for (const raw of ['"read"', "42", '{"read":true}', "null"]) {
+				writeFileSync(join(agentDir, "settings.json"), `{"defaultTools": ${raw}}`);
+				expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toBeUndefined();
+			}
+		});
+
+		it("drops non-string entries from the list", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ defaultTools: ["read", 42, null, { name: "bash" }] }),
+			);
+
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["read"]);
 		});
 
 		it("returns a copy, not the stored array", () => {

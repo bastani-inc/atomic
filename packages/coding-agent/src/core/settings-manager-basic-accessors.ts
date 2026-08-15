@@ -219,8 +219,12 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getDefaultTools() {
+		// Settings load unvalidated from disk, so guard the shape here the same
+		// way getFallbackModels() does: a non-array (or null) reads as unset,
+		// and non-string entries are dropped rather than passed through to the
+		// initial tool selection.
 		const tools = settingsInternals(this).settings.defaultTools;
-		return tools ? [...tools] : undefined;
+		return Array.isArray(tools) ? tools.filter((tool): tool is string => typeof tool === "string") : undefined;
 	},
 
 	getFallbackModels() {

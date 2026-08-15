@@ -1,7 +1,7 @@
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -52,17 +52,14 @@ const BUILTIN_EXTENSION_TOOLS = ["workflow", "subagent", "intercom", "mcp", "web
 
 type ToolOptions = Pick<CreateAgentSessionOptions, "tools" | "excludedTools" | "noTools" | "customTools">;
 
-async function createSession(
-	// undefined leaves the setting unset; [] requests zero initial built-ins.
-	defaultTools: string[] | undefined,
+async function createSessionFromManager(
+	settingsManager: SettingsManager,
+	cwd: string,
+	agentDir: string,
 	options: ToolOptions = {},
 	extensionFactories: InlineExtension[] = [],
 	builtinPackagePaths: string[] = [],
 ) {
-	const { cwd, agentDir } = sessionRoots("atomic-default-tools-");
-	const settingsManager = SettingsManager.inMemory(
-		defaultTools === undefined ? {} : { defaultTools: [...defaultTools] },
-	);
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir,
@@ -82,6 +79,20 @@ async function createSession(
 		...options,
 	});
 	return session;
+}
+
+async function createSession(
+	// undefined leaves the setting unset; [] requests zero initial built-ins.
+	defaultTools: string[] | undefined,
+	options: ToolOptions = {},
+	extensionFactories: InlineExtension[] = [],
+	builtinPackagePaths: string[] = [],
+) {
+	const { cwd, agentDir } = sessionRoots("atomic-default-tools-");
+	const settingsManager = SettingsManager.inMemory(
+		defaultTools === undefined ? {} : { defaultTools: [...defaultTools] },
+	);
+	return createSessionFromManager(settingsManager, cwd, agentDir, options, extensionFactories, builtinPackagePaths);
 }
 
 function staticExtensionTool(name: string): InlineExtension {
@@ -274,6 +285,30 @@ describe("defaultTools setting", () => {
 			}
 		} finally {
 			emptySession.dispose();
+		}
+	});
+
+	test("an unreadable setting value falls back to the standard built-in defaults", async () => {
+		// Settings load unvalidated from disk. Before the accessor guarded the
+		// stored shape, a string value spread into single characters and silently
+		// produced a zero-tool session, while a number threw out of
+		// createAgentSession itself (the hazard upstream 541045ae exists to
+		// prevent, reached through a malformed input shape).
+		for (const raw of ['"read"', "42", '{"read":true}']) {
+			const { cwd, agentDir } = sessionRoots("atomic-default-tools-invalid-");
+			writeFileSync(join(agentDir, "settings.json"), `{"defaultTools": ${raw}}`);
+			const settingsManager = SettingsManager.create(cwd, agentDir);
+
+			const session = await createSessionFromManager(settingsManager, cwd, agentDir);
+			try {
+				assert.deepEqual(
+					session.getActiveToolNames(),
+					[...defaultToolNames],
+					`expected malformed defaultTools ${raw} to fall back to the standard defaults`,
+				);
+			} finally {
+				session.dispose();
+			}
 		}
 	});
 });
