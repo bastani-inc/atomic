@@ -2,6 +2,15 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import {
+	clearWorkflowLifecycleBridgeEvents,
+	getWorkflowLifecycleBridgeLineages,
+	getWorkflowLifecycleBridgeSnapshot,
+	getWorkflowLifecycleBridgeTerminalLineages,
+	rememberWorkflowLifecycleBridgeEvent,
+	rememberWorkflowLifecycleBridgeLineage,
+} from "../../packages/coding-agent/src/core/workflow-lifecycle-events.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	installWorkflowLifecycleNotifications,
@@ -9,9 +18,11 @@ import {
 	LIFECYCLE_NOTICE_SNIPPET_LIMIT,
 	resetWorkflowLifecycleNotificationState,
 	seedWorkflowLifecycleNotificationState,
+	WORKFLOW_LIFECYCLE_NOTICE_KINDS,
 	type WorkflowLifecycleNoticeDetails,
 	withWorkflowLifecycleNotificationsSuppressed,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+import { killRun } from "../../packages/workflows/src/runs/background/status.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -555,5 +566,746 @@ describe("installWorkflowLifecycleNotifications", () => {
 			sent.map((message) => message.details?.runId),
 			["run-live"],
 		);
+	});
+});
+
+describe("neutral workflow lifecycle bridge", () => {
+	test("publishes top-level current lifecycle states even when chat notices are disabled", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "run-start", "build");
+		store.recordRunStart({
+			id: "nested-run",
+			name: "hidden child",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 2,
+			parentRunId: "run-start",
+		});
+		store.recordStageStart("run-start", runningStage({ id: "approval", name: "approval" }));
+		store.recordStageAwaitingInput("run-start", "approval", true, 3);
+		const eventCountAtWait = events.length;
+		store.recordNotice({ id: "while-awaiting", level: "info", message: "unrelated", createdAt: 3.5 });
+		assert.equal(events.length, eventCountAtWait);
+
+		store.recordStageAwaitingInput("run-start", "approval", false, 4);
+		store.recordRunPaused("run-start", 4, { actor: "user" });
+		store.recordRunResumed("run-start", 5, { actor: "user", source: "run_control" });
+		const eventCountAfterResume = events.length;
+		store.recordNotice({ id: "after-resume", level: "info", message: "unrelated", createdAt: 5.5 });
+		assert.equal(events.length, eventCountAfterResume);
+
+		startRun(store, "run-failed", "failed");
+		store.recordRunEnd("run-failed", "failed", undefined, "failure details");
+		startRun(store, "run-blocked", "blocked");
+		store.recordRunEnd("run-blocked", "blocked", undefined, "blocked details");
+		startRun(store, "run-completed", "completed");
+		store.recordRunEnd("run-completed", "completed", {});
+		startRun(store, "run-quit", "quit");
+		store.recordRunPaused("run-quit", 6, { actor: "user", exitReason: "quit" });
+
+		assert.deepEqual([...new Set(events.map((event) => event.kind))].sort(), [
+			"awaiting_input",
+			"blocked",
+			"completed",
+			"failed",
+			"paused",
+			"quit",
+			"resumed",
+			"started",
+		]);
+		assert.equal(
+			events.some((event) => event.runKey === "nested-run"),
+			false,
+		);
+		assert.equal(events.find((event) => event.kind === "awaiting_input")?.label, "build: approval");
+		assert.equal(
+			events.some((event) => event.label.includes("failure details")),
+			false,
+		);
+		assert.deepEqual(events, [
+			{ runKey: "run-start", kind: "started", label: "build" },
+			{ runKey: "run-start", kind: "awaiting_input", label: "build: approval" },
+			{ runKey: "run-start", kind: "resumed", label: "build" },
+			{ runKey: "run-start", kind: "paused", label: "build: approval" },
+			{ runKey: "run-start", kind: "resumed", label: "build: approval" },
+			{ runKey: "run-failed", kind: "started", label: "failed" },
+			{ runKey: "run-failed", kind: "failed", label: "failed" },
+			{ runKey: "run-blocked", kind: "started", label: "blocked" },
+			{ runKey: "run-blocked", kind: "blocked", label: "blocked" },
+			{ runKey: "run-completed", kind: "started", label: "completed" },
+			{ runKey: "run-completed", kind: "completed", label: "completed" },
+			{ runKey: "run-quit", kind: "started", label: "quit" },
+			{ runKey: "run-quit", kind: "quit", label: "quit" },
+		]);
+	});
+
+	test("seeds a replacement bridge from active and blocked snapshot state", () => {
+		const store = createStore();
+		startRun(store, "active", "active workflow");
+		startRun(store, "failed", "failed workflow");
+		store.recordRunEnd("failed", "failed", undefined, "private failure");
+
+		const first: Array<{ runKey: string; kind: string; label: string }> = [];
+		const unsubscribeFirst = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				first.push(event);
+			},
+		});
+		assert.deepEqual(
+			first.map((event) => event.kind),
+			["started", "failed"],
+		);
+
+		assert.equal(first.find((event) => event.kind === "failed")?.label, "failed workflow");
+		unsubscribeFirst();
+
+		const replacement: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				replacement.push(event);
+			},
+		});
+		assert.deepEqual(
+			replacement.map((event) => event.kind),
+			["started", "failed"],
+		);
+	});
+	test("keeps a fresh-id continuation on one logical bridge contribution", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "failed-source", "deploy");
+		store.recordRunEnd("failed-source", "failed", undefined, "private failure");
+		store.recordRunStart({
+			id: "fresh-continuation",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 3,
+			resumedFromRunId: "failed-source",
+			resumeSource: "run_control",
+			resumeActor: "agent",
+			resumedAt: 3,
+		});
+		store.recordRunEnd("fresh-continuation", "completed", {});
+
+		assert.deepEqual(events, [
+			{ runKey: "failed-source", kind: "started", label: "deploy" },
+			{ runKey: "failed-source", kind: "failed", label: "deploy" },
+			{ runKey: "failed-source", kind: "resumed", label: "deploy" },
+			{ runKey: "failed-source", kind: "completed", label: "deploy" },
+		]);
+	});
+	test("keeps a logical continuation working while any sibling leaf remains live", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "source", "deploy");
+		store.recordRunEnd("source", "failed", undefined, "private failure");
+		store.recordRunStart({
+			id: "branch-one",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 2,
+			resumedFromRunId: "source",
+		});
+		store.recordRunStart({
+			id: "branch-two",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 3,
+			resumedFromRunId: "source",
+		});
+		const beforeBranchCompletion = events.length;
+		store.recordRunEnd("branch-two", "completed", {});
+		assert.deepEqual(events.slice(beforeBranchCompletion), []);
+
+		store.recordRunEnd("branch-one", "completed", {});
+		assert.deepEqual(events.at(-1), { runKey: "source", kind: "completed", label: "deploy" });
+		assert.equal(
+			events.every((event) => event.runKey === "source"),
+			true,
+		);
+	});
+
+	test("does not resurrect a failed predecessor after pruning a completed continuation", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "source", "deploy");
+		store.recordRunEnd("source", "failed", undefined, "private failure");
+		store.recordRunStart({
+			id: "successor",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 2,
+			resumedFromRunId: "source",
+		});
+		store.recordRunEnd("successor", "completed", {});
+		const afterCompletion = events.length;
+
+		store.removeRun("successor");
+		assert.deepEqual(events.slice(afterCompletion), []);
+	});
+
+	test("preserves a completed continuation tombstone across bridge replacement", () => {
+		const store = createStore();
+		const bus = createEventBus();
+		const first: Array<{ runKey: string; kind: string; label: string }> = [];
+		const firstUnsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			rememberBridgeLineage(runId, runKey) {
+				rememberWorkflowLifecycleBridgeLineage(runId, runKey, bus);
+			},
+			publishLifecycleEvent(event) {
+				rememberWorkflowLifecycleBridgeEvent(event, bus);
+				first.push(event);
+			},
+		});
+
+		startRun(store, "source", "deploy");
+		store.recordRunEnd("source", "failed", undefined, "private failure");
+		store.recordRunStart({
+			id: "successor",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 2,
+			resumedFromRunId: "source",
+		});
+		store.recordRunEnd("successor", "completed", {});
+		store.removeRun("successor");
+		firstUnsubscribe();
+		clearWorkflowLifecycleBridgeEvents(bus);
+		assert.deepEqual(getWorkflowLifecycleBridgeSnapshot(bus), []);
+
+		assert.deepEqual(getWorkflowLifecycleBridgeLineages(bus), [
+			{ runId: "source", runKey: "source" },
+			{ runId: "successor", runKey: "source" },
+		]);
+		assert.deepEqual(getWorkflowLifecycleBridgeTerminalLineages(bus), ["source"]);
+
+		const replacement: Array<{ runKey: string; kind: string; label: string }> = [];
+		const replacementUnsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			bridgeLineages: getWorkflowLifecycleBridgeLineages(bus),
+			bridgeTerminalLineages: getWorkflowLifecycleBridgeTerminalLineages(bus),
+			publishLifecycleEvent(event) {
+				replacement.push(event);
+			},
+		});
+
+		assert.deepEqual(replacement, []);
+		replacementUnsubscribe();
+	});
+
+	test("allows a quit run to resume after its dropped contribution is tombstoned", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "quit-resume", "deploy");
+		store.recordRunPaused("quit-resume", 2, { actor: "user", exitReason: "quit" });
+		store.recordRunResumed("quit-resume", 3, { actor: "user", source: "run_control" });
+
+		assert.deepEqual(events, [
+			{ runKey: "quit-resume", kind: "started", label: "deploy" },
+			{ runKey: "quit-resume", kind: "quit", label: "deploy" },
+			{ runKey: "quit-resume", kind: "resumed", label: "deploy" },
+		]);
+	});
+
+	test("keeps a two-hop continuation key after its predecessors leave the snapshot", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "root", "chain");
+		store.recordRunEnd("root", "failed", undefined, "first failure");
+		store.recordRunStart({
+			id: "middle",
+			name: "chain",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 2,
+			resumedFromRunId: "root",
+		});
+		store.recordRunEnd("middle", "failed", undefined, "second failure");
+		store.recordRunStart({
+			id: "leaf",
+			name: "chain",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 3,
+			resumedFromRunId: "middle",
+		});
+		const beforeRemoval = events.length;
+		store.removeRun("root");
+		store.removeRun("middle");
+		store.recordNotice({ id: "unrelated", level: "info", message: "tick", createdAt: 4 });
+		assert.deepEqual(events.slice(beforeRemoval), []);
+		assert.equal(
+			events.every((event) => event.runKey === "root"),
+			true,
+		);
+
+		store.recordRunEnd("leaf", "completed", {});
+		assert.deepEqual(events.at(-1), { runKey: "root", kind: "completed", label: "chain" });
+	});
+
+	test("reconstructs a pruned two-hop continuation under the same key after replacement", () => {
+		const store = createStore();
+		const bus = createEventBus();
+		const first: Array<{ runKey: string; kind: string; label: string }> = [];
+		const firstUnsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			rememberBridgeLineage(runId, runKey) {
+				rememberWorkflowLifecycleBridgeLineage(runId, runKey, bus);
+			},
+			publishLifecycleEvent(event) {
+				rememberWorkflowLifecycleBridgeEvent(event, bus);
+				first.push(event);
+			},
+		});
+
+		startRun(store, "root", "chain");
+		store.recordRunEnd("root", "failed", undefined, "first failure");
+		store.recordRunStart({
+			id: "middle",
+			name: "chain",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 2,
+			resumedFromRunId: "root",
+		});
+		store.recordRunEnd("middle", "failed", undefined, "second failure");
+		store.recordRunStart({
+			id: "leaf",
+			name: "chain",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 3,
+			resumedFromRunId: "middle",
+		});
+		store.removeRun("root");
+		store.removeRun("middle");
+		firstUnsubscribe();
+
+		const replacement: Array<{ runKey: string; kind: string; label: string }> = [];
+		const replacementUnsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			bridgeLineages: getWorkflowLifecycleBridgeLineages(bus),
+			publishLifecycleEvent(event) {
+				replacement.push(event);
+			},
+		});
+
+		assert.equal(replacement.at(-1)?.runKey, "root");
+		store.recordRunEnd("leaf", "completed", {});
+		assert.deepEqual(replacement.at(-1), { runKey: "root", kind: "completed", label: "chain" });
+		assert.equal(
+			first.every((event) => event.runKey === "root"),
+			true,
+		);
+		replacementUnsubscribe();
+	});
+
+	test("drops killed, cancelled, and skipped runs without claiming they completed", () => {
+		for (const status of ["killed", "cancelled", "skipped"] as const) {
+			const store = createStore();
+			const events: Array<{ runKey: string; kind: string; label: string }> = [];
+			installWorkflowLifecycleNotifications({
+				store,
+				config: { enabled: false, notifyOn: [] },
+				publishLifecycleEvent(event) {
+					events.push(event);
+				},
+			});
+
+			startRun(store, status, "cleanup");
+			store.recordRunEnd(status, status, {});
+			assert.deepEqual(
+				events,
+				[
+					{ runKey: status, kind: "started", label: "cleanup" },
+					{ runKey: status, kind: "quit", label: "cleanup" },
+				],
+				`run ended ${status}`,
+			);
+			assert.equal(
+				events.some((event) => event.kind === "completed"),
+				false,
+				`run ended ${status} must never publish completed`,
+			);
+		}
+	});
+
+	test("a stale stage never outranks the terminal status of a stopped run", () => {
+		for (const runStatus of ["killed", "cancelled", "skipped"] as const) {
+			for (const staleStage of ["awaiting_input", "blocked", "paused"] as const) {
+				const scenario = `${runStatus} run with a stale ${staleStage} stage`;
+				const store = createStore();
+				const events: Array<{ runKey: string; kind: string; label: string }> = [];
+				installWorkflowLifecycleNotifications({
+					store,
+					config: { enabled: false, notifyOn: [] },
+					publishLifecycleEvent(event) {
+						events.push(event);
+					},
+				});
+
+				startRun(store, "stale", "deploy");
+				store.recordStageStart("stale", runningStage({ id: "approval", name: "approval" }));
+				if (staleStage === "awaiting_input") store.recordStageAwaitingInput("stale", "approval", true, 2);
+				else if (staleStage === "blocked") store.recordStageBlocked("stale", "approval", "gate");
+				else store.recordStagePaused("stale", "approval", 2);
+				assert.equal(events.at(0)?.kind, "started", scenario);
+
+				// `recordRunEnd` moves the run to its terminal status and leaves every
+				// stage status exactly where it was.
+				const before = events.length;
+				store.recordRunEnd("stale", runStatus, {});
+				assert.deepEqual(events.slice(before), [{ runKey: "stale", kind: "quit", label: "deploy" }], scenario);
+				assert.equal(
+					store.runs()[0]?.stages.at(0)?.status,
+					staleStage,
+					`${scenario}: the stale stage state must still be present`,
+				);
+			}
+		}
+	});
+
+	test("a real killRun drops the contribution of a run waiting on input", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "waiting", "deploy");
+		store.recordStageStart("waiting", runningStage({ id: "approval", name: "approval" }));
+		store.recordStageAwaitingInput("waiting", "approval", true, 2);
+		assert.deepEqual(events.at(-1), { runKey: "waiting", kind: "awaiting_input", label: "deploy: approval" });
+
+		const result = killRun("waiting", { store });
+		assert.equal(result.ok, true);
+		assert.deepEqual(events.at(-1), { runKey: "waiting", kind: "quit", label: "deploy" });
+		assert.equal(
+			events.some((event) => event.kind === "completed"),
+			false,
+		);
+	});
+
+	test("drops a run that leaves the snapshot without claiming it completed", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "vanishes", "deploy");
+		store.removeRun("vanishes");
+		assert.deepEqual(events, [
+			{ runKey: "vanishes", kind: "started", label: "deploy" },
+			{ runKey: "vanishes", kind: "quit", label: "deploy" },
+		]);
+	});
+
+	test("publishes one event when a listener synchronously invalidates the store", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		let reentered = false;
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+				if (reentered || event.kind !== "started") return;
+				reentered = true;
+				// A synchronous listener re-enters `inspect` from inside publish.
+				store.recordNotice({ id: "listener-side-effect", level: "info", message: "tick", createdAt: 2 });
+			},
+		});
+
+		startRun(store, "run-1", "deploy");
+		assert.equal(reentered, true);
+		assert.deepEqual(events, [{ runKey: "run-1", kind: "started", label: "deploy" }]);
+	});
+
+	test("keeps reentrant publishes in order when the store really changed", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		let reentered = false;
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+				if (reentered || event.kind !== "started") return;
+				reentered = true;
+				store.recordStageStart("run-1", runningStage({ id: "approval", name: "approval" }));
+				store.recordStageAwaitingInput("run-1", "approval", true, 3);
+			},
+		});
+
+		startRun(store, "run-1", "deploy");
+		assert.deepEqual(events, [
+			{ runKey: "run-1", kind: "started", label: "deploy" },
+			{ runKey: "run-1", kind: "awaiting_input", label: "deploy: approval" },
+		]);
+	});
+
+	test("reconciles a retained contribution against the successor's own store", () => {
+		const store = createStore();
+		startRun(store, "live", "deploy");
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		const unsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			bridgeContributions: [
+				{ runKey: "live", kind: "started", label: "deploy" },
+				{ runKey: "gone", kind: "started", label: "stale" },
+			],
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		// The live run keeps the contribution it already published; the run this
+		// bridge cannot observe is dropped rather than left behind.
+		assert.deepEqual(events, [{ runKey: "gone", kind: "quit", label: "stale" }]);
+		unsubscribe();
+	});
+
+	test("does not resurrect completed or quit runs while seeding a replacement", () => {
+		const store = createStore();
+		startRun(store, "completed", "completed workflow");
+		store.recordRunEnd("completed", "completed", {});
+		startRun(store, "quit", "quit workflow");
+		store.recordRunPaused("quit", 3, { actor: "user", exitReason: "quit" });
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		const unsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+		assert.deepEqual(events, []);
+		unsubscribe();
+	});
+	test("dedupes bridge state across a notification reinstall that shares lifecycle state", () => {
+		const store = createStore();
+		startRun(store, "run-shared", "shared workflow");
+		const state = createWorkflowLifecycleNotificationState();
+		const first: Array<{ runKey: string; kind: string; label: string }> = [];
+		const unsubscribeFirst = installWorkflowLifecycleNotifications({
+			store,
+			state,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				first.push(event);
+			},
+		});
+		assert.deepEqual(first, [{ runKey: "run-shared", kind: "started", label: "shared workflow" }]);
+		unsubscribeFirst();
+
+		const second: Array<{ runKey: string; kind: string; label: string }> = [];
+		const unsubscribeSecond = installWorkflowLifecycleNotifications({
+			store,
+			state,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				second.push(event);
+			},
+		});
+		assert.deepEqual(second, []);
+		unsubscribeSecond();
+	});
+});
+
+/**
+ * Both consumers read one derivation, so a run's classification is the same on
+ * either side while delivery stays distinct: chat is edge-triggered, filtered
+ * by `notifyOn` and deduped; the bridge is level-triggered and reconciled.
+ */
+describe("chat and bridge share one lifecycle derivation", () => {
+	function installBoth() {
+		const store = createStore();
+		const sent: SentMessage[] = [];
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		const unsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: true, notifyOn: WORKFLOW_LIFECYCLE_NOTICE_KINDS },
+			sendMessage(message) {
+				sent.push(message as SentMessage);
+			},
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+		return { store, sent, events, unsubscribe };
+	}
+
+	const chatKinds = (sent: readonly SentMessage[]): Array<string | undefined> =>
+		sent.map((message) => message.details?.kind);
+
+	test("a killed run with a stale awaiting stage ends on both sides", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		startRun(store, "killed-run", "deploy");
+		store.recordStageStart("killed-run", runningStage({ id: "approval", name: "approval" }));
+		store.recordStageAwaitingInput("killed-run", "approval", true, 2);
+		store.recordRunEnd("killed-run", "killed", {});
+
+		// Chat never invents a terminal notice for a status its vocabulary does
+		// not name, and the bridge does not stay pinned on the stale stage.
+		assert.equal(chatKinds(sent).includes("completed"), false);
+		assert.equal(chatKinds(sent).includes("failed"), false);
+		assert.equal(events.at(-1)?.kind, "quit");
+		unsubscribe();
+	});
+
+	test("a user pause is the same kind on both sides", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		store.recordRunStart({
+			id: "paused-run",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+			origin: "user",
+		});
+		store.recordRunPaused("paused-run", 2, { actor: "user" });
+
+		assert.equal(chatKinds(sent).at(-1), "paused");
+		assert.equal(events.at(-1)?.kind, "paused");
+		unsubscribe();
+	});
+
+	test("a recoverable blocked run is blocked on both sides", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		startRun(store, "blocked-run", "deploy");
+		store.recordRunEnd("blocked-run", "blocked", undefined, "needs a human");
+
+		assert.equal(chatKinds(sent).at(-1), "blocked");
+		assert.equal(events.at(-1)?.kind, "blocked");
+		// The bridge label carries no error detail even though chat's notice does.
+		assert.equal(events.at(-1)?.label, "deploy");
+		assert.equal(sent.at(-1)?.details?.error, "needs a human");
+		unsubscribe();
+	});
+
+	test("a fresh-id continuation stays one contribution while chat reports both runs", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		startRun(store, "source", "deploy");
+		store.recordRunEnd("source", "failed", undefined, "boom");
+		store.recordRunStart({
+			id: "continuation",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 3,
+			resumedFromRunId: "source",
+			resumeSource: "run_control",
+			resumeActor: "user",
+			resumedAt: 3,
+		});
+		store.recordRunEnd("continuation", "completed", {});
+
+		// Chat reports each physical run; the bridge holds one logical key.
+		assert.deepEqual(chatKinds(sent), ["failed", "resumed", "completed"]);
+		assert.equal(
+			events.every((event) => event.runKey === "source"),
+			true,
+		);
+		assert.equal(events.at(-1)?.kind, "completed");
+		unsubscribe();
+	});
+
+	test("a stage change while working republishes nothing and notifies nobody", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		startRun(store, "working-run", "deploy");
+		const afterStart = { chat: sent.length, bridge: events.length };
+
+		store.recordStageStart("working-run", runningStage({ id: "build", name: "build" }));
+		store.recordStageEnd("working-run", runningStage({ id: "build", name: "build", status: "completed" }));
+		store.recordStageStart("working-run", runningStage({ id: "test", name: "test" }));
+
+		assert.equal(sent.length, afterStart.chat);
+		assert.equal(events.length, afterStart.bridge);
+		unsubscribe();
 	});
 });

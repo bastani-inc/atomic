@@ -1,5 +1,3 @@
-import { copyScopedModels } from "../../core/extensions/runner-context.ts";
-import { ModelRegistry } from "../../core/model-registry.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -7,7 +5,6 @@ import {
 	AssistantMessageComponent,
 	type Component,
 	Container,
-	type ExtensionContext,
 	type ExtensionRunner,
 	type ExtensionWidgetOptions,
 	type KeyId,
@@ -27,41 +24,10 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 	const shortcuts = extensionRunner.getShortcuts(this.keybindings.getEffectiveConfig());
 	if (shortcuts.size === 0) return;
 
-	// Create a context for shortcut handlers
-	const createContext = (): ExtensionContext => ({
-		ui: this.createExtensionUIContext(),
-		mode: "tui",
-		hasUI: true,
-		cwd: this.sessionManager.getCwd(),
-		sessionManager: this.sessionManager,
-		modelRegistry: new ModelRegistry(this.session.modelRuntime),
-		model: this.session.model,
-		// Copied through the same helper `createExtensionContext` uses: this
-		// hand-built context reaches the same shortcut handlers, so it owes them
-		// the same guarantee, entries included.
-		scopedModels: copyScopedModels(this.session.scopedModels),
-		isIdle: () => !this.session.isStreaming,
-		isProjectTrusted: () => this.session.settingsManager.isProjectTrusted(),
-		signal: this.session.agent.signal,
-		abort: () => this.session.abort(),
-		hasPendingMessages: () => this.session.pendingMessageCount > 0,
-		shutdown: () => {
-			this.shutdownRequested = true;
-		},
-		getContextUsage: () => this.session.getContextUsage(),
-		compact: (options) => {
-			void (async () => {
-				try {
-					const result = await this.session.compact();
-					options?.onComplete?.(result);
-				} catch (error) {
-					const err = error instanceof Error ? error : new Error(String(error));
-					options?.onError?.(err);
-				}
-			})();
-		},
-		getSystemPrompt: () => this.session.systemPrompt,
-	});
+	// Use the runner's canonical context so shortcut handlers get the same lazy
+	// accessors, stale-session guards, and block-minting UI wrapper as every other
+	// extension entry point.
+	const createContext = () => extensionRunner.createContext();
 
 	// Set up the extension shortcut handler on the default editor
 	this.defaultEditor.onExtensionShortcut = (data: string) => {

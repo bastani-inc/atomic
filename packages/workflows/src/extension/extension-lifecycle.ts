@@ -53,6 +53,23 @@ export interface WorkflowLifecycleRegistrationDeps {
 	intercomControlRef: { current: (() => void) | null };
 }
 
+/**
+ * Whether a session boundary stops this session's workflows.
+ *
+ * None of the four replacement boundaries does. `reload`, `new`, `resume`, and
+ * `fork` all replace the session inside one process that keeps running the
+ * workflows either way, so stopping them destroyed work the replacement was
+ * about to report, and left a pane reading idle in the middle of a live run
+ * (W8). The successor reconstructs what it reports from the runs it can still
+ * observe.
+ *
+ * `startup` and a reason this code does not recognise still clear: neither
+ * names a predecessor that handed anything over.
+ */
+function replacementStopsWorkflows(reason: string | undefined): boolean {
+	return reason !== "reload" && reason !== "fork" && reason !== "new" && reason !== "resume";
+}
+
 export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: WorkflowLifecycleRegistrationDeps): void {
 	if (typeof pi.on !== "function") return;
 	installDbosProcessShutdown();
@@ -72,28 +89,39 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		const messageLabel = reason === "new" ? "Starting a new session" : "Resuming another session";
 		try {
 			const shouldSwitchSession = await confirmSessionSwitch(
-				`${actionLabel} and stop ${inFlightWorkflowCount} in-flight ${workflowNoun}?`,
-				`${messageLabel} will stop/kill ${inFlightWorkflowCount} in-flight ${workflowNoun} and clear workflow history tied to the current session.`,
+				`${actionLabel} while ${inFlightWorkflowCount} in-flight ${workflowNoun} keeps running?`,
+				`${messageLabel} leaves ${inFlightWorkflowCount} in-flight ${workflowNoun} running, and the new session keeps reporting their state. Inspect them there with /workflow status.`,
 			);
 			if (shouldSwitchSession) return undefined;
 		} catch {
 			return undefined;
 		}
 		const cancelledLabel = reason === "new" ? "New session" : "Resume";
-		ctx?.ui?.notify?.(`${cancelledLabel} cancelled; in-flight workflows were left unchanged.`, "info");
+		ctx?.ui?.notify?.(`${cancelledLabel} cancelled; this session stays active.`, "info");
 		return { cancel: true };
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		const reason =
+			typeof event === "object" && event !== null && "reason" in event
+				? (event as { readonly reason?: string }).reason
+				: undefined;
+		// The neutral bridge snapshot is deliberately not reset here. The bridge
+		// installed at the end of this handler reconciles what the replaced
+		// session published against the store it can actually observe, which both
+		// preserves a live run's contribution and drops a dead one.
 		runtimeState.resetWorkflowDiscoveryForSession();
 		deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
 		await runtimeState.ensureWorkflowConfigLoaded();
-		killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
-		store.clear();
+		if (replacementStopsWorkflows(reason)) {
+			killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
+			store.clear();
+		}
 		clearForms();
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
 		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
-		stageControlRegistry.clear();
+		if (!replacementStopsWorkflows(reason)) stageControlRegistry.clearDetached();
+		else stageControlRegistry.clear();
 		// Named workflows publish lifecycle notices through the normal notification path.
 		runtimeState.setNotificationsActive(true);
 		runtimeState.startWorkflowDiscoveryWarmup(() => {
@@ -141,9 +169,11 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			} finally {
 				stageControlRegistry.clear();
 			}
+		} else if (!replacementStopsWorkflows(reason)) {
+			// Preserve live executor stages for the successor while invalidating
+			// detached post-mortem handles that cannot cross the host boundary.
+			stageControlRegistry.clearDetached();
 		} else {
-			// Every non-quit host-session boundary invalidates detached lazy handles
-			// synchronously, before they can attach to the replacement session.
 			stageControlRegistry.clear();
 		}
 		deps.storeWidgetRef.current?.();

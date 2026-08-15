@@ -7,6 +7,7 @@ import type {
 	PiKeybindings,
 	PiTheme,
 } from "../extension/wiring.js";
+import { createSessionScopedSingleton } from "./session-scoped-singleton.js";
 import type { StageInputAnswer, StagePromptAdapter } from "./stage-prompt.js";
 import type { StagePromptAnswerSource, Store } from "./store.js";
 import { store as defaultStore } from "./store.js";
@@ -329,4 +330,19 @@ export async function mountStageCustomUi(
 	return { request, component };
 }
 
-export const stageUiBroker = new StageUiBroker();
+const stageUiBrokerSingleton = createSessionScopedSingleton<StageUiBroker>(
+	"atomic-workflows/stage-ui-broker@1",
+	() => new StageUiBroker(),
+);
+
+/**
+ * Singleton broker for the default runtime. A session-scoped facade, so stage
+ * prompts raised before `/reload` re-evaluated this module can still be
+ * surfaced and answered afterwards.
+ */
+export const stageUiBroker: StageUiBroker = stageUiBrokerSingleton.facade;
+
+/** Re-bind the singleton broker to the host session scope (`pi.events`). */
+export function adoptStageUiBroker(scope: object): void {
+	stageUiBrokerSingleton.adopt(scope);
+}

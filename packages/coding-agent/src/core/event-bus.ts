@@ -31,3 +31,21 @@ export function createEventBus(): EventBusController {
 		},
 	};
 }
+
+const canonicalBusByFacade = new WeakMap<object, object>();
+
+/**
+ * Record that `facade` is a per-extension events surface delegating to the
+ * shared `bus`. The loader creates one facade per extension per load, so
+ * facade identity is unstable across extensions and across `/reload`;
+ * consumers that key state by events-object identity resolve through this
+ * registry to stay on the one bus that outlives every facade.
+ */
+export function registerEventBusFacade(facade: object, bus: object): void {
+	canonicalBusByFacade.set(facade, bus);
+}
+
+/** Resolve an events object to the shared bus it delegates to, when known. */
+export function canonicalEventBusFor(events: object): object {
+	return canonicalBusByFacade.get(events) ?? events;
+}

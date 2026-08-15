@@ -1,8 +1,9 @@
 import type { Provider } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
-import type { EventBus } from "../event-bus.ts";
+import { type EventBus, registerEventBusFacade } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import type { UserBlock, UserBlockReason } from "./block-types.js";
 import {
 	emptyWorkflowResourceProvider,
 	normalizeWorkflowResourceProvider,
@@ -21,6 +22,7 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types.ts";
+import { openUserBlock } from "./user-blocks.js";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
@@ -211,6 +213,11 @@ export function createExtensionAPI(
 			return runtime.getCommandsAfterRegistration?.(extension) ?? runtime.getCommands();
 		},
 
+		awaitUserDecision(label: string, reason: UserBlockReason): UserBlock {
+			runtime.assertActive();
+			return openUserBlock(label, reason);
+		},
+
 		setModel(model) {
 			runtime.assertActive();
 			return runtime.setModel(model);
@@ -252,6 +259,13 @@ export function createExtensionAPI(
 			},
 		},
 	} as ExtensionAPI;
+
+	// Each load builds a fresh per-extension events facade over the one shared
+	// bus. Consumers that key snapshots by events-object identity (the workflow
+	// lifecycle bridge) must resolve every facade to that shared bus, or a
+	// snapshot written through one extension's facade is invisible through
+	// another's and lost across /reload.
+	if (api.events !== undefined) registerEventBusFacade(api.events, eventBus);
 
 	return api;
 }

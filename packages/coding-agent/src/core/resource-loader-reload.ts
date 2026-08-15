@@ -2,6 +2,8 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath } from "../utils/paths.ts";
+import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.js";
+import { withLoadedFileExtensionPathCycle } from "./extensions/loaded-extension-paths.js";
 import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
@@ -21,6 +23,7 @@ import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./reso
 import {
 	loadExtensionFactories,
 	loadFinalExtensionSet,
+	recordLoadedFileExtensionPaths,
 	resolveInheritedExtensionOverlaps,
 } from "./resource-loader-extensions.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
@@ -94,6 +97,10 @@ function addCliMetadata(cliExtensionPaths: ResolvedPaths, metadataByPath: Map<st
 }
 
 export async function loadProjectTrustExtensions(loader: DefaultResourceLoader): Promise<LoadExtensionsResult> {
+	return withLoadedFileExtensionPathCycle(() => loadProjectTrustExtensionsInCycle(loader));
+}
+
+async function loadProjectTrustExtensionsInCycle(loader: DefaultResourceLoader): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
 	state.settingsManager.setProjectTrusted(false);
 	await state.settingsManager.reload();
@@ -110,9 +117,13 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	state.workflowResources = workflowResources;
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
-	const extensionPaths = state.noExtensions
-		? cliEnabledExtensions
-		: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
+	// The builtin Herdr reporter supersedes the installed file integration in a
+	// Herdr pane; see extensions/herdr-file-integration.ts.
+	const extensionPaths = filterSupersededHerdrIntegrationPaths(
+		state.noExtensions
+			? cliEnabledExtensions
+			: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]),
+	);
 	const extensionsResult = await loadExtensionsCached(
 		extensionPaths,
 		state.cwd,
@@ -121,6 +132,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 		undefined,
 		inheritanceSnapshotProvider,
 	);
+	recordLoadedFileExtensionPaths(extensionsResult);
 	const inlineExtensions = await loadExtensionFactories(
 		loader,
 		extensionsResult.runtime,
@@ -134,6 +146,16 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 }
 
 export async function reloadDefaultResourceLoader(
+	loader: DefaultResourceLoader,
+	options?: ResourceLoaderReloadOptions,
+): Promise<void> {
+	// One cycle spans the whole reload, so the pre-trust and final loads share a
+	// single answer and a concurrent reload in the same process cannot overwrite
+	// it between an inline factory's load and its later re-check.
+	return withLoadedFileExtensionPathCycle(() => reloadDefaultResourceLoaderInCycle(loader, options));
+}
+
+async function reloadDefaultResourceLoaderInCycle(
 	loader: DefaultResourceLoader,
 	options?: ResourceLoaderReloadOptions,
 ): Promise<void> {
@@ -250,9 +272,13 @@ export async function reloadDefaultResourceLoader(
 	state.workflowResources = workflowResources;
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 
-	const extensionPaths = state.noExtensions
-		? cliEnabledExtensions
-		: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
+	// The builtin Herdr reporter supersedes the installed file integration in a
+	// Herdr pane; see extensions/herdr-file-integration.ts.
+	const extensionPaths = filterSupersededHerdrIntegrationPaths(
+		state.noExtensions
+			? cliEnabledExtensions
+			: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]),
+	);
 
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	const extensionsResult: LoadExtensionsResult = options?.deferExtensions
@@ -274,6 +300,11 @@ export async function reloadDefaultResourceLoader(
 		}
 	}
 	state.extensionsResult = state.extensionsOverride ? state.extensionsOverride(extensionsResult) : extensionsResult;
+	// Re-record from the final set, not just the pre-inline snapshot. An inline
+	// factory that defers its decision to activation time — the Herdr reporter
+	// stands down for a file-based integration — must see every file extension
+	// this cycle loaded, including any that landed after the factories ran.
+	recordLoadedFileExtensionPaths(state.extensionsResult);
 	applyExtensionSourceInfo(loader, state.extensionsResult.extensions, metadataByPath);
 	resolveInheritedExtensionOverlaps(state.extensionsResult);
 

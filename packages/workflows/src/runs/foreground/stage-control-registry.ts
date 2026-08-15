@@ -26,6 +26,7 @@
  */
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
@@ -190,6 +191,13 @@ export interface StageControlRegistry {
 	forRun(runId: string): readonly StageControlHandle[];
 	/** Build a run-level control aggregate. Cheap; not memoised. */
 	run(runId: string): WorkflowRunControlHandle;
+	/**
+	 * Drop handles detached from run-level control while retaining live executor
+	 * handles that still own workflow execution. Used across process-preserving
+	 * host-session replacements.
+	 */
+	clearDetached(): void;
+
 	/**
 	 * Drop every registration and invoke each handle's optional dispose hook.
 	 * Used on session boundaries to release retained direct chat handles and
@@ -418,6 +426,21 @@ export function createStageControlRegistry(): StageControlRegistry {
 		run(runId: string): WorkflowRunControlHandle {
 			return makeRunHandle(runId);
 		},
+		clearDetached(): void {
+			const detachedEntries: RegistryEntry[] = [];
+			for (const [runId, runMap] of _byRun) {
+				for (const [stageId, entry] of runMap) {
+					if (entry.controlsDependencies) continue;
+					runMap.delete(stageId);
+					detachedEntries.push(entry);
+				}
+				if (runMap.size === 0) _byRun.delete(runId);
+			}
+			for (const entry of detachedEntries) {
+				disposeEntryInBackground(entry, "atomic-workflows: detached stage handle dispose failed");
+			}
+		},
+
 		clear(): void {
 			const entries = [..._byRun.values()].flatMap((runMap) => [...runMap.values()]);
 			_byRun.clear();
@@ -433,4 +456,21 @@ export function createStageControlRegistry(): StageControlRegistry {
  * explicit instance via `RunOpts.stageControlRegistry`; the singleton
  * is the default consumer surface used by the extension factory.
  */
-export const stageControlRegistry: StageControlRegistry = createStageControlRegistry();
+const stageControlSingleton = createSessionScopedSingleton<StageControlRegistry>(
+	"atomic-workflows/stage-control-registry@1",
+	createStageControlRegistry,
+);
+
+/**
+ * Process-wide registry. Tests and embedders SHOULD prefer passing an
+ * explicit instance via `RunOpts.stageControlRegistry`; the singleton
+ * is the default consumer surface used by the extension factory. A
+ * session-scoped facade, so live stage handles registered before `/reload`
+ * re-evaluated this module stay controllable afterwards.
+ */
+export const stageControlRegistry: StageControlRegistry = stageControlSingleton.facade;
+
+/** Re-bind the singleton registry to the host session scope (`pi.events`). */
+export function adoptStageControlRegistry(scope: object): void {
+	stageControlSingleton.adopt(scope);
+}

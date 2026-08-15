@@ -36,6 +36,19 @@ export function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: b
 	return "interactive";
 }
 
+/**
+ * Whether this host presents a terminal pane a multiplexer can display.
+ *
+ * `appMode` alone is not the answer. The isolated interactive engine child is
+ * spawned through the RPC client, which passes `--mode rpc`, and it talks over
+ * piped stdio — so it resolves to `rpc` while in fact driving the terminal UI
+ * through its host. The engine-child flag is part of the predicate for that
+ * reason rather than as a special case around it.
+ */
+export function hostPresentsTerminalPane(appMode: AppMode, interactiveEngineChild: boolean): boolean {
+	return appMode === "interactive" || interactiveEngineChild;
+}
+
 export function isReadOnlyRuntimeMetadataCommand(parsed: Args): boolean {
 	return parsed.help === true || parsed.listModels !== undefined;
 }

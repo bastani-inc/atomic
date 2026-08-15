@@ -1,3 +1,10 @@
+import {
+	rememberWorkflowLifecycleBridgeEvent,
+	rememberWorkflowLifecycleBridgeLineage,
+	takeWorkflowLifecycleBridgeHandoff,
+	WORKFLOW_LIFECYCLE_EVENT,
+	type WorkflowLifecycleBridgeEvent,
+} from "@bastani/atomic";
 import { getDurableBackend } from "../durable/factory.js";
 import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
@@ -157,16 +164,43 @@ export function createWorkflowExtensionRuntimeState(
 	registerWorkflowHeartbeatRenderer({ rendererHost: pi, registerMessageRenderer });
 	const sendWorkflowNotificationMessage: ExtensionAPI["sendMessage"] | undefined =
 		typeof pi.sendMessage === "function" ? (message, options) => pi.sendMessage!(message, options) : undefined;
+	const publishWorkflowLifecycleEvent: ((event: WorkflowLifecycleBridgeEvent) => void) | undefined =
+		typeof pi.events?.emit === "function"
+			? (event) => {
+					if (pi.events !== undefined) rememberWorkflowLifecycleBridgeEvent(event, pi.events);
+					pi.events?.emit?.(WORKFLOW_LIFECYCLE_EVENT, {
+						runKey: event.runKey,
+						kind: event.kind,
+						label: event.label,
+					});
+				}
+			: undefined;
+	const rememberWorkflowLifecycleLineage: ((runId: string, runKey: string) => void) | undefined =
+		pi.events === undefined
+			? undefined
+			: (runId, runKey) => rememberWorkflowLifecycleBridgeLineage(runId, runKey, pi.events);
 	const reinstallLifecycleNotifications = (): void => {
 		lifecycleNotificationsUnsubscribe?.();
 		lifecycleNotificationsUnsubscribe = null;
 		if (!notificationsActive) return;
+		// Taken, not read: lineage and terminal tombstones move into this bridge,
+		// which re-records them for every run it can still observe. Active
+		// contributions stay on the bus for a reporter that has not seeded yet,
+		// and are reconciled against the store on the first pass — a live run
+		// keeps what the replaced bridge published, and one this session can no
+		// longer observe is dropped rather than left as a phantom.
+		const handoff = takeWorkflowLifecycleBridgeHandoff(pi.events);
 		lifecycleNotificationsUnsubscribe = installWorkflowLifecycleNotifications({
 			store,
 			config: lifecycleNotificationConfigRef.current,
 			state: lifecycleNotificationState,
 			seedExisting: true,
 			sendMessage: sendWorkflowNotificationMessage,
+			publishLifecycleEvent: publishWorkflowLifecycleEvent,
+			rememberBridgeLineage: rememberWorkflowLifecycleLineage,
+			bridgeLineages: handoff.lineages,
+			bridgeTerminalLineages: handoff.terminalLineages,
+			bridgeContributions: handoff.contributions,
 		});
 	};
 	const reinstallHilAnswerNotifications = (): void => {
@@ -575,6 +609,10 @@ export function createWorkflowExtensionRuntimeState(
 			notificationGeneration += 1;
 			notificationsActive = active;
 			reinstallLifecycleNotifications();
+			// Active contributions are deliberately retained here. A non-quit
+			// shutdown is followed by a successor that reconciles them against the
+			// store; clearing them would strand a live run's pane state in the
+			// window before that successor installs.
 			reinstallHilAnswerNotifications();
 			// A fresh host session restarts the cadence from each run's persisted
 			// start time; prior-session schedule and pending state cannot apply.

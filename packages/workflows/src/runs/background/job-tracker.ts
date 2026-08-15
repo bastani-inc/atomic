@@ -9,6 +9,8 @@
  * cross-ref: spec detached-runner §job-tracker
  */
 
+import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -113,4 +115,19 @@ export function createJobTracker(): JobTracker {
 /**
  * Singleton tracker for the default runtime.
  */
-export const jobTracker: JobTracker = createJobTracker();
+const jobTrackerSingleton = createSessionScopedSingleton<JobTracker>(
+	"atomic-workflows/job-tracker@1",
+	createJobTracker,
+);
+
+/**
+ * Singleton tracker for the default runtime. A session-scoped facade, so
+ * background jobs started before `/reload` re-evaluated this module stay
+ * tracked afterwards.
+ */
+export const jobTracker: JobTracker = jobTrackerSingleton.facade;
+
+/** Re-bind the singleton tracker to the host session scope (`pi.events`). */
+export function adoptWorkflowJobTracker(scope: object): void {
+	jobTrackerSingleton.adopt(scope);
+}

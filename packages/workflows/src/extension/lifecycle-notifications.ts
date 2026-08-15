@@ -1,3 +1,4 @@
+import type { WorkflowLifecycleBridgeEvent, WorkflowLifecycleBridgeLineage } from "@bastani/atomic";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
@@ -110,10 +111,54 @@ export interface WorkflowLifecycleNotificationOptions {
 	readonly config: WorkflowLifecycleNotificationConfig;
 	readonly state?: WorkflowLifecycleNotificationState;
 	readonly seedExisting?: boolean;
+	/** Publish the neutral cross-extension event, independent of chat delivery. */
+	readonly publishLifecycleEvent?: (event: WorkflowLifecycleBridgeEvent) => void;
+	/** Remember physical-to-logical lineage for successor reconstruction. */
+	readonly rememberBridgeLineage?: (runId: string, runKey: string) => void;
+	/** Terminal logical keys retained by a replacement bridge. */
+	readonly bridgeTerminalLineages?: readonly string[];
+	/** Physical-to-logical lineage retained by a replacement bridge. */
+	readonly bridgeLineages?: readonly WorkflowLifecycleBridgeLineage[];
+	/**
+	 * Active neutral contributions retained by the bridge this one replaces.
+	 *
+	 * Seeding them lets the first reconciliation compare a successor's derived
+	 * state against what the session last published: a run still live keeps its
+	 * contribution, and a run the successor cannot observe has its contribution
+	 * dropped explicitly rather than left behind as a phantom.
+	 */
+	readonly bridgeContributions?: readonly WorkflowLifecycleBridgeEvent[];
 }
 
 type RawRenderer = PiMessageRenderer;
 const rendererRegisteredHosts = new WeakSet<object>();
+const bridgeContributionsByState = new WeakMap<WorkflowLifecycleNotificationState, Map<string, BridgeContribution>>();
+const bridgeLineageByState = new WeakMap<WorkflowLifecycleNotificationState, Map<string, string>>();
+const bridgeTerminalLineagesByState = new WeakMap<WorkflowLifecycleNotificationState, Set<string>>();
+
+function bridgeTerminalLineagesFor(state: WorkflowLifecycleNotificationState): Set<string> {
+	const existing = bridgeTerminalLineagesByState.get(state);
+	if (existing !== undefined) return existing;
+	const lineages = new Set<string>();
+	bridgeTerminalLineagesByState.set(state, lineages);
+	return lineages;
+}
+
+function bridgeLineageFor(state: WorkflowLifecycleNotificationState): Map<string, string> {
+	const existing = bridgeLineageByState.get(state);
+	if (existing !== undefined) return existing;
+	const lineage = new Map<string, string>();
+	bridgeLineageByState.set(state, lineage);
+	return lineage;
+}
+
+function bridgeContributionsFor(state: WorkflowLifecycleNotificationState): Map<string, BridgeContribution> {
+	const existing = bridgeContributionsByState.get(state);
+	if (existing !== undefined) return existing;
+	const contributions = new Map<string, BridgeContribution>();
+	bridgeContributionsByState.set(state, contributions);
+	return contributions;
+}
 export function createWorkflowLifecycleNotificationState(): WorkflowLifecycleNotificationState {
 	return {
 		deliveredTerminalRuns: new Set<string>(),
@@ -135,6 +180,9 @@ export function resetWorkflowLifecycleNotificationState(state: WorkflowLifecycle
 	state.retryObservers.clear();
 	state.deliveredInputPrompts.clear();
 	state.suppressionDepth = 0;
+	bridgeContributionsByState.get(state)?.clear();
+	bridgeLineageByState.get(state)?.clear();
+	bridgeTerminalLineagesByState.get(state)?.clear();
 }
 
 export function seedWorkflowLifecycleNotificationState(
@@ -207,18 +255,79 @@ export async function withWorkflowLifecycleNotificationsSuppressedAsync<T>(
 export function installWorkflowLifecycleNotifications(options: WorkflowLifecycleNotificationOptions): () => void {
 	registerLifecycleNoticeRenderer(options);
 
-	if (!options.config.enabled) return () => undefined;
-	const send = options.sendMessage;
-	if (typeof send !== "function") return () => undefined;
-
 	const notifyOn = new Set<WorkflowLifecycleNoticeKind>(options.config.notifyOn);
 	const state = options.state ?? createWorkflowLifecycleNotificationState();
-	let delivery!: ReturnType<typeof createLifecycleNoticeDelivery>;
-	if (options.seedExisting !== false) {
-		seedWorkflowLifecycleNotificationState(state, readGraphStoreSnapshot(options.store));
+	const send = options.sendMessage;
+	const chatEnabled = options.config.enabled && typeof send === "function";
+	const publishLifecycleEvent = options.publishLifecycleEvent;
+	const bridgeEnabled = typeof publishLifecycleEvent === "function";
+	if (!chatEnabled && !bridgeEnabled) return () => undefined;
+
+	const initialSnapshot = readGraphStoreSnapshot(options.store);
+	if (chatEnabled && options.seedExisting !== false) {
+		seedWorkflowLifecycleNotificationState(state, initialSnapshot);
 	}
+	const bridgeContributions = bridgeEnabled ? bridgeContributionsFor(state) : undefined;
+	const bridgeLineage = bridgeEnabled ? bridgeLineageFor(state) : undefined;
+	const bridgeTerminalLineages = bridgeEnabled ? bridgeTerminalLineagesFor(state) : undefined;
+	if (bridgeLineage !== undefined) {
+		for (const entry of options.bridgeLineages ?? []) bridgeLineage.set(entry.runId, entry.runKey);
+	}
+	/**
+	 * Tombstones inherited from the bridge this one replaces.
+	 *
+	 * They exist to stop the first reconciliation resurrecting a predecessor
+	 * whose continuation already completed, which is a fact about runs the
+	 * successor can still see. Held apart from this bridge's own tombstones and
+	 * discarded after the first pass: a key the first pass actually used is
+	 * adopted below, and one it did not is about a lineage nothing observes, so
+	 * keeping it would only suppress a later run that reused a retired id.
+	 */
+	let inheritedTerminalLineages: Set<string> | undefined =
+		bridgeEnabled && (options.bridgeTerminalLineages?.length ?? 0) > 0
+			? new Set(options.bridgeTerminalLineages)
+			: undefined;
+	if (bridgeContributions !== undefined) {
+		for (const event of options.bridgeContributions ?? []) {
+			bridgeContributions.set(event.runKey, bridgeContributionFromEvent(event));
+		}
+	}
+	const publishBridge = (runKey: string, contribution: BridgeContribution): void => {
+		if (!bridgeEnabled || publishLifecycleEvent === undefined) return;
+		try {
+			publishLifecycleEvent({ runKey, kind: contribution.kind, label: contribution.label });
+		} catch {
+			// A neutral observer must never break the store subscriber or workflow.
+		}
+	};
+
+	/**
+	 * Publishing is deferred until every contribution has been committed.
+	 *
+	 * Event-bus listeners run synchronously, so one that invalidates the store
+	 * re-enters `inspect` from inside `publishBridge`. Reconciliation there sees
+	 * the already-committed contributions and appends only what genuinely
+	 * changed; the outermost drain then publishes it, in order, exactly once.
+	 */
+	const bridgePublishQueue: Array<{ runKey: string; contribution: BridgeContribution }> = [];
+	let bridgePublishing = false;
+	const enqueueBridgePublish = (runKey: string, contribution: BridgeContribution): void => {
+		bridgePublishQueue.push({ runKey, contribution });
+	};
+	const drainBridgePublishQueue = (): void => {
+		if (bridgePublishing) return;
+		bridgePublishing = true;
+		try {
+			for (let next = bridgePublishQueue.shift(); next !== undefined; next = bridgePublishQueue.shift()) {
+				publishBridge(next.runKey, next.contribution);
+			}
+		} finally {
+			bridgePublishing = false;
+		}
+	};
 
 	const emit = (details: WorkflowLifecycleNoticeDetails): boolean | Promise<boolean> => {
+		if (typeof send !== "function") return true;
 		try {
 			const result = send(
 				{
@@ -243,13 +352,13 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		}
 	};
 
-	const emitTerminalNoticeOnce = (run: RunSnapshot, kind: "completed" | "failed" | "blocked"): void => {
-		const noticeKind = terminalNoticeKind(run);
-		if (noticeKind !== kind || lifecycleOccurrenceAt(run, kind) === undefined || !notifyOn.has(kind)) {
-			return;
-		}
+	let delivery: ReturnType<typeof createLifecycleNoticeDelivery> | undefined;
 
-		const key = terminalRunKey(kind, run);
+	const emitTerminalNoticeOnce = (derived: RunLifecycleDerivation, kind: "completed" | "failed" | "blocked"): void => {
+		const terminal = derived.terminal;
+		if (terminal === undefined || terminal.details.kind !== kind || !delivery || !notifyOn.has(kind)) return;
+
+		const key = terminal.key;
 		if (
 			state.deliveredTerminalRuns.has(key) ||
 			state.pendingTerminalRuns.has(key) ||
@@ -262,13 +371,13 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 			state.retryableTerminalNotices.delete(key);
 			return;
 		}
-		delivery.deliver(key, makeTerminalNotice(run, kind));
+		delivery.deliver(key, terminal.details);
 	};
 
-	const emitControlNoticesOnce = (run: RunSnapshot): void => {
-		for (const occurrence of controlOccurrences(run)) {
-			if (!notifyOn.has(occurrence.kind)) continue;
-			const key = controlOccurrenceKey(run, occurrence);
+	const emitControlNoticesOnce = (derived: RunLifecycleDerivation): void => {
+		for (const control of derived.controls) {
+			if (!delivery || !notifyOn.has(control.details.kind)) continue;
+			const key = control.key;
 			if (
 				state.deliveredTerminalRuns.has(key) ||
 				state.pendingTerminalRuns.has(key) ||
@@ -281,58 +390,60 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 				state.retryableTerminalNotices.delete(key);
 				continue;
 			}
-			delivery.deliver(key, makeControlNotice(run, occurrence));
+			delivery.deliver(key, control.details);
 		}
 	};
 
-	const emitStageAwaitingInputNoticeOnce = (run: RunSnapshot, stage: StageSnapshot): void => {
-		if (stage.status !== "awaiting_input") return;
-
-		const key = awaitingInputKey(run.id, stage);
-		if (state.deliveredInputPrompts.has(key)) return;
-
-		state.deliveredInputPrompts.add(key);
-		// Awaiting-input states are tracked for dedupe/restore, but must not enqueue
-		// a main-chat steer turn. Waking the active agent with an actionable prompt
-		// can let the model answer workflow HIL without a deliberate user action.
+	/**
+	 * Awaiting-input states are tracked for dedupe/restore, but must not enqueue
+	 * a main-chat steer turn. Waking the active agent with an actionable prompt
+	 * can let the model answer workflow HIL without a deliberate user action, so
+	 * prompt state stays visible through workflow status/connect surfaces
+	 * instead of the main chat context.
+	 */
+	const markAwaitingInputDelivered = (derived: RunLifecycleDerivation): void => {
+		for (const awaiting of derived.awaitingInputs) state.deliveredInputPrompts.add(awaiting.key);
 	};
 
-	const emitRunAwaitingInputNoticeOnce = (run: RunSnapshot): void => {
-		if (run.pendingPrompt === undefined) return;
-
-		const key = runAwaitingInputKey(run.id, run.pendingPrompt);
-		if (state.deliveredInputPrompts.has(key)) return;
-
-		state.deliveredInputPrompts.add(key);
-		// See stage-level awaiting-input handling above: prompt state remains visible
-		// through workflow status/connect surfaces instead of the main chat context.
-	};
-
-	const inspect = (snapshot: StoreSnapshot): void => {
-		for (const run of snapshot.runs) {
-			if (!isTopLevelWorkflowRun(run)) continue;
-			emitTerminalNoticeOnce(run, "completed");
-			emitTerminalNoticeOnce(run, "failed");
-			emitTerminalNoticeOnce(run, "blocked");
-			emitControlNoticesOnce(run);
-
-			if (!notifyOn.has("awaiting_input")) continue;
-			emitRunAwaitingInputNoticeOnce(run);
-			for (const stage of run.stages) {
-				emitStageAwaitingInputNoticeOnce(run, stage);
-			}
+	if (chatEnabled) {
+		delivery = createLifecycleNoticeDelivery({ state, emit, eligible: (details) => notifyOn.has(details.kind) });
+		for (const [key, details] of state.retryableTerminalNotices) {
+			if (notifyOn.has(details.kind)) delivery.deliver(key, details);
 		}
-	};
-	delivery = createLifecycleNoticeDelivery({ state, emit, eligible: (details) => notifyOn.has(details.kind) });
-	for (const [key, details] of state.retryableTerminalNotices) {
-		if (notifyOn.has(details.kind)) delivery.deliver(key, details);
 	}
 
+	const inspect = (snapshot: StoreSnapshot): void => {
+		const topLevelRuns = snapshot.runs.filter(isTopLevelWorkflowRun);
+		if (delivery !== undefined) {
+			for (const run of topLevelRuns) {
+				const derived = deriveRunLifecycle(run);
+				emitTerminalNoticeOnce(derived, "completed");
+				emitTerminalNoticeOnce(derived, "failed");
+				emitTerminalNoticeOnce(derived, "blocked");
+				emitControlNoticesOnce(derived);
+				if (notifyOn.has("awaiting_input")) markAwaitingInputDelivered(derived);
+			}
+		}
+		if (bridgeContributions !== undefined && bridgeLineage !== undefined && bridgeTerminalLineages !== undefined) {
+			reconcileBridgeContributions(
+				topLevelRuns,
+				bridgeContributions,
+				bridgeLineage,
+				bridgeTerminalLineages,
+				inheritedTerminalLineages,
+				options.rememberBridgeLineage,
+				enqueueBridgePublish,
+			);
+			drainBridgePublishQueue();
+		}
+	};
+
 	const unsubscribe = subscribeStoreInvalidation(options.store, () => inspect(readGraphStoreSnapshot(options.store)));
-	inspect(readGraphStoreSnapshot(options.store));
+	inspect(initialSnapshot);
+	inheritedTerminalLineages = undefined;
 	return () => {
 		unsubscribe();
-		delivery.dispose();
+		delivery?.dispose();
 	};
 }
 
@@ -475,6 +586,393 @@ function makeControlNotice(run: RunSnapshot, occurrence: ControlOccurrence): Wor
 			: {}),
 		createdAt: occurrence.at,
 	};
+}
+/**
+ * One run's neutral contribution to the bridge.
+ *
+ * It stores exactly the three fields that leave the bridge. There is no path
+ * from a stored contribution back to a notice, so a dropped contribution can
+ * only ever repeat a label it already published — never claim an outcome the
+ * run did not reach.
+ */
+interface BridgeContribution {
+	readonly kind: WorkflowLifecycleNoticeKind;
+	readonly label: string;
+	readonly signature: string;
+}
+
+/** How a run in a derived lifecycle state contributes to the pane (W2). */
+type BridgeActivity = "working" | "blocked" | "ended";
+
+const BRIDGE_ACTIVITY_BY_KIND = {
+	started: "working",
+	resumed: "working",
+	awaiting_input: "blocked",
+	blocked: "blocked",
+	failed: "blocked",
+	paused: "blocked",
+	completed: "ended",
+	quit: "ended",
+} as const satisfies Record<WorkflowLifecycleNoticeKind, BridgeActivity>;
+
+interface BridgeRunState {
+	readonly run: RunSnapshot;
+	readonly details: WorkflowLifecycleNoticeDetails;
+	readonly activity: BridgeActivity;
+}
+
+/** One awaiting-input state a run currently carries. */
+interface AwaitingInputState {
+	readonly key: string;
+	readonly stage: StageSnapshot | undefined;
+}
+
+/** One lifecycle fact a run currently carries, with its dedupe key. */
+interface RunLifecycleFact {
+	readonly key: string;
+	readonly details: WorkflowLifecycleNoticeDetails;
+}
+
+/** What one run's lifecycle currently carries. See {@link deriveRunLifecycle}. */
+interface RunLifecycleDerivation {
+	readonly run: RunSnapshot;
+	/** The single level state the run is in right now. Total over `RunStatus`. */
+	readonly current: WorkflowLifecycleNoticeDetails;
+	/** The terminal outcome the chat notice path reports, when it carries one. */
+	readonly terminal: RunLifecycleFact | undefined;
+	/** Every user-attributed control action the run currently carries. */
+	readonly controls: readonly RunLifecycleFact[];
+	readonly awaitingInputs: readonly AwaitingInputState[];
+}
+
+function bridgeActivity(kind: WorkflowLifecycleNoticeKind): BridgeActivity {
+	return BRIDGE_ACTIVITY_BY_KIND[kind];
+}
+
+function bridgeContributionOf(details: WorkflowLifecycleNoticeDetails): BridgeContribution {
+	const label = lifecycleBridgeLabel(details);
+	return { kind: details.kind, label, signature: bridgeSignatureOf(details.kind, label) };
+}
+
+function bridgeContributionFromEvent(event: WorkflowLifecycleBridgeEvent): BridgeContribution {
+	return { kind: event.kind, label: event.label, signature: bridgeSignatureOf(event.kind, event.label) };
+}
+
+/**
+ * End a contribution the bridge can no longer observe.
+ *
+ * A run that left the snapshot did not report an outcome, so the drop repeats
+ * the label already on the wire under `quit` — the neutral "stopped without
+ * completing" kind. Calling it `completed` would invent a result.
+ */
+function bridgeDropContribution(previous: BridgeContribution): BridgeContribution {
+	return { kind: "quit", label: previous.label, signature: bridgeSignatureOf("quit", previous.label) };
+}
+
+function bridgeSignatureOf(kind: WorkflowLifecycleNoticeKind, label: string): string {
+	return `${kind}:${bridgeBlockedKind(kind) ? label : ""}`;
+}
+
+function reconcileBridgeContributions(
+	runs: readonly RunSnapshot[],
+	contributions: Map<string, BridgeContribution>,
+	lineage: Map<string, string>,
+	terminalLineages: Set<string>,
+	inheritedTerminalLineages: Set<string> | undefined,
+	rememberLineage: ((runId: string, runKey: string) => void) | undefined,
+	enqueue: (runKey: string, contribution: BridgeContribution) => void,
+): void {
+	const groups = bridgeRunGroups(runs, lineage);
+	const currentKeys = new Set<string>();
+	for (const [runKey, group] of groups) {
+		for (const run of group) rememberLineage?.(run.id, runKey);
+		currentKeys.add(runKey);
+		const previous = contributions.get(runKey);
+		const hasLiveContinuation = group.some(
+			(run) => isBridgeContinuation(run) && bridgeRunState(run, previous?.kind).activity !== "ended",
+		);
+		const tombstoned = terminalLineages.has(runKey) || inheritedTerminalLineages?.has(runKey) === true;
+		if (tombstoned && !hasLiveContinuation) {
+			// Adopted, so the guard outlives the inherited set for as long as this
+			// lineage stays observable.
+			terminalLineages.add(runKey);
+			contributions.delete(runKey);
+			continue;
+		}
+		if (hasLiveContinuation) {
+			terminalLineages.delete(runKey);
+			inheritedTerminalLineages?.delete(runKey);
+		}
+
+		const current = bridgeCurrentStateForGroup(group, previous?.kind);
+		if (current === undefined || current.activity === "ended") {
+			// Committed before anything is published, on the terminal path too.
+			contributions.delete(runKey);
+			terminalLineages.add(runKey);
+			if (previous !== undefined) {
+				enqueue(
+					runKey,
+					current === undefined ? bridgeDropContribution(previous) : bridgeContributionOf(current.details),
+				);
+			}
+			continue;
+		}
+
+		const contribution = bridgeContributionOf(current.details);
+		contributions.set(runKey, contribution);
+		if (previous?.signature !== contribution.signature) enqueue(runKey, contribution);
+	}
+
+	for (const [runKey, previous] of [...contributions]) {
+		if (currentKeys.has(runKey)) continue;
+		contributions.delete(runKey);
+		terminalLineages.add(runKey);
+		enqueue(runKey, bridgeDropContribution(previous));
+	}
+}
+
+function bridgeRunGroups(runs: readonly RunSnapshot[], lineage: Map<string, string>): Map<string, RunSnapshot[]> {
+	const groups = new Map<string, RunSnapshot[]>();
+	for (const run of runs) {
+		const runKey = bridgeLogicalRunKey(run, runs, lineage);
+		const group = groups.get(runKey);
+		if (group === undefined) groups.set(runKey, [run]);
+		else group.push(run);
+	}
+	return groups;
+}
+
+function bridgeLogicalRunKey(run: RunSnapshot, runs: readonly RunSnapshot[], lineage: Map<string, string>): string {
+	const known = lineage.get(run.id);
+	if (known !== undefined) return known;
+
+	const path: RunSnapshot[] = [];
+	const visited = new Set<string>();
+	let current: RunSnapshot | undefined = run;
+	let key = run.id;
+	while (current !== undefined && !visited.has(current.id)) {
+		visited.add(current.id);
+		path.push(current);
+		const knownCurrent = lineage.get(current.id);
+		if (knownCurrent !== undefined) {
+			key = knownCurrent;
+			break;
+		}
+		const predecessorId: string | undefined = current.resumedFromRunId;
+		if (predecessorId === undefined) {
+			key = current.id;
+			break;
+		}
+		const knownPredecessor = lineage.get(predecessorId);
+		if (knownPredecessor !== undefined) {
+			key = knownPredecessor;
+			break;
+		}
+		const predecessor: RunSnapshot | undefined = runs.find((candidate) => candidate.id === predecessorId);
+		if (predecessor === undefined) {
+			key = predecessorId;
+			break;
+		}
+		current = predecessor;
+	}
+
+	for (const item of path) lineage.set(item.id, key);
+	return key;
+}
+
+function isBridgeContinuation(run: RunSnapshot): boolean {
+	return run.resumedFromRunId !== undefined || run.resumeSource !== undefined || run.resumedAt !== undefined;
+}
+
+function bridgeCurrentStateForGroup(
+	group: readonly RunSnapshot[],
+	previousKind: WorkflowLifecycleNoticeKind | undefined,
+): BridgeRunState | undefined {
+	const predecessorIds = new Set(
+		group.flatMap((run) => (run.resumedFromRunId === undefined ? [] : [run.resumedFromRunId])),
+	);
+	const leaves = group.filter((run) => !predecessorIds.has(run.id));
+	const leafRuns = leaves.length === 0 ? group : leaves;
+	const states = leafRuns.map((run) => bridgeRunState(run, previousKind));
+
+	return (
+		latestBridgeState(states, "blocked") ?? latestBridgeState(states, "working") ?? latestBridgeState(states, "ended")
+	);
+}
+
+function latestBridgeState(states: readonly BridgeRunState[], activity: BridgeActivity): BridgeRunState | undefined {
+	return states
+		.filter((state) => state.activity === activity)
+		.reduce<BridgeRunState | undefined>(latestBridgeStateByStart, undefined);
+}
+
+function latestBridgeStateByStart(latest: BridgeRunState | undefined, candidate: BridgeRunState): BridgeRunState {
+	return latest === undefined || candidate.run.startedAt >= latest.run.startedAt ? candidate : latest;
+}
+
+function bridgeRunState(run: RunSnapshot, previousKind: WorkflowLifecycleNoticeKind | undefined): BridgeRunState {
+	const details = deriveRunLifecycle(run, previousKind).current;
+	return { run, details, activity: bridgeActivity(details.kind) };
+}
+
+/**
+ * Everything one run's lifecycle currently carries, derived in one place.
+ *
+ * Both consumers read this and nothing else. The chat notice path takes the
+ * edge facts — the terminal outcome, the user-attributed control actions, the
+ * awaiting-input states — and applies its own `notifyOn` filter, dedupe keys,
+ * and delivery. The neutral bridge takes `current`, the single level state the
+ * run is in right now. Neither classifies a run itself, which is what stops
+ * the two drifting apart.
+ *
+ * Pure: it mutates nothing, publishes nothing, and touches no dedupe set.
+ *
+ * `previousKind` is the kind last reported for this run. It only separates a
+ * first start from a continuation, and only `current` reads it.
+ */
+function deriveRunLifecycle(run: RunSnapshot, previousKind?: WorkflowLifecycleNoticeKind): RunLifecycleDerivation {
+	const terminalKind = terminalNoticeKind(run);
+	const terminal =
+		terminalKind !== undefined && lifecycleOccurrenceAt(run, terminalKind) !== undefined
+			? { key: terminalRunKey(terminalKind, run), details: makeTerminalNotice(run, terminalKind) }
+			: undefined;
+	const occurrences = controlOccurrences(run);
+	const controls = occurrences.map((occurrence) => ({
+		key: controlOccurrenceKey(run, occurrence),
+		details: makeControlNotice(run, occurrence),
+	}));
+	return {
+		run,
+		terminal,
+		controls,
+		awaitingInputs: awaitingInputStates(run),
+		current: deriveCurrentRunState(run, terminalKind, occurrences, previousKind),
+	};
+}
+
+/**
+ * The single state a run is in right now, in precedence order.
+ *
+ * Total over `RunStatus`. A run that ended without an outcome the notice
+ * vocabulary names — `killed`, `cancelled`, `skipped` — is caught by the
+ * terminal guard directly after {@link terminalNoticeKind}, before any stage
+ * check. That order matters: `recordRunEnd` moves the run to its terminal
+ * status but leaves stage statuses untouched, so a killed run routinely still
+ * carries an `awaiting_input`, `blocked`, or `paused` stage. Reading the stage
+ * first pinned the pane on a run that had already stopped.
+ */
+function deriveCurrentRunState(
+	run: RunSnapshot,
+	terminalKind: "completed" | "failed" | "blocked" | undefined,
+	occurrences: readonly ControlOccurrence[],
+	previousKind: WorkflowLifecycleNoticeKind | undefined,
+): WorkflowLifecycleNoticeDetails {
+	if (isQuitRun(run)) return quitStateNotice(run, occurrences);
+	if (terminalKind !== undefined) return makeTerminalNotice(run, terminalKind);
+	if (run.endedAt !== undefined || isStoppedRunStatus(effectiveRunStatus(run))) {
+		return quitStateNotice(run, occurrences);
+	}
+
+	const awaiting = awaitingInputStates(run)[0];
+	if (awaiting !== undefined) return bridgeStateNotice(run, "awaiting_input", awaiting.stage);
+
+	const blockedStage = run.stages.find((stage) => stage.status === "blocked");
+	if (blockedStage !== undefined) return bridgeStateNotice(run, "blocked", blockedStage);
+
+	const pausedStage = run.stages.find((stage) => stage.status === "paused");
+	if (pausedStage !== undefined) {
+		const occurrence = occurrences.find(
+			(candidate) => candidate.kind === "paused" && candidate.stage?.id === pausedStage.id,
+		);
+		return occurrence === undefined
+			? bridgeStateNotice(run, "paused", pausedStage)
+			: makeControlNotice(run, occurrence);
+	}
+
+	if (run.status === "paused") {
+		const occurrence = occurrences.find((candidate) => candidate.kind === "paused");
+		return occurrence === undefined ? bridgeStateNotice(run, "paused") : makeControlNotice(run, occurrence);
+	}
+
+	if (run.status === "pending" || run.status === "running") {
+		const previousWasWorking = previousKind === "started" || previousKind === "resumed";
+		const resumed = isBridgeContinuation(run) || (previousKind !== undefined && !previousWasWorking);
+		const kind: "started" | "resumed" = resumed || previousKind === "resumed" ? "resumed" : "started";
+		const occurrence =
+			kind === "resumed" ? occurrences.findLast((candidate) => candidate.kind === "resumed") : undefined;
+		return occurrence === undefined ? bridgeStateNotice(run, kind) : makeControlNotice(run, occurrence);
+	}
+
+	return quitStateNotice(run, occurrences);
+}
+
+/** Run statuses that mean the run stopped without reaching a named outcome. */
+function isStoppedRunStatus(status: RunStatus): boolean {
+	return status === "killed" || status === "cancelled" || status === "skipped";
+}
+
+/** Every awaiting-input state a run currently carries, run-scoped first. */
+function awaitingInputStates(run: RunSnapshot): readonly AwaitingInputState[] {
+	const states: AwaitingInputState[] = [];
+	if (run.pendingPrompt !== undefined) {
+		states.push({ key: runAwaitingInputKey(run.id, run.pendingPrompt), stage: undefined });
+	}
+	for (const stage of run.stages) {
+		if (stage.status !== "awaiting_input" && stage.pendingPrompt === undefined && stage.inputRequest === undefined) {
+			continue;
+		}
+		states.push({ key: awaitingInputKey(run.id, stage), stage });
+	}
+	return states;
+}
+
+function bridgeBlockedKind(kind: WorkflowLifecycleNoticeKind): boolean {
+	return kind === "awaiting_input" || kind === "blocked" || kind === "failed" || kind === "paused";
+}
+
+function quitStateNotice(run: RunSnapshot, occurrences: readonly ControlOccurrence[]): WorkflowLifecycleNoticeDetails {
+	const occurrence = occurrences.find((candidate) => candidate.kind === "quit");
+	return occurrence === undefined ? bridgeStateNotice(run, "quit") : makeControlNotice(run, occurrence);
+}
+
+function lifecycleBridgeLabel(details: WorkflowLifecycleNoticeDetails): string {
+	const stage = details.stageName ?? details.stageId;
+	const label = stage === undefined ? details.workflowName : `${details.workflowName}: ${stage}`;
+	return label.length <= LIFECYCLE_NOTICE_SNIPPET_LIMIT
+		? label
+		: `${label.slice(0, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
+}
+
+function bridgeStateNotice(
+	run: RunSnapshot,
+	kind: WorkflowLifecycleNoticeKind,
+	stage?: StageSnapshot,
+): WorkflowLifecycleNoticeDetails {
+	const createdAt =
+		stage === undefined
+			? kind === "paused"
+				? (run.pausedAt ?? run.startedAt)
+				: kind === "resumed"
+					? (run.resumedAt ?? run.startedAt)
+					: (run.pendingPrompt?.createdAt ?? run.startedAt)
+			: kind === "paused"
+				? (stage.pausedAt ?? stage.startedAt ?? run.startedAt)
+				: kind === "resumed"
+					? (stage.resumedAt ?? stage.startedAt ?? run.startedAt)
+					: (stage.awaitingInputSince ?? stage.startedAt ?? run.startedAt);
+	return {
+		kind,
+		scope: stage === undefined ? "run" : "stage",
+		runId: run.id,
+		workflowName: run.name,
+		status: stage === undefined ? run.status : stage.status,
+		...(stage === undefined ? {} : { stageId: stage.id, stageName: stage.name }),
+		createdAt,
+	};
+}
+
+function isQuitRun(run: RunSnapshot): boolean {
+	return run.status === "paused" && (run.exitReason === "quit" || run.quitAt !== undefined);
 }
 
 /** The stage a run currently rests on, preferring an explicitly paused one. */
