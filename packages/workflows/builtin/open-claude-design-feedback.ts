@@ -358,11 +358,6 @@ export function hasMeaningfulLiveChanges(feedback: PreviewFeedback): boolean {
   return typeof feedback.liveChanges === "string" && feedback.liveChanges.length > 0;
 }
 
-/** Whether a feedback round carries any meaningful user signal: typed notes or accepted live variants. */
-export function hasMeaningfulFeedback(feedback: PreviewFeedback): boolean {
-  return hasMeaningfulUserNotes(feedback) || hasMeaningfulLiveChanges(feedback);
-}
-
 function feedbackLabel(feedback: PreviewFeedback): string {
   return feedback.iteration === 0
     ? "the initial preview"
