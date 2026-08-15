@@ -448,6 +448,37 @@ describe("SettingsManager", () => {
 			expect(savedSettings.theme).toBe("light");
 		});
 	});
+	describe("defaultTools", () => {
+		it("loads global defaults and lets project settings replace them", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["read", "bash"]);
+
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["grep"] }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["grep"]);
+		});
+
+		it("preserves an empty tool list", () => {
+			expect(SettingsManager.inMemory({ defaultTools: [] }).getDefaultTools()).toEqual([]);
+			expect(SettingsManager.inMemory().getDefaultTools()).toBeUndefined();
+		});
+
+		it("returns a copy, not the stored array", () => {
+			const manager = SettingsManager.inMemory({ defaultTools: ["read", "bash"] });
+
+			const first = manager.getDefaultTools();
+			const second = manager.getDefaultTools();
+			expect(first).not.toBe(second);
+			expect(first).toEqual(["read", "bash"]);
+
+			first.push("write");
+			first.length = 0;
+
+			expect(manager.getDefaultTools()).toEqual(["read", "bash"]);
+		});
+	});
+
 	describe("getSessionDir", () => {
 		it("should return undefined when not set", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));

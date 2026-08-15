@@ -32,6 +32,7 @@ interface SettingsManagerBasicAccessors {
 	setShowCacheMissNotices(enabled: boolean): void;
 	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
 	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"): void;
+	getDefaultTools(): string[] | undefined;
 	getFallbackModels(): string[];
 	getTransport(): TransportSetting;
 	setTransport(transport: TransportSetting): void;
@@ -215,6 +216,11 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.globalSettings.defaultThinkingLevel = level;
 		state.markModified("defaultThinkingLevel");
 		state.save();
+	},
+
+	getDefaultTools() {
+		const tools = settingsInternals(this).settings.defaultTools;
+		return tools ? [...tools] : undefined;
 	},
 
 	getFallbackModels() {

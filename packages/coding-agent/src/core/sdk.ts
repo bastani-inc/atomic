@@ -181,12 +181,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
+	// `defaultTools` narrows only the initial BUILT-IN selection. It must not
+	// narrow `allowedToolNames`: a narrow allowlist would drop every extension
+	// and SDK custom tool (workflow, subagent, intercom, mcp, web_search, ...)
+	// for any user who configures it (upstream 4d9aa837 + companion fix 541045ae).
+	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const initialActiveToolNames: string[] = options.tools
 		? [...options.tools]
 		: options.noTools
 			? []
-			: [...defaultToolNames];
+			: [...(configuredDefaultToolNames ?? defaultToolNames)];
 
 	let agent: Agent;
 
