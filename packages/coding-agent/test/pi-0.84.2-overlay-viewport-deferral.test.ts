@@ -2,8 +2,10 @@ import { tmpdir } from "node:os";
 import {
 	type Component,
 	getKeybindings,
+	isKeyRelease,
 	ScrollView,
 	setKeybindings,
+	setKittyProtocolActive,
 	Text,
 	TUI_KEYBINDINGS,
 	TuiAltScreen,
@@ -19,14 +21,27 @@ import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 
 const PAGE_UP = "\x1b[5~";
 const PAGE_DOWN = "\x1b[6~";
+const HOME = "\x1b[H";
+const ESCAPE = "\x1b";
+/** Legacy `alt+enter`: ESC and CR reassembled into one sequence by `StdinBuffer`. */
+const ALT_ENTER = "\x1b\r";
 /** SGR wheel reports at row 2, column 10. */
 const WHEEL_UP = "\x1b[<64;10;2M";
 const CTRL_Y = "\x19";
+/** Default `app.thinking.toggle`. */
+const CTRL_T = "\x14";
+/** A remapped `app.thinking.toggle`, bound to nothing pi-tui's `Input` claims. */
+const ALT_T = "\x1bt";
 /** Kitty-protocol `ctrl+shift+f`, pi-tui 0.84.2's default `tui.altScreen.search` key. */
 const CTRL_SHIFT_F = "\x1b[102;6u";
 /** pi-tui's `PAGE_SCROLL_OVERLAP`: a page moves `viewportHeight` minus this. */
 const PAGE_SCROLL_OVERLAP = 4;
 const TRANSCRIPT_LINES = 120;
+/** Atomic ships the search actions unbound; a user binding is how the find box opens today. */
+const SEARCH_BINDING: KeybindingsConfig = { "tui.altScreen.search": "ctrl+shift+f" };
+const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
+/** pi-tui's zero-width hardware-cursor marker (`dist/tui.js:21`). */
+const CURSOR_MARKER = "\x1b_pi:c\x07";
 
 const initialKeybindings = getKeybindings();
 
@@ -62,6 +77,8 @@ interface Fixture {
 	transcript: ScrollView;
 	overlay: RecordingOverlay;
 	editor: Text;
+	/** Input the gated route handed to the host thinking action, in order. */
+	thinkingToggles: string[];
 	stop: () => void;
 }
 
@@ -86,12 +103,13 @@ function createFixture(options: FixtureOptions = {}): Fixture {
 	terminal.rows = 40;
 
 	const editor = new Text("editor", 0, 0);
+	const thinkingToggles: string[] = [];
 	let tui!: TuiAltScreen;
 	tui = createFullscreenTui({
 		showHardwareCursor: false,
 		logDirectory: tmpdir(),
 		terminal,
-		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay) =>
+		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay, focusedIsViewportSearch) =>
 			shouldHandleFullscreenViewportInput(
 				tui.getFocusedComponent(),
 				editor,
@@ -99,7 +117,15 @@ function createFixture(options: FixtureOptions = {}): Fixture {
 				isMouseInput,
 				focusedIsOverlay,
 				keybindings,
+				focusedIsViewportSearch,
 			),
+		// Mirrors `InteractiveModeBase.handleOverlayUnhandledInput`: the host
+		// thinking action, dispatched only on the gated route.
+		onOverlayUnhandledInput: (data) => {
+			if (isKeyRelease(data) || !keybindings.matches(data, "app.thinking.toggle")) return false;
+			thinkingToggles.push(data);
+			return true;
+		},
 	});
 
 	const transcript = new ScrollView(
@@ -126,7 +152,7 @@ function createFixture(options: FixtureOptions = {}): Fixture {
 		expect(tui.getFocusedComponent()).toBe(editor);
 	}
 
-	return { tui, terminal, transcript, overlay, editor, stop: () => tui.stop() };
+	return { tui, terminal, transcript, overlay, editor, thinkingToggles, stop: () => tui.stop() };
 }
 
 /** Scroll to the bottom and report the resulting `scrollTop` plus a page's worth of rows. */
@@ -136,6 +162,57 @@ function anchorAtEnd(fixture: Fixture): { top: number; page: number } {
 	const page = Math.max(1, fixture.transcript.viewportHeight - PAGE_SCROLL_OVERLAP);
 	expect(page).toBeGreaterThan(1);
 	return { top: fixture.transcript.scrollTop, page };
+}
+
+/** pi-tui keeps its find box private (tui-alt-screen.d.ts:50, alt-screen-search.d.ts:12). */
+interface AltScreenSearchInternals {
+	activeSearch?: { component: Component; overlay?: { isFocused(): boolean } };
+}
+
+function activeSearch(fixture: Fixture): { component: Component; overlay?: { isFocused(): boolean } } | undefined {
+	return (fixture.tui as unknown as AltScreenSearchInternals).activeSearch;
+}
+
+/** Open pi-tui's find box the way a user with the action bound does, and confirm it took focus. */
+function openTranscriptSearch(fixture: Fixture): void {
+	fixture.terminal.input(CTRL_SHIFT_F);
+	fixture.tui.renderNow();
+	const search = activeSearch(fixture);
+	expect(search, "ctrl+shift+f opened no search").toBeDefined();
+	expect(search?.overlay?.isFocused()).toBe(true);
+	expect(fixture.tui.getFocusedComponent()).toBe(search?.component);
+}
+
+/** The find box's query, read off its own frame: the input field is private. */
+function searchQuery(fixture: Fixture): string {
+	const search = activeSearch(fixture);
+	if (!search) throw new Error("no active transcript search");
+	const rows = search.component.render(40);
+	const field = rows[rows.length - 1] ?? "";
+	return field.replaceAll(CURSOR_MARKER, "").replaceAll(ANSI, "").replace(/^> /, "").trimEnd();
+}
+
+function type(fixture: Fixture, text: string): void {
+	for (const character of text) fixture.terminal.input(character);
+	fixture.tui.renderNow();
+}
+
+/**
+ * Record what the find box is offered, without changing what it does.
+ * `AltScreenSearchComponent.handleInput` returns `void`, so a key it silently
+ * swallowed is invisible in the transcript's scroll position alone.
+ */
+function recordSearchInput(fixture: Fixture): string[] {
+	const search = activeSearch(fixture);
+	if (!search) throw new Error("no active transcript search");
+	const { component } = search;
+	const offered: string[] = [];
+	const handleInput = component.handleInput?.bind(component);
+	component.handleInput = (data: string): void => {
+		offered.push(data);
+		handleInput?.(data);
+	};
+	return offered;
 }
 
 /**
@@ -298,6 +375,235 @@ describe("pi-tui 0.84.2 transcript search defaults", () => {
 			fixture.terminal.input(CTRL_SHIFT_F);
 			fixture.tui.renderNow();
 			expect((fixture.tui as unknown as { activeSearch?: unknown }).activeSearch).toBeUndefined();
+		} finally {
+			fixture.stop();
+		}
+	});
+});
+
+/**
+ * The one overlay Atomic's gate does not own. pi-tui mounts its find box as an
+ * overlay and then exempts it from `shouldDeferViewportInputToOverlay()`
+ * (`dist/tui-alt-screen.js:379`) so the transcript keeps scrolling while a
+ * search is open. Atomic's gate had no such exemption: it offered every
+ * viewport action and every mouse report to the find box first, which let
+ * pi-tui's `Input` claim `home`/`end` as cursor motion — silently, since
+ * `AltScreenSearchComponent.handleInput` returns `void` — while the same key
+ * also scrolled the transcript through the replay.
+ *
+ * Atomic's own overlays keep Atomic's policy; this exemption is scoped to the
+ * find box while it holds focus.
+ */
+describe("focused transcript search keeps the viewport", () => {
+	test("transcript-scrolls-while-search-focused", () => {
+		const fixture = createFixture({ mountOverlay: false, userBindings: SEARCH_BINDING });
+		try {
+			const { top, page } = anchorAtEnd(fixture);
+			openTranscriptSearch(fixture);
+			const offered = recordSearchInput(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			fixture.tui.renderNow();
+			expect(top - fixture.transcript.scrollTop).toBe(page);
+
+			fixture.terminal.input(WHEEL_UP);
+			fixture.tui.renderNow();
+			expect(top - fixture.transcript.scrollTop).toBe(page + 1);
+
+			fixture.terminal.input(PAGE_DOWN);
+			fixture.tui.renderNow();
+			expect(top - fixture.transcript.scrollTop).toBe(1);
+
+			// The viewport owns these outright: the find box is never offered them,
+			// so it cannot swallow one silently.
+			expect(offered).toEqual([]);
+			// Scrolling never cost the find box its focus or its query.
+			expect(activeSearch(fixture)?.overlay?.isFocused()).toBe(true);
+			expect(searchQuery(fixture)).toBe("");
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("home scrolls the transcript instead of moving the query cursor", () => {
+		const fixture = createFixture({ mountOverlay: false, userBindings: SEARCH_BINDING });
+		try {
+			anchorAtEnd(fixture);
+			openTranscriptSearch(fixture);
+			type(fixture, "line");
+			expect(searchQuery(fixture)).toBe("line");
+
+			// `home` is `tui.altScreen.top` and `tui.editor.cursorLineStart` at once.
+			// Fullscreen gives it to the viewport, so the caret stays at the end.
+			fixture.terminal.input(HOME);
+			fixture.tui.renderNow();
+			expect(fixture.transcript.scrollTop).toBe(0);
+
+			type(fixture, "s");
+			expect(searchQuery(fixture)).toBe("lines");
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("the find box still receives every key the viewport does not claim", () => {
+		const fixture = createFixture({ mountOverlay: false, userBindings: SEARCH_BINDING });
+		try {
+			anchorAtEnd(fixture);
+			openTranscriptSearch(fixture);
+			const offered = recordSearchInput(fixture);
+
+			type(fixture, "line 7");
+			expect(offered).toEqual(["l", "i", "n", "e", " ", "7"]);
+			expect(searchQuery(fixture)).toBe("line 7");
+			// The query drives pi-tui's matcher, which is the point of typing at all.
+			expect(activeSearch(fixture)).toMatchObject({ query: "line 7" });
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("an Atomic overlay focused above an open search keeps Atomic's policy", () => {
+		const fixture = createFixture({ consumes: true, mountOverlay: false, userBindings: SEARCH_BINDING });
+		try {
+			const { top } = anchorAtEnd(fixture);
+			openTranscriptSearch(fixture);
+
+			fixture.tui.showOverlay(fixture.overlay, { anchor: "bottom-center", width: "100%" });
+			fixture.tui.renderNow();
+			expect(fixture.tui.getFocusedComponent()).toBe(fixture.overlay);
+			expect(activeSearch(fixture)?.overlay?.isFocused()).toBe(false);
+
+			fixture.terminal.input(PAGE_UP);
+			fixture.tui.renderNow();
+			expect(fixture.overlay.handledInputs).toEqual([PAGE_UP]);
+			expect(fixture.transcript.scrollTop).toBe(top);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	/**
+	 * The exemption covers viewport keys, not host actions.
+	 * `app.thinking.toggle` is documented and remappable, and it is dispatched
+	 * from `onOverlayUnhandledInput`, which only the gated route runs — so an
+	 * exemption checked first would silently drop the toggle for as long as the
+	 * find box held focus.
+	 */
+	test("the default thinking toggle still runs while the find box has focus", () => {
+		const fixture = createFixture({ mountOverlay: false, userBindings: SEARCH_BINDING });
+		try {
+			anchorAtEnd(fixture);
+			openTranscriptSearch(fixture);
+			type(fixture, "line");
+			const scrollTop = fixture.transcript.scrollTop;
+			const offered = recordSearchInput(fixture);
+
+			fixture.terminal.input(CTRL_T);
+			fixture.tui.renderNow();
+
+			expect(fixture.thinkingToggles).toEqual([CTRL_T]);
+			// The find box is offered the key and declines it; that decline is what
+			// hands it to the host action.
+			expect(offered).toEqual([CTRL_T]);
+			// Routing it through the find box costs nothing: pi-tui's `Input`
+			// rejects control sequences, and the viewport never saw the key.
+			expect(searchQuery(fixture)).toBe("line");
+			expect(activeSearch(fixture)?.overlay?.isFocused()).toBe(true);
+			expect(fixture.transcript.scrollTop).toBe(scrollTop);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a remapped thinking toggle still runs while the find box has focus", () => {
+		const fixture = createFixture({
+			mountOverlay: false,
+			userBindings: { ...SEARCH_BINDING, "app.thinking.toggle": "alt+t" },
+		});
+		try {
+			anchorAtEnd(fixture);
+			openTranscriptSearch(fixture);
+			const offered = recordSearchInput(fixture);
+
+			// The default key binds nothing once the action moves.
+			fixture.terminal.input(CTRL_T);
+			fixture.tui.renderNow();
+			expect(fixture.thinkingToggles).toEqual([]);
+
+			fixture.terminal.input(ALT_T);
+			fixture.tui.renderNow();
+			expect(fixture.thinkingToggles).toEqual([ALT_T]);
+			expect(offered).toEqual([CTRL_T, ALT_T]);
+			expect(searchQuery(fixture)).toBe("");
+			expect(activeSearch(fixture)?.overlay?.isFocused()).toBe(true);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("the find box still owns page and wheel scrolling with the toggle rule ahead of it", () => {
+		const fixture = createFixture({ mountOverlay: false, userBindings: SEARCH_BINDING });
+		try {
+			const { top, page } = anchorAtEnd(fixture);
+			openTranscriptSearch(fixture);
+			const offered = recordSearchInput(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			fixture.terminal.input(WHEEL_UP);
+			fixture.tui.renderNow();
+
+			expect(top - fixture.transcript.scrollTop).toBe(page + 1);
+			expect(offered).toEqual([]);
+			expect(fixture.thinkingToggles).toEqual([]);
+		} finally {
+			fixture.stop();
+		}
+	});
+});
+
+/**
+ * Probe for upstream `2a95ef70` (the `PI_TUI_ESC_TIMEOUT` window applies only
+ * to a lone ESC) and `06ed8716` (an `Alt+Enter` split by SSH latency must not
+ * read as Escape-then-Enter). Both fixes reassemble bytes inside
+ * `StdinBuffer`/`ProcessTerminal`, upstream of every input listener, so the
+ * open question for Atomic is the other direction: does the chunk-splitting
+ * replay in `routeViewportInput` take a reassembled sequence apart again?
+ *
+ * It does not. `replayMouseInput` splits only a chunk whose every byte is a
+ * mouse report; both sequences below survive a decline intact and still match
+ * the action they are bound to. **Outcome: no breakage, no fix needed.**
+ */
+describe("pi 0.84.2 ESC-timeout and split Alt+Enter probes", () => {
+	test("a lone ESC bound to a viewport action replays as one sequence", () => {
+		const fixture = createFixture({ userBindings: { "tui.altScreen.pageUp": "escape" } });
+		try {
+			const { top, page } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(ESCAPE);
+			fixture.tui.renderNow();
+			expect(fixture.overlay.handledInputs).toEqual([ESCAPE]);
+			expect(top - fixture.transcript.scrollTop).toBe(page);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a reassembled alt+enter replays as one sequence", () => {
+		// `\x1b\r` is `alt+enter` only while the Kitty protocol is inactive, which
+		// is the transport `06ed8716` is about.
+		setKittyProtocolActive(false);
+		const fixture = createFixture({ userBindings: { "tui.altScreen.pageUp": "alt+enter" } });
+		try {
+			const { top, page } = anchorAtEnd(fixture);
+			expect(getKeybindings().matches(ALT_ENTER, "tui.altScreen.pageUp")).toBe(true);
+
+			fixture.terminal.input(ALT_ENTER);
+			fixture.tui.renderNow();
+			// One chunk to the overlay, and one chunk to pi-tui after the decline:
+			// a replay split into ESC and CR would match neither.
+			expect(fixture.overlay.handledInputs).toEqual([ALT_ENTER]);
+			expect(top - fixture.transcript.scrollTop).toBe(page);
 		} finally {
 			fixture.stop();
 		}

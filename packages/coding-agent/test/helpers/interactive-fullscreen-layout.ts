@@ -146,7 +146,7 @@ export function createProductionFullscreenContext(
 		showHardwareCursor: false,
 		logDirectory: tmpdir(),
 		terminal,
-		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay) =>
+		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay, focusedIsViewportSearch) =>
 			shouldHandleFullscreenViewportInput(
 				tui.getFocusedComponent(),
 				editor,
@@ -154,6 +154,7 @@ export function createProductionFullscreenContext(
 				isMouseInput,
 				focusedIsOverlay,
 				keybindings,
+				focusedIsViewportSearch,
 			),
 	});
 	const headerContainer = new Container();

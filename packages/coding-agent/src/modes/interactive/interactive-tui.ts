@@ -49,6 +49,16 @@ interface TuiAltScreenViewportDeferral {
 	shouldDeferViewportInputToOverlay?(): boolean;
 }
 
+/**
+ * pi-tui 0.84.2 keeps its transcript-search state private
+ * (tui-alt-screen.d.ts:50). Only the focus question is read here: pi-tui's own
+ * `shouldDeferViewportInputToOverlay` asks it the same way
+ * (`dist/tui-alt-screen.js:379`), and a missing field reads as "no find box".
+ */
+interface TuiAltScreenSearchInternals {
+	activeSearch?: { overlay?: { isFocused(): boolean } };
+}
+
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
 
 export function isOverlayMounted(tui: TUI, component: Component): boolean {
@@ -88,8 +98,16 @@ export interface InteractiveTuiOptions {
 	 * Return false to let a focused overlay receive viewport input first.
 	 * Mouse input is deferred only while the focused component belongs to an
 	 * overlay; non-overlay focus keeps pi-tui's transcript selection path.
+	 * `focusedIsViewportSearch` marks the one overlay pi-tui mounts itself — its
+	 * find box — which is exempt so the transcript still scrolls while a search
+	 * is open.
 	 */
-	shouldHandleViewportInput?: (data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean;
+	shouldHandleViewportInput?: (
+		data: string,
+		isMouseInput: boolean,
+		focusedIsOverlay: boolean,
+		focusedIsViewportSearch: boolean,
+	) => boolean;
 	/** Handle an unconsumed overlay input before replaying it to the viewport. */
 	onOverlayUnhandledInput?: (data: string) => boolean;
 }
@@ -141,10 +159,14 @@ export function handleUrlActivation(url: string, handlers: UrlActivationHandlers
 
 const viewportInputListeners = new WeakSet<AtomicTuiAltScreen>();
 
-const viewportInputGates = new WeakMap<
-	AtomicTuiAltScreen,
-	(data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean
->();
+type ViewportInputGate = (
+	data: string,
+	isMouseInput: boolean,
+	focusedIsOverlay: boolean,
+	focusedIsViewportSearch: boolean,
+) => boolean;
+
+const viewportInputGates = new WeakMap<AtomicTuiAltScreen, ViewportInputGate>();
 const overlayUnhandledInputHandlers = new WeakMap<AtomicTuiAltScreen, (data: string) => boolean>();
 /** Instances currently replaying overlay-declined input into pi-tui's viewport listener. */
 const viewportInputReplays = new WeakSet<AtomicTuiAltScreen>();
@@ -216,7 +238,24 @@ function isLeftMouseSequence(data: string): boolean {
 	return parseMouseSequences(data)?.some((sequence) => isLeftMouseButton(sequence)) ?? false;
 }
 
-/** Replay a chunk one report at a time because pi-tui parses one report per call. */
+/**
+ * Replay a chunk one report at a time because pi-tui parses one report per
+ * call. Only a chunk whose every byte is a mouse report is split; anything else
+ * is replayed verbatim.
+ *
+ * **Probe, pi 0.84.2 (upstream `2a95ef70`, `06ed8716`):** neither the
+ * lone-ESC timeout scope nor the split-`Alt+Enter` reassembly is affected by
+ * this replay. Both land in `StdinBuffer`/`ProcessTerminal`
+ * (`dist/stdin-buffer.js:process`, `dist/terminal.js:48`), which assemble
+ * complete sequences before any listener runs; Atomic builds pi-tui's own
+ * `ProcessTerminal` in `createFullscreenTui`/`createInteractiveTui` below and
+ * overrides neither the buffer nor its escape timeout. A reassembled `\x1b` or
+ * `\x1b\r` reaches this function as one chunk, fails `parseMouseSequences`, and
+ * is handed on unsplit — so a viewport action bound to `escape` or `alt+enter`
+ * still matches after a decline.
+ * Outcome: no breakage, covered by the replay probes in
+ * `test/pi-0.84.2-overlay-viewport-deferral.test.ts`.
+ */
 function replayMouseInput(viewportListener: TuiInputListener, data: string): void {
 	const sequences = parseMouseSequences(data);
 	if (!sequences) {
@@ -239,7 +278,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		showHardwareCursor: boolean,
 		logDirectory: string,
 		options: ConstructorParameters<typeof TuiAltScreen>[3],
-		viewportInputGate?: (data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean,
+		viewportInputGate?: ViewportInputGate,
 		onOverlayUnhandledInput?: (data: string) => boolean,
 	) {
 		super(terminal, showHardwareCursor, logDirectory, options);
@@ -276,6 +315,17 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		return tui.overlayStack.some((entry) => entry.component === this.getFocusedComponent());
 	}
 
+	/**
+	 * Whether the focused overlay is pi-tui's own transcript find box. That
+	 * overlay is viewport chrome, so it is exempt from Atomic's gate: pi-tui
+	 * exempts it from native deferral too (`dist/tui-alt-screen.js:379`), which
+	 * is what keeps the transcript scrolling while a search is open.
+	 */
+	private isFocusedViewportSearch(): boolean {
+		const { activeSearch } = this as unknown as TuiAltScreenSearchInternals;
+		return activeSearch?.overlay?.isFocused() === true;
+	}
+
 	override addInputListener(listener: TuiInputListener): () => void {
 		if (!viewportInputListeners.has(this)) {
 			viewportInputListeners.add(this);
@@ -288,7 +338,8 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			subscription.viewportUnsubscribe = super.addInputListener((data) => {
 				const gate = viewportInputGates.get(this);
 				const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
-				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay())) return undefined;
+				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay(), this.isFocusedViewportSearch()))
+					return undefined;
 				return listener(data);
 			});
 			subscription.routeUnsubscribe = super.addInputListener(subscription.routeListener);
@@ -360,7 +411,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
 		const gate = viewportInputGates.get(this);
 		const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
-		if (!gate || gate(data, isMouseInput, this.isFocusedOverlay())) return undefined;
+		if (!gate || gate(data, isMouseInput, this.isFocusedOverlay(), this.isFocusedViewportSearch())) return undefined;
 
 		// Returning `consume` below skips pi-tui's post-listener phase. Mirror its
 		// overlay-focus repair before reading the focused component so a resize
