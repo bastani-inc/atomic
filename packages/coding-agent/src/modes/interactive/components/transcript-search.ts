@@ -171,8 +171,6 @@ export interface TranscriptSearchHighlightRange {
 	current: boolean;
 }
 
-const TRAILING_ANSI = /(?:\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_])+$/;
-
 /**
  * Repaint `line` with every range in `ranges` highlighted.
  *
@@ -204,8 +202,7 @@ export function highlightSearchMatchRow(
 		cursor = endCol;
 	}
 	if (cursor === 0) return line;
-	const trailingAnsi = TRAILING_ANSI.exec(line)?.[0] ?? "";
-	const suffix = cursor < lineWidth ? sliceByColumn(line, cursor, lineWidth - cursor, true) : "";
-	pieces.push(suffix.endsWith(trailingAnsi) ? suffix : suffix + trailingAnsi);
+	// Ask for one column past the visible text so pi-tui carries trailing ANSI sequences.
+	pieces.push(sliceByColumn(line, cursor, lineWidth - cursor + 1, true));
 	return pieces.join("");
 }

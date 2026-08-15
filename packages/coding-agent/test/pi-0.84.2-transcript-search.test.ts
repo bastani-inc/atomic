@@ -111,14 +111,14 @@ describe("transcript search highlighting", () => {
 
 		assert.equal(highlighted, "\x1b[1m<m>needle</m>\x1b[22m");
 	});
-	test("preserves trailing ANSI sequences after a middle highlight", () => {
+	test("preserves multiple trailing ANSI sequences after a middle highlight", () => {
 		const highlighted = highlightSearchMatchRow(
-			"\x1b[31malpha needle omega\x1b[39m",
+			"\x1b[31malpha needle omega\x1b[39m\x1b[49m",
 			[{ startCol: 6, endCol: 12, current: false }],
 			STYLES,
 		);
 
-		assert.equal(highlighted, "\x1b[31malpha \x1b[31m<m>needle</m>\x1b[31m omega\x1b[39m");
+		assert.equal(highlighted, "\x1b[31malpha \x1b[31m<m>needle</m>\x1b[31m omega\x1b[39m\x1b[49m");
 	});
 
 	test("a range past the end of the line is clipped rather than padded onto it", () => {
