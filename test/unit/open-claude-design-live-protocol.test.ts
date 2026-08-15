@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
 	buildLiveEventPrompt,
+	buildLiveSessionStartPrompt,
 	type LiveEvent,
 	needsModel,
 	parseLiveEvent,
@@ -126,5 +127,21 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 		assert.match(prompt, /three DISTINCT on-brand variants/);
 		assert.match(prompt, /Do not poll, do not reply, and do not exit/);
 		assert.match(prompt, /\/tmp\/run\/preview\.html/);
+	});
+
+	test("the start prompt tells the user how to end a review that otherwise waits forever", () => {
+		const prompt = buildLiveSessionStartPrompt({
+			previewPath: "/tmp/run/preview.html",
+			previewFileUrl: "file:///tmp/run/preview.html",
+			browserBootstrapRules: "<rules/>",
+			round: 1,
+		});
+		assert.match(prompt, /how the user ends the review/);
+		assert.match(prompt, /close the browser tab/);
+		assert.match(prompt, /exit live/);
+		assert.match(prompt, /waits indefinitely/);
+		assert.match(prompt, /exports the design as it then stands/);
+		// The stage opens the session and stops; the workflow owns the loop.
+		assert.match(prompt, /Do NOT start a poll loop/);
 	});
 });

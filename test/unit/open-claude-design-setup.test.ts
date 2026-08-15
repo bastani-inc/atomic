@@ -157,11 +157,17 @@ describe("open-claude-design setup", () => {
 				previewFileUrl: "file:///tmp/run/preview.html",
 			});
 			assert.match(message, /review session 1 /i);
-			assert.match(message, /ends when you leave/i);
+			assert.match(message, /unbounded/i);
 			assert.doesNotMatch(message, /regeneration|budget|max_refinements/i);
 			assert.ok(message.includes("/tmp/run/preview.html"));
 			assert.ok(message.includes("file:///tmp/run/preview.html"));
 			assert.ok(message.includes("/workflow connect"));
+			// The user is the only thing that ends the review, so the gate they read
+			// beforehand has to say how, and what it costs them.
+			assert.match(message, /YOU end the review/);
+			assert.match(message, /closing the browser tab/);
+			assert.match(message, /exit live/);
+			assert.match(message, /exported/);
 			for (const option of LIVE_REVIEW_GATE_OPTIONS) {
 				assert.ok(message.includes(option), option);
 			}

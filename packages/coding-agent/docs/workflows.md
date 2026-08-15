@@ -840,6 +840,8 @@ The workflow establishes or loads project design context, extracts user-provided
 
 **The workflow owns the poll loop.** A `user-feedback-N-start` stage boots the session and prints the review URL, then durable `live-poll-N-M` tool nodes poll the helper. `live-generate-*`, `live-steer-*`, and `live-manual_edit_apply-*` stages handle exactly the events that need a model; `live-reply-N-M` tool nodes acknowledge them. `accept`, `discard`, and `prefetch` mint no model stage, and `timeout` is absorbed inside the poll node. The loop ends only on `exit`; no summary stage runs afterward. The impeccable skill ships inside Atomic, with a project-vendored copy taking precedence. There is no model-driven fallback.
 
+**Ending the review is the user's job.** The session waits through any amount of silence — a poll timeout is not an ending — so the run advances only when the user clicks exit in the Impeccable overlay, closes the browser tab, or says `exit live`. The run-level gate says so before the session opens, and the session-start stage prints it again directly under the live review URL. Ending the session exports the design as it then stands: there is no further round and no confirmation step.
+
 No `<artifact_dir>/feedback/` directory, JSON record, Markdown copy, or annotated-snapshot copy is written. The declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. It has no implicit `result` output.
 
 ```text

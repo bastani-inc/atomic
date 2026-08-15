@@ -250,9 +250,10 @@ export function buildLiveSessionStartPrompt(input: {
 			"<instructions>",
 			"1. Drive `/skill:impeccable live` against the static preview: run `live.mjs` with `--target` pointed at the preview file, or the equivalent `.impeccable/live/config.json` entry, and open the URL that serves it.",
 			"2. Print the live `http://` review URL in plain text, plus the preview file URL as the manual fallback, so anyone attaching to this run can find the review.",
-			"3. Do NOT start a poll loop. The workflow owns polling and will call you back for each event that needs you. Ending your turn does not end the review.",
+			"3. Directly under the URL, print how the user ends the review, in plain text: click exit in the Impeccable overlay, close the browser tab, or say `exit live`. State that the review waits indefinitely until they do, and that ending it exports the design as it then stands, with no further round.",
+			"4. Do NOT start a poll loop. The workflow owns polling and will call you back for each event that needs you. Ending your turn does not end the review.",
 			"</instructions>",
 		].join("\n"),
-		"<output_format>Under 120 words: the live review URL, the manual fallback path, and whether the browser opened.</output_format>",
+		"<output_format>Under 150 words: the live review URL, the manual fallback path, how to end the review, and whether the browser opened.</output_format>",
 	].join("\n\n");
 }

@@ -291,7 +291,11 @@ export function buildLiveReviewGateMessage(args: {
     `Preview URL: ${args.previewFileUrl}`,
     "",
     `"${LIVE_REVIEW_GATE_OPTIONS[0]}" opens an interactive browser session; the session-start stage prints the live http:// review URL as soon as its server is up (attach with /workflow connect to see it, or open the preview URL above directly).`,
-    "The session ends when you leave it: pick elements, accept variants, and steer for as long as you like, and everything you accept lands in the preview as you go.",
+    "The session is unbounded: pick elements, accept variants, and steer for as long as you like, and everything you accept lands in the preview as you go.",
+    "",
+    "YOU end the review, and nothing else does. It keeps waiting through any amount of silence.",
+    "End it by clicking exit in the Impeccable overlay, closing the browser tab, or saying \"exit live\".",
+    "The moment you do, the design you are looking at is exported. There is no further round and no confirmation, so end the session only when the preview is what you want handed off.",
     `"${LIVE_REVIEW_GATE_OPTIONS[1]}" accepts the current design and proceeds to export without opening a session.`,
   ].join("\n");
 }
