@@ -11,7 +11,8 @@
  * merged back into `main`. This mirrors how openai/codex tags releases.
  *
  * Mechanically:
- *   1. validate the version + a clean working tree
+ *   1. validate the version, drop the inherited repository-local git
+ *      environment, and require a clean working tree
  *   2. resolve the current attached branch (or `--base`) to its exact remote branch SHA
  *   3. read publish.yml **out of that base commit** and verify every package it
  *      publishes is already registered on npm, before anything in the
@@ -116,6 +117,42 @@ function validateVersion(version: string): void {
 	}
 }
 
+/**
+ * Git's repository-local environment variables, named by git itself.
+ *
+ * The fallback is only for a git too old to print the list; it names the six
+ * that actually redirect a command.
+ */
+const FALLBACK_GIT_LOCAL_ENV_VARS = [
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+/**
+ * Remove the inherited repository-local git environment from this process.
+ *
+ * Git honors `GIT_DIR` and its siblings over `-C <path>` and over a literal
+ * path argument alike, and every repository this script touches is addressed
+ * by path: the checkout it reads, and the temporary worktree it stamps,
+ * commits, and tags. A caller that exports them — a git hook, or the
+ * publish-release workflow running under one — would otherwise redirect all of
+ * that into a repository nobody is releasing. `git rev-parse --local-env-vars`
+ * is the list's own source, so this cannot drift as git adds to it.
+ *
+ * Every child is spawned after this runs, so deleting the keys here is what
+ * scrubs `git`, `npm`, and the nested `bun` alike.
+ */
+async function scrubGitEnvironment(): Promise<void> {
+	const listed = await $`git rev-parse --local-env-vars`.nothrow().quiet();
+	const names =
+		listed.exitCode === 0 ? listed.stdout.toString().split(/\s+/u).filter(Boolean) : FALLBACK_GIT_LOCAL_ENV_VARS;
+	for (const name of names) delete process.env[name];
+}
+
 async function gitText(args: string[], cwd: string = ROOT): Promise<string> {
 	return (await $`git -C ${cwd} ${args}`.text()).trim();
 }
@@ -209,6 +246,7 @@ async function preflightNpmRegistration(
 async function main(): Promise<void> {
 	const { version, base, push, yes, allowNew } = parseArgs();
 	validateVersion(version);
+	await scrubGitEnvironment();
 
 	// Refuse to operate on a dirty tree — the worktree is created from committed
 	// state, so uncommitted edits would silently be excluded from the release.

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
+import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { bunExecutable, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -82,9 +83,90 @@ afterAll(async () => {
 	await Promise.all([missing.close(), mirror.close()]);
 });
 
+/**
+ * Every git child this fixture spawns runs with the repository-local part of
+ * the environment removed.
+ *
+ * Git hooks export `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+ * `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` and
+ * `GIT_ALTERNATE_OBJECT_DIRECTORIES`, and git honors them over `-C <path>` and
+ * over a literal path argument alike. `git init --bare <path>` under an
+ * inherited `GIT_DIR` therefore does not initialize `<path>`: it re-initializes
+ * the repository `GIT_DIR` names — this checkout, which is a linked worktree —
+ * as bare, and every worktree sharing that git dir stops resolving. This suite
+ * did exactly that when it ran under the repository's own pre-push hook.
+ *
+ * `createGitEnvironment` is the repository's existing scrubber and mirrors
+ * `git rev-parse --local-env-vars`, so it covers those six and the rest.
+ * `git-fixture-cannot-reach-the-repository-under-test` is what proves the
+ * scrub is wired to every spawn rather than merely available.
+ */
+function gitEnvironment(): NodeJS.ProcessEnv {
+	return createGitEnvironment();
+}
+
 function git(root: string, args: string[]): void {
-	const result = spawnSyncCollect(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
+	const result = spawnSyncCollect(["git", "-C", root, ...args], {
+		stdout: "pipe",
+		stderr: "pipe",
+		env: gitEnvironment(),
+	});
 	assert.equal(result.exitCode, 0, `git ${args.join(" ")}: ${result.stderr.toString()}`);
+}
+
+/** One git query, trimmed. Failures return "" so a snapshot can record them rather than throw. */
+function gitOutput(root: string, args: string[]): string {
+	return spawnSyncCollect(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe", env: gitEnvironment() })
+		.stdout.toString()
+		.trim();
+}
+
+/**
+ * Everything a stray git command would disturb in a repository that is not the
+ * fixture: whether it is still a working checkout rather than a bare one, which
+ * git dir it resolves to, what it has checked out, and its local configuration.
+ */
+function foreignRepositorySnapshot(root: string): Record<string, string> {
+	return {
+		bare: gitOutput(root, ["rev-parse", "--is-bare-repository"]),
+		gitDir: gitOutput(root, ["rev-parse", "--absolute-git-dir"]),
+		head: gitOutput(root, ["rev-parse", "HEAD"]),
+		config: gitOutput(root, ["config", "--list", "--local"]),
+	};
+}
+
+/** The same, plus the refs — used for a repository this file owns outright. */
+function repositoryFingerprint(root: string): Record<string, string> {
+	return { ...foreignRepositorySnapshot(root), refs: gitOutput(root, ["show-ref"]) };
+}
+
+/**
+ * A repository standing in for the checkout that runs this suite, and the
+ * hook-style environment aimed at it.
+ *
+ * Asserting the hostile case against the real checkout would mean risking it;
+ * this one is owned by the test, so it can be compared byte for byte.
+ */
+function createSentinel(): { stage: string; path: string; hostile: Record<string, string> } {
+	const stage = mkdtempSync(join(tmpdir(), "atomic-cut-release-sentinel-"));
+	const path = join(stage, "checkout");
+	mkdirSync(path, { recursive: true });
+	git(path, ["init", "-b", "main"]);
+	writeFileSync(join(path, "tracked.txt"), "sentinel\n");
+	commit(path, "sentinel");
+	// Exactly what a git hook exports.
+	return {
+		stage,
+		path,
+		hostile: {
+			GIT_DIR: join(path, ".git"),
+			GIT_WORK_TREE: path,
+			GIT_INDEX_FILE: join(path, ".git", "index"),
+			GIT_COMMON_DIR: join(path, ".git"),
+			GIT_OBJECT_DIRECTORY: join(path, ".git", "objects"),
+			GIT_ALTERNATE_OBJECT_DIRECTORIES: join(path, ".git", "objects"),
+		},
+	};
 }
 
 function commit(root: string, message: string): void {
@@ -168,7 +250,14 @@ function createFixture(options: FixtureOptions): Fixture {
 	writeFileSync(workflow, publishWorkflow(options.packages, options.registry));
 	git(root, ["init", "-b", "main"]);
 	commit(root, "fixture");
-	spawnSyncCollect(["git", "init", "--bare", origin], { stdout: "pipe", stderr: "pipe" });
+	// The path argument, and only the path argument, decides what becomes bare.
+	const bare = spawnSyncCollect(["git", "init", "--bare", origin], {
+		stdout: "pipe",
+		stderr: "pipe",
+		env: gitEnvironment(),
+	});
+	assert.equal(bare.exitCode, 0, bare.stderr.toString());
+	assert.equal(gitOutput(origin, ["rev-parse", "--is-bare-repository"]), "true", "the origin was not initialized");
 	git(root, ["remote", "add", "origin", origin]);
 	git(root, ["push", "origin", "main"]);
 
@@ -190,8 +279,16 @@ interface CutResult {
  * Spawned asynchronously on purpose: `spawnSync` would block this process's
  * event loop, and the loopback registries npm is talking to live in it.
  */
-async function runCutRelease(fixture: Fixture, args: string[]): Promise<CutResult> {
-	const environment: Record<string, string | undefined> = { ...process.env };
+async function runCutRelease(
+	fixture: Fixture,
+	args: string[],
+	extraEnv: Record<string, string> = {},
+): Promise<CutResult> {
+	// Scrubbed for the same reason as every git child above: the script's own
+	// git commands are what create the worktree and write the tag, and an
+	// inherited GIT_DIR would aim them at this checkout instead of the fixture.
+	// `extraEnv` is how the one case that puts those variables *back* does it.
+	const environment: Record<string, string | undefined> = { ...gitEnvironment() };
 	// npm's own configuration, pointed at the mirror that answers "yes" to
 	// everything — including the scope-specific form, which npm prefers over
 	// `--registry`. The preflight must ignore both and ask the registry
@@ -217,6 +314,8 @@ async function runCutRelease(fixture: Fixture, args: string[]): Promise<CutResul
 	]) {
 		environment[key] = undefined;
 	}
+
+	Object.assign(environment, extraEnv);
 
 	const child = spawnProcess({
 		cmd: [bunExecutable(), "run", join(fixture.root, "scripts", "cut-release.ts"), ...args],
@@ -256,11 +355,7 @@ function gitCommands(fixture: Fixture): string[] {
 
 /** Everything the script could have mutated, read back after it exits. */
 function repositoryState(root: string): { tags: string; status: string } {
-	const read = (args: string[]): string =>
-		spawnSyncCollect(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" })
-			.stdout.toString()
-			.trim();
-	return { tags: read(["tag", "--list"]), status: read(["status", "--porcelain"]) };
+	return { tags: gitOutput(root, ["tag", "--list"]), status: gitOutput(root, ["status", "--porcelain"]) };
 }
 
 describe("cut-release npm registration preflight", () => {
@@ -280,6 +375,7 @@ describe("cut-release npm registration preflight", () => {
 				// and the publisher and then stopped. It never pruned, added a
 				// worktree, stamped a version, committed, or wrote a tag.
 				assert.deepEqual(gitCommands(fixture), [
+					"rev-parse --local-env-vars",
 					"status --porcelain",
 					"tag --list 9.9.9",
 					"rev-parse --abbrev-ref HEAD",
@@ -396,6 +492,88 @@ describe("cut-release npm registration preflight", () => {
 				assert.deepEqual(repositoryState(fixture.root), { tags: "", status: "" });
 			} finally {
 				rmSync(fixture.stage, { recursive: true, force: true });
+			}
+		},
+		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
+	);
+
+	test(
+		"git-fixture-cannot-reach-the-repository-under-test",
+		async () => {
+			// `GIT_DIR` overrides `-C <path>` and the path argument of `git init
+			// --bare` alike, so an unscrubbed fixture builds itself inside — and on
+			// top of — whichever repository the ambient environment names. Under
+			// this repository's own pre-push hook that repository is this checkout,
+			// which is a linked worktree: initializing it bare detaches all of them.
+			const sentinel = createSentinel();
+			const sentinelBefore = repositoryFingerprint(sentinel.path);
+			const selfBefore = foreignRepositorySnapshot(repoRoot);
+			assert.equal(selfBefore.bare, "false", "the repository under test is already bare");
+
+			const saved = new Map(Object.keys(sentinel.hostile).map((key) => [key, process.env[key]] as const));
+			Object.assign(process.env, sentinel.hostile);
+
+			let fixture: Fixture | undefined;
+			try {
+				try {
+					fixture = createFixture({ packages: fixturePackages, registry: missing.url });
+					const result = await runCutRelease(fixture, ["9.9.9", "--base", "main", "--yes"]);
+
+					// The whole run still landed on the fixture: it resolved its own
+					// base, read its own publisher, and aborted on its own payload.
+					assert.equal(result.exitCode, 1, result.stdout + result.stderr);
+					assert.match(result.stderr, /2 of 2 publish-payload packages are not registered on npm/u);
+					assert.equal(gitOutput(fixture.root, ["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+					assert.deepEqual(repositoryState(fixture.root), { tags: "", status: "" });
+				} finally {
+					for (const [key, value] of saved) {
+						if (value === undefined) delete process.env[key];
+						else process.env[key] = value;
+					}
+					if (fixture) rmSync(fixture.stage, { recursive: true, force: true });
+				}
+
+				// Neither repository was initialized, committed into, or turned bare.
+				assert.deepEqual(
+					repositoryFingerprint(sentinel.path),
+					sentinelBefore,
+					"the fixture wrote to the ambient repository",
+				);
+				assert.deepEqual(foreignRepositorySnapshot(repoRoot), selfBefore, "the fixture wrote to this checkout");
+			} finally {
+				rmSync(sentinel.stage, { recursive: true, force: true });
+			}
+		},
+		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
+	);
+
+	test(
+		"an exported GIT_DIR cannot redirect the cut into another repository",
+		async () => {
+			// The same hook environment, handed to the script itself rather than
+			// erased by the fixture. `cut-release.ts` addresses every repository it
+			// touches by path — the checkout it reads, and the temporary worktree it
+			// stamps and tags — so it scrubs the inherited variables before its
+			// first git command. Without that, the run reads the sentinel's state
+			// and would stamp and tag the sentinel.
+			const sentinel = createSentinel();
+			const sentinelBefore = repositoryFingerprint(sentinel.path);
+			const fixture = createFixture({ packages: fixturePackages, registry: missing.url });
+			try {
+				const result = await runCutRelease(fixture, ["9.9.9", "--base", "main", "--yes"], sentinel.hostile);
+
+				// It read the fixture's base and the fixture's publisher: the
+				// sentinel has no origin, so a redirected run dies on the base
+				// instead, and never names a payload package at all.
+				assert.equal(result.exitCode, 1, result.stdout + result.stderr);
+				assert.match(result.stderr, /2 of 2 publish-payload packages are not registered on npm/u);
+				for (const name of fixturePackages) assert.ok(result.stderr.includes(name), `missing ${name}`);
+				assert.doesNotMatch(result.stderr, /does not exist on origin/u);
+				assert.deepEqual(repositoryFingerprint(sentinel.path), sentinelBefore, "the cut wrote to the sentinel");
+				assert.deepEqual(repositoryState(fixture.root), { tags: "", status: "" });
+			} finally {
+				rmSync(fixture.stage, { recursive: true, force: true });
+				rmSync(sentinel.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,

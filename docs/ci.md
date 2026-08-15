@@ -232,6 +232,10 @@ bun run scripts/cut-release.ts 0.9.10 --base main --push --allow-new
 
 `--allow-new` covers only "npm has never heard of this name". A registry that cannot answer — unreachable, unauthorized, no npm at all, or a probe killed by a signal — stops the cut regardless, because an unreadable answer is not evidence that a package is new.
 
+### Inherited git environment
+
+`cut-release.ts` deletes every repository-local git variable — `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, and the rest of `git rev-parse --local-env-vars` — from its own process before its first git command. Git honors those over `-C <path>` and over a literal path argument alike, and the cut addresses every repository it touches by path: the checkout it reads, and the temporary worktree it stamps, commits, and tags. Running the script from a git hook, or from a workflow that runs under one, would otherwise stamp and tag a repository nobody is releasing.
+
 ## Build and validation jobs
 
 ### Native NAPI matrix
