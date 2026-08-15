@@ -52,19 +52,30 @@ export interface StageChatSearchState {
 	selectedIndex: number;
 	selectedKey: string | undefined;
 	selectionMode: StageChatSearchSelectionMode;
-	/** Row the selection is re-derived from when the query changes. */
-	anchorRow: number;
+	/**
+	 * Row the selection is re-derived from when the query changes, or
+	 * `undefined` for "wherever the reader will be when the next frame is
+	 * matched". See `resolveAnchorRow`.
+	 */
+	anchorRow: number | undefined;
 }
 
 /**
- * Open the find bar, anchored on the row the reader is parked on so the first
- * match chosen is the one nearest what they were already reading.
+ * Open the find bar.
  *
  * Opening also takes the streaming tail window off the body. A stage that is
  * mid-turn renders only the last 240 lines of the live assistant entry while
  * the reader follows the bottom, and those are the rows this search would
  * otherwise measure: the first half of a long answer would report `No matches`
  * for text still on the reader's screen a page earlier.
+ *
+ * Which is also why no anchor row is recorded here. Row numbers are positions
+ * in a corpus, and this call has just changed the corpus: `bodyMaxScroll` still
+ * describes the truncated stack the last frame painted, so a reader parked on
+ * the newest row of a long live stream would be anchored a few hundred rows
+ * above where they are reading and the first match chosen would be one they
+ * had scrolled past minutes ago. The anchor is resolved instead on the frame
+ * that actually matches, against the rows that frame measured.
  */
 export function openStageChatSearch(ctx: StageChatViewContext): void {
 	if (ctx.search) return;
@@ -77,7 +88,7 @@ export function openStageChatSearch(ctx: StageChatViewContext): void {
 		selectedIndex: -1,
 		selectedKey: undefined,
 		selectionMode: "query",
-		anchorRow: firstVisibleBodyRow(ctx),
+		anchorRow: undefined,
 	};
 	ctx.chatHost.setStreamingTailWindowEnabled(false);
 	ctx.requestRender?.();
@@ -96,12 +107,18 @@ export function closeStageChatSearch(ctx: StageChatViewContext): void {
 	ctx.requestRender?.();
 }
 
-/** Replace the query, re-anchoring on the match the reader is looking at. */
+/**
+ * Replace the query, re-anchoring on the match the reader is looking at.
+ *
+ * With no match selected there is nothing to re-anchor on, and the reader's own
+ * position is deliberately *not* read here either: a query typed before the
+ * first frame of an open search would be anchored in the pre-search corpus.
+ * Clearing the anchor asks the next refresh for it.
+ */
 export function setStageChatSearchQuery(ctx: StageChatViewContext, query: string): void {
 	const search = ctx.search;
 	if (!search || query === search.query) return;
-	const selected = search.matches[search.selectedIndex];
-	search.anchorRow = selected?.segments[0]?.row ?? firstVisibleBodyRow(ctx);
+	search.anchorRow = search.matches[search.selectedIndex]?.segments[0]?.row;
 	search.query = query;
 	search.selectionMode = "query";
 	search.selectedIndex = -1;
@@ -191,6 +208,14 @@ export function refreshStageChatSearch(
 	}
 	const lines = ctx.chatHost.renderBodyRows(width, 0, rowCount);
 	const matches = findSearchMatches(lines, search.query);
+	// A query typed but not yet anchored is anchored *here*, against the rows
+	// this frame measured. Anywhere earlier is a different corpus: opening the
+	// search dropped the streaming tail window, and a live stage grows between
+	// renders, so a row number recorded before this point names a row the
+	// reader is not on.
+	if (search.selectionMode === "query" && search.anchorRow === undefined) {
+		search.anchorRow = predictedFirstVisibleBodyRow(ctx, rowCount, Math.max(1, Math.floor(layout.transcriptRows)));
+	}
 	search.selectedIndex = selectMatchIndex(search, matches);
 	search.matches = matches;
 	search.selectedKey = search.selectedIndex >= 0 ? getSearchMatchKey(matches[search.selectedIndex]!) : undefined;
@@ -205,7 +230,8 @@ function selectMatchIndex(search: StageChatSearchState, matches: readonly Transc
 		: -1;
 	switch (search.selectionMode) {
 		case "query": {
-			const index = matches.findIndex((match) => (match.segments[0]?.row ?? 0) >= search.anchorRow);
+			const anchorRow = search.anchorRow ?? 0;
+			const index = matches.findIndex((match) => (match.segments[0]?.row ?? 0) >= anchorRow);
 			return index < 0 ? 0 : index;
 		}
 		case "next": {
@@ -317,12 +343,18 @@ export function highlightStageChatSearchRows(
 /**
  * Match styling, read from the host theme on every frame so `/theme` repaints
  * an open search rather than leaving it on the palette it opened with.
+ *
+ * Colors *and* attributes match the fullscreen transcript search: an ordinary
+ * match is underlined, the selected one is inverse and bold
+ * (`interactive-tui.ts` createFullscreenTui). Same two theme tokens, same two
+ * attributes — a reader who searches a stage chat and then the transcript
+ * behind it sees one feature rather than two that resemble each other.
  */
 export function stageChatSearchStyles(ctx: StageChatViewContext): TranscriptSearchHighlightStyles {
 	const colors = searchMatchColors(ctx.piTheme, ctx.theme);
 	return {
-		match: (text) => paint(text, colors.text, { bg: colors.bg }),
-		currentMatch: (text) => paint(text, colors.text, { bg: colors.bg, bold: true }),
+		match: (text) => paint(text, colors.text, { bg: colors.bg, underline: true }),
+		currentMatch: (text) => paint(text, colors.text, { bg: colors.bg, bold: true, inverse: true }),
 	};
 }
 

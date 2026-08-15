@@ -88,11 +88,16 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		return true;
 	}
 	if (handleStageChatJumpToBottom(ctx, data)) return true;
-	if (ctx.chatHost.handleScrollInput(data)) return true;
+	// Before the viewport, not after it. `handleScrollInput` answers *physical*
+	// PageUp/PageDown/Home/End, so a reader who bound `tui.altScreen.search` to
+	// one of them — a normal remap, and one the keybindings manager reports as
+	// search and nothing else — would watch the chat scroll and never get a find
+	// box. A bound action outranks a key the viewport recognises by shape.
 	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearch) && !isBlocked(ctx) && !readOnlyPromptArchive) {
 		openStageChatSearch(ctx);
 		return true;
 	}
+	if (ctx.chatHost.handleScrollInput(data)) return true;
 	if (matchesKey(data, Key.escape)) {
 		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
 			return ctx.chatHost.handleInput(data);

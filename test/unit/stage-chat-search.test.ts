@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { getKeybindings, ScrollView, setKeybindings, Text, type TuiAltScreen, VStack } from "@earendil-works/pi-tui";
+import chalk from "chalk";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
@@ -26,7 +27,9 @@ import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/inte
 import type { PiCustomComponent } from "../../packages/workflows/src/extension/ui-surface.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { searchMatchColors } from "../../packages/workflows/src/tui/graph-theme.js";
+import { stageChatSearchStyles } from "../../packages/workflows/src/tui/stage-chat-search.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+import type { StageChatViewContext } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
 import {
 	type AgentSessionEvent,
 	assistantTextMessage,
@@ -64,6 +67,19 @@ const NEEDLE = "buried needle";
 const needlePattern = new RegExp(`${NEEDLE} is here`);
 /** Comfortably past `tailStreamingText`'s 240-line window. */
 const STREAM_LINES = 300;
+/**
+ * Stream lines the two marks sit on.
+ *
+ * `MARK_ABOVE_LINE` is chosen to fall between the two anchors that can be
+ * computed for the same reader: the top of the last window of the *truncated*
+ * corpus the tail window paints, and the top of the last window of the whole
+ * transcript the search reads. `MARK_AT_READER_LINE` is on the reader's screen.
+ */
+const MARK_ABOVE_LINE = 270;
+const MARK_AT_READER_LINE = STREAM_LINES - 1;
+/** The highlight background `themeWithSearchColors` pins, as its SGR run. */
+const HIGHLIGHT_BG = "\x1b[48;2;20;21;22m";
+const SGR_RESET = "\x1b[0m";
 /** pi-tui's zero-width hardware-cursor marker, which occupies no column. */
 const CURSOR_MARKER = /\x1b_pi:c\x07/g;
 
@@ -296,6 +312,25 @@ function escapeAnsi(sequence: string): string {
 	return sequence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * The run one search highlight painted on a row, escapes included: from the
+ * highlight's own background sequence to the reset that ends it. Reading the
+ * whole row instead would mix in whatever attributes the transcript already
+ * used.
+ */
+function highlightRun(line: string): string {
+	const start = line.indexOf(HIGHLIGHT_BG);
+	if (start < 0) return "";
+	const end = line.indexOf(SGR_RESET, start);
+	return end < 0 ? line.slice(start) : line.slice(start, end);
+}
+
+/** The SGR attribute codes — bold, italic, underline, inverse — a run carries. */
+function attributes(run: string): string[] {
+	const codes = [...run.matchAll(/\x1b\[(\d+)m/g)].map((match) => match[1] ?? "");
+	return [...new Set(codes.filter((code) => ["1", "3", "4", "7"].includes(code)))].sort();
+}
+
 function type(view: StageChatView, text: string): void {
 	for (const character of text) view.handleInput(character);
 }
@@ -404,7 +439,7 @@ describe("stage chat search", () => {
 		assert.ok(highlighted, "the revealed match must be on screen");
 		assert.match(
 			highlighted,
-			new RegExp(`${escapeAnsi(searchMatchBg)}${escapeAnsi(searchMatchText)}\\x1b\\[1mburied`),
+			new RegExp(`${escapeAnsi(searchMatchBg)}${escapeAnsi(searchMatchText)}\\x1b\\[1m\\x1b\\[7mburied`),
 		);
 		// Only the match is repainted; the rest of the row keeps its own colors.
 		assert.equal(highlighted.split(searchMatchBg).length - 1, 2, "expected exactly the two segments of one match");
@@ -419,7 +454,7 @@ describe("stage chat search", () => {
 		const highlighted = chat.render().find((line) => plain(line).includes("buried"));
 
 		assert.ok(highlighted, "the revealed match must be on screen");
-		assert.match(highlighted, /\x1b\[48;2;69;71;90m\x1b\[38;2;205;214;244m\x1b\[1mburied/);
+		assert.match(highlighted, /\x1b\[48;2;69;71;90m\x1b\[38;2;205;214;244m\x1b\[1m\x1b\[7mburied/);
 		assert.equal(fallbackBg, "#45475a", "fixture pins the palette this assertion encodes");
 	});
 
@@ -444,7 +479,50 @@ describe("stage chat search", () => {
 		const highlighted = chat.render().find((line) => plain(line).includes("buried"));
 
 		assert.ok(highlighted, "the revealed match must be on screen");
-		assert.match(highlighted, /\x1b\[48;2;20;21;22m\x1b\[38;2;17;18;19m\x1b\[1mburied/);
+		assert.match(highlighted, /\x1b\[48;2;20;21;22m\x1b\[38;2;17;18;19m\x1b\[1m\x1b\[7mburied/);
+	});
+
+	/**
+	 * §5.5 asks the two search surfaces to look identical, and that is
+	 * attributes as much as colors: L8 underlines an ordinary match and paints
+	 * the selected one inverse and bold (`interactive-tui.ts` createFullscreenTui).
+	 * Colors alone left the stage chat's current match separated from its
+	 * neighbours by boldness the terminal renders on an already-colored run —
+	 * on most themes, nothing a reader can see.
+	 *
+	 * The expected codes are derived from L8's own styles rather than written
+	 * down here, so the two surfaces cannot drift apart without this failing.
+	 */
+	test("stage-chat matches carry the fullscreen search attributes", () => {
+		const previousLevel = chalk.level;
+		// `Theme.underline`/`bold`/`inverse` are chalk, and chalk emits nothing
+		// at level 0 — which is what a test runner without a TTY gets.
+		chalk.level = 3;
+		try {
+			const piTheme = themeWithSearchColors("#141516", "#111213");
+			const colored = (text: string) => piTheme.bg("searchMatchBg", piTheme.fg("searchMatchText", text));
+			const fullscreenMatch = attributes(piTheme.underline(colored("x")));
+			const fullscreenCurrent = attributes(piTheme.bold(piTheme.inverse(colored("x"))));
+			assert.deepEqual(fullscreenMatch, ["4"], "L8 underlines an ordinary match");
+			assert.deepEqual(fullscreenCurrent, ["1", "7"], "L8 paints the current match bold and inverse");
+
+			const chat = makeSearchableChat({ piTheme, messages: ["twin alpha", "twin beta"] });
+			const styles = stageChatSearchStyles(chat.view as unknown as StageChatViewContext);
+			assert.deepEqual(attributes(styles.match("x")), fullscreenMatch);
+			assert.deepEqual(attributes(styles.currentMatch("x")), fullscreenCurrent);
+
+			chat.view.handleInput(CTRL_SHIFT_F);
+			type(chat.view, "twin");
+			const frame = chat.render();
+			assert.match(chat.visible(), /1\/2/, "fixture is wrong: the first match is not the selected one");
+			const current = frame.find((line) => plain(line).includes("twin alpha"));
+			const ordinary = frame.find((line) => plain(line).includes("twin beta"));
+			assert.ok(current && ordinary, "both matches must be on screen for this comparison");
+			assert.deepEqual(attributes(highlightRun(current)), fullscreenCurrent);
+			assert.deepEqual(attributes(highlightRun(ordinary)), fullscreenMatch);
+		} finally {
+			chalk.level = previousLevel;
+		}
 	});
 
 	/**
@@ -651,6 +729,38 @@ describe("stage chat search", () => {
 	});
 
 	/**
+	 * Opening the search drops the streaming tail window, and that renumbers
+	 * the body: rows the tail was hiding come back above the reader, so every
+	 * row they can see moves down by that many. A row number recorded before
+	 * that — at open, or on the first keystroke of a query typed before the
+	 * next frame — names a row hundreds of lines above where they are reading,
+	 * and the search opens on a match up there instead of the one in front of
+	 * them. Precisely the long-live-stream case the whole-corpus search exists
+	 * to serve.
+	 */
+	test("a query typed on a long live stream anchors where the reader is", () => {
+		const chat = makeSearchableChat({ streaming: true, messages: ["settled line"] });
+		const streamed = Array.from({ length: STREAM_LINES }, (_, index) => `stream line ${index + 1}`);
+		streamed[MARK_ABOVE_LINE - 1] = `stream line ${MARK_ABOVE_LINE} mark alpha`;
+		streamed[MARK_AT_READER_LINE - 1] = `stream line ${MARK_AT_READER_LINE} mark beta`;
+		streamAssistantText(chat, streamed);
+
+		const painted = chat.visible();
+		assert.match(painted, /mark beta/, "fixture is wrong: the reader does not start at the live end");
+		assert.doesNotMatch(painted, /mark alpha/, "fixture is wrong: both marks start on screen");
+
+		// No render between opening and typing: the reader types straight into
+		// the box, which is the window where the stale anchor was readable.
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, "mark ");
+
+		const searching = chat.visible();
+		assert.match(searching, /2\/2/, "the match after the reader's own row is the one to select");
+		assert.match(searching, /mark beta/, "the search jumped away from the rows the reader was on");
+		assert.doesNotMatch(searching, /mark alpha/);
+	});
+
+	/**
 	 * The search measures the rows this frame is about to paint, then scrolls
 	 * to the selected match. Both halves used to be answered with the previous
 	 * frame's layout: a match inside rows appended since the last paint was
@@ -794,5 +904,33 @@ describe("stage chat search", () => {
 
 		chat.view.handleInput(CTRL_N);
 		assert.match(chat.visible(), /2\/\d+/, "the bound searchNext must walk them");
+	});
+
+	/**
+	 * The chat body's viewport answers PageUp/PageDown/Home/End by *shape*
+	 * (`ScrollableComponentViewport.handleInput`), and it used to be offered
+	 * every key before the search action was. A reader who moved
+	 * `tui.altScreen.search` onto one of those keys — a legal remap, and one
+	 * the keybindings manager then reports as search and nothing else — got a
+	 * scroll and no find box, with no other key left to open one. A bound
+	 * action outranks a key the viewport recognises by shape.
+	 */
+	test("a search remapped onto a scroll key opens the find box instead of scrolling", () => {
+		const keybindings = new KeybindingsManager({ "tui.altScreen.search": "pageUp" });
+		assert.equal(keybindings.matches(PAGE_UP, "tui.altScreen.search"), true);
+		assert.equal(
+			keybindings.matches(CTRL_SHIFT_F, "tui.altScreen.search"),
+			false,
+			"fixture is wrong: the remap left the default key bound too",
+		);
+
+		const chat = makeSearchableChat({ piKeybindings: keybindings });
+		const host = (chat.view as unknown as { chatHost: { bodyScrollFromBottom(): number } }).chatHost;
+		assert.match(chat.visible(), /filler line 80/, "fixture is wrong: the chat does not start at its end");
+
+		assert.equal(chat.view.handleInput(PAGE_UP), true);
+
+		assert.match(chat.visible(), /Find in stage chat/, "the bound search key must open the box");
+		assert.equal(host.bodyScrollFromBottom(), 0, "the chat scrolled instead of opening the search");
 	});
 });
