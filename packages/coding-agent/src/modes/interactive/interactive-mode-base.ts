@@ -120,9 +120,10 @@ export function isFullscreenViewportAction(data: string, keybindings: Keybinding
  * `app.thinking.toggle` is a documented, remappable host action, and it is
  * dispatched from `onOverlayUnhandledInput`, which only the gated route runs.
  * Exempting the find box first would send that key to pi-tui instead and drop
- * the toggle for as long as a search had focus. Routing it through the find box
- * costs nothing: pi-tui's `Input` rejects control sequences, so the query is
- * untouched and the declined key reaches the host action.
+ * the toggle for as long as a search had focus. The gated route answers it
+ * before the find box sees it (`interactive-tui.ts:routeViewportInput`),
+ * because the binding may be a bare letter (`docs/keybindings.md`) and pi-tui's
+ * `Input` types a printable character into the query rather than rejecting it.
  */
 export function shouldHandleFullscreenViewportInput(
 	focused: Component | null,

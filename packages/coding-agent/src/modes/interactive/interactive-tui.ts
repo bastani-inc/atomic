@@ -253,7 +253,7 @@ function isLeftMouseSequence(data: string): boolean {
  * `\x1b\r` reaches this function as one chunk, fails `parseMouseSequences`, and
  * is handed on unsplit — so a viewport action bound to `escape` or `alt+enter`
  * still matches after a decline.
- * Outcome: no breakage, covered by the replay probes in
+ * Outcome: no breakage, no fix needed — covered by the replay probes in
  * `test/pi-0.84.2-overlay-viewport-deferral.test.ts`.
  */
 function replayMouseInput(viewportListener: TuiInputListener, data: string): void {
@@ -449,6 +449,19 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		this.repairOverlayFocus();
 		const focused = this.getFocusedComponent();
 		const tui = this as unknown as TuiOverlayInternals;
+		// pi-tui's find box is exempt from the gate for everything except a host
+		// action, so a chunk that reaches here while it holds focus is a host
+		// action by construction. Dispatch it before the query sees it: the
+		// binding is user-remappable to a bare letter (`docs/keybindings.md`),
+		// and pi-tui's `Input` inserts a printable character rather than
+		// rejecting it the way it rejects `ctrl+t` — so offering it first typed
+		// the key into the query and then ran the action. This is scoped to
+		// pi-tui's own chrome; an application overlay keeps first refusal on
+		// every key it is offered, host actions included.
+		if (this.isFocusedViewportSearch() && this.handleOverlayUnhandledInput(data, focused)) {
+			tui.requestImmediateRender();
+			return { consume: true };
+		}
 		if (focused?.handleInput && (!isKeyRelease(data) || focused.wantsKeyRelease === true)) {
 			const handleInput = focused.handleInput as (
 				data: string,
