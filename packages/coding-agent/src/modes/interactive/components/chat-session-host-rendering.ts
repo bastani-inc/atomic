@@ -182,7 +182,7 @@ function streamingWindowedEntry<TExtraEntry extends ChatTranscriptEntryLike>(
 	entry: ChatMessageEntry,
 	isStreaming: boolean,
 ): ChatMessageEntry {
-	if (!isStreaming || state.bodyViewport.getScrollFromBottom() !== 0) {
+	if (!isStreaming || !state.streamingTailWindowEnabled || state.bodyViewport.getScrollFromBottom() !== 0) {
 		return entry;
 	}
 	if (entry.kind !== "assistant") return entry;

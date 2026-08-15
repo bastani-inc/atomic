@@ -129,12 +129,17 @@ export class StageChatView implements Component, Focusable {
 		const promptActive = !customUiActive && this.promptState !== null;
 		const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 		const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
+		// A paused stage and a read-only archive hide the composer but still
+		// paint their chat rows, so they are searchable; an archived *prompt*
+		// footprint replaces those rows with the question card and is not.
+		const transcriptVisible =
+			!customUiActive && !promptActive && !blocked && !(readOnlyArchive && stage?.promptFootprint !== undefined);
 
 		// Whatever swaps the transcript out of the body takes the find box with
 		// it. A bar left painted over a body it cannot search is the one state
 		// where Escape has two plausible meanings, and the reader would have to
 		// guess which one this frame means.
-		if (chatChromeHidden) closeStageChatSearch(ctx);
+		if (!transcriptVisible) closeStageChatSearch(ctx);
 		// The find box owns the caret while it is open, so the composer paints
 		// unfocused and only one component emits a cursor.
 		const searchActive = this.search !== null;
@@ -182,6 +187,27 @@ export class StageChatView implements Component, Focusable {
 			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
 			keyLabel: () => keyText("tui.altScreen.bottom"),
 		});
+		/**
+		 * Paint the transcript with the find box's answer for this frame.
+		 *
+		 * Matching runs first because it may scroll the body to reveal a match
+		 * the window does not hold, and the highlight is applied to the rows
+		 * that scroll produced. Every body that shows chat rows goes through
+		 * here — live, paused, and archived alike — so none of them can accept
+		 * the search key and then answer `No matches` for a row on the screen.
+		 */
+		const renderSearchableTranscript = (rows: number, indicatorSharesRows: boolean): string[] => {
+			refreshStageChatSearch(ctx, w, {
+				transcriptRows: rows,
+				indicatorSharesTranscriptRows: indicatorSharesRows,
+			});
+			const painted = this.chatHost.renderBody(w, rows);
+			return highlightStageChatSearchRows(
+				ctx,
+				painted,
+				Math.max(0, this.chatHost.bodyMaxScroll() - this.chatHost.bodyScrollFromBottom()),
+			);
+		};
 		if (bodyBudget <= 0) {
 			bodyLines = [];
 		} else if (promptActive) {
@@ -190,23 +216,28 @@ export class StageChatView implements Component, Focusable {
 			bodyLines = renderBlockedBody(ctx, w, bodyBudget, stage);
 		} else if (!readOnlyArchive && isPaused(ctx, stage)) {
 			reservedIndicatorLines = bodyBudget > 1 ? indicator.render(w) : [];
-			bodyLines = renderPausedBody(ctx, w, bodyBudget, reservedIndicatorLines, () => indicator.render(w));
+			bodyLines = renderPausedBody(
+				ctx,
+				w,
+				bodyBudget,
+				reservedIndicatorLines,
+				() => indicator.render(w),
+				(rows) => renderSearchableTranscript(rows, false),
+			);
 		} else if (readOnlyArchive) {
 			reservedIndicatorLines = bodyBudget > 1 ? indicator.render(w) : [];
-			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage, reservedIndicatorLines, () =>
-				indicator.render(w),
+			bodyLines = renderReadOnlyArchiveBody(
+				ctx,
+				w,
+				bodyBudget,
+				stage,
+				reservedIndicatorLines,
+				() => indicator.render(w),
+				(rows) => renderSearchableTranscript(rows, false),
 			);
 		} else {
 			transcriptBodyActive = true;
-			// Match before painting: the search reads every row of the transcript
-			// and may scroll the body to reveal one the window does not hold.
-			refreshStageChatSearch(ctx, w, bodyBudget);
-			bodyLines = this.chatHost.renderBody(w, bodyBudget);
-			bodyLines = highlightStageChatSearchRows(
-				ctx,
-				bodyLines,
-				Math.max(0, this.chatHost.bodyMaxScroll() - this.chatHost.bodyScrollFromBottom()),
-			);
+			bodyLines = renderSearchableTranscript(bodyBudget, true);
 		}
 		const indicatorLines = transcriptBodyActive && bodyBudget > 1 ? indicator.render(w) : [];
 		const indicatorVisible = indicatorLines.length > 0;

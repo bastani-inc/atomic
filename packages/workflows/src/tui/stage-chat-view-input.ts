@@ -33,6 +33,17 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (matchesKey(data, Key.ctrl("t")) && matchesAction(keybindings, data, APP_ACTION.thinkingToggle)) {
 		return false;
 	}
+	// An open find box answers its own close key before anything else in this
+	// function. Every later branch is a different reader intent — detach,
+	// dismiss a mounted custom UI, interrupt the stage, close the pane — and a
+	// reader who pressed Escape at a visible find box meant none of them. The
+	// custom-UI branch below is the one that made this ordering load-bearing:
+	// mounting happens between renders, so a frame can hold both an open box
+	// and a mounted UI, and the mounted UI would answer the same Escape.
+	if (ctx.search && isStageChatSearchCloseInput(ctx, data)) {
+		closeStageChatSearch(ctx);
+		return true;
+	}
 	if (matchesKey(data, Key.ctrl("x"))) {
 		// Leaving for the graph takes the find box with it: a chat reattached
 		// later opens on its transcript, not on someone's stale query.
@@ -63,18 +74,9 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 	const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
 
-	// Escape reaches an open find box before it reaches the interrupt-or-close
-	// ladder below, on every frame the box is open — including the one where a
-	// prompt card or a block arrives and takes the transcript away. That frame
-	// used to dismiss the search and then interrupt the stage with the same
-	// keystroke.
-	if (ctx.search && isStageChatSearchCloseInput(ctx, data)) {
-		closeStageChatSearch(ctx);
-		return true;
-	}
-	// A prompt card or a blocked stage swaps the transcript out of the body, so
-	// the search goes with it.
-	if (ctx.search && (ctx.promptState || isBlocked(ctx))) closeStageChatSearch(ctx);
+	// A prompt card, a blocked stage, or an archived prompt footprint swaps the
+	// transcript out of the body, so the search goes with it.
+	if (ctx.search && (ctx.promptState || isBlocked(ctx) || readOnlyPromptArchive)) closeStageChatSearch(ctx);
 	if (ctx.search) return handleStageChatSearchKeys(ctx, data);
 	if (ctx.promptState) {
 		if (handlePromptScrollInput(ctx, data, ctx.promptEditor === null)) return true;
@@ -87,7 +89,7 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (handleStageChatJumpToBottom(ctx, data)) return true;
 	if (ctx.chatHost.handleScrollInput(data)) return true;
-	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearch) && !isBlocked(ctx)) {
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearch) && !isBlocked(ctx) && !readOnlyPromptArchive) {
 		openStageChatSearch(ctx);
 		return true;
 	}
@@ -122,6 +124,15 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 /**
  * Input while the find box is open.
  *
+ * Navigation is the four `tui.altScreen.search*` actions and nothing else,
+ * exactly as pi-tui routes them for the fullscreen transcript
+ * (`tui-alt-screen.js` handleViewportInput). A reader who moves `searchNext`
+ * onto Ctrl+N has unbound Enter, and Enter must then type into the query
+ * rather than quietly keep its old job here. The physical defaults are used
+ * only when no keybindings manager is wired at all, which is the one case
+ * where the actions cannot answer and a host would otherwise get a find box it
+ * cannot navigate or close.
+ *
  * Escape is the contended key: the ladder in `handleStageChatInput` maps it to
  * interrupt-the-stage or close-the-pane, and both are the wrong answer for a
  * reader who only wants the find box gone. It is answered above that ladder,
@@ -147,9 +158,10 @@ function handleStageChatSearchKeys(ctx: StageChatViewContext, data: string): boo
 		navigateStageChatSearch(ctx, -1);
 		return true;
 	}
-	// Enter advances even with no keybindings manager wired, so the box is
-	// navigable on a host that supplies none.
-	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearchNext) || matchesKey(data, Key.enter)) {
+	if (
+		matchesAction(keybindings, data, TUI_ACTION.altScreenSearchNext) ||
+		(!keybindings && matchesKey(data, Key.enter))
+	) {
 		navigateStageChatSearch(ctx, 1);
 		return true;
 	}
@@ -179,13 +191,14 @@ function isStageChatSearchAction(ctx: StageChatViewContext, data: string): boole
 }
 
 /**
- * What dismisses an open find box: the literal Escape — which works even for a
- * host that wired no keybindings manager, or bound `searchClose` elsewhere —
- * and the bound `tui.altScreen.searchClose`.
+ * What dismisses an open find box: the bound `tui.altScreen.searchClose`, and
+ * — only for a host that wired no keybindings manager — the physical Escape
+ * that action defaults to.
  */
 function isStageChatSearchCloseInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	return matchesKey(data, Key.escape) || matchesAction(keybindings, data, TUI_ACTION.altScreenSearchClose);
+	if (!keybindings) return matchesKey(data, Key.escape);
+	return matchesAction(keybindings, data, TUI_ACTION.altScreenSearchClose);
 }
 
 function handleStageChatJumpToBottom(ctx: StageChatViewContext, data: string): boolean {

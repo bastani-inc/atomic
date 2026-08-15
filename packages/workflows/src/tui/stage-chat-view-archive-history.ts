@@ -33,6 +33,12 @@ function postMortemUnavailableMessage(reason: StageChatViewContext["postMortemUn
 	}
 }
 
+/**
+ * `renderTranscript` paints the archived chat rows into the budget it is given.
+ * `StageChatView` passes the search-aware painter so an open find box searches
+ * and highlights a read-only archive exactly as it does a live chat; the
+ * default keeps this function usable on its own.
+ */
 export function renderReadOnlyArchiveBody(
 	ctx: StageChatViewContext,
 	width: number,
@@ -40,6 +46,7 @@ export function renderReadOnlyArchiveBody(
 	stage: StageSnapshot | undefined,
 	indicatorLines: readonly string[] = [],
 	renderIndicator: () => readonly string[] = () => indicatorLines,
+	renderTranscript: (rows: number) => string[] = (rows) => ctx.chatHost.renderBody(width, rows),
 ): string[] {
 	if (stage?.promptFootprint) {
 		return renderReadOnlyPromptArchiveBody(ctx, width, budget, stage);
@@ -74,7 +81,7 @@ export function renderReadOnlyArchiveBody(
 	const reservedIndicatorRows =
 		indicatorLines.length > 0 && transcriptBudget > indicatorLines.length ? indicatorLines.length : 0;
 	const transcriptRows = transcriptBudget - reservedIndicatorRows;
-	const lines = transcriptRows > 0 ? ctx.chatHost.renderBody(width, transcriptRows) : [];
+	const lines = transcriptRows > 0 ? renderTranscript(transcriptRows) : [];
 	const visibleIndicatorLines =
 		reservedIndicatorRows > 0 ? [...renderIndicator().slice(0, reservedIndicatorRows)] : [];
 	while (visibleIndicatorLines.length < reservedIndicatorRows) visibleIndicatorLines.push(blankLine(width));
@@ -171,12 +178,14 @@ function formatReadOnlyPromptAnswer(value: unknown, kind: PendingPrompt["kind"])
 	}
 }
 
+/** `renderTranscript` as in `renderReadOnlyArchiveBody`: a paused chat is searchable too. */
 export function renderPausedBody(
 	ctx: StageChatViewContext,
 	width: number,
 	budget: number,
 	indicatorLines: readonly string[] = [],
 	renderIndicator: () => readonly string[] = () => indicatorLines,
+	renderTranscript: (rows: number) => string[] = (rows) => ctx.chatHost.renderBody(width, rows),
 ): string[] {
 	const t = ctx.theme;
 	const callout: string[] = [];
@@ -194,7 +203,7 @@ export function renderPausedBody(
 	const reservedIndicatorRows =
 		indicatorLines.length > 0 && transcriptBudget > indicatorLines.length ? indicatorLines.length : 0;
 	const transcriptRows = transcriptBudget - reservedIndicatorRows;
-	const lines = transcriptRows > 0 ? ctx.chatHost.renderBody(width, transcriptRows) : [];
+	const lines = transcriptRows > 0 ? renderTranscript(transcriptRows) : [];
 	const visibleIndicatorLines =
 		reservedIndicatorRows > 0 ? [...renderIndicator().slice(0, reservedIndicatorRows)] : [];
 	while (visibleIndicatorLines.length < reservedIndicatorRows) visibleIndicatorLines.push(blankLine(width));

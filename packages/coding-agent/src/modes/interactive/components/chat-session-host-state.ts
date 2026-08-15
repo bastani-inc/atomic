@@ -76,6 +76,17 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	liveChat: LiveChatEntriesController;
 	editor: EditorComponent | undefined;
 	optimisticUserSignatureCounts = new Map<string, number>();
+	/**
+	 * Whether an assistant entry still streaming into a sticky-bottom body is
+	 * rendered as its tail alone.
+	 *
+	 * On by default: while the reader is following a live stream, the rows far
+	 * above the cursor cost layout work nobody is reading. A caller that must
+	 * see the whole entry — a find box searching this transcript — turns it off
+	 * for as long as it needs the rows, because a corpus missing the head of
+	 * the stream would report a match that is plainly on the screen as absent.
+	 */
+	streamingTailWindowEnabled = true;
 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>, callbacks: ChatSessionHostStateCallbacks<TExtraEntry>) {
 		this.style = opts.style;

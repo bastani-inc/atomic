@@ -164,4 +164,32 @@ describe("ScrollableComponentViewport absolute row access", () => {
 		view.scrollTo(9_000);
 		assert.equal(view.getScrollFromBottom(), 0);
 	});
+
+	/**
+	 * The caller that needs an absolute row is a search, and a search measures
+	 * the stack as it is *now*: rows may have arrived since the last render.
+	 * Resolving the request against the previous frame — its smaller
+	 * `maxScroll`, then its anchor — silently answered with a row nobody asked
+	 * for, which for a sticky-bottom body meant no movement at all.
+	 */
+	test("scrollTo names a row of the stack the next render paints, not the last one", () => {
+		const view = viewport(100, 5);
+		view.render(20);
+		assert.equal(view.getMaxScroll(), 95);
+
+		view.setComponents([textComponent(Array.from({ length: 141 }, (_, index) => `row ${index + 1}`))]);
+		view.scrollTo(100);
+
+		assert.equal(view.render(20)[0]?.trim(), "row 101");
+	});
+
+	test("any other scroll withdraws a pending scrollTo", () => {
+		const view = viewport(50, 5);
+		view.render(20);
+
+		view.scrollTo(10);
+		view.scrollToBottom();
+
+		assert.equal(view.render(20)[0]?.trim(), "row 46");
+	});
 });

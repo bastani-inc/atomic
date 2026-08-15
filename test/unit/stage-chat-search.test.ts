@@ -45,6 +45,8 @@ const CTRL_SHIFT_F = "\x1b[102;6u";
 const ENTER = "\r";
 /** pi-tui's default `tui.altScreen.searchClose`. */
 const ESCAPE = "\x1b";
+/** Not bound to anything here until a test rebinds `searchNext` onto it. */
+const CTRL_N = "\x0e";
 const PAGE_UP = "\x1b[5~";
 const HOME = "\x1b[H";
 const WIDTH = 80;
@@ -54,6 +56,14 @@ const FILLER_MESSAGES = 80;
 const LEAD_MESSAGES = 12;
 /** Appears once, far above any window this chat shows. */
 const NEEDLE = "buried needle";
+/**
+ * The needle *in the transcript*. The query line of the find bar shows the
+ * needle too, so a bare match on the frame proves only that the reader typed
+ * it; the trailing words are what pin it to a body row.
+ */
+const needlePattern = new RegExp(`${NEEDLE} is here`);
+/** Comfortably past `tailStreamingText`'s 240-line window. */
+const STREAM_LINES = 300;
 /** pi-tui's zero-width hardware-cursor marker, which occupies no column. */
 const CURSOR_MARKER = /\x1b_pi:c\x07/g;
 
@@ -61,6 +71,7 @@ interface ChatFixture {
 	view: StageChatView;
 	store: ReturnType<typeof createStore>;
 	broker: StageUiBroker;
+	handle: ReturnType<typeof makeHandle>["handle"];
 	emit: (event: AgentSessionEvent) => void;
 	closes: () => number;
 	interrupts: () => number;
@@ -75,7 +86,13 @@ interface ChatFixture {
  * as they do in a session.
  */
 function makeSearchableChat(
-	options: { streaming?: boolean; piTheme?: unknown; leadMessages?: number; messages?: string[] } = {},
+	options: {
+		streaming?: boolean;
+		piTheme?: unknown;
+		piKeybindings?: unknown;
+		leadMessages?: number;
+		messages?: string[];
+	} = {},
 ): ChatFixture {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a");
@@ -115,7 +132,7 @@ function makeSearchableChat(
 		},
 		piTui: makeTestTui(VIEWPORT_ROWS),
 		piTheme: options.piTheme,
-		piKeybindings: new KeybindingsManager({}),
+		piKeybindings: options.piKeybindings ?? new KeybindingsManager({}),
 		stageUiBroker: broker,
 	});
 	const chatHost = (view as unknown as { chatHost: { interrupt(options?: unknown): Promise<void> } }).chatHost;
@@ -130,6 +147,7 @@ function makeSearchableChat(
 		view,
 		store,
 		broker,
+		handle,
 		emit,
 		closes: () => closes,
 		interrupts: () => interrupts,
@@ -139,6 +157,28 @@ function makeSearchableChat(
 		// let a strip of the joined frame swallow the rows after it.
 		visible: () => render().map(plain).join("\n"),
 	};
+}
+
+/** Start an assistant turn and stream `lines` into it as one delta. */
+function streamAssistantText(chat: ChatFixture, lines: readonly string[]): void {
+	chat.emit({ type: "message_start", message: { role: "assistant", content: [] } } as unknown as AgentSessionEvent);
+	chat.emit({
+		type: "message_update",
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: lines.join("\n") },
+	} as unknown as AgentSessionEvent);
+}
+
+/** Every row of the body, on screen or not — the corpus a search reads. */
+function bodyCorpus(chat: ChatFixture): string {
+	const host = (
+		chat.view as unknown as {
+			chatHost: {
+				bodyRowCount(width: number): number;
+				renderBodyRows(width: number, startRow: number, endRow: number): string[];
+			};
+		}
+	).chatHost;
+	return host.renderBodyRows(WIDTH, 0, host.bodyRowCount(WIDTH)).map(plain).join("\n");
 }
 
 /**
@@ -332,7 +372,7 @@ describe("stage chat search", () => {
 	test("the matcher covers rows the viewport window does not hold", () => {
 		const chat = makeSearchableChat();
 		const beforeSearch = chat.visible();
-		assert.doesNotMatch(beforeSearch, new RegExp(NEEDLE), "fixture is wrong: the needle starts on screen");
+		assert.doesNotMatch(beforeSearch, needlePattern, "fixture is wrong: the needle starts on screen");
 		assert.match(beforeSearch, /filler line 80/);
 
 		chat.view.handleInput(CTRL_SHIFT_F);
@@ -340,7 +380,7 @@ describe("stage chat search", () => {
 
 		const searching = chat.visible();
 		assert.match(searching, /1\/1/, "the only match sits far above the window and must still be counted");
-		assert.match(searching, new RegExp(NEEDLE), "the selected match must be scrolled into view");
+		assert.match(searching, needlePattern, "the selected match must be scrolled into view");
 	});
 
 	/**
@@ -448,14 +488,14 @@ describe("stage chat search", () => {
 	 */
 	test("a match at the top of the transcript is revealed, not only counted", () => {
 		const chat = makeSearchableChat({ leadMessages: 0 });
-		assert.doesNotMatch(chat.visible(), new RegExp(NEEDLE), "fixture is wrong: the needle starts on screen");
+		assert.doesNotMatch(chat.visible(), needlePattern, "fixture is wrong: the needle starts on screen");
 
 		chat.view.handleInput(CTRL_SHIFT_F);
 		type(chat.view, NEEDLE);
 
 		const searching = chat.visible();
 		assert.match(searching, /1\/1/);
-		assert.match(searching, new RegExp(NEEDLE), "the first transcript row must be shown, not just counted");
+		assert.match(searching, needlePattern, "the first transcript row must be shown, not just counted");
 	});
 
 	/**
@@ -581,5 +621,178 @@ describe("stage chat search", () => {
 			const row = plain(line);
 			assert.ok(row.length <= WIDTH, `line exceeds width: ${JSON.stringify(row)}`);
 		}
+	});
+
+	/**
+	 * A sticky-bottom body renders a live assistant entry as its last 240 lines
+	 * (`tailStreamingText`), and those were the rows the search measured. The
+	 * corpus is supposed to be the *whole* stage transcript, so the first half
+	 * of a long answer reported `No matches` for text the reader had scrolled
+	 * past a moment earlier.
+	 */
+	test("a live stream longer than its tail window is searched whole", () => {
+		const chat = makeSearchableChat({ streaming: true, messages: ["settled line"] });
+		streamAssistantText(chat, [
+			`the ${NEEDLE} is here`,
+			...Array.from({ length: STREAM_LINES }, (_, index) => `stream line ${index + 1}`),
+		]);
+		chat.render();
+
+		const corpus = bodyCorpus(chat);
+		assert.match(corpus, /earlier streaming output hidden/, "fixture is wrong: the tail window did not engage");
+		assert.doesNotMatch(corpus, needlePattern, "fixture is wrong: the tail window kept the head of the stream");
+
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, NEEDLE);
+
+		const searching = chat.visible();
+		assert.match(searching, /1\/1/, "the head of a live stream is part of the transcript this search covers");
+		assert.match(searching, needlePattern, "the match must be revealed, not only counted");
+	});
+
+	/**
+	 * The search measures the rows this frame is about to paint, then scrolls
+	 * to the selected match. Both halves used to be answered with the previous
+	 * frame's layout: a match inside rows appended since the last paint was
+	 * judged visible when it was not, and the absolute scroll clamped against a
+	 * smaller `maxScroll` — leaving the body at the new bottom with `1/1` in
+	 * the bar and nothing highlighted anywhere.
+	 */
+	test("a match in rows that arrived since the last paint is revealed, not only counted", () => {
+		const chat = makeSearchableChat({
+			streaming: true,
+			messages: Array.from({ length: 100 }, (_, index) => `settled line ${index + 1}`),
+		});
+		const painted = chat.visible();
+		assert.match(painted, /settled line 100/, "fixture is wrong: the chat did not paint its live end");
+		assert.doesNotMatch(painted, needlePattern);
+
+		streamAssistantText(chat, [
+			`the ${NEEDLE} is here`,
+			...Array.from({ length: 40 }, (_, index) => `appended line ${index + 1}`),
+		]);
+
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, NEEDLE);
+
+		const searching = chat.visible();
+		assert.match(searching, /1\/1/);
+		assert.match(searching, needlePattern, "the reported match must be on screen, not only in the query box");
+	});
+
+	/**
+	 * A paused stage keeps its chat rows on screen under the PAUSED callout, so
+	 * it accepts the search key — and used to answer every query with `No
+	 * matches`, because only the live branch ever ran the matcher.
+	 */
+	test("a paused stage chat searches the transcript it is showing", () => {
+		const chat = makeSearchableChat();
+		chat.render();
+		assert.equal(chat.store.recordStagePaused("run-1", "stage-a"), true);
+		assert.match(chat.visible(), /PAUSED/);
+
+		assert.equal(chat.view.handleInput(CTRL_SHIFT_F), true);
+		type(chat.view, NEEDLE);
+
+		const searching = chat.visible();
+		assert.match(searching, /Find in stage chat/);
+		assert.match(searching, /1\/1/, "a paused chat must search the rows it is painting");
+		assert.match(searching, needlePattern);
+	});
+
+	/**
+	 * A read-only archive paints its transcript above the READ-ONLY callout,
+	 * and it too accepted `ctrl+shift+f`. The find box was then closed by the
+	 * next render, which treated every archive as hidden chat chrome.
+	 */
+	test("a read-only archive searches the transcript it is showing", () => {
+		const chat = makeSearchableChat();
+		chat.render();
+		const stage = chat.store.runs()[0]?.stages[0];
+		assert.ok(stage);
+		chat.store.recordStageEnd("run-1", { ...stage, status: "completed", endedAt: Date.now() });
+		Object.defineProperty(chat.handle, "isDisposed", { value: true });
+		assert.match(chat.visible(), /READ-ONLY SESSION/);
+
+		assert.equal(chat.view.handleInput(CTRL_SHIFT_F), true);
+		type(chat.view, NEEDLE);
+
+		const searching = chat.visible();
+		assert.match(searching, /Find in stage chat/, "the archive accepted the key, so it must show the box");
+		assert.match(searching, /1\/1/);
+		assert.match(searching, needlePattern);
+	});
+
+	/**
+	 * A custom UI mounts through the broker, which is not a render: until the
+	 * next paint the chat holds both an open find box and a mounted UI. Escape
+	 * belongs to the box on that frame, and only to it — the mounted UI used to
+	 * receive the same keystroke and could act on it.
+	 */
+	test("escape closes an open search before a newly mounted custom UI sees it", async () => {
+		const chat = makeSearchableChat({ piTheme: {} });
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, "filler");
+		assert.match(chat.visible(), /Find in stage chat/);
+
+		const keys: string[] = [];
+		const abort = new AbortController();
+		const pending = chat.broker.requestCustomUi(
+			"run-1",
+			"stage-a",
+			(): PiCustomComponent => ({
+				render: () => ["stage question"],
+				handleInput: (data: string) => {
+					keys.push(data);
+					return true;
+				},
+				invalidate: () => {},
+			}),
+			undefined,
+			abort.signal,
+		);
+		pending.catch(() => {});
+		// Deliberately no render between mounting and the keystroke: that window
+		// is the whole state under test.
+		await flush();
+
+		try {
+			assert.equal(chat.view.handleInput(ESCAPE), true);
+			assert.deepEqual(keys, [], "the mounted custom UI must not see the escape that closed the search");
+			assert.equal(chat.interrupts(), 0);
+			assert.equal(chat.closes(), 0);
+			assert.doesNotMatch(chat.visible(), /Find in stage chat/);
+		} finally {
+			abort.abort();
+			chat.view.dispose();
+		}
+	});
+
+	/**
+	 * pi-tui routes its transcript search through the four `tui.altScreen.*`
+	 * actions and nothing else. A reader who moves `searchNext` onto another
+	 * key has unbound Enter, and Enter must then be query text here too —
+	 * otherwise the stage chat keeps a shortcut the keybindings manager says
+	 * does not exist.
+	 */
+	test("a remapped searchNext governs stage-chat navigation", () => {
+		const keybindings = new KeybindingsManager({ "tui.altScreen.searchNext": "ctrl+n" });
+		assert.equal(
+			keybindings.matches(ENTER, "tui.altScreen.searchNext"),
+			false,
+			"fixture is wrong: enter is still bound to searchNext",
+		);
+		assert.equal(keybindings.matches(CTRL_N, "tui.altScreen.searchNext"), true);
+
+		const chat = makeSearchableChat({ piKeybindings: keybindings });
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, "filler line 1");
+		assert.match(chat.visible(), /1\/\d+/);
+
+		chat.view.handleInput(ENTER);
+		assert.match(chat.visible(), /1\/\d+/, "an unbound enter must not walk the matches");
+
+		chat.view.handleInput(CTRL_N);
+		assert.match(chat.visible(), /2\/\d+/, "the bound searchNext must walk them");
 	});
 });

@@ -59,6 +59,12 @@ export interface StageChatSearchState {
 /**
  * Open the find bar, anchored on the row the reader is parked on so the first
  * match chosen is the one nearest what they were already reading.
+ *
+ * Opening also takes the streaming tail window off the body. A stage that is
+ * mid-turn renders only the last 240 lines of the live assistant entry while
+ * the reader follows the bottom, and those are the rows this search would
+ * otherwise measure: the first half of a long answer would report `No matches`
+ * for text still on the reader's screen a page earlier.
  */
 export function openStageChatSearch(ctx: StageChatViewContext): void {
 	if (ctx.search) return;
@@ -73,16 +79,19 @@ export function openStageChatSearch(ctx: StageChatViewContext): void {
 		selectionMode: "query",
 		anchorRow: firstVisibleBodyRow(ctx),
 	};
+	ctx.chatHost.setStreamingTailWindowEnabled(false);
 	ctx.requestRender?.();
 }
 
 /**
- * Close the find bar. The transcript keeps whatever scroll position the search
- * left it at — closing a search is not an undo.
+ * Close the find bar and give the streaming tail window back. The transcript
+ * keeps whatever scroll position the search left it at — closing a search is
+ * not an undo.
  */
 export function closeStageChatSearch(ctx: StageChatViewContext): void {
 	if (!ctx.search) return;
 	ctx.search = null;
+	ctx.chatHost.setStreamingTailWindowEnabled(true);
 	ctx.chatHost.invalidate();
 	ctx.requestRender?.();
 }
@@ -119,11 +128,26 @@ export function typeIntoStageChatSearch(ctx: StageChatViewContext, data: string)
 }
 
 /**
+ * Where this frame paints the transcript, which is what the reveal arithmetic
+ * needs and the frame planner already knows.
+ *
+ * `transcriptRows` is the row budget the transcript itself gets, which is the
+ * whole body on a live chat and the body minus its callout on a paused or
+ * archived one. `indicatorSharesTranscriptRows` says whether the follow
+ * indicator, when it appears, takes one of those rows (the live body) or has
+ * its own reserved outside them (paused and archived bodies).
+ */
+export interface StageChatSearchBodyLayout {
+	readonly transcriptRows: number;
+	readonly indicatorSharesTranscriptRows: boolean;
+}
+
+/**
  * Re-match against the current transcript and, when the selection moved, scroll
  * the body so the selected match is on screen.
  *
- * Called once per frame *before* the body is painted, with the row budget that
- * frame will give the transcript.
+ * Called once per frame *before* the body is painted, with the rows that frame
+ * will give the transcript.
  *
  * The match run is not cached. A stage that is streaming rewrites the rows it
  * already has — a token appended to the last line changes no row count and no
@@ -134,7 +158,11 @@ export function typeIntoStageChatSearch(ctx: StageChatViewContext, data: string)
  * measurement just produced is the cheap half of the work, and the transcript's
  * own per-entry block cache keeps an unchanged entry from being re-rendered.
  */
-export function refreshStageChatSearch(ctx: StageChatViewContext, width: number, bodyRows: number): void {
+export function refreshStageChatSearch(
+	ctx: StageChatViewContext,
+	width: number,
+	layout: StageChatSearchBodyLayout,
+): void {
 	const search = ctx.search;
 	if (!search) return;
 	const revealSelection = search.selectionMode !== "retain";
@@ -150,7 +178,7 @@ export function refreshStageChatSearch(ctx: StageChatViewContext, width: number,
 		// The body's component stack is installed by `renderBody`, so a search
 		// opened before this chat ever painted has nothing to measure yet. Paint
 		// once and re-measure rather than returning a wrong "no matches".
-		ctx.chatHost.renderBody(width, Math.max(1, bodyRows));
+		ctx.chatHost.renderBody(width, Math.max(1, layout.transcriptRows));
 		rowCount = ctx.chatHost.bodyRowCount(width);
 	}
 	if (rowCount <= 0) {
@@ -167,7 +195,7 @@ export function refreshStageChatSearch(ctx: StageChatViewContext, width: number,
 	search.matches = matches;
 	search.selectedKey = search.selectedIndex >= 0 ? getSearchMatchKey(matches[search.selectedIndex]!) : undefined;
 	search.selectionMode = "retain";
-	if (revealSelection) revealSelectedMatch(ctx, search, bodyRows);
+	if (revealSelection) revealSelectedMatch(ctx, search, rowCount, layout);
 }
 
 function selectMatchIndex(search: StageChatSearchState, matches: readonly TranscriptSearchMatch[]): number {
@@ -198,25 +226,53 @@ function selectMatchIndex(search: StageChatSearchState, matches: readonly Transc
  * the way down rather than at the very top, so the rows around it read as
  * context instead of the match being pinned to an edge.
  *
- * "On screen" is not the whole row budget. While the reader is scrolled up the
- * follow indicator takes one of the body's rows — the top one, except on a body
- * already parked at row zero, where `StageChatView` gives up the bottom row
- * instead so the first transcript row stays reachable. This window follows that
- * rule exactly; a looser one reports a clipped match as revealed and the search
- * never scrolls to it.
+ * "On screen" is measured against the rows *this* frame will paint, not the
+ * last one. A live stage grows its transcript between renders, and the window
+ * moves with it: a reader following the bottom is about to be shown the newest
+ * rows, so a match judged against the previous frame's window is judged against
+ * rows that have already scrolled away. That is how a match could be counted
+ * `1/1` and never revealed.
+ *
+ * The window is also not the whole row budget. Where the follow indicator
+ * shares the transcript's rows it takes the top one, except on a body already
+ * parked at row zero, where `StageChatView` gives up the bottom row instead so
+ * the first transcript row stays reachable. This follows that rule exactly; a
+ * looser one reports a clipped match as revealed and the search never scrolls.
  */
-function revealSelectedMatch(ctx: StageChatViewContext, search: StageChatSearchState, bodyRows: number): void {
+function revealSelectedMatch(
+	ctx: StageChatViewContext,
+	search: StageChatSearchState,
+	rowCount: number,
+	layout: StageChatSearchBodyLayout,
+): void {
 	const selected = search.matches[search.selectedIndex];
 	const first = selected?.segments[0];
 	const last = selected?.segments[selected.segments.length - 1];
-	if (!first || !last || bodyRows <= 0) return;
-	const top = firstVisibleBodyRow(ctx);
-	const firstVisible = top === 0 ? 0 : top + 1;
-	const lastVisible = top + bodyRows - 1 - (top === 0 ? 1 : 0);
+	const rows = Math.max(0, Math.floor(layout.transcriptRows));
+	if (!first || !last || rows <= 0) return;
+	const top = predictedFirstVisibleBodyRow(ctx, rowCount, rows);
+	const scrolledUp = ctx.chatHost.bodyScrollFromBottom() > 0;
+	const indicatorRow = layout.indicatorSharesTranscriptRows && scrolledUp && rows > 1 ? 1 : 0;
+	const firstVisible = top === 0 ? 0 : top + indicatorRow;
+	const lastVisible = top + rows - 1 - (top === 0 ? indicatorRow : 0);
 	if (first.row >= firstVisible && last.row <= lastVisible) return;
 	// At least one row of cushion, so the revealed match never lands on the row
 	// the indicator takes.
-	ctx.chatHost.scrollBodyTo(first.row - Math.max(1, Math.floor(bodyRows / 3)));
+	ctx.chatHost.scrollBodyTo(first.row - Math.max(1, Math.floor(rows / 3)));
+}
+
+/**
+ * The first row the body will show once this frame renders.
+ *
+ * A reader following the bottom lands on the last window of the transcript as
+ * it is *now*, rows and all that arrived since the last paint. A reader
+ * scrolled up keeps the row they are reading, which is what the viewport's own
+ * anchor does for them.
+ */
+function predictedFirstVisibleBodyRow(ctx: StageChatViewContext, rowCount: number, transcriptRows: number): number {
+	const maxScroll = Math.max(0, rowCount - transcriptRows);
+	if (ctx.chatHost.bodyScrollFromBottom() === 0) return maxScroll;
+	return Math.max(0, Math.min(maxScroll, firstVisibleBodyRow(ctx)));
 }
 
 function firstVisibleBodyRow(ctx: StageChatViewContext): number {

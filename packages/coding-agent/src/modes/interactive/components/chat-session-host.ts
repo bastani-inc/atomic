@@ -174,6 +174,24 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return this.state.bodyViewport.renderRows(width, startRow, endRow);
 	}
 
+	/**
+	 * Render a live assistant entry whole, or only its tail (the default).
+	 *
+	 * The tail window keeps a fast-streaming turn cheap for a reader following
+	 * the bottom of the body; it also drops everything above the last 240 lines
+	 * from what `bodyRowCount` and `renderBodyRows` report. A find box open on
+	 * this transcript therefore turns it off while it is open, or it would
+	 * answer "No matches" for text the stream printed a minute ago. Returns
+	 * whether the setting changed, so the caller can invalidate the rows that
+	 * were rendered under the old rule.
+	 */
+	setStreamingTailWindowEnabled(enabled: boolean): boolean {
+		if (this.state.streamingTailWindowEnabled === enabled) return false;
+		this.state.streamingTailWindowEnabled = enabled;
+		this.invalidate();
+		return true;
+	}
+
 	renderPendingMessages(width: number): string[] {
 		return renderChatSessionPendingMessages(this.state, width);
 	}
