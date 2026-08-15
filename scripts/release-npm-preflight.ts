@@ -13,32 +13,41 @@
  * This module answers that question while it is still cheap to answer — before
  * `cut-release.ts` touches a worktree, stamps a version, or writes a tag.
  *
- * The payload is read from `publish.yml` rather than restated here. The
+ * Both halves of the question are read out of `publish.yml` rather than
+ * restated here: which names ship, and which registry they ship to. The
  * publisher is the thing that publishes; a second hand-maintained list would
  * drift from it silently, and the preflight would then vouch for a payload
- * nobody ships. The count is deliberately *not* enforced at cut time — the
- * workflow already fails a run whose packed tarballs do not number ten, and
- * `test/ci/release-publisher-contracts.test.ts` pins the ten names this
- * repository expects.
+ * nobody ships or for a registry nobody publishes to. The count is deliberately
+ * *not* enforced at cut time — the workflow already fails a run whose packed
+ * tarballs do not number ten, and `test/unit/release-npm-preflight.test.ts`
+ * pins the ten names this repository expects.
+ *
+ * The source is a string, never a path: `cut-release.ts` reads `publish.yml`
+ * out of the *release base commit* it is about to tag, not out of the caller's
+ * checkout, and those two differ whenever `--base` names another branch.
  *
  * No Bun import: the probe is injected, so the whole module runs under Node in
  * the test suites while `cut-release.ts` supplies the real `npm view` call.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 /** The publisher that owns the release payload, relative to the repository root. */
 export const PUBLISH_WORKFLOW_PATH = ".github/workflows/publish.yml";
 
-/** The registry `publish.yml` publishes to, and the default this preflight asks. */
-export const DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org";
+/**
+ * The registry `publish.yml` publishes to.
+ *
+ * Documentation and a unit-test anchor, **not** a fallback: the registry the
+ * preflight asks is always parsed from the publisher, so this constant going
+ * stale fails a test rather than quietly redirecting a probe.
+ */
+export const PUBLISHER_NPM_REGISTRY = "https://registry.npmjs.org";
 
-/** Number of npm packages one release tag publishes; asserted against `publish.yml` by contract test. */
+/** Number of npm packages one release tag publishes; asserted against `publish.yml` by unit test. */
 export const RELEASE_PAYLOAD_PACKAGE_COUNT = 10;
 
 const PACKAGES_ARRAY_RE = /^[ \t]*packages=\(([^)]*)\)[ \t]*$/gmu;
 const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
+const REGISTRY_FLAG_RE = /--registry[= \t]+([^\s"'|;&]+)/gu;
 
 /** The raw result of one `npm view <name>` invocation. */
 export interface NpmViewOutcome {
@@ -49,6 +58,12 @@ export interface NpmViewOutcome {
 
 /** Resolves to `true` when npm knows the package name, `false` when it does not. */
 export type NpmRegistrationProbe = (packageName: string) => Promise<boolean>;
+
+/** What `publish.yml` publishes, and where. */
+export interface ReleasePublisher {
+	readonly packages: readonly string[];
+	readonly registry: string;
+}
 
 export interface RegistrationPreflightOptions {
 	/** Package names to check. Defaults to whatever `publish.yml` publishes. */
@@ -62,18 +77,6 @@ export interface RegistrationPreflightResult {
 	readonly checked: readonly string[];
 	/** Names npm has never seen. Non-empty only when `allowNew` was passed. */
 	readonly unregistered: readonly string[];
-}
-
-/**
- * The registry to ask.
- *
- * `npm_config_registry` is npm's own configuration variable, so a mirror or an
- * enterprise proxy is honored rather than probed around. Anything else falls
- * back to the registry `publish.yml` names.
- */
-export function resolveNpmRegistry(env: NodeJS.ProcessEnv = process.env): string {
-	const configured = env.npm_config_registry?.trim();
-	return configured && configured.length > 0 ? configured : DEFAULT_NPM_REGISTRY;
 }
 
 /** Extract the publish payload from `publish.yml`'s `packages=(…)` array. */
@@ -102,33 +105,85 @@ export function parseReleasePayloadPackages(workflowSource: string): string[] {
 	return names;
 }
 
-/** Read the publish payload package names out of the repository at `root`. */
-export function readReleasePayloadPackages(root: string): string[] {
-	const path = join(root, PUBLISH_WORKFLOW_PATH);
-	let source: string;
-	try {
-		source = readFileSync(path, "utf8");
-	} catch (error) {
-		throw new Error(`Cannot read the release payload from ${path}: ${(error as Error).message}`);
+/**
+ * The registry to ask: the one `publish.yml` pins on its own npm commands.
+ *
+ * npm's `npm_config_registry` is deliberately **not** consulted. A mirror or a
+ * proxy can answer "yes" for a name that does not exist on the registry the
+ * release will actually publish to, and that answer would clear a preflight
+ * whose entire job is to predict the publish. The publisher passes `--registry`
+ * explicitly on every npm command it runs, so the flag is parsed from the same
+ * file — and the same commit — the payload comes from.
+ */
+export function parsePublisherNpmRegistry(workflowSource: string): string {
+	const values = [...new Set([...workflowSource.matchAll(REGISTRY_FLAG_RE)].map((match) => match[1] as string))];
+	if (values.length === 0) {
+		throw new Error(
+			`${PUBLISH_WORKFLOW_PATH} pins no \`--registry\` on its npm commands, so the registry the release ` +
+				"publishes to cannot be determined. The preflight refuses to guess one.",
+		);
 	}
-	return parseReleasePayloadPackages(source);
+	if (values.length > 1) {
+		throw new Error(
+			`${PUBLISH_WORKFLOW_PATH} pins more than one \`--registry\`: ${values.join(", ")}. ` +
+				"The preflight cannot tell which one the release publishes to.",
+		);
+	}
+	const registry = values[0] as string;
+	let parsed: URL;
+	try {
+		parsed = new URL(registry);
+	} catch {
+		throw new Error(`${PUBLISH_WORKFLOW_PATH} pins \`--registry ${registry}\`, which is not an absolute URL.`);
+	}
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+		throw new Error(`${PUBLISH_WORKFLOW_PATH} pins \`--registry ${registry}\`, which is not an http(s) registry.`);
+	}
+	return registry;
+}
+
+/** Read both halves of the publisher's contract out of one `publish.yml` source. */
+export function parseReleasePublisher(workflowSource: string): ReleasePublisher {
+	return {
+		packages: parseReleasePayloadPackages(workflowSource),
+		registry: parsePublisherNpmRegistry(workflowSource),
+	};
 }
 
 /**
  * Decide what one `npm view` invocation actually said.
  *
- * Exit 0 is registered and a 404 is not registered. **Every other failure is
+ * Exit 0 is registered and a 404 is not registered. **Every other outcome is
  * indeterminate and throws**: an unreachable registry, a missing npm, or an
  * auth error says nothing about whether the name exists, and reading it as
  * "new" would let `--allow-new` wave through a broken probe.
+ *
+ * A null exit code is checked *first*, before any output is read. It means the
+ * command was killed by a signal, so whatever it had printed by then is a
+ * fragment of an answer it never finished giving — a 404 in that fragment is
+ * not a registry verdict, and treating it as one would let a timeout or a
+ * Ctrl-C register as "this package is new".
  */
 export function classifyNpmViewOutcome(packageName: string, outcome: NpmViewOutcome): boolean {
-	if (outcome.exitCode === 0) return true;
 	const answer = `${outcome.stdout}\n${outcome.stderr}`;
+	if (outcome.exitCode === null) {
+		throw new Error(
+			`\`npm view ${packageName}\` was terminated by a signal, so its registration is unknown` +
+				`${describeNpmViewAnswer(answer)}`,
+		);
+	}
+	if (outcome.exitCode === 0) return true;
 	if (answer.includes("E404") || answer.includes("404 Not Found") || answer.includes("is not in this registry")) {
 		return false;
 	}
-	// The first lines carry npm's error code; the tail is a log path and proxy advice.
+	throw new Error(
+		`\`npm view ${packageName}\` exited ${outcome.exitCode} without a 404, so its registration is unknown` +
+			`${describeNpmViewAnswer(answer)}`,
+	);
+}
+
+/** The first lines carry npm's error code; the tail is a log path and proxy advice. */
+function describeNpmViewAnswer(answer: string): string {
 	const detail = answer
 		.split(/\r?\n/u)
 		.map((line) => line.trim())
@@ -136,10 +191,7 @@ export function classifyNpmViewOutcome(packageName: string, outcome: NpmViewOutc
 		.slice(0, 3)
 		.join(" | ")
 		.slice(0, 300);
-	throw new Error(
-		`\`npm view ${packageName}\` exited ${outcome.exitCode ?? "with a signal"} without a 404, so its registration is unknown` +
-			`${detail ? `: ${detail}` : "."}`,
-	);
+	return detail ? `: ${detail}` : ".";
 }
 
 /** The abort message for names npm has never seen. */

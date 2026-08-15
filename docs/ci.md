@@ -220,7 +220,7 @@ The tag push is the publication signal. Do not bump package versions directly on
 
 ### npm registration preflight
 
-Before it touches anything, `scripts/cut-release.ts` asks npm whether every package the publisher publishes already exists. The payload is read from the `packages=(…)` array in `.github/workflows/publish.yml`, so the check follows the publisher rather than a second list, and each name is probed with `npm view` against `npm_config_registry` (default `https://registry.npmjs.org`).
+Before it touches anything, `scripts/cut-release.ts` asks npm whether every package the publisher publishes already exists. Both halves of the question come from `.github/workflows/publish.yml`, read out of the **release base commit** the cut is about to tag rather than out of the caller's checkout — `--base` names another branch as often as not, and that branch's workflow is the one that will publish. The payload is the `packages=(…)` array, and the registry is the `--registry` the publisher pins on its own npm commands (`https://registry.npmjs.org`). npm's `npm_config_registry` is deliberately ignored: a mirror answering "yes" for a name that does not exist on npmjs would clear a check whose whole job is to predict the publish.
 
 An unregistered name aborts the cut with nothing to unwind — no prune, no worktree, no version stamp, no tag. `publish.yml`'s own `npm view` call is an idempotency check that runs after the binaries are built, so without this preflight a name npm has never seen fails at the very end of a release.
 
@@ -230,7 +230,7 @@ A genuine first publish is still possible, but only deliberately:
 bun run scripts/cut-release.ts 0.9.10 --base main --push --allow-new
 ```
 
-`--allow-new` covers only "npm has never heard of this name". A registry that cannot answer — unreachable, unauthorized, or no npm at all — stops the cut regardless, because an unreadable answer is not evidence that a package is new.
+`--allow-new` covers only "npm has never heard of this name". A registry that cannot answer — unreachable, unauthorized, no npm at all, or a probe killed by a signal — stops the cut regardless, because an unreadable answer is not evidence that a package is new.
 
 ## Build and validation jobs
 

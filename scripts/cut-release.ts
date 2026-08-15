@@ -12,9 +12,10 @@
  *
  * Mechanically:
  *   1. validate the version + a clean working tree
- *   2. verify every package publish.yml publishes is already registered on npm,
- *      before anything in the repository is touched (see --allow-new)
- *   3. resolve the current attached branch (or `--base`) to its exact remote branch SHA
+ *   2. resolve the current attached branch (or `--base`) to its exact remote branch SHA
+ *   3. read publish.yml **out of that base commit** and verify every package it
+ *      publishes is already registered on npm, before anything in the
+ *      repository is touched (see --allow-new)
  *   4. stamp the real version into the worktree via scripts/bump-version.ts
  *      (including package-lock.json's workspace entries: `npm ci` refuses to
  *      install when the lockfile and a package.json disagree)
@@ -43,9 +44,10 @@ import { canonicalReleaseBaseRef } from "./release-base.js";
 import {
 	classifyNpmViewOutcome,
 	type NpmRegistrationProbe,
+	PUBLISH_WORKFLOW_PATH,
+	parseReleasePublisher,
 	type RegistrationPreflightResult,
-	readReleasePayloadPackages,
-	resolveNpmRegistry,
+	type ReleasePublisher,
 	verifyReleasePackagesRegistered,
 } from "./release-npm-preflight.js";
 
@@ -121,19 +123,57 @@ async function gitText(args: string[], cwd: string = ROOT): Promise<string> {
 /**
  * Ask npm whether it knows a package name.
  *
- * `--registry` is pinned to the registry publish.yml publishes to, unless npm's
- * own `npm_config_registry` points somewhere else. Any answer that is neither
- * "yes" nor a 404 throws rather than counting as a new package.
+ * The registry is pinned twice. `--registry` sets the default, and
+ * `--<scope>:registry` overrides any scope-specific redirect an `.npmrc` on
+ * this machine declares — npm resolves a scoped name through that redirect in
+ * preference to `--registry`, so without the second flag the preflight could
+ * vouch for a mirror while the release publishes somewhere else. npm's own
+ * `npm_config_registry` is deliberately not consulted for the same reason.
+ *
+ * Any answer that is neither "yes" nor a 404 throws rather than counting as a
+ * new package.
  */
 function createNpmRegistrationProbe(registry: string): NpmRegistrationProbe {
 	return async (packageName) => {
-		const result = await $`npm view ${packageName} name --registry ${registry}`.nothrow().quiet();
+		const scope = packageName.startsWith("@") ? packageName.split("/")[0] : undefined;
+		const args = [
+			"view",
+			packageName,
+			"name",
+			`--registry=${registry}`,
+			...(scope ? [`--${scope}:registry=${registry}`] : []),
+		];
+		const result = await $`npm ${args}`.nothrow().quiet();
 		return classifyNpmViewOutcome(packageName, {
 			exitCode: result.exitCode,
 			stdout: result.stdout.toString(),
 			stderr: result.stderr.toString(),
 		});
 	};
+}
+
+/**
+ * Read publish.yml out of the commit that is about to be tagged.
+ *
+ * The caller's checkout is not the release. `--base` names another branch as
+ * often as not, and the worktree, the version stamp, and the tag all come from
+ * that branch's remote SHA — so a payload or a registry read from the working
+ * tree would describe a release nobody is cutting.
+ */
+async function readPublisherAtBase(baseRef: string, baseSha: string): Promise<ReleasePublisher> {
+	const shown = await $`git -C ${ROOT} show ${`${baseSha}:${PUBLISH_WORKFLOW_PATH}`}`.nothrow().quiet();
+	if (shown.exitCode !== 0) {
+		const detail = shown.stderr.toString().trim().split(/\r?\n/u)[0] ?? "git show failed";
+		return fail(
+			`Cannot read ${PUBLISH_WORKFLOW_PATH} from ${baseRef} (${baseSha.slice(0, 9)}): ${detail}. ` +
+				`Fetch the base commit first: git fetch origin ${baseRef}`,
+		);
+	}
+	try {
+		return parseReleasePublisher(shown.stdout.toString());
+	} catch (error) {
+		return fail(`${(error as Error).message} (read from ${baseRef} at ${baseSha.slice(0, 9)})`);
+	}
 }
 
 /**
@@ -145,13 +185,14 @@ function createNpmRegistrationProbe(registry: string): NpmRegistrationProbe {
  * binaries are built. Checking here costs one concurrent registry round-trip
  * and fails with nothing to unwind.
  */
-async function preflightNpmRegistration(allowNew: boolean): Promise<RegistrationPreflightResult> {
-	const registry = resolveNpmRegistry();
+async function preflightNpmRegistration(
+	publisher: ReleasePublisher,
+	allowNew: boolean,
+): Promise<RegistrationPreflightResult> {
 	try {
-		const packages = readReleasePayloadPackages(ROOT);
 		const registration = await verifyReleasePackagesRegistered({
-			packages,
-			isRegistered: createNpmRegistrationProbe(registry),
+			packages: publisher.packages,
+			isRegistered: createNpmRegistrationProbe(publisher.registry),
 			allowNew,
 		});
 		if (registration.unregistered.length > 0) {
@@ -182,13 +223,8 @@ async function main(): Promise<void> {
 		fail(`Tag ${version} already exists.`);
 	}
 
-	// Every mutation below this line — the prune, the worktree, the stamp, the
-	// tag — is preceded by the registry check, so an unregistered package name
-	// aborts a release that has changed nothing.
-	const registration = await preflightNpmRegistration(allowNew);
-
-	await $`git -C ${ROOT} worktree prune`.quiet();
-
+	// Resolve the base before anything is checked against it: the release is cut
+	// from this commit, so this is the publish.yml the preflight must read.
 	const branch = await gitText(["rev-parse", "--abbrev-ref", "HEAD"]);
 	const baseBranch = base ?? branch;
 	if (baseBranch === "HEAD") {
@@ -210,6 +246,9 @@ async function main(): Promise<void> {
 		fail(`Base ref "${baseRef}" did not resolve to exactly one immutable remote commit.`);
 	}
 
+	const publisher = await readPublisherAtBase(baseRef, baseSha);
+	const registration = await preflightNpmRegistration(publisher, allowNew);
+
 	const name = (await $`git -C ${ROOT} config user.name`.nothrow().text()).trim() || "atomic-release";
 	const email =
 		(await $`git -C ${ROOT} config user.email`.nothrow().text()).trim() || "atomic-release@users.noreply.github.com";
@@ -217,10 +256,17 @@ async function main(): Promise<void> {
 	const registered = registration.checked.length - registration.unregistered.length;
 	console.log(`Cutting release ${version}`);
 	console.log(`  base:   ${baseRef} (${baseSha.slice(0, 9)})`);
-	console.log(`  npm:    ${registered}/${registration.checked.length} publish-payload packages registered`);
+	console.log(
+		`  npm:    ${registered}/${registration.checked.length} publish-payload packages registered on ${publisher.registry}`,
+	);
 	console.log(`  branch: ${branch} (left untouched)\n`);
 
 	if (!yes) console.log("Proceeding immediately; pass --yes to suppress this notice.\n");
+
+	// Every mutation below this line — the prune, the worktree, the stamp, the
+	// tag — is preceded by the registry check, so an unregistered package name
+	// aborts a release that has changed nothing.
+	await $`git -C ${ROOT} worktree prune`.quiet();
 
 	const tmpRoot = mkdtempSync(join(tmpdir(), "atomic-release-"));
 	const worktreeDir = join(tmpRoot, "wt");

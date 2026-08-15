@@ -1,22 +1,28 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "vitest";
 import {
 	classifyNpmViewOutcome,
-	DEFAULT_NPM_REGISTRY,
 	describeUnregisteredPackages,
 	PUBLISH_WORKFLOW_PATH,
+	PUBLISHER_NPM_REGISTRY,
+	parsePublisherNpmRegistry,
 	parseReleasePayloadPackages,
+	parseReleasePublisher,
 	RELEASE_PAYLOAD_PACKAGE_COUNT,
-	readReleasePayloadPackages,
-	resolveNpmRegistry,
 	verifyReleasePackagesRegistered,
 } from "../../scripts/release-npm-preflight.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
+const publishWorkflow = readFileSync(join(root, PUBLISH_WORKFLOW_PATH), "utf8");
 
 const payload = (names: readonly string[]): string =>
 	`          packages=(${names.join(" ")})\n          for name in "\${packages[@]}"; do\n`;
+
+const publishes = (names: readonly string[], registry = PUBLISHER_NPM_REGISTRY): string =>
+	`${payload(names)}          npm publish "$file" --access public --registry ${registry}\n`;
 
 /** A probe that answers from a set, and records every name it was asked about. */
 function probeFrom(registered: Set<string>, asked: string[] = []) {
@@ -31,7 +37,7 @@ function probeFrom(registered: Set<string>, asked: string[] = []) {
 
 describe("scripts/release-npm-preflight.ts", () => {
 	test("the publish payload is read from the workflow that publishes it", () => {
-		const names = readReleasePayloadPackages(root);
+		const names = parseReleasePayloadPackages(publishWorkflow);
 		assert.equal(names.length, RELEASE_PAYLOAD_PACKAGE_COUNT);
 		assert.deepEqual(names, [
 			"@bastani/atomic-natives-darwin-arm64",
@@ -67,19 +73,36 @@ describe("scripts/release-npm-preflight.ts", () => {
 		);
 	});
 
-	test("a missing publisher names the file it could not read", () => {
-		assert.throws(
-			() => readReleasePayloadPackages(fileURLToPath(new URL("./fixtures-that-do-not-exist", import.meta.url))),
-			new RegExp(`Cannot read the release payload from .*${PUBLISH_WORKFLOW_PATH.replace(/[./]/gu, ".")}`, "u"),
+	test("the registry probed is the one the publisher pins, not a machine's npm configuration", () => {
+		// The publisher hardcodes it on both its `npm view` and `npm publish`
+		// calls; a mirror answering "yes" is not evidence the publish will work.
+		assert.equal(parsePublisherNpmRegistry(publishWorkflow), PUBLISHER_NPM_REGISTRY);
+		assert.equal(
+			parsePublisherNpmRegistry(publishes(["@bastani/atomic"], "https://npm.example.com/")),
+			"https://npm.example.com/",
 		);
+		assert.deepEqual(parseReleasePublisher(publishes(["@bastani/atomic"], "http://127.0.0.1:4873/")), {
+			packages: ["@bastani/atomic"],
+			registry: "http://127.0.0.1:4873/",
+		});
 	});
 
-	test("npm's own registry configuration is honored, and nothing else changes the default", () => {
-		assert.equal(resolveNpmRegistry({}), DEFAULT_NPM_REGISTRY);
-		assert.equal(resolveNpmRegistry({ npm_config_registry: "   " }), DEFAULT_NPM_REGISTRY);
-		assert.equal(
-			resolveNpmRegistry({ npm_config_registry: " https://npm.example.com/ " }),
-			"https://npm.example.com/",
+	test("a publisher with no, conflicting, or unusable `--registry` is refused rather than guessed at", () => {
+		assert.throws(() => parsePublisherNpmRegistry(payload(["@bastani/atomic"])), /pins no `--registry`/u);
+		assert.throws(
+			() =>
+				parsePublisherNpmRegistry(
+					`${publishes(["@bastani/atomic"])}          npm view x --registry https://mirror.example.com\n`,
+				),
+			/pins more than one `--registry`: https:\/\/registry\.npmjs\.org, https:\/\/mirror\.example\.com/u,
+		);
+		assert.throws(
+			() => parsePublisherNpmRegistry(publishes(["@bastani/atomic"], "registry.npmjs.org")),
+			/is not an absolute URL/u,
+		);
+		assert.throws(
+			() => parsePublisherNpmRegistry(publishes(["@bastani/atomic"], "file:///tmp/registry")),
+			/is not an http\(s\) registry/u,
 		);
 	});
 
@@ -114,14 +137,29 @@ describe("scripts/release-npm-preflight.ts", () => {
 				}),
 			/`npm view @bastani\/atomic` exited 1 without a 404, so its registration is unknown.*ENOTFOUND/su,
 		);
+	});
+
+	test("a killed `npm view` is never an answer, even when it printed a 404 first", async () => {
+		// A signal means the command never finished; whatever it had written is a
+		// fragment. Reading a 404 out of that fragment would let a timeout or a
+		// Ctrl-C register as "this package is new" and clear --allow-new.
+		const killed = { exitCode: null, stdout: "", stderr: "npm error code E404\n" } as const;
 		assert.throws(
-			() => classifyNpmViewOutcome("@bastani/atomic", { exitCode: null, stdout: "", stderr: "" }),
-			/exited with a signal without a 404/u,
+			() => classifyNpmViewOutcome("@bastani/atomic-new", killed),
+			/`npm view @bastani\/atomic-new` was terminated by a signal, so its registration is unknown.*E404/su,
+		);
+		await assert.rejects(
+			verifyReleasePackagesRegistered({
+				packages: ["@bastani/atomic-new"],
+				isRegistered: async (name) => classifyNpmViewOutcome(name, killed),
+				allowNew: true,
+			}),
+			/could not be determined for 1 of 1 publish-payload packages/u,
 		);
 	});
 
 	test("a fully registered payload passes and probes every package exactly once", async () => {
-		const names = readReleasePayloadPackages(root);
+		const names = parseReleasePayloadPackages(publishWorkflow);
 		const probe = probeFrom(new Set(names));
 		const result = await verifyReleasePackagesRegistered({
 			packages: names,
@@ -134,7 +172,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 	});
 
 	test("an unregistered package aborts, naming every missing package and the escape", async () => {
-		const names = readReleasePayloadPackages(root);
+		const names = parseReleasePayloadPackages(publishWorkflow);
 		const registered = new Set(names);
 		registered.delete("@bastani/atomic-natives-win32-arm64-msvc");
 		registered.delete("@bastani/atomic");
