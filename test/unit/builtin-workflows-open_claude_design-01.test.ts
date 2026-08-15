@@ -346,21 +346,18 @@ describe("open-claude-design", () => {
 	});
 
 	const annotationNotes = [
-		"- I don't like this background; simplify it to a black to grey gradient with solid texture.",
-		"- The top-left masthead text is too light on this background; ensure WCAG/a11y standards across the page.",
-		"- The copy button font is too generic; make it less generic with better design craft.",
-		"- Good call to action on the Start a loop CTA; keep it.",
-		"- Make the overall vibe more polished, closer to the Apple website.",
-	].join("\n");
-
-	const previewWithAnnotations = [
-		"display_method: playwright-cli interactive annotation",
-		"preview_path: /tmp/preview.html",
-		"annotated_snapshot: .playwright-cli/annotations-test.png",
-		"user_notes:",
-		annotationNotes,
-		"next_action_hint: proceed to refinement",
-	].join("\n");
+		"I don't like this background; simplify it to a black to grey gradient with solid texture.",
+		"The top-left masthead text is too light on this background; ensure WCAG/a11y standards across the page.",
+		"The copy button font is too generic; make it less generic with better design craft.",
+		"Good call to action on the Start a loop CTA; keep it.",
+		"Make the overall vibe more polished, closer to the Apple website.",
+	];
+	const structuredAnnotations = JSON.stringify({
+		decision: "revise",
+		user_notes: annotationNotes,
+		live_changes: [],
+		annotated_snapshot: ".playwright-cli/annotations-test.png",
+	});
 
 	test("threads captured user-feedback annotations into the next generate stage", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
@@ -369,7 +366,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Redesign the Atomic website", max_refinements: 2 },
 			{
 				task: (name) => {
-					if (name === "user-feedback-1") return previewWithAnnotations;
+					if (name === "user-feedback-1") return structuredAnnotations;
 					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
 					return undefined;
 				},

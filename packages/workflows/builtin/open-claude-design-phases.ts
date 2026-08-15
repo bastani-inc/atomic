@@ -8,9 +8,6 @@ import {
 import {
   assertUserAnnotationsThreaded,
   feedbackArtifactPath,
-  hasMeaningfulLiveChanges,
-  hasMeaningfulUserNotes,
-  loadPreviewFeedback,
   persistPreviewFeedback,
   previewFeedbackSchema,
   toPreviewFeedback,
@@ -190,38 +187,21 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
 
     latestUserFeedbackSessionFile =
       userFeedbackResult.sessionFile ?? latestUserFeedbackSessionFile;
+    const feedback = toPreviewFeedback({ iteration, stageName: feedbackStageName, result: userFeedbackResult });
+    const artifactPath = feedbackArtifactPath(artifactDir, iteration);
     persistPreviewFeedback({
       artifactDir,
       workflowCwd,
-      feedback: toPreviewFeedback({ iteration, stageName: feedbackStageName, result: userFeedbackResult }),
+      feedback,
     });
 
-    // The durable artifact — not the stage's prose — drives the loop, so the
-    // round the next generate stage reads is exactly the round on disk.
-    const artifactPath = feedbackArtifactPath(artifactDir, iteration);
-    const durableFeedback = loadPreviewFeedback({ artifactDir, iteration, stageName: feedbackStageName });
-
-    // Fail closed. An unreadable deliverable and an indeterminate round are
-    // both "we do not know what the user asked for", and neither may approve
-    // an export that would discard the review (issue #2401).
-    if (durableFeedback === undefined || durableFeedback.decision === "indeterminate") {
-      const reason = durableFeedback === undefined
-        ? "the persisted feedback deliverable could not be read back (missing or malformed)"
-        : "the round returned no schema-validated structured answer, and its prose report carried no unambiguous feedback";
-      throw new Error(
-        `open-claude-design ${feedbackStageName}: ${reason}. Feedback deliverable: ${artifactPath}. Refusing to approve or export a preview whose review outcome is unknown (see issue #2401).`,
-      );
-    }
-    // Approval may never discard captured work: an artifact that approves
-    // while carrying notes or live changes is a contradiction the loader
-    // already rejects, so if one ever reaches here it runs another round
-    // rather than exporting over the review (issue #2401 items A.3 and B.3).
-    const capturedWork = hasMeaningfulUserNotes(durableFeedback) || hasMeaningfulLiveChanges(durableFeedback);
-    if (durableFeedback.decision === "approve" && !capturedWork) {
+    // The structured result drives this loop in memory. The durable artifact
+    // remains the authoritative record the next generate stage reads.
+    if (feedback.decision === "approve") {
       approvedForExport = true;
       break;
     }
-    pendingFeedback = durableFeedback;
+    pendingFeedback = feedback;
     pendingFeedbackArtifact = artifactPath;
   }
 

@@ -16,15 +16,15 @@ import { makeMockCtx, readPathEndsWith } from "./builtin-workflows-helpers.js";
 const STRUCTURED_APPROVAL = JSON.stringify({ decision: "approve", user_notes: [], live_changes: [] });
 
 describe("open-claude-design — generate/user-feedback refinement loop (#1464)", () => {
-	const previewWithAnnotations = [
-		"display_method: playwright-cli interactive annotation",
-		"preview_path: /tmp/preview.html",
-		"annotated_snapshot: .playwright-cli/annotations-test.png",
-		"user_notes:",
-		"- I don't like this background; simplify it to a black to grey gradient.",
-		"- Make the overall vibe more polished, closer to the Apple website.",
-		"next_action_hint: proceed to refinement",
-	].join("\n");
+	const previewWithAnnotations = JSON.stringify({
+		decision: "revise",
+		user_notes: [
+			"I don't like this background; simplify it to a black to grey gradient.",
+			"Make the overall vibe more polished, closer to the Apple website.",
+		],
+		live_changes: [],
+		annotated_snapshot: ".playwright-cli/annotations-test.png",
+	});
 
 	test("threads user feedback directly into the next generate stage", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
@@ -156,13 +156,11 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 });
 
 describe("open-claude-design — deterministic live-review gate (#2060)", () => {
-	const previewWithAnnotations = [
-		"display_method: live",
-		"preview_path: /tmp/preview.html",
-		"user_notes:",
-		"- Tighten the hero spacing.",
-		"next_action_hint: proceed to refinement",
-	].join("\n");
+	const previewWithAnnotations = JSON.stringify({
+		decision: "revise",
+		user_notes: ["Tighten the hero spacing."],
+		live_changes: [],
+	});
 
 	test("raises a run-level ui.select naming the preview before each user-feedback stage", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
@@ -309,36 +307,11 @@ describe("open-claude-design — rejected feedback stage is not approval (#2123)
 		const artifactDir = result.artifact_dir as string;
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
-
-	test("a feedback round that declares nothing fails the run instead of exporting", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{ prompt: "Design a dashboard", max_refinements: 2 },
-			{
-				task: (name) => {
-					// The issue's shape: a short unlabeled wrap-up with no structured
-					// answer. Its outcome is unknown, so it must never approve (#2401).
-					if (name.startsWith("user-feedback-")) return "All set — the live review session is closed.";
-					return undefined;
-				},
-			},
-		);
-
-		await assert.rejects(
-			() => d.run(ctx),
-			/user-feedback-1: the round returned no schema-validated structured answer, and its prose report carried no unambiguous feedback.*feedback[/\\]iteration-1\.json/s,
-		);
-		assert.equal(ctx.calls.task.includes("exporter"), false);
-		assert.equal(ctx.calls.task.includes("final-display"), false);
-	});
 });
 
 /**
- * The reported failure: the feedback stage emitted a labeled report, a
- * synthetic resume-continuation turn followed, and the stage's final text
- * became a short unlabeled wrap-up. The structured answer the stage finalized
- * is what the loop reads, so the wrap-up cannot approve a stale preview.
+ * A finalized structured feedback result remains authoritative even when a
+ * continuation would otherwise replace the stage's visible text.
  * cross-ref: issue #2401.
  */
 describe("open-claude-design — structured feedback deliverable (#2401)", () => {
@@ -367,8 +340,6 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 
 		const result = await d.run(ctx);
 
-		// The requested revision runs another round rather than exporting the
-		// preview the user asked to change.
 		assert.ok(ctx.calls.task.includes("generate-2"));
 		assert.equal(result.approved_for_export, true);
 		assert.ok(ctx.calls.task.includes("exporter"));
@@ -379,10 +350,8 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 		assert.equal(artifact.decision, "revise");
 		assert.deepEqual(artifact.user_notes, STRUCTURED_REVISION.user_notes);
 		assert.deepEqual(artifact.live_changes, STRUCTURED_REVISION.live_changes);
-		// The displaced wrap-up survives as transcript metadata and nothing more.
-		assert.equal(artifact.meta.text, CONTINUATION_WRAP_UP);
+		assert.deepEqual(Object.keys(artifact.meta).sort(), ["captured_at", "iteration", "stage_name"]);
 
-		// generate-2 reads the durable deliverable and quotes the captured work.
 		const generatePrompt = ctx.calls.prompts["generate-2"]?.[0] ?? "";
 		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.user_notes[0]));
 		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.live_changes[0]));
@@ -408,9 +377,6 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 
 		const result = await d.run(ctx);
 
-		// The loop bound caps review rounds, not the work they asked for: the
-		// requested revision runs one more generate round rather than exporting
-		// the preview the user just asked to change.
 		assert.deepEqual(
 			ctx.calls.task.filter(
 				(name) => name.startsWith("generate-") || name.startsWith("user-feedback-") || name === "exporter",
@@ -421,37 +387,7 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.user_notes[0]));
 		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.live_changes[0]));
 		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
-		// The user approved nothing, so the export is not an approved one.
 		assert.equal(result.approved_for_export, false);
 		rmSync(result.artifact_dir as string, { recursive: true, force: true });
-	});
-
-	test("a structured payload the schema rejects stops the run instead of exporting", async () => {
-		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const d = mod.default as unknown as WorkflowDefinition;
-		const ctx = makeMockCtx(
-			{ prompt: "Redesign the Atomic website", max_refinements: 2 },
-			{
-				task: (name) => {
-					// `maybe` is not a decision the schema admits, so the payload is
-					// discarded and the unlabeled wrap-up parses to nothing.
-					if (name === "user-feedback-1") {
-						return {
-							text: CONTINUATION_WRAP_UP,
-							structured: { decision: "maybe", user_notes: [], live_changes: [] },
-						};
-					}
-					return undefined;
-				},
-			},
-		);
-
-		await assert.rejects(
-			() => d.run(ctx),
-			/user-feedback-1: the round returned no schema-validated structured answer, and its prose report carried no unambiguous feedback/,
-		);
-		assert.equal(ctx.calls.task.includes("generate-2"), false);
-		assert.equal(ctx.calls.task.includes("exporter"), false);
-		assert.equal(ctx.calls.task.includes("final-display"), false);
 	});
 });
