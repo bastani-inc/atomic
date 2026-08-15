@@ -150,6 +150,20 @@ function canonicalLabel(value: string): string {
 }
 
 /**
+ * Drop the heading or list marker a label may carry, so the label itself is
+ * what gets canonicalized. Markdown accepts both ordered-list markers, `1.` and
+ * `1)`, and both must be stripped: a marker the parser does not know hides the
+ * label behind it, and the field already being collected swallows that line
+ * instead of ending there. cross-ref: issue #2401 item 4.
+ */
+function stripListMarkers(line: string): string {
+  return line
+    .replace(/^\s*#{1,6}\s+/, "")
+    .replace(/^\s*[-*+]\s+/, "")
+    .replace(/^\s*\d+[.)]\s+/, "");
+}
+
+/**
  * Normalize a candidate label line into a canonical key (or undefined).
  *
  * Labels arrive decorated: fenced (```` ```user_notes``` ````), bolded
@@ -163,10 +177,7 @@ function canonicalLabel(value: string): string {
  * cross-ref: issue #2401 item 4.
  */
 function labelOf(line: string): string | undefined {
-  const stripped = line
-    .replace(/^\s*#{1,6}\s+/, "")
-    .replace(/^\s*[-*+]\s+/, "")
-    .replace(/^\s*\d+\.\s+/, "");
+  const stripped = stripListMarkers(line);
   const colonIdx = stripped.indexOf(":");
   const candidate = colonIdx >= 0 ? stripped.slice(0, colonIdx) : stripped;
   const key = canonicalLabel(candidate);
@@ -179,10 +190,7 @@ function labelOf(line: string): string | undefined {
 
 /** Inline value following a `label:` on the same line. */
 function inlineValueOf(line: string): string {
-  const stripped = line
-    .replace(/^\s*#{1,6}\s+/, "")
-    .replace(/^\s*[-*+]\s+/, "")
-    .replace(/^\s*\d+\.\s+/, "");
+  const stripped = stripListMarkers(line);
   const colonIdx = stripped.indexOf(":");
   if (colonIdx < 0) return "";
   return stripped.slice(colonIdx + 1).replace(/[`*]/g, "").trim();

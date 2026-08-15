@@ -696,6 +696,32 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		assert.equal(extractLiveChanges(repeatAcrossFields), "Accepted variant 2.");
 	});
 
+	test("a `1)` ordered-list marker cannot hide the label behind it", () => {
+		// Markdown accepts `1.` and `1)` alike. Stripping only `1.` left the second
+		// form's label unrecognized, so `user_notes` swallowed the whole
+		// live-changes block and the field it hid vanished.
+		const orderedParen = ["user_notes:", "First note.", "1) **live_changes:**", "Accepted variant 2."].join("\n");
+		assert.equal(extractUserNotes(orderedParen), "First note.");
+		assert.equal(extractLiveChanges(orderedParen), "Accepted variant 2.");
+
+		// The marker also precedes an inline value.
+		const orderedInline = [
+			"1) user_notes: Simplify the hero.",
+			"2) live_changes: Accepted the tighter density.",
+		].join("\n");
+		assert.equal(extractUserNotes(orderedInline), "Simplify the hero.");
+		assert.equal(extractLiveChanges(orderedInline), "Accepted the tighter density.");
+
+		// A repeat behind that marker is a conflicting repeated label, not a
+		// second sentence of the first note.
+		const orderedRepeat = ["user_notes: First note.", "1) **user_notes:** Second note."].join("\n");
+		assert.equal(extractUserNotes(orderedRepeat), "First note.");
+		assert.equal(
+			toPreviewFeedback({ iteration: 1, stageName: "user-feedback-1", result: { text: orderedRepeat } }).decision,
+			"indeterminate",
+		);
+	});
+
 	test("persist/load round-trips revise, approve, and indeterminate rounds", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
 		tempDirs.push(dir);
