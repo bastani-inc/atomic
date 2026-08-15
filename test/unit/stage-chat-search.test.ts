@@ -9,19 +9,30 @@
  *  - `Escape` closes the find box and does nothing else — the stage keeps
  *    running and the pane stays open.
  */
-
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { getKeybindings, ScrollView, setKeybindings, Text, type TuiAltScreen, VStack } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	isFullscreenViewportAction,
 	shouldHandleFullscreenViewportInput,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import { createFullscreenTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.ts";
+import type { Theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-class.ts";
+import { loadThemeFromContent } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
+import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
+import type { PiCustomComponent } from "../../packages/workflows/src/extension/ui-surface.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { searchMatchColors } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import {
+	type AgentSessionEvent,
 	assistantTextMessage,
 	createStore,
 	deriveGraphTheme,
+	flush,
 	makeHandle,
 	makeTestTui,
 	setupRun,
@@ -34,6 +45,8 @@ const CTRL_SHIFT_F = "\x1b[102;6u";
 const ENTER = "\r";
 /** pi-tui's default `tui.altScreen.searchClose`. */
 const ESCAPE = "\x1b";
+const PAGE_UP = "\x1b[5~";
+const HOME = "\x1b[H";
 const WIDTH = 80;
 const VIEWPORT_ROWS = 24;
 const FILLER_MESSAGES = 80;
@@ -46,6 +59,9 @@ const CURSOR_MARKER = /\x1b_pi:c\x07/g;
 
 interface ChatFixture {
 	view: StageChatView;
+	store: ReturnType<typeof createStore>;
+	broker: StageUiBroker;
+	emit: (event: AgentSessionEvent) => void;
 	closes: () => number;
 	interrupts: () => number;
 	detaches: () => number;
@@ -58,15 +74,19 @@ interface ChatFixture {
  * any rendered window, plus real keybindings so the search keys resolve exactly
  * as they do in a session.
  */
-function makeSearchableChat(options: { streaming?: boolean; piTheme?: unknown } = {}): ChatFixture {
+function makeSearchableChat(
+	options: { streaming?: boolean; piTheme?: unknown; leadMessages?: number; messages?: string[] } = {},
+): ChatFixture {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a");
-	const messages = [
-		...Array.from({ length: LEAD_MESSAGES }, (_, index) => assistantTextMessage(`lead line ${index + 1}`)),
-		assistantTextMessage(`the ${NEEDLE} is here`),
-		...Array.from({ length: FILLER_MESSAGES }, (_, index) => assistantTextMessage(`filler line ${index + 1}`)),
+	const leadMessages = options.leadMessages ?? LEAD_MESSAGES;
+	const texts = options.messages ?? [
+		...Array.from({ length: leadMessages }, (_, index) => `lead line ${index + 1}`),
+		`the ${NEEDLE} is here`,
+		...Array.from({ length: FILLER_MESSAGES }, (_, index) => `filler line ${index + 1}`),
 	];
-	const { handle } = makeHandle(
+	const messages = texts.map((text) => assistantTextMessage(text));
+	const { handle, emit } = makeHandle(
 		{
 			promptCalls: [],
 			steerCalls: [],
@@ -77,6 +97,7 @@ function makeSearchableChat(options: { streaming?: boolean; piTheme?: unknown } 
 		},
 		messages,
 	);
+	const broker = new StageUiBroker(store);
 	let closes = 0;
 	let detaches = 0;
 	const view = new StageChatView({
@@ -95,6 +116,7 @@ function makeSearchableChat(options: { streaming?: boolean; piTheme?: unknown } 
 		piTui: makeTestTui(VIEWPORT_ROWS),
 		piTheme: options.piTheme,
 		piKeybindings: new KeybindingsManager({}),
+		stageUiBroker: broker,
 	});
 	const chatHost = (view as unknown as { chatHost: { interrupt(options?: unknown): Promise<void> } }).chatHost;
 	let interrupts = 0;
@@ -106,6 +128,9 @@ function makeSearchableChat(options: { streaming?: boolean; piTheme?: unknown } 
 	const render = () => view.render(WIDTH);
 	return {
 		view,
+		store,
+		broker,
+		emit,
 		closes: () => closes,
 		interrupts: () => interrupts,
 		detaches: () => detaches,
@@ -114,6 +139,111 @@ function makeSearchableChat(options: { streaming?: boolean; piTheme?: unknown } 
 		// let a strip of the joined frame swallow the rows after it.
 		visible: () => render().map(plain).join("\n"),
 	};
+}
+
+/**
+ * Mount a stage custom UI over the chat, the way a stage that asks for one
+ * does. `consumes: false` is the shape that matters here: a custom UI that
+ * declines a key hands it back, and what happens next is the whole question.
+ */
+async function mountCustomUi(chat: ChatFixture, consumes: boolean): Promise<AbortController> {
+	const abort = new AbortController();
+	const pending = chat.broker.requestCustomUi(
+		"run-1",
+		"stage-a",
+		(): PiCustomComponent => ({
+			render: () => ["stage question"],
+			handleInput: () => consumes,
+			invalidate: () => {},
+		}),
+		undefined,
+		abort.signal,
+	);
+	pending.catch(() => {});
+	await flush();
+	chat.render();
+	return abort;
+}
+
+interface FullscreenProbe {
+	press: (data: string) => void;
+	mainSearchOpened: () => boolean;
+	stop: () => void;
+}
+
+/**
+ * The stage chat mounted as the focused overlay of a *real* fullscreen
+ * renderer: Atomic's viewport gate, pi-tui's transcript, and pi-tui's own find
+ * box, wired exactly as `InteractiveModeBase` wires them.
+ *
+ * This is the only place the misrouting is visible. A stage chat that returns
+ * `false` looks harmless on its own; it is `AtomicTuiAltScreen` replaying that
+ * declined key into pi-tui that opens a find box on the main transcript behind
+ * the overlay.
+ */
+function mountInFullscreenRoute(view: StageChatView): FullscreenProbe {
+	const previousKeybindings = getKeybindings();
+	const keybindings = new KeybindingsManager({});
+	// pi-tui reads the global manager; Atomic's gate reads the one below. Both
+	// must see the same bindings or the two halves disagree.
+	setKeybindings(new KeybindingsManager({}));
+	const terminal = new RecordingTerminal();
+	terminal.columns = WIDTH;
+	terminal.rows = VIEWPORT_ROWS;
+	const editor = new Text("editor", 0, 0);
+	let tui!: TuiAltScreen;
+	tui = createFullscreenTui({
+		showHardwareCursor: false,
+		logDirectory: tmpdir(),
+		terminal,
+		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay, focusedIsViewportSearch) =>
+			shouldHandleFullscreenViewportInput(
+				tui.getFocusedComponent(),
+				editor,
+				data,
+				isMouseInput,
+				focusedIsOverlay,
+				keybindings,
+				focusedIsViewportSearch,
+			),
+	});
+	const transcript = new ScrollView(
+		new Text(Array.from({ length: 120 }, (_, index) => `transcript line ${index + 1}`).join("\n"), 0, 0),
+		{ follow: "end", primary: true },
+	);
+	tui.setLayoutRoot(
+		new VStack([
+			{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: editor, basis: 1, shrink: 0 },
+		]),
+	);
+	tui.setFocus(editor);
+	tui.start();
+	tui.renderNow();
+	tui.showOverlay(view, { anchor: "bottom-center", width: "100%" });
+	tui.renderNow();
+	assert.equal(tui.getFocusedComponent(), view, "the stage chat must be the focused overlay");
+	return {
+		press: (data: string) => {
+			terminal.input(data);
+			tui.renderNow();
+		},
+		// pi-tui keeps its find box private (`tui-alt-screen.d.ts`).
+		mainSearchOpened: () => (tui as unknown as { activeSearch?: unknown }).activeSearch !== undefined,
+		stop: () => {
+			tui.stop();
+			setKeybindings(previousKeybindings);
+		},
+	};
+}
+
+/** The shipped dark theme with the two search tokens pinned to known colors. */
+function themeWithSearchColors(searchMatchBg: string, searchMatchText: string): Theme {
+	const source = new URL("../../packages/coding-agent/src/modes/interactive/theme/dark.json", import.meta.url);
+	const json = JSON.parse(readFileSync(source, "utf8")) as { colors: Record<string, string> };
+	json.colors.searchMatchBg = searchMatchBg;
+	json.colors.searchMatchText = searchMatchText;
+	return loadThemeFromContent("stage-chat-search-test.json", JSON.stringify(json), "truecolor");
 }
 
 /** One rendered row as the reader sees it: no escapes, no zero-width marker. */
@@ -138,8 +268,14 @@ describe("stage chat search", () => {
 	 * action allowlist refuses the key to the viewport while a non-editor
 	 * component holds focus, and the stage chat consumes it — both halves are
 	 * asserted here, because either one alone leaves the misrouting possible.
+	 *
+	 * The last half is the one a gate test cannot see: a declined key is
+	 * *replayed* into pi-tui, so a stage chat that answers `false` reopens the
+	 * hole the gate closed. That state is real — a mounted stage custom UI that
+	 * does not claim the key — and it is exercised here through the whole
+	 * fullscreen route rather than simulated.
 	 */
-	test("stage-chat-search-does-not-reach-transcript", () => {
+	test("stage-chat-search-does-not-reach-transcript", async () => {
 		const keybindings = new KeybindingsManager({});
 		const overlay = { render: () => ["stage chat"], handleInput: () => true, invalidate: () => {} };
 		const editor = { render: () => ["editor"], invalidate: () => {} };
@@ -168,6 +304,29 @@ describe("stage chat search", () => {
 		assert.equal(chat.view._inputBuffer, "");
 		assert.match(searching, /> filler/);
 		assert.match(searching, /\d+\/\d+/);
+
+		// A mounted stage custom UI that declines the key, on the real route.
+		const declining = makeSearchableChat({ piTheme: {} });
+		const abort = await mountCustomUi(declining, false);
+		const probe = mountInFullscreenRoute(declining.view);
+		try {
+			assert.match(declining.visible(), /stage question/, "the declining custom UI must actually be mounted");
+			assert.equal(
+				declining.view.handleInput(CTRL_SHIFT_F),
+				true,
+				"a stage chat whose custom UI declines the key must still consume it",
+			);
+			probe.press(CTRL_SHIFT_F);
+			assert.equal(
+				probe.mainSearchOpened(),
+				false,
+				"ctrl+shift+f reached the main transcript behind the focused stage chat",
+			);
+		} finally {
+			probe.stop();
+			abort.abort();
+			declining.view.dispose();
+		}
 	});
 
 	test("the matcher covers rows the viewport window does not hold", () => {
@@ -224,6 +383,113 @@ describe("stage chat search", () => {
 		assert.equal(fallbackBg, "#45475a", "fixture pins the palette this assertion encodes");
 	});
 
+	/**
+	 * The colors have to survive a real `Theme`, whose accessors read instance
+	 * state through `this` (`theme-class.ts:158-171`). Passing them around as
+	 * detached functions throws on every call, and that throw reads exactly like
+	 * "this theme has no such token" — a silent, perfect-looking fallback for
+	 * every host that actually defines the two colors.
+	 */
+	test("a real host Theme supplies the search-match colors", () => {
+		const piTheme = themeWithSearchColors("#141516", "#111213");
+		assert.deepEqual(
+			searchMatchColors(piTheme, deriveGraphTheme({})),
+			{ bg: "#141516", text: "#111213" },
+			"a real Theme must reach the highlight, not the overlay fallback",
+		);
+
+		const chat = makeSearchableChat({ piTheme });
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, NEEDLE);
+		const highlighted = chat.render().find((line) => plain(line).includes("buried"));
+
+		assert.ok(highlighted, "the revealed match must be on screen");
+		assert.match(highlighted, /\x1b\[48;2;20;21;22m\x1b\[38;2;17;18;19m\x1b\[1mburied/);
+	});
+
+	/**
+	 * A streaming stage rewrites rows it already has: the row count, the width
+	 * and the query all stay put while the text underneath them changes. An
+	 * open search that keys on those three answers with the transcript as it
+	 * was, which is the one thing a live search may not do.
+	 */
+	test("the query is re-run against text streamed into a row the transcript already had", () => {
+		const chat = makeSearchableChat({ streaming: true, messages: ["alpha"] });
+		const host = (chat.view as unknown as { chatHost: { bodyRowCount(width: number): number } }).chatHost;
+		chat.emit({
+			type: "message_start",
+			message: { role: "assistant", content: [] },
+		} as unknown as AgentSessionEvent);
+		chat.emit({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "beta" },
+		} as unknown as AgentSessionEvent);
+
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, "needle");
+		assert.match(chat.visible(), /No matches/);
+		const rowsBefore = host.bodyRowCount(WIDTH);
+
+		chat.emit({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " needle" },
+		} as unknown as AgentSessionEvent);
+		const searching = chat.visible();
+
+		assert.equal(host.bodyRowCount(WIDTH), rowsBefore, "fixture is wrong: the streamed row changed the row count");
+		assert.match(searching, /1\/1/, "an open search must answer against the transcript as it is now");
+		assert.match(searching, /beta needle/);
+	});
+
+	/**
+	 * The top of the transcript is the boundary the reveal arithmetic can walk
+	 * off: the scroll target sits above row zero and clamps. The match still has
+	 * to end up on screen rather than one row above it.
+	 */
+	test("a match at the top of the transcript is revealed, not only counted", () => {
+		const chat = makeSearchableChat({ leadMessages: 0 });
+		assert.doesNotMatch(chat.visible(), new RegExp(NEEDLE), "fixture is wrong: the needle starts on screen");
+
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, NEEDLE);
+
+		const searching = chat.visible();
+		assert.match(searching, /1\/1/);
+		assert.match(searching, new RegExp(NEEDLE), "the first transcript row must be shown, not just counted");
+	});
+
+	/**
+	 * The follow indicator takes a row from the body whenever the reader is
+	 * scrolled up. It used to take it off the top of the *painted* body, so the
+	 * row the viewport reported as first was not the row the reader saw and
+	 * absolute row zero could not be shown at all. Reserving the row up front
+	 * keeps the two in agreement, which is what the reveal arithmetic assumes.
+	 */
+	test("the body starts on the row the viewport parks it on", () => {
+		const chat = makeSearchableChat({ leadMessages: 0 });
+		const host = (
+			chat.view as unknown as {
+				chatHost: {
+					bodyMaxScroll(): number;
+					bodyScrollFromBottom(): number;
+					renderBodyRows(width: number, startRow: number, endRow: number): string[];
+				};
+			}
+		).chatHost;
+		chat.render();
+		// Scroll up first: the indicator appears and the body settles at the
+		// height it keeps for the rest of this test.
+		chat.view.handleInput(PAGE_UP);
+		chat.render();
+		chat.view.handleInput(HOME);
+		const frame = chat.render();
+
+		assert.equal(host.bodyMaxScroll() - host.bodyScrollFromBottom(), 0, "home must park the body on row 0");
+		const topRows = host.renderBodyRows(WIDTH, 0, 3);
+		const start = frame.findIndex((_, index) => topRows.every((row, offset) => frame[index + offset] === row));
+		assert.ok(start >= 0, "the first transcript row was clipped off the top of the body");
+	});
+
 	test("enter walks the matches and the selection is reported", () => {
 		const chat = makeSearchableChat();
 		chat.view.handleInput(CTRL_SHIFT_F);
@@ -258,6 +524,48 @@ describe("stage chat search", () => {
 		chat.view.handleInput(ESCAPE);
 		await new Promise<void>((resolve) => queueMicrotask(resolve));
 		assert.equal(chat.interrupts(), 1);
+	});
+
+	/**
+	 * The stage can be blocked between the frame that painted the find bar and
+	 * the keystroke that answers it. The reader still sees a find box, so
+	 * Escape still means "close it" — it may not fall through and interrupt the
+	 * stage on the way past.
+	 */
+	test("escape closes the search on the frame the stage becomes blocked", async () => {
+		const chat = makeSearchableChat({ streaming: true });
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, "filler");
+		assert.match(chat.visible(), /Find in stage chat/);
+
+		chat.store.recordStageBlocked("run-1", "stage-a", "review-a");
+
+		assert.equal(chat.view.handleInput(ESCAPE), true);
+		await flush();
+		assert.equal(chat.interrupts(), 0, "escape must not abort the stage while the find box is open");
+		assert.equal(chat.closes(), 0, "escape must not close the pane while the find box is open");
+
+		// The block took the transcript out of the body, so the bar goes too.
+		const blocked = chat.visible();
+		assert.match(blocked, /BLOCKED/);
+		assert.doesNotMatch(blocked, /Find in stage chat/);
+	});
+
+	test("a body that no longer shows the transcript drops the find bar", async () => {
+		const chat = makeSearchableChat({ piTheme: {} });
+		chat.view.handleInput(CTRL_SHIFT_F);
+		type(chat.view, "filler");
+		assert.match(chat.visible(), /Find in stage chat/);
+
+		const abort = await mountCustomUi(chat, true);
+		try {
+			const mounted = chat.visible();
+			assert.match(mounted, /stage question/);
+			assert.doesNotMatch(mounted, /Find in stage chat/);
+		} finally {
+			abort.abort();
+			chat.view.dispose();
+		}
 	});
 
 	test("the find bar takes its rows from the body and the frame keeps its height", () => {

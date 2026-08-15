@@ -27,6 +27,7 @@ import { keyText, TranscriptFollowIndicator } from "@bastani/atomic";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
+	closeStageChatSearch,
 	highlightStageChatSearchRows,
 	refreshStageChatSearch,
 	renderStageChatSearchBar,
@@ -123,19 +124,25 @@ export class StageChatView implements Component, Focusable {
 		const stage = currentStage(ctx);
 		const blocked = isBlocked(ctx);
 
+		const customUiActive = this.mountedCustomUi !== null;
+		syncPromptState(ctx, stage?.pendingPrompt);
+		const promptActive = !customUiActive && this.promptState !== null;
+		const readOnlyArchive = isReadOnlyArchive(ctx, stage);
+		const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
+
+		// Whatever swaps the transcript out of the body takes the find box with
+		// it. A bar left painted over a body it cannot search is the one state
+		// where Escape has two plausible meanings, and the reader would have to
+		// guess which one this frame means.
+		if (chatChromeHidden) closeStageChatSearch(ctx);
 		// The find box owns the caret while it is open, so the composer paints
 		// unfocused and only one component emits a cursor.
 		const searchActive = this.search !== null;
 		this.chatHost.focused = this.focused && !searchActive;
 		const headerLines = renderHeader(ctx, w, stage);
 		const sepLines = [sepRule(ctx, w)];
-		const customUiActive = this.mountedCustomUi !== null;
-		syncPromptState(ctx, stage?.pendingPrompt);
-		const promptActive = !customUiActive && this.promptState !== null;
-		const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 
 		const customUiLines = customUiActive ? renderCustomUi(ctx, w) : [];
-		const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
 		const pendingLines = chatChromeHidden ? [] : this.chatHost.renderPendingMessages(w);
 		const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
 		const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
@@ -204,7 +211,21 @@ export class StageChatView implements Component, Focusable {
 		const indicatorLines = transcriptBodyActive && bodyBudget > 1 ? indicator.render(w) : [];
 		const indicatorVisible = indicatorLines.length > 0;
 		const dropBodyRow = transcriptBodyActive && indicatorVisible && bodyLines.length >= bodyBudget;
-		const visibleBodyLines = bodyLines.slice(dropBodyRow ? 1 : 0, bodyBudget);
+		// The indicator's row comes out of the body, and the end it comes from
+		// decides which rows the reader can reach at all. Taken off the top, the
+		// first transcript row is unpaintable: the reader is already parked as
+		// high as the viewport goes and the row is still clipped, so a search
+		// that reveals a match there counts it and shows the row under it. A body
+		// already parked at row zero therefore gives up its last row instead.
+		// Either way the body is rendered at the full budget, which is what keeps
+		// the viewport size — and the page arithmetic that reads it — stable
+		// while the indicator is visible.
+		const parkedAtTop = this.chatHost.bodyMaxScroll() - this.chatHost.bodyScrollFromBottom() <= 0;
+		const visibleBodyLines = dropBodyRow
+			? parkedAtTop
+				? bodyLines.slice(0, bodyBudget - 1)
+				: bodyLines.slice(1, bodyBudget)
+			: bodyLines.slice(0, bodyBudget);
 
 		const searchLines = searchActive ? renderStageChatSearchBar(ctx, w).slice(0, plan.searchRows) : [];
 		const lines = [

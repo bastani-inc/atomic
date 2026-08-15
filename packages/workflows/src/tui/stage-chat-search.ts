@@ -54,8 +54,6 @@ export interface StageChatSearchState {
 	selectionMode: StageChatSearchSelectionMode;
 	/** Row the selection is re-derived from when the query changes. */
 	anchorRow: number;
-	/** Corpus identity of the last match run, so a repaint does not re-match. */
-	corpusKey: string;
 }
 
 /**
@@ -74,7 +72,6 @@ export function openStageChatSearch(ctx: StageChatViewContext): void {
 		selectedKey: undefined,
 		selectionMode: "query",
 		anchorRow: firstVisibleBodyRow(ctx),
-		corpusKey: "",
 	};
 	ctx.requestRender?.();
 }
@@ -98,7 +95,6 @@ export function setStageChatSearchQuery(ctx: StageChatViewContext, query: string
 	search.anchorRow = selected?.segments[0]?.row ?? firstVisibleBodyRow(ctx);
 	search.query = query;
 	search.selectionMode = "query";
-	search.corpusKey = "";
 	search.selectedIndex = -1;
 	ctx.requestRender?.();
 }
@@ -108,7 +104,6 @@ export function navigateStageChatSearch(ctx: StageChatViewContext, direction: 1 
 	const search = ctx.search;
 	if (!search?.query.trim()) return;
 	search.selectionMode = direction < 0 ? "previous" : "next";
-	search.corpusKey = "";
 	ctx.requestRender?.();
 }
 
@@ -128,13 +123,28 @@ export function typeIntoStageChatSearch(ctx: StageChatViewContext, data: string)
  * the body so the selected match is on screen.
  *
  * Called once per frame *before* the body is painted, with the row budget that
- * frame will give it. Re-matching is skipped when neither the query nor the
- * corpus shape changed, so a streaming stage does not re-scan its whole
- * transcript on every animation tick.
+ * frame will give the transcript.
+ *
+ * The match run is not cached. A stage that is streaming rewrites the rows it
+ * already has — a token appended to the last line changes no row count and no
+ * width — so every key cheaper than the rendered text itself answers a live
+ * search with the transcript as it was, which is the one thing an open search
+ * may not do. The corpus is measured every frame regardless (`bodyRowCount`
+ * renders the whole stack to count it), so re-reading the rows that
+ * measurement just produced is the cheap half of the work, and the transcript's
+ * own per-entry block cache keeps an unchanged entry from being re-rendered.
  */
 export function refreshStageChatSearch(ctx: StageChatViewContext, width: number, bodyRows: number): void {
 	const search = ctx.search;
 	if (!search) return;
+	const revealSelection = search.selectionMode !== "retain";
+	if (!search.query.trim()) {
+		search.matches = [];
+		search.selectedIndex = -1;
+		search.selectedKey = undefined;
+		search.selectionMode = "retain";
+		return;
+	}
 	let rowCount = ctx.chatHost.bodyRowCount(width);
 	if (rowCount === 0) {
 		// The body's component stack is installed by `renderBody`, so a search
@@ -143,21 +153,14 @@ export function refreshStageChatSearch(ctx: StageChatViewContext, width: number,
 		ctx.chatHost.renderBody(width, Math.max(1, bodyRows));
 		rowCount = ctx.chatHost.bodyRowCount(width);
 	}
-	const corpusKey = `${width}:${rowCount}:${search.query}`;
-	if (corpusKey === search.corpusKey) return;
-	const hasQuery = search.query.trim().length > 0;
-	if (!hasQuery || rowCount <= 0) {
-		// An empty query is a settled answer and is cached. A query with nothing
-		// to search yet is not: leave the key clear so the next frame retries.
-		search.corpusKey = hasQuery ? "" : corpusKey;
+	if (rowCount <= 0) {
+		// Nothing to search *yet*. The pending selection mode is deliberately
+		// kept, so the frame that finally has rows still anchors and reveals.
 		search.matches = [];
 		search.selectedIndex = -1;
 		search.selectedKey = undefined;
-		search.selectionMode = "retain";
 		return;
 	}
-	search.corpusKey = corpusKey;
-	const revealSelection = search.selectionMode !== "retain";
 	const lines = ctx.chatHost.renderBodyRows(width, 0, rowCount);
 	const matches = findSearchMatches(lines, search.query);
 	search.selectedIndex = selectMatchIndex(search, matches);
@@ -195,10 +198,12 @@ function selectMatchIndex(search: StageChatSearchState, matches: readonly Transc
  * the way down rather than at the very top, so the rows around it read as
  * context instead of the match being pinned to an edge.
  *
- * The top body row is not counted as on screen: while the reader is scrolled up
- * the follow indicator takes that row, so a match parked there would be
- * reported as visible and never shown. The cushion is at least one row, which
- * is what keeps that test from re-firing on the row it just revealed.
+ * "On screen" is not the whole row budget. While the reader is scrolled up the
+ * follow indicator takes one of the body's rows — the top one, except on a body
+ * already parked at row zero, where `StageChatView` gives up the bottom row
+ * instead so the first transcript row stays reachable. This window follows that
+ * rule exactly; a looser one reports a clipped match as revealed and the search
+ * never scrolls to it.
  */
 function revealSelectedMatch(ctx: StageChatViewContext, search: StageChatSearchState, bodyRows: number): void {
 	const selected = search.matches[search.selectedIndex];
@@ -206,8 +211,11 @@ function revealSelectedMatch(ctx: StageChatViewContext, search: StageChatSearchS
 	const last = selected?.segments[selected.segments.length - 1];
 	if (!first || !last || bodyRows <= 0) return;
 	const top = firstVisibleBodyRow(ctx);
-	const bottom = top + bodyRows - 1;
-	if (first.row > top && last.row <= bottom) return;
+	const firstVisible = top === 0 ? 0 : top + 1;
+	const lastVisible = top + bodyRows - 1 - (top === 0 ? 1 : 0);
+	if (first.row >= firstVisible && last.row <= lastVisible) return;
+	// At least one row of cushion, so the revealed match never lands on the row
+	// the indicator takes.
 	ctx.chatHost.scrollBodyTo(first.row - Math.max(1, Math.floor(bodyRows / 3)));
 }
 

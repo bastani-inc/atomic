@@ -197,22 +197,30 @@ function parsePiAnsiToHex(ansi: string | undefined): string | undefined {
  * Pi's `Theme.getFgAnsi` throws when the requested key is missing from
  * the current theme; we want feature detection without surfacing the
  * throw to overlay mount.
+ *
+ * The accessor is called **on the theme**. Pi's `Theme` reads instance
+ * fields through `this` (`theme-class.ts:158-171`), so a detached
+ * `theme.getFgAnsi` handed around as a plain function throws `TypeError`
+ * on every call and lands in the `catch` below — which reads as "this
+ * theme has no such token" and quietly returns the fallback palette for
+ * a real host theme that has every token.
  */
-function tryPiAccessor(fn: ((color: string) => string) | undefined, color: string): string | undefined {
+function tryPiAccessor(theme: PiRuntimeTheme, accessor: "getFgAnsi" | "getBgAnsi", color: string): string | undefined {
+	const fn = theme[accessor];
 	if (typeof fn !== "function") return undefined;
 	try {
-		return fn(color);
+		return fn.call(theme, color);
 	} catch {
 		return undefined;
 	}
 }
 
 function fgHex(theme: PiRuntimeTheme, color: string): string | undefined {
-	return parsePiAnsiToHex(tryPiAccessor(theme.getFgAnsi, color));
+	return parsePiAnsiToHex(tryPiAccessor(theme, "getFgAnsi", color));
 }
 
 function bgHex(theme: PiRuntimeTheme, color: string): string | undefined {
-	return parsePiAnsiToHex(tryPiAccessor(theme.getBgAnsi, color));
+	return parsePiAnsiToHex(tryPiAccessor(theme, "getBgAnsi", color));
 }
 
 /**
