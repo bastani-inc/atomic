@@ -32,6 +32,7 @@ test("offline model candidate startup restores caches without catalog network re
 				refresh,
 				getAvailableSnapshot: () => [],
 				getCredentialGeneration: () => 0,
+				getModelConfigFingerprint: () => "models",
 			},
 		},
 	};
@@ -52,6 +53,7 @@ test("footer provider count uses the current snapshot without refreshing catalog
 				refresh,
 				getAvailableSnapshot: () => [{ provider: "one" }, { provider: "one" }, { provider: "two" }],
 				getCredentialGeneration: () => 0,
+				getModelConfigFingerprint: () => "models",
 			},
 		},
 		footerDataProvider: { setAvailableProviderCount },
@@ -76,7 +78,12 @@ test("offline scoped-model selector starts a cache-only background refresh", asy
 	const mode = {
 		session: {
 			scopedModels: [],
-			modelRuntime: { refresh, getAvailableSnapshot: () => [], getCredentialGeneration: () => 0 },
+			modelRuntime: {
+				refresh,
+				getAvailableSnapshot: () => [],
+				getCredentialGeneration: () => 0,
+				getModelConfigFingerprint: () => "models",
+			},
 		},
 		settingsManager: { getEnabledModels: () => undefined },
 		showSelector,

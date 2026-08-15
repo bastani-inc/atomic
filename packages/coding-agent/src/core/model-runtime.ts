@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
 	type Api,
@@ -28,6 +30,7 @@ import {
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
+import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
 import { POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS } from "./model-refresh-timeout.ts";
@@ -677,6 +680,37 @@ export class ModelRuntime implements Models {
 	 */
 	isNetworkRefreshEnabled(): boolean {
 		return this.modelNetworkEnabled;
+	}
+
+	/**
+	 * Identity of the models.json content the next refresh would load.
+	 *
+	 * Every refresh reloads models.json and applies it, so a pass that started
+	 * before that file changed answers for provider `apiKey`s and model
+	 * definitions that no longer exist. Callers that share one in-flight pass
+	 * read this to tell a pass that predates an edit from one that can answer
+	 * for the current file, which is what keeps hot reload honest when a shared
+	 * refresh is already running.
+	 *
+	 * The token is the file's content hash, read synchronously so the answer
+	 * belongs to the same tick as the decision to share. An mtime is not enough:
+	 * a same-size rewrite inside one filesystem timestamp tick — an edited key or
+	 * a renamed model — is exactly the change a shared pass must not hide, and
+	 * models.json is a small user-authored file that `runRefresh` reads in full
+	 * on every pass anyway.
+	 */
+	getModelConfigFingerprint(): string {
+		if (!this.modelsPath) return "none";
+		try {
+			return createHash("sha1")
+				.update(readFileSync(normalizePath(this.modelsPath)))
+				.digest("hex");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			// An absent file is a stable state a refresh can share; any other read
+			// failure keys on its own code rather than pretending the file is empty.
+			return code === "ENOENT" ? "absent" : `unreadable:${code ?? "unknown"}`;
+		}
 	}
 
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {

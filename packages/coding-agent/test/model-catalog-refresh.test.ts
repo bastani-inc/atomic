@@ -20,21 +20,27 @@ function successfulRefresh(): ModelsRefreshResult {
 }
 
 /**
- * A runtime stub carrying the network policy an omitted `allowNetwork` resolves to
- * and the credential generation a real `ModelRuntime` bumps on every login, logout,
- * or key change.
+ * A runtime stub carrying the network policy an omitted `allowNetwork` resolves to,
+ * the credential generation a real `ModelRuntime` bumps on every login, logout,
+ * or key change, and the models.json fingerprint a real `ModelRuntime` derives
+ * from the file every refresh reloads.
  */
 function createRuntime(
 	refresh: (options?: ModelsRefreshOptions) => Promise<ModelsRefreshResult>,
 	networkEnabled = true,
 ) {
 	let credentialGeneration = 0;
+	let modelConfigFingerprint = "models-a";
 	return {
 		refresh: vi.fn(refresh),
 		isNetworkRefreshEnabled: () => networkEnabled,
 		getCredentialGeneration: () => credentialGeneration,
+		getModelConfigFingerprint: () => modelConfigFingerprint,
 		mutateCredentials: () => {
 			credentialGeneration += 1;
+		},
+		editModelsJson: (fingerprint: string) => {
+			modelConfigFingerprint = fingerprint;
 		},
 	};
 }
@@ -160,6 +166,46 @@ describe("interactive model catalog refresh", () => {
 
 		deferred.resolve(successfulRefresh());
 		await Promise.all([first, second, third, fourth]);
+	});
+
+	it("refuses to answer a post-models.json-edit request with a pass that predates the edit", async () => {
+		const beforeEditPass = createDeferred<ModelsRefreshResult>();
+		const afterEditPass = createDeferred<ModelsRefreshResult>();
+		let starts = 0;
+		const runtime = createRuntime(() => (starts++ === 0 ? beforeEditPass.promise : afterEditPass.promise));
+		const controller = new AbortController();
+
+		// Every pass reloads models.json and applies it, so the in-flight pass carries
+		// the provider key and model list the user just replaced.
+		const beforeEdit = refreshModelCatalogs(runtime, { signal: controller.signal });
+		runtime.editModelsJson("models-b");
+		const afterEdit = refreshModelCatalogs(runtime, { signal: controller.signal });
+
+		expect(runtime.refresh).toHaveBeenCalledTimes(2);
+
+		beforeEditPass.resolve(successfulRefresh());
+		afterEditPass.resolve(successfulRefresh());
+		await expect(beforeEdit).resolves.toEqual(successfulRefresh());
+		await expect(afterEdit).resolves.toEqual(successfulRefresh());
+	});
+
+	it("still shares one pass between callers reading the same models.json", async () => {
+		const deferred = createDeferred<ModelsRefreshResult>();
+		const runtime = createRuntime(() => deferred.promise);
+		const controller = new AbortController();
+
+		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
+		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
+		expect(runtime.refresh).toHaveBeenCalledOnce();
+
+		// An edit that restores the previous content is the same work again, so a
+		// caller after it still joins rather than paying for a duplicate pass.
+		runtime.editModelsJson("models-a");
+		const third = refreshModelCatalogs(runtime, { signal: controller.signal });
+		expect(runtime.refresh).toHaveBeenCalledOnce();
+
+		deferred.resolve(successfulRefresh());
+		await Promise.all([first, second, third]);
 	});
 
 	it("refuses to answer a different catalog request with an in-flight one", async () => {

@@ -21,6 +21,7 @@ function fakeMode(overrides?: { refreshRejects?: boolean }): { mode: Interactive
 				},
 				isNetworkRefreshEnabled: () => true,
 				getCredentialGeneration: () => 0,
+				getModelConfigFingerprint: () => "models",
 				getAvailableSnapshot: () => [{ provider: "anthropic" }, { provider: "openai" }, { provider: "openai" }],
 			},
 		},

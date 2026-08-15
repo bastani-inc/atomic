@@ -32,6 +32,7 @@ function createSelector(refresh: ModelRuntime["refresh"]): ModelSelectorComponen
 		refresh,
 		isNetworkRefreshEnabled: () => true,
 		getCredentialGeneration: () => 0,
+		getModelConfigFingerprint: () => "models",
 		getError: () => undefined,
 		getAvailableSnapshot: () => [model],
 		getModel: () => model,

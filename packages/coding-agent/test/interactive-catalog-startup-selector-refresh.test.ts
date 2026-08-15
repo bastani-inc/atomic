@@ -52,6 +52,7 @@ function createHarness(networkEnabled = true): Harness {
 		refresh,
 		isNetworkRefreshEnabled: () => networkEnabled,
 		getCredentialGeneration: () => 0,
+		getModelConfigFingerprint: () => "models",
 		getError: () => undefined,
 		getAvailableSnapshot: () => [model],
 		getModel: () => model,

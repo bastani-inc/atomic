@@ -2,7 +2,10 @@ import type { ModelsRefreshOptions, ModelsRefreshResult } from "@earendil-works/
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 
-type ModelCatalogRuntime = Pick<ModelRuntime, "refresh" | "isNetworkRefreshEnabled" | "getCredentialGeneration">;
+type ModelCatalogRuntime = Pick<
+	ModelRuntime,
+	"refresh" | "isNetworkRefreshEnabled" | "getCredentialGeneration" | "getModelConfigFingerprint"
+>;
 
 /**
  * The whole-catalog options interactive refreshes vary. `providers` and `force`
@@ -35,10 +38,17 @@ interface ActiveModelCatalogRefresh {
  * the post-login catalog refresh to the selector (`interactive-auth-login.ts`).
  * Without the generation the selector joined the pre-login pass and showed no
  * models for the provider the user had just authenticated.
+ *
+ * The models.json fingerprint is part of the key for the same reason in the
+ * other direction: every pass reloads that file and applies it, so a pass that
+ * started before an edit answers with the provider keys and model definitions
+ * the user just replaced. Without it, a `/model` picker opened after an edit
+ * joined the older pass and the edit did not take effect until a third refresh,
+ * silently revoking the hot reload `model-registry-hot-reload.test.ts` states.
  */
 function refreshKey(modelRuntime: ModelCatalogRuntime, options: ModelCatalogRefreshOptions): string {
 	const policy = (options.allowNetwork ?? modelRuntime.isNetworkRefreshEnabled()) ? "network" : "cache";
-	return `${policy}:${modelRuntime.getCredentialGeneration()}`;
+	return `${policy}:${modelRuntime.getCredentialGeneration()}:${modelRuntime.getModelConfigFingerprint()}`;
 }
 
 class ModelCatalogRefreshCoordinator {

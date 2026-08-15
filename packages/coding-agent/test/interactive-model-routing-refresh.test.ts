@@ -34,7 +34,12 @@ function createMode(
 		getModelCandidates: InteractiveModeBase.prototype.getModelCandidates,
 		session: {
 			scopedModels,
-			modelRuntime: { refresh, getAvailableSnapshot, getCredentialGeneration: () => 0 },
+			modelRuntime: {
+				refresh,
+				getAvailableSnapshot,
+				getCredentialGeneration: () => 0,
+				getModelConfigFingerprint: () => "models",
+			},
 		},
 	};
 }

@@ -56,6 +56,7 @@ async function openSelector(initialModels: readonly Model<Api>[], options: OpenS
 				},
 				refresh,
 				getCredentialGeneration: () => 0,
+				getModelConfigFingerprint: () => "models",
 			},
 			setScopedModels,
 		},
