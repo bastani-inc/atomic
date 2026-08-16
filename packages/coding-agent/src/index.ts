@@ -64,6 +64,15 @@ export {
 	runCallback,
 	runSynchronousCallback,
 } from "./core/callback-activity.ts";
+// Cloudflare AI Gateway over the Workers AI binding (no API token; see docs/providers.md)
+export {
+	type AiGatewayBinding,
+	type AiGatewayBindingGateway,
+	type AiGatewayUniversalRequestLike,
+	CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+	createGatewayBindingFetch,
+	type GatewayBindingFetchOptions,
+} from "./core/cloudflare-gateway-binding.ts";
 export {
 	CODEX_FAST_MODE_SERVICE_TIER,
 	type CodexFastModeResolvedSettings,

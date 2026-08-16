@@ -15,24 +15,38 @@ let _virtualModules: Record<string, object> | null = null;
 let _virtualModulesPromise: Promise<Record<string, object>> | null = null;
 
 async function loadVirtualModules(): Promise<Record<string, object>> {
-	const [typebox, typeboxCompile, typeboxValue, piAgentCore, piTui, piTuiLayout, piAi, piAiOauth, piCodingAgent] =
-		await Promise.all([
-			import("typebox"),
-			import("typebox/compile"),
-			import("typebox/value"),
-			import("@earendil-works/pi-agent-core"),
-			import("@earendil-works/pi-tui"),
-			import("@earendil-works/pi-tui/dist/layout.js"),
-			// pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
-			// `/compat` (a strict superset). Extensions still `import ... from
-			// "@earendil-works/pi-ai"`, so we load the compat module here and key it
-			// under the root specifier below to keep every extension working unchanged.
-			import("@earendil-works/pi-ai/compat"),
-			import("@earendil-works/pi-ai/oauth"),
-			// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
-			// avoiding a circular dependency while preserving the package-name extension import path.
-			import("../../index.ts"),
-		]);
+	const [
+		typebox,
+		typeboxCompile,
+		typeboxValue,
+		piAgentCore,
+		piTui,
+		piTuiLayout,
+		piAi,
+		piAiOauth,
+		piAiCloudflareGatewayBinding,
+		piCodingAgent,
+	] = await Promise.all([
+		import("typebox"),
+		import("typebox/compile"),
+		import("typebox/value"),
+		import("@earendil-works/pi-agent-core"),
+		import("@earendil-works/pi-tui"),
+		import("@earendil-works/pi-tui/dist/layout.js"),
+		// pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
+		// `/compat` (a strict superset). Extensions still `import ... from
+		// "@earendil-works/pi-ai"`, so we load the compat module here and key it
+		// under the root specifier below to keep every extension working unchanged.
+		import("@earendil-works/pi-ai/compat"),
+		import("@earendil-works/pi-ai/oauth"),
+		// Re-exported from `@bastani/atomic`; jiti-loaded extensions (the builtin
+		// packages import the host entry) reach this specifier, so it needs a key
+		// of its own instead of falling through to the compat/root prefix alias.
+		import("@earendil-works/pi-ai/api/cloudflare-gateway-binding"),
+		// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
+		// avoiding a circular dependency while preserving the package-name extension import path.
+		import("../../index.ts"),
+	]);
 
 	return {
 		typebox,
@@ -47,6 +61,7 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@earendil-works/pi-ai": piAi,
 		"@earendil-works/pi-ai/compat": piAi,
 		"@earendil-works/pi-ai/oauth": piAiOauth,
+		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 		"@bastani/atomic": piCodingAgent,
 		"@mariozechner/pi-agent-core": piAgentCore,
 		"@mariozechner/pi-tui": piTui,
@@ -54,6 +69,7 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@mariozechner/pi-ai": piAi,
 		"@mariozechner/pi-ai/compat": piAi,
 		"@mariozechner/pi-ai/oauth": piAiOauth,
+		"@mariozechner/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 	};
 }
 
@@ -422,6 +438,10 @@ function getAliases(): Record<string, string> {
 	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@earendil-works/pi-ai");
+	const piAiGatewayBindingEntry = resolveWorkspaceOrImport(
+		"ai/dist/api/cloudflare-gateway-binding.js",
+		"@earendil-works/pi-ai",
+	);
 
 	_aliases = {
 		"@bastani/atomic": piCodingAgentEntry,
@@ -432,6 +452,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
 		"@earendil-works/pi-ai/compat": piAiEntry,
+		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
 		"@earendil-works/pi-ai": piAiEntry,
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
 		"@mariozechner/pi-tui/dist/layout.js": piTuiLayoutEntry,
@@ -439,6 +460,7 @@ function getAliases(): Record<string, string> {
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
 		"@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
 		"@mariozechner/pi-ai/compat": piAiEntry,
+		"@mariozechner/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
 		"@mariozechner/pi-ai": piAiEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,

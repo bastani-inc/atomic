@@ -64,6 +64,29 @@ describe("extension loader pi-ai compat aliases", () => {
 		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 	);
 
+	it(
+		"maps the Cloudflare gateway binding transport through both loader resolution paths",
+		async () => {
+			// Re-exported from `@bastani/atomic`, so jiti-loaded extensions that import
+			// the host entry reach this specifier; without its own alias key it falls
+			// through to the compat/root prefix alias and fails to load.
+			const specifiers = [
+				"@earendil-works/pi-ai/api/cloudflare-gateway-binding",
+				"@mariozechner/pi-ai/api/cloudflare-gateway-binding",
+			] as const;
+			const aliases = extensionLoaderTestHooks.getAliases();
+			const modules = await extensionLoaderTestHooks.loadVirtualModules();
+			for (const specifier of specifiers) {
+				expect(aliases[specifier]).toMatch(/[\\/]cloudflare-gateway-binding\.js$/);
+				expect(fs.existsSync(aliases[specifier]!)).toBe(true);
+				const binding = modules[specifier] as { createGatewayBindingFetch?: object };
+				expect(typeof binding.createGatewayBindingFetch).toBe("function");
+			}
+			expect(modules[specifiers[0]]).toBe(modules[specifiers[1]]);
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
+
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {
 		const root = (await import("@earendil-works/pi-ai")) as PiAiExports;
 		const compat = (await import("@earendil-works/pi-ai/compat")) as PiAiExports;
