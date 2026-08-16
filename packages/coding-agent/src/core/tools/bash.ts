@@ -18,6 +18,7 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { BashResult } from "../bash-executor.ts";
+import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import {
 	type BashInterceptorRule,
@@ -359,6 +360,7 @@ export function createBashToolDefinition(
 		label: "bash",
 		description: "Execute a shell command in the session workspace, with optional PTY handling.",
 		promptSnippet: bashToolSystemPromptContribution.snippet,
+		...experimentalToolSamplingProperty(),
 		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
 		parameters: bashSchema,
 		maxResultSizeChars: Infinity,

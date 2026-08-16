@@ -483,14 +483,24 @@ export async function followUp(this: AgentSession, text: string, images?: ImageC
 }
 
 /**
- * Internal: Queue a steering message (already expanded, no extension command check).
+ * Send a user message and trigger a turn.
+ *
+ * By default the text is delivered literally: extension commands are not
+ * dispatched and skill commands / prompt templates are not expanded. Set
+ * `expandPromptTemplates: true` to dispatch a registered extension or skill
+ * command (or expand a prompt template) instead of sending the raw text —
+ * with that option the message may DISPATCH a command rather than be sent.
+ *
+ * @param content User message content (string or content array)
+ * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
+ * @param options.expandPromptTemplates Whether to dispatch extension commands and expand skill commands and prompt templates. Default: false.
  */
-
 export async function sendUserMessage(
 	this: AgentSession,
 	content: string | (TextContent | ImageContent)[],
 	options?: {
 		deliverAs?: "steer" | "followUp";
+		expandPromptTemplates?: boolean;
 		__workflowDelivery?: PromptOptionsWithWorkflowDelivery["__workflowDelivery"];
 	},
 ): Promise<void> {
@@ -514,11 +524,12 @@ export async function sendUserMessage(
 		if (images.length === 0) images = undefined;
 	}
 
-	// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion.
-	// The private delivery hook lets workflow routing report and gate the branch
-	// selected after asynchronous input/compaction extension preflight.
+	// prompt() owns command dispatch and template expansion; the default (false)
+	// keeps every pre-existing caller sending literally. The private delivery hook
+	// lets workflow routing report and gate the branch selected after asynchronous
+	// input/compaction extension preflight.
 	await this.prompt(text, {
-		expandPromptTemplates: false,
+		expandPromptTemplates: options?.expandPromptTemplates ?? false,
 		streamingBehavior: options?.deliverAs,
 		images,
 		source: "extension",

@@ -1,4 +1,5 @@
 import type { OverlayOptions } from "@earendil-works/pi-tui";
+import { experimentalToolSamplingProperty } from "../../experimental.ts";
 import type { ToolDefinition } from "../../extensions/types.ts";
 import { loadConfig, validateGuidanceFields } from "./config.ts";
 import { QuestionnaireSession } from "./state/questionnaire-session.ts";
@@ -89,6 +90,7 @@ Use the optional \`preview\` field on options when presenting concrete artifacts
 Preview content is rendered as markdown in a monospace box. Multi-line text with newlines is supported. When any option has a preview, the UI switches to a side-by-side layout with a vertical option list on the left and preview on the right. Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).`,
 		promptSnippet: guidance.promptSnippet ?? DEFAULT_PROMPT_SNIPPET,
 		promptGuidelines: guidance.promptGuidelines ?? DEFAULT_PROMPT_GUIDELINES,
+		...experimentalToolSamplingProperty(),
 		parameters: QuestionParamsSchema,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

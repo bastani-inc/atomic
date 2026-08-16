@@ -260,6 +260,90 @@ describe("AgentSession prompt characterization", () => {
 		expect(getMessageText(harness.session.messages[0]!)).toBe("from extension");
 	});
 
+	it("sendUserMessage sends a registered command literally by default", async () => {
+		const commandRuns: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("testcmd", {
+						description: "Test command",
+						handler: async (args) => {
+							commandRuns.push(args);
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok")]);
+
+		await harness.session.sendUserMessage("/testcmd hello world");
+
+		// Absent the option, every pre-existing caller keeps today's meaning:
+		// no dispatch, the raw text is sent to the model.
+		expect(commandRuns).toEqual([]);
+		expect(getMessageText(harness.session.messages[0])).toBe("/testcmd hello world");
+	});
+
+	it("sendUserMessage dispatches extension commands with expandPromptTemplates", async () => {
+		const commandRuns: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("testcmd", {
+						description: "Test command",
+						handler: async (args) => {
+							commandRuns.push(args);
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("should stay queued")]);
+
+		await harness.session.sendUserMessage("/testcmd hello world", { expandPromptTemplates: true });
+
+		expect(commandRuns).toEqual(["hello world"]);
+		expect(harness.session.messages).toEqual([]);
+		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
+	it("sendUserMessage with expandPromptTemplates falls through to a literal send for unknown commands", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok")]);
+
+		await harness.session.sendUserMessage("/nosuchcommand keep literal", { expandPromptTemplates: true });
+
+		expect(getMessageText(harness.session.messages[0])).toBe("/nosuchcommand keep literal");
+		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+	});
+
+	it("sendUserMessage expands prompt templates with expandPromptTemplates", async () => {
+		const template: PromptTemplate = {
+			name: "review",
+			description: "Review template",
+			content: "Review this code: $1",
+			filePath: "/virtual/review.md",
+			sourceInfo: createSyntheticSourceInfo("/virtual/review.md", {
+				source: "local",
+				scope: "temporary",
+				origin: "top-level",
+			}),
+		};
+		const resourceLoader = {
+			...createTestResourceLoader(),
+			getPrompts: () => ({ prompts: [template], diagnostics: [] }),
+		};
+		const harness = await createHarness({ resourceLoader });
+		harnesses.push(harness);
+
+		await harness.session.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
+
+		expect(getMessageText(harness.session.messages[0])).toBe("Review this code: src/index.ts");
+	});
+
 	it("does not report streamingBehavior to input handlers while idle", async () => {
 		const inputEvents: InputEvent[] = [];
 		const harness = await createHarness({

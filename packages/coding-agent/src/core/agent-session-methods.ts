@@ -174,7 +174,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	followUp(text: string, images?: ImageContent[]): Promise<void>;
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): Promise<void>;
 
 	_queueSteer(text: string, images?: ImageContent[]): Promise<void>;

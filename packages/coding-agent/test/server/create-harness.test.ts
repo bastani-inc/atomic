@@ -17,6 +17,8 @@ import { createModels } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { describe, expect, test, vi } from "vitest";
+import { createStructuredOutputTool } from "../../src/core/tools/structured-output.ts";
+import { wrapToolDefinition } from "../../src/core/tools/tool-definition-wrapper.ts";
 import {
 	buildCodingAgentHarnessSystemPrompt,
 	type CodingAgentHarnessTool,
@@ -781,6 +783,77 @@ describe("coding-agent Harness construction", () => {
 			throw error;
 		} finally {
 			await created.harness.close();
+			await env.cleanup();
+		}
+	});
+
+	test("applies experimental strict sampling to default harness tools without rewriting schemas", async () => {
+		const originalPiExperimental = process.env.PI_EXPERIMENTAL;
+		delete process.env.PI_EXPERIMENTAL;
+		const session = createSession("strict-sampling-session");
+		const env = new NodeExecutionEnv({ cwd: "/workspace" });
+		let created: Awaited<ReturnType<typeof createCodingAgentHarness>> | undefined;
+		try {
+			created = await createCodingAgentHarness({
+				session,
+				models: createModels(),
+				model: getModel("google", "gemini-2.5-flash"),
+				env,
+			});
+			const normalTools = await created.harness.getTools();
+			for (const tool of normalTools) {
+				expect(tool.constrainedSampling).toBeUndefined();
+			}
+
+			process.env.PI_EXPERIMENTAL = "1";
+			created = await createCodingAgentHarness({
+				session: createSession("strict-sampling-experimental-session"),
+				models: createModels(),
+				model: getModel("google", "gemini-2.5-flash"),
+				env,
+			});
+			const experimentalTools = await created.harness.getTools();
+			expect(experimentalTools.map((tool) => tool.name)).toEqual(normalTools.map((tool) => tool.name));
+			for (const [index, tool] of experimentalTools.entries()) {
+				expect(tool.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
+				// One flat sampling hint, never a schema rewrite.
+				expect(tool.parameters).toEqual(normalTools[index]?.parameters);
+			}
+		} finally {
+			if (originalPiExperimental === undefined) delete process.env.PI_EXPERIMENTAL;
+			else process.env.PI_EXPERIMENTAL = originalPiExperimental;
+			await created?.harness.close();
+			await env.cleanup();
+		}
+	});
+
+	test("keeps a structured-output tool's own constraint instead of double-wrapping under strict mode", async () => {
+		const originalPiExperimental = process.env.PI_EXPERIMENTAL;
+		process.env.PI_EXPERIMENTAL = "1";
+		const session = createSession("structured-compose-session");
+		const env = new NodeExecutionEnv({ cwd: "/workspace" });
+		const schema = Type.Object({ verdict: Type.String() });
+		const structured = wrapToolDefinition(createStructuredOutputTool({ schema }));
+		let created: Awaited<ReturnType<typeof createCodingAgentHarness>> | undefined;
+		try {
+			created = await createCodingAgentHarness({
+				session,
+				models: createModels(),
+				model: getModel("google", "gemini-2.5-flash"),
+				env,
+				tools: [structured],
+				activeToolNames: [structured.name],
+			});
+			const tools = await created.harness.getTools();
+			expect(tools.map((tool) => tool.name)).toEqual([structured.name]);
+			// The caller-supplied schema constraint arrives untouched — the same
+			// schema object, no second wrapper from experimental strict mode.
+			expect(tools[0]?.parameters).toBe(schema);
+			expect(tools[0]?.constrainedSampling).toBeUndefined();
+		} finally {
+			if (originalPiExperimental === undefined) delete process.env.PI_EXPERIMENTAL;
+			else process.env.PI_EXPERIMENTAL = originalPiExperimental;
+			await created?.harness.close();
 			await env.cleanup();
 		}
 	});
