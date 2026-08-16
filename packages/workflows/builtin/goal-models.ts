@@ -20,8 +20,8 @@ export const orchestratorModelConfig = {
       "anthropic/claude-opus-4-8:high",
       "github-copilot/claude-opus-4.8:high",
       "xai/grok-4.5:high",
-      "zai/glm-5.2:xhigh",
-      "zai-coding-cn/glm-5.2:xhigh",
+      "zai/glm-5.3:high",
+      "zai-coding-cn/glm-5.3:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-fable-5:high",
@@ -30,7 +30,6 @@ export const orchestratorModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.5",
-      "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -55,8 +54,8 @@ export const reviewerModelConfig = {
       "anthropic/claude-opus-4-8:high",
       "github-copilot/claude-opus-4.8:high",
       "xai/grok-4.5:high",
-      "zai/glm-5.2:xhigh",
-      "zai-coding-cn/glm-5.2:xhigh",
+      "zai/glm-5.3:high",
+      "zai-coding-cn/glm-5.3:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
@@ -65,7 +64,6 @@ export const reviewerModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.5",
-      "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,

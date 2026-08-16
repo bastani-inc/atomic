@@ -12,6 +12,7 @@
 
 - A subagent that pins no model of its own now inherits the dispatching session's thinking level alongside its model, matching the parent's tool configuration inheritance. The agent's declared `thinking` and any candidate `:level` suffix still take precedence.
 - In-process JSONL event artifacts now honor `includeJsonl: false` and enforce the existing 50 MiB cap when enabled, preventing unbounded artifact growth ([#2445](https://github.com/bastani-inc/atomic/issues/2445)).
+- Migrated all built-in subagent GLM fallbacks to direct Z.AI `glm-5.3:high` entries, omitting unavailable OpenRouter GLM-5.3 fallbacks. Baseten's separate GLM-5.2 exception is not part of these subagent chains ([#2459](https://github.com/bastani-inc/atomic/issues/2459)).
 
 ## [0.9.13] - 2026-08-13
 

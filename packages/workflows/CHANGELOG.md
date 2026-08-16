@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The live review session is the final review boundary: the workflow-owned poll loop dispatches `generate`, `steer`, `manual_edit_apply`, and failed variant mounts to model stages, keeps successful mounts journal-only, ends on the helper's `exit` event, and exports the preview as it stands without a summary, second opinion, decision, or later review session ([#2401](https://github.com/bastani-inc/atomic/issues/2401), [#2382](https://github.com/bastani-inc/atomic/issues/2382)).
 - The run-level gate retains `Start live review` and `Skip remaining review rounds and export as-is`; the skip choice exports immediately without opening the session ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 - Added model-visible workflow source-layout guidance: keep compact workflows in one entry file, and extract only cohesive prompt, schema/type, model-policy, deterministic-helper, or child-workflow concerns at meaningful boundaries while keeping graph control flow visible in the entry file ([#2451](https://github.com/bastani-inc/atomic/issues/2451)).
+- Migrated the built-in Goal, Ralph, and open-claude-design model chains from active GLM-5.2 entries to direct Z.AI `zai/glm-5.3:high` and `zai-coding-cn/glm-5.3:high` fallbacks. OpenRouter's unavailable GLM-5.3 model is intentionally omitted rather than shipped as a placeholder ([#2459](https://github.com/bastani-inc/atomic/issues/2459)).
 
 ### Fixed
 

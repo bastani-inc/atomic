@@ -45,7 +45,7 @@ The Pareto frontier — models where nothing else is both cheaper and more accur
 | claude-sonnet-5 [max] | 54% | $26.40 | Drop everywhere | Worst value on the chart; 268 steps of meandering |
 | muse-spark-1.1 [xhigh] | 53% | $2.36 | Frontier (cheapest defensible) | Cheapest model still on the frontier; open weights diversity |
 | gpt-5.4 [xhigh] | 52% | $5.65 | Superseded | grok-4.5 and luna dominate it on cost and accuracy |
-| glm-5.2 [max] | 44% | $3.92 | Diversity only | Reviewer-C primary (a third model family decorrelates review errors); budget fallback elsewhere |
+| glm-5.3 [high] | unmeasured | unmeasured | Diversity fallback | Direct Z.AI fallback; GLM-5.3 has no published benchmark result here, so GLM-5.2 measurements are not relabeled |
 | gemini-3.5-flash [medium] | 37% | $7.34 | Drop from reasoning | Token hose (276k output tokens); kept only at :low in retrieval chains where token price rules |
 | kimi-k2.7-code | 31% | $2.82 | Drop | Dominated by muse-spark-1.1 (both cheaper reach); superseded by kimi-k3 |
 | claude-sonnet-4.6 [high] | 30% | $5.52 | Drop everywhere | Removed from all chains |

@@ -9,10 +9,10 @@ import { reviewDecisionSchema } from "./ralph-core.js";
 //   decorrelate review errors from reviewer A.
 // - Dominated benchmark models stay out of the chains: claude-sonnet-5,
 //   claude-sonnet-4.6, gemini-3.1-pro, and gemini-3.5-flash.
-// - GLM-5.2 has only two real reasoning tiers — its thinkingLevelMap collapses
-//   minimal/low/medium/high to "high" and xhigh to "max" — so chains only use
-//   :high (budget tier, 36%/$2.84) or :xhigh (best tier, 44%/$3.92); the
-//   openrouter/z-ai mirror maps :xhigh exclusively, so it is always :xhigh.
+// - GLM-5.3 exposes reasoning without a thinkingLevelMap or reasoning-effort
+//   control, so chains use the catalog-supported :high tier explicitly rather
+//   than carrying GLM-5.2's :xhigh/:max suffixes forward. OpenRouter has no
+//   GLM-5.3 catalog entry, so its unavailable fallback is intentionally omitted.
 
 export const promptEngineerModelConfig = {
     model: "anthropic/claude-opus-5:high",
@@ -32,8 +32,8 @@ export const promptEngineerModelConfig = {
       "anthropic/claude-opus-4-8:high",
       "github-copilot/claude-opus-4.8:high",
       "xai/grok-4.5:high",
-      "zai/glm-5.2:xhigh",
-      "zai-coding-cn/glm-5.2:xhigh",
+      "zai/glm-5.3:high",
+      "zai-coding-cn/glm-5.3:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
@@ -42,7 +42,6 @@ export const promptEngineerModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.5",
-      "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -65,8 +64,8 @@ export const researchModelConfig = {
       "anthropic/claude-opus-4-8:high",
       "github-copilot/claude-opus-4.8:high",
       "xai/grok-4.5:high",
-      "zai/glm-5.2:xhigh",
-      "zai-coding-cn/glm-5.2:xhigh",
+      "zai/glm-5.3:high",
+      "zai-coding-cn/glm-5.3:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-fable-5:high",
@@ -75,7 +74,6 @@ export const researchModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.5",
-      "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -98,8 +96,8 @@ export const orchestratorModelConfig = {
       "anthropic/claude-opus-4-8:high",
       "github-copilot/claude-opus-4.8:high",
       "xai/grok-4.5:high",
-      "zai/glm-5.2:xhigh",
-      "zai-coding-cn/glm-5.2:xhigh",
+      "zai/glm-5.3:high",
+      "zai-coding-cn/glm-5.3:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-fable-5:high",
@@ -108,7 +106,6 @@ export const orchestratorModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.5",
-      "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -131,8 +128,8 @@ export const reviewerAModelConfig = {
       "anthropic/claude-opus-4-8:high",
       "github-copilot/claude-opus-4.8:high",
       "xai/grok-4.5:high",
-      "zai/glm-5.2:xhigh",
-      "zai-coding-cn/glm-5.2:xhigh",
+      "zai/glm-5.3:high",
+      "zai-coding-cn/glm-5.3:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/moonshotai/kimi-k3:max",
@@ -141,7 +138,6 @@ export const reviewerAModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.5",
-      "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,
@@ -165,8 +161,8 @@ export const reviewerBModelConfig = {
       "anthropic/claude-opus-4-8:high",
       "github-copilot/claude-opus-4.8:high",
       "xai/grok-4.5:high",
-      "zai/glm-5.2:xhigh",
-      "zai-coding-cn/glm-5.2:xhigh",
+      "zai/glm-5.3:high",
+      "zai-coding-cn/glm-5.3:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
@@ -175,7 +171,6 @@ export const reviewerBModelConfig = {
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.5",
-      "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,

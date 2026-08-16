@@ -153,7 +153,7 @@ Remote pi.dev catalogs persist their ETag and are revalidated with `If-None-Matc
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
 
-Baseten's built-in default is `zai-org/GLM-5.2`; its catalog supplies the provider-specific thinking levels. Qwen Token Plan Individual defaults to `qwen3.8-max` and uses the international `QWEN_TOKEN_PLAN_API_KEY` shared with the existing Qwen Token Plan provider.
+Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-coding-cn/glm-5.3`); the generated catalogs expose reasoning without a thinking-level map, so built-in chains use the supported `:high` suffix rather than inventing distinct `:xhigh` or `:max` tiers. OpenRouter currently exposes `z-ai/glm-5.2` but not `z-ai/glm-5.3`, so Atomic does not ship an unavailable OpenRouter GLM-5.3 fallback. Baseten also has no GLM-5.3 catalog entry, so its documented default remains `zai-org/GLM-5.2` and its catalog supplies the provider-specific thinking levels. Qwen Token Plan Individual defaults to `qwen3.8-max` and uses the international `QWEN_TOKEN_PLAN_API_KEY` shared with the existing Qwen Token Plan provider.
 
 Reference for environment variables and `auth.json` keys: `findEnvKeys()` / `getEnvApiKey()` in the installed `@earendil-works/pi-ai` dependency (`node_modules/@earendil-works/pi-ai/dist/env-api-keys.d.ts`). The private provider map those functions use is in `node_modules/@earendil-works/pi-ai/dist/env-api-keys.js`; Atomic does not include a separate `packages/ai` source directory in this monorepo.
 

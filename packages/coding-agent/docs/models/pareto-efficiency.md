@@ -46,7 +46,7 @@ This is the reason to key these docs to the live benchmarks: a single release cy
 
 Efficiency is not the only axis. A dominated model can still earn a slot when it decorrelates errors or fills a niche:
 
-- **glm-5.2** — kept as reviewer-C because a third model family decorrelates review errors, even though it is dominated on raw efficiency.
+- **glm-5.3 [high]** — unmeasured in the current benchmark snapshot; retained as a direct Z.AI provider-diversity fallback. GLM-5.2 results are not relabeled as GLM-5.3.
 - **kimi-k3** — frontier on efficiency *and* an open-weights provider-diversity option; a strong reviewer-C or fallback.
 - **claude-opus-4.8 [max]** — retained for Anthropic provider diversity and its long-context niche.
 - **claude-fable-5** — kept where Anthropic-family behavior is specifically wanted, e.g. the quality-first, unbenchmarked design chain.
