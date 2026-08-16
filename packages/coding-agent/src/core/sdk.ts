@@ -26,6 +26,7 @@ import { DefaultResourceLoader } from "./resource-loader.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { guardStreamLiveness } from "./stream-liveness-guard.ts";
 import { time } from "./timings.ts";
 import { defaultToolNames } from "./tools/index.ts";
 
@@ -82,6 +83,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	let resourceLoader = options.resourceLoader;
+
+	// Content-progress liveness window for the assistant-response stream (#2446).
+	// 0/undefined disables it (interactive main sessions never set it); only
+	// unattended in-process subagent sessions pass a positive value, which wraps
+	// each stream so a non-terminating turn ends retryably instead of hanging.
+	const streamStallMs = options.streamStallMs ?? 0;
 
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
@@ -311,16 +318,25 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				fastModeEnabled,
 			);
 			if (usesExtensionStream) {
-				return modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
+				return guardStreamLiveness(modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions), {
+					stallMs: streamStallMs,
+					signal: streamOptions?.signal,
+				});
 			}
 			if (fastModeEnabled) {
-				return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
+				return guardStreamLiveness(streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions), {
+					stallMs: streamStallMs,
+					signal: streamOptions?.signal,
+				});
 			}
 			const transportOptions =
 				usesChatGptCodexTransport(requestModel) && codexFastModeStreamOptions
 					? withChatGptCodexTransportRouting(requestModel, codexFastModeStreamOptions, false)
 					: codexFastModeStreamOptions;
-			return modelRuntime.streamSimple(requestModel, context, transportOptions);
+			return guardStreamLiveness(modelRuntime.streamSimple(requestModel, context, transportOptions), {
+				stallMs: streamStallMs,
+				signal: streamOptions?.signal,
+			});
 		},
 		onPayload: async (payload, model) => {
 			const fastModeEnabled = isCodexFastModeEnabled(model);

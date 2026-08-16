@@ -55,6 +55,14 @@ export interface ControlConfig {
 	activeNoticeAfterTurns?: number;
 	activeNoticeAfterTokens?: number;
 	failedToolAttemptsBeforeAttention?: number;
+	/**
+	 * Content-progress liveness window (ms) applied to each unattended in-process
+	 * child's assistant-response stream. A turn that produces no content-bearing
+	 * event within the window is ended with a retryable provider failure so
+	 * same-model retry and fallback advance instead of blocking the parent
+	 * indefinitely (#2446). `0` disables the guard. Default: 300000.
+	 */
+	streamStallMs?: number;
 	notifyOn?: ControlEventType[];
 	notifyChannels?: ControlNotificationChannel[];
 }
@@ -66,6 +74,13 @@ export interface ResolvedControlConfig {
 	activeNoticeAfterTurns?: number;
 	activeNoticeAfterTokens?: number;
 	failedToolAttemptsBeforeAttention: number;
+	/**
+	 * Resolved content-progress liveness window (ms) for unattended in-process
+	 * children; `0` disables. Optional so existing literal configs in tests need
+	 * not enumerate it — an absent value is treated as the 300000 ms default at
+	 * the point it is threaded into the child session (#2446).
+	 */
+	streamStallMs?: number;
 	notifyOn: ControlEventType[];
 	notifyChannels: ControlNotificationChannel[];
 }

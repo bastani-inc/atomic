@@ -93,6 +93,13 @@ const ControlOverrides = Type.Object({
 			description: "Consecutive mutating-tool failures before escalating to needs_attention (default: 3)",
 		}),
 	),
+	streamStallMs: Type.Optional(
+		Type.Integer({
+			minimum: 0,
+			description:
+				"Content-progress liveness window in ms for an unattended child's assistant-response stream; a stalled or contentless-flooding turn is ended with a retryable failure so retry/fallback advance. 0 disables (default: 300000).",
+		}),
+	),
 	notifyOn: Type.Optional(
 		Type.Array(Type.String({ enum: ["active_long_running", "needs_attention"] }), {
 			description:

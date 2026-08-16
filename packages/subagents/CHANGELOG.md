@@ -12,6 +12,7 @@
 
 - A subagent that pins no model of its own now inherits the dispatching session's thinking level alongside its model, matching the parent's tool configuration inheritance. The agent's declared `thinking` and any candidate `:level` suffix still take precedence.
 - In-process JSONL event artifacts now honor `includeJsonl: false` and enforce the existing 50 MiB cap when enabled, preventing unbounded artifact growth ([#2445](https://github.com/bastani-inc/atomic/issues/2445)).
+- Unattended in-process children apply a content-progress liveness bound so a stalled or contentless-flooding provider turn no longer blocks the parent indefinitely ([#2446](https://github.com/bastani-inc/atomic/issues/2446)). Subagent control config gains `streamStallMs` (default `300000` ms; `0` disables), resolved from per-run `control.streamStallMs` or global config and threaded through the child spec into the SDK session. A child stream that stops producing content-bearing events within the window is ended with a retryable failure so same-model retry and then configured `fallbackModels` advance, while long legitimate turns and slow in-flight tools keep resetting it. With defaults it trips after the observational needs-attention (60000 ms) and long-running (240000 ms) notices, which surface a stalled child but never terminate it.
 
 ## [0.9.13] - 2026-08-13
 

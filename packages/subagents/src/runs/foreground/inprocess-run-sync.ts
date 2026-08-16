@@ -291,6 +291,9 @@ export async function runSingleInProcess(
 			: undefined,
 		artifactJsonlPath: options.artifactConfig?.includeJsonl === true ? artifactPaths?.jsonlPath : undefined,
 		...(fallbackCandidates.length ? { fallbackModels: fallbackCandidates } : {}),
+		...(options.controlConfig?.streamStallMs !== undefined
+			? { streamStallMs: options.controlConfig.streamStallMs }
+			: {}),
 		onProgress: options.onUpdate
 			? (progress) => {
 					const liveProgress = { ...progress, index: options.index ?? 0 };

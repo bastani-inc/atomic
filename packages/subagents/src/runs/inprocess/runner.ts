@@ -113,6 +113,14 @@ export interface ChildSpec {
 	 * candidate-advancement behavior main chat and workflow stages share.
 	 */
 	readonly fallbackModels?: readonly string[];
+	/**
+	 * Content-progress liveness window (ms) forwarded to the SDK session so an
+	 * unattended child whose provider turn stops producing content-bearing events
+	 * is ended with a retryable failure (→ same-model retry, then `fallbackModels`)
+	 * instead of blocking the parent indefinitely. `0` disables; `undefined` lets
+	 * the SDK default apply (#2446).
+	 */
+	readonly streamStallMs?: number;
 	/** Live progress callback for the parent's tool-result rendering. */
 	readonly onProgress?: (progress: AgentProgress) => void;
 }
@@ -901,6 +909,9 @@ export class SubagentControlRuntime {
 							thinkingLevel: candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
 							...(admitted.spec.fallbackModels?.length
 								? { fallbackModels: [...admitted.spec.fallbackModels] }
+								: {}),
+							...(admitted.spec.streamStallMs !== undefined
+								? { streamStallMs: admitted.spec.streamStallMs }
 								: {}),
 							tools: admitted.policy.tools ? [...admitted.policy.tools] : undefined,
 							excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
