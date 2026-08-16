@@ -35,12 +35,16 @@ type ManagedToolsThis = {
 	streamingMessage: object | undefined;
 	pendingTools: Map<string, Component>;
 	renderInitialMessages: ReturnType<typeof vi.fn>;
+	attachStartupNoticesContainer: ReturnType<typeof vi.fn>;
+	renderSessionEntries: ReturnType<typeof vi.fn>;
+	sessionManager: { getEntries: ReturnType<typeof vi.fn>; getLeafId: ReturnType<typeof vi.fn> };
 };
 
 const prototype = InteractiveMode.prototype as unknown as {
 	ensureManagedToolsReady(this: ManagedToolsThis): Promise<void>;
 	showManagedToolStatus(this: ManagedToolsThis, status: ToolStatus): void;
 	renderCurrentSessionState(this: ManagedToolsThis): void;
+	rebuildChatFromMessages(this: ManagedToolsThis): void;
 };
 
 function createMode(): ManagedToolsThis {
@@ -60,6 +64,9 @@ function createMode(): ManagedToolsThis {
 		streamingMessage: undefined,
 		pendingTools: new Map(),
 		renderInitialMessages: vi.fn(),
+		attachStartupNoticesContainer: vi.fn(),
+		renderSessionEntries: vi.fn(),
+		sessionManager: { getEntries: vi.fn(() => []), getLeafId: vi.fn(() => null) },
 	};
 	mode.showManagedToolStatus = (status) => prototype.showManagedToolStatus.call(mode, status);
 	return mode;
@@ -76,6 +83,38 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+});
+
+test("keeps current readiness callbacks across a same-session transcript rebuild", async () => {
+	const mode = createMode();
+	const callbacks: Array<(status: ToolStatus) => void> = [];
+	const resolveTools: Array<(path: string | undefined) => void> = [];
+	toolMocks.ensureTool.mockImplementation((_tool, onStatus) => {
+		if (onStatus) callbacks.push(onStatus);
+		return new Promise<string | undefined>((resolve) => resolveTools.push(resolve));
+	});
+
+	const readiness = prototype.ensureManagedToolsReady.call(mode);
+	assert.equal(callbacks.length, 2);
+	const beforeRebuild = callbacks[0];
+	const afterRebuild = callbacks[1];
+	assert.ok(beforeRebuild);
+	assert.ok(afterRebuild);
+	beforeRebuild({ type: "info", message: "before same-session rebuild" });
+	assert.match(transcriptText(mode), /before same-session rebuild/u);
+
+	mode.renderSessionEntries.mockImplementation(() => {
+		mode.chatContainer.addChild(new Text("same session transcript", 1, 0));
+	});
+	prototype.rebuildChatFromMessages.call(mode);
+	afterRebuild({ type: "warning", message: "after same-session rebuild" });
+
+	const after = transcriptText(mode);
+	assert.match(after, /same session transcript/u);
+	assert.match(after, /Warning: after same-session rebuild/u);
+	assert.equal(mode.chatContainer.children.length, 3, "transcript marker, one status spacer, and one status row");
+	for (const resolve of resolveTools) resolve(undefined);
+	await readiness;
 });
 test("ignores readiness callbacks from a prior transcript after a session rebuild", async () => {
 	const mode = createMode();

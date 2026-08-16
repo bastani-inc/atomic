@@ -501,7 +501,9 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 		resetStartupDisclosure?: boolean;
 	} = {},
 ): void {
-	this.managedToolStatusGeneration++;
+	// Generic rebuilds keep the same session: pending fd/rg callbacks still own
+	// this transcript. Full session replacements invalidate their generation in
+	// renderCurrentSessionState() before rebuilding the replacement transcript.
 	this.managedToolStatusStarted = false;
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
