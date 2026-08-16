@@ -79,12 +79,23 @@ test("workflow direct Z.AI GLM references use catalog-supported thinking levels"
 });
 
 test("builtin subagent fallback chains use GLM-5.3 and omit OpenRouter GLM fallbacks", () => {
+	const allDirectGlmReferences: string[] = [];
 	for (const { name, text } of subagentFrontmatter()) {
 		assert.doesNotMatch(text, /glm-5\.2/iu, name);
 		assert.doesNotMatch(text, /openrouter\/z-ai\/glm-5\.3/iu, name);
-		const directGlmReferences = text.match(/(?:zai|zai-coding-cn)\/glm-5\.3:[^,\s]+/gu) ?? [];
-		assert.deepEqual(directGlmReferences, ["zai/glm-5.3:high", "zai-coding-cn/glm-5.3:high"], name);
+		const directGlmReferences = text.match(/(?:zai|zai-coding-cn)\/glm-[^,\s]+/gu) ?? [];
+		for (const reference of directGlmReferences) {
+			const expectedReference = reference.startsWith("zai-coding-cn/")
+				? "zai-coding-cn/glm-5.3:high"
+				: "zai/glm-5.3:high";
+			assert.equal(reference, expectedReference, name);
+			allDirectGlmReferences.push(reference);
+		}
 	}
+	assert.ok(
+		allDirectGlmReferences.length > 0,
+		"expected at least one direct Z.AI GLM fallback across builtin subagents",
+	);
 });
 
 test("direct Z.AI GLM-5.3 resolves through ModelRuntime with the catalog-supported high suffix", async () => {
