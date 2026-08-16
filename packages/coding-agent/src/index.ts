@@ -165,7 +165,7 @@ export {
 	type CredentialSynchronizationOperation,
 	ModelRuntime,
 	type ModelRuntimeAuthOverrides,
-} from "./core/model-runtime.ts";
+} from "./core/model-runtime.js";
 export type {
 	PackageManager,
 	PathMetadata,

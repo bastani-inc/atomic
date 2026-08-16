@@ -1,4 +1,4 @@
-import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
+import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import type { RpcCommand, RpcExtensionUIRequest, RpcResponse } from "./rpc-types.ts";
 
 export type RpcOutputRecord = RpcResponse | RpcExtensionUIRequest | object;

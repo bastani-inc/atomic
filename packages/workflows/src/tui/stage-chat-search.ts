@@ -29,7 +29,7 @@ import {
 } from "@bastani/atomic";
 import { Input, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { paint } from "./color-utils.js";
-import { paintSearchMatch, searchMatchAnsi } from "./stage-chat-search-theme.js";
+import { type PiSearchTheme, paintSearchMatch, searchMatchAnsi } from "./stage-chat-search-theme.js";
 import { blankLine } from "./stage-chat-view-render-helpers.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
@@ -376,7 +376,8 @@ export function highlightStageChatSearchRows(
  * behind it sees one feature rather than two that resemble each other.
  */
 export function stageChatSearchStyles(ctx: StageChatViewContext): TranscriptSearchHighlightStyles {
-	const colors = searchMatchAnsi(ctx.piTheme, ctx.theme);
+	const piTheme = ctx.piTheme !== null && typeof ctx.piTheme === "object" ? (ctx.piTheme as PiSearchTheme) : undefined;
+	const colors = searchMatchAnsi(piTheme, ctx.theme);
 	return {
 		match: (text) => paintSearchMatch(text, colors, { underline: true }),
 		currentMatch: (text) => paintSearchMatch(text, colors, { bold: true, inverse: true }),

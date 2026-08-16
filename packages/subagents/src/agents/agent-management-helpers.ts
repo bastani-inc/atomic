@@ -1,9 +1,9 @@
 import type { SkillCatalog } from "@bastani/atomic";
-import { MAX_SUBAGENT_NESTING_DEPTH, type SubagentToolResult } from "../shared/types.ts";
-import type { ManagementContext, ManagementScope } from "./agent-management.ts";
-import type { AgentConfig, AgentScope } from "./agents.ts";
-import { discoverAgentsAll, parsePackageName } from "./agents.ts";
-import { discoverAvailableSkills, resolveSkillsFromCatalog } from "./skills.ts";
+import { MAX_SUBAGENT_NESTING_DEPTH, type SubagentToolResult } from "../shared/types.js";
+import type { ManagementContext, ManagementScope } from "./agent-management.js";
+import type { AgentConfig, AgentScope } from "./agents.js";
+import { discoverAgentsAll, parsePackageName } from "./agents.js";
+import { discoverAvailableSkills, resolveSkillsFromCatalog } from "./skills.js";
 
 export function result(text: string, isError = false): SubagentToolResult {
 	return { content: [{ type: "text", text }], isError, details: { mode: "management", results: [] } };

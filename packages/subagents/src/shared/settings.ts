@@ -2,7 +2,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentConfig } from "../agents/agents.ts";
+import type { AgentConfig } from "../agents/agents.js";
 import type { OutputMode } from "./types.ts";
 
 const INITIAL_PROGRESS_CONTENT = "# Progress\n\n## Status\nIn Progress\n\n## Tasks\n\n## Files Changed\n\n## Notes\n";

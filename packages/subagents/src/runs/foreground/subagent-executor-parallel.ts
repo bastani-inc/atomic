@@ -1,4 +1,4 @@
-import type { AgentConfig } from "../../agents/agents.ts";
+import type { AgentConfig } from "../../agents/agents.js";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";

@@ -1,25 +1,27 @@
 import assert from "node:assert/strict";
-import {
-	chmodSync,
-	copyFileSync,
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
-import { bunExecutable, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	chmodSync,
+	copyFileSync,
+	fileExistsSync,
+	makeDirectorySync,
+	makeTempDirectory,
+	moduleDir,
+	readDirectorySync,
+	readStreamText,
+	readTextSync,
+	removePathSync,
+	spawnProcess,
+	spawnSyncCollect,
+	writeTextSync,
+} from "../helpers/runtime.js";
 
-const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+const repoRoot = join(moduleDir(import.meta.url), "../..");
 
 /**
  * Package names no registry has ever seen. The fixture's `publish.yml` declares
@@ -91,7 +93,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
 	await Promise.all([missing.close(), mirror.close()]);
-	if (neutralGitHome) rmSync(neutralGitHome, { recursive: true, force: true });
+	if (neutralGitHome) removePathSync(neutralGitHome, { recursive: true, force: true });
 });
 
 /**
@@ -110,9 +112,9 @@ let neutralGitHome: string | undefined;
 
 function neutralGitPaths(): { config: string; hooks: string } {
 	if (neutralGitHome === undefined) {
-		neutralGitHome = mkdtempSync(join(tmpdir(), "atomic-cut-release-git-neutral-"));
-		writeFileSync(join(neutralGitHome, "gitconfig"), "");
-		mkdirSync(join(neutralGitHome, "hooks"), { recursive: true });
+		neutralGitHome = makeTempDirectory("atomic-cut-release-git-neutral-");
+		writeTextSync(join(neutralGitHome, "gitconfig"), "");
+		makeDirectorySync(join(neutralGitHome, "hooks"), { recursive: true });
 	}
 	return { config: join(neutralGitHome, "gitconfig"), hooks: join(neutralGitHome, "hooks") };
 }
@@ -250,24 +252,24 @@ interface HookCanary {
  * have, and the marker is the evidence that it did.
  */
 function createHookCanary(): HookCanary {
-	const stage = mkdtempSync(join(tmpdir(), "atomic-cut-release-hook-canary-"));
+	const stage = makeTempDirectory("atomic-cut-release-hook-canary-");
 	const hooks = join(stage, "hooks");
 	const markers = join(stage, "fired");
-	mkdirSync(hooks, { recursive: true });
-	mkdirSync(markers, { recursive: true });
+	makeDirectorySync(hooks, { recursive: true });
+	makeDirectorySync(markers, { recursive: true });
 	for (const hook of CANARY_HOOKS) {
 		const path = join(hooks, hook);
-		writeFileSync(path, `#!/bin/sh\nprintf 'fired\\n' > "${configPath(markers)}/${hook}"\nexit 0\n`);
+		writeTextSync(path, `#!/bin/sh\nprintf 'fired\\n' > "${configPath(markers)}/${hook}"\nexit 0\n`);
 		chmodSync(path, 0o755);
 	}
 	const config = join(stage, "gitconfig");
-	writeFileSync(config, `[core]\n\thooksPath = ${configPath(hooks)}\n`);
+	writeTextSync(config, `[core]\n\thooksPath = ${configPath(hooks)}\n`);
 	return {
 		stage,
 		config,
-		fired: () => readdirSync(markers).sort(),
+		fired: () => readDirectorySync(markers).sort(),
 		reset: () => {
-			for (const marker of readdirSync(markers)) rmSync(join(markers, marker), { force: true });
+			for (const marker of readDirectorySync(markers)) removePathSync(join(markers, marker), { force: true });
 		},
 	};
 }
@@ -282,9 +284,9 @@ function createHookCanary(): HookCanary {
  * environment this suite ran with before, which is what the guard now closes.
  */
 function assertHookCanaryFires(canary: HookCanary): void {
-	const stage = mkdtempSync(join(tmpdir(), "atomic-cut-release-canary-control-"));
+	const stage = makeTempDirectory("atomic-cut-release-canary-control-");
 	const root = join(stage, "checkout");
-	mkdirSync(root, { recursive: true });
+	makeDirectorySync(root, { recursive: true });
 	// Deliberately NOT gitEnvironment(): the config and the hooks it names are
 	// left reachable. GIT_DIR and its siblings are still scrubbed, because a
 	// control that wrote into the ambient repository would be the very bug
@@ -296,7 +298,7 @@ function assertHookCanaryFires(canary: HookCanary): void {
 	};
 	try {
 		run(["init", "-b", "main"]);
-		writeFileSync(join(root, "tracked.txt"), "control\n");
+		writeTextSync(join(root, "tracked.txt"), "control\n");
 		run(["add", "-A"]);
 		run([
 			"-c",
@@ -314,7 +316,7 @@ function assertHookCanaryFires(canary: HookCanary): void {
 			`the hook canary never fired, so its silence proves nothing: [${canary.fired().join(", ")}]`,
 		);
 	} finally {
-		rmSync(stage, { recursive: true, force: true });
+		removePathSync(stage, { recursive: true, force: true });
 	}
 }
 
@@ -326,11 +328,11 @@ function assertHookCanaryFires(canary: HookCanary): void {
  * this one is owned by the test, so it can be compared byte for byte.
  */
 function createSentinel(): { stage: string; path: string; hostile: Record<string, string> } {
-	const stage = mkdtempSync(join(tmpdir(), "atomic-cut-release-sentinel-"));
+	const stage = makeTempDirectory("atomic-cut-release-sentinel-");
 	const path = join(stage, "checkout");
-	mkdirSync(path, { recursive: true });
+	makeDirectorySync(path, { recursive: true });
 	git(path, ["init", "-b", "main"]);
-	writeFileSync(join(path, "tracked.txt"), "sentinel\n");
+	writeTextSync(join(path, "tracked.txt"), "sentinel\n");
 	commit(path, "sentinel");
 	// Exactly what a git hook exports.
 	return {
@@ -410,22 +412,20 @@ interface Fixture {
  * refusal from the one under test.
  */
 function createFixture(options: FixtureOptions): Fixture {
-	const stage = mkdtempSync(join(tmpdir(), "atomic-cut-release-preflight-"));
+	const stage = makeTempDirectory("atomic-cut-release-preflight-");
 	const root = join(stage, "repo");
 	const origin = join(stage, "origin.git");
-	mkdirSync(join(root, "scripts"), { recursive: true });
-	mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+	makeDirectorySync(join(root, "scripts"), { recursive: true });
+	makeDirectorySync(join(root, ".github", "workflows"), { recursive: true });
 	for (const script of ["cut-release.ts", "release-base.ts", "release-npm-preflight.ts"]) {
 		copyFileSync(join(repoRoot, "scripts", script), join(root, "scripts", script));
 	}
-	// The real stamper is out of scope here; a stub ends the run at the first
-	// step after the preflight, which is what the cleared-gate cases assert.
-	writeFileSync(
+	writeTextSync(
 		join(root, "scripts", "bump-version.ts"),
 		'console.error("stub bump-version: the preflight was cleared");\nprocess.exit(3);\n',
 	);
 	const workflow = join(root, ".github", "workflows", "publish.yml");
-	writeFileSync(workflow, publishWorkflow(options.packages, options.registry));
+	writeTextSync(workflow, publishWorkflow(options.packages, options.registry));
 	git(root, ["init", "-b", "main"]);
 	commit(root, "fixture");
 	// The path argument, and only the path argument, decides what becomes bare.
@@ -437,7 +437,7 @@ function createFixture(options: FixtureOptions): Fixture {
 
 	if (options.localPackages) {
 		git(root, ["checkout", "-b", "local"]);
-		writeFileSync(workflow, publishWorkflow(options.localPackages, options.registry));
+		writeTextSync(workflow, publishWorkflow(options.localPackages, options.registry));
 		commit(root, "local-only payload");
 	}
 	return { stage, root, npmCache: join(stage, "npm-cache"), traceLog: join(stage, "git-trace.log") };
@@ -518,8 +518,8 @@ async function runCutRelease(
  * dropped rather than pinned into the expected sequence.
  */
 function gitCommands(fixture: Fixture): string[] {
-	if (!existsSync(fixture.traceLog)) return [];
-	return readFileSync(fixture.traceLog, "utf8")
+	if (!fileExistsSync(fixture.traceLog)) return [];
+	return readTextSync(fixture.traceLog, "utf8")
 		.split(/\r?\n/u)
 		.map((line) => /trace: built-in: git (.*)$/u.exec(line)?.[1])
 		.filter((command): command is string => command !== undefined)
@@ -559,7 +559,7 @@ describe("cut-release npm registration preflight", () => {
 				assert.doesNotMatch(result.stdout, /Cutting release/u);
 				assert.deepEqual(repositoryState(fixture.root), { tags: "", status: "" });
 			} finally {
-				rmSync(fixture.stage, { recursive: true, force: true });
+				removePathSync(fixture.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
@@ -590,7 +590,7 @@ describe("cut-release npm registration preflight", () => {
 				assert.match(result.stderr, /stub bump-version: the preflight was cleared/u);
 				assert.equal(repositoryState(fixture.root).tags, "");
 			} finally {
-				rmSync(fixture.stage, { recursive: true, force: true });
+				removePathSync(fixture.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
@@ -617,7 +617,7 @@ describe("cut-release npm registration preflight", () => {
 				assert.ok(!missing.requests.includes(localOnlyPackage), "the checked-out payload was probed");
 				assert.deepEqual(repositoryState(fixture.root), { tags: "", status: "" });
 			} finally {
-				rmSync(fixture.stage, { recursive: true, force: true });
+				removePathSync(fixture.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
@@ -641,7 +641,7 @@ describe("cut-release npm registration preflight", () => {
 				assert.match(result.stderr, /stub bump-version: the preflight was cleared/u);
 				assert.equal(repositoryState(fixture.root).tags, "");
 			} finally {
-				rmSync(fixture.stage, { recursive: true, force: true });
+				removePathSync(fixture.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
@@ -665,7 +665,7 @@ describe("cut-release npm registration preflight", () => {
 				);
 				assert.deepEqual(repositoryState(fixture.root), { tags: "", status: "" });
 			} finally {
-				rmSync(fixture.stage, { recursive: true, force: true });
+				removePathSync(fixture.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
@@ -680,7 +680,7 @@ describe("cut-release npm registration preflight", () => {
 		const sentinel = createSentinel();
 		try {
 			const before = repositoryFingerprint(sentinel.path);
-			writeFileSync(join(sentinel.path, "hook-marker.txt"), "written by something the test did not run\n");
+			writeTextSync(join(sentinel.path, "hook-marker.txt"), "written by something the test did not run\n");
 			const after = repositoryFingerprint(sentinel.path);
 
 			for (const field of ["bare", "gitDir", "head", "config", "refs"] as const) {
@@ -689,7 +689,7 @@ describe("cut-release npm registration preflight", () => {
 			assert.notDeepEqual(after, before, "a marker file left every guarded field identical");
 			assert.match(after.status, /hook-marker\.txt/u);
 		} finally {
-			rmSync(sentinel.stage, { recursive: true, force: true });
+			removePathSync(sentinel.stage, { recursive: true, force: true });
 		}
 	});
 
@@ -742,7 +742,7 @@ describe("cut-release npm registration preflight", () => {
 						if (value === undefined) delete process.env[key];
 						else process.env[key] = value;
 					}
-					if (fixture) rmSync(fixture.stage, { recursive: true, force: true });
+					if (fixture) removePathSync(fixture.stage, { recursive: true, force: true });
 				}
 
 				// Not one hook ran — not for a fixture git child, and not for a git
@@ -757,8 +757,8 @@ describe("cut-release npm registration preflight", () => {
 				);
 				assert.deepEqual(foreignRepositorySnapshot(repoRoot), selfBefore, "the fixture wrote to this checkout");
 			} finally {
-				rmSync(sentinel.stage, { recursive: true, force: true });
-				rmSync(canary.stage, { recursive: true, force: true });
+				removePathSync(sentinel.stage, { recursive: true, force: true });
+				removePathSync(canary.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
@@ -789,8 +789,8 @@ describe("cut-release npm registration preflight", () => {
 				assert.deepEqual(repositoryFingerprint(sentinel.path), sentinelBefore, "the cut wrote to the sentinel");
 				assert.deepEqual(repositoryState(fixture.root), { tags: "", status: "" });
 			} finally {
-				rmSync(fixture.stage, { recursive: true, force: true });
-				rmSync(sentinel.stage, { recursive: true, force: true });
+				removePathSync(fixture.stage, { recursive: true, force: true });
+				removePathSync(sentinel.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,

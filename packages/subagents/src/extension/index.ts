@@ -20,7 +20,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { discoverAgents } from "../agents/agents.ts";
+import { discoverAgents } from "../agents/agents.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";

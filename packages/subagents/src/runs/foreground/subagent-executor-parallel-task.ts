@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@bastani/atomic";
-import type { AgentConfig } from "../../agents/agents.ts";
+import type { AgentConfig } from "../../agents/agents.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import type { ModelInfo } from "../../shared/model-info.ts";
 import type { CandidateModelResolver } from "../../shared/model-resolution.ts";

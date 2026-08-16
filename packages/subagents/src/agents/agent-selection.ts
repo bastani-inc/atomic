@@ -1,4 +1,4 @@
-import type { AgentConfig, AgentScope } from "./agents.ts";
+import type { AgentConfig, AgentScope } from "./agents.js";
 
 export function mergeAgentsForScope(
 	scope: AgentScope,

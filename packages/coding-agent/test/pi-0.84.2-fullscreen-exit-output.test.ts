@@ -1,13 +1,13 @@
 import { tmpdir } from "node:os";
 import { Container, ScrollView, Text, type TuiAltScreen, VStack } from "@earendil-works/pi-tui";
 import { expect, test, vi } from "vitest";
-import { type FullscreenExitOutput, SettingsManager } from "../src/core/settings-manager.ts";
-import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.ts";
-import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
-import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
-import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
+import { type FullscreenExitOutput, SettingsManager } from "../src/core/settings-manager.js";
+import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";
+import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.js";
+import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
 
 /**
  * Upstream `ac4ac9ea`, adapted: Atomic has no regular renderer to switch into,

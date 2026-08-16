@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
 import { APP_NAME } from "@bastani/atomic";
 
-import { discoverAgents } from "../agents/agents.ts";
+import { discoverAgents } from "../agents/agents.js";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";

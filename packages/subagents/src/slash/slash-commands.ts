@@ -8,7 +8,7 @@ import {
 	keyHintIfBound,
 } from "@bastani/atomic";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import { discoverAgents } from "../agents/agents.ts";
+import { discoverAgents } from "../agents/agents.js";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import {
 	type SingleResult,

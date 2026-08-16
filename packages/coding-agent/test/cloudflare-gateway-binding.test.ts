@@ -1,14 +1,15 @@
+import assert from "node:assert/strict";
 import { streamSimple as anthropicMessagesStreamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
 import * as piAiCloudflareGatewayBinding from "@earendil-works/pi-ai/api/cloudflare-gateway-binding";
-import { describe, expect, it } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { describe, it } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
 import {
 	type AiGatewayBinding,
 	type AiGatewayUniversalRequestLike,
 	CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
 	createGatewayBindingFetch,
-} from "../src/index.ts";
+} from "../src/index.js";
 
 const ACCOUNT_ID = "acct";
 const GATEWAY_ID = "gw";
@@ -49,8 +50,8 @@ const ANTHROPIC_SSE = `${[
 
 describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 	it("re-exports pi-ai's binding transport from the public surface", () => {
-		expect(createGatewayBindingFetch).toBe(piAiCloudflareGatewayBinding.createGatewayBindingFetch);
-		expect(CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL).toBe("cloudflare-gateway-binding");
+		assert.equal(createGatewayBindingFetch, piAiCloudflareGatewayBinding.createGatewayBindingFetch);
+		assert.equal(CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL, "cloudflare-gateway-binding");
 	});
 
 	it("translates a gateway-prefixed POST into one universal-endpoint binding call", async () => {
@@ -68,24 +69,27 @@ describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 			body: JSON.stringify(body),
 		});
 
-		expect(response.status).toBe(200);
-		expect(runs).toHaveLength(1);
-		expect(runs[0].gatewayId).toBe(GATEWAY_ID);
-		expect(runs[0].data.provider).toBe("anthropic");
-		expect(runs[0].data.endpoint).toBe("v1/messages?beta=true");
-		expect(runs[0].data.query).toEqual(body);
+		assert.equal(response.status, 200);
+		assert.equal(runs.length, 1);
+		const run = runs[0];
+		assert.ok(run);
+		assert.equal(run.gatewayId, GATEWAY_ID);
+		assert.equal(run.data.provider, "anthropic");
+		assert.equal(run.data.endpoint, "v1/messages?beta=true");
+		assert.deepEqual(run.data.query, body);
 		// Gateway auth never reaches the binding: binding calls are pre-authenticated,
 		// and a sentinel on the wire would be read as a BYOK provider key.
-		expect(runs[0].data.headers).not.toHaveProperty("cf-aig-authorization");
-		expect(runs[0].data.headers).not.toHaveProperty("host");
-		expect(runs[0].data.headers["content-type"]).toBe("application/json");
+		assert.equal(Object.hasOwn(run.data.headers, "cf-aig-authorization"), false);
+		assert.equal(Object.hasOwn(run.data.headers, "host"), false);
+		assert.equal(run.data.headers["content-type"], "application/json");
 	});
 
 	it("rejects URLs outside the configured gateway prefix instead of forwarding them", async () => {
 		const { binding } = createFakeBinding(ANTHROPIC_SSE);
 		const fetch = createGatewayBindingFetch({ binding, gateway: GATEWAY_ID, baseUrl: GATEWAY_PREFIX });
 
-		await expect(fetch("https://api.anthropic.com/v1/messages", { method: "POST", body: "{}" })).rejects.toThrow(
+		await assert.rejects(
+			fetch("https://api.anthropic.com/v1/messages", { method: "POST", body: "{}" }),
 			/outside the configured gateway prefix/,
 		);
 	});
@@ -94,10 +98,11 @@ describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 		const { binding } = createFakeBinding(ANTHROPIC_SSE);
 		const fetch = createGatewayBindingFetch({ binding, gateway: GATEWAY_ID, baseUrl: GATEWAY_PREFIX });
 
-		await expect(fetch(`${GATEWAY_PREFIX}/anthropic/v1/messages`)).rejects.toThrow(/only POST is supported/);
-		await expect(
+		await assert.rejects(fetch(`${GATEWAY_PREFIX}/anthropic/v1/messages`), /only POST is supported/);
+		await assert.rejects(
 			fetch(`${GATEWAY_PREFIX}/anthropic/v1/messages`, { method: "POST", body: "not json" }),
-		).rejects.toThrow(/non-JSON body/);
+			/non-JSON body/,
+		);
 	});
 
 	it("completes a ModelRuntime turn through the binding with no Cloudflare API token", async () => {
@@ -138,15 +143,15 @@ describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 			});
 
 			const model = modelRuntime.getModel("cloudflare-ai-gateway", "claude-sonnet-4-5");
-			expect(model).toBeDefined();
-			if (!model) throw new Error("cloudflare-ai-gateway/claude-sonnet-4-5 missing from the catalog");
+			assert.ok(model);
 
 			const resolution = await modelRuntime.getAuth(model);
-			expect(resolution?.auth.apiKey).toBeUndefined();
-			expect(resolution?.auth.headers?.["cf-aig-authorization"]).toBe(
+			assert.equal(resolution?.auth.apiKey, undefined);
+			assert.equal(
+				resolution?.auth.headers?.["cf-aig-authorization"],
 				`Bearer ${CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL}`,
 			);
-			expect(resolution?.env).toEqual({
+			assert.deepEqual(resolution?.env, {
 				CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID,
 				CLOUDFLARE_GATEWAY_ID: GATEWAY_ID,
 			});
@@ -155,16 +160,19 @@ describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 				messages: [{ role: "user", content: "Say hello" }],
 			});
 
-			expect(result.stopReason).toBe("stop");
-			expect(result.content).toEqual([{ type: "text", text: "Hello from the binding" }]);
-			expect(runs).toHaveLength(1);
-			expect(runs[0].gatewayId).toBe(GATEWAY_ID);
-			expect(runs[0].data.provider).toBe("anthropic");
-			expect(runs[0].data.endpoint).toBe("v1/messages");
-			expect(runs[0].data.query).toMatchObject({ model: "claude-sonnet-4-5", stream: true });
-			expect(runs[0].data.headers).not.toHaveProperty("cf-aig-authorization");
-			expect(runs[0].data.headers).not.toHaveProperty("authorization");
-			expect(runs[0].data.headers).not.toHaveProperty("x-api-key");
+			assert.equal(result.stopReason, "stop");
+			assert.deepEqual(result.content, [{ type: "text", text: "Hello from the binding" }]);
+			assert.equal(runs.length, 1);
+			const run = runs[0];
+			assert.ok(run);
+			assert.equal(run.gatewayId, GATEWAY_ID);
+			assert.equal(run.data.provider, "anthropic");
+			assert.equal(run.data.endpoint, "v1/messages");
+			assert.equal(run.data.query.model, "claude-sonnet-4-5");
+			assert.equal(run.data.query.stream, true);
+			assert.equal(Object.hasOwn(run.data.headers, "cf-aig-authorization"), false);
+			assert.equal(Object.hasOwn(run.data.headers, "authorization"), false);
+			assert.equal(Object.hasOwn(run.data.headers, "x-api-key"), false);
 		} finally {
 			if (previousAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
 			else process.env.CLOUDFLARE_ACCOUNT_ID = previousAccount;

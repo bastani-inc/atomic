@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type SessionHeader, SessionManager } from "../src/core/session-manager.ts";
+import { afterEach, beforeEach, describe, it } from "vitest";
+import { type SessionHeader, SessionManager } from "../src/core/session-manager.js";
 
 /**
  * Upstream 7bdb16c2 gave pi's storage a has_session_name / session_name pair so a cleared
@@ -67,22 +68,22 @@ describe("pi 0.84.2 session name state", () => {
 		const sessions = await SessionManager.list(cwd, dir);
 		const cleared = sessions.find((s) => s.id === "cleared");
 		const never = sessions.find((s) => s.id === "never");
-		expect(cleared).toBeDefined();
-		expect(never).toBeDefined();
-		expect(cleared?.name).toBeUndefined();
-		expect(cleared?.hasName).toBe(true);
-		expect(never?.name).toBeUndefined();
-		expect(never?.hasName).toBeFalsy();
+		assert.ok(cleared);
+		assert.ok(never);
+		assert.equal(cleared.name, undefined);
+		assert.equal(cleared.hasName, true);
+		assert.equal(never.name, undefined);
+		assert.ok(!never.hasName);
 
 		// Opening the same files reports the same states through SessionManager.
 		const clearedSession = SessionManager.open(clearedPath);
-		expect(clearedSession.getSessionNameState()).toEqual({ hasName: true });
+		assert.deepEqual(clearedSession.getSessionNameState(), { hasName: true });
 		const neverSession = SessionManager.open(neverPath);
-		expect(neverSession.getSessionNameState()).toEqual({ hasName: false });
+		assert.deepEqual(neverSession.getSessionNameState(), { hasName: false });
 
 		// The bare-string surface is unchanged: both still read as nameless.
-		expect(clearedSession.getSessionName()).toBeUndefined();
-		expect(neverSession.getSessionName()).toBeUndefined();
+		assert.equal(clearedSession.getSessionName(), undefined);
+		assert.equal(neverSession.getSessionName(), undefined);
 	});
 
 	it("reports the latest name while the session stays named", async () => {
@@ -93,14 +94,14 @@ describe("pi 0.84.2 session name state", () => {
 		]);
 
 		const sessions = await SessionManager.list(cwd, dir);
-		expect(sessions.find((s) => s.id === "named")).toMatchObject({
-			name: "Second title",
-			hasName: true,
-		});
+		const named = sessions.find((s) => s.id === "named");
+		assert.ok(named);
+		assert.equal(named.name, "Second title");
+		assert.equal(named.hasName, true);
 
 		const session = SessionManager.open(path);
-		expect(session.getSessionNameState()).toEqual({ hasName: true, name: "Second title" });
-		expect(session.getSessionName()).toBe("Second title");
+		assert.deepEqual(session.getSessionNameState(), { hasName: true, name: "Second title" });
+		assert.equal(session.getSessionName(), "Second title");
 	});
 
 	it("treats a whitespace-only latest name as a clear", () => {
@@ -110,19 +111,19 @@ describe("pi 0.84.2 session name state", () => {
 			sessionInfo("n2", "n1", "   "),
 		]);
 
-		expect(SessionManager.open(path).getSessionNameState()).toEqual({ hasName: true });
+		assert.deepEqual(SessionManager.open(path).getSessionNameState(), { hasName: true });
 	});
 
 	it("keeps the distinction across the live name and clear path", () => {
 		const session = SessionManager.inMemory(cwd);
-		expect(session.getSessionNameState()).toEqual({ hasName: false });
+		assert.deepEqual(session.getSessionNameState(), { hasName: false });
 
 		session.appendSessionInfo("Sprint");
-		expect(session.getSessionNameState()).toEqual({ hasName: true, name: "Sprint" });
+		assert.deepEqual(session.getSessionNameState(), { hasName: true, name: "Sprint" });
 
 		session.appendSessionInfo("");
-		expect(session.getSessionNameState()).toEqual({ hasName: true });
-		expect(session.getSessionName()).toBeUndefined();
+		assert.deepEqual(session.getSessionNameState(), { hasName: true });
+		assert.equal(session.getSessionName(), undefined);
 	});
 
 	it("still writes a clear as a session_info entry with an empty name", () => {
@@ -151,12 +152,15 @@ describe("pi 0.84.2 session name state", () => {
 
 		// The storage format is unchanged: a clear is a session_info entry with name "".
 		const file = session.getSessionFile();
-		expect(file).toBeDefined();
-		const infoEntries = readFileSync(file!, "utf8")
+		assert.ok(file);
+		const infoEntries = readFileSync(file, "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line) as { type: string; name?: string })
 			.filter((entry) => entry.type === "session_info");
-		expect(infoEntries.map((entry) => entry.name)).toEqual(["Sprint", ""]);
+		assert.deepEqual(
+			infoEntries.map((entry) => entry.name),
+			["Sprint", ""],
+		);
 	});
 });

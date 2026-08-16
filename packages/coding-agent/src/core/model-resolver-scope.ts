@@ -5,7 +5,7 @@ import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import { findExactModelReferenceMatch, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ScopedModel } from "./model-resolver-types.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime } from "./model-runtime.js";
 
 export interface ModelScopeDiagnostic {
 	type: "warning";

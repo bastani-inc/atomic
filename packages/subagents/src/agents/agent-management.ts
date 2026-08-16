@@ -30,7 +30,7 @@ import {
 	defaultSystemPromptMode,
 	discoverAgentsAll,
 	frontmatterNameForConfig,
-} from "./agents.ts";
+} from "./agents.js";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 export type ManagementScope = "user" | "project";

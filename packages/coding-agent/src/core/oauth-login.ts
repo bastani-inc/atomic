@@ -1,5 +1,5 @@
 import type { AuthInfoLink, AuthInteraction, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import { CredentialSynchronizationError } from "./model-runtime.ts";
+import { CredentialSynchronizationError } from "./model-runtime.js";
 
 export interface AtomicOAuthLoginCallbacks extends OAuthLoginCallbacks {
 	onManualCodeCancel?(): void;

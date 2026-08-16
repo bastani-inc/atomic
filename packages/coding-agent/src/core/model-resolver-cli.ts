@@ -2,7 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import { buildFallbackModel, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ResolveCliModelResult } from "./model-resolver-types.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime } from "./model-runtime.js";
 
 function buildProviderMap(availableModels: Model<Api>[]): Map<string, string> {
 	const providerMap = new Map<string, string>();

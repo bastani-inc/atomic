@@ -10,8 +10,8 @@ import {
 	defaultInheritSkills,
 	defaultSystemPromptMode,
 } from "./agent-types.ts";
-import { type FrontmatterValue, parseFrontmatter } from "./frontmatter.ts";
-import { buildRuntimeName, parsePackageName } from "./identity.ts";
+import { type FrontmatterValue, parseFrontmatter } from "./frontmatter.js";
+import { buildRuntimeName, parsePackageName } from "./identity.js";
 
 function listFilesRecursive(dir: string, predicate: (fileName: string) => boolean): string[] {
 	const files: string[] = [];

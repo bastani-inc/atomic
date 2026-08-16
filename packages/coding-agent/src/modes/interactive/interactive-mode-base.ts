@@ -365,6 +365,8 @@ export class InteractiveModeBase {
 
 	/** Leading spacer added once for the managed-tool startup status block. */
 	managedToolStatusStarted = false;
+	/** Invalidates readiness callbacks after the transcript is rebuilt for another session. */
+	managedToolStatusGeneration = 0;
 
 	// Streaming message tracking
 	streamingComponent: AssistantMessageComponent | undefined = undefined;

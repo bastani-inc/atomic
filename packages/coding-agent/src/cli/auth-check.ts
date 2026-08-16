@@ -1,6 +1,6 @@
 import { type AuthResult, type CredentialStore, ModelsError } from "@earendil-works/pi-ai";
 import { findExactModelReferenceMatch, resolveCliModel } from "../core/model-resolver.ts";
-import { ModelRuntime } from "../core/model-runtime.ts";
+import { ModelRuntime } from "../core/model-runtime.js";
 import { InMemoryCodingAgentModelsStore } from "../core/models-store.ts";
 import type { Args } from "./args.ts";
 import { AuthCommandError, validateAuthCheckArgs } from "./auth-command.ts";

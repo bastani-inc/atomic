@@ -48,7 +48,7 @@ import type {
 	ToolDefinition,
 } from "./extensions/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";

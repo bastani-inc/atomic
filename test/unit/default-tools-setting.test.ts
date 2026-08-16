@@ -1,8 +1,6 @@
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
@@ -17,17 +15,24 @@ import {
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { allToolNames, defaultToolNames } from "../../packages/coding-agent/src/core/tools/index.js";
+import {
+	fileExistsSync,
+	makeDirectorySync,
+	makeTempDirectory,
+	removePathSync,
+	writeTextSync,
+} from "../helpers/runtime.js";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) {
-		if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		if (fileExistsSync(dir)) removePathSync(dir, { recursive: true, force: true });
 	}
 });
 
 function tempDir(prefix: string): string {
-	const dir = mkdtempSync(join(tmpdir(), prefix));
+	const dir = makeTempDirectory(prefix);
 	tempDirs.push(dir);
 	return dir;
 }
@@ -35,7 +40,7 @@ function tempDir(prefix: string): string {
 function sessionRoots(prefix: string): { cwd: string; agentDir: string } {
 	const cwd = tempDir(prefix);
 	const agentDir = join(cwd, "agent");
-	mkdirSync(agentDir, { recursive: true });
+	makeDirectorySync(agentDir, { recursive: true });
 	return { cwd, agentDir };
 }
 
@@ -296,7 +301,7 @@ describe("defaultTools setting", () => {
 		// prevent, reached through a malformed input shape).
 		for (const raw of ['"read"', "42", '{"read":true}']) {
 			const { cwd, agentDir } = sessionRoots("atomic-default-tools-invalid-");
-			writeFileSync(join(agentDir, "settings.json"), `{"defaultTools": ${raw}}`);
+			writeTextSync(join(agentDir, "settings.json"), `{"defaultTools": ${raw}}`);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
 
 			const session = await createSessionFromManager(settingsManager, cwd, agentDir);

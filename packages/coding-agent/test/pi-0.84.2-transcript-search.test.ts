@@ -14,13 +14,13 @@
 import assert from "node:assert/strict";
 import type { Component } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
-import { ScrollableComponentViewport } from "../src/modes/interactive/components/chat-transcript.ts";
+import { ScrollableComponentViewport } from "../src/modes/interactive/components/chat-transcript.js";
 import {
 	findSearchMatches,
 	getSearchMatchKey,
 	highlightSearchMatchRow,
 	type TranscriptSearchHighlightStyles,
-} from "../src/modes/interactive/components/transcript-search.ts";
+} from "../src/modes/interactive/components/transcript-search.js";
 
 const STYLES: TranscriptSearchHighlightStyles = {
 	match: (text) => `<m>${text}</m>`,
@@ -110,6 +110,18 @@ describe("transcript search highlighting", () => {
 		);
 
 		assert.equal(highlighted, "\x1b[1m<m>needle</m>\x1b[22m");
+	});
+
+	test("handles repeated malformed ANSI prefixes without regex backtracking", () => {
+		const line = `${"\x1b]".repeat(4096)}needle`;
+		const highlighted = highlightSearchMatchRow(line, [{ startCol: 0, endCol: line.length, current: false }], STYLES);
+		assert.ok(highlighted.includes("needle"));
+	});
+
+	test("handles repeated ANSI sequences without polynomial suffix matching", () => {
+		const line = `${"\x1b[31m".repeat(2048)}needle`;
+		const highlighted = highlightSearchMatchRow(line, [{ startCol: 0, endCol: line.length, current: false }], STYLES);
+		assert.ok(highlighted.endsWith("<m>needle</m>"));
 	});
 	test("preserves multiple trailing ANSI sequences after a middle highlight", () => {
 		const highlighted = highlightSearchMatchRow(

@@ -1,6 +1,6 @@
 import { ModelsError } from "@earendil-works/pi-ai";
 import type { AgentSession } from "./agent-session.ts";
-import { CredentialSynchronizationError } from "./model-runtime.ts";
+import { CredentialSynchronizationError } from "./model-runtime.js";
 import {
 	type AtomicOAuthLoginCallbacks,
 	createAuthInteraction,

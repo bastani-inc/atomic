@@ -1,4 +1,4 @@
-import type { ModelRuntime } from "./core/model-runtime.ts";
+import type { ModelRuntime } from "./core/model-runtime.js";
 
 type CliApiKeyRuntime = Pick<ModelRuntime, "setRuntimeApiKey" | "refresh" | "getAvailable">;
 

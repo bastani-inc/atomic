@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, test } from "vitest";
 import {
 	classifyNpmViewOutcome,
@@ -14,9 +12,10 @@ import {
 	RELEASE_PAYLOAD_PACKAGE_COUNT,
 	verifyReleasePackagesRegistered,
 } from "../../scripts/release-npm-preflight.js";
+import { moduleDir, readTextSync } from "../helpers/runtime.js";
 
-const root = fileURLToPath(new URL("../..", import.meta.url));
-const publishWorkflow = readFileSync(join(root, PUBLISH_WORKFLOW_PATH), "utf8");
+const root = join(moduleDir(import.meta.url), "../..");
+const publishWorkflow = readTextSync(join(root, PUBLISH_WORKFLOW_PATH), "utf8");
 
 const payload = (names: readonly string[]): string =>
 	`          packages=(${names.join(" ")})\n          for name in "\${packages[@]}"; do\n`;

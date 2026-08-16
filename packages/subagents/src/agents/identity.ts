@@ -1,4 +1,4 @@
-import type { AgentConfig } from "./agents.ts";
+import type { AgentConfig } from "./agents.js";
 
 const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)*$/;
 

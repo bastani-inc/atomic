@@ -1,13 +1,15 @@
+import assert from "node:assert/strict";
+import { type Component, Container, type Spacer, Text } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import type { ToolStatus } from "../src/utils/tools-manager.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import type { ToolStatus } from "../src/utils/tools-manager.js";
 
 const toolMocks = vi.hoisted(() => ({
 	ensureTool: vi.fn<(tool: "fd" | "rg", onStatus?: (status: ToolStatus) => void) => Promise<string | undefined>>(),
 }));
 
-vi.mock("../src/utils/tools-manager.ts", () => ({ ensureTool: toolMocks.ensureTool }));
+vi.mock("../src/utils/tools-manager.js", () => ({ ensureTool: toolMocks.ensureTool }));
 
 /**
  * Upstream `6f707eb3`, the Atomic half: `ensureTool(tool, onStatus)` reports
@@ -20,43 +22,51 @@ vi.mock("../src/utils/tools-manager.ts", () => ({ ensureTool: toolMocks.ensureTo
 type ManagedToolsThis = {
 	fdPath: string | undefined;
 	managedToolStatusStarted: boolean;
-	lastStatusSpacer: unknown;
-	lastStatusText: unknown;
-	chatContainer: { children: unknown[]; addChild: (child: unknown) => void };
+	managedToolStatusGeneration: number;
+	lastStatusSpacer: Spacer | undefined;
+	lastStatusText: Text | undefined;
+	chatContainer: Container;
 	ui: { requestRender: ReturnType<typeof vi.fn> };
 	setupAutocompleteProvider: ReturnType<typeof vi.fn>;
 	showManagedToolStatus: (status: ToolStatus) => void;
+	pendingMessagesContainer: Container;
+	compactionQueuedMessages: never[];
+	streamingComponent: Component | undefined;
+	streamingMessage: object | undefined;
+	pendingTools: Map<string, Component>;
+	renderInitialMessages: ReturnType<typeof vi.fn>;
 };
 
 const prototype = InteractiveMode.prototype as unknown as {
 	ensureManagedToolsReady(this: ManagedToolsThis): Promise<void>;
 	showManagedToolStatus(this: ManagedToolsThis, status: ToolStatus): void;
+	renderCurrentSessionState(this: ManagedToolsThis): void;
 };
 
 function createMode(): ManagedToolsThis {
 	const mode: ManagedToolsThis = {
 		fdPath: undefined,
 		managedToolStatusStarted: false,
+		managedToolStatusGeneration: 0,
 		lastStatusSpacer: undefined,
 		lastStatusText: undefined,
-		chatContainer: {
-			children: [],
-			addChild(child: unknown) {
-				this.children.push(child);
-			},
-		},
+		chatContainer: new Container(),
 		ui: { requestRender: vi.fn() },
 		setupAutocompleteProvider: vi.fn(),
 		showManagedToolStatus: undefined as never,
+		pendingMessagesContainer: new Container(),
+		compactionQueuedMessages: [],
+		streamingComponent: undefined,
+		streamingMessage: undefined,
+		pendingTools: new Map(),
+		renderInitialMessages: vi.fn(),
 	};
 	mode.showManagedToolStatus = (status) => prototype.showManagedToolStatus.call(mode, status);
 	return mode;
 }
 
 function transcriptText(mode: ManagedToolsThis): string {
-	return mode.chatContainer.children
-		.flatMap((child) => (child as { render?: (width: number) => string[] }).render?.(80) ?? [])
-		.join("\n");
+	return mode.chatContainer.children.flatMap((child) => child.render(80)).join("\n");
 }
 
 beforeEach(() => {
@@ -66,6 +76,42 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+});
+test("ignores readiness callbacks from a prior transcript after a session rebuild", async () => {
+	const mode = createMode();
+	const oldCallbacks: Array<(status: ToolStatus) => void> = [];
+	const resolveOldTools: Array<(path: string | undefined) => void> = [];
+	toolMocks.ensureTool.mockImplementation((_tool, onStatus) => {
+		if (onStatus) oldCallbacks.push(onStatus);
+		return new Promise<string | undefined>((resolve) => resolveOldTools.push(resolve));
+	});
+
+	const oldReadiness = prototype.ensureManagedToolsReady.call(mode);
+	assert.equal(oldCallbacks.length, 2);
+	assert.equal(resolveOldTools.length, 2);
+	const oldStatus = oldCallbacks[0];
+	const oldWarning = oldCallbacks[1];
+	assert.ok(oldStatus);
+	assert.ok(oldWarning);
+	mode.renderInitialMessages.mockImplementation(() => {
+		mode.chatContainer.addChild(new Text("replacement session", 1, 0));
+	});
+	prototype.renderCurrentSessionState.call(mode);
+	oldStatus({ type: "info", message: "stale startup status" });
+	assert.equal(transcriptText(mode).includes("replacement session"), true);
+	assert.equal(transcriptText(mode).includes("stale startup status"), false);
+
+	toolMocks.ensureTool.mockImplementation(async (_tool, onStatus) => {
+		onStatus?.({ type: "info", message: "current startup status" });
+		return "/tools/current";
+	});
+	await prototype.ensureManagedToolsReady.call(mode);
+	oldWarning({ type: "warning", message: "stale failure status" });
+	assert.equal(transcriptText(mode).includes("current startup status"), true);
+	assert.equal(transcriptText(mode).includes("stale failure status"), false);
+
+	for (const resolve of resolveOldTools) resolve(undefined);
+	await oldReadiness;
 });
 
 test("managed-tool warnings land in the transcript, never on the console", async () => {

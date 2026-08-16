@@ -6,7 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { formatNoModelsAvailableMessage } from "../core/auth-guidance.ts";
-import type { ModelRuntime } from "../core/model-runtime.ts";
+import type { ModelRuntime } from "../core/model-runtime.js";
 
 /**
  * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")

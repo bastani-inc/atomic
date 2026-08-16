@@ -26,7 +26,7 @@ import { inspect } from "node:util";
 import type { Api, AuthType, Model } from "@earendil-works/pi-ai";
 import { ModelsError } from "@earendil-works/pi-ai";
 import { resolveCliModel } from "../core/model-resolver.ts";
-import type { ModelRuntime } from "../core/model-runtime.ts";
+import type { ModelRuntime } from "../core/model-runtime.js";
 import { flushRawStdout, RawStdoutWriteError, writeRawStdoutOnce } from "../core/output-guard.ts";
 import type { Args } from "./args.ts";
 

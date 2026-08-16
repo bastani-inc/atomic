@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import {
 	type Component,
@@ -7,19 +8,18 @@ import {
 	type TuiAltScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
-import { beforeEach, describe, expect, test, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { TRANSCRIPT_JUMP_TO_END_URL } from "../src/modes/interactive/components/transcript-follow-indicator.ts";
-import { shouldHandleFullscreenViewportInput } from "../src/modes/interactive/interactive-mode-base.ts";
-import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
-import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
+import { beforeEach, describe, test, vi } from "vitest";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { TRANSCRIPT_JUMP_TO_END_URL } from "../src/modes/interactive/components/transcript-follow-indicator.js";
+import { shouldHandleFullscreenViewportInput } from "../src/modes/interactive/interactive-mode-base.js";
+import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
 
 const clipboardMocks = vi.hoisted(() => ({
 	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
 	readClipboardText: vi.fn<() => Promise<string | null>>(),
 }));
-
-vi.mock("../src/utils/clipboard.ts", () => clipboardMocks);
+vi.mock("../src/utils/clipboard.js", () => clipboardMocks);
 
 /**
  * Upstream #7963 (`83aed2ba`): terminals that report a release with the generic
@@ -131,7 +131,7 @@ function createFixture(): Fixture {
 	const overlay = new ClaimingOverlay();
 	tui.showOverlay(overlay, { anchor: "bottom-center", width: "100%" });
 	tui.renderNow();
-	expect(tui.getFocusedComponent()).toBe(overlay);
+	assert.equal(tui.getFocusedComponent(), overlay);
 
 	return {
 		tui,
@@ -160,7 +160,7 @@ describe("generic SGR mouse release (upstream #7963)", () => {
 	test("generic-sgr-release-ends-selection", () => {
 		const fixture = createFixture();
 		try {
-			expect(fixture.screen()[0]).toContain("alpha");
+			assert.ok(fixture.screen()[0]?.includes("alpha"));
 
 			fixture.terminal.input(sgr(PRESS, 0, 0));
 			fixture.terminal.input(sgr(MOTION, 5, 0));
@@ -168,18 +168,18 @@ describe("generic SGR mouse release (upstream #7963)", () => {
 
 			// The overlay claimed all three reports, so the only way pi-tui saw the
 			// release is Atomic forwarding it.
-			expect(fixture.overlay.handledInputs).toEqual([
+			assert.deepEqual(fixture.overlay.handledInputs, [
 				sgr(PRESS, 0, 0),
 				sgr(MOTION, 5, 0),
 				sgr(GENERIC_RELEASE, 5, 0, true),
 			]);
-			expect(fixture.copiedText()).toEqual(["alpha"]);
+			assert.deepEqual(fixture.copiedText(), ["alpha"]);
 
 			// The press is closed: a further drag and release extends nothing and
 			// copies nothing, because pi-tui's press state was cleared.
 			fixture.terminal.input(sgr(MOTION, 20, 0));
 			fixture.terminal.input(sgr(GENERIC_RELEASE, 20, 0, true));
-			expect(fixture.copiedText()).toEqual(["alpha"]);
+			assert.deepEqual(fixture.copiedText(), ["alpha"]);
 		} finally {
 			fixture.stop();
 		}
@@ -193,9 +193,9 @@ describe("generic SGR mouse release (upstream #7963)", () => {
 			fixture.terminal.input(sgr(PRESS, link.column, link.row));
 			fixture.terminal.input(sgr(GENERIC_RELEASE, link.column, link.row, true));
 
-			expect(fixture.internalUiActions).toEqual([TRANSCRIPT_JUMP_TO_END_URL]);
+			assert.deepEqual(fixture.internalUiActions, [TRANSCRIPT_JUMP_TO_END_URL]);
 			// A link click is an activation, not a selection.
-			expect(fixture.copiedText()).toEqual([]);
+			assert.deepEqual(fixture.copiedText(), []);
 		} finally {
 			fixture.stop();
 		}
@@ -208,7 +208,7 @@ describe("generic SGR mouse release (upstream #7963)", () => {
 			fixture.terminal.input(sgr(MOTION, 5, 0));
 			fixture.terminal.input(sgr(PRESS, 5, 0, true));
 
-			expect(fixture.copiedText()).toEqual(["alpha"]);
+			assert.deepEqual(fixture.copiedText(), ["alpha"]);
 		} finally {
 			fixture.stop();
 		}
@@ -222,7 +222,7 @@ describe("generic SGR mouse release (upstream #7963)", () => {
 			fixture.terminal.input(sgr(MOTION, 5, 0));
 			fixture.terminal.input(sgr(GENERIC_RELEASE | 4, 5, 0, true));
 
-			expect(fixture.copiedText()).toEqual(["alpha"]);
+			assert.deepEqual(fixture.copiedText(), ["alpha"]);
 		} finally {
 			fixture.stop();
 		}
@@ -236,11 +236,11 @@ describe("generic SGR mouse release (upstream #7963)", () => {
 			// The wheel bit is set, so this is not a left-button release even
 			// though its low bits read as the generic code.
 			fixture.terminal.input(sgr(WHEEL_UP | GENERIC_RELEASE, 5, 0, true));
-			expect(fixture.copiedText()).toEqual([]);
+			assert.deepEqual(fixture.copiedText(), []);
 
 			// The real release still lands.
 			fixture.terminal.input(sgr(GENERIC_RELEASE, 5, 0, true));
-			expect(fixture.copiedText()).toEqual(["alpha"]);
+			assert.deepEqual(fixture.copiedText(), ["alpha"]);
 		} finally {
 			fixture.stop();
 		}

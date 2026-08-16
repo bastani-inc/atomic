@@ -45,7 +45,7 @@ import type {
 	ToolInfo,
 } from "./extensions/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";

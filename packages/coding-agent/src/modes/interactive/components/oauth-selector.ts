@@ -7,7 +7,7 @@ import {
 	Spacer,
 	TruncatedText,
 } from "@earendil-works/pi-tui";
-import type { ModelRuntime } from "../../../core/model-runtime.ts";
+import type { ModelRuntime } from "../../../core/model-runtime.js";
 import type { AuthStatus } from "../../../core/provider-composer.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";

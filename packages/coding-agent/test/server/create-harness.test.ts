@@ -789,7 +789,9 @@ describe("coding-agent Harness construction", () => {
 
 	test("applies experimental strict sampling to default harness tools without rewriting schemas", async () => {
 		const originalPiExperimental = process.env.PI_EXPERIMENTAL;
+		const originalAtomicExperimental = process.env.ATOMIC_EXPERIMENTAL;
 		delete process.env.PI_EXPERIMENTAL;
+		delete process.env.ATOMIC_EXPERIMENTAL;
 		const session = createSession("strict-sampling-session");
 		const env = new NodeExecutionEnv({ cwd: "/workspace" });
 		let created: Awaited<ReturnType<typeof createCodingAgentHarness>> | undefined;
@@ -805,6 +807,23 @@ describe("coding-agent Harness construction", () => {
 				expect(tool.constrainedSampling).toBeUndefined();
 			}
 
+			await created.harness.close();
+			process.env.ATOMIC_EXPERIMENTAL = "1";
+			created = await createCodingAgentHarness({
+				session: createSession("strict-sampling-atomic-experimental-session"),
+				models: createModels(),
+				model: getModel("google", "gemini-2.5-flash"),
+				env,
+			});
+			const atomicExperimentalTools = await created.harness.getTools();
+			expect(atomicExperimentalTools.map((tool) => tool.name)).toEqual(normalTools.map((tool) => tool.name));
+			for (const [index, tool] of atomicExperimentalTools.entries()) {
+				expect(tool.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
+				expect(tool.parameters).toEqual(normalTools[index]?.parameters);
+			}
+
+			delete process.env.ATOMIC_EXPERIMENTAL;
+			await created.harness.close();
 			process.env.PI_EXPERIMENTAL = "1";
 			created = await createCodingAgentHarness({
 				session: createSession("strict-sampling-experimental-session"),
@@ -822,6 +841,8 @@ describe("coding-agent Harness construction", () => {
 		} finally {
 			if (originalPiExperimental === undefined) delete process.env.PI_EXPERIMENTAL;
 			else process.env.PI_EXPERIMENTAL = originalPiExperimental;
+			if (originalAtomicExperimental === undefined) delete process.env.ATOMIC_EXPERIMENTAL;
+			else process.env.ATOMIC_EXPERIMENTAL = originalAtomicExperimental;
 			await created?.harness.close();
 			await env.cleanup();
 		}
@@ -829,6 +850,9 @@ describe("coding-agent Harness construction", () => {
 
 	test("keeps a structured-output tool's own constraint instead of double-wrapping under strict mode", async () => {
 		const originalPiExperimental = process.env.PI_EXPERIMENTAL;
+		const originalAtomicExperimental = process.env.ATOMIC_EXPERIMENTAL;
+		delete process.env.PI_EXPERIMENTAL;
+		delete process.env.ATOMIC_EXPERIMENTAL;
 		process.env.PI_EXPERIMENTAL = "1";
 		const session = createSession("structured-compose-session");
 		const env = new NodeExecutionEnv({ cwd: "/workspace" });
@@ -853,6 +877,8 @@ describe("coding-agent Harness construction", () => {
 		} finally {
 			if (originalPiExperimental === undefined) delete process.env.PI_EXPERIMENTAL;
 			else process.env.PI_EXPERIMENTAL = originalPiExperimental;
+			if (originalAtomicExperimental === undefined) delete process.env.ATOMIC_EXPERIMENTAL;
+			else process.env.ATOMIC_EXPERIMENTAL = originalAtomicExperimental;
 			await created?.harness.close();
 			await env.cleanup();
 		}

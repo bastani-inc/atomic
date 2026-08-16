@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_NAME, createChildProcessEnvironment, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
-import type { AgentConfig } from "../agents/agents.ts";
+import type { AgentConfig } from "../agents/agents.js";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 

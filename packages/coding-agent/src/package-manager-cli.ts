@@ -19,7 +19,7 @@ import {
 import { parseConfigCommand } from "./config-command-parser.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
-import { ModelRuntime } from "./core/model-runtime.ts";
+import { ModelRuntime } from "./core/model-runtime.js";
 import { DefaultPackageManager } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";

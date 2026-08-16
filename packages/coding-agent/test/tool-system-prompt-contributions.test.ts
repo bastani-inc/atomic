@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { readTextSync } from "../../../test/helpers/runtime.js";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 import {
 	askUserQuestionToolSystemPromptContribution,
@@ -119,14 +119,14 @@ describe("built-in tool system prompt contributions", () => {
 		const srcDir = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 		for (const entry of ["index.ts", "index-extensions.ts"]) {
-			const source = readFileSync(join(srcDir, entry), "utf8");
+			const source = readTextSync(join(srcDir, entry), "utf8");
 			expect(source, entry).not.toContain("askUserQuestionToolSystemPromptContribution");
 			expect(source, entry).not.toContain("todoToolSystemPromptContribution");
 		}
 
 		// Sanity check that the entries are actually read: the seven upstream-facing
 		// contributions predate this change and stay exported from src/index.ts.
-		const indexSource = readFileSync(join(srcDir, "index.ts"), "utf8");
+		const indexSource = readTextSync(join(srcDir, "index.ts"), "utf8");
 		expect(indexSource).toContain("bashToolSystemPromptContribution");
 	});
 });

@@ -27,9 +27,9 @@ const INVERSE = "\x1b[7m";
  * the host, so the concrete class cannot be imported without pulling the whole
  * host into this type graph; the two accessors are feature-detected instead.
  */
-interface PiSearchTheme {
-	getFgAnsi?: (color: string) => string;
-	getBgAnsi?: (color: string) => string;
+export interface PiSearchTheme {
+	getFgAnsi?(color: string): string;
+	getBgAnsi?(color: string): string;
 }
 
 /** Ready-to-emit SGR sequences for a search match. */
@@ -67,10 +67,10 @@ function tryThemeAnsi(theme: PiSearchTheme, accessor: "getFgAnsi" | "getBgAnsi",
  * inside Pi's own `Theme`; a host with no theme at all falls back to the
  * overlay's own palette so the highlight is never invisible.
  */
-export function searchMatchAnsi(piTheme: unknown, fallback: GraphTheme): SearchMatchAnsi {
+export function searchMatchAnsi(piTheme: PiSearchTheme | undefined, fallback: GraphTheme): SearchMatchAnsi {
 	const fallbackAnsi: SearchMatchAnsi = { bg: hexBg(fallback.selection), text: hexToAnsi(fallback.text) };
 	if (!piTheme || typeof piTheme !== "object") return fallbackAnsi;
-	const theme = piTheme as PiSearchTheme;
+	const theme = piTheme;
 	return {
 		bg: tryThemeAnsi(theme, "getBgAnsi", "searchMatchBg") ?? fallbackAnsi.bg,
 		text: tryThemeAnsi(theme, "getFgAnsi", "searchMatchText") ?? fallbackAnsi.text,

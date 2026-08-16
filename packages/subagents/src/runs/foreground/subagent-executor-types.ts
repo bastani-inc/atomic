@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import type { AgentConfig, AgentScope } from "../../agents/agents.ts";
+import type { AgentConfig, AgentScope } from "../../agents/agents.js";
 import type { IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import type { ModelInfo } from "../../shared/model-info.ts";
 import type {

@@ -10,7 +10,7 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import { boundedInteractiveModelRefresh } from "../../../core/bounded-model-refresh.ts";
-import type { ModelRuntime } from "../../../core/model-runtime.ts";
+import type { ModelRuntime } from "../../../core/model-runtime.js";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";

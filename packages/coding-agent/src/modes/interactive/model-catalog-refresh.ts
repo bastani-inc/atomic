@@ -1,6 +1,6 @@
 import type { ModelsRefreshOptions, ModelsRefreshResult } from "@earendil-works/pi-ai";
-import type { ModelRuntime } from "../../core/model-runtime.ts";
-import { raceWithAbortSignal } from "../../utils/abort.ts";
+import type { ModelRuntime } from "../../core/model-runtime.js";
+import { raceWithAbortSignal } from "../../utils/abort.js";
 
 type ModelCatalogRuntime = Pick<ModelRuntime, "refresh" | "isNetworkRefreshEnabled" | "getCatalogInputsGeneration">;
 

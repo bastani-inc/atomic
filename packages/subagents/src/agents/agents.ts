@@ -22,4 +22,4 @@ export {
 	defaultInheritSkills,
 	defaultSystemPromptMode,
 } from "./agent-types.ts";
-export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
+export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.js";

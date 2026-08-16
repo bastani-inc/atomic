@@ -1,7 +1,7 @@
 import type { Credential } from "@earendil-works/pi-ai";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { HostInputFormRequest } from "../../core/extensions/ui-types.ts";
-import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
+import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { createAuthInteraction, isOAuthLoginCancelled } from "../../core/oauth-login.ts";
 import { createRpcOAuthCallbacks, type OAuthInteractionTransport } from "./rpc-oauth-interaction.ts";
 import type { RpcLoginProviderResult, RpcModelCatalog, RpcOAuthLoginProviderResult } from "./rpc-types.ts";

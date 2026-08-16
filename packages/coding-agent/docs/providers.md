@@ -396,6 +396,7 @@ export default {
         }
       ]
     });
+    await loader.reload();
 
     const { session } = await createAgentSession({
       resourceLoader: loader

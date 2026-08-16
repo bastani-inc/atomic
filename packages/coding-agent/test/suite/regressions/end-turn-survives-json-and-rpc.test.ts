@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
-import { toJsonEvent } from "../../../src/modes/json-event.ts";
-import { serializeRpcOutputRecord } from "../../../src/modes/rpc/rpc-output-buffer.ts";
-import { createHarness, type Harness } from "../harness.ts";
+import { afterEach, describe, it } from "vitest";
+import { type JsonAgentSessionEvent, toJsonEvent } from "../../../src/modes/json-event.js";
+import { serializeRpcOutputRecord } from "../../../src/modes/rpc/rpc-output-buffer.js";
+import { createHarness, type Harness } from "../harness.js";
 
 /**
  * `AssistantMessage.endTurn` is the provider's explicit end-of-turn signal
@@ -11,12 +12,12 @@ import { createHarness, type Harness } from "../harness.ts";
  * binding writes `serializeRpcOutputRecord(toJsonEvent(event))`, so both are
  * exercised here against the same events.
  */
-function jsonWire(event: unknown): Record<string, unknown> {
-	return JSON.parse(JSON.stringify(event)) as Record<string, unknown>;
+function jsonWire(event: JsonAgentSessionEvent): JsonAgentSessionEvent {
+	return JSON.parse(JSON.stringify(event)) as JsonAgentSessionEvent;
 }
 
-function rpcWire(event: Parameters<typeof serializeRpcOutputRecord>[0]): Record<string, unknown> {
-	return JSON.parse(serializeRpcOutputRecord(event)) as Record<string, unknown>;
+function rpcWire(event: JsonAgentSessionEvent): JsonAgentSessionEvent {
+	return JSON.parse(serializeRpcOutputRecord(event)) as JsonAgentSessionEvent;
 }
 
 describe("regression end-turn-survives-json-and-rpc", () => {
@@ -36,11 +37,11 @@ describe("regression end-turn-survives-json-and-rpc", () => {
 		// The delta-only projection strips `partial`, which is where a provider's
 		// end-of-turn signal lives during streaming — the same loss #7982 fixed for usage.
 		const updates = harness.eventsOfType("message_update").map((event) => toJsonEvent(event));
-		expect(updates.length).toBeGreaterThan(0);
+		assert.ok(updates.length > 0);
 		for (const update of updates) {
-			expect(update.endTurn).toBe(true);
-			expect(jsonWire(update).endTurn).toBe(true);
-			expect(rpcWire(update).endTurn).toBe(true);
+			assert.equal(update.endTurn, true);
+			assert.equal(jsonWire(update).endTurn, true);
+			assert.equal(rpcWire(update).endTurn, true);
 		}
 	});
 
@@ -58,11 +59,11 @@ describe("regression end-turn-survives-json-and-rpc", () => {
 			throw new Error("Expected an assistant message_end event");
 		}
 
-		expect(end.message.endTurn).toBe(true);
-		const jsonMessage = jsonWire(end).message as Record<string, unknown>;
-		const rpcMessage = rpcWire(end).message as Record<string, unknown>;
-		expect(jsonMessage.endTurn).toBe(true);
-		expect(rpcMessage.endTurn).toBe(true);
+		assert.equal(end.message.endTurn, true);
+		const jsonMessage = jsonWire(end).message;
+		const rpcMessage = rpcWire(end).message;
+		assert.equal(jsonMessage.endTurn, true);
+		assert.equal(rpcMessage.endTurn, true);
 	});
 
 	it("omits endTurn entirely when the provider reported none", async () => {
@@ -74,11 +75,11 @@ describe("regression end-turn-survives-json-and-rpc", () => {
 		// A present-but-undefined key would make silence indistinguishable from a
 		// provider that explicitly reported `endTurn: false`.
 		const updates = harness.eventsOfType("message_update").map((event) => toJsonEvent(event));
-		expect(updates.length).toBeGreaterThan(0);
+		assert.ok(updates.length > 0);
 		for (const update of updates) {
-			expect(update).not.toHaveProperty("endTurn");
-			expect(jsonWire(update)).not.toHaveProperty("endTurn");
-			expect(rpcWire(update)).not.toHaveProperty("endTurn");
+			assert.equal(Object.hasOwn(update, "endTurn"), false);
+			assert.equal(Object.hasOwn(jsonWire(update), "endTurn"), false);
+			assert.equal(Object.hasOwn(rpcWire(update), "endTurn"), false);
 		}
 	});
 
@@ -89,11 +90,11 @@ describe("regression end-turn-survives-json-and-rpc", () => {
 		await harness.session.prompt("respond");
 
 		const updates = harness.eventsOfType("message_update").map((event) => toJsonEvent(event));
-		expect(updates.length).toBeGreaterThan(0);
+		assert.ok(updates.length > 0);
 		for (const update of updates) {
-			expect(update.endTurn).toBe(false);
-			expect(jsonWire(update).endTurn).toBe(false);
-			expect(rpcWire(update).endTurn).toBe(false);
+			assert.equal(update.endTurn, false);
+			assert.equal(jsonWire(update).endTurn, false);
+			assert.equal(rpcWire(update).endTurn, false);
 		}
 	});
 });

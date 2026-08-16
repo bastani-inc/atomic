@@ -13,7 +13,16 @@ import { parseFrontmatter as parseYamlFrontmatter } from "@bastani/atomic";
 export type FrontmatterValue = string | string[] | boolean | number | null;
 export type Frontmatter = Record<string, FrontmatterValue>;
 
-function toFrontmatterValue(value: unknown): FrontmatterValue | undefined {
+type RawFrontmatterValue =
+	| string
+	| boolean
+	| number
+	| null
+	| RawFrontmatterValue[]
+	| { [key: string]: RawFrontmatterValue };
+type ParsedYamlDocument = { frontmatter: Record<string, RawFrontmatterValue>; body: string };
+
+function toFrontmatterValue(value: RawFrontmatterValue): FrontmatterValue | undefined {
 	if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") {
 		return value;
 	}
@@ -47,9 +56,9 @@ export interface ParsedAgentFrontmatter {
  * parse error is returned so discovery can surface a diagnostic.
  */
 export function parseFrontmatter(content: string): ParsedAgentFrontmatter {
-	let parsed: { frontmatter: unknown; body: string };
+	let parsed: ParsedYamlDocument;
 	try {
-		parsed = parseYamlFrontmatter(content);
+		parsed = parseYamlFrontmatter<Record<string, RawFrontmatterValue>>(content);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { frontmatter: {}, body: content, parseError: message };

@@ -1,4 +1,4 @@
-import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
+import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { isOAuthLoginCancelled } from "../../core/oauth-login.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {

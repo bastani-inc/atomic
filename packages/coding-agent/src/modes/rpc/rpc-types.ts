@@ -20,7 +20,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
-import type { CredentialSynchronizationOperation } from "../../core/model-runtime.ts";
+import type { CredentialSynchronizationOperation } from "../../core/model-runtime.js";
 import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";

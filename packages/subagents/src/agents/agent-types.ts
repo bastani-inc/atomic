@@ -1,4 +1,4 @@
-import type { FrontmatterValue } from "./frontmatter.ts";
+import type { FrontmatterValue } from "./frontmatter.js";
 
 export type AgentScope = "user" | "project" | "both";
 

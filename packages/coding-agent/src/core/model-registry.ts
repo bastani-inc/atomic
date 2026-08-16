@@ -10,7 +10,7 @@ import type {
 	Provider,
 	ProviderHeaders,
 } from "@earendil-works/pi-ai";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime } from "./model-runtime.js";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
 
 export type { ProviderConfigInput } from "./provider-composer.ts";

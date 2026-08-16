@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type AgentSource, discoverAgentsAll } from "../agents/agents.ts";
+import { type AgentSource, discoverAgentsAll } from "../agents/agents.js";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
 import { type ExtensionConfig, type SubagentState, TEMP_ROOT_DIR } from "../shared/types.ts";

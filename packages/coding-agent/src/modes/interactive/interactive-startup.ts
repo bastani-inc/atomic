@@ -129,17 +129,18 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 
 /** Bring fd and rg to readiness, reporting progress into the transcript. */
 InteractiveModeBase.prototype.ensureManagedToolsReady = function (this: InteractiveModeBase): Promise<void> {
-	return Promise.all([
-		ensureTool("fd", (status) => this.showManagedToolStatus(status)),
-		ensureTool("rg", (status) => this.showManagedToolStatus(status)),
-	])
+	const statusGeneration = ++this.managedToolStatusGeneration;
+	const reportStatus = (status: ToolStatus): void => {
+		if (this.managedToolStatusGeneration === statusGeneration) this.showManagedToolStatus(status);
+	};
+	return Promise.all([ensureTool("fd", reportStatus), ensureTool("rg", reportStatus)])
 		.then(([fdPath]) => {
 			this.fdPath = fdPath;
 			this.setupAutocompleteProvider();
 		})
 		.catch((error) => {
 			const message = error instanceof Error ? error.message : String(error);
-			this.showManagedToolStatus({ type: "warning", message: `Tool readiness check failed: ${message}` });
+			reportStatus({ type: "warning", message: `Tool readiness check failed: ${message}` });
 		});
 };
 

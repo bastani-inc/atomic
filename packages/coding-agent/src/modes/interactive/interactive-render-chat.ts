@@ -501,6 +501,10 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 		resetStartupDisclosure?: boolean;
 	} = {},
 ): void {
+	this.managedToolStatusGeneration++;
+	this.managedToolStatusStarted = false;
+	this.lastStatusSpacer = undefined;
+	this.lastStatusText = undefined;
 	this.chatContainer.clear();
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();

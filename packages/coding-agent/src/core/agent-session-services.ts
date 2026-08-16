@@ -4,7 +4,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import { ModelRuntime } from "./model-runtime.ts";
+import { ModelRuntime } from "./model-runtime.js";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,

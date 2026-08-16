@@ -47,28 +47,64 @@ function changelogSubsection(sectionText: string, name: string): string {
 	return sectionText.slice(start, end === -1 ? undefined : end);
 }
 
+interface FenceMarker {
+	line: number;
+	length: number;
+}
+
+interface FenceScan {
+	markers: FenceMarker[];
+	open: FenceMarker | undefined;
+}
+
+function scanFences(lines: readonly string[]): FenceScan {
+	const markers: FenceMarker[] = [];
+	let open: FenceMarker | undefined;
+	for (const [index, line] of lines.entries()) {
+		const match = /^\s*(`{3,})/u.exec(line);
+		const run = match?.[1];
+		if (run === undefined) continue;
+		const marker = { line: index + 1, length: run.length };
+		if (open === undefined) {
+			open = marker;
+			markers.push(marker);
+		} else if (marker.length >= open.length) {
+			markers.push(marker);
+			open = undefined;
+		}
+	}
+	return { markers, open };
+}
 describe("pi 0.84.2 docs contract — markdown structure", () => {
 	test("every fenced code block in every doc file is closed (fence parity)", () => {
 		assert.ok(docFiles.length > 20, "the doc corpus was discovered, not hardcoded");
 		for (const [name, path] of docFiles) {
 			const lines = readFileSync(path, "utf8").split("\n");
-			// A fence marker is a line whose first non-space characters are ```.
-			// Each one toggles open/closed, so their count must be even; an odd
-			// count means one example block swallows everything after it and
-			// every later table, heading, and example renders inside out.
-			const fenceLines = lines
-				.map((line, i) => ({ i: i + 1, fence: /^\s*```/u.test(line) }))
-				.filter(({ fence }) => fence);
+			// A fence closes only when its backtick run is at least as long as the
+			// opener. A shorter run can be literal content inside a longer wrapper.
+			const scan = scanFences(lines);
+			const fenceLines = scan.markers;
 			const firstFenceLines = fenceLines
 				.slice(0, 5)
-				.map(({ i }) => i)
+				.map(({ line }) => line)
 				.join(", ");
 			assert.equal(
-				fenceLines.length % 2,
-				0,
-				`${name} has ${fenceLines.length} fence markers (lines ${firstFenceLines}…): an unclosed code block inverts the rendering of everything after it`,
+				scan.open,
+				undefined,
+				`${name} has an unclosed ${scan.open?.length ?? "unknown"}-backtick fence (markers ${fenceLines.length}, lines ${firstFenceLines}…): an unclosed code block inverts the rendering of everything after it`,
 			);
 		}
+	});
+
+	test("permits a four-backtick wrapper around a literal three-backtick example", () => {
+		const scan = scanFences(["````markdown", "```ts", "const answer = 42;", "```", "````"]);
+		assert.equal(scan.open, undefined);
+		assert.equal(scan.markers.length, 2);
+	});
+
+	test("rejects a three-backtick close for a four-backtick opener", () => {
+		const scan = scanFences(["````markdown", "const answer = 42;", "```"]);
+		assert.deepEqual(scan.open, { line: 1, length: 4 });
 	});
 });
 

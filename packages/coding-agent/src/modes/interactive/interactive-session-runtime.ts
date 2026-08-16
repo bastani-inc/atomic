@@ -147,6 +147,10 @@ InteractiveModeBase.prototype.handleFatalRuntimeError = async function (
 };
 
 InteractiveModeBase.prototype.renderCurrentSessionState = function (this: InteractiveModeBase): void {
+	this.managedToolStatusGeneration++;
+	this.managedToolStatusStarted = false;
+	this.lastStatusSpacer = undefined;
+	this.lastStatusText = undefined;
 	this.chatContainer.clear();
 	this.pendingMessagesContainer.clear();
 	this.compactionQueuedMessages = [];

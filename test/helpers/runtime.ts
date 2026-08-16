@@ -15,7 +15,17 @@
  * node:assert/strict.
  */
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+	chmodSync as nodeChmodSync,
+	copyFileSync as nodeCopyFileSync,
+	existsSync as nodeExistsSync,
+	mkdirSync as nodeMkdirSync,
+	mkdtempSync as nodeMkdtempSync,
+	readdirSync as nodeReaddirSync,
+	readFileSync as nodeReadFileSync,
+	rmSync as nodeRmSync,
+	writeFileSync as nodeWriteFileSync,
+} from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -24,13 +34,23 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 /** Create a temporary directory for a test and return its path. */
 export function makeTempDirectory(prefix: string): string {
-	return mkdtempSync(join(tmpdir(), prefix));
+	return nodeMkdtempSync(join(tmpdir(), prefix));
 }
 
 /** Remove a temporary test directory and everything it contains. */
 export function removeTempDirectory(path: string): void {
-	rmSync(path, { recursive: true, force: true });
+	nodeRmSync(path, { recursive: true, force: true });
 }
+
+/** Synchronous filesystem adapters for root suites that need setup before a test starts. */
+export const chmodSync = nodeChmodSync;
+export const copyFileSync = nodeCopyFileSync;
+export const fileExistsSync = nodeExistsSync;
+export const makeDirectorySync = nodeMkdirSync;
+export const readDirectorySync = nodeReaddirSync;
+export const readTextSync = nodeReadFileSync;
+export const removePathSync = nodeRmSync;
+export const writeTextSync = nodeWriteFileSync;
 
 /** `Bun.sleep(ms)`. */
 export function sleep(milliseconds: number): Promise<void> {
@@ -59,7 +79,7 @@ let cachedBunExecutable: string | undefined;
 export function bunExecutable(): string {
 	if (cachedBunExecutable !== undefined) return cachedBunExecutable;
 	const override = process.env.ATOMIC_BUN_EXECUTABLE;
-	if (override && existsSync(override)) {
+	if (override && nodeExistsSync(override)) {
 		cachedBunExecutable = override;
 		return cachedBunExecutable;
 	}
@@ -85,7 +105,7 @@ export function bunExecutable(): string {
  * async-only failure would slip past that catch and lose it.
  */
 function resolveExecutable(command: string): string | undefined {
-	if (command.includes("/") || command.includes("\\")) return existsSync(command) ? command : undefined;
+	if (command.includes("/") || command.includes("\\")) return nodeExistsSync(command) ? command : undefined;
 	const extensions =
 		process.platform === "win32"
 			? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((part) => part !== "")
@@ -96,8 +116,8 @@ function resolveExecutable(command: string): string | undefined {
 		// PATHEXT first on Windows. npm ships as both `npm` (a POSIX shell script
 		// that Windows cannot exec) and `npm.cmd` beside it, so preferring the
 		// extensionless match picks the one that fails with ENOENT.
-		for (const extension of extensions) if (existsSync(base + extension)) return base + extension;
-		if (existsSync(base)) return base;
+		for (const extension of extensions) if (nodeExistsSync(base + extension)) return base + extension;
+		if (nodeExistsSync(base)) return base;
 	}
 	return undefined;
 }

@@ -6,7 +6,7 @@ import { resolveCliModel } from "./model-resolver-cli.ts";
 import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
 import { buildFallbackModel } from "./model-resolver-patterns.ts";
 import type { InitialModelResult, ScopedModel } from "./model-resolver-types.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime } from "./model-runtime.js";
 
 const CONFIGURED_DEFAULT_MODEL_UNAVAILABLE_MESSAGE =
 	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
