@@ -272,9 +272,13 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 	const top = `${bg}${bc}╭${topMiddle}╮${RESET}`;
 	const bottom = `${bg}${bc}╰${"─".repeat(innerWidth)}╯${RESET}`;
 
+	// A tool card is a fixed-size graph node, not a result preview: the read-only
+	// detail view owns args, result, error, and timing. The body is constant in
+	// every state so the card stops competing with it, while the status, meta,
+	// and dependency rows below keep their own content.
 	const bodyText =
 		stage.nodeKind === "tool"
-			? (stage.error ?? stage.result ?? "durable tool")
+			? "durable tool"
 			: stage.status === "blocked"
 				? blockedBadgeText(stage, opts.stages, innerWidth)
 				: durationText(stage);

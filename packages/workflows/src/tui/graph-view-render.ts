@@ -8,6 +8,7 @@ import { NODE_H } from "./layout.js";
 import { renderPromptCard } from "./prompt-card.js";
 import { renderSwitcher } from "./switcher.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
+import { renderToolDetailLines } from "./tool-detail.js";
 
 /**
  * `renderLayoutFrame` wraps each painted row with its segment reset. The
@@ -23,20 +24,28 @@ function stripLayoutWrapper(line: string): string {
 	const end = endsWithWrapper ? line.length - LAYOUT_OSC_RESET.length : line.length;
 	return line.slice(start, Math.max(start, end));
 }
+/** One frame's tool-detail geometry, derived once and shared by both callbacks. */
+interface ToolDetailFrame {
+	readonly width: number;
+	readonly cardWidth: number;
+	readonly leftPad: number;
+	readonly lines: readonly string[];
+}
+
 /** Overlay/widget rendering orchestration for GraphView. */
 export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	protected readonly graphLayout: GraphViewLayout;
 	private lastOverlayFrameHeight = 0;
 	private hasReportedViewportRows = false;
 	private renderRun: RunSnapshot | null | undefined;
-
+	private detailFrame: ToolDetailFrame | null = null;
 	constructor(opts: GraphViewOpts) {
 		super(opts);
 		this.graphLayout = new GraphViewLayout({
 			renderHeader: (width) => this._renderHeader(width),
 			renderBody: (width, top, rows, contentRows) => this._renderBody(width, top, rows, contentRows),
 			renderFooter: (width) => this._renderStatusline(width),
-			bodyContentHeight: (_width, viewportRows) => this._graphBodyContentHeight(viewportRows),
+			bodyContentHeight: (width, viewportRows) => this._graphBodyContentHeight(width, viewportRows),
 			beforeFrame: (scrollView, viewportRows, contentRows, width) =>
 				this._prepareGraphScroll(scrollView, viewportRows, contentRows, width),
 			requestRender: () => this.requestRender?.(),
@@ -77,6 +86,10 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const frameWidth = Math.max(40, width);
 		const run = this._getCurrentRun();
 		this.renderRun = run;
+		// One frame, one detail layout: the scroll clamp and the painted rows
+		// must come from the same line array, and a running node's timing must
+		// still advance between frames.
+		this.detailFrame = null;
 		try {
 			const frameHeight = this._overlayFrameHeight(run);
 			const layoutFrame = this.graphLayout.render(frameWidth, frameHeight);
@@ -91,9 +104,14 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			const bodyStart = layoutFrame.bodyBox?.rect.y ?? layoutFrame.topMarginRows + GRAPH_HEADER_ROWS;
 			const bodyRows = layoutFrame.bodyBox?.rect.height ?? this.graphLayout.viewportRows;
 			if (run) {
-				this._recordGraphNodeHitRects(bodyStart + this.lastGraphTopPad, this.lastGraphVisibleRows);
-				this._renderSwitcherOverlay(lines, run, frameWidth, bodyStart, bodyRows);
-				this._renderPromptOverlay(lines, frameWidth, bodyStart, bodyRows);
+				if (this.toolDetail !== null) {
+					this.graphNodeHitRects = [];
+					this.lastGraphViewport = null;
+				} else {
+					this._recordGraphNodeHitRects(bodyStart + this.lastGraphTopPad, this.lastGraphVisibleRows);
+					this._renderSwitcherOverlay(lines, run, frameWidth, bodyStart, bodyRows);
+					this._renderPromptOverlay(lines, frameWidth, bodyStart, bodyRows);
+				}
 			} else {
 				this.graphNodeHitRects = [];
 				this.lastGraphViewport = null;
@@ -127,8 +145,37 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		return this.renderRun !== undefined ? this.renderRun : this._getCurrentRun();
 	}
 
-	private _graphBodyContentHeight(viewportRows: number): number {
+	/**
+	 * Lay the detail card out once per frame width.
+	 *
+	 * The height callback and the body callback are invoked separately by the
+	 * layout, and the body may be handed a narrower width when the ScrollView
+	 * reserves its scrollbar column. Both go through here, so the rows the
+	 * scroll range is clamped to are the rows that were actually produced.
+	 */
+	private _toolDetailFrame(node: NonNullable<GraphViewRenderer["toolDetail"]>, width: number): ToolDetailFrame {
+		const safeWidth = Math.max(1, Math.floor(width));
+		const cached = this.detailFrame;
+		if (cached !== null && cached.width === safeWidth) return cached;
+		// Never wider than the cells the body was actually given: at a 40-column
+		// frame the reserved scrollbar column leaves 39, and a 40-wide card would
+		// lose its closing border to the row truncation.
+		const cardWidth = Math.min(96, Math.max(40, safeWidth - 6), safeWidth);
+		const frame: ToolDetailFrame = {
+			width: safeWidth,
+			cardWidth,
+			leftPad: Math.max(0, Math.floor((safeWidth - cardWidth) / 2)),
+			lines: renderToolDetailLines(node, { theme: this.graphTheme, width: cardWidth }),
+		};
+		this.detailFrame = frame;
+		return frame;
+	}
+
+	private _graphBodyContentHeight(width: number, viewportRows: number): number {
 		const rows = Math.max(0, Math.floor(viewportRows));
+		if (this.toolDetail !== null) {
+			return Math.max(rows, this._toolDetailFrame(this.toolDetail, width).lines.length);
+		}
 		if (!this._currentRenderRun() || this.cachedRenderGeometry.totalRows <= 0) return rows;
 		return Math.max(rows, this.cachedRenderGeometry.totalRows);
 	}
@@ -141,6 +188,11 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	): void {
 		const run = this._currentRenderRun();
 		if (viewportRows <= 0) return;
+		if (this.toolDetail !== null) {
+			if (this.pendingEnsureFocusedVisible) scrollView.scrollToStart();
+			this.pendingEnsureFocusedVisible = false;
+			return;
+		}
 		if (!run || this.cachedRenderGeometry.totalRows <= 0) {
 			scrollView.scrollToStart();
 			this.pendingEnsureFocusedVisible = false;
@@ -188,6 +240,12 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	}
 
 	private _renderBody(width: number, top: number, rows: number, _contentRows: number): string[] {
+		if (this.toolDetail !== null) {
+			const detail = this._toolDetailFrame(this.toolDetail, width);
+			return detail.lines
+				.slice(top, top + rows)
+				.map((line) => this._canvasRow(`${" ".repeat(detail.leftPad)}${line}`, width));
+		}
 		const run = this._currentRenderRun();
 		const raw = run ? this._renderGraph(width, top, rows, run) : this._renderEmptyBody(width, rows);
 		return raw.map((line) => this._canvasRow(line, width));

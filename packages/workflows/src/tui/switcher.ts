@@ -36,6 +36,9 @@ export function filterStages(stages: readonly StageSnapshot[], query: string): S
 
 const STAGE_HINT = "↑↓ select · ↵ open stage chat · esc close";
 const STAGE_COMPACT_HINT = "↵ stage chat · esc close";
+/** Selecting a tool row opens its read-only detail, so Enter is live there too. */
+const TOOL_HINT = "↑↓ select · ↵ open tool detail · esc close";
+const TOOL_COMPACT_HINT = "↵ tool detail · esc close";
 const NO_CHAT_HINT = "↑↓ select · esc close";
 const NO_CHAT_COMPACT_HINT = "esc close";
 
@@ -73,8 +76,8 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 	const filtered = filterStages(stages, state.query);
 	const innerWidth = Math.max(4, width - 2);
 	const selected = filtered[state.selectedIndex];
-	const canOpenStageChat =
-		selected !== undefined && (opts.canOpenStageChat?.(selected) ?? selected.nodeKind !== "tool");
+	const selectedIsTool = selected?.nodeKind === "tool";
+	const canOpenStageChat = selected !== undefined && !selectedIsTool && (opts.canOpenStageChat?.(selected) ?? true);
 
 	const border = hexToAnsi(theme.borderActive);
 	const panelBg = hexBg(theme.backgroundPanel);
@@ -95,10 +98,14 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 		innerWidth >= 44
 			? canOpenStageChat
 				? STAGE_HINT
-				: NO_CHAT_HINT
+				: selectedIsTool
+					? TOOL_HINT
+					: NO_CHAT_HINT
 			: canOpenStageChat
 				? STAGE_COMPACT_HINT
-				: NO_CHAT_COMPACT_HINT;
+				: selectedIsTool
+					? TOOL_COMPACT_HINT
+					: NO_CHAT_COMPACT_HINT;
 	const queryBudget = Math.max(0, innerWidth - visibleWidth(leftLabelText) - visibleWidth(hint) - 3);
 	const queryDisplay = state.query ? ` ${truncateToWidth(state.query, queryBudget, "…")}` : "";
 	const leftSegmentWidth = visibleWidth(`${leftLabelText}${queryDisplay}`);

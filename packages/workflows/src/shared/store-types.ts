@@ -3,7 +3,12 @@
  * cross-ref: spec §5.5
  */
 
-import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
+import type {
+	WorkflowExitStatus,
+	WorkflowInputValues,
+	WorkflowOutputValues,
+	WorkflowSerializableValue,
+} from "./types.js";
 
 export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "killed";
 export type StageStatus =
@@ -23,6 +28,8 @@ export interface ToolNodeSnapshot {
 	readonly kind: "tool";
 	readonly id: string;
 	readonly name: string;
+	/** Exact invocation arguments retained for read-only graph inspection. */
+	readonly args?: Readonly<Record<string, WorkflowSerializableValue>>;
 	readonly argsHash: string;
 	readonly ordinal: number;
 	readonly parentIds: readonly string[];
@@ -35,8 +42,18 @@ export interface ToolNodeSnapshot {
 	executionOrder?: number;
 	startedAt?: number;
 	endedAt?: number;
+	durationMs?: number;
+	/** Full serializable callback result, when one was retained. */
+	result?: WorkflowSerializableValue;
+	/**
+	 * Callback source captured from `fn.toString()` when the call was
+	 * registered. Inspection-only: capture never re-runs the callback, never
+	 * reads a file, and never reaches past the value already in hand.
+	 */
+	source?: string;
 	resultSummary?: string;
 	error?: string;
+	/** Tool nodes remain read-only graph inspection targets, never chat targets. */
 	readonly attachable: false;
 }
 

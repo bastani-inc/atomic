@@ -19,6 +19,7 @@ import { runCallback } from "@bastani/atomic";
 import { sleepOrAbort } from "../runs/shared/retry.js";
 import { flattenTruncatedString } from "../shared/flat-string.js";
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
+import { boundedToolPayloadRecord, boundedToolText } from "../shared/tool-payload-bounds.js";
 import type {
 	WorkflowSerializableValue,
 	WorkflowToolContext,
@@ -109,10 +110,39 @@ export interface CreateToolPrimitiveInput {
 	readonly onNodeRunning?: (nodeId: string, startedAt: number) => void;
 	readonly onNodeEnd?: (
 		nodeId: string,
-		update: Pick<ToolNodeSnapshot, "status"> & Partial<Pick<ToolNodeSnapshot, "endedAt" | "resultSummary" | "error">>,
+		update: Pick<ToolNodeSnapshot, "status"> &
+			Partial<Pick<ToolNodeSnapshot, "endedAt" | "durationMs" | "result" | "resultSummary" | "error">>,
 	) => void;
 	readonly onNodeSettle?: (nodeId: string) => void;
 	readonly runTopology?: DurableStageRunTopology;
+}
+
+function cloneToolArgs(
+	args: Readonly<Record<string, WorkflowSerializableValue>>,
+): Readonly<Record<string, WorkflowSerializableValue>> {
+	// Bounded, hostile-input safe, and always a plain object: author args may be
+	// cyclic, may throw on property access, may be arbitrarily large, and may
+	// carry a `toJSON` that would otherwise collapse the record to a scalar in a
+	// durable checkpoint. `argsHash` still hashes the raw args, so cache identity
+	// is unaffected by this inspection copy.
+	return boundedToolPayloadRecord(args);
+}
+
+/**
+ * Capture the callback's own source for read-only inspection.
+ *
+ * `Function.prototype.toString` reads text the runtime already holds: it never
+ * invokes the callback, never touches the filesystem, and never reaches any
+ * data beyond the function passed to this call. A host that refuses the read
+ * simply yields no source row.
+ */
+function captureCallbackSource(fn: unknown): string | undefined {
+	if (typeof fn !== "function") return undefined;
+	try {
+		return boundedToolText(Function.prototype.toString.call(fn));
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -155,7 +185,7 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
 			noteCancelled: () => admission?.noteCancelled?.(),
 			releaseAdmission: () => lease?.release(),
 		};
-		void executeToolInvocation(input, ordinals, name, args, fn, options, control)
+		void executeToolInvocation(input, ordinals, name, args, fn, options, control, captureCallbackSource(fn))
 			// Backstop for a throw before either explicit release point; the lease
 			// release itself is idempotent.
 			.finally(() => lease?.release())
@@ -172,6 +202,7 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 	fn: (toolCtx: WorkflowToolContext) => Promise<T>,
 	options: WorkflowToolOptions | undefined,
 	control: ToolInvocationAdmissionControl,
+	source: string | undefined,
 ): Promise<WorkflowToolInvocationResult<T>> {
 	input.throwIfCancelled();
 	if (
@@ -192,10 +223,13 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 	const argsHash = durableHash({ name, args, ordinal, ...identityMode });
 
 	const cached = input.backend.getToolCheckpoint(input.workflowId, argsHash);
+	const capturedSource = cached?.source ?? source;
 	const node: ToolNodeSnapshot = {
 		kind: "tool",
 		id: cached?.topology?.nodeId ?? `tool:${argsHash}`,
 		name,
+		args: cloneToolArgs(cached?.args ?? args),
+		...(capturedSource !== undefined ? { source: capturedSource } : {}),
 		argsHash,
 		ordinal: cached?.topology?.ordinal ?? ordinal,
 		parentIds: Object.freeze(cached?.topology?.parentIds ?? []),
@@ -226,6 +260,8 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 			input.onNodeEnd?.(node.id, {
 				status: failed ? "failed" : "cached",
 				endedAt,
+				...(node.startedAt !== undefined ? { durationMs: Math.max(0, endedAt - node.startedAt) } : {}),
+				result: output,
 				...(failed && returnedOutcome?.ok === false
 					? { error: returnedOutcome.error.message }
 					: { resultSummary: summarizeToolResult(output) }),
@@ -236,9 +272,11 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 			const cancelled = input.signal?.aborted === true;
 			if (cancelled) control.noteCancelled();
 			else input.onFailureObserved?.(error, node.id);
+			const endedAt = Date.now();
 			input.onNodeEnd?.(node.id, {
 				status: cancelled ? "cancelled" : "failed",
-				endedAt: Date.now(),
+				endedAt,
+				...(node.startedAt !== undefined ? { durationMs: Math.max(0, endedAt - node.startedAt) } : {}),
 				error: error instanceof Error ? error.message : String(error),
 			});
 			input.onNodeSettle?.(node.id);
@@ -249,6 +287,8 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		input,
 		node,
 		name,
+		args: node.args ?? args,
+		...(capturedSource !== undefined ? { source: capturedSource } : {}),
 		argsHash,
 		ordinal,
 		fn,
@@ -262,6 +302,8 @@ interface LiveToolInvocation<T extends WorkflowSerializableValue> {
 	readonly input: CreateToolPrimitiveInput;
 	readonly node: ToolNodeSnapshot;
 	readonly name: string;
+	readonly args: Readonly<Record<string, WorkflowSerializableValue>>;
+	readonly source?: string;
 	readonly argsHash: string;
 	readonly ordinal: number;
 	readonly fn: (toolCtx: WorkflowToolContext) => Promise<T>;
@@ -269,7 +311,6 @@ interface LiveToolInvocation<T extends WorkflowSerializableValue> {
 	readonly control: ToolInvocationAdmissionControl;
 	readonly returnFailure: boolean;
 }
-
 class WorkflowToolTimeoutError extends Error {
 	constructor(toolName: string, timeoutMs: number) {
 		super(`atomic-workflows: ctx.tool ${toolName} timed out after ${timeoutMs}ms`);
@@ -362,7 +403,7 @@ async function executeTimedToolAttempt<T extends WorkflowSerializableValue>(
 async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 	live: LiveToolInvocation<T>,
 ): Promise<WorkflowToolInvocationResult<T>> {
-	const { input, node, name, argsHash, ordinal, fn, options, control, returnFailure } = live;
+	const { input, node, name, args, source, argsHash, ordinal, fn, options, control, returnFailure } = live;
 	const nodeController = new AbortController();
 	const toolSignal =
 		input.signal === undefined ? nodeController.signal : AbortSignal.any([input.signal, nodeController.signal]);
@@ -416,6 +457,8 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 			workflowId: input.workflowId,
 			checkpointId: `tool:${argsHash}`,
 			name,
+			args: cloneToolArgs(args),
+			...(source !== undefined ? { source } : {}),
 			argsHash,
 			output,
 			...(returnFailure ? { outcomeKind: "return_success" as const } : {}),
@@ -435,6 +478,8 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 		input.onNodeEnd?.(node.id, {
 			status: "completed",
 			endedAt: completedAt,
+			durationMs: Math.max(0, completedAt - startedAt),
+			result: output,
 			resultSummary: summarizeToolResult(output),
 		});
 		input.onNodeSettle?.(node.id);
@@ -455,9 +500,11 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 			if (returnFailure) {
 				await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
 			}
+			const endedAt = Date.now();
 			input.onNodeEnd?.(node.id, {
 				status: "cancelled",
-				endedAt: Date.now(),
+				endedAt,
+				durationMs: Math.max(0, endedAt - startedAt),
 				error: cancellation.message,
 			});
 			input.onNodeSettle?.(node.id);
@@ -469,11 +516,16 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 			const failure = await recordThrowingToolFailure(
 				input,
 				node,
-				{ name, argsHash, ordinal, startedAt },
+				{ name, args, ...(source !== undefined ? { source } : {}), argsHash, ordinal, startedAt },
 				callbackFailure,
 				attempts,
 			);
-			input.onNodeEnd?.(node.id, { status: "failed", endedAt: failure.failedAt, error: failure.message });
+			input.onNodeEnd?.(node.id, {
+				status: "failed",
+				endedAt: failure.failedAt,
+				durationMs: Math.max(0, failure.failedAt - startedAt),
+				error: failure.message,
+			});
 			input.onNodeSettle?.(node.id);
 			throw callbackFailure;
 		}
@@ -485,6 +537,8 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 				workflowId: input.workflowId,
 				checkpointId: `tool:${argsHash}`,
 				name,
+				args: cloneToolArgs(args),
+				...(source !== undefined ? { source } : {}),
 				argsHash,
 				output: outcome,
 				outcomeKind: "return_failure",
@@ -504,15 +558,23 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 				await recordCheckpointDurably(input.backend, checkpoint);
 			} catch (persistenceError) {
 				input.onFailureObserved?.(persistenceError, node.id);
+				const endedAt = Date.now();
 				input.onNodeEnd?.(node.id, {
 					status: "failed",
-					endedAt: Date.now(),
+					endedAt,
+					durationMs: Math.max(0, endedAt - startedAt),
 					error: persistenceError instanceof Error ? persistenceError.message : String(persistenceError),
 				});
 				input.onNodeSettle?.(node.id);
 				throw persistenceError;
 			}
-			input.onNodeEnd?.(node.id, { status: "failed", endedAt: completedAt, error: outcome.error.message });
+			input.onNodeEnd?.(node.id, {
+				status: "failed",
+				endedAt: completedAt,
+				durationMs: Math.max(0, completedAt - startedAt),
+				result: outcome,
+				error: outcome.error.message,
+			});
 			input.onNodeSettle?.(node.id);
 			if (!timeoutFailure) throwIfInvocationCancelled(input, toolSignal);
 			return outcome;
@@ -522,11 +584,16 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 		const failure = await recordThrowingToolFailure(
 			input,
 			node,
-			{ name, argsHash, ordinal, startedAt },
+			{ name, args, ...(source !== undefined ? { source } : {}), argsHash, ordinal, startedAt },
 			reportedFailure,
 			attempts,
 		);
-		input.onNodeEnd?.(node.id, { status: "failed", endedAt: failure.failedAt, error: failure.message });
+		input.onNodeEnd?.(node.id, {
+			status: "failed",
+			endedAt: failure.failedAt,
+			durationMs: Math.max(0, failure.failedAt - startedAt),
+			error: failure.message,
+		});
 		input.onNodeSettle?.(node.id);
 		throw reportedFailure;
 	} finally {
@@ -554,7 +621,14 @@ async function recordCancelledToolInspection<T extends WorkflowSerializableValue
 		await recordThrowingToolFailure(
 			live.input,
 			live.node,
-			{ name: live.name, argsHash: live.argsHash, ordinal: live.ordinal, startedAt },
+			{
+				name: live.name,
+				args: live.args,
+				...(live.source !== undefined ? { source: live.source } : {}),
+				argsHash: live.argsHash,
+				ordinal: live.ordinal,
+				startedAt,
+			},
 			cancellation,
 			attempts,
 		);
@@ -696,6 +770,8 @@ async function recordReplayedToolTopology(
 		workflowId: input.workflowId,
 		checkpointId: `tool-replay-meta:${durableHash({ argsHash, topology })}`,
 		name: node.name,
+		...(cached.args !== undefined ? { args: cached.args } : {}),
+		...(cached.source !== undefined ? { source: cached.source } : {}),
 		argsHash,
 		output: cached.output,
 		...(cached.outcomeKind !== undefined ? { outcomeKind: cached.outcomeKind } : {}),

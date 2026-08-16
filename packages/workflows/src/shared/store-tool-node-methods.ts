@@ -1,6 +1,7 @@
 import { type StoreContext, TERMINAL_STATUSES } from "./store-internal.js";
 import type { Store } from "./store-public-types.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "./store-types.js";
+import { boundedToolPayload } from "./tool-payload-bounds.js";
 
 type ToolNodeStoreMethods = Pick<Store, "recordToolNodeStart" | "recordToolNodeRunning" | "recordToolNodeEnd">;
 
@@ -44,6 +45,12 @@ export function createToolNodeStoreMethods(context: StoreContext): ToolNodeStore
 				return false;
 			node.status = update.status;
 			if (update.endedAt !== undefined) node.endedAt = update.endedAt;
+			if (update.durationMs !== undefined) node.durationMs = update.durationMs;
+			// The live store is read raw by session/status surfaces that clone and
+			// re-serialize it, so the author's result is detached and bounded here
+			// rather than aliased. The durable checkpoint keeps the exact output,
+			// which is what a cached replay returns.
+			if (update.result !== undefined) node.result = boundedToolPayload(update.result);
 			if (update.resultSummary !== undefined) node.resultSummary = update.resultSummary;
 			if (update.error !== undefined) node.error = update.error;
 			context.bumpAndNotify();

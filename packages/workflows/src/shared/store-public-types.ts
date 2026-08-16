@@ -106,7 +106,8 @@ export interface Store {
 	recordToolNodeEnd(
 		runId: string,
 		nodeId: string,
-		update: Pick<ToolNodeSnapshot, "status"> & Partial<Pick<ToolNodeSnapshot, "endedAt" | "resultSummary" | "error">>,
+		update: Pick<ToolNodeSnapshot, "status"> &
+			Partial<Pick<ToolNodeSnapshot, "endedAt" | "durationMs" | "result" | "resultSummary" | "error">>,
 	): boolean;
 	/** Link a workflow boundary stage to its live child run before that child completes. */
 	recordStageWorkflowChildRun(runId: string, stageId: string, ref: WorkflowChildRunRef): boolean;

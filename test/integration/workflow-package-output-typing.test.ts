@@ -6,14 +6,29 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, test } from "vitest";
+import type { ToolNodeSnapshot as AuthoringToolNodeSnapshot } from "../../packages/workflows/src/shared/authoring-contract-ui.js";
+import type { ToolNodeSnapshot as StoreToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { moduleDir } from "../helpers/runtime.js";
+
+type ToolInspectionField = "args" | "durationMs" | "result" | "source" | "attachable";
+type SameType<Left, Right> = [Left] extends [Right] ? ([Right] extends [Left] ? true : false) : false;
+type ToolInspectionFieldsMatch = [
+	SameType<AuthoringToolNodeSnapshot["args"], StoreToolNodeSnapshot["args"]>,
+	SameType<AuthoringToolNodeSnapshot["durationMs"], StoreToolNodeSnapshot["durationMs"]>,
+	SameType<AuthoringToolNodeSnapshot["result"], StoreToolNodeSnapshot["result"]>,
+	SameType<AuthoringToolNodeSnapshot["source"], StoreToolNodeSnapshot["source"]>,
+	SameType<AuthoringToolNodeSnapshot["attachable"], StoreToolNodeSnapshot["attachable"]>,
+] extends [true, true, true, true, true]
+	? true
+	: false;
+const TOOL_INSPECTION_FIELDS_MATCH: ToolInspectionFieldsMatch = true;
 
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const workflowsPackage = join(repoRoot, "packages", "workflows");
 const typeboxPackage = join(repoRoot, "node_modules", "typebox");
 
 const workflowOutputFixture = `import { createStore, run, workflow } from "@bastani/workflows";
-import type { RunResult, ToolNodeSnapshot } from "@bastani/workflows";
+import type { RunResult, ToolNodeSnapshot, WorkflowSerializableValue } from "@bastani/workflows";
 import { Type } from "typebox";
 
 const child = workflow({
@@ -72,11 +87,14 @@ run(child, {}).then((runResult) => {
 const legacyResult: RunResult = { runId: "legacy", status: "completed", stages: [] };
 const failedResult: RunResult = { runId: "failed", status: "failed", stages: [], failedToolNodeId: "tool:failure" };
 const inspectedTool: ToolNodeSnapshot = {
-  kind: "tool", id: "tool:stable", name: "publish", argsHash: "args", ordinal: 2,
+  kind: "tool", id: "tool:stable", name: "publish",
+  args: { branch: "main", duplicate: ["same", "same"] }, argsHash: "args", ordinal: 2,
   parentIds: ["stage:parent"], status: "cached", executionOrder: 3,
-  startedAt: 10, endedAt: 20, replayed: true, resultSummary: "ok", attachable: false,
+  startedAt: 10, endedAt: 20, durationMs: 10, replayed: true,
+  result: { ok: true }, source: "async () => ({ ok: true })", resultSummary: "ok", attachable: false,
 };
 const storeTool = createStore().runs()[0]?.toolNodes?.[0];
+const runResultTool = legacyResult.toolNodes?.[0];
 const failedToolNodeId: string | undefined = createStore().runs()[0]?.failedToolNodeId;
 const stableId: string | undefined = storeTool?.id;
 const toolName: string | undefined = storeTool?.name;
@@ -89,6 +107,14 @@ const topologyState: "unavailable" | undefined = storeTool?.topologyState;
 const replayed: boolean | undefined = storeTool?.replayed;
 const startedAt: number | undefined = storeTool?.startedAt;
 const endedAt: number | undefined = storeTool?.endedAt;
+const args: Readonly<Record<string, WorkflowSerializableValue>> | undefined = storeTool?.args;
+const durationMs: number | undefined = storeTool?.durationMs;
+const result: WorkflowSerializableValue | undefined = storeTool?.result;
+const runResultArgs: Readonly<Record<string, WorkflowSerializableValue>> | undefined = runResultTool?.args;
+const runResultDurationMs: number | undefined = runResultTool?.durationMs;
+const runResultValue: WorkflowSerializableValue | undefined = runResultTool?.result;
+const toolSource: string | undefined = storeTool?.source;
+const runResultSource: string | undefined = runResultTool?.source;
 const resultSummary: string | undefined = storeTool?.resultSummary;
 const toolError: string | undefined = storeTool?.error;
 const attachable: false | undefined = storeTool?.attachable;
@@ -107,6 +133,14 @@ void topologyState;
 void replayed;
 void startedAt;
 void endedAt;
+void args;
+void durationMs;
+void result;
+void runResultArgs;
+void runResultDurationMs;
+void runResultValue;
+void toolSource;
+void runResultSource;
 void resultSummary;
 void toolError;
 void attachable;
@@ -198,6 +232,25 @@ function writeSourceFixture(fixtureRoot: string): void {
 }
 
 describe("workflow output typing", () => {
+	test("keeps authoring and store tool inspection fields aligned", () => {
+		const authoringFields: Pick<AuthoringToolNodeSnapshot, ToolInspectionField> = {
+			args: { branch: "main", duplicate: ["same", "same"] },
+			durationMs: 10,
+			result: { ok: true },
+			source: "async () => ({ ok: true })",
+			attachable: false,
+		};
+		const storeFields: Pick<StoreToolNodeSnapshot, ToolInspectionField> = authoringFields;
+		assert.equal(TOOL_INSPECTION_FIELDS_MATCH, true);
+		assert.deepEqual(storeFields, {
+			args: { branch: "main", duplicate: ["same", "same"] },
+			durationMs: 10,
+			result: { ok: true },
+			source: "async () => ({ ok: true })",
+			attachable: false,
+		});
+	});
+
 	test("closes package-authored output maps", () => {
 		const fixtureRoot = join(tmpdir(), `atomic-workflow-output-package-types-${randomUUID()}`);
 		try {

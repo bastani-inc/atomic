@@ -112,6 +112,10 @@ export interface DurableToolCheckpoint {
 	readonly checkpointId: string;
 	/** Tool name for display/debugging. */
 	readonly name: string;
+	/** Exact invocation arguments retained for read-only inspection. */
+	readonly args?: Readonly<Record<string, WorkflowSerializableValue>>;
+	/** Callback source captured at registration for read-only inspection. */
+	readonly source?: string;
 	/** Deterministic hash of the tool arguments for idempotency. */
 	readonly argsHash: string;
 	/** Cached tool output (JSON-serializable). */

@@ -17,6 +17,7 @@ const GRAPH_SCROLL_WHEEL_LINES = 4;
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
 	handleInput(data: string): boolean {
+		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
 		if (this._isReturnToMainChatInput(data)) {
 			this._returnToMainChat();
 			return true;
@@ -33,6 +34,73 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		// run-level text/editor prompts own input.
 		if (this.promptState) return this._handlePromptInput(data);
 		return this._handleGraphInput(data);
+	}
+
+	private _handleToolDetailInput(data: string): boolean {
+		if (this.graphLayout.handleScrollbarInput(data)) {
+			this.pendingEnsureFocusedVisible = false;
+			return true;
+		}
+		const wheelDelta = this._mouseWheelDelta(data);
+		if (wheelDelta) {
+			if (wheelDelta.rows !== 0) this._scrollGraphVertically(wheelDelta.rows);
+			return true;
+		}
+		if (this._isReturnToMainChatInput(data) || matchesKey(data, Key.escape)) {
+			this._closeToolDetail();
+			return true;
+		}
+		if (matchesKey(data, Key.ctrl("c"))) {
+			this.onClose?.();
+			return true;
+		}
+		if (matchesKey(data, "h") && this.onHide) {
+			this.onHide();
+			return true;
+		}
+		// A capped payload still renders far more rows than a terminal shows, so
+		// the detail must be readable without a mouse: these keys drive the same
+		// vertical scroll the wheel and scrollbar drive.
+		if (matchesKey(data, Key.down)) {
+			this._scrollGraphVertically(1);
+			return true;
+		}
+		if (matchesKey(data, Key.up)) {
+			this._scrollGraphVertically(-1);
+			return true;
+		}
+		if (matchesKey(data, Key.pageDown)) {
+			this._scrollGraphVertically(this._toolDetailPageRows());
+			return true;
+		}
+		if (matchesKey(data, Key.pageUp)) {
+			this._scrollGraphVertically(-this._toolDetailPageRows());
+			return true;
+		}
+		if (matchesKey(data, Key.home)) {
+			this.pendingEnsureFocusedVisible = false;
+			this.graphLayout.scrollView.scrollToStart();
+			return true;
+		}
+		if (matchesKey(data, Key.end)) {
+			this.pendingEnsureFocusedVisible = false;
+			this.graphLayout.scrollView.scrollToEnd();
+			return true;
+		}
+		if (
+			matchesKey(data, Key.enter) ||
+			matchesKey(data, Key.left) ||
+			matchesKey(data, Key.right) ||
+			matchesKey(data, "/") ||
+			parseTerminalMouseInput(data) !== null
+		)
+			return true;
+		return false;
+	}
+
+	/** One page is the visible body, less a row of overlap for continuity. */
+	private _toolDetailPageRows(): number {
+		return Math.max(1, this.graphLayout.viewportRows - 1);
 	}
 
 	private _promptKeybindings(): KeybindingsLike | undefined {
@@ -151,11 +219,13 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 				const idx = this.cachedLayout.findIndex((n) => n.stage.id === selected.id);
 				if (idx !== -1) {
 					this._setFocusedIndex(idx);
-					// Selecting from the `/` switcher should complete the same
-					// action as pressing Enter on a graph node: jump straight
-					// into that stage's chat when the attach shell is present.
+					// Selecting from the switcher opens tool detail or preserves the
+					// existing stage attach path; stages without an attach callback
+					// retain their historical no-op behavior.
 					this.switcherOpen = false;
-					if (this._attachFocusedStage()) return true;
+					if (this.cachedLayout[idx]?.stage.nodeKind === "tool") this._openFocusedToolDetail();
+					else this._attachFocusedStage();
+					return true;
 				}
 			}
 			this.switcherOpen = false;
@@ -241,6 +311,9 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	private _activateFocusedNode(): void {
+		// Tool nodes open a read-only snapshot detail; they never enter the
+		// stage-chat attach path even though they share the graph card shape.
+		if (this._openFocusedToolDetail()) return;
 		// Enter and direct node clicks attach the popup interior to the focused
 		// stage. The attach shell swaps in the stage-chat view without remounting
 		// the overlay; without a callback, fall back to the legacy expand/collapse
@@ -309,8 +382,13 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		if (direction === "right") return { cols: GRAPH_SCROLL_STEP_COLS, rows: 0 };
 		return null;
 	}
+
 	get _graphScrollbarGeometry() {
 		return this.graphLayout.scrollbarGeometry;
+	}
+
+	get _toolDetail(): typeof this.toolDetail {
+		return this.toolDetail;
 	}
 
 	// ---- test seams ----

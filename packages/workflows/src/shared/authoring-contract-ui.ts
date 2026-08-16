@@ -371,6 +371,8 @@ export interface ToolNodeSnapshot extends WorkflowSerializableObject {
 	/** Stable durable node identity. */
 	readonly id: string;
 	readonly name: string;
+	/** Exact invocation arguments retained for read-only graph inspection. */
+	readonly args?: Readonly<Record<string, WorkflowSerializableValue>>;
 	readonly argsHash: string;
 	readonly ordinal: number;
 	readonly parentIds: readonly string[];
@@ -380,6 +382,11 @@ export interface ToolNodeSnapshot extends WorkflowSerializableObject {
 	readonly executionOrder?: number;
 	readonly startedAt?: number;
 	readonly endedAt?: number;
+	readonly durationMs?: number;
+	/** Full serializable callback result, when one was retained. */
+	readonly result?: WorkflowSerializableValue;
+	/** Callback source captured from `fn.toString()` at registration. */
+	readonly source?: string;
 	readonly resultSummary?: string;
 	readonly error?: string;
 	readonly attachable: false;

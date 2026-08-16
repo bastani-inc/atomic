@@ -10,6 +10,17 @@ export const COMPACT_HINT_KEYS: Array<{ key: string; label: string }> = [
 	{ key: "↵", label: "stage chat" },
 ];
 
+/** Read-only `ctx.tool` detail: scrolling first, then the way back. */
+export const TOOL_DETAIL_HINT_KEYS: Array<{ key: string; label: string }> = [
+	{ key: "ctrl+x", label: "return to graph" },
+	{ key: "↑↓ pgup/pgdn", label: "scroll" },
+];
+
+export const COMPACT_TOOL_DETAIL_HINT_KEYS: Array<{ key: string; label: string }> = [
+	{ key: "ctrl+x", label: "graph" },
+	{ key: "↑↓", label: "scroll" },
+];
+
 /**
  * Bottom mode pill. The status bar mirrors the top header band: a
  * three-row chrome strip with an outlined pill flush-left and hints

@@ -1,6 +1,7 @@
 import { flattenTruncatedString } from "../shared/flat-string.js";
 import { isReopenableSessionTranscript } from "../shared/session-transcript.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
+import { boundedToolPayload, boundedToolPayloadRecord, boundedToolText } from "../shared/tool-payload-bounds.js";
 import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import {
@@ -266,6 +267,11 @@ function completedToolNodes(
 				kind: "tool" as const,
 				id: topology?.nodeId ?? checkpoint.checkpointId,
 				name: checkpoint.name,
+				// Restored nodes are recorded into the live store, which session and
+				// status surfaces clone and re-serialize, so these inspection copies
+				// are bounded. `checkpoint.output` itself stays exact for replay.
+				...(checkpoint.args !== undefined ? { args: boundedToolPayloadRecord(checkpoint.args) } : {}),
+				...(checkpoint.source !== undefined ? { source: boundedToolText(checkpoint.source) } : {}),
 				argsHash: checkpoint.argsHash,
 				ordinal: topology?.ordinal ?? index + 1,
 				parentIds: Object.freeze(
@@ -277,6 +283,10 @@ function completedToolNodes(
 				executionOrder: topology?.order ?? firstSequenceByHash.get(checkpoint.argsHash)!,
 				...(topology?.startedAt !== undefined ? { startedAt: topology.startedAt } : {}),
 				endedAt: topology?.endedAt ?? checkpoint.completedAt,
+				...(topology?.startedAt !== undefined
+					? { durationMs: Math.max(0, (topology?.endedAt ?? checkpoint.completedAt) - topology.startedAt) }
+					: {}),
+				...(checkpoint.throwingFailureError === undefined ? { result: boundedToolPayload(checkpoint.output) } : {}),
 				...(failed
 					? { error: failureError ?? "Invalid durable ctx.tool failure outcome" }
 					: { resultSummary: summarizeCompletedToolResult(checkpoint.output) }),

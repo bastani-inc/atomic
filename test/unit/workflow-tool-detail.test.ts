@@ -1,0 +1,1074 @@
+// @ts-nocheck -- focused GraphView tool-detail input/rendering coverage
+
+import assert from "node:assert/strict";
+import { describe, test } from "vitest";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { classifyCheckpointPayload, encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
+import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
+import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
+import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import {
+	boundedToolPayloadRecord,
+	TOOL_PAYLOAD_TRUNCATION_MARKER,
+	TOOL_PAYLOAD_VALUE_LIMIT,
+} from "../../packages/workflows/src/shared/tool-payload-bounds.js";
+import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
+import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
+import { renderSessionList } from "../../packages/workflows/src/tui/session-list.js";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
+import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
+import { ANSI_RE, defaultTheme, visibleText } from "./overlay-graph-helpers.js";
+
+const KEY_DOWN = "\x1b[B";
+const KEY_UP = "\x1b[A";
+const KEY_PAGE_DOWN = "\x1b[6~";
+const KEY_PAGE_UP = "\x1b[5~";
+const KEY_HOME = "\x1b[H";
+const KEY_END = "\x1b[F";
+
+/**
+ * Two snapshots of a five-million-element null array.
+ *
+ * The bounded walk is a few milliseconds; the unbounded one reviewers measured
+ * cost 1.1–3.5 seconds *per call* and was re-paid on every version bump. This
+ * budget leaves roughly two orders of magnitude of headroom for a loaded
+ * machine — vitest runs files in parallel — while still failing that shape.
+ */
+const LARGE_NULL_SNAPSHOT_BUDGET_MS = 400;
+
+/** Element kinds JSON emits as `null`, which the cap once charged nothing for. */
+const UNCHARGED_ELEMENT_SHAPES: ReadonlyArray<readonly [string, () => unknown[]]> = [
+	["null elements", () => new Array(5_000_000).fill(null)],
+	["undefined elements", () => new Array(2_000_000).fill(undefined)],
+	["function elements", () => new Array(2_000_000).fill(() => undefined)],
+	["symbol elements", () => new Array(2_000_000).fill(Symbol("tool"))],
+	["sparse holes", () => new Array(20_000_000)],
+];
+
+/** Strip both SGR and the layout's OSC-8 reset so row suffixes are comparable. */
+function stripFrameEscapes(row: string): string {
+	return row.replace(ANSI_RE, "").replace(/\x1b\]8;;\x07/g, "");
+}
+
+/** Read back the array a bounded tool result retained in the live store. */
+function retainedRows(store: ReturnType<typeof createStore>): unknown[] {
+	const node = store.runs()[0]?.toolNodes?.[0];
+	assert.ok(node, "the run must hold the recorded tool node");
+	const rows = (node.result as { rows?: unknown[] }).rows;
+	assert.ok(Array.isArray(rows), "the retained result must keep its array");
+	return rows;
+}
+
+/** Record one finished tool node into a live store the way the runtime does. */
+function storeWithToolResult(result: unknown, runId = RUN_ID): ReturnType<typeof createStore> {
+	const store = createStore();
+	store.recordRunStart({
+		id: runId,
+		name: "hostile run",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: Date.now(),
+	});
+	store.recordToolNodeStart(runId, {
+		kind: "tool",
+		id: "tool:hostile",
+		name: "hostile",
+		argsHash: "hostile-hash",
+		ordinal: 1,
+		parentIds: [],
+		status: "pending",
+		attachable: false,
+	});
+	store.recordToolNodeEnd(runId, "tool:hostile", {
+		status: "completed",
+		endedAt: Date.now(),
+		result: result as never,
+		resultSummary: "hostile",
+	});
+	return store;
+}
+
+const DETAIL_LABEL_WIDTH = 10;
+
+/** Rebuild one labeled detail field across the rows it wrapped onto. */
+function detailField(rendered: string, label: string): string {
+	const rows = rendered.split("\n").map((row) => row.replace(ANSI_RE, "").replace(/^│/, "").replace(/│$/, ""));
+	const start = rows.findIndex((row) => row.startsWith(label.padEnd(DETAIL_LABEL_WIDTH, " ")));
+	if (start < 0) return "";
+	const parts = [rows[start]!.slice(DETAIL_LABEL_WIDTH).trimEnd()];
+	for (let index = start + 1; index < rows.length; index++) {
+		const row = rows[index]!;
+		if (!row.startsWith(" ".repeat(DETAIL_LABEL_WIDTH))) break;
+		parts.push(row.slice(DETAIL_LABEL_WIDTH).trimEnd());
+	}
+	return parts.join("");
+}
+
+const RUN_ID = "tool-detail-run";
+
+function tool(overrides: Partial<ToolNodeSnapshot> = {}): ToolNodeSnapshot {
+	return {
+		kind: "tool",
+		id: "tool:inspect",
+		name: "inspect-api",
+		args: { branch: "feat/inspect", checks: ["lint", "test"] },
+		argsHash: "args-hash",
+		ordinal: 1,
+		parentIds: [],
+		status: "completed",
+		startedAt: 100,
+		endedAt: 175,
+		result: { ok: true, output: ["passed", "passed"] },
+		resultSummary: '{"ok":true}',
+		attachable: false,
+		...overrides,
+	};
+}
+
+function viewFor(node: ToolNodeSnapshot): GraphView {
+	const store = createStore();
+	store.recordRunStart({
+		id: RUN_ID,
+		name: "inspection run",
+		inputs: {},
+		status: "completed",
+		stages: [],
+		toolNodes: [node],
+		startedAt: 1,
+		endedAt: 200,
+	});
+	return new GraphView({
+		mode: "overlay",
+		runId: RUN_ID,
+		store,
+		graphTheme: defaultTheme,
+		piTui: { terminal: { rows: 32 } },
+		onStageAttach() {
+			throw new Error("tool detail must not attach a stage chat");
+		},
+	});
+}
+
+/** Same run shape as `viewFor`, with an explicit terminal height. */
+function viewForAtRows(node: ToolNodeSnapshot, rows: number): GraphView {
+	const store = createStore();
+	store.recordRunStart({
+		id: RUN_ID,
+		name: "inspection run",
+		inputs: {},
+		status: "completed",
+		stages: [],
+		toolNodes: [node],
+		startedAt: 1,
+		endedAt: 200,
+	});
+	return new GraphView({
+		mode: "overlay",
+		runId: RUN_ID,
+		store,
+		graphTheme: defaultTheme,
+		piTui: { terminal: { rows } },
+	});
+}
+
+/**
+ * Observe the width the layout actually hands the body, which is narrower than
+ * the frame whenever the scrollbar column is reserved.
+ */
+function withBodyWidthProbe(view: GraphView): {
+	bodyWidth: () => number | undefined;
+	renderAll: (width: number) => string[];
+} {
+	const target = view as unknown as {
+		_renderBody: (width: number, top: number, rows: number, contentRows: number) => string[];
+	};
+	const original = target._renderBody.bind(view);
+	const widths: number[] = [];
+	target._renderBody = (width, top, rows, contentRows) => {
+		widths.push(width);
+		return original(width, top, rows, contentRows);
+	};
+	return {
+		bodyWidth: () => widths.at(-1),
+		renderAll: (width) => original(width, 0, Number.MAX_SAFE_INTEGER, 0),
+	};
+}
+
+/** Scroll to the bottom using only keys, the way a mouseless terminal must. */
+function keyboardScrollToBottom(view: GraphView, width: number): string {
+	let previous = -1;
+	for (let step = 0; step < 200 && view._graphScrollOffset !== previous; step++) {
+		previous = view._graphScrollOffset;
+		view.handleInput(KEY_PAGE_DOWN);
+		view.render(width);
+	}
+	return visibleText(view.render(width));
+}
+
+function clickForSingleNode(stage: ToolNodeSnapshot, width = 120, rows = 32): string {
+	const projection = {
+		id: stage.id,
+		name: stage.name,
+		status: stage.status === "cached" ? "completed" : stage.status === "cancelled" ? "skipped" : stage.status,
+		parentIds: stage.parentIds,
+		nodeKind: "tool",
+		toolStatus: stage.status,
+		toolEvents: [],
+		attachable: false,
+		workflowGraphTarget: { runId: RUN_ID, stageId: stage.id, runName: "inspection run", depth: 0 },
+	};
+	const [node] = computeLayout([projection], { orientation: "vertical" });
+	const marginRows = 1;
+	const bodyRows = rows - marginRows * 2 - 6;
+	const totalGraphRows = node.y + NODE_H;
+	const topPad =
+		totalGraphRows <= bodyRows ? Math.min(3, Math.max(0, Math.floor((bodyRows - totalGraphRows) / 2))) : 0;
+	const graphInner = Math.max(1, width - 4);
+	const canvasWidth = node.x + NODE_W;
+	const leftMargin = Math.max(2, canvasWidth <= graphInner ? Math.floor((graphInner - canvasWidth) / 2) : 2);
+	const col = leftMargin + node.x + 2;
+	const row = marginRows + 3 + topPad + node.y + 2;
+	return `\x1b[<0;${col + 1};${row + 1}M`;
+}
+
+describe("tool graph inspection", () => {
+	test("Enter and direct selection open a read-only snapshot detail", () => {
+		const node = tool();
+		const enterView = viewFor(node);
+		enterView.render(120);
+		assert.equal(enterView.handleInput("\r"), true);
+		assert.ok(enterView._toolDetail);
+		const text = visibleText(enterView.render(120));
+		for (const expected of [
+			"inspect-api",
+			"STATUS    completed",
+			'ARGS      {"branch":"feat/inspect","checks":["lint","test"]}',
+			'RESULT    {"ok":true,"output":["passed","passed"]}',
+			"startedAt=100",
+			"endedAt=175",
+			"duration=75ms",
+		])
+			assert.ok(text.includes(expected), expected);
+		assert.doesNotMatch(text, /stage chat|attach|interrupt|resume|steer/i);
+		assert.equal(enterView.handleInput("\x1b"), true);
+		assert.equal(enterView._toolDetail, null);
+		enterView.dispose();
+
+		const clickView = viewFor(node);
+		clickView.render(120);
+		assert.equal(clickView.handleInput(clickForSingleNode(node)), true);
+		assert.ok(clickView._toolDetail);
+		clickView.dispose();
+	});
+
+	test("large and unusual values render with an explicit truncation marker", () => {
+		const huge = "x".repeat(20_000);
+		assert.doesNotThrow(() => {
+			const text = renderToolDetail(
+				tool({
+					args: { huge },
+					result: { huge },
+				}),
+				{ theme: defaultTheme, width: 80 },
+			);
+			assert.match(text, /… \[truncated\]/);
+		});
+		const errorText = renderToolDetail(tool({ status: "failed", result: undefined, error: "check failed" }), {
+			theme: defaultTheme,
+			width: 80,
+		}).replace(/\x1b\[[0-9;]*m/g, "");
+		assert.match(errorText, /ERROR\s+"check failed"/);
+	});
+
+	test("malformed snapshot display values never make the detail renderer throw", () => {
+		const cyclic: { self?: object } = {};
+		cyclic.self = cyclic;
+		const throwingCoercion = {
+			toJSON(): never {
+				throw new Error("toJSON failed");
+			},
+			toString(): never {
+				throw new Error("toString failed");
+			},
+		};
+
+		for (const [label, overrides, expected] of [
+			["cyclic", { args: cyclic as never }, "<cycle>"],
+			["BigInt", { result: 42n as never }, "42"],
+			["throwing coercion", { args: throwingCoercion as never }, "<unserializable>"],
+		] as const) {
+			let rendered = "";
+			assert.doesNotThrow(() => {
+				rendered = renderToolDetail(tool(overrides), { theme: defaultTheme, width: 80 });
+			}, label);
+			assert.ok(rendered.includes(expected), `${label}: ${expected}`);
+		}
+	});
+
+	test("durable tool execution carries exact args and result into snapshots", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: "durable-detail",
+			name: "detail",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		let started: ToolNodeSnapshot | undefined;
+		let ended: ToolNodeSnapshot | undefined;
+		const tool = createToolPrimitive({
+			workflowId: "durable-detail",
+			backend,
+			nextCheckpointId: () => "unused",
+			throwIfCancelled() {},
+			onNodeStart(node) {
+				started = node;
+			},
+			onNodeEnd(nodeId, update) {
+				ended = { ...(started as ToolNodeSnapshot), id: nodeId, ...update };
+			},
+		});
+		const args = { branch: "feat/inspect", duplicate: ["same", "same"] };
+		const result = { ok: true, value: ["first", "second"] };
+		assert.deepEqual(await tool("inspect", args, async () => result), result);
+		assert.deepEqual(started?.args, args);
+		assert.deepEqual(ended?.result, result);
+		const checkpoint = backend.listCheckpoints("durable-detail").find((entry) => entry.kind === "tool");
+		assert.deepEqual(checkpoint?.kind === "tool" ? checkpoint.args : undefined, args);
+		assert.deepEqual(checkpoint?.kind === "tool" ? checkpoint.output : undefined, result);
+	});
+
+	test("graph snapshots detach full tool payloads before freezing them", () => {
+		const args = { nested: { values: ["first", "second"] } };
+		const result = { nested: { ok: true } };
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "snapshot run",
+			inputs: {},
+			status: "completed",
+			stages: [],
+			toolNodes: [tool({ args, result })],
+			startedAt: 1,
+			endedAt: 2,
+		});
+		const snapshotNode = store.graphSnapshot().runs[0]?.toolNodes?.[0];
+		assert.deepEqual(snapshotNode?.args, args);
+		assert.deepEqual(snapshotNode?.result, result);
+		assert.notStrictEqual(snapshotNode?.args, args);
+		assert.notStrictEqual(snapshotNode?.result, result);
+		assert.notStrictEqual(snapshotNode?.args?.nested, args.nested);
+		assert.notStrictEqual(snapshotNode?.result?.nested, result.nested);
+		assert.equal(Object.isFrozen(args), false);
+		assert.equal(Object.isFrozen(result), false);
+	});
+
+	test("detail view keeps large payloads scrollable without activating graph controls", () => {
+		const huge = "x".repeat(20_000);
+		const view = viewFor(tool({ args: { huge } }));
+		view.render(120);
+		assert.equal(view.handleInput("\r"), true);
+		view.render(120);
+		assert.equal(view._graphScrollOffset, 0);
+		assert.equal(view.handleInput("\x1b[<65;1;1M"), true);
+		assert.ok(view._graphScrollOffset > 0);
+		assert.equal(view.handleInput("q"), false);
+		assert.ok(view._toolDetail);
+		view.dispose();
+	});
+
+	test("the real graph view survives hostile payloads through the store projection", () => {
+		const selfReferential: Record<string, unknown> = {};
+		selfReferential.self = selfReferential;
+		// Reviewer-reported shape: an own enumerable `toJSON` that throws, on a
+		// cyclic object. `structuredClone` rejects the function, and the old
+		// hand-rolled fallback then recursed on the cycle until the stack died.
+		const throwingToJson: Record<string, unknown> = {
+			toJSON(): never {
+				throw new Error("toJSON boom");
+			},
+		};
+		throwingToJson.self = throwingToJson;
+		const throwingGetter: Record<string, unknown> = {};
+		Object.defineProperty(throwingGetter, "boom", {
+			enumerable: true,
+			get() {
+				throw new Error("getter boom");
+			},
+		});
+
+		for (const [label, payload, expected] of [
+			["cyclic with throwing toJSON", { hostile: throwingToJson, loop: selfReferential }, "<unserializable>"],
+			["enumerable throwing getter", { hostile: throwingGetter }, "<unreadable>"],
+		] as const) {
+			let view!: GraphView;
+			assert.doesNotThrow(() => {
+				view = viewFor(tool({ args: payload as never, result: payload as never }));
+			}, `${label}: constructing the view must not throw`);
+			let text = "";
+			assert.doesNotThrow(() => {
+				view.render(120);
+				assert.equal(view.handleInput("\r"), true);
+				text = visibleText(view.render(120));
+			}, `${label}: opening the detail must not throw`);
+			assert.ok(view._toolDetail, label);
+			assert.ok(text.includes("inspect-api"), `${label}: renders the tool`);
+			assert.ok(text.includes(expected), `${label}: ${expected}`);
+			view.dispose();
+		}
+
+		const cycleView = viewFor(tool({ args: { loop: selfReferential } as never }));
+		cycleView.render(120);
+		cycleView.handleInput("\r");
+		assert.ok(visibleText(cycleView.render(120)).includes("<cycle>"));
+		cycleView.dispose();
+	});
+
+	test("the graph projection retains bounded tool payloads", () => {
+		const huge = "y".repeat(2_000_000);
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "bounded run",
+			inputs: {},
+			status: "completed",
+			stages: [],
+			toolNodes: [tool({ args: { huge }, result: { huge } })],
+			startedAt: 1,
+			endedAt: 2,
+		});
+
+		const node = store.graphSnapshot().runs[0]?.toolNodes?.[0];
+		assert.ok(node);
+		const retained = [node.args?.huge as string, (node.result as { huge: string }).huge];
+		for (const value of retained) {
+			assert.ok(
+				value.length <= TOOL_PAYLOAD_VALUE_LIMIT + TOOL_PAYLOAD_TRUNCATION_MARKER.length,
+				`retained ${value.length} characters`,
+			);
+			assert.ok(value.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
+			// Verbatim within the cap: nothing normalized, reordered, or dropped.
+			assert.equal(value.slice(0, 32), huge.slice(0, 32));
+		}
+	});
+
+	test("detail serialization is bounded by the display cap rather than the payload", () => {
+		const entries = 20_000;
+		let reads = 0;
+		const target: Record<string, string> = {};
+		for (let index = 0; index < entries; index++) target[`field${index}`] = "";
+		const probe = new Proxy(target, {
+			get(_target, key) {
+				if (typeof key === "string" && key.startsWith("field")) reads += 1;
+				return "v".repeat(64);
+			},
+		});
+
+		const rendered = renderToolDetail(tool({ args: probe as never }), { theme: defaultTheme, width: 96 });
+		assert.ok(reads > 0, "the serializer must read the payload it displays");
+		// One capped field cannot cost a whole payload walk: ~16 KiB of output at
+		// ~77 characters per entry settles near 200 reads, never 20,000.
+		assert.ok(reads < entries / 10, `observed ${reads} property reads`);
+		assert.ok(rendered.includes(TOOL_PAYLOAD_TRUNCATION_MARKER.slice(0, 3)));
+	});
+
+	test("timing stays inspectable at the narrowest supported detail width", () => {
+		const rendered = renderToolDetail(tool({ startedAt: 1786890801337, endedAt: 1786890801341 }), {
+			theme: defaultTheme,
+			width: 40,
+		});
+		const text = visibleText(rendered.split("\n"));
+		for (const expected of ["startedAt=1786890801337", "endedAt=1786890801341", "duration=4ms"]) {
+			assert.ok(text.includes(expected), `${expected} must survive at width 40`);
+		}
+	});
+
+	test("callback source is captured at registration, persisted, and rendered", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: "durable-source",
+			name: "source",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		let started: ToolNodeSnapshot | undefined;
+		let callbackRuns = 0;
+		const durableTool = createToolPrimitive({
+			workflowId: "durable-source",
+			backend,
+			nextCheckpointId: () => "unused",
+			throwIfCancelled() {},
+			onNodeStart(node) {
+				started = node;
+			},
+		});
+		await durableTool("inspect", {}, async () => {
+			callbackRuns += 1;
+			return { published: true };
+		});
+
+		assert.equal(callbackRuns, 1, "capturing source must not re-execute the callback");
+		assert.ok(started?.source?.includes("published: true"), started?.source);
+		const checkpoint = backend.listCheckpoints("durable-source").find((entry) => entry.kind === "tool");
+		assert.equal(checkpoint?.kind === "tool" ? checkpoint.source : undefined, started?.source);
+
+		const rendered = renderToolDetail(tool({ source: started?.source }), { theme: defaultTheme, width: 96 });
+		assert.ok(detailField(rendered, "SOURCE").includes("published: true"));
+
+		const oversized = `${"s".repeat(TOOL_PAYLOAD_VALUE_LIMIT + 1_000)}`;
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "source run",
+			inputs: {},
+			status: "completed",
+			stages: [],
+			toolNodes: [tool({ source: oversized })],
+			startedAt: 1,
+			endedAt: 2,
+		});
+		const retained = store.graphSnapshot().runs[0]?.toolNodes?.[0]?.source ?? "";
+		assert.equal(retained.length, TOOL_PAYLOAD_VALUE_LIMIT);
+		assert.ok(retained.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
+		assert.ok(
+			detailField(
+				renderToolDetail(tool({ source: oversized }), { theme: defaultTheme, width: 96 }),
+				"SOURCE",
+			).endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER),
+		);
+	});
+
+	test("tool cards render a constant body while status keeps the result summary", () => {
+		const nodes = [
+			tool({ id: "tool:done", name: "done", argsHash: "h1", status: "completed", resultSummary: '"published"' }),
+			tool({
+				id: "tool:failed",
+				name: "failed",
+				argsHash: "h2",
+				status: "failed",
+				result: undefined,
+				resultSummary: undefined,
+				error: "publish rejected",
+			}),
+			tool({ id: "tool:live", name: "live", argsHash: "h3", status: "running", endedAt: undefined }),
+		];
+		const run = {
+			id: RUN_ID,
+			name: "card run",
+			inputs: {},
+			status: "running" as const,
+			stages: [],
+			toolNodes: nodes,
+			startedAt: 1,
+		};
+		const graph = expandWorkflowGraph({ runs: [run], notices: [], version: 1 }, RUN_ID);
+
+		for (const node of nodes) {
+			const card = graph.renderStages.find((stage) => stage.toolStatus === node.status);
+			assert.ok(card !== undefined, node.status);
+			const rows = renderNodeCard(card, { theme: defaultTheme })
+				.map((row) =>
+					row
+						.replace(ANSI_RE, "")
+						.replace(/[│╭╮╰╯─]/g, "")
+						.trim(),
+				)
+				.filter((row) => row.length > 0);
+			assert.ok(rows.includes("durable tool"), `${node.status}: ${rows.join(" | ")}`);
+			assert.ok(!rows.some((row) => row.includes("publish rejected")), `${node.status}: no error preview`);
+			assert.ok(!rows.some((row) => row.includes("published")), `${node.status}: no result preview`);
+		}
+
+		const summarized = summarizeRunSnapshot(run, 300).tools.find((entry) => entry.name === "done");
+		assert.equal(summarized?.resultSummary, '"published"');
+	});
+
+	test("the session list survives every non-clonable tool result the store can hold", () => {
+		const withOwnFunction: Record<string, unknown> = { ok: true, retry: () => undefined };
+		const withProxy = new Proxy({ ok: true }, {});
+		const variants: Array<readonly [string, unknown]> = [
+			["baseline", undefined],
+			["plain", { ok: true }],
+			["own function property", withOwnFunction],
+			["promise", { pending: Promise.resolve("later") }],
+			["proxy", { proxied: withProxy }],
+			["symbol value", { marker: Symbol("tool") }],
+			["weakmap", { cache: new WeakMap() }],
+		];
+
+		for (const [label, result] of variants) {
+			const store = storeWithToolResult(result);
+			assert.doesNotThrow(() => {
+				renderSessionList(store.runs(), { theme: defaultTheme, includeAll: true });
+			}, `${label}: renderSessionList must not throw`);
+			assert.doesNotThrow(() => {
+				structuredClone(store.runs()[0]?.toolNodes?.[0]);
+			}, `${label}: the stored node must stay clonable`);
+		}
+	});
+
+	test("an inspection-only field never invalidates a durable checkpoint", async () => {
+		// Args whose `toJSON` runs are reachable end to end. A *throwing* `toJSON`
+		// getter is not: `durableHash` reads the raw args first and rejects the
+		// call before any inspection copy exists, which is pre-existing identity
+		// behavior this change must not alter. Its stored shape is covered by the
+		// envelope cases below, which is where the suppression risk lives.
+		const hostileArgs: Array<readonly [string, Record<string, unknown>]> = [
+			[
+				"throwing toJSON",
+				{
+					branch: "feat/x",
+					toJSON(): never {
+						throw new Error("args toJSON boom");
+					},
+				},
+			],
+			["array toJSON", { branch: "feat/x", toJSON: () => ["a", "b"] }],
+			["string toJSON", { branch: "feat/x", toJSON: () => "flat" }],
+		];
+
+		for (const [label, args] of hostileArgs) {
+			const backend = new InMemoryDurableBackend();
+			const workflowId = `durable-args-${label.replace(/\s+/g, "-")}`;
+			backend.registerWorkflow({ workflowId, name: label, inputs: {}, createdAt: 1, status: "running" });
+			const durableTool = createToolPrimitive({
+				workflowId,
+				backend,
+				nextCheckpointId: () => "unused",
+				throwIfCancelled() {},
+			});
+			await durableTool("inspect", args as never, async () => ({ ok: true }));
+			const checkpoint = backend.listCheckpoints(workflowId).find((entry) => entry.kind === "tool");
+			assert.ok(checkpoint, label);
+			const envelope = encodeCheckpoint(checkpoint);
+			const classified = classifyCheckpointPayload(workflowId, checkpoint.checkpointId, envelope);
+			assert.equal(classified.kind, "current", `${label}: a tool checkpoint must never classify as unknown`);
+		}
+
+		// A decoder must also tolerate a stored field it did not expect rather
+		// than discarding the workflow that owns it.
+		const base = {
+			kind: "tool" as const,
+			workflowId: "legacy",
+			checkpointId: "tool:legacy",
+			name: "legacy",
+			argsHash: "legacy-hash",
+			output: { ok: true },
+			completedAt: 5,
+		};
+		const legacyEnvelope = encodeCheckpoint(base);
+		assert.equal(classifyCheckpointPayload("legacy", "tool:legacy", legacyEnvelope).kind, "current");
+		assert.equal(legacyEnvelope.args, undefined, "a legacy envelope carries no args");
+
+		for (const [label, override] of [
+			["string args", { args: "flat" }],
+			["array args", { args: ["a", "b"] }],
+			["null args", { args: null }],
+			["unserializable placeholder args", { args: "<unserializable>" }],
+			["unreadable placeholder args", { args: "<unreadable>" }],
+			["numeric source", { source: 42 }],
+		] as const) {
+			const classified = classifyCheckpointPayload("legacy", "tool:legacy", {
+				...legacyEnvelope,
+				...override,
+			} as never);
+			assert.equal(classified.kind, "current", `${label}: must decode, not suppress the workflow`);
+			if (classified.kind === "current" && classified.checkpoint.kind === "tool") {
+				assert.equal(classified.checkpoint.output !== undefined, true, `${label}: replayable output survives`);
+			}
+		}
+	});
+
+	test("bounding the live store never bounds the replayed durable output", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: "durable-replay",
+			name: "replay",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		const oversized = "z".repeat(TOOL_PAYLOAD_VALUE_LIMIT * 2);
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "replay run",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: Date.now(),
+		});
+		const primitiveFor = (onNodeStart?: (node: ToolNodeSnapshot) => void) =>
+			createToolPrimitive({
+				workflowId: "durable-replay",
+				backend,
+				nextCheckpointId: () => "unused",
+				throwIfCancelled() {},
+				onNodeStart(node) {
+					onNodeStart?.(node);
+					store.recordToolNodeStart(RUN_ID, { ...node, status: "pending" });
+				},
+				onNodeEnd(nodeId, update) {
+					store.recordToolNodeEnd(RUN_ID, nodeId, update);
+				},
+			});
+
+		const first = await primitiveFor()("big", {}, async () => ({ big: oversized }));
+		assert.equal((first as { big: string }).big.length, oversized.length);
+
+		let replayExecutions = 0;
+		const replayed = await primitiveFor()("big", {}, async () => {
+			replayExecutions += 1;
+			return { big: "re-executed" };
+		});
+		assert.equal(replayExecutions, 0, "a cached call must not re-execute");
+		assert.deepEqual(replayed, first, "the replayed value must be the exact original output");
+		assert.equal((replayed as { big: string }).big.length, oversized.length);
+
+		const retained = store.runs()[0]?.toolNodes?.[0]?.result as { big: string };
+		assert.ok(
+			retained.big.length <= TOOL_PAYLOAD_VALUE_LIMIT + TOOL_PAYLOAD_TRUNCATION_MARKER.length,
+			`live store retained ${retained.big.length} characters`,
+		);
+		assert.ok(retained.big.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
+	});
+
+	test("the live store keeps a multi-megabyte tool result bounded", () => {
+		const store = storeWithToolResult({ payload: "m".repeat(5_000_000) });
+		const serialized = JSON.stringify(store.snapshot());
+		assert.ok(serialized.length < 100_000, `store.snapshot() serialized to ${serialized.length} bytes`);
+		assert.ok(serialized.includes(TOOL_PAYLOAD_TRUNCATION_MARKER));
+	});
+
+	test("the detail view scrolls from the keyboard alone", () => {
+		const view = viewFor(tool({ args: { huge: "x".repeat(60_000) } }));
+		view.render(120);
+		assert.equal(view.handleInput("\r"), true);
+		view.render(120);
+		assert.equal(view._graphScrollOffset, 0);
+
+		assert.equal(view.handleInput(KEY_DOWN), true);
+		view.render(120);
+		const afterDown = view._graphScrollOffset;
+		assert.equal(afterDown, 1, "Down scrolls one row");
+
+		assert.equal(view.handleInput(KEY_PAGE_DOWN), true);
+		view.render(120);
+		const afterPage = view._graphScrollOffset;
+		assert.ok(afterPage > afterDown + 1, `PageDown advanced to ${afterPage}`);
+
+		assert.equal(view.handleInput(KEY_PAGE_UP), true);
+		view.render(120);
+		assert.ok(view._graphScrollOffset < afterPage, "PageUp scrolls back");
+
+		assert.equal(view.handleInput(KEY_END), true);
+		const atEnd = visibleText(view.render(120));
+		assert.ok(view._graphScrollOffset > afterPage, "End reaches the bottom");
+		assert.ok(atEnd.includes("TIMING"), "the last field is reachable without a mouse event");
+		assert.ok(atEnd.includes("MARKERS"));
+
+		assert.equal(view.handleInput(KEY_HOME), true);
+		view.render(120);
+		assert.equal(view._graphScrollOffset, 0, "Home returns to the first row");
+
+		assert.equal(view.handleInput(KEY_UP), true);
+		view.render(120);
+		assert.equal(view._graphScrollOffset, 0, "Up at the top stays clamped");
+		assert.ok(view._toolDetail, "scrolling never closes the detail");
+		view.dispose();
+	});
+
+	test("source text cannot desynchronize the box or emit escape sequences", () => {
+		const width = 60;
+		for (const [label, source] of [
+			["tab indented", "async () => {\n\treturn {\n\t\tok: true,\n\t};\n}"],
+			["embedded escape", "async () => {\n\tconsole.log('\x1b[31mred\x1b[0m');\n\treturn null;\n}"],
+			["carriage return and bell", "async () => {\r\n\treturn '\x07';\r\n}"],
+		] as const) {
+			const lines = renderToolDetail(tool({ source, name: `tool\x1b[31m-${label}` }), { width }).split("\n");
+			for (const [index, line] of lines.entries()) {
+				assert.equal(visibleWidth(line), width, `${label}: row ${index} width`);
+			}
+			const rendered = lines.join("\n");
+			assert.ok(!rendered.includes("\x1b"), `${label}: no raw escape byte reaches the frame`);
+			assert.ok(!rendered.includes("\x07"), `${label}: no raw bell reaches the frame`);
+			assert.ok(!rendered.includes("\t"), `${label}: tabs are expanded`);
+		}
+	});
+
+	test("the scroll range always equals the rows the body really rendered", () => {
+		// One width passed and it stayed broken at every other width: the height
+		// callback and the body callback are handed different widths whenever the
+		// scrollbar column is reserved, so this sweeps the widths around the
+		// `min(96, …)` ceiling where the two used to diverge.
+		for (const width of [40, 60, 72, 79, 80, 81, 100, 101, 102, 110, 120]) {
+			const view = viewForAtRows(tool({ args: { huge: "x".repeat(TOOL_PAYLOAD_VALUE_LIMIT) } }), 40);
+			const probe = withBodyWidthProbe(view);
+			view.render(width);
+			assert.equal(view.handleInput("\r"), true);
+			view.render(width);
+
+			const bodyWidth = probe.bodyWidth();
+			assert.ok(bodyWidth !== undefined, `width ${width}: the body must render`);
+			const layout = (view as unknown as { graphLayout: { contentRows: number } }).graphLayout;
+			assert.equal(
+				layout.contentRows,
+				probe.renderAll(bodyWidth).length,
+				`width ${width}: scroll range must equal the rows produced at body width ${bodyWidth}`,
+			);
+			view.dispose();
+		}
+	});
+
+	test("the tail of a capped payload is reachable on ordinary terminals", () => {
+		for (const [width, rows] of [
+			[80, 40],
+			[100, 24],
+		] as const) {
+			const view = viewForAtRows(
+				tool({
+					args: { huge: "x".repeat(TOOL_PAYLOAD_VALUE_LIMIT) },
+					source: "async () => {\n  return { ok: true };\n}",
+				}),
+				rows,
+			);
+			view.render(width);
+			assert.equal(view.handleInput("\r"), true);
+			view.render(width);
+
+			assert.equal(view.handleInput(KEY_END), true);
+			const atEnd = visibleText(view.render(width));
+			for (const field of ["SOURCE", "TIMING", "MARKERS"]) {
+				assert.ok(atEnd.includes(field), `${width}x${rows}: End must reveal ${field}`);
+			}
+			assert.match(atEnd, /╰─{30,}╯/, `${width}x${rows}: the closing detail border must be reachable`);
+
+			// A terminal without mouse reporting has no other way down.
+			assert.equal(view.handleInput(KEY_HOME), true);
+			view.render(width);
+			assert.equal(view._graphScrollOffset, 0);
+			const keyboardOnly = keyboardScrollToBottom(view, width);
+			for (const field of ["SOURCE", "TIMING", "MARKERS"]) {
+				assert.ok(keyboardOnly.includes(field), `${width}x${rows}: PageDown alone must reveal ${field}`);
+			}
+			view.dispose();
+		}
+	});
+
+	test("an ordinary result reaches its last field at 80x40", () => {
+		const view = viewForAtRows(tool({ result: { payload: "r".repeat(5_000) } }), 40);
+		view.render(80);
+		assert.equal(view.handleInput("\r"), true);
+		view.render(80);
+		assert.equal(view.handleInput(KEY_END), true);
+		const atEnd = visibleText(view.render(80));
+		assert.ok(atEnd.includes("MARKERS"), "a 5,000-character result must still reach MARKERS");
+		assert.ok(atEnd.includes("TIMING"));
+		view.dispose();
+	});
+
+	test("a focused tool node advertises its activation key", () => {
+		const view = viewFor(tool());
+		const graphFooter = visibleText(view.render(120));
+		assert.ok(graphFooter.includes("↵"), "a focused tool node must offer an Enter affordance");
+		assert.match(graphFooter, /↵ open tool detail/);
+		assert.ok(graphFooter.includes("ctrl+x"), "the hierarchy chord stays first");
+
+		// The compact fallback is width-driven and, at the budgets that select it,
+		// only its leading hierarchy chord fits — for a tool node exactly as for a
+		// stage node. Assert that shape is untouched rather than inventing a width
+		// where the second segment would render.
+		const compactFooter = visibleText(
+			(view as unknown as { _renderStatusline: (width: number) => string[] })._renderStatusline(30),
+		);
+		assert.match(compactFooter, /ctrl\+x/);
+		assert.ok(!compactFooter.includes("open tool detail"), "the compact budget drops the trailing segment");
+
+		assert.equal(view.handleInput("\r"), true);
+		const detailFooter = visibleText(view.render(120));
+		assert.ok(detailFooter.includes("scroll"), "the open detail advertises scrolling instead");
+		assert.ok(!detailFooter.includes("↵"), "the open detail has nothing left for Enter to activate");
+		view.dispose();
+	});
+
+	test("stage-node statusline hints are unchanged", () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "stage run",
+			inputs: {},
+			status: "completed",
+			stages: [
+				{
+					id: "retained",
+					name: "retained",
+					status: "completed",
+					parentIds: [],
+					toolEvents: [],
+					attachable: false,
+					sessionFile: "/tmp/retained.jsonl",
+				},
+			],
+			startedAt: 1,
+			endedAt: 2,
+		});
+		const attachable = new GraphView({
+			mode: "overlay",
+			runId: RUN_ID,
+			store,
+			graphTheme: defaultTheme,
+			piTui: { terminal: { rows: 32 } },
+			onStageAttach() {},
+		});
+		assert.match(visibleText(attachable.render(120)), /↵ open stage chat/);
+		attachable.dispose();
+
+		const plainStore = createStore();
+		plainStore.recordRunStart({
+			id: RUN_ID,
+			name: "stage run",
+			inputs: {},
+			status: "running",
+			stages: [{ id: "pending", name: "pending", status: "pending", parentIds: [], toolEvents: [] }],
+			startedAt: 1,
+		});
+		const plain = new GraphView({
+			mode: "overlay",
+			runId: RUN_ID,
+			store: plainStore,
+			graphTheme: defaultTheme,
+			piTui: { terminal: { rows: 32 } },
+		});
+		// A stage node keeps the stage-chat wording it always had, whether or not
+		// a retained session exists; only tool nodes changed.
+		assert.match(visibleText(plain.render(120)), /↵ open stage chat/);
+		plain.dispose();
+
+		const emptyStore = createStore();
+		const empty = new GraphView({
+			mode: "overlay",
+			runId: null,
+			store: emptyStore,
+			graphTheme: defaultTheme,
+			piTui: { terminal: { rows: 32 } },
+		});
+		assert.ok(!visibleText(empty.render(120)).includes("↵"), "with no focused node the ↵ hint stays filtered out");
+		empty.dispose();
+	});
+
+	test("every element kind advances the retention cap", () => {
+		// JSON emits `null` for holes, `undefined`, functions, and symbols. A
+		// walker that returns those without charging never reaches the cap, so a
+		// multi-million-element array of them was retained whole.
+		for (const [label, build] of UNCHARGED_ELEMENT_SHAPES) {
+			const store = storeWithToolResult({ rows: build() });
+			const rows = retainedRows(store);
+			assert.ok(Array.isArray(rows), `${label}: rows must survive as an array`);
+			assert.ok(
+				rows.length <= TOOL_PAYLOAD_VALUE_LIMIT / 4,
+				`${label}: retained ${rows.length} elements against a ${TOOL_PAYLOAD_VALUE_LIMIT} cap`,
+			);
+			assert.ok(
+				rows.length >= TOOL_PAYLOAD_VALUE_LIMIT / 16,
+				`${label}: retained only ${rows.length} elements — the cap must bound, not erase`,
+			);
+			assert.equal(rows.at(-1), TOOL_PAYLOAD_TRUNCATION_MARKER, `${label}: truncation stays marked`);
+		}
+	});
+
+	test("a sparse array is bounded rather than densified", () => {
+		const store = storeWithToolResult({ rows: new Array(20_000_000) });
+		const rows = retainedRows(store);
+		assert.ok(rows.length <= TOOL_PAYLOAD_VALUE_LIMIT / 4, `retained ${rows.length} of 20,000,000 holes`);
+		assert.equal(rows.at(-1), TOOL_PAYLOAD_TRUNCATION_MARKER);
+	});
+
+	test("durable args stay bounded for uncharged element kinds", () => {
+		const record = boundedToolPayloadRecord({ rows: new Array(3_000_000).fill(null) } as never);
+		const rows = (record as { rows: unknown[] }).rows;
+		assert.ok(Array.isArray(rows));
+		assert.ok(rows.length <= TOOL_PAYLOAD_VALUE_LIMIT / 4, `durable args retained ${rows.length} elements`);
+
+		const encoded = encodeCheckpoint({
+			kind: "tool",
+			workflowId: "durable-null-args",
+			checkpointId: "tool:null-args",
+			name: "null-args",
+			args: record,
+			argsHash: "null-args-hash",
+			output: { ok: true },
+			completedAt: 1,
+		});
+		const bytes = JSON.stringify(encoded).length;
+		assert.ok(bytes < 100_000, `the durable checkpoint payload grew to ${bytes} bytes`);
+	});
+
+	test("repeated graph snapshots re-walk only a bounded payload", () => {
+		const store = storeWithToolResult({ rows: new Array(5_000_000).fill(null) });
+		for (const pass of ["first", "after a version bump"]) {
+			if (pass !== "first") {
+				// The projection memoizes per version, so bump it: the reviewers'
+				// measurement re-paid the full walk on every unrelated store write.
+				store.recordRunStart({
+					id: "second-run",
+					name: "second",
+					inputs: {},
+					status: "running",
+					stages: [],
+					startedAt: Date.now(),
+				});
+			}
+			const started = performance.now();
+			const snapshot = store.graphSnapshot();
+			const elapsed = performance.now() - started;
+
+			// Deterministic: what each pass copies is what the cap allows. The
+			// wall-clock ceiling below is the secondary signal — the unbounded
+			// walk measured 2798 ms and 2838 ms per pass under Bun — because a
+			// timing assertion alone is runner- and load-dependent.
+			const projectedNode = snapshot.runs[0]?.toolNodes?.[0];
+			assert.ok(projectedNode, `${pass}: the projection keeps the tool node`);
+			const projected = (projectedNode.result as { rows?: unknown[] }).rows;
+			assert.ok(Array.isArray(projected), `${pass}: the projection keeps the array`);
+			assert.ok(
+				projected.length <= TOOL_PAYLOAD_VALUE_LIMIT / 4,
+				`${pass}: the projection copied ${projected.length} elements`,
+			);
+			assert.ok(
+				elapsed < LARGE_NULL_SNAPSHOT_BUDGET_MS,
+				`${pass} graphSnapshot took ${elapsed.toFixed(1)} ms against a ${LARGE_NULL_SNAPSHOT_BUDGET_MS} ms budget`,
+			);
+		}
+	});
+
+	test("the detail panel closes at the narrowest frame the overlay allows", () => {
+		const view = viewForAtRows(tool({ args: { payload: "x".repeat(2_000) } }), 24);
+		view.render(40);
+		assert.equal(view.handleInput("\r"), true);
+		view.render(40);
+		assert.equal(view.handleInput(KEY_END), true);
+		const frame = view.render(40).map(stripFrameEscapes);
+
+		// The detail card starts at column 0 of the body; the ORCHESTRATOR and
+		// GRAPH pills are indented, so this selects the panel and not its chrome.
+		const cardRows = frame.filter((row) => /^[╭│╰]/.test(row));
+		assert.ok(cardRows.length > 3, `expected detail rows, saw ${cardRows.length}`);
+		const widths = new Set(cardRows.map((row) => visibleWidth(row.trimEnd())));
+		assert.equal(widths.size, 1, `detail rows must share one width, saw ${[...widths].join(", ")}`);
+		for (const row of cardRows) {
+			assert.match(row.trimEnd(), /[│╮╯]$/, `detail row lost its right border: ${JSON.stringify(row.trimEnd())}`);
+		}
+		const closing = cardRows.filter((row) => /^╰─+╯$/.test(row.trimEnd()));
+		assert.equal(closing.length, 1, "the detail panel must close with exactly one ╰─…╯ border");
+		view.dispose();
+	});
+
+	test("tool snapshots remain non-attachable", () => {
+		assert.equal(tool().attachable, false);
+	});
+});

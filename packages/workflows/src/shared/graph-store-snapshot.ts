@@ -10,6 +10,7 @@ import type {
 	WorkflowChildReplaySnapshot,
 	WorkflowNotice,
 } from "./store-types.js";
+import { boundedToolPayload, boundedToolPayloadRecord, boundedToolText } from "./tool-payload-bounds.js";
 import type { WorkflowOutputValues, WorkflowSerializableValue } from "./types.js";
 
 export const COMPACT_RESULT_FIELD_LIMIT = 1024;
@@ -115,7 +116,9 @@ function compactStage(stage: StageSnapshot): StageSnapshot {
 		attemptedModels: _attemptedModels,
 		modelAttempts: _modelAttempts,
 		// Agent-stage results can be unbounded and graph cards do not render
-		// them. Durable tool cards use ToolNodeSnapshot.resultSummary instead.
+		// them. Tool cards render a constant body, so `resultSummary` is kept
+		// for status surfaces while the bounded full payload below backs the
+		// read-only detail view.
 		result: _result,
 		...metadata
 	} = stage;
@@ -133,7 +136,16 @@ function compactStage(stage: StageSnapshot): StageSnapshot {
 }
 
 function compactToolNode(node: ToolNodeSnapshot): ToolNodeSnapshot {
-	return { ...node, parentIds: [...node.parentIds] };
+	return {
+		...node,
+		parentIds: [...node.parentIds],
+		// Author payloads may be cyclic, may throw on property access, and may be
+		// arbitrarily large. `boundedToolPayload` contains all three so building a
+		// snapshot cannot throw and one version cannot retain a whole payload.
+		...(node.args !== undefined ? { args: boundedToolPayloadRecord(node.args) } : {}),
+		...(node.result !== undefined ? { result: boundedToolPayload(node.result) } : {}),
+		...(node.source !== undefined ? { source: boundedToolText(node.source) } : {}),
+	};
 }
 
 function compactRun(run: RunSnapshot): RunSnapshot {

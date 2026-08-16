@@ -8,9 +8,13 @@ import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
 const STAGE_FOOTER = "ctrl+x return to main chat  ·  ↵ open stage chat  ·  ↑↓←→ navigate  ·  / stages";
-const TOOL_FOOTER = "ctrl+x return to main chat  ·  ↑↓←→ navigate  ·  / stages";
+/** A focused tool node activates its read-only detail with the same key. */
+const TOOL_FOOTER = "ctrl+x return to main chat  ·  ↵ open tool detail  ·  ↑↓←→ navigate  ·  / stages";
+/** Nothing focused can be activated: the `↵` segment drops out entirely. */
+const NO_ACTIVATION_FOOTER = "ctrl+x return to main chat  ·  ↑↓←→ navigate  ·  / stages";
 const STAGE_SWITCHER = "↑↓ select · ↵ open stage chat · esc close";
-const TOOL_SWITCHER = "↑↓ select · esc close";
+/** Enter opens the read-only detail from the switcher exactly as it does in the graph. */
+const TOOL_SWITCHER = "↑↓ select · ↵ open tool detail · esc close";
 
 function stage(id: string, parentIds: readonly string[] = [], overrides: Partial<StageSnapshot> = {}): StageSnapshot {
 	return {
@@ -67,7 +71,7 @@ describe("tool graph chat hints", () => {
 
 		stageView.expandedGraph.targets.clear();
 		const missingTargetText = visibleText(stageView.render(120));
-		assert.ok(missingTargetText.includes(TOOL_FOOTER));
+		assert.ok(missingTargetText.includes(NO_ACTIVATION_FOOTER));
 		assert.doesNotMatch(missingTargetText, /↵ (?:open )?stage chat/);
 
 		const toolView = viewFor([], [tool()]);
@@ -112,7 +116,7 @@ describe("tool graph chat hints", () => {
 		assert.ok(wideTool.includes(TOOL_SWITCHER));
 		assert.doesNotMatch(wideTool, /↵ open stage chat/);
 		const compactTool = visibleText(view.render(40));
-		assert.match(compactTool, /esc close/);
+		assert.match(compactTool, /↵ tool detail · esc close/);
 		assert.doesNotMatch(compactTool, /↵ stage chat/);
 
 		view.handleInput("\x1b[B");

@@ -47,6 +47,8 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
 	readonly kind: DurableCheckpointKind;
 	readonly checkpointId: string;
 	readonly name?: string;
+	readonly args?: WorkflowSerializableValue;
+	readonly source?: string;
 	readonly argsHash?: string;
 	readonly promptKind?: UiPromptKind;
 	readonly outcomeKind?: "return_success" | "return_failure";
@@ -99,6 +101,8 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
 		return {
 			...base,
 			name: t.name,
+			...(t.args !== undefined ? { args: t.args } : {}),
+			...(t.source !== undefined ? { source: t.source } : {}),
 			argsHash: t.argsHash,
 			...(t.outcomeKind !== undefined ? { outcomeKind: t.outcomeKind } : {}),
 			...(t.throwingFailureError !== undefined ? { throwingFailureError: t.throwingFailureError } : {}),
@@ -218,6 +222,10 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 		return undefined;
 	const common = { workflowId, checkpointId: env.checkpointId, completedAt: env.completedAt };
 	if (env.kind === "tool") {
+		// An inspection-only field must never invalidate durable state: one
+		// rejected checkpoint suppresses the whole workflow and re-runs completed
+		// side effects. `args` and `source` are therefore ignored when they are
+		// not the expected shape, while the replayable fields stay strict.
 		if (
 			typeof env.argsHash !== "string" ||
 			env.output === undefined ||
@@ -227,6 +235,10 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 			(env.throwingFailureError !== undefined && typeof env.throwingFailureError !== "string")
 		)
 			return undefined;
+		const inspectionArgs =
+			typeof env.args === "object" && env.args !== null && !Array.isArray(env.args)
+				? (env.args as Readonly<Record<string, WorkflowSerializableValue>>)
+				: undefined;
 		const outcome = env.outcomeKind === undefined ? undefined : workflowToolOutcomeFromValue(env.output);
 		if (
 			(env.outcomeKind === "return_success" && outcome?.ok !== true) ||
@@ -239,6 +251,8 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 			kind: "tool",
 			...common,
 			name: env.name ?? "tool",
+			...(inspectionArgs !== undefined ? { args: inspectionArgs } : {}),
+			...(typeof env.source === "string" ? { source: env.source } : {}),
 			argsHash: env.argsHash,
 			output: env.output,
 			...(env.outcomeKind !== undefined ? { outcomeKind: env.outcomeKind } : {}),

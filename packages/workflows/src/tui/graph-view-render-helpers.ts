@@ -1,6 +1,12 @@
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphCanvas } from "./graph-canvas.js";
-import { COMPACT_HINT_KEYS, HINT_KEYS, MODE_PILL_LABEL } from "./graph-view-constants.js";
+import {
+	COMPACT_HINT_KEYS,
+	COMPACT_TOOL_DETAIL_HINT_KEYS,
+	HINT_KEYS,
+	MODE_PILL_LABEL,
+	TOOL_DETAIL_HINT_KEYS,
+} from "./graph-view-constants.js";
 import { GraphViewState } from "./graph-view-state.js";
 import { renderOutlinePill } from "./header.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -45,13 +51,37 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const rightEdgePad = 2;
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const fullHierarchyHint = "ctrl+x return to main chat";
+		// A focused tool node has no stage chat, but Enter now opens its read-only
+		// detail, so it keeps an activation hint of its own instead of losing the
+		// `↵` affordance entirely the way an unfocusable node does. Both lookups
+		// resolve once per frame: the two hint lists below are built eagerly, and
+		// re-resolving focus inside each would double this frame's layout reads.
+		const chatTarget = this.toolDetail === null ? this._focusedStageChatTarget() : undefined;
+		const focusedToolNode = this.toolDetail === null && this._focusedTool() !== undefined;
+		const relabelActivation = (
+			keys: ReadonlyArray<{ key: string; label: string }>,
+			label: string,
+		): Array<{ key: string; label: string }> =>
+			keys.map((hint) => (hint.key === "↵" ? { key: hint.key, label } : hint));
 		const availableHintKeys =
-			this._focusedStageChatTarget() === undefined ? HINT_KEYS.filter(({ key }) => key !== "↵") : HINT_KEYS;
+			this.toolDetail !== null
+				? TOOL_DETAIL_HINT_KEYS
+				: focusedToolNode
+					? relabelActivation(HINT_KEYS, "open tool detail")
+					: chatTarget === undefined
+						? HINT_KEYS.filter(({ key }) => key !== "↵")
+						: HINT_KEYS;
 		const availableCompactHintKeys =
-			this._focusedStageChatTarget() === undefined
-				? COMPACT_HINT_KEYS.filter(({ key }) => key !== "↵")
-				: COMPACT_HINT_KEYS;
-		const hintKeys = hintsBudget >= visibleWidth(fullHierarchyHint) ? availableHintKeys : availableCompactHintKeys;
+			this.toolDetail !== null
+				? COMPACT_TOOL_DETAIL_HINT_KEYS
+				: focusedToolNode
+					? relabelActivation(COMPACT_HINT_KEYS, "tool detail")
+					: chatTarget === undefined
+						? COMPACT_HINT_KEYS.filter(({ key }) => key !== "↵")
+						: COMPACT_HINT_KEYS;
+		const fullHintWidth =
+			this.toolDetail !== null ? "ctrl+x return to graph  ·  ↑↓ pgup/pgdn scroll" : fullHierarchyHint;
+		const hintKeys = hintsBudget >= visibleWidth(fullHintWidth) ? availableHintKeys : availableCompactHintKeys;
 		const statusText = this._externalStatusText();
 		const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];
 		const hintSegments = hintKeys.map(

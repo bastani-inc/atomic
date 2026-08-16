@@ -85,6 +85,7 @@ export class GraphViewLayout {
 	private readonly callbacks: GraphViewLayoutCallbacks;
 	private bodyViewportRows = 0;
 	private bodyContentRows = 0;
+	private lastBodyWidth: number | undefined;
 	private scrollbar: ScrollbarGeometry | undefined;
 	private draggingScrollbar: { grabOffset: number } | undefined;
 
@@ -93,7 +94,12 @@ export class GraphViewLayout {
 
 		const margin = new CallbackComponent(() => [""]);
 		const header = new CallbackComponent((width) => this.callbacks.renderHeader(width));
-		const body = new CallbackComponent((width) => this.renderBody(width));
+		const body = new CallbackComponent((width) => {
+			// The ScrollView reserves its scrollbar column from the width it hands
+			// the body, so this is the only place the real body width is known.
+			this.lastBodyWidth = width;
+			return this.renderBody(width);
+		});
 		const footer = new CallbackComponent((width) => this.callbacks.renderFooter(width));
 		this.scrollView = new ScrollView(body, {
 			axis: "vertical",
@@ -117,16 +123,20 @@ export class GraphViewLayout {
 		const safeHeight = Math.max(1, Math.floor(height));
 		const marginRows = graphLayoutMarginRows(safeHeight);
 		this.bodyViewportRows = graphLayoutBodyRows(safeHeight);
-		this.bodyContentRows = Math.max(
-			0,
-			Math.floor(this.callbacks.bodyContentHeight(safeWidth, this.bodyViewportRows)),
-		);
-		const requestRender = this.callbacks.requestRender ?? EMPTY_RENDER;
-		this.scrollView.updateLayout(this.bodyContentRows, this.bodyViewportRows, requestRender);
-		this.scrollView.setScrollbar(this.bodyContentRows > this.bodyViewportRows ? "always" : "hidden");
-		this.callbacks.beforeFrame?.(this.scrollView, this.bodyViewportRows, this.bodyContentRows, safeWidth);
-
-		const frame = renderLayoutFrame(this.root, safeWidth, safeHeight, requestRender);
+		// Content height can depend on the width the body is laid out at, and that
+		// is narrower than the frame whenever the ScrollView reserves its
+		// scrollbar column. Measuring at the frame width clamps the scroll range
+		// to a height the body never produced, which strands its tail rows for
+		// every input path. Measure at the width the body actually received last
+		// time, then reconcile if this frame disagrees; when no column is
+		// reserved the two are already the same width and nothing re-runs.
+		const requestedTop = this.scrollView.scrollTop;
+		const expectedWidth = this.lastBodyWidth ?? safeWidth;
+		let frame = this.renderPass(safeWidth, safeHeight, expectedWidth);
+		const measuredWidth = this.lastBodyWidth ?? safeWidth;
+		if (measuredWidth !== expectedWidth && this.contentRowsFor(measuredWidth) !== this.bodyContentRows) {
+			frame = this.renderPass(safeWidth, safeHeight, measuredWidth, requestedTop);
+		}
 		const bodyBox = getScrollViewBox(frame, this.scrollView);
 		this.scrollbar = bodyBox ? getScrollbarGeometry(bodyBox) : undefined;
 		if (!this.scrollbar) this.draggingScrollbar = undefined;
@@ -140,6 +150,27 @@ export class GraphViewLayout {
 			wrappedRows,
 			scrollbar: this.scrollbar,
 		};
+	}
+
+	private contentRowsFor(width: number): number {
+		return Math.max(0, Math.floor(this.callbacks.bodyContentHeight(width, this.bodyViewportRows)));
+	}
+
+	/**
+	 * One full layout pass whose scroll range is measured at `measureWidth`.
+	 *
+	 * `restoreTop` re-applies a scroll position that a previous pass' stale,
+	 * shorter content height clamped away, so reconciling never scrolls the
+	 * user back up a frame.
+	 */
+	private renderPass(safeWidth: number, safeHeight: number, measureWidth: number, restoreTop?: number): LayoutFrame {
+		const requestRender = this.callbacks.requestRender ?? EMPTY_RENDER;
+		this.bodyContentRows = this.contentRowsFor(measureWidth);
+		this.scrollView.updateLayout(this.bodyContentRows, this.bodyViewportRows, requestRender);
+		if (restoreTop !== undefined && this.scrollView.scrollTop < restoreTop) this.scrollView.scrollTo(restoreTop);
+		this.scrollView.setScrollbar(this.bodyContentRows > this.bodyViewportRows ? "always" : "hidden");
+		this.callbacks.beforeFrame?.(this.scrollView, this.bodyViewportRows, this.bodyContentRows, safeWidth);
+		return renderLayoutFrame(this.root, safeWidth, safeHeight, requestRender);
 	}
 
 	/** Repaint the thumb after overlays that cover the body rows. */

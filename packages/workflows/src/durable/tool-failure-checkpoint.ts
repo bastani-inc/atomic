@@ -1,4 +1,5 @@
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
+import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { workflowToolFailure } from "./tool-outcome.js";
 import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableStageRunTopology } from "./types.js";
@@ -16,6 +17,8 @@ export async function recordThrowingToolFailure(
 	node: ToolNodeSnapshot,
 	identity: {
 		readonly name: string;
+		readonly args?: Readonly<Record<string, WorkflowSerializableValue>>;
+		readonly source?: string;
 		readonly argsHash: string;
 		readonly ordinal: number;
 		readonly startedAt: number;
@@ -30,6 +33,8 @@ export async function recordThrowingToolFailure(
 		workflowId: input.workflowId,
 		checkpointId: `tool-failure:${identity.argsHash}:${input.nextCheckpointId()}`,
 		name: identity.name,
+		...(identity.args !== undefined ? { args: identity.args } : {}),
+		...(identity.source !== undefined ? { source: identity.source } : {}),
 		argsHash: identity.argsHash,
 		output: null,
 		throwingFailureError: message,

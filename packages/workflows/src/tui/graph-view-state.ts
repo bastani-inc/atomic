@@ -3,6 +3,7 @@ import {
 	type ExpandedWorkflowGraph,
 	type ExpandedWorkflowStage,
 	type ExpandedWorkflowStageTarget,
+	type ExpandedWorkflowTool,
 	expandedStageTarget,
 	expandWorkflowGraph,
 	refreshExpandedWorkflowGraph,
@@ -103,6 +104,8 @@ export abstract class GraphViewState {
 		targets: new Map(),
 	};
 	protected currentSnapshot: StoreSnapshot | null = null;
+	/** Selected read-only tool detail; tool nodes never become stage chats. */
+	protected toolDetail: ExpandedWorkflowTool | null = null;
 	protected abstract _graphScrollTop(): number;
 	protected graphScrollColOffset = 0;
 	protected graphNodeHitRects: GraphNodeHitRect[] = [];
@@ -192,6 +195,7 @@ export abstract class GraphViewState {
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
 			this.promptState = null;
+			this.toolDetail = null;
 			this.topologySnapshot = this.currentSnapshot;
 			this.hasAnimatingStages = false;
 			this.lastBuiltSnapshotVersion = version;
@@ -219,6 +223,7 @@ export abstract class GraphViewState {
 				(stage) => stage.status === "running" || stage.status === "awaiting_input",
 			);
 			this._finalizeFocusAndPrompt(run, previousFocusedStageId, true);
+			this._syncToolDetail();
 			this.lastBuiltSnapshotVersion = version;
 			return;
 		}
@@ -233,6 +238,7 @@ export abstract class GraphViewState {
 		this.graphNodeHitRects = [];
 		this.lastGraphViewport = null;
 		this._finalizeFocusAndPrompt(run, previousFocusedStageId, false);
+		this._syncToolDetail();
 		this.lastBuiltSnapshotVersion = version;
 	}
 
@@ -433,6 +439,40 @@ export abstract class GraphViewState {
 	protected _stageChatTarget(stage: StageSnapshot | undefined): ExpandedWorkflowStageTarget | undefined {
 		if (!stage || stage.nodeKind === "tool") return undefined;
 		return expandedStageTarget(this.expandedGraph, stage.id);
+	}
+	/** Resolve the focused graph projection back to its full tool snapshot. */
+	protected _focusedTool(): ExpandedWorkflowTool | undefined {
+		const stage = this.cachedLayout[this.focusedIndex]?.stage;
+		if (stage?.nodeKind !== "tool") return undefined;
+		return this.expandedGraph.tools.find((tool) => tool.id === stage.id);
+	}
+
+	/** Open a read-only detail view for the focused tool, if it is a tool node. */
+	protected _openFocusedToolDetail(): boolean {
+		const tool = this._focusedTool();
+		if (tool === undefined) return false;
+		this.toolDetail = tool;
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	protected _closeToolDetail(): boolean {
+		if (this.toolDetail === null) return false;
+		this.toolDetail = null;
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	private _syncToolDetail(): void {
+		if (this.toolDetail === null) return;
+		this.toolDetail = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
+	}
+
+	/** Let the renderer discard any cached body frame after a detail transition. */
+	private graphLayoutInvalidateForDetail(): void {
+		this.pendingEnsureFocusedVisible = true;
+		this.graphNodeHitRects = [];
+		this.lastGraphViewport = null;
 	}
 
 	/**
