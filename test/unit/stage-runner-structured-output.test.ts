@@ -190,6 +190,7 @@ describe("createStageContext — structured_output corrective retry", () => {
 			assert.equal(prompts.length, 2);
 			assert.match(prompts[1] ?? "", new RegExp(validationError.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 			assert.match(prompts[1] ?? "", /artifact as ordinary text before calling `structured_output`/);
+			assert.match(prompts[1] ?? "", /correct the tool arguments and call `structured_output` again/);
 			assert.equal(await readFile(output, "utf8"), "# Corrected review\n\nReady to merge.");
 			const receipt = (ctx as InternalStageContext).getLastAssistantText();
 			assert.ok(receipt);
@@ -338,6 +339,272 @@ describe("createStageContext — structured_output corrective retry", () => {
 			await rm(dir, { recursive: true, force: true });
 			if (transcriptPath) await rm(transcriptPath, { force: true });
 		}
+	});
+
+	test("recovers earlier-turn prose when the corrective turn calls structured_output without text", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-structured-output-earlier-"));
+		let transcriptPath: string | undefined;
+		try {
+			let createOptions: StageSessionCreateOptions | undefined;
+			const prompts: string[] = [];
+			const messages = [] as AgentSession["messages"];
+			const mock = makeMockSession({
+				messages,
+				async prompt(promptText) {
+					prompts.push(promptText);
+					if (prompts.length === 1) {
+						// The model writes the full deliverable as ordinary text but
+						// never calls the tool, so the corrective loop runs.
+						messages.push(
+							assistantMessageWithContent([{ type: "text", text: "# Full deliverable from the first turn" }]),
+						);
+						return;
+					}
+					const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
+					assert.ok(structuredTool);
+					// The corrective turn calls the tool with no accompanying prose.
+					messages.push(
+						assistantMessageWithContent([
+							{
+								type: "toolCall",
+								id: "structured-call-late",
+								name: "structured_output",
+								arguments: { ok: true },
+							},
+						]),
+					);
+					await structuredTool.execute(
+						"structured-call-late",
+						{ ok: true },
+						undefined,
+						undefined,
+						undefined as never,
+					);
+				},
+			});
+			const agentSession: AgentSessionAdapter = {
+				async create(options) {
+					createOptions = options;
+					return mock.session;
+				},
+			};
+			const output = join(dir, "review.md");
+			const ctx = createStageContext(
+				makeOpts({
+					adapters: { agentSession },
+					stageOptions: { schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }) },
+				}),
+			);
+
+			assert.deepEqual(await ctx.prompt("return structured data", { output, outputMode: "file-only" }), {
+				ok: true,
+			});
+			assert.equal(prompts.length, 2);
+			assert.match(prompts[1] ?? "", /Corrective attempt 1\/3/);
+			assert.equal(await readFile(output, "utf8"), "# Full deliverable from the first turn");
+			const receipt = (ctx as InternalStageContext).getLastAssistantText();
+			assert.ok(receipt);
+			const transcriptMatch = receipt.match(/Transcript saved to: ([^ ]+) \(/);
+			assert.ok(transcriptMatch?.[1]);
+			transcriptPath = transcriptMatch[1];
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
+	});
+
+	test("completes with an empty artifact when the session no longer holds the successful tool-call message", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-structured-output-missing-"));
+		let transcriptPath: string | undefined;
+		try {
+			let createOptions: StageSessionCreateOptions | undefined;
+			const messages = [] as AgentSession["messages"];
+			const mock = makeMockSession({
+				messages,
+				async prompt() {
+					const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
+					assert.ok(structuredTool);
+					// A model-fallback recreation can leave the live session holding
+					// only an earlier tool-call id, never the captured one.
+					messages.push(
+						assistantMessageWithContent([
+							{
+								type: "toolCall",
+								id: "structured-call-from-abandoned-session",
+								name: "structured_output",
+								arguments: { ok: false },
+							},
+						]),
+					);
+					await structuredTool.execute(
+						"structured-call-live",
+						{ ok: true },
+						undefined,
+						undefined,
+						undefined as never,
+					);
+				},
+			});
+			const agentSession: AgentSessionAdapter = {
+				async create(options) {
+					createOptions = options;
+					return mock.session;
+				},
+			};
+			const output = join(dir, "review.md");
+			const ctx = createStageContext(
+				makeOpts({
+					adapters: { agentSession },
+					stageOptions: { schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }) },
+				}),
+			) as InternalStageContext;
+
+			assert.deepEqual(await ctx.prompt("return structured data", { output, outputMode: "file-only" }), {
+				ok: true,
+			});
+			assert.equal(await readFile(output, "utf8"), "");
+			const receipt = ctx.getLastAssistantText();
+			assert.ok(receipt);
+			assert.match(receipt, /WARNING: the stage artifact is empty/);
+			const transcriptMatch = receipt.match(/Transcript saved to: ([^ ]+) \(/);
+			assert.ok(transcriptMatch?.[1]);
+			transcriptPath = transcriptMatch[1];
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
+	});
+
+	test("pairs the artifact with the latest successful execution across a fallback recreation", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-structured-output-recreated-"));
+		let transcriptPath: string | undefined;
+		try {
+			let createOptions: StageSessionCreateOptions | undefined;
+			const messages = [] as AgentSession["messages"];
+			const mock = makeMockSession({
+				messages,
+				async prompt() {
+					const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
+					assert.ok(structuredTool);
+					messages.push(
+						assistantMessageWithContent([
+							{ type: "text", text: "# First session" },
+							{
+								type: "toolCall",
+								id: "structured-call-first",
+								name: "structured_output",
+								arguments: { ok: false },
+							},
+						]),
+					);
+					await structuredTool.execute(
+						"structured-call-first",
+						{ ok: false },
+						undefined,
+						undefined,
+						undefined as never,
+					);
+					// The session is recreated and the model repeats the call: the
+					// live session's pairing must win over the abandoned one.
+					messages.push(
+						assistantMessageWithContent([
+							{ type: "text", text: "# Recreated session" },
+							{
+								type: "toolCall",
+								id: "structured-call-second",
+								name: "structured_output",
+								arguments: { ok: true },
+							},
+						]),
+					);
+					await structuredTool.execute(
+						"structured-call-second",
+						{ ok: true },
+						undefined,
+						undefined,
+						undefined as never,
+					);
+				},
+			});
+			const agentSession: AgentSessionAdapter = {
+				async create(options) {
+					createOptions = options;
+					return mock.session;
+				},
+			};
+			const output = join(dir, "review.md");
+			const ctx = createStageContext(
+				makeOpts({
+					adapters: { agentSession },
+					stageOptions: { schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }) },
+				}),
+			);
+
+			assert.deepEqual(await ctx.prompt("return structured data", { output, outputMode: "file-only" }), {
+				ok: true,
+			});
+			assert.equal(await readFile(output, "utf8"), "# Recreated session");
+			const receipt = (ctx as InternalStageContext).getLastAssistantText();
+			assert.ok(receipt);
+			const transcriptMatch = receipt.match(/Transcript saved to: ([^ ]+) \(/);
+			assert.ok(transcriptMatch?.[1]);
+			transcriptPath = transcriptMatch[1];
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
+	});
+
+	test("schema-only stages keep following late admitted assistant text", async () => {
+		let createOptions: StageSessionCreateOptions | undefined;
+		const messages = [] as AgentSession["messages"];
+		let sessionLastAssistantText = "# Structured turn";
+		const mock = makeMockSession({
+			messages,
+			getLastAssistantText: () => sessionLastAssistantText,
+			async prompt() {
+				const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
+				assert.ok(structuredTool);
+				messages.push(
+					assistantMessageWithContent([
+						{ type: "text", text: "# Structured turn" },
+						{
+							type: "toolCall",
+							id: "structured-call-schema-only",
+							name: "structured_output",
+							arguments: { ok: true },
+						},
+					]),
+				);
+				await structuredTool.execute(
+					"structured-call-schema-only",
+					{ ok: true },
+					undefined,
+					undefined,
+					undefined as never,
+				);
+			},
+		});
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				createOptions = options;
+				return mock.session;
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: { schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }) },
+			}),
+		) as InternalStageContext;
+
+		assert.deepEqual(await ctx.prompt("return structured data"), { ok: true });
+		assert.equal(ctx.getLastAssistantText(), '{\n  "ok": true\n}');
+		// A late admitted turn grows the session and displaces the serialized
+		// schema value, exactly as it would on a stage without structured output.
+		messages.push(assistantMessageWithContent([{ type: "text", text: "late admitted acknowledgement" }]));
+		sessionLastAssistantText = "late admitted acknowledgement";
+		assert.equal(ctx.getLastAssistantText(), "late admitted acknowledgement");
 	});
 
 	test("stops after three corrective prompts when structured_output is still missing", async () => {

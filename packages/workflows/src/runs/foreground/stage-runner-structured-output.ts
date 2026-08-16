@@ -59,9 +59,10 @@ export function formatStructuredOutputCorrectionPrompt(
 		error,
 		"",
 		"You must finish by calling the `structured_output` tool exactly once with arguments matching the registered schema.",
+		"If you attempted `structured_output` and validation failed, correct the tool arguments and call `structured_output` again.",
 		needsArtifactText
-			? "In the same final assistant message, include the complete human-readable artifact as ordinary text before calling `structured_output`; the tool arguments are the separate machine-readable result. Do not put prose after the tool call."
-			: "Do not answer with plain JSON text, Markdown, or prose. If you attempted `structured_output` and validation failed, correct the tool arguments and call `structured_output` again.",
+			? "In the same final assistant message, include the complete human-readable artifact as ordinary text before calling `structured_output`; the tool arguments are the separate machine-readable result. Do not put prose after the tool call, and do not write the artifact as plain JSON text or Markdown code."
+			: "Do not answer with plain JSON text, Markdown, or prose.",
 	].join("\n");
 }
 
@@ -90,7 +91,11 @@ export function stageOptionsWithStructuredOutput<TSchemaDef extends TSchema>(
 		...structuredOutputTool,
 		async execute(...args: Parameters<typeof executeStructuredOutput>) {
 			const result = await executeStructuredOutput(...args);
-			if (executionCapture !== undefined && executionCapture.snapshot === undefined && capture.called) {
+			// Mirror the shared capture, which keeps the latest successful call:
+			// a model-fallback session recreation can execute the tool a second
+			// time, and the snapshot must describe the call the live session (and
+			// its messages) actually holds, not an abandoned earlier one.
+			if (executionCapture !== undefined && capture.called) {
 				executionCapture.snapshot = {
 					toolCallId: args[0],
 					value: args[1],

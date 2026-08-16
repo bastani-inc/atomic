@@ -77,6 +77,10 @@ describe("tournament builtin", () => {
 		assert.match(secondJudge.prompt, /First presentation: attempt-4/);
 		assert.equal(firstJudge.context, "fresh");
 		assert.equal(firstJudge.reads.length, 2);
+		const judgeReport = JSON.parse(readFileSync(join(output.artifact_dir, "judges", "round-1-match-1.json"), "utf8"));
+		assert.equal(judgeReport.winner, "first");
+		assert.equal(judgeReport.rationale, "rubric judge-round-1-match-1");
+		assert.deepEqual(judgeReport.evidence, ["observable evidence"]);
 		const bracket = JSON.parse(readFileSync(output.bracket_path, "utf8"));
 		assert.equal(bracket.matches.length, 3);
 		assert.equal(bracket.winner.label, output.winner);
@@ -148,6 +152,16 @@ describe("loop-until-done builtin", () => {
 			"completion-summary",
 		]);
 		assert.equal(ctx.calls.taskOptions["evaluate-1"][0].context, "fresh");
+		assert.equal(ctx.calls.taskOptions["evaluate-1"][0].output, undefined);
+		const evaluation = JSON.parse(readFileSync(output.evaluation_artifact_paths[0], "utf8"));
+		assert.deepEqual(evaluation, {
+			done: false,
+			summary: "one remains",
+			new_findings: ["lint"],
+			failures: ["lint failed"],
+			validation_evidence: ["tests pass"],
+			remaining_work: "fix lint",
+		});
 		assert.ok(ctx.calls.taskOptions["iteration-2"][0].reads.includes(output.ledger_path));
 		const ledger = JSON.parse(readFileSync(output.ledger_path, "utf8"));
 		assert.equal(ledger.status, "complete");

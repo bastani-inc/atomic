@@ -48,11 +48,16 @@ export async function runGenerateAndFilter(ctx: WorkflowRunContext<Inputs>): Pro
   const filterPath = join(root, "filter.json");
   const filtered = await ctx.task("dedupe-and-filter", {
     prompt: renderFilterPrompt(ctx.inputs.prompt, candidatePaths, shortlistLimit), context: "fresh",
-    reads: [manifestPath, ...candidatePaths], schema: filterSchema, output: filterPath, outputMode: "file-only",
+    reads: [manifestPath, ...candidatePaths], schema: filterSchema,
   });
+  const filteredDecision = filterDecision(filtered.structured);
+  // The filter report is inter-stage data: the judge and final-shortlist
+  // stages read schema-shaped JSON from this path, so the runner persists the
+  // structured decision itself rather than routing it through the artifact.
+  await writeFile(filterPath, `${JSON.stringify(filteredDecision ?? { shortlist: [], discarded: [] }, null, 2)}\n`);
   const selectCandidates = (paths: readonly string[]): string[] => [...new Set(paths.filter((path) => candidatePaths.includes(path)))].slice(0, shortlistLimit);
   const fallbackShortlist = candidatePaths.slice(0, shortlistLimit);
-  const filteredShortlist = selectCandidates(filterDecision(filtered.structured)?.shortlist ?? []);
+  const filteredShortlist = selectCandidates(filteredDecision?.shortlist ?? []);
   let shortlist = filteredShortlist.length > 0 ? filteredShortlist : fallbackShortlist;
   let judgePath: string | null = null;
   let decisionPath = filterPath;
@@ -60,9 +65,12 @@ export async function runGenerateAndFilter(ctx: WorkflowRunContext<Inputs>): Pro
     judgePath = join(root, "judge.json");
     const judged = await ctx.task("judge", {
       prompt: renderJudgePrompt(ctx.inputs.prompt, filterPath, shortlistLimit), context: "fresh",
-      reads: [filterPath, ...shortlist], schema: judgeSchema, output: judgePath, outputMode: "file-only",
+      reads: [filterPath, ...shortlist], schema: judgeSchema,
     });
-    const judgedShortlist = selectCandidates(judgeDecision(judged.structured)?.shortlist ?? []);
+    const judgedDecision = judgeDecision(judged.structured);
+    // Same inter-stage contract as the filter report above.
+    await writeFile(judgePath, `${JSON.stringify(judgedDecision ?? { shortlist: [], rationale: "Judge stage produced no valid structured decision." }, null, 2)}\n`);
+    const judgedShortlist = selectCandidates(judgedDecision?.shortlist ?? []);
     shortlist = judgedShortlist.length > 0 ? judgedShortlist : shortlist;
     decisionPath = judgePath;
   }

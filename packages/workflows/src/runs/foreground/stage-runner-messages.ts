@@ -6,6 +6,7 @@ type TextLikeContent = {
 	readonly type?: string;
 	readonly text?: string;
 	readonly id?: string;
+	readonly name?: string;
 };
 
 type MessageWithTextContent = {
@@ -34,21 +35,48 @@ export function lastAssistantTextFromMessages(messages: AgentSession["messages"]
 	return undefined;
 }
 
-interface AssistantToolCallTextSnapshot {
-	readonly text?: string;
-}
-
-export function assistantTextSnapshotForToolCallIdFromMessages(
+/**
+ * Artifact text for a successful `structured_output` call (issue #2198).
+ *
+ * Primary: the ordinary text of the exact assistant message that carried the
+ * successful tool call, so corrective attempts and later admitted turns cannot
+ * replace the pairing. Fallback: when that message carries no ordinary text —
+ * or the session no longer holds it after model-fallback recreation — the most
+ * recent earlier assistant message that carries text and makes no
+ * `structured_output` call. Assistant turns after the successful call never
+ * win. When neither side exists the caller writes an empty artifact and its
+ * receipt carries the standard empty-artifact warning; the companion
+ * transcript remains the recovery path.
+ */
+export function assistantArtifactTextForToolCall(
 	messages: AgentSession["messages"],
 	toolCallId: string,
-): AssistantToolCallTextSnapshot | undefined {
-	for (const message of messages) {
+): string | undefined {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
 		if (message?.role !== "assistant") continue;
 		const { content } = message as MessageWithTextContent;
 		if (!Array.isArray(content)) continue;
 		if (!content.some((block) => block.type === "toolCall" && block.id === toolCallId)) continue;
 		const text = extractMessageText(message);
-		return text.trim().length > 0 ? { text } : {};
+		if (text.trim().length > 0) return text;
+		return lastNonStructuredAssistantTextBefore(messages, index);
+	}
+	return lastNonStructuredAssistantTextBefore(messages, messages.length);
+}
+
+function lastNonStructuredAssistantTextBefore(
+	messages: AgentSession["messages"],
+	endIndex: number,
+): string | undefined {
+	for (let index = endIndex - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		const { content } = message as MessageWithTextContent;
+		if (!Array.isArray(content)) continue;
+		if (content.some((block) => block.type === "toolCall" && block.name === "structured_output")) continue;
+		const text = extractMessageText(message);
+		if (text.trim().length > 0) return text;
 	}
 	return undefined;
 }

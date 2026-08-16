@@ -129,10 +129,12 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
       context: "fresh",
       reads: [ledgerPath, iterationPath],
       schema: evaluationSchema,
-      output: evaluationPath,
-      outputMode: "file-only",
     });
     const decision = evaluationFrom(evaluator);
+    // Evaluation reports are declared workflow outputs consumed as data: the
+    // runner persists the structured decision itself so evaluation-N.json
+    // stays schema-shaped JSON rather than stage prose.
+    await writeFile(evaluationPath, `${JSON.stringify(evaluator.structured, null, 2)}\n`);
     entries.push({
       iteration,
       artifact_path: iterationPath,

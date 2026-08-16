@@ -80,6 +80,17 @@ test("adversarial-verification uses fresh evidence verifiers and accepts only th
 			assert.notEqual(options?.schema, undefined);
 		}
 		assert.ok(readPaths(ctx.calls.taskOptions["reducer-0"]?.[0]).some((path) => path.includes("verification-0-1")));
+		assert.equal(ctx.calls.taskOptions["reducer-0"]?.[0]?.output, undefined);
+		assert.deepEqual(JSON.parse(readFileSync(join(result.artifact_dir, "verification-0-1.json"), "utf8")), {
+			verdict: "pass",
+			evidence: ["checked"],
+			blocking_findings: [],
+		});
+		assert.deepEqual(JSON.parse(readFileSync(result.review_report_path, "utf8")), {
+			decision: "accept",
+			rationale: "all evidence passed",
+			remaining_work: [],
+		});
 	});
 });
 
@@ -109,6 +120,16 @@ test("adversarial-verification bounds repair and returns inspectable rejection",
 		assert.deepEqual(ctx.calls.parallel, [["verifier-0-1"], ["verifier-1-1"]]);
 		assert.ok(ctx.calls.task.includes("repair-1"));
 		assert.deepEqual(result.remaining_work, ["missing test"]);
+		assert.deepEqual(JSON.parse(readFileSync(join(result.artifact_dir, "verification-0-1.json"), "utf8")), {
+			verdict: "fail",
+			evidence: [],
+			blocking_findings: ["missing test"],
+		});
+		assert.deepEqual(JSON.parse(readFileSync(result.review_report_path, "utf8")), {
+			decision: "repair",
+			rationale: "repair required",
+			remaining_work: ["missing test"],
+		});
 	});
 });
 
@@ -185,6 +206,19 @@ test("generate-and-filter fans out, dedupes, optionally judges, and finalizes ar
 		);
 		assert.ok(readPaths(ctx.calls.taskOptions.judge?.[0]).some((path) => path.endsWith("filter.json")));
 		assert.ok(readPaths(ctx.calls.taskOptions["final-shortlist"]?.[0]).some((path) => path.endsWith("judge.json")));
+		const filterReport = JSON.parse(readFileSync(result.filter_path, "utf8")) as {
+			shortlist: string[];
+			discarded: unknown[];
+		};
+		assert.equal(filterReport.shortlist.length, 2);
+		assert.ok(filterReport.shortlist.every((path) => path.includes("candidate-")));
+		assert.deepEqual(filterReport.discarded, []);
+		const judgeReport = JSON.parse(readFileSync(result.judge_path ?? "", "utf8")) as {
+			shortlist: string[];
+			rationale: string;
+		};
+		assert.ok(judgeReport.shortlist.every((path) => path.includes("candidate-")));
+		assert.equal(judgeReport.rationale, "ranked");
 	});
 });
 
@@ -204,6 +238,7 @@ test("generate-and-filter skips judge when disabled", async () => {
 		assert.equal(result.judge_path, null);
 		assert.equal(ctx.calls.task.includes("judge"), false);
 		assert.ok(readPaths(ctx.calls.taskOptions["final-shortlist"]?.[0]).some((path) => path.endsWith("filter.json")));
+		assert.deepEqual(JSON.parse(readFileSync(result.filter_path, "utf8")), { shortlist: [], discarded: [] });
 	});
 });
 

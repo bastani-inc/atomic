@@ -2,7 +2,7 @@ import { createStructuredOutputCapture, runCallback } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
 import type { StageExecutionMeta } from "../../shared/types.js";
 import { StageSessionController } from "./stage-runner-controller.js";
-import { assistantMessage, assistantTextSnapshotForToolCallIdFromMessages } from "./stage-runner-messages.js";
+import { assistantArtifactTextForToolCall, assistantMessage } from "./stage-runner-messages.js";
 import {
 	finalizePromptOutput,
 	splitPromptOptions,
@@ -42,7 +42,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 	let lastAssistantText: string | undefined;
 	let lastFinalizedOutput: string | undefined;
 	let lastFinalizedMessageCount: number | undefined;
-	let structuredOutputFinalized = false;
+	let structuredArtifactFinalized = false;
 	let adapterMessages = [] as InternalStageContext["messages"];
 
 	function runtimeCwd(): string {
@@ -52,7 +52,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 	function finalizedOutputIsCurrent(): boolean {
 		return (
 			lastFinalizedOutput !== undefined &&
-			(structuredOutputFinalized ||
+			(structuredArtifactFinalized ||
 				lastFinalizedMessageCount === undefined ||
 				controller.currentSession?.messages.length === lastFinalizedMessageCount)
 		);
@@ -121,16 +121,14 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 						"atomic-workflows: structured_output completed without an execution snapshot; the successful tool call could not be paired with its result.",
 					);
 				}
-				const assistantSnapshot = hasOutputArtifact
-					? assistantTextSnapshotForToolCallIdFromMessages(sessionMessages ?? [], executionSnapshot.toolCallId)
-					: undefined;
-				if (hasOutputArtifact && assistantSnapshot === undefined) {
-					throw new Error(
-						`atomic-workflows: could not find the assistant message for successful structured_output tool call ${executionSnapshot.toolCallId}.`,
-					);
-				}
+				// The exact successful tool-call message owns the artifact. When it
+				// carries no ordinary text — or the session no longer holds it after
+				// model-fallback recreation — fall back to the last non-structured
+				// assistant text so an earlier-turn deliverable is not discarded
+				// (issue #2198); only when no prose exists anywhere is the artifact
+				// empty, and its receipt then carries the empty-artifact warning.
 				const rawOutputText = hasOutputArtifact
-					? (assistantSnapshot?.text ?? "")
+					? (assistantArtifactTextForToolCall(sessionMessages ?? [], executionSnapshot.toolCallId) ?? "")
 					: stringifyStructuredOutputValue(executionSnapshot.value);
 				lastAssistantText = await finalizePromptOutput(
 					rawOutputText,
@@ -141,7 +139,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				);
 				lastFinalizedOutput = lastAssistantText;
 				lastFinalizedMessageCount = controller.currentSession?.messages.length;
-				structuredOutputFinalized = true;
+				if (hasOutputArtifact) structuredArtifactFinalized = true;
 				return executionSnapshot.value as never;
 			}
 			await controller.promptWithFallback(promptText, sdkOptions);

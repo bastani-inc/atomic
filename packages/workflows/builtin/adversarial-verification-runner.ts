@@ -42,7 +42,11 @@ function isVerifier(value: WorkflowSerializableValue): value is VerifierDecision
 function isReducer(value: WorkflowSerializableValue): value is ReducerDecision {
   return isRecord(value) && (value.decision === "accept" || value.decision === "reject" || value.decision === "repair") && typeof value.rationale === "string" && Array.isArray(value.remaining_work) && value.remaining_work.every((item) => typeof item === "string");
 }
-
+const INVALID_VERIFIER_REPORT: VerifierDecision = {
+  verdict: "fail",
+  evidence: [],
+  blocking_findings: ["Verifier stage produced no valid structured report."],
+};
 export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>): Promise<AdversarialVerificationResult> {
   const root = await stableArtifactRoot(ctx, "adversarial-verification");
   const rubricPath = join(root, "rubric.md");
@@ -56,15 +60,20 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
   let decision: ReducerDecision = { decision: "reject", rationale: "No valid reducer decision was produced.", remaining_work: ["Reducer did not return a valid structured decision."] };
   for (;;) {
     verifierArtifactPaths = Array.from({ length: ctx.inputs.verifier_count }, (_, index) => join(root, `verification-${repairsCompleted}-${index + 1}.json`));
-    const reports = await ctx.parallel(verifierArtifactPaths.map((path, index) => ({
+    const reports = await ctx.parallel(verifierArtifactPaths.map((_, index) => ({
       name: `verifier-${repairsCompleted}-${index + 1}`,
       prompt: renderVerifierPrompt(ctx.inputs.task, candidatePath, rubricPath),
       context: "fresh" as const,
       reads: [candidatePath, rubricPath],
       schema: verifierSchema,
-      output: path,
-      outputMode: "file-only" as const,
     })), { concurrency: Math.min(ctx.inputs.verifier_count, 4), failFast: false });
+    // Verifier reports are inter-stage data: the reducer reads schema-shaped
+    // JSON from these paths, so the runner persists the structured decisions
+    // itself rather than routing them through the stage artifact channel.
+    await Promise.all(verifierArtifactPaths.map(async (path, index) => {
+      const report = structured(reports[index]?.structured, isVerifier) ?? INVALID_VERIFIER_REPORT;
+      await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
+    }));
     const validReports = reports.map((report) => structured(report.structured, isVerifier)).filter((report): report is VerifierDecision => report !== undefined);
     const allVerifiersPassed = validReports.length === ctx.inputs.verifier_count && validReports.every((report) => report.verdict === "pass");
     await writeFile(join(root, `verification-summary-${repairsCompleted}.json`), JSON.stringify(validReports, null, 2));
@@ -72,9 +81,11 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
     const reduced = await ctx.task(`reducer-${repairsCompleted}`, {
       prompt: renderReducerPrompt(ctx.inputs.task, candidatePath, verifierArtifactPaths, repairsCompleted, ctx.inputs.max_repairs),
       context: "fresh", reads: [candidatePath, rubricPath, ...verifierArtifactPaths], schema: reducerSchema,
-      output: reviewReportPath, outputMode: "file-only",
     });
     decision = structured(reduced.structured, isReducer) ?? decision;
+    // Same inter-stage contract as the verifier reports above: the repair
+    // stage reads this path as the reducer's structured decision.
+    await writeFile(reviewReportPath, `${JSON.stringify(decision, null, 2)}\n`);
     if (decision.decision === "accept" && !allVerifiersPassed) {
       const remaining = validReports.flatMap((report) => report.blocking_findings);
       decision = repairsCompleted < ctx.inputs.max_repairs

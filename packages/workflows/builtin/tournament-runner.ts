@@ -125,8 +125,6 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
         context: "fresh" as const,
         reads: [first.path, second.path],
         schema: judgeDecisionSchema,
-        output: path,
-        outputMode: "file-only" as const,
       };
     });
     const judgeResults = await ctx.parallel(judgeSteps, {
@@ -141,6 +139,11 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
       const second = reverse ? left : right;
       const name = `judge-round-${round}-match-${index + 1}`;
       const decision = decisionFrom(resultByName(judgeResults, name));
+      // Judge decisions are inter-stage data: the bracket reducer reads
+      // schema-shaped JSON from these paths, so the runner persists the
+      // structured decisions itself rather than the stage artifact channel.
+      const judgeArtifactPath = judgeArtifactPaths.at(-pairs.length + index)!;
+      await writeFile(judgeArtifactPath, `${JSON.stringify(decision, null, 2)}\n`);
       const winner = decision.winner === "first" ? first : second;
       next.push(winner);
       matches.push({
@@ -151,7 +154,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
         winner: winner.label,
         rationale: decision.rationale,
         evidence: decision.evidence,
-        judge_artifact_path: judgeArtifactPaths.at(-pairs.length + index)!,
+        judge_artifact_path: judgeArtifactPath,
       });
     }
     if (bye !== undefined) next.push(bye);
