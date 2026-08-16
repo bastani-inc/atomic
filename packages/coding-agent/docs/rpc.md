@@ -985,6 +985,7 @@ boolean — present only when the provider reported one.
     "delta": "Hello "
   }
 }
+```
 
 The `assistantMessageEvent` field contains one of these delta types:
 

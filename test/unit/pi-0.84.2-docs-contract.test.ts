@@ -15,6 +15,14 @@ import { moduleDir } from "../helpers/runtime.js";
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const docsDir = join(repoRoot, "packages/coding-agent/docs");
 
+/** Every markdown file this layer shipped or touched, discovered not hardcoded. */
+const docFiles = [
+	...readdirSync(docsDir)
+		.filter((name) => name.endsWith(".md"))
+		.map((name) => [`packages/coding-agent/docs/${name}`, join(docsDir, name)] as const),
+	["packages/workflows/README.md", join(repoRoot, "packages/workflows/README.md")] as const,
+];
+
 function doc(name: string): string {
 	return readFileSync(join(docsDir, name), "utf8");
 }
@@ -39,14 +47,32 @@ function changelogSubsection(sectionText: string, name: string): string {
 	return sectionText.slice(start, end === -1 ? undefined : end);
 }
 
-describe("pi 0.84.2 docs contract — no renderer-mode machinery", () => {
-	const docFiles = [
-		...readdirSync(docsDir)
-			.filter((name) => name.endsWith(".md"))
-			.map((name) => [`packages/coding-agent/docs/${name}`, join(docsDir, name)] as const),
-		["packages/workflows/README.md", join(repoRoot, "packages/workflows/README.md")] as const,
-	];
+describe("pi 0.84.2 docs contract — markdown structure", () => {
+	test("every fenced code block in every doc file is closed (fence parity)", () => {
+		assert.ok(docFiles.length > 20, "the doc corpus was discovered, not hardcoded");
+		for (const [name, path] of docFiles) {
+			const lines = readFileSync(path, "utf8").split("\n");
+			// A fence marker is a line whose first non-space characters are ```.
+			// Each one toggles open/closed, so their count must be even; an odd
+			// count means one example block swallows everything after it and
+			// every later table, heading, and example renders inside out.
+			const fenceLines = lines
+				.map((line, i) => ({ i: i + 1, fence: /^\s*```/u.test(line) }))
+				.filter(({ fence }) => fence);
+			const firstFenceLines = fenceLines
+				.slice(0, 5)
+				.map(({ i }) => i)
+				.join(", ");
+			assert.equal(
+				fenceLines.length % 2,
+				0,
+				`${name} has ${fenceLines.length} fence markers (lines ${firstFenceLines}…): an unclosed code block inverts the rendering of everything after it`,
+			);
+		}
+	});
+});
 
+describe("pi 0.84.2 docs contract — no renderer-mode machinery", () => {
 	test("no doc mentions tuiMode, --tui-mode, or a regular renderer mode", () => {
 		assert.ok(docFiles.length > 20, "the doc corpus was discovered, not hardcoded");
 		for (const [name, path] of docFiles) {
@@ -122,11 +148,15 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.match(keybindings, /pi-tui 0\.84\.2/u);
 	});
 
-	test("environment-variables.md documents PI_TUI_ESC_TIMEOUT and the AI_AGENT marker", () => {
+	test("environment-variables.md documents PI_TUI_ESC_TIMEOUT, the AI_AGENT marker, and the experimental gate", () => {
 		const env = doc("environment-variables.md");
 		assert.match(env, /`PI_TUI_ESC_TIMEOUT`/u);
 		assert.match(env, /`100` over SSH and `10` otherwise/u);
 		assert.match(env, /`AI_AGENT=atomic`/u);
+		// The strict-sampling feature is reachable only through this gate, so the
+		// gate itself must be documented where the other app variables live.
+		assert.match(env, /\| `ATOMIC_EXPERIMENTAL` \| `PI_EXPERIMENTAL` \|/u);
+		assert.match(env, /strict JSON-schema constrained sampling/u);
 	});
 
 	test("json.md and rpc.md document usage and endTurn on message_update", () => {
@@ -192,9 +222,14 @@ describe("pi 0.84.2 docs contract — changelog covers L1–L20", () => {
 			"`expandPromptTemplates`",
 			"strict JSON-schema constrained sampling",
 			"Cloudflare AI Gateway Workers AI binding",
+			"`SessionNameState`",
+			"`getSessionNameState()`",
 		]) {
 			assert.ok(added.includes(needle), `[Unreleased] Added must mention ${needle}`);
 		}
+		// A new export is new public surface, not a fix: it belongs under Added.
+		const fixed = changelogSubsection(unreleased, "Fixed");
+		assert.ok(!fixed.includes("`getSessionNameState()`"), "new SDK exports belong under ### Added");
 	});
 
 	test("coding-agent [Unreleased] Changed carries the pi 0.84.2 adoption and the Theme constructor change", () => {
