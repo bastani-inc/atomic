@@ -573,10 +573,6 @@ class Atomic(BaseInstalledAgent):
             output_text = output_file.read_bytes().decode("utf-8", errors="replace")
         except OSError:
             output_text = ""
-        if "\ufffd" in output_text:
-            self._malformed_jsonl_lines[str(output_file)] = (
-                self._malformed_jsonl_lines.get(str(output_file), 0) + 1
-            )
         for line in output_text.splitlines():
             line = line.strip()
             if not line:
@@ -584,10 +580,6 @@ class Atomic(BaseInstalledAgent):
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
-                if line.startswith(("{", "[")):
-                    self._malformed_jsonl_lines[str(output_file)] = (
-                        self._malformed_jsonl_lines.get(str(output_file), 0) + 1
-                    )
                 continue
             if not isinstance(event, dict) or event.get("type") != "message_end":
                 continue
