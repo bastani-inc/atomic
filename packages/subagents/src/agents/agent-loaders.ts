@@ -10,7 +10,7 @@ import {
 	defaultInheritSkills,
 	defaultSystemPromptMode,
 } from "./agent-types.ts";
-import { parseFrontmatter } from "./frontmatter.ts";
+import { type FrontmatterValue, parseFrontmatter } from "./frontmatter.ts";
 import { buildRuntimeName, parsePackageName } from "./identity.ts";
 
 function listFilesRecursive(dir: string, predicate: (fileName: string) => boolean): string[] {
@@ -45,6 +45,39 @@ function parseCommaSeparatedList(value: string | undefined): string[] | undefine
 	return parsed && parsed.length > 0 ? parsed : undefined;
 }
 
+/**
+ * Narrow a frontmatter value to its scalar spelling. A YAML sequence where a
+ * scalar belongs (`model: [anthropic, x]`) reads as undefined rather than a
+ * stringified list, matching upstream's `typeof` narrowing.
+ */
+function frontmatterString(value: FrontmatterValue | undefined): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * Normalize a frontmatter `tools` value to a list of tool names.
+ *
+ * Both spellings are valid YAML and both are in use (upstream pi #7598):
+ *
+ *     tools: read, bash        # string, comma-separated
+ *     tools: [read, bash]      # flow sequence
+ *     tools:                   # block sequence
+ *       - read
+ *       - bash
+ *
+ * so accept either. Anything else yields no tools rather than throwing: this
+ * runs inside agent discovery, where a single bad file must not take down
+ * every other agent in the same directory.
+ */
+function parseToolList(value: FrontmatterValue | undefined): string[] | undefined {
+	const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+	const tools = raw
+		.filter((tool): tool is string => typeof tool === "string")
+		.map((tool) => tool.trim())
+		.filter(Boolean);
+	return tools.length > 0 ? tools : undefined;
+}
+
 export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
@@ -58,51 +91,57 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 
 		const { frontmatter, body } = parseFrontmatter(content);
 
-		if (!frontmatter.name || !frontmatter.description) {
+		// Sequences are legal frontmatter but not valid `name`/`description`
+		// spellings; a file whose identity fields are not plain strings is
+		// skipped whole, exactly as upstream's loader does.
+		const localName = frontmatterString(frontmatter.name);
+		const description = frontmatterString(frontmatter.description);
+		if (!localName || !description) {
 			continue;
 		}
 
-		const localName = frontmatter.name;
-		const parsedPackage = parsePackageName(frontmatter.package, `Agent '${localName}' package`);
+		const parsedPackage = parsePackageName(frontmatterString(frontmatter.package), `Agent '${localName}' package`);
 		if (parsedPackage.error) continue;
 		const packageName = parsedPackage.packageName;
 		const runtimeName = buildRuntimeName(localName, packageName);
 
-		const rawTools = parseCommaSeparatedList(frontmatter.tools);
+		const rawTools = parseToolList(frontmatter.tools);
 		const parsedTools = splitToolList(rawTools);
-		const defaultReads = parseCommaSeparatedList(frontmatter.defaultReads);
-		const skillStr = frontmatter.skill || frontmatter.skills;
+		const defaultReads = parseCommaSeparatedList(frontmatterString(frontmatter.defaultReads));
+		const skillStr = frontmatterString(frontmatter.skill) || frontmatterString(frontmatter.skills) || undefined;
 		const skills = parseCommaSeparatedList(skillStr);
-		const fallbackModels = parseCommaSeparatedList(frontmatter.fallbackModels);
-		const fallbackThinkingLevels = parseCommaSeparatedList(frontmatter.fallbackThinkingLevels);
+		const fallbackModels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackModels));
+		const fallbackThinkingLevels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackThinkingLevels));
+		const systemPromptModeRaw = frontmatterString(frontmatter.systemPromptMode);
+		const inheritProjectContextRaw = frontmatterString(frontmatter.inheritProjectContext);
+		const inheritSkillsRaw = frontmatterString(frontmatter.inheritSkills);
+		const defaultContextRaw = frontmatterString(frontmatter.defaultContext);
+		const extensionsRaw = frontmatterString(frontmatter.extensions);
+		const maxSubagentDepthRaw = frontmatterString(frontmatter.maxSubagentDepth);
 		const systemPromptMode =
-			frontmatter.systemPromptMode === "replace"
+			systemPromptModeRaw === "replace"
 				? "replace"
-				: frontmatter.systemPromptMode === "append"
+				: systemPromptModeRaw === "append"
 					? "append"
 					: defaultSystemPromptMode(localName);
 		const inheritProjectContext =
-			frontmatter.inheritProjectContext === "true"
+			inheritProjectContextRaw === "true"
 				? true
-				: frontmatter.inheritProjectContext === "false"
+				: inheritProjectContextRaw === "false"
 					? false
 					: defaultInheritProjectContext(localName);
 		const inheritSkills =
-			frontmatter.inheritSkills === "true"
-				? true
-				: frontmatter.inheritSkills === "false"
-					? false
-					: defaultInheritSkills();
+			inheritSkillsRaw === "true" ? true : inheritSkillsRaw === "false" ? false : defaultInheritSkills();
 		const defaultContext =
-			frontmatter.defaultContext === "fork"
+			defaultContextRaw === "fork"
 				? ("fork" as const)
-				: frontmatter.defaultContext === "fresh"
+				: defaultContextRaw === "fresh"
 					? ("fresh" as const)
 					: undefined;
 
 		let extensions: string[] | undefined;
-		if (frontmatter.extensions !== undefined) {
-			extensions = frontmatter.extensions
+		if (extensionsRaw !== undefined) {
+			extensions = extensionsRaw
 				.split(",")
 				.map((extension) => extension.trim())
 				.filter(Boolean);
@@ -110,22 +149,22 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 
 		const extraFields: Record<string, string> = {};
 		for (const [key, value] of Object.entries(frontmatter)) {
-			if (shouldPreserveAgentExtraField(key)) extraFields[key] = value;
+			if (shouldPreserveAgentExtraField(key) && typeof value === "string") extraFields[key] = value;
 		}
 
-		const parsedMaxSubagentDepth = normalizeMaxSubagentDepth(frontmatter.maxSubagentDepth);
+		const parsedMaxSubagentDepth = normalizeMaxSubagentDepth(maxSubagentDepthRaw);
 
 		agents.push({
 			name: runtimeName,
 			localName,
 			packageName,
-			description: frontmatter.description,
+			description,
 			tools: parsedTools.tools,
 			mcpDirectTools: parsedTools.mcpDirectTools,
-			model: frontmatter.model,
+			model: frontmatterString(frontmatter.model),
 			fallbackModels,
 			fallbackThinkingLevels,
-			thinking: frontmatter.thinking,
+			thinking: frontmatterString(frontmatter.thinking),
 			systemPromptMode,
 			inheritProjectContext,
 			inheritSkills,
@@ -135,10 +174,10 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			filePath,
 			skills,
 			extensions,
-			output: frontmatter.output,
+			output: frontmatterString(frontmatter.output),
 			defaultReads,
-			defaultProgress: frontmatter.defaultProgress === "true",
-			interactive: frontmatter.interactive === "true",
+			defaultProgress: frontmatterString(frontmatter.defaultProgress) === "true",
+			interactive: frontmatterString(frontmatter.interactive) === "true",
 			maxSubagentDepth: parsedMaxSubagentDepth,
 			extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
 		});

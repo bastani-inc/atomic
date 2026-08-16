@@ -111,6 +111,13 @@ export interface RunSyncOptions {
 	preferredModelProvider?: string;
 	/** Current parent-session model to try after configured fallback models */
 	currentModel?: string;
+	/**
+	 * Current parent-session thinking level. Inherited by a child that pins no
+	 * model of its own — neither frontmatter `model` nor a per-call override —
+	 * matching upstream pi #7897: a subagent dispatched without a model runs on
+	 * the dispatching session's model and thinking level.
+	 */
+	currentThinkingLevel?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
 	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */

@@ -149,6 +149,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				resolveCandidateModel: input.resolveCandidateModel,
 				preferredModelProvider: input.ctx.model?.provider,
 				currentModel: currentModelFullId(input.ctx.model),
+				currentThinkingLevel: input.ctx.thinkingLevel,
 				skills: effectiveSkills === false ? [] : effectiveSkills,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {

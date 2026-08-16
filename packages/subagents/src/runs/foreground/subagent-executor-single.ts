@@ -229,6 +229,7 @@ export async function runSinglePath(
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),
 			preferredModelProvider: currentProvider,
 			currentModel: currentModelFullId(ctx.model),
+			currentThinkingLevel: ctx.thinkingLevel,
 			skills: effectiveSkills,
 		});
 	} catch (error) {

@@ -154,6 +154,7 @@ async function resumeRetainedForegroundChild(
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
 			preferredModelProvider: ctx.model?.provider,
 			currentModel: currentModelFullId(ctx.model),
+			currentThinkingLevel: ctx.thinkingLevel,
 			onUpdate: forwardSingleUpdate,
 			onDetachedExit: (detachedResult) => {
 				cleanupProgress();

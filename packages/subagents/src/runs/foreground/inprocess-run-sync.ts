@@ -199,6 +199,13 @@ export async function runSingleInProcess(
 		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
 	const candidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
+	// Upstream pi #7897: a subagent that pins no model of its own inherits the
+	// dispatching session's model AND thinking level. Atomic resolves the
+	// parent's model as the trailing candidate, so the same condition governs
+	// the parent's thinking level: only when neither the agent's frontmatter
+	// nor the caller named a model. An agent's own `thinking` still wins over
+	// the inherited level, and a candidate `:level` suffix wins over both.
+	const inheritsDispatchConfig = agent.model === undefined && options.modelOverride === undefined;
 	// The candidate is only a string. `createAgentSession` selects a model from a
 	// `Model<Api>` object and otherwise restores the model persisted in the
 	// session file — which, for a fork-context child, is the parent's model.
@@ -254,7 +261,9 @@ export async function runSingleInProcess(
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,
 		model: resolvedCandidate?.model,
-		thinkingLevel: (resolvedCandidate?.thinkingLevel ?? agent.thinking) as ChildSpec["thinkingLevel"],
+		thinkingLevel: (resolvedCandidate?.thinkingLevel ??
+			agent.thinking ??
+			(inheritsDispatchConfig ? options.currentThinkingLevel : undefined)) as ChildSpec["thinkingLevel"],
 		parent,
 		intercom: options.orchestratorIntercomTarget
 			? {
