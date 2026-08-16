@@ -12,6 +12,7 @@
  */
 
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import type { Component } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import { ScrollableComponentViewport } from "../src/modes/interactive/components/chat-transcript.js";
@@ -26,6 +27,13 @@ const STYLES: TranscriptSearchHighlightStyles = {
 	match: (text) => `<m>${text}</m>`,
 	currentMatch: (text) => `<c>${text}</c>`,
 };
+
+/**
+ * These 24–64 KiB transcript rows must stay far below the suite's 30 s
+ * timeout. The generous budget detects the old 2.5–6.5 s near-quadratic scans
+ * without treating this as a microbenchmark.
+ */
+const MALFORMED_ANSI_HIGHLIGHT_BUDGET_MS = 1_000;
 
 /** A plain component of fixed text rows, the shape a chat body stacks. */
 function textComponent(lines: readonly string[]): Component {
@@ -122,6 +130,48 @@ describe("transcript search highlighting", () => {
 		const line = `${"\x1b[31m".repeat(2048)}needle`;
 		const highlighted = highlightSearchMatchRow(line, [{ startCol: 0, endCol: line.length, current: false }], STYLES);
 		assert.ok(highlighted.endsWith("<m>needle</m>"));
+	});
+
+	test("keeps literal CSI-at input within the interactive highlight budget", () => {
+		const prefix = "\x1b[@".repeat(8192);
+		const line = `${prefix}needle`;
+		const startedAt = performance.now();
+		const highlighted = highlightSearchMatchRow(line, [{ startCol: 0, endCol: line.length, current: false }], STYLES);
+		const elapsedMs = performance.now() - startedAt;
+
+		assert.equal(highlighted, `${prefix}<m>needle</m>`);
+		assert.ok(
+			elapsedMs < MALFORMED_ANSI_HIGHLIGHT_BUDGET_MS,
+			`literal CSI-at highlight took ${elapsedMs.toFixed(0)} ms (budget ${MALFORMED_ANSI_HIGHLIGHT_BUDGET_MS} ms)`,
+		);
+	});
+
+	test("keeps repeated malformed OSC openers within the interactive highlight budget", () => {
+		const line = `${"\x1b]".repeat(32768)}needle`;
+		const startedAt = performance.now();
+		const highlighted = highlightSearchMatchRow(line, [{ startCol: 0, endCol: line.length, current: false }], STYLES);
+		const elapsedMs = performance.now() - startedAt;
+
+		assert.equal(highlighted, `${"\x1b]".repeat(32768)}<m>needle</m>`);
+		assert.ok(
+			elapsedMs < MALFORMED_ANSI_HIGHLIGHT_BUDGET_MS,
+			`malformed OSC highlight took ${elapsedMs.toFixed(0)} ms (budget ${MALFORMED_ANSI_HIGHLIGHT_BUDGET_MS} ms)`,
+		);
+	});
+
+	test("keeps mixed malformed CSI input within the interactive highlight budget", () => {
+		const repeats = 8192;
+		const prefix = `\x1b[${"@\x1b[ ".repeat(repeats)}`;
+		const line = `${prefix}needle`;
+		const startedAt = performance.now();
+		const highlighted = highlightSearchMatchRow(line, [{ startCol: 0, endCol: line.length, current: false }], STYLES);
+		const elapsedMs = performance.now() - startedAt;
+
+		assert.equal(highlighted, `${prefix}n<m>eedle</m>`);
+		assert.ok(
+			elapsedMs < MALFORMED_ANSI_HIGHLIGHT_BUDGET_MS,
+			`mixed malformed CSI highlight took ${elapsedMs.toFixed(0)} ms (budget ${MALFORMED_ANSI_HIGHLIGHT_BUDGET_MS} ms)`,
+		);
 	});
 	test("preserves multiple trailing ANSI sequences after a middle highlight", () => {
 		const highlighted = highlightSearchMatchRow(

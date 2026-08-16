@@ -14,7 +14,7 @@
  * supplies the styling and decides which rows are on screen.
  */
 
-import { sliceByColumn, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 /** One highlightable run of columns on one row of the searched corpus. */
 export interface TranscriptSearchSegment {
@@ -43,6 +43,112 @@ interface SearchCorpus {
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
+interface TerminalLineToken {
+	text: string;
+	width: number;
+	ansi: boolean;
+}
+
+interface ScannedTerminalLine {
+	tokens: TerminalLineToken[];
+	width: number;
+}
+
+function isPiCsiFinal(code: number): boolean {
+	return code === 0x6d || code === 0x47 || code === 0x4b || code === 0x48 || code === 0x4a;
+}
+
+/**
+ * Tokenize using pi-tui's 0.84.2 terminal-sequence semantics, but pre-index
+ * terminators so every input code unit is inspected a bounded number of times.
+ * Its `extractAnsiCode()` scans the full remaining suffix for each unterminated
+ * ESC `[` / ESC `]`; repeated malformed openers therefore become quadratic.
+ */
+function scanTerminalLine(line: string): ScannedTerminalLine {
+	const length = line.length;
+	const hasEscape = line.includes("\x1b");
+	const nextCsiFinal = hasEscape ? new Int32Array(length + 1) : undefined;
+	const nextStringTerminatorEnd = hasEscape ? new Int32Array(length + 1) : undefined;
+	if (nextCsiFinal && nextStringTerminatorEnd) {
+		nextCsiFinal.fill(-1);
+		nextStringTerminatorEnd.fill(-1);
+		let csiFinal = -1;
+		let stringTerminatorEnd = -1;
+		for (let index = length - 1; index >= 0; index -= 1) {
+			if (isPiCsiFinal(line.charCodeAt(index))) csiFinal = index;
+			nextCsiFinal[index] = csiFinal;
+			if (line.charCodeAt(index) === 0x07) stringTerminatorEnd = index + 1;
+			else if (line.charCodeAt(index) === 0x1b && line[index + 1] === "\\") stringTerminatorEnd = index + 2;
+			nextStringTerminatorEnd[index] = stringTerminatorEnd;
+		}
+	}
+
+	const ansiLengthAt = (index: number): number => {
+		if (!hasEscape || line.charCodeAt(index) !== 0x1b) return 0;
+		const next = line[index + 1];
+		if (next === "[") {
+			const final = nextCsiFinal?.[index + 2] ?? -1;
+			return final >= 0 ? final + 1 - index : 0;
+		}
+		if (next === "]" || next === "_") {
+			const end = nextStringTerminatorEnd?.[index + 2] ?? -1;
+			return end >= 0 ? end - index : 0;
+		}
+		return 0;
+	};
+
+	const tokens: TerminalLineToken[] = [];
+	let width = 0;
+	let index = 0;
+	while (index < length) {
+		const ansiLength = ansiLengthAt(index);
+		if (ansiLength > 0) {
+			tokens.push({ text: line.slice(index, index + ansiLength), width: 0, ansi: true });
+			index += ansiLength;
+			continue;
+		}
+		let textEnd = index + 1;
+		while (textEnd < length && ansiLengthAt(textEnd) === 0) textEnd += 1;
+		for (const { segment } of graphemeSegmenter.segment(line.slice(index, textEnd))) {
+			let segmentWidth: number;
+			if (segment === "\t") segmentWidth = 3;
+			else {
+				const code = segment.length === 1 ? segment.charCodeAt(0) : 0;
+				segmentWidth = code >= 0x20 && code <= 0x7e ? 1 : visibleWidth(segment);
+			}
+			tokens.push({ text: segment, width: segmentWidth, ansi: false });
+			width += segmentWidth;
+		}
+		index = textEnd;
+	}
+	return { tokens, width };
+}
+
+/** Match pi-tui's strict column slicing against one pre-scanned line. */
+function sliceScannedLine(line: ScannedTerminalLine, startCol: number, length: number): string {
+	if (length <= 0) return "";
+	const endCol = startCol + length;
+	const result: string[] = [];
+	const pendingAnsi: string[] = [];
+	let currentCol = 0;
+	for (const token of line.tokens) {
+		if (token.ansi) {
+			if (currentCol >= startCol && currentCol < endCol) result.push(token.text);
+			else if (currentCol < startCol) pendingAnsi.push(token.text);
+			continue;
+		}
+		const inRange = currentCol >= startCol && currentCol < endCol;
+		const fits = currentCol + token.width <= endCol;
+		if (inRange && fits) {
+			if (pendingAnsi.length > 0) result.push(pendingAnsi.splice(0).join(""));
+			result.push(token.text);
+		}
+		currentCol += token.width;
+		if (currentCol >= endCol) break;
+	}
+	return result.join("");
+}
+
 function appendMappedText(text: string, span: TranscriptSearchSegment | undefined, corpus: SearchCorpus): void {
 	corpus.text += text;
 	for (let index = 0; index < text.length; index += 1) corpus.source.push(span);
@@ -61,22 +167,22 @@ function buildSearchCorpus(lines: readonly string[]): SearchCorpus {
 	const corpus: SearchCorpus = { text: "", source: [] };
 	let pendingSeparator = false;
 	for (let row = 0; row < lines.length; row += 1) {
-		const line = stripTerminalSequences(lines[row] ?? "");
+		const line = scanTerminalLine(lines[row] ?? "");
 		let column = 0;
-		for (const grapheme of graphemeSegmenter.segment(line)) {
-			const text = grapheme.segment;
-			const width = visibleWidth(text);
+		for (const token of line.tokens) {
+			if (token.ansi) continue;
+			const text = token.text;
 			if (/^\s+$/u.test(text)) {
 				if (corpus.text.length > 0) pendingSeparator = true;
-				column += width;
+				column += token.width;
 				continue;
 			}
 			if (pendingSeparator) {
 				appendMappedText(" ", undefined, corpus);
 				pendingSeparator = false;
 			}
-			appendMappedText(text, { row, startCol: column, endCol: column + width }, corpus);
-			column += width;
+			appendMappedText(text, { row, startCol: column, endCol: column + token.width }, corpus);
+			column += token.width;
 		}
 		if (corpus.text.length > 0) pendingSeparator = true;
 	}
@@ -134,7 +240,7 @@ export function getSearchMatchKey(match: TranscriptSearchMatch): string {
 	return first && last ? `${first.row}:${first.startCol}:${last.row}:${last.endCol}` : "";
 }
 
-const ANSI_SEQUENCE = /^(?:\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_])/;
+const ANSI_SEQUENCE = /(?:\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_])/y;
 
 /**
  * Style the printable runs of `text`, leaving its escape sequences alone.
@@ -145,22 +251,23 @@ const ANSI_SEQUENCE = /^(?:\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[
  * outermost on each of them.
  */
 function styleTextPreservingAnsi(text: string, style: (text: string) => string): string {
-	let result = "";
+	const result: string[] = [];
 	let plainStart = 0;
 	let index = 0;
 	while (index < text.length) {
-		const ansi = ANSI_SEQUENCE.exec(text.slice(index));
+		ANSI_SEQUENCE.lastIndex = index;
+		const ansi = ANSI_SEQUENCE.exec(text);
 		if (!ansi) {
 			index += 1;
 			continue;
 		}
-		if (index > plainStart) result += style(text.slice(plainStart, index));
-		result += ansi[0];
+		if (index > plainStart) result.push(style(text.slice(plainStart, index)));
+		result.push(ansi[0]);
 		index += ansi[0].length;
 		plainStart = index;
 	}
-	if (plainStart < text.length) result += style(text.slice(plainStart));
-	return result;
+	if (plainStart < text.length) result.push(style(text.slice(plainStart)));
+	return result.join("");
 }
 
 /** One highlight request against a single rendered row. */
@@ -188,7 +295,8 @@ export function highlightSearchMatchRow(
 	styles: TranscriptSearchHighlightStyles,
 ): string {
 	if (ranges.length === 0) return line;
-	const lineWidth = visibleWidth(line);
+	const scannedLine = scanTerminalLine(line);
+	const lineWidth = scannedLine.width;
 	const ordered = [...ranges].sort((a, b) => a.startCol - b.startCol || Number(b.current) - Number(a.current));
 	const pieces: string[] = [];
 	let cursor = 0;
@@ -196,13 +304,13 @@ export function highlightSearchMatchRow(
 		const startCol = Math.max(cursor, range.startCol);
 		const endCol = Math.min(range.endCol, lineWidth);
 		if (endCol <= startCol) continue;
-		if (startCol > cursor) pieces.push(sliceByColumn(line, cursor, startCol - cursor, true));
+		if (startCol > cursor) pieces.push(sliceScannedLine(scannedLine, cursor, startCol - cursor));
 		const style = range.current ? styles.currentMatch : styles.match;
-		pieces.push(styleTextPreservingAnsi(sliceByColumn(line, startCol, endCol - startCol, true), style));
+		pieces.push(styleTextPreservingAnsi(sliceScannedLine(scannedLine, startCol, endCol - startCol), style));
 		cursor = endCol;
 	}
 	if (cursor === 0) return line;
-	// Ask for one column past the visible text so pi-tui carries trailing ANSI sequences.
-	pieces.push(sliceByColumn(line, cursor, lineWidth - cursor + 1, true));
+	// Ask for one column past the visible text so trailing ANSI sequences survive.
+	pieces.push(sliceScannedLine(scannedLine, cursor, lineWidth - cursor + 1));
 	return pieces.join("");
 }
