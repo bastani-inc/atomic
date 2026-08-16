@@ -242,6 +242,22 @@ def _is_trial_root(path: Path) -> bool:
     return (path / TRIAL_CONFIG_FILENAME).is_file() and (path / TRIAL_RESULT_FILENAME).is_file()
 
 
+def _under_job_metadata(path: Path, job_dir: Path) -> bool:
+    """True when ``path`` sits inside a job-level metadata directory.
+
+    Checked on the whole relative path, not just the final component. Pier's
+    critique runs live at ``.critiques/{run}/{trial}/`` and create their own
+    ``agent/`` and ``artifacts/`` directories, so a recursive search finds them
+    and audits critique output as if it were a benchmark trial. It carries no
+    ``model.patch``, which failed an otherwise healthy job.
+    """
+    try:
+        relative = path.relative_to(job_dir)
+    except ValueError:
+        return False
+    return any(part in JOB_METADATA_DIR_NAMES for part in relative.parts)
+
+
 def find_trial_dirs(job_dir: Path) -> list[Path]:
     """Return every trial directory under ``job_dir``, in sorted order.
 
@@ -256,13 +272,16 @@ def find_trial_dirs(job_dir: Path) -> list[Path]:
     ``ok`` and named only the healthy one. A root already containing a
     discovered directory is not added again, so a multi-step trial is audited at
     its steps rather than twice.
+
+    Both discoveries skip job metadata. Only the marker search did at first,
+    which left the recursive one free to audit a critique run as a trial.
     """
     if not job_dir.is_dir():
         return []
     found: set[Path] = set()
     for name in (AGENT_DIR_NAME, ARTIFACTS_DIR_NAME):
         for path in job_dir.rglob(name):
-            if path.is_dir():
+            if path.is_dir() and not _under_job_metadata(path, job_dir):
                 found.add(path.parent)
     for child in sorted(job_dir.iterdir()):
         if _is_trial_root(child) and not any(
