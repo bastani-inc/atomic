@@ -11,7 +11,7 @@ Commands run from `evals/` unless stated otherwise.
 | Path | Remote | Why |
 |---|---|---|
 | `evals/deep-swe` | [`datacurve-ai/deep-swe`](https://github.com/datacurve-ai/deep-swe) | The Deep SWE task corpus: 113 tasks, each with a `[[verifier.collect]]` hook that writes `/logs/artifacts/model.patch`. |
-| `evals/vendor/pier` | [`bastani-inc/pier`](https://github.com/bastani-inc/pier) | Org-owned fork of [`datacurve-ai/pier`](https://github.com/datacurve-ai/pier). Upstream `v0.3.1` plus Atomic commits that (a) set `extra="forbid"` on the task-config models, so a `task.toml` key pier cannot model raises a `ValidationError` naming it instead of being silently dropped, (b) honor verifier-scoped `network_mode`, and (c) error a trial whose `model.patch` never arrived or arrived empty, instead of recording it as completed. |
+| `evals/vendor/pier` | [`bastani-inc/pier`](https://github.com/bastani-inc/pier), branch `main` | Org-owned fork of [`datacurve-ai/pier`](https://github.com/datacurve-ai/pier). Upstream `v0.3.1` and later, plus Atomic commits that (a) set `extra="forbid"` on the task-config models, so a `task.toml` key pier cannot model raises a `ValidationError` naming it instead of being silently dropped, (b) honor verifier-scoped `network_mode`, and (c) error a trial whose `model.patch` never arrived or arrived empty, instead of recording it as completed. |
 
 Both are pinned by SHA. Read a pin from the superproject gitlink:
 
@@ -26,14 +26,21 @@ it silently reports the wrong corpus.
 
 ### Changing the pier fork
 
-Commit and push to `bastani-inc/pier` first, then move the gitlink and refresh
-the editable install:
+The fork's `main` carries the Atomic commits, so changes land there rather than
+on a long-lived side branch. Push first, then move the gitlink and refresh the
+editable install:
 
 ```bash
-git -C evals/vendor/pier push origin HEAD:<branch>
+git -C evals/vendor/pier push origin HEAD:main
 git add evals/vendor/pier
 uv sync --reinstall-package datacurve-pier
 ```
+
+To take new upstream work, merge `datacurve-ai/pier` into the fork's `main`,
+rerun its suite, and move the gitlink. `git submodule update --remote` will
+fetch that `main` because `.gitmodules` names it, but it does **not** update the
+pin — it moves the working tree off it, which the preflight then reports as
+drift. Commit the new gitlink to make it the pin.
 
 ## Preflight
 

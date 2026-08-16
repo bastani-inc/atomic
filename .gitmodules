@@ -4,3 +4,4 @@
 [submodule "evals/vendor/pier"]
 	path = evals/vendor/pier
 	url = https://github.com/bastani-inc/pier
+	branch = main
