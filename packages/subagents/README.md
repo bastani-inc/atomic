@@ -413,7 +413,7 @@ Important fields:
 | `package` | Optional package identifier. A file with `name: api-auditor` and `package: code-analysis` registers as `code-analysis.api-auditor`; serialization keeps `name` and `package` separate. |
 | `tools` | Builtin tool allowlist, comma-separated (`tools: read, bash`) or YAML array-form (`tools: [read, bash]`, or a `tools:` block list) — both spellings produce the same tool set. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
 | `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
-| `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. When omitted — and no per-call model override is given — the subagent inherits the dispatching session's active model and thinking level; a declared `thinking` still takes precedence over the inherited level. |
+| `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. When omitted — with no `fallbackModels` and no per-call model override — the subagent inherits the dispatching session's active model and thinking level; a declared `thinking` still takes precedence over the inherited level. |
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. The current user-selected model is automatically appended as the last fallback and de-duplicated. Ordinary task failures do not trigger fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi’s base prompt. |

@@ -113,9 +113,12 @@ export interface RunSyncOptions {
 	currentModel?: string;
 	/**
 	 * Current parent-session thinking level. Inherited by a child that pins no
-	 * model of its own — neither frontmatter `model` nor a per-call override —
-	 * matching upstream pi #7897: a subagent dispatched without a model runs on
-	 * the dispatching session's model and thinking level.
+	 * model of its own — no frontmatter `model`, no `fallbackModels`, and no
+	 * per-call override — matching upstream pi #7897: a subagent dispatched
+	 * without a model runs on the dispatching session's model and thinking
+	 * level. An agent whose fallback chain selects its own first candidate
+	 * runs on that model, not the parent's, and keeps its own thinking
+	 * configuration.
 	 */
 	currentThinkingLevel?: string;
 	/** Skills to inject (overrides agent default if provided) */

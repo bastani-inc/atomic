@@ -1,18 +1,26 @@
 /**
  * Pi 0.84.2 parity audit (upstream d268454e, "accept array-form `tools` in
  * the subagent example", #7598): agent frontmatter must accept YAML
- * array-form `tools` — flow (`tools: [read, bash]`) and block sequences —
- * as well as the comma-separated string, and both spellings must produce
- * the same tool set.
+ * array-form `tools` — flow (`tools: [read, bash]`, single- or multi-line)
+ * and block sequences (`tools:` followed by `- read` lines at any
+ * indentation) — as well as the comma-separated string, and every spelling
+ * must produce the same tool set.
  *
- * Atomic's `@bastani/subagents` parses frontmatter with a line-based reader
- * rather than a YAML library, so before this fix a flow form arrived as the
- * literal string `"[read, bash]"` and comma-split into garbage tool names
- * (`["[read", "bash]"]`) that reached the child as a bogus allowlist. The
- * parser now yields sequences as arrays and the loader normalizes either
- * spelling; scalar fields narrow to strings, so a sequence where a scalar
- * belongs is ignored rather than stringified (upstream's own `typeof`
- * narrowing).
+ * Upstream's fix parses agent frontmatter with a real YAML library. Atomic's
+ * first cut hand-rolled a partial sequence reader, which produced garbage
+ * for legal YAML it did not model: a multi-line flow sequence parsed to the
+ * one-element allowlist `["["]` that reached the child, and a zero-indent
+ * block sequence was dropped entirely. Frontmatter now delegates to the
+ * yaml-backed `parseFrontmatter` exported by `@bastani/atomic`, so every
+ * legal YAML spelling parses identically.
+ *
+ * The real parser also yields true booleans and numbers for the unquoted
+ * spellings `serializeAgent` itself writes (`interactive: true`,
+ * `maxSubagentDepth: 3`); the loader accepts those alongside the legacy
+ * quoted strings, an invalid-YAML file reads as no frontmatter so one bad
+ * file cannot take down the rest of the directory, and sequence-valued
+ * custom fields survive an agent update by round-tripping through
+ * `serializeAgent` as flow sequences.
  *
  * These tests run the real `loadAgentsFromDir` against agent files on disk.
  */
@@ -23,6 +31,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, test } from "vitest";
 import { loadAgentsFromDir } from "../../packages/subagents/src/agents/agent-loaders.ts";
+import { serializeAgent } from "../../packages/subagents/src/agents/agent-serializer.ts";
 import { parseFrontmatter } from "../../packages/subagents/src/agents/frontmatter.ts";
 
 const roots: string[] = [];
@@ -45,15 +54,21 @@ function agentFile(frontmatterTools: string, extra = ""): string {
 }
 
 describe("array-form tools frontmatter parity", () => {
-	test("flow, block, and comma-separated tools produce the same tool set", () => {
+	test("every legal YAML array spelling produces the same tool set as the comma form", () => {
 		const dir = writeAgents({
 			"comma.md": agentFile("tools: read, bash\n"),
 			"flow.md": agentFile("tools: [read, bash]\n"),
-			"block.md": agentFile("tools:\n  - read\n  - bash\n"),
+			// A multi-line flow sequence parsed to the garbage one-element
+			// allowlist ["["] under the hand-rolled reader.
+			"multiline-flow.md": agentFile("tools: [\n  read,\n  bash\n]\n"),
+			// A zero-indent block sequence was dropped entirely (tools read as
+			// undefined) because the reader required indented items.
+			"zero-indent-block.md": agentFile("tools:\n- read\n- bash\n"),
+			"indented-block.md": agentFile("tools:\n  - read\n  - bash\n"),
 		});
 
 		const agents = loadAgentsFromDir(dir, "user");
-		assert.equal(agents.length, 3);
+		assert.equal(agents.length, 5);
 
 		const toolSets = agents.map((agent) => agent.tools);
 		for (const tools of toolSets) {
@@ -62,7 +77,7 @@ describe("array-form tools frontmatter parity", () => {
 		// No spelling splits out MCP direct tools when none are declared.
 		assert.deepEqual(
 			agents.map((agent) => agent.mcpDirectTools),
-			[undefined, undefined, undefined],
+			[undefined, undefined, undefined, undefined, undefined],
 		);
 	});
 
@@ -120,6 +135,70 @@ describe("array-form tools frontmatter parity", () => {
 			agents.map((agent) => agent.name),
 			["probe"],
 		);
+	});
+
+	test("unquoted YAML booleans and numbers load, matching serializeAgent's own spellings", () => {
+		const dir = writeAgents({
+			"scalar-types.md": agentFile(
+				"",
+				"interactive: true\ninheritProjectContext: false\ninheritSkills: true\ndefaultProgress: true\nmaxSubagentDepth: 3\n",
+			),
+		});
+
+		const [agent] = loadAgentsFromDir(dir, "user");
+		assert.equal(agent?.interactive, true);
+		assert.equal(agent?.inheritProjectContext, false);
+		assert.equal(agent?.inheritSkills, true);
+		assert.equal(agent?.defaultProgress, true);
+		assert.equal(agent?.maxSubagentDepth, 3);
+	});
+
+	test("quoted boolean and number strings from the line-reader era stay accepted", () => {
+		const dir = writeAgents({
+			"legacy-strings.md": agentFile(
+				"",
+				'interactive: "true"\ninheritProjectContext: "false"\nmaxSubagentDepth: "2"\n',
+			),
+		});
+
+		const [agent] = loadAgentsFromDir(dir, "user");
+		assert.equal(agent?.interactive, true);
+		assert.equal(agent?.inheritProjectContext, false);
+		assert.equal(agent?.maxSubagentDepth, 2);
+	});
+
+	test("one file with invalid YAML frontmatter does not take down the directory", () => {
+		const dir = writeAgents({
+			// A colon-space inside a plain scalar is invalid YAML; the real
+			// parser throws, and the file must read as frontmatter-less
+			// rather than killing the scan that loads its neighbors.
+			"bad-yaml.md": "---\nname: bad\ndescription: Deploy: fast\ntools: read\n---\n\nbody\n",
+			"good.md": agentFile("tools: read\n"),
+		});
+
+		const agents = loadAgentsFromDir(dir, "user");
+		assert.deepEqual(
+			agents.map((agent) => agent.name),
+			["probe"],
+		);
+	});
+
+	test("a sequence-valued custom field survives an agent update round-trip", () => {
+		const dir = writeAgents({
+			"custom.md": agentFile("", "custom: [a, b]\n"),
+		});
+
+		const [loaded] = loadAgentsFromDir(dir, "user");
+		assert.deepEqual(loaded?.extraFields?.custom, ["a", "b"]);
+
+		// agent-management rewrites the file from the loaded config via
+		// serializeAgent; the sequence must come back out, not be deleted.
+		const rewritten = serializeAgent(loaded!);
+		assert.match(rewritten, /^custom: \[a, b\]$/m);
+
+		const roundTripDir = writeAgents({ "custom.md": rewritten });
+		const [reloaded] = loadAgentsFromDir(roundTripDir, "user");
+		assert.deepEqual(reloaded?.extraFields?.custom, ["a", "b"]);
 	});
 
 	test("parseFrontmatter keeps scalar fields as strings alongside sequences", () => {

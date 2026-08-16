@@ -1,3 +1,5 @@
+import type { FrontmatterValue } from "./frontmatter.ts";
+
 export type AgentScope = "user" | "project" | "both";
 
 export type AgentSource = "builtin" | "user" | "project";
@@ -79,7 +81,7 @@ export interface AgentConfig {
 	interactive?: boolean;
 	maxSubagentDepth?: number;
 	disabled?: boolean;
-	extraFields?: Record<string, string>;
+	extraFields?: Record<string, FrontmatterValue>;
 	override?: BuiltinAgentOverrideInfo;
 }
 

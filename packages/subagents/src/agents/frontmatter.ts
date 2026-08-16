@@ -1,77 +1,49 @@
+import { parseFrontmatter as parseYamlFrontmatter } from "@bastani/atomic";
+
 /**
- * A frontmatter value. Scalars stay strings; YAML sequence values — flow
- * (`tools: [read, bash]`) and block (`tools:` followed by `- read` lines) —
- * parse to arrays so list fields accept the same spellings a real YAML
- * parser produces (upstream pi #7598). Callers narrow per field: a sequence
- * where a scalar belongs is ignored, never stringified.
+ * A frontmatter value as a real YAML parser produces it (upstream pi #7598
+ * parses agent frontmatter with the yaml library, not a line reader): scalars
+ * parse to strings, booleans, numbers, or null; sequences — flow
+ * (`tools: [read, bash]`, single- or multi-line) and block (`tools:` followed
+ * by `- read` lines at any indentation) — parse to arrays of their string
+ * items. Nested maps have no agent-frontmatter spelling and are dropped at
+ * parse, so every consumer narrows over a finite union instead of
+ * re-deriving YAML semantics per field.
  */
-export type FrontmatterValue = string | string[];
+export type FrontmatterValue = string | string[] | boolean | number | null;
 export type Frontmatter = Record<string, FrontmatterValue>;
 
-function stripSurroundingQuotes(value: string): string {
-	if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-		return value.slice(1, -1);
+function toFrontmatterValue(value: unknown): FrontmatterValue | undefined {
+	if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") {
+		return value;
 	}
-	return value;
+	if (Array.isArray(value)) {
+		return value.filter((item): item is string => typeof item === "string");
+	}
+	return undefined;
 }
 
 /**
- * Split the inside of a YAML flow sequence (`[a, b]`) into trimmed items.
- * Items keep no surrounding quotes, matching scalar handling.
+ * Parse a markdown file's frontmatter with the real YAML parser exported by
+ * `@bastani/atomic`. This function never throws: agent discovery loads every
+ * `.md` file in a directory, and one file with invalid YAML (an unclosed flow
+ * sequence, a colon-space inside a plain scalar) must not take down every
+ * other agent there. An unparseable document reads as no frontmatter, which
+ * makes the loader skip that file for lacking `name`/`description`.
  */
-function parseFlowSequenceItems(inner: string): string[] {
-	return inner
-		.split(",")
-		.map((item) => stripSurroundingQuotes(item.trim()))
-		.filter(Boolean);
-}
-
 export function parseFrontmatter(content: string): { frontmatter: Frontmatter; body: string } {
+	let parsed: { frontmatter: unknown; body: string };
+	try {
+		parsed = parseYamlFrontmatter(content);
+	} catch {
+		return { frontmatter: {}, body: content };
+	}
 	const frontmatter: Frontmatter = {};
-	const normalized = content.replace(/\r\n/g, "\n");
-
-	if (!normalized.startsWith("---")) {
-		return { frontmatter, body: normalized };
+	const raw = parsed.frontmatter;
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { frontmatter, body: parsed.body };
+	for (const [key, value] of Object.entries(raw)) {
+		const narrowed = toFrontmatterValue(value);
+		if (narrowed !== undefined) frontmatter[key] = narrowed;
 	}
-
-	const endIndex = normalized.indexOf("\n---", 3);
-	if (endIndex === -1) {
-		return { frontmatter, body: normalized };
-	}
-
-	const frontmatterBlock = normalized.slice(4, endIndex);
-	const body = normalized.slice(endIndex + 4).trim();
-	const lines = frontmatterBlock.split("\n");
-
-	for (let index = 0; index < lines.length; index++) {
-		const match = lines[index]!.match(/^([\w-]+):\s*(.*)$/);
-		if (!match) continue;
-		const key = match[1]!;
-		const value = match[2]!.trim();
-
-		// YAML flow sequence: `key: [a, b]`. `[]` parses to an empty list.
-		if (value.startsWith("[") && value.endsWith("]")) {
-			frontmatter[key] = parseFlowSequenceItems(value.slice(1, -1));
-			continue;
-		}
-
-		// YAML block sequence: `key:` alone, followed by indented `- item` lines.
-		if (value === "") {
-			const items: string[] = [];
-			while (index + 1 < lines.length) {
-				const itemMatch = lines[index + 1]!.match(/^\s+-\s+(.*)$/);
-				if (!itemMatch) break;
-				items.push(stripSurroundingQuotes(itemMatch[1]!.trim()));
-				index++;
-			}
-			if (items.length > 0) {
-				frontmatter[key] = items;
-				continue;
-			}
-		}
-
-		frontmatter[key] = stripSurroundingQuotes(value);
-	}
-
-	return { frontmatter, body };
+	return { frontmatter, body: parsed.body };
 }

@@ -1,4 +1,5 @@
 import type { AgentConfig } from "./agents.ts";
+import type { FrontmatterValue } from "./frontmatter.ts";
 import { frontmatterNameForConfig } from "./identity.ts";
 
 export const KNOWN_FIELDS = new Set([
@@ -33,6 +34,18 @@ export function shouldPreserveAgentExtraField(key: string): boolean {
 function joinComma(values: string[] | undefined): string | undefined {
 	if (!values || values.length === 0) return undefined;
 	return values.join(", ");
+}
+
+/**
+ * Render an extra frontmatter field back to its YAML spelling so an unknown
+ * custom field survives an agent update: sequences return as flow sequences,
+ * booleans/numbers/null as their own scalars, strings verbatim. Each shape
+ * re-parses to itself, so load → serialize → load is stable.
+ */
+function serializeExtraFieldValue(value: FrontmatterValue): string {
+	if (Array.isArray(value)) return `[${value.join(", ")}]`;
+	if (value === null) return "null";
+	return String(value);
 }
 
 export function serializeAgent(config: AgentConfig): string {
@@ -80,7 +93,7 @@ export function serializeAgent(config: AgentConfig): string {
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {
 			if (!shouldPreserveAgentExtraField(key)) continue;
-			lines.push(`${key}: ${value}`);
+			lines.push(`${key}: ${serializeExtraFieldValue(value)}`);
 		}
 	}
 

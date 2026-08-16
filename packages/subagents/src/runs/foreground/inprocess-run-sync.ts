@@ -201,11 +201,16 @@ export async function runSingleInProcess(
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	// Upstream pi #7897: a subagent that pins no model of its own inherits the
 	// dispatching session's model AND thinking level. Atomic resolves the
-	// parent's model as the trailing candidate, so the same condition governs
-	// the parent's thinking level: only when neither the agent's frontmatter
-	// nor the caller named a model. An agent's own `thinking` still wins over
-	// the inherited level, and a candidate `:level` suffix wins over both.
-	const inheritsDispatchConfig = agent.model === undefined && options.modelOverride === undefined;
+	// parent's model as the trailing candidate, so the parent's thinking level
+	// applies only when nothing the agent configured can outrank it: no
+	// frontmatter `model`, no `fallbackModels` (an agent whose fallback chain
+	// selects its own first candidate runs on that model, not the parent's),
+	// and no per-call override. An agent's own `thinking` still wins over the
+	// inherited level, and a candidate `:level` suffix wins over both.
+	const inheritsDispatchConfig =
+		agent.model === undefined &&
+		(agent.fallbackModels === undefined || agent.fallbackModels.length === 0) &&
+		options.modelOverride === undefined;
 	// The candidate is only a string. `createAgentSession` selects a model from a
 	// `Model<Api>` object and otherwise restores the model persisted in the
 	// session file — which, for a fork-context child, is the parent's model.

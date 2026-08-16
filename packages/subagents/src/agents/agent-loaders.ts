@@ -55,6 +55,19 @@ function frontmatterString(value: FrontmatterValue | undefined): string | undefi
 }
 
 /**
+ * Narrow a frontmatter value to a boolean. The real YAML parser yields true
+ * booleans for the unquoted spellings `serializeAgent` itself writes
+ * (`interactive: true`); quoted or hand-written `"true"`/`"false"` strings
+ * from the legacy line-reader era stay accepted.
+ */
+function frontmatterBoolean(value: FrontmatterValue | undefined): boolean | undefined {
+	if (typeof value === "boolean") return value;
+	if (value === "true") return true;
+	if (value === "false") return false;
+	return undefined;
+}
+
+/**
  * Normalize a frontmatter `tools` value to a list of tool names.
  *
  * Both spellings are valid YAML and both are in use (upstream pi #7598):
@@ -107,38 +120,30 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 
 		const rawTools = parseToolList(frontmatter.tools);
 		const parsedTools = splitToolList(rawTools);
+		const inheritProjectContextRaw = frontmatterBoolean(frontmatter.inheritProjectContext);
+		const inheritSkillsRaw = frontmatterBoolean(frontmatter.inheritSkills);
+		const defaultContextRaw = frontmatterString(frontmatter.defaultContext);
+		const extensionsRaw = frontmatterString(frontmatter.extensions);
+		const systemPromptModeRaw = frontmatterString(frontmatter.systemPromptMode);
 		const defaultReads = parseCommaSeparatedList(frontmatterString(frontmatter.defaultReads));
 		const skillStr = frontmatterString(frontmatter.skill) || frontmatterString(frontmatter.skills) || undefined;
 		const skills = parseCommaSeparatedList(skillStr);
 		const fallbackModels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackModels));
 		const fallbackThinkingLevels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackThinkingLevels));
-		const systemPromptModeRaw = frontmatterString(frontmatter.systemPromptMode);
-		const inheritProjectContextRaw = frontmatterString(frontmatter.inheritProjectContext);
-		const inheritSkillsRaw = frontmatterString(frontmatter.inheritSkills);
-		const defaultContextRaw = frontmatterString(frontmatter.defaultContext);
-		const extensionsRaw = frontmatterString(frontmatter.extensions);
-		const maxSubagentDepthRaw = frontmatterString(frontmatter.maxSubagentDepth);
+		const inheritProjectContext = inheritProjectContextRaw ?? defaultInheritProjectContext(localName);
+		const inheritSkills = inheritSkillsRaw ?? defaultInheritSkills();
 		const systemPromptMode =
 			systemPromptModeRaw === "replace"
 				? "replace"
 				: systemPromptModeRaw === "append"
 					? "append"
 					: defaultSystemPromptMode(localName);
-		const inheritProjectContext =
-			inheritProjectContextRaw === "true"
-				? true
-				: inheritProjectContextRaw === "false"
-					? false
-					: defaultInheritProjectContext(localName);
-		const inheritSkills =
-			inheritSkillsRaw === "true" ? true : inheritSkillsRaw === "false" ? false : defaultInheritSkills();
 		const defaultContext =
 			defaultContextRaw === "fork"
 				? ("fork" as const)
 				: defaultContextRaw === "fresh"
 					? ("fresh" as const)
 					: undefined;
-
 		let extensions: string[] | undefined;
 		if (extensionsRaw !== undefined) {
 			extensions = extensionsRaw
@@ -147,12 +152,12 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 				.filter(Boolean);
 		}
 
-		const extraFields: Record<string, string> = {};
+		const extraFields: Record<string, FrontmatterValue> = {};
 		for (const [key, value] of Object.entries(frontmatter)) {
-			if (shouldPreserveAgentExtraField(key) && typeof value === "string") extraFields[key] = value;
+			if (shouldPreserveAgentExtraField(key)) extraFields[key] = value;
 		}
 
-		const parsedMaxSubagentDepth = normalizeMaxSubagentDepth(maxSubagentDepthRaw);
+		const parsedMaxSubagentDepth = normalizeMaxSubagentDepth(frontmatter.maxSubagentDepth);
 
 		agents.push({
 			name: runtimeName,
@@ -176,8 +181,8 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			extensions,
 			output: frontmatterString(frontmatter.output),
 			defaultReads,
-			defaultProgress: frontmatterString(frontmatter.defaultProgress) === "true",
-			interactive: frontmatterString(frontmatter.interactive) === "true",
+			defaultProgress: frontmatterBoolean(frontmatter.defaultProgress) === true,
+			interactive: frontmatterBoolean(frontmatter.interactive) === true,
 			maxSubagentDepth: parsedMaxSubagentDepth,
 			extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
 		});

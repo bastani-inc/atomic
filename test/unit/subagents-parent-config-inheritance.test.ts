@@ -13,7 +13,9 @@
  * of its own started on the child's settings default instead of the
  * dispatching session's level. The fix threads `currentThinkingLevel` through
  * `RunSyncOptions` and applies it under the same condition upstream uses:
- * only when neither the agent's frontmatter nor the caller named a model.
+ * only when nothing the agent configured names a model — no frontmatter
+ * `model`, no `fallbackModels` (whose chain outranks the parent's model in
+ * `buildModelCandidates`), and no per-call override.
  *
  * Tool configuration is pinned too: an agent that omits `tools` must leave
  * the child's spec without an allowlist so `createAgentSession` keeps its
@@ -197,6 +199,22 @@ describe("subagent inherits the dispatching session's configuration", () => {
 		assert.deepEqual(spec.model, configuredModel);
 		// Upstream gates inheritance on `!agent.model`; a child dispatched onto
 		// a different model keeps that model's own thinking configuration.
+		assert.equal(spec.thinkingLevel, undefined);
+	});
+
+	test("an agent whose fallback chain selects its own model does not inherit the thinking level", async () => {
+		const { spec, candidate } = await dispatchAndCapture({
+			agent: agentConfig({ fallbackModels: [CONFIGURED_MODEL_ID] }),
+			thinking: PARENT_THINKING_LEVEL,
+		});
+
+		// `buildModelCandidates` orders [primary, ...fallbacks, parent], so an
+		// agent with fallbackModels and no primary runs on its own first
+		// fallback — the parent's model is never selected. The child therefore
+		// keeps its own thinking configuration: leaking the parent's level
+		// here is the same defect as leaking it for a declared `model`.
+		assert.equal(candidate.modelId, CONFIGURED_MODEL_ID);
+		assert.deepEqual(spec.model, configuredModel);
 		assert.equal(spec.thinkingLevel, undefined);
 	});
 
