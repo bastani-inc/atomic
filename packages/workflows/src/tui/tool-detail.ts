@@ -18,6 +18,8 @@ import { graphemes, truncateToWidth, visibleWidth } from "./text-helpers.js";
 export const TOOL_DETAIL_VALUE_LIMIT = TOOL_PAYLOAD_VALUE_LIMIT;
 const COLLAPSED_ARGS_LIMIT = 240;
 const COLLAPSED_RESULT_LIMIT = 320;
+/** Match the host tool renderer's collapsed fallback preview row bound. */
+const COLLAPSED_RESULT_LINES = 10;
 const DETAIL_LABEL_WIDTH = 10;
 
 export interface RenderToolDetailOpts {
@@ -185,6 +187,30 @@ function messageHeader(tool: ToolNodeSnapshot, width: number, theme: GraphTheme 
 	);
 }
 
+function compactResultRows(
+	result: { text: string; error: boolean },
+	status: ToolNodeStatus,
+	width: number,
+	theme: GraphTheme | undefined,
+	expandKey: string,
+): { rows: string[]; remaining: number } {
+	const lines = result.text.split("\n");
+	const displayed = lines.slice(0, COLLAPSED_RESULT_LINES);
+	const remaining = lines.length - displayed.length;
+	const resultGlyph = styledStatus(status, theme);
+	const rows = displayed.map((line, index) => {
+		const prefix = index === 0 ? `  ${resultGlyph} ` : "  ";
+		const text = result.error ? styledError(line, theme) : styledMuted(line, theme);
+		return fitLine(`${prefix}${text}`, width, "…", theme);
+	});
+	if (remaining > 0) {
+		const hint =
+			expandKey.length > 0 ? `... (${remaining} more lines, ${expandKey} Expand)` : `... (${remaining} more lines)`;
+		rows.push(fitLine(`  ${styledMuted(hint, theme)}`, width, "…", theme));
+	}
+	return { rows, remaining };
+}
+
 function compactMessageLines(
 	tool: ToolNodeSnapshot,
 	width: number,
@@ -193,13 +219,9 @@ function compactMessageLines(
 ): string[] {
 	const safeWidth = Math.max(1, Math.floor(width));
 	const result = compactResult(tool);
-	const resultGlyph = styledStatus(tool.status, theme);
-	const resultText = result.error ? styledError(result.text, theme) : styledMuted(result.text, theme);
-	const rows = [
-		messageHeader(tool, safeWidth, theme),
-		fitLine(`  ${resultGlyph} ${resultText}`, safeWidth, "…", theme),
-	];
-	if (expandKey.length > 0) {
+	const compact = compactResultRows(result, tool.status, safeWidth, theme, expandKey);
+	const rows = [messageHeader(tool, safeWidth, theme), ...compact.rows];
+	if (compact.remaining === 0 && expandKey.length > 0) {
 		rows.push(fitLine(`  ${styledMuted(`(${expandKey} to expand)`, theme)}`, safeWidth, "…", theme));
 	}
 	return rows;

@@ -15,8 +15,10 @@
  * inspect it. We call that trap once, then bound all controlled per-key work:
  * at most `TOOL_PAYLOAD_MAX_KEYS` candidate keys have descriptors read, and
  * only those candidates that pass the enumerable-string check have values
- * read. This preserves own enumerable string-key order while making descriptor
- * and value work independent of the remaining payload width.
+ * read. The budget is charged before filtering, deliberately including symbol
+ * and non-enumerable candidates, so hostile key lists cannot make filtering
+ * work unbounded. This preserves own enumerable string-key order while making
+ * descriptor and value work independent of the remaining payload width.
  *
  * Every bound here is explicit in the output: truncation appends
  * `TOOL_PAYLOAD_TRUNCATION_MARKER`, a back-reference becomes
@@ -73,12 +75,8 @@ export type ToolPayloadRetainedValue =
 	| bigint
 	| readonly ToolPayloadRetainedValue[]
 	| { readonly [key: string]: ToolPayloadRetainedValue | undefined };
-/** An object with a callable JSON conversion hook. */
-export interface ToolPayloadObjectWithToJSON extends ToolPayloadObject {
-	readonly toJSON: ToolPayloadCallable;
-}
-
 /** Maximum candidate keys whose descriptors may be inspected per payload walk. */
+/** This is one total-work budget across the recursive walk; a wide member may consume sibling budget. */
 export const TOOL_PAYLOAD_MAX_KEYS = 2_048;
 
 /** Maximum serialized payload characters retained or displayed per field. */
@@ -118,15 +116,6 @@ export function isToolPayloadObjectLike(value: ToolPayloadValue): value is ToolP
 /** Narrow a payload member to a callable value without invoking it. */
 export function isToolPayloadCallable(value: ToolPayloadValue | undefined): value is ToolPayloadCallable {
 	return typeof value === "function";
-}
-
-/** Test a payload object's `toJSON` member while containing a throwing getter. */
-export function hasCallableToolPayloadToJSON(value: ToolPayloadObject): value is ToolPayloadObjectWithToJSON {
-	try {
-		return isToolPayloadCallable(value.toJSON);
-	} catch {
-		return false;
-	}
 }
 
 interface PropertyRead {
@@ -364,7 +353,7 @@ export function boundedToolPayloadRecord(
 	limit = TOOL_PAYLOAD_VALUE_LIMIT,
 ): Readonly<Record<string, ToolPayloadRetainedValue>> {
 	const record: { [key: string]: ToolPayloadRetainedValue } = {};
-	if (!isToolPayloadObjectLike(value)) return record;
+	if (!isToolPayloadObject(value) && !isToolPayloadArray(value)) return record;
 	const state: CloneState = {
 		remaining: Math.max(1, limit),
 		depth: 0,

@@ -4,7 +4,6 @@ import {
 	boundedToolPayload,
 	boundedToolPayloadRecord,
 	boundedToolPayloadText,
-	hasCallableToolPayloadToJSON,
 	isToolPayloadArray,
 	isToolPayloadCallable,
 	isToolPayloadObject,
@@ -54,11 +53,10 @@ function assertBoundedProxyWork(counters: ProxyWorkCounters, label: string): voi
 	assert.ok(counters.gets <= EXPECTED_MAX_KEY_INSPECTIONS + 2, `${label}: read ${counters.gets} values`);
 }
 
-test("payload boundary guards contain hostile object and callable detection", () => {
+test("payload boundary guards classify hostile object and callable values", () => {
 	const jsonObject = { toJSON: () => ({ ok: true }) };
 	assert.equal(isToolPayloadObject(jsonObject as never), true);
 	assert.equal(isToolPayloadObjectLike(jsonObject as never), true);
-	assert.equal(hasCallableToolPayloadToJSON(jsonObject as never), true);
 	assert.equal(isToolPayloadCallable(jsonObject.toJSON as never), true);
 	assert.equal(isToolPayloadArray([] as never), true);
 	assert.equal(isToolPayloadObject([] as never), false);
@@ -70,7 +68,7 @@ test("payload boundary guards contain hostile object and callable detection", ()
 			throw new Error("hostile toJSON getter");
 		},
 	});
-	assert.equal(hasCallableToolPayloadToJSON(throwingObject as never), false);
+	assert.equal(boundedToolPayload(throwingObject as never), "<unreadable>");
 });
 
 test("wide hostile objects bound descriptor and value work on retention and text paths", () => {

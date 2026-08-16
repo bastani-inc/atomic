@@ -296,6 +296,55 @@ describe("tool graph inspection", () => {
 		assert.ok(clickView._toolDetail);
 		clickView.dispose();
 	});
+	test("collapsed multi-line errors keep the block inset and account for bounded rows", () => {
+		const wideError = "first line\nsecond line\nthird line";
+		const wideRows = renderToolDetail(tool({ status: "failed", result: undefined, error: wideError }), {
+			width: 120,
+			expandKey: "ctrl+o",
+		}).split("\n");
+		assert.deepEqual(wideRows, [
+			'✗ inspect-api {"branch":"feat/inspect","checks":["lint","test"]}',
+			"  ✗ first line",
+			"  second line",
+			"  third line",
+			"  (ctrl+o to expand)",
+		]);
+		assert.ok(wideRows.slice(2, 4).every((row) => row.startsWith("  ")));
+
+		const narrowRows = renderToolDetail(
+			tool({
+				status: "failed",
+				result: undefined,
+				error: `${"a".repeat(200)}\nSECOND-LINE-MARKER\nTHIRD-LINE-MARKER`,
+			}),
+			{ width: 60, expandKey: "ctrl+o" },
+		).split("\n");
+		assert.ok(
+			narrowRows.some((row) => row.includes("SECOND-LINE-MARKER")),
+			"second error line must remain visible",
+		);
+		assert.ok(
+			narrowRows.some((row) => row.includes("THIRD-LINE-MARKER")),
+			"third error line must remain visible",
+		);
+		assert.ok(narrowRows.slice(2).every((row) => row.startsWith("  ")));
+		assert.ok(
+			narrowRows.every((row) => visibleWidth(row) <= 60),
+			"collapsed rows must fit the frame",
+		);
+
+		const manyRows = renderToolDetail(
+			tool({
+				status: "failed",
+				result: undefined,
+				error: Array.from({ length: 200 }, (_, index) => `line-${index}`).join("\n"),
+			}),
+			{ width: 80, expandKey: "ctrl+o" },
+		).split("\n");
+		assert.ok(manyRows.length <= 12, `collapsed preview emitted ${manyRows.length} rows`);
+		assert.match(manyRows.at(-1) ?? "", /more lines/);
+		assert.ok(manyRows.slice(1).every((row) => row.startsWith("  ")));
+	});
 
 	test("large and unusual values render with an explicit truncation marker", () => {
 		const huge = "x".repeat(20_000);
