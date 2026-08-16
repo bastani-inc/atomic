@@ -729,4 +729,77 @@ describe("workflow-first execution routing", () => {
 			}
 		}
 	});
+
+	test("keeps compact workflows in one file and rejects arbitrary splitting", () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"Keep a small, readable workflow in one entry file",
+			"Do not split short one-use prompts",
+			"create one file per stage",
+			"wrapper-only modules",
+			"hide the graph across files",
+			"line counts alone as a module boundary",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+	});
+
+	test("extracts cohesive workflow concerns only at meaningful source boundaries", () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"meaningful source boundary",
+			"improves clarity, reuse, ownership, or testability",
+			"keep the graph and control flow in the top-level workflow entry file",
+			"cohesive concerns",
+			"long or reused prompt builders",
+			"shared TypeBox schemas and workflow-specific types",
+			"model-policy constants shared by several stages",
+			"deterministic helpers with their own testable behavior",
+			"reusable child workflow definitions",
+			"workflow-specific subdirectory below the top-level discovery directory",
+			"top-level `.ts`/`.js` files in the workflow directory",
+			"not scanned as extra top-level workflow candidates",
+			"`.js` import extensions from TypeScript source",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+	});
+
+	test("keeps source-layout policy aligned across workflow authoring docs", async () => {
+		const sharedPolicyPhrases = [
+			"Keep a small, readable workflow in one entry file",
+			"meaningful source boundary",
+			"improves clarity, reuse, ownership, or testability",
+			"keep the graph and control flow in the top-level workflow entry file",
+			"cohesive concerns",
+			"long or reused prompt builders",
+			"shared TypeBox schemas and workflow-specific types",
+			"model-policy constants shared by several stages",
+			"deterministic helpers with their own testable behavior",
+			"reusable child workflow definitions",
+			"workflow-specific subdirectory below the top-level discovery directory",
+			"top-level `.ts`/`.js` files in the workflow directory",
+			"not scanned as extra top-level workflow candidates",
+			"`.js` import extensions from TypeScript source",
+			"short one-use prompts",
+			"one file per stage",
+			"wrapper-only modules",
+			"hide the graph across files",
+			"line counts alone as a module boundary",
+		];
+		for (const path of ["packages/coding-agent/docs/workflows.md", "packages/workflows/README.md"]) {
+			const documentation = await readRepositoryFile(path);
+			for (const phrase of sharedPolicyPhrases) {
+				expect(documentation, path).toContain(phrase);
+			}
+			for (const layoutLine of [
+				".atomic/workflows/code-review.ts",
+				".atomic/workflows/code-review/prompts.ts",
+				".atomic/workflows/code-review/schemas.ts",
+				".atomic/workflows/code-review/model-policy.ts",
+			]) {
+				expect(documentation, path).toContain(layoutLine);
+			}
+		}
+	});
 });

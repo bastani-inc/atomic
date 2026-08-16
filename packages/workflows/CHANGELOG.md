@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The `open-claude-design` run-level review gate and the session-start stage now state how a review ends — exit in the Impeccable overlay, closing the browser tab, or `exit live` — that the session waits indefinitely until then, and that ending it exports the design as it stands with no further round ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 - The live review session is the final review boundary: the workflow-owned poll loop dispatches `generate`, `steer`, `manual_edit_apply`, and failed variant mounts to model stages, keeps successful mounts journal-only, ends on the helper's `exit` event, and exports the preview as it stands without a summary, second opinion, decision, or later review session ([#2401](https://github.com/bastani-inc/atomic/issues/2401), [#2382](https://github.com/bastani-inc/atomic/issues/2382)).
 - The run-level gate retains `Start live review` and `Skip remaining review rounds and export as-is`; the skip choice exports immediately without opening the session ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- Added model-visible workflow source-layout guidance: keep compact workflows in one entry file, and extract only cohesive prompt, schema/type, model-policy, deterministic-helper, or child-workflow concerns at meaningful boundaries while keeping graph control flow visible in the entry file ([#2451](https://github.com/bastani-inc/atomic/issues/2451)).
 
 ### Fixed
 

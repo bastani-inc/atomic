@@ -82,6 +82,23 @@ Sketch branches, loops, and nested boundaries before launch. Bounded loops must 
 
 Execution, replay, and DBOS hydration are the authoritative topology-validation points. Runtime topology changes should add incremental edge checks and DBOS hydration validation; prompt guidance and TypeScript types cannot replace these checks.
 
+### Workflow source layout
+
+Keep a small, readable workflow in one entry file. Do not split short one-use prompts, create one file per stage, add wrapper-only modules, hide the graph across files, or use line counts alone as a module boundary.
+
+At a meaningful source boundary that improves clarity, reuse, ownership, or testability, keep the graph and control flow in the top-level workflow entry file and extract cohesive concerns: long or reused prompt builders; shared TypeBox schemas and workflow-specific types; model-policy constants shared by several stages; deterministic helpers with their own testable behavior; or reusable child workflow definitions.
+
+Put workflow-specific modules in a workflow-specific subdirectory below the top-level discovery directory. Project and user discovery scans only top-level `.ts`/`.js` files in the workflow directory; the scan is non-recursive, so support modules are not scanned as extra top-level workflow candidates. Use `.js` import extensions from TypeScript source.
+
+The existing `.atomic/workflows/release-docs.ts` keeps its graph in the entry file and imports deterministic helpers from `.atomic/workflows/lib/release-docs.ts`. For example:
+
+```text
+.atomic/workflows/code-review.ts
+.atomic/workflows/code-review/prompts.ts
+.atomic/workflows/code-review/schemas.ts
+.atomic/workflows/code-review/model-policy.ts
+```
+
 ### Workflow-owned side effects
 
 Prefer `ctx.tool(name, args, fn)` for workflow-owned TypeScript operations with side effects, including filesystem writes, network mutations, external API actions, and similar deterministic operations orchestrated directly by the workflow definition. Each invocation creates a non-chat, non-attachable durable graph node before `fn` runs; it may appear before, between, after, or without model stages. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn` or repeating the side effect. Tool-only workflows are valid tracked execution, while a normal return with no stage, child, tool, or explicit exit remains invalid. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately. The executor closes tool admission before publishing any terminal outcome; calling a retained `ctx.tool` function afterward returns a rejected native promise and creates no callback, retry, graph node, or checkpoint.

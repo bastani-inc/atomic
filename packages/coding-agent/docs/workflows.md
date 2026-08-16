@@ -953,6 +953,31 @@ To migrate an existing file from the removed `defineWorkflow(...).compile()` bui
 
 Author workflows to create at least one tracked execution node by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, `ctx.workflow()`, or `ctx.tool()` in the run body so each normal run has graph work to inspect and render. Stage nodes remain the attachable, interruptible, resumable chat units; durable tool nodes are non-chat execution. Guard-only workflows may call `ctx.exit(...)` before creating a node when they intentionally stop early.
 
+### Source layout for authored workflows
+
+Keep a small, readable workflow in one entry file. Do not split short one-use prompts, create one file per stage, add wrapper-only modules, hide the graph across files, or use line counts alone as a module boundary.
+
+When a meaningful source boundary improves clarity, reuse, ownership, or testability, keep the graph and control flow in the top-level workflow entry file and extract cohesive concerns:
+
+- long or reused prompt builders;
+- shared TypeBox schemas and workflow-specific types;
+- model-policy constants shared by several stages;
+- deterministic helpers with their own testable behavior; and
+- reusable child workflow definitions.
+
+Put those workflow-specific modules in a workflow-specific subdirectory below the top-level discovery directory. Project and user discovery scans only top-level `.ts`/`.js` files in the workflow directory; the scan is non-recursive, so these support modules are not scanned as extra top-level workflow candidates. Use `.js` import extensions from TypeScript source, following the repository convention.
+
+The repository uses this shape in `.atomic/workflows/release-docs.ts`: the entry file keeps the graph and imports deterministic helpers from `.atomic/workflows/lib/release-docs.ts`. A valid layout for a custom workflow is:
+
+```text
+.atomic/workflows/code-review.ts
+.atomic/workflows/code-review/prompts.ts
+.atomic/workflows/code-review/schemas.ts
+.atomic/workflows/code-review/model-policy.ts
+```
+
+The subdirectory is for cohesive, reusable support code, not a requirement to give every prompt or stage its own file.
+
 ### Dynamic topology must remain acyclic
 
 Atomic `workflow({ run })` definitions are imperative, dynamic TypeScript. The final graph is materialized only while `run(ctx)` executes and may depend on runtime inputs, branches, loops, files or network data, model or human output, helpers, and nested workflows. Discovery can report module import and definition-shape diagnostics: it loads the module, checks its exports, schemas, and `run` function, and rejects failures observable at that point. It does not execute every control-flow path or compile `run` into a complete graph. TypeScript and discovery cannot prove arbitrary dynamic acyclicity.
