@@ -1,3 +1,4 @@
+import { stringify } from "yaml";
 import type { AgentConfig } from "./agents.ts";
 import type { FrontmatterValue } from "./frontmatter.ts";
 import { frontmatterNameForConfig } from "./identity.ts";
@@ -37,15 +38,22 @@ function joinComma(values: string[] | undefined): string | undefined {
 }
 
 /**
- * Render an extra frontmatter field back to its YAML spelling so an unknown
- * custom field survives an agent update: sequences return as flow sequences,
- * booleans/numbers/null as their own scalars, strings verbatim. Each shape
- * re-parses to itself, so load → serialize → load is stable.
+ * Render one extra frontmatter field through the real YAML emitter so an
+ * unknown custom field survives an agent update without changing meaning.
+ * The yaml package quotes scalars a hand-joined spelling corrupts: `a #b`
+ * would open a comment mid-flow-sequence and leave the file unparseable,
+ * `a, b` would split into two items, `a: b` would start a nested mapping,
+ * and an unquoted `""` or `"true"` would change type on re-parse. Keys are
+ * emitted by the same call, so a custom key that needs quoting gets it.
+ * Sequences render as block collections and may span several lines; nested
+ * maps are dropped at parse (they have no agent-frontmatter spelling) and
+ * so never reach this path. Every emitted shape re-parses to itself, so
+ * load → serialize → load is stable.
  */
-function serializeExtraFieldValue(value: FrontmatterValue): string {
-	if (Array.isArray(value)) return `[${value.join(", ")}]`;
-	if (value === null) return "null";
-	return String(value);
+function serializeExtraFieldEntry(key: string, value: FrontmatterValue): string[] {
+	return stringify({ [key]: value }, { lineWidth: 0 })
+		.trimEnd()
+		.split("\n");
 }
 
 export function serializeAgent(config: AgentConfig): string {
@@ -93,7 +101,7 @@ export function serializeAgent(config: AgentConfig): string {
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {
 			if (!shouldPreserveAgentExtraField(key)) continue;
-			lines.push(`${key}: ${serializeExtraFieldValue(value)}`);
+			lines.push(...serializeExtraFieldEntry(key, value));
 		}
 	}
 

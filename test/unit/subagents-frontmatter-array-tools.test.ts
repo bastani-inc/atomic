@@ -192,9 +192,11 @@ describe("array-form tools frontmatter parity", () => {
 		assert.deepEqual(loaded?.extraFields?.custom, ["a", "b"]);
 
 		// agent-management rewrites the file from the loaded config via
-		// serializeAgent; the sequence must come back out, not be deleted.
+		// serializeAgent, which renders extra fields through the yaml
+		// emitter as block collections; the sequence must come back out,
+		// not be deleted.
 		const rewritten = serializeAgent(loaded!);
-		assert.match(rewritten, /^custom: \[a, b\]$/m);
+		assert.match(rewritten, /^custom:\n {2}- a\n {2}- b$/m);
 
 		const roundTripDir = writeAgents({ "custom.md": rewritten });
 		const [reloaded] = loadAgentsFromDir(roundTripDir, "user");

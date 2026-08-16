@@ -23,20 +23,36 @@ function toFrontmatterValue(value: unknown): FrontmatterValue | undefined {
 	return undefined;
 }
 
+export interface ParsedAgentFrontmatter {
+	frontmatter: Frontmatter;
+	body: string;
+	/**
+	 * The YAML parser's error message when the document does not parse.
+	 * The switch from a line reader to the real parser made previously
+	 * loadable files (a colon-space inside a plain scalar, duplicate keys,
+	 * tab-indented block lists) read as frontmatter-less; carrying the
+	 * error lets the loader report the skipped file instead of letting it
+	 * vanish silently.
+	 */
+	parseError?: string;
+}
+
 /**
  * Parse a markdown file's frontmatter with the real YAML parser exported by
  * `@bastani/atomic`. This function never throws: agent discovery loads every
  * `.md` file in a directory, and one file with invalid YAML (an unclosed flow
  * sequence, a colon-space inside a plain scalar) must not take down every
  * other agent there. An unparseable document reads as no frontmatter, which
- * makes the loader skip that file for lacking `name`/`description`.
+ * makes the loader skip that file for lacking `name`/`description`, and the
+ * parse error is returned so discovery can surface a diagnostic.
  */
-export function parseFrontmatter(content: string): { frontmatter: Frontmatter; body: string } {
+export function parseFrontmatter(content: string): ParsedAgentFrontmatter {
 	let parsed: { frontmatter: unknown; body: string };
 	try {
 		parsed = parseYamlFrontmatter(content);
-	} catch {
-		return { frontmatter: {}, body: content };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { frontmatter: {}, body: content, parseError: message };
 	}
 	const frontmatter: Frontmatter = {};
 	const raw = parsed.frontmatter;

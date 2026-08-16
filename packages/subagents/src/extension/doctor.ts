@@ -115,7 +115,17 @@ function formatDiscovery(input: DoctorReportInput, deps: DoctorDeps): string[] {
 				user: discovered.user.length,
 				project: discovered.project.length,
 			};
-			return `- agents: total ${agentCounts.builtin + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`;
+			const lines = [
+				`- agents: total ${agentCounts.builtin + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`,
+			];
+			// A file whose frontmatter is invalid YAML is skipped by discovery;
+			// without these lines it would vanish with no signal at all.
+			for (const diagnostic of discovered.diagnostics) {
+				lines.push(
+					`- agents: warning — ${diagnostic.path}: invalid YAML frontmatter (${diagnostic.message}); file skipped`,
+				);
+			}
+			return lines.join("\n");
 		}),
 		lineFromCheck("skills", () => {
 			const skills = deps.discoverAvailableSkills(input.cwd);

@@ -406,6 +406,8 @@ maxSubagentDepth: 1
 Your system prompt goes here.
 ```
 
+Frontmatter is parsed with a real YAML parser, so it must be valid YAML: a file whose frontmatter does not parse (for example a colon-space inside an unquoted scalar like `description: Deploy: fast`, duplicate keys, or tab-indented block lists) is skipped during discovery. `subagent({ action: "doctor" })` lists every skipped file with the parser's message, so a bad file never disappears silently.
+
 Important fields:
 
 | Field | Notes |

@@ -3,6 +3,8 @@
  */
 
 export { discoverAgents, discoverAgentsAll } from "./agent-discovery.ts";
+export type { AgentDirLoadResult, AgentLoadDiagnostic } from "./agent-loaders.ts";
+export { loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.ts";
 export {
 	buildBuiltinOverrideConfig,
 	removeBuiltinAgentOverride,

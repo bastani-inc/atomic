@@ -91,8 +91,28 @@ function parseToolList(value: FrontmatterValue | undefined): string[] | undefine
 	return tools.length > 0 ? tools : undefined;
 }
 
-export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
+export interface AgentLoadDiagnostic {
+	/** Absolute path of the skipped file. */
+	path: string;
+	/** Why the file was skipped, from the YAML parser when it threw. */
+	message: string;
+}
+
+export interface AgentDirLoadResult {
+	agents: AgentConfig[];
+	diagnostics: AgentLoadDiagnostic[];
+}
+
+/**
+ * Load every agent file in a directory, collecting a diagnostic per file
+ * skipped for invalid YAML frontmatter. The real YAML parser is stricter
+ * than the line reader it replaced (`description: Deploy: fast` is a
+ * nested-mapping error, not a description), so without this record those
+ * files would vanish from discovery with no signal.
+ */
+export function loadAgentsFromDirWithDiagnostics(dir: string, source: AgentSource): AgentDirLoadResult {
 	const agents: AgentConfig[] = [];
+	const diagnostics: AgentLoadDiagnostic[] = [];
 
 	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md"))) {
 		let content: string;
@@ -102,7 +122,11 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter(content);
+		const { frontmatter, body, parseError } = parseFrontmatter(content);
+		if (parseError !== undefined) {
+			diagnostics.push({ path: filePath, message: parseError });
+			continue;
+		}
 
 		// Sequences are legal frontmatter but not valid `name`/`description`
 		// spellings; a file whose identity fields are not plain strings is
@@ -188,5 +212,9 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 		});
 	}
 
-	return agents;
+	return { agents, diagnostics };
+}
+
+export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
+	return loadAgentsFromDirWithDiagnostics(dir, source).agents;
 }
