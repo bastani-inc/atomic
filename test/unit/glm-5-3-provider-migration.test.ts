@@ -53,6 +53,31 @@ test("builtin Goal, Ralph, and Open Claude Design chains have no active GLM-5.2 
 	}
 });
 
+test("workflow direct Z.AI GLM references use catalog-supported thinking levels", () => {
+	const directReferences = workflowModelReferences().filter((reference) =>
+		/^(?:zai|zai-coding-cn)\/glm-/u.test(reference),
+	);
+	assert.ok(directReferences.length > 0, "expected direct Z.AI GLM workflow references");
+
+	for (const reference of directReferences) {
+		const match = /^(zai|zai-coding-cn)\/(glm-[^:]+):([^:]+)$/u.exec(reference);
+		assert.ok(match, `direct GLM workflow reference must include a thinking suffix: ${reference}`);
+		if (!match) continue;
+
+		const [, provider, modelId, thinkingLevel] = match;
+		assert.ok(provider === "zai" || provider === "zai-coding-cn", `unexpected direct GLM provider: ${provider}`);
+		if (provider !== "zai" && provider !== "zai-coding-cn") continue;
+		const model = getBuiltinModels(provider).find((candidate) => candidate.id === modelId);
+		assert.ok(model, `direct GLM workflow reference must resolve in the ${provider} catalog: ${reference}`);
+		if (!model) continue;
+
+		assert.ok(
+			getSupportedThinkingLevels(model).map(String).includes(thinkingLevel),
+			`${reference} uses a thinking level unsupported by the ${provider}/${modelId} catalog entry`,
+		);
+	}
+});
+
 test("builtin subagent fallback chains use GLM-5.3 and omit OpenRouter GLM fallbacks", () => {
 	for (const { name, text } of subagentFrontmatter()) {
 		assert.doesNotMatch(text, /glm-5\.2/iu, name);
