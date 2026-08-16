@@ -2277,6 +2277,7 @@ Zero-argument callbacks stay valid — `async () => { ... }` still compiles and 
 **Options:**
 - `failureMode` — `"throw"` keeps the default throw-on-failure behavior; `"return"` returns a typed success or failure outcome after retries.
 - `retriesAllowed` — retries failures when `true`; default `false`. Retries alone do not bound a callback that hangs because a hung attempt never fails.
+Callbacks that spawn child processes or perform network I/O need an explicit `timeoutMs` deadline and must forward the supplied `signal` to that work.
 - `maxAttempts` — positive integer maximum when retries are enabled; default `3`. Invalid enabled retry bounds throw before the callback runs.
 - `intervalMs` — initial retry interval; default `1000`.
 - `backoffRate` — retry interval multiplier; default `2`.
