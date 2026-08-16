@@ -36,6 +36,8 @@
  */
 export interface KeybindingsLike {
 	matches(data: string, action: string): boolean;
+	/** Optional host display lookup; structural test doubles may omit it. */
+	getKeys?(action: string): readonly string[];
 }
 
 export const APP_ACTION = {

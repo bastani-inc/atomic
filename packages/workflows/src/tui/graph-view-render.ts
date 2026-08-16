@@ -4,6 +4,7 @@ import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
 import { GRAPH_HEADER_ROWS, GraphViewLayout, graphLayoutNaturalHeight } from "./graph-view-layout.js";
 import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
+import { APP_ACTION, isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
 import { renderPromptCard } from "./prompt-card.js";
 import { renderSwitcher } from "./switcher.js";
@@ -24,12 +25,19 @@ function stripLayoutWrapper(line: string): string {
 	const end = endsWithWrapper ? line.length - LAYOUT_OSC_RESET.length : line.length;
 	return line.slice(start, Math.max(start, end));
 }
-/** One frame's tool-detail geometry, derived once and shared by both callbacks. */
+/** One frame's tool-message geometry, derived once and shared by both callbacks. */
 interface ToolDetailFrame {
 	readonly width: number;
-	readonly cardWidth: number;
+	readonly blockWidth: number;
 	readonly leftPad: number;
 	readonly lines: readonly string[];
+}
+
+function toolExpandKey(piKeybindings: unknown): string {
+	if (!isKeybindingsLike(piKeybindings)) return "ctrl+o";
+	const keys = piKeybindings.getKeys?.(APP_ACTION.toolsExpand);
+	if (keys === undefined) return "ctrl+o";
+	return keys.join("/");
 }
 
 /** Overlay/widget rendering orchestration for GraphView. */
@@ -146,7 +154,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	}
 
 	/**
-	 * Lay the detail card out once per frame width.
+	 * Lay the tool message block out once per frame width.
 	 *
 	 * The height callback and the body callback are invoked separately by the
 	 * layout, and the body may be handed a narrower width when the ScrollView
@@ -157,15 +165,20 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const cached = this.detailFrame;
 		if (cached !== null && cached.width === safeWidth) return cached;
-		// Never wider than the cells the body was actually given: at a 40-column
-		// frame the reserved scrollbar column leaves 39, and a 40-wide card would
-		// lose its closing border to the row truncation.
-		const cardWidth = Math.min(96, Math.max(40, safeWidth - 6), safeWidth);
+		// Match the flat message surface used by agent tool calls. The one-cell
+		// leading inset gives the block the same breathing room without drawing a
+		// standalone rounded panel or hiding content behind a border.
+		const blockWidth = Math.max(1, safeWidth - 1);
 		const frame: ToolDetailFrame = {
 			width: safeWidth,
-			cardWidth,
-			leftPad: Math.max(0, Math.floor((safeWidth - cardWidth) / 2)),
-			lines: renderToolDetailLines(node, { theme: this.graphTheme, width: cardWidth }),
+			blockWidth,
+			leftPad: safeWidth > 1 ? 1 : 0,
+			lines: renderToolDetailLines(node, {
+				theme: this.graphTheme,
+				width: blockWidth,
+				expanded: this.toolDetailExpanded,
+				expandKey: toolExpandKey(this.piKeybindings),
+			}),
 		};
 		this.detailFrame = frame;
 		return frame;

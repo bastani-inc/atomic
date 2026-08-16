@@ -1,6 +1,6 @@
 import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
-import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
+import { APP_ACTION, isKeybindingsLike, type KeybindingsLike, matchesAction } from "./keybindings-adapter.js";
 import { isTerminalLeftMousePress, parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { defaultResponseFor, handlePromptCardInput } from "./prompt-card.js";
 import { filterStages, type SwitcherState } from "./switcher.js";
@@ -12,6 +12,8 @@ interface MouseWheelDelta {
 }
 
 const GRAPH_SCROLL_WHEEL_LINES = 4;
+/** Raw Ctrl+O is only a compatibility fallback for hosts without keybindings. */
+const TOOL_EXPAND_FALLBACK = "\x0f";
 
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
 export abstract class GraphViewInputController extends GraphViewRenderer {
@@ -44,6 +46,11 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const wheelDelta = this._mouseWheelDelta(data);
 		if (wheelDelta) {
 			if (wheelDelta.rows !== 0) this._scrollGraphVertically(wheelDelta.rows);
+			return true;
+		}
+		if (this._matchesToolExpandInput(data)) {
+			this.toolDetailExpanded = !this.toolDetailExpanded;
+			this.pendingEnsureFocusedVisible = true;
 			return true;
 		}
 		if (this._isReturnToMainChatInput(data) || matchesKey(data, Key.escape)) {
@@ -105,6 +112,13 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
 	private _promptKeybindings(): KeybindingsLike | undefined {
 		return isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined;
+	}
+
+	private _matchesToolExpandInput(data: string): boolean {
+		const keybindings = this._promptKeybindings();
+		// Do not run a raw fallback beside a host manager: a user remap must win,
+		// and an explicitly unbound action must remain unbound.
+		return keybindings ? matchesAction(keybindings, data, APP_ACTION.toolsExpand) : data === TOOL_EXPAND_FALLBACK;
 	}
 
 	private _isReturnToMainChatInput(data: string): boolean {
@@ -389,6 +403,9 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
 	get _toolDetail(): typeof this.toolDetail {
 		return this.toolDetail;
+	}
+	get _toolDetailExpanded(): boolean {
+		return this.toolDetailExpanded;
 	}
 
 	// ---- test seams ----

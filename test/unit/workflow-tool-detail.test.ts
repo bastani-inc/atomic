@@ -129,7 +129,7 @@ function tool(overrides: Partial<ToolNodeSnapshot> = {}): ToolNodeSnapshot {
 	};
 }
 
-function viewFor(node: ToolNodeSnapshot): GraphView {
+function viewFor(node: ToolNodeSnapshot, piKeybindings?: unknown): GraphView {
 	const store = createStore();
 	store.recordRunStart({
 		id: RUN_ID,
@@ -147,6 +147,7 @@ function viewFor(node: ToolNodeSnapshot): GraphView {
 		store,
 		graphTheme: defaultTheme,
 		piTui: { terminal: { rows: 32 } },
+		piKeybindings,
 		onStageAttach() {
 			throw new Error("tool detail must not attach a stage chat");
 		},
@@ -236,27 +237,58 @@ function clickForSingleNode(stage: ToolNodeSnapshot, width = 120, rows = 32): st
 }
 
 describe("tool graph inspection", () => {
-	test("Enter and direct selection open a read-only snapshot detail", () => {
+	test("Enter and direct selection open a collapsed read-only tool message block", () => {
 		const node = tool();
 		const enterView = viewFor(node);
 		enterView.render(120);
 		assert.equal(enterView.handleInput("\r"), true);
 		assert.ok(enterView._toolDetail);
-		const text = visibleText(enterView.render(120));
+		const collapsed = visibleText(enterView.render(120));
 		for (const expected of [
 			"inspect-api",
-			"STATUS    completed",
+			'{"branch":"feat/inspect","checks":["lint","test"]}',
+			'{"ok":true,"output":["passed","passed"]}',
+			"ctrl+o to expand",
+		])
+			assert.ok(collapsed.includes(expected), expected);
+		for (const hidden of ["ARGS", "RESULT", "SOURCE", "TIMING", "MARKERS"])
+			assert.doesNotMatch(collapsed, new RegExp(`\\b${hidden}\\b`));
+		assert.doesNotMatch(collapsed, /stage chat|attach|interrupt|resume|steer/i);
+
+		assert.equal(enterView.handleInput("\x0f"), true);
+		const expanded = visibleText(enterView.render(120));
+		for (const expected of [
 			'ARGS      {"branch":"feat/inspect","checks":["lint","test"]}',
 			'RESULT    {"ok":true,"output":["passed","passed"]}',
+			"SOURCE    —",
 			"startedAt=100",
 			"endedAt=175",
 			"duration=75ms",
+			"MARKERS   —",
+			"ctrl+o to collapse",
 		])
-			assert.ok(text.includes(expected), expected);
-		assert.doesNotMatch(text, /stage chat|attach|interrupt|resume|steer/i);
+			assert.ok(expanded.includes(expected), expected);
+		assert.equal(enterView.handleInput("\x0f"), true);
+		assert.doesNotMatch(visibleText(enterView.render(120)), /\bTIMING\b/);
 		assert.equal(enterView.handleInput("\x1b"), true);
 		assert.equal(enterView._toolDetail, null);
 		enterView.dispose();
+
+		const configured = viewFor(node, {
+			matches(data: string, action: string): boolean {
+				return action === "app.tools.expand" && data === "x";
+			},
+			getKeys(): readonly string[] {
+				return ["ctrl+x"];
+			},
+		});
+		assert.equal(configured.handleInput("\r"), true);
+		assert.equal(configured.handleInput("\x0f"), false, "the host manager owns expansion when present");
+		assert.equal(configured._toolDetailExpanded, false);
+		assert.equal(configured.handleInput("x"), true);
+		assert.equal(configured._toolDetailExpanded, true);
+		assert.match(visibleText(configured.render(120)), /ctrl\+x to collapse/);
+		configured.dispose();
 
 		const clickView = viewFor(node);
 		clickView.render(120);
@@ -273,15 +305,43 @@ describe("tool graph inspection", () => {
 					args: { huge },
 					result: { huge },
 				}),
-				{ theme: defaultTheme, width: 80 },
+				{ theme: defaultTheme, width: 80, expanded: true },
 			);
 			assert.match(text, /… \[truncated\]/);
 		});
 		const errorText = renderToolDetail(tool({ status: "failed", result: undefined, error: "check failed" }), {
 			theme: defaultTheme,
 			width: 80,
+			expanded: true,
 		}).replace(/\x1b\[[0-9;]*m/g, "");
-		assert.match(errorText, /ERROR\s+"check failed"/);
+		assert.match(errorText, /ERROR\s+check failed/);
+	});
+
+	test("failed, cached, and replayed tool nodes keep status markers in the message block", () => {
+		const failed = visibleText(
+			renderToolDetail(tool({ status: "failed", result: undefined, error: "check failed" }), {
+				theme: defaultTheme,
+				width: 96,
+				expanded: true,
+			}).split("\n"),
+		);
+		assert.match(failed, /✗/);
+		assert.match(failed, /ERROR\s+check failed/);
+
+		const cached = visibleText(
+			renderToolDetail(tool({ status: "cached", replayed: true, resultSummary: "cached result" }), {
+				theme: defaultTheme,
+				width: 96,
+				expanded: true,
+			}).split("\n"),
+		);
+		assert.match(cached, /↻/);
+		assert.match(cached, /MARKERS\s+cached · replayed/);
+
+		const replayed = visibleText(
+			renderToolDetail(tool({ replayed: true }), { theme: defaultTheme, width: 96, expanded: true }).split("\n"),
+		);
+		assert.match(replayed, /MARKERS\s+replayed/);
 	});
 
 	test("malformed snapshot display values never make the detail renderer throw", () => {
@@ -372,8 +432,8 @@ describe("tool graph inspection", () => {
 		const view = viewFor(tool({ args: { huge } }));
 		view.render(120);
 		assert.equal(view.handleInput("\r"), true);
+		assert.equal(view.handleInput("\x0f"), true);
 		view.render(120);
-		assert.equal(view._graphScrollOffset, 0);
 		assert.equal(view.handleInput("\x1b[<65;1;1M"), true);
 		assert.ok(view._graphScrollOffset > 0);
 		assert.equal(view.handleInput("q"), false);
@@ -468,7 +528,11 @@ describe("tool graph inspection", () => {
 			},
 		});
 
-		const rendered = renderToolDetail(tool({ args: probe as never }), { theme: defaultTheme, width: 96 });
+		const rendered = renderToolDetail(tool({ args: probe as never }), {
+			theme: defaultTheme,
+			width: 96,
+			expanded: true,
+		});
 		assert.ok(reads > 0, "the serializer must read the payload it displays");
 		// One capped field cannot cost a whole payload walk: ~16 KiB of output at
 		// ~77 characters per entry settles near 200 reads, never 20,000.
@@ -480,6 +544,7 @@ describe("tool graph inspection", () => {
 		const rendered = renderToolDetail(tool({ startedAt: 1786890801337, endedAt: 1786890801341 }), {
 			theme: defaultTheme,
 			width: 40,
+			expanded: true,
 		});
 		const text = visibleText(rendered.split("\n"));
 		for (const expected of ["startedAt=1786890801337", "endedAt=1786890801341", "duration=4ms"]) {
@@ -517,7 +582,11 @@ describe("tool graph inspection", () => {
 		const checkpoint = backend.listCheckpoints("durable-source").find((entry) => entry.kind === "tool");
 		assert.equal(checkpoint?.kind === "tool" ? checkpoint.source : undefined, started?.source);
 
-		const rendered = renderToolDetail(tool({ source: started?.source }), { theme: defaultTheme, width: 96 });
+		const rendered = renderToolDetail(tool({ source: started?.source }), {
+			theme: defaultTheme,
+			width: 96,
+			expanded: true,
+		});
 		assert.ok(detailField(rendered, "SOURCE").includes("published: true"));
 
 		const oversized = `${"s".repeat(TOOL_PAYLOAD_VALUE_LIMIT + 1_000)}`;
@@ -537,7 +606,7 @@ describe("tool graph inspection", () => {
 		assert.ok(retained.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
 		assert.ok(
 			detailField(
-				renderToolDetail(tool({ source: oversized }), { theme: defaultTheme, width: 96 }),
+				renderToolDetail(tool({ source: oversized }), { theme: defaultTheme, width: 96, expanded: true }),
 				"SOURCE",
 			).endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER),
 		);
@@ -749,6 +818,7 @@ describe("tool graph inspection", () => {
 		const view = viewFor(tool({ args: { huge: "x".repeat(60_000) } }));
 		view.render(120);
 		assert.equal(view.handleInput("\r"), true);
+		assert.equal(view.handleInput("\x0f"), true);
 		view.render(120);
 		assert.equal(view._graphScrollOffset, 0);
 
@@ -790,9 +860,12 @@ describe("tool graph inspection", () => {
 			["embedded escape", "async () => {\n\tconsole.log('\x1b[31mred\x1b[0m');\n\treturn null;\n}"],
 			["carriage return and bell", "async () => {\r\n\treturn '\x07';\r\n}"],
 		] as const) {
-			const lines = renderToolDetail(tool({ source, name: `tool\x1b[31m-${label}` }), { width }).split("\n");
+			const lines = renderToolDetail(tool({ source, name: `tool\x1b[31m-${label}` }), {
+				width,
+				expanded: true,
+			}).split("\n");
 			for (const [index, line] of lines.entries()) {
-				assert.equal(visibleWidth(line), width, `${label}: row ${index} width`);
+				assert.ok(visibleWidth(line) <= width, `${label}: row ${index} overflows`);
 			}
 			const rendered = lines.join("\n");
 			assert.ok(!rendered.includes("\x1b"), `${label}: no raw escape byte reaches the frame`);
@@ -811,6 +884,7 @@ describe("tool graph inspection", () => {
 			const probe = withBodyWidthProbe(view);
 			view.render(width);
 			assert.equal(view.handleInput("\r"), true);
+			assert.equal(view.handleInput("\x0f"), true);
 			view.render(width);
 
 			const bodyWidth = probe.bodyWidth();
@@ -839,6 +913,7 @@ describe("tool graph inspection", () => {
 			);
 			view.render(width);
 			assert.equal(view.handleInput("\r"), true);
+			assert.equal(view.handleInput("\x0f"), true);
 			view.render(width);
 
 			assert.equal(view.handleInput(KEY_END), true);
@@ -846,7 +921,7 @@ describe("tool graph inspection", () => {
 			for (const field of ["SOURCE", "TIMING", "MARKERS"]) {
 				assert.ok(atEnd.includes(field), `${width}x${rows}: End must reveal ${field}`);
 			}
-			assert.match(atEnd, /╰─{30,}╯/, `${width}x${rows}: the closing detail border must be reachable`);
+			// The graph header/footer retain their existing chrome; the detail body itself is flat.
 
 			// A terminal without mouse reporting has no other way down.
 			assert.equal(view.handleInput(KEY_HOME), true);
@@ -864,6 +939,7 @@ describe("tool graph inspection", () => {
 		const view = viewForAtRows(tool({ result: { payload: "r".repeat(5_000) } }), 40);
 		view.render(80);
 		assert.equal(view.handleInput("\r"), true);
+		assert.equal(view.handleInput("\x0f"), true);
 		view.render(80);
 		assert.equal(view.handleInput(KEY_END), true);
 		const atEnd = visibleText(view.render(80));
@@ -1046,25 +1122,21 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("the detail panel closes at the narrowest frame the overlay allows", () => {
+	test("the collapsed and expanded message block stay width-safe at the narrowest frame", () => {
 		const view = viewForAtRows(tool({ args: { payload: "x".repeat(2_000) } }), 24);
 		view.render(40);
 		assert.equal(view.handleInput("\r"), true);
+		const collapsed = visibleText(view.render(40));
+		assert.match(collapsed, /ctrl\+o to expand/);
+		assert.doesNotMatch(collapsed, /╰─{30,}╯/);
+		assert.equal(view.handleInput("\x0f"), true);
 		view.render(40);
 		assert.equal(view.handleInput(KEY_END), true);
 		const frame = view.render(40).map(stripFrameEscapes);
-
-		// The detail card starts at column 0 of the body; the ORCHESTRATOR and
-		// GRAPH pills are indented, so this selects the panel and not its chrome.
-		const cardRows = frame.filter((row) => /^[╭│╰]/.test(row));
-		assert.ok(cardRows.length > 3, `expected detail rows, saw ${cardRows.length}`);
-		const widths = new Set(cardRows.map((row) => visibleWidth(row.trimEnd())));
-		assert.equal(widths.size, 1, `detail rows must share one width, saw ${[...widths].join(", ")}`);
-		for (const row of cardRows) {
-			assert.match(row.trimEnd(), /[│╮╯]$/, `detail row lost its right border: ${JSON.stringify(row.trimEnd())}`);
-		}
-		const closing = cardRows.filter((row) => /^╰─+╯$/.test(row.trimEnd()));
-		assert.equal(closing.length, 1, "the detail panel must close with exactly one ╰─…╯ border");
+		const text = frame.join("\n");
+		assert.match(text, /SOURCE|TIMING|MARKERS/);
+		assert.doesNotMatch(text, /╰─{30,}╯/);
+		for (const row of frame) assert.ok(visibleWidth(row) <= 40, `row overflowed: ${JSON.stringify(row)}`);
 		view.dispose();
 	});
 

@@ -106,6 +106,8 @@ export abstract class GraphViewState {
 	protected currentSnapshot: StoreSnapshot | null = null;
 	/** Selected read-only tool detail; tool nodes never become stage chats. */
 	protected toolDetail: ExpandedWorkflowTool | null = null;
+	/** Tool message blocks open collapsed and own expansion independently of graph cards. */
+	protected toolDetailExpanded = false;
 	protected abstract _graphScrollTop(): number;
 	protected graphScrollColOffset = 0;
 	protected graphNodeHitRects: GraphNodeHitRect[] = [];
@@ -447,11 +449,11 @@ export abstract class GraphViewState {
 		return this.expandedGraph.tools.find((tool) => tool.id === stage.id);
 	}
 
-	/** Open a read-only detail view for the focused tool, if it is a tool node. */
 	protected _openFocusedToolDetail(): boolean {
 		const tool = this._focusedTool();
 		if (tool === undefined) return false;
 		this.toolDetail = tool;
+		this.toolDetailExpanded = false;
 		this.graphLayoutInvalidateForDetail();
 		return true;
 	}
@@ -459,6 +461,7 @@ export abstract class GraphViewState {
 	protected _closeToolDetail(): boolean {
 		if (this.toolDetail === null) return false;
 		this.toolDetail = null;
+		this.toolDetailExpanded = false;
 		this.graphLayoutInvalidateForDetail();
 		return true;
 	}
