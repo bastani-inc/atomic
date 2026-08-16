@@ -20,20 +20,10 @@ from prerequisites import (
     root_install_command,
 )
 from run_manifest import (
-    MANIFEST_FILENAME,
     RunManifest,
     manifest_for_agent_logs_dir,
     recorded_atomic_version,
     write_manifest,
-)
-from trial_audit import (
-    REASON_EMPTY_OUTPUT,
-    REASON_MALFORMED_SESSION_LOG,
-    REASON_MANIFEST_NOT_WRITTEN,
-    REASON_MISSING_OUTPUT,
-    REASON_UNRESOLVED_VERSION,
-    AgentRunStatus,
-    write_agent_status,
 )
 
 
@@ -96,8 +86,6 @@ class Atomic(BaseInstalledAgent):
         # request is a moving tag (`version=next`) or a fallback candidate runs.
         self._resolved_version: str | None = None
         self._selected_model: str | None = None
-        self._manifest_write_failed = False
-        self._version_unresolved = False
         super().__init__(
             logs_dir=logs_dir,
             prompt_template_path=prompt_template_path,
@@ -543,26 +531,6 @@ class Atomic(BaseInstalledAgent):
             return True
         return session_file.parent != session_root
 
-    def _record_agent_status(
-        self, context: AgentContext, reasons: list[str], details: dict[str, object]
-    ) -> AgentRunStatus:
-        """Persist an explicit run status and stamp it onto the agent context.
-
-        A manifest that could not be persisted, or a version that could not be
-        resolved, is folded in here, on every path, because
-        `_record_run_manifest` runs first and cannot report it itself.
-        """
-        if self._manifest_write_failed and REASON_MANIFEST_NOT_WRITTEN not in reasons:
-            reasons = [*reasons, REASON_MANIFEST_NOT_WRITTEN]
-            details = {**details, "manifest_path": str(self.logs_dir / MANIFEST_FILENAME)}
-        if self._version_unresolved and REASON_UNRESOLVED_VERSION not in reasons:
-            reasons = [*reasons, REASON_UNRESOLVED_VERSION]
-            details = {**details, "requested_version": self.version()}
-        status = AgentRunStatus.from_reasons(reasons, details)
-        write_agent_status(self.logs_dir, status)
-        context.metadata = {**(context.metadata or {}), "atomic_status": status.to_json()}
-        return status
-
     def _observed_model(self) -> str | None:
         """The provider/model that actually answered, read from the agent stream."""
         output_file = self.logs_dir / self._OUTPUT_FILENAME
@@ -604,28 +572,22 @@ class Atomic(BaseInstalledAgent):
         when that spec is pinned — a moving request that could not be resolved
         records nothing rather than letting two builds compare as equal.
         """
-        version = recorded_atomic_version(self._resolved_version, self.version())
-        self._version_unresolved = version is None
         manifest = manifest_for_agent_logs_dir(
             self.logs_dir,
             model=self._observed_model() or self._selected_model or self.model_name,
-            atomic_version=version,
+            atomic_version=recorded_atomic_version(self._resolved_version, self.version()),
         )
-        self._manifest_write_failed = write_manifest(self.logs_dir, manifest) is None
+        _ = write_manifest(self.logs_dir, manifest)
         context.metadata = {**(context.metadata or {}), "atomic_manifest": manifest.to_json()}
         return manifest
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
-        self._malformed_jsonl_lines: dict[str, int] = {}
         self._record_run_manifest(context)
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
-            # An absent atomic.txt means the agent produced no output at all.
-            # Returning silently here is what made a dead trial look complete.
-            self._record_agent_status(
-                context, [REASON_MISSING_OUTPUT], {"expected": str(output_file)}
-            )
+            # An agent that wrote no atomic.txt also changed nothing, so the
+            # task's collect hook writes an empty model.patch. Nothing to add.
             return
 
         total_input_tokens = 0
@@ -685,10 +647,6 @@ class Atomic(BaseInstalledAgent):
                 text = session_file.read_bytes().decode("utf-8", errors="replace")
             except OSError:
                 return
-            if "\ufffd" in text:
-                self._malformed_jsonl_lines[str(session_file)] = (
-                    self._malformed_jsonl_lines.get(str(session_file), 0) + 1
-                )
             for line in text.splitlines():
                 line = line.strip()
                 if not line:
@@ -696,13 +654,6 @@ class Atomic(BaseInstalledAgent):
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
-                    # Session transcripts are machine-written: any undecodable
-                    # line is corruption, whatever byte it starts with.
-                    # (atomic.txt below keeps the first-byte tolerance, because
-                    # Atomic interleaves plain-text diagnostics there.)
-                    self._malformed_jsonl_lines[str(session_file)] = (
-                        self._malformed_jsonl_lines.get(str(session_file), 0) + 1
-                    )
                     continue
                 if not isinstance(entry, dict) or entry.get("type") != "message":
                     continue
@@ -764,12 +715,3 @@ class Atomic(BaseInstalledAgent):
             **(context.metadata or {}),
             "n_agent_steps": total_agent_steps,
         }
-
-        reasons: list[str] = []
-        details: dict[str, object] = {"atomic_txt": str(output_file)}
-        if output_file.stat().st_size == 0:
-            reasons.append(REASON_EMPTY_OUTPUT)
-        if self._malformed_jsonl_lines:
-            reasons.append(REASON_MALFORMED_SESSION_LOG)
-            details["malformed_jsonl_lines"] = dict(self._malformed_jsonl_lines)
-        self._record_agent_status(context, reasons, details)

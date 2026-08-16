@@ -101,68 +101,60 @@ uv run python -c "from pier.models.task.config import VerifierConfig; print('col
 ## Network policy
 
 Every Deep SWE task declares `network_mode = "no-network"` under both `[agent]`
-and `[verifier]`, which pier resolves onto `allow_internet=False`. The agent
-keeps filtered egress through a Squid overlay built from the adapter's
+and `[verifier]`, which the pinned pier resolves onto `allow_internet=False`.
+The agent keeps filtered egress through a Squid overlay built from the adapter's
 allowlist; the verifier gets none.
 
-That overlay applies only while the allowlist is **non-empty**. An empty one
-silently falls back to the no-network overlay, and the model call then fails as
-a generic connection error that reads like a bad credential. The adapter
-therefore raises `EmptyEgressAllowlistError` (`evals/network_policy.py`) instead
-of returning an empty allowlist.
+The allowlist is the union of every provider's domains, so it is never empty in
+practice. The one way to lose egress is a `--model` with no `provider/` prefix:
+the adapter cannot resolve domains, pier drops the overlay, and the run dies as
+a connection error that reads like a bad credential. `network_allowlist()`
+raises a `ValueError` naming the model instead.
 
 ## What a trial must produce
 
-- `artifacts/model.patch` — written by the task's `[[verifier.collect]]` hook. A
-  missing or empty patch fails the trial **in the run path**: the pinned pier
-  records a `MissingArtifactError` in `TrialResult.exception_info`, so
-  `result.json` reports `n_errored_trials: 1` and lists the trial under
-  `exception_stats`.
+`artifacts/model.patch`, written by the task's `[[verifier.collect]]` hook. A
+missing or empty patch fails the trial **in the run path**: the pinned pier
+records a `MissingArtifactError` in `TrialResult.exception_info`, so
+`result.json` reports `n_errored_trials: 1` and lists the trial under
+`exception_stats`.
 
-  This is scoped to `model.patch` alone. Every other declared artifact stays
-  best-effort — a task may legitimately declare a log that a given run leaves
-  empty or never writes, and erroring the trial for that would invent a rule no
-  task asked for and reject runs on other datasets pier permits. Those outcomes
-  are still recorded in the artifacts manifest and the debug log.
+That single check is load-bearing for more than it looks. A dead agent changes
+nothing, so the collect hook writes a zero-byte diff and the trial errors —
+which is how a run that never received its task gets caught.
 
-- `agent/atomic-status.json` — the adapter's own verdict, written on every path
-  including pier's cancel and outer-exception handlers. `failed` names reasons
-  such as `missing-atomic.txt`, `empty-atomic.txt`,
-  `malformed-session-jsonl`, `manifest-not-written`, or
-  `unresolved-atomic-version`.
+The contract is scoped to `model.patch` alone. Every other declared artifact
+stays best-effort: a task may legitimately declare a log that a given run leaves
+empty or never writes, and erroring the trial for that would invent a rule no
+task asked for and reject runs on other datasets pier permits. Those outcomes
+are still recorded in the artifacts manifest and the debug log.
 
-- `agent/atomic-manifest.json` — see below.
-
-Audit a finished job from the host. `audit_job` discovers a trial by its
-`agent/`/`artifacts/` directories **and** by pier's root-level markers
-(`trial.log`, or `config.json` plus `result.json`), because a trial that fails
-during environment setup has a result and neither directory — and used to be
-omitted from the audit entirely, letting a job with one healthy trial and one
-dead one report success:
+Check a finished job from the host with pier's own numbers:
 
 ```bash
-uv run python -c 'from trial_audit import audit_job; import pathlib; a = audit_job(pathlib.Path("jobs/atomic-smoke")); print(a.describe()); raise SystemExit(0 if a.ok else 1)'
+jq '.n_errored_trials, .n_completed_trials' jobs/atomic-smoke/result.json
+find jobs/atomic-smoke -name model.patch -size -1c
 ```
+
+On the **Harbor** path this enforcement does not exist — Harbor is a PyPI
+dependency with no post-collect hook, so its `result.json` reports a trial as
+completed even when the patch is missing. The `find` above is the check there.
 
 ### The adapters target the current CLI
 
 Both adapters pass the task as `atomic … -- <instruction>`, using Atomic's
 end-of-options terminator. They carry no compatibility path for older builds,
 so pin a current version — an Atomic that predates the terminator reads it as a
-flag, starts with no task, and prints `Error: Unknown option: --`.
-
-That failure is quiet where it matters, which is worth knowing when reading a
-bad run: the trial proceeds, the collect hook writes an empty `model.patch`,
-and `atomic-status.json` still reports `ok` — `atomic.txt` is non-empty, so
-neither `empty-atomic.txt` nor `malformed-session-jsonl` applies. Only the
-host-side audit catches it, through the empty patch. Observed live at
-`version=0.9.5`.
+flag, starts with no task, and prints `Error: Unknown option: --`. Observed live
+at `version=0.9.5`, where the trial ran to completion and collected an empty
+patch, which is what errored it.
 
 ## Run manifests
 
 `agent/atomic-manifest.json` records run ID, seed, model, Atomic version,
-deep-swe SHA, and pier SHA. Both adapters write it. Every field records what
-actually **ran**, not what was asked for:
+deep-swe SHA, and pier SHA. Both adapters write it, on every path including
+pier's cancel and outer-except handlers. Every field records what actually
+**ran**, not what was asked for:
 
 - the two SHAs are the commits checked out inside each submodule, falling back
   to the gitlink when a submodule is uninitialized, with `-dirty` appended when
@@ -174,31 +166,21 @@ actually **ran**, not what was asked for:
   metadata;
 - `atomic_version` is what the container reported after install. A moving
   request such as `version=next` is recorded **only** once resolved; if the
-  version probe fails, the manifest records nothing and the status carries
-  `unresolved-atomic-version`. Recording `next` would let two different builds
-  compare as equal, which is the one thing the manifest exists to prevent.
+  version probe fails it records `null` rather than `next`, because recording
+  the moving tag would let two different builds compare as equal — the one thing
+  the manifest exists to prevent.
 
-If the manifest cannot be written, `atomic-status.json` records
-`manifest-not-written` and the trial fails: a run that cannot be compared with
-another is not a usable result.
-
-Compare two runs:
+Comparing two runs is a diff, not an API:
 
 ```bash
-uv run python -c '
-from run_manifest import compare_manifests, read_manifest
-import pathlib
-compare_manifests(read_manifest(pathlib.Path("jobs/run-a/<trial>/agent")), read_manifest(pathlib.Path("jobs/run-b/<trial>/agent")))
-print("comparable")
-'
+diff <(jq -S . jobs/run-a/<trial>/agent/atomic-manifest.json) \
+     <(jq -S . jobs/run-b/<trial>/agent/atomic-manifest.json)
 ```
 
-`compare_manifests` raises `ManifestMismatchError` naming every field the two
-runs disagree on. It first raises `IncompleteManifestError` when either side is
-absent, unreadable, or missing a required field, so two empty manifests can
-never compare as equal. Runs recorded against different corpus SHAs, pier SHAs,
-models, seeds, or Atomic versions are not comparable — including runs from
-before `network_mode` was honored, which had unrestricted agent internet access.
+Any difference in corpus SHA, pier SHA, model, seed, or Atomic version means the
+two runs are not comparable — including runs from before `network_mode` was
+honored, which had unrestricted agent internet access. A `null` field proves
+nothing was recorded, so it cannot be read as agreement.
 
 ## Harbor
 
@@ -256,8 +238,10 @@ uv run harbor run \
   -n 1 \
   --force-build \
   --no-delete \
-  --debug \
-&& uv run python -c 'from trial_audit import audit_job; import pathlib; a = audit_job(pathlib.Path("jobs/atomic-harbor-smoke")); print(a.describe()); raise SystemExit(0 if a.ok else 1)'
+  --debug
+
+# Harbor does not enforce the patch contract; this is the check.
+find jobs/atomic-harbor-smoke -name model.patch -size -1c
 ```
 
 `-l/--n-tasks` bounds the task count and `-k/--n-attempts` sets pass@k repeats.
@@ -328,9 +312,9 @@ provider is `openrouter`. For a custom OpenRouter-compatible endpoint, pass
 ## Tests
 
 There is no test suite in `evals/`. The harness is verified by running it: the
-preflight above, then a one-task smoke run whose `audit_job` exit code is the
-verdict. `evals/vendor/pier` keeps upstream's suite, which is where changes to
-the fork are tested:
+preflight above, then a one-task smoke run whose `model.patch` is the verdict.
+`evals/vendor/pier` keeps upstream's suite, which is where changes to the fork
+are tested:
 
 ```bash
 cd vendor/pier && uv run pytest

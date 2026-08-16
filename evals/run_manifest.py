@@ -1,17 +1,20 @@
-"""S7 — the run manifest.
+"""The run manifest: what actually produced a number.
 
-Two Deep SWE runs used to be indistinguishable after the fact: nothing recorded
-which corpus, which pier, which Atomic build, which model, or which seed
-produced a number. The manifest records all six, and :func:`compare_manifests`
-refuses to compare two runs that did not share them.
+Two Deep SWE runs used to be indistinguishable after the fact — nothing recorded
+which corpus, which pier, which Atomic build, which model, or which seed was
+involved. Each trial now carries an ``atomic-manifest.json`` alongside its agent
+logs.
 
-The submodule SHAs are the revisions that actually **ran**: the commit checked
-out inside each submodule, falling back to the superproject's gitlink when the
-submodule is uninitialized. A manifest exists to say which corpus and which pier
-produced a number, so a working tree sitting off its pin must be recorded as
-what it is rather than as the pin it drifted from, and a working tree carrying
-uncommitted changes is recorded with a ``-dirty`` suffix so it can never compare
-equal to the clean revision whose SHA it still reports.
+This module only *records*. Comparing two runs is `diff` on two files:
+
+    diff <(jq -S . run-a/<trial>/agent/atomic-manifest.json) \\
+         <(jq -S . run-b/<trial>/agent/atomic-manifest.json)
+
+Every field records what **ran**, not what was asked for. The submodule SHAs are
+the commits checked out inside each submodule, falling back to the superproject's
+gitlink when a submodule is uninitialized, with ``-dirty`` appended when that
+working tree carried uncommitted changes — a number produced by modified code was
+not produced by the pin.
 
 Note what is *not* used: ``git -C evals/deep-swe rev-parse HEAD``. In an
 uninitialized submodule that silently prints the *superproject* SHA, which would
@@ -24,7 +27,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,66 +39,19 @@ from prerequisites import (
 )
 
 MANIFEST_FILENAME = "atomic-manifest.json"
-
-REQUIRED_FIELDS: tuple[str, ...] = (
-    "run_id",
-    "seed",
-    "model",
-    "atomic_version",
-    "deep_swe_sha",
-    "pier_sha",
-)
-"""Every field a manifest must record before two runs may be compared.
-
-Harbor has no seed concept at all — ``harbor.models.job.config.JobConfig``
-declares no seed-like field and ``harbor run`` has no ``--sample-seed`` — so a
-Harbor manifest's ``seed`` is ``None`` and two Harbor runs refuse to compare,
-naming ``seed``. That is the honest answer: an unrecorded seed cannot be proven
-equal.
-"""
-
+DIRTY_SUFFIX = "-dirty"
 
 _PINNED_VERSION = re.compile(r"^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?$")
 
 
-def is_pinned_version(spec: str | None) -> bool:
-    """True when ``spec`` names exactly one immutable published build.
-
-    Everything else — ``next``, ``latest``, a dist-tag, a range such as
-    ``^0.9``, or nothing at all — resolves to a different build tomorrow.
-    """
-    return bool(spec) and _PINNED_VERSION.match(spec.strip()) is not None
-
-
-def recorded_atomic_version(resolved: str | None, requested: str | None) -> str | None:
-    """The Atomic version a manifest may record, or ``None`` when it has none.
-
-    ``resolved`` is what the container reported after install; ``requested`` is
-    the ``--version`` spec. Recording ``requested`` unconditionally was the
-    defect: with ``version=next`` and a failed version probe, two runs of
-    different builds both recorded ``next`` and compared as equal. A moving
-    request that could not be resolved therefore records nothing, which makes
-    the manifest incomplete and refuses the comparison rather than inventing one.
-    """
-    if resolved:
-        return resolved
-    if is_pinned_version(requested):
-        return requested
-    return None
-
-
-COMPARABLE_FIELDS: tuple[str, ...] = (
-    "model",
-    "seed",
-    "atomic_version",
-    "deep_swe_sha",
-    "pier_sha",
-)
-"""Fields two runs must share to be comparable. ``run_id`` differs by design."""
-
 @dataclass(frozen=True)
 class RunManifest:
-    """Everything needed to say whether two runs measured the same thing."""
+    """Everything needed to say whether two runs measured the same thing.
+
+    Harbor has no seed concept at all — ``harbor run`` has no ``--sample-seed``
+    — so a Harbor manifest's ``seed`` is ``None``. That is the honest answer: an
+    unrecorded seed cannot be proven equal.
+    """
 
     run_id: str | None = None
     seed: int | None = None
@@ -115,60 +70,30 @@ class RunManifest:
             "pier_sha": self.pier_sha,
         }
 
-    @classmethod
-    def from_json(cls, payload: object) -> RunManifest | None:
-        if not isinstance(payload, dict):
-            return None
-        seed = payload.get("seed")
-        return cls(
-            run_id=_as_str(payload.get("run_id")),
-            seed=seed if isinstance(seed, int) and not isinstance(seed, bool) else None,
-            model=_as_str(payload.get("model")),
-            atomic_version=_as_str(payload.get("atomic_version")),
-            deep_swe_sha=_as_str(payload.get("deep_swe_sha")),
-            pier_sha=_as_str(payload.get("pier_sha")),
-        )
 
+def is_pinned_version(spec: str | None) -> bool:
+    """True when ``spec`` names exactly one immutable published build.
 
-def missing_fields(manifest: RunManifest) -> tuple[str, ...]:
-    """Return every required field this manifest does not record."""
-    payload = manifest.to_json()
-    return tuple(field for field in REQUIRED_FIELDS if payload.get(field) is None)
-
-
-class ManifestMismatchError(RuntimeError):
-    """Raised when two run manifests describe incompatible runs."""
-
-    def __init__(self, differences: Sequence[tuple[str, object, object]]) -> None:
-        self.differences = tuple(differences)
-        rendered = "; ".join(f"{field}: {left!r} != {right!r}" for field, left, right in differences)
-        super().__init__(
-            "Refusing to compare runs recorded under different conditions — " + rendered
-        )
-
-
-class IncompleteManifestError(ManifestMismatchError):
-    """Raised when a manifest is absent, unreadable, or missing required fields.
-
-    A manifest that records nothing cannot prove two runs measured the same
-    thing, so it must refuse rather than compare as equal. Subclasses
-    :class:`ManifestMismatchError` so a caller that already refuses mismatches
-    refuses this too.
+    Everything else — ``next``, ``latest``, a dist-tag, a range such as
+    ``^0.9``, or nothing at all — resolves to a different build tomorrow.
     """
-
-    def __init__(self, *, side: str, fields: Sequence[str]) -> None:
-        self.side = side
-        self.fields = tuple(fields)
-        RuntimeError.__init__(
-            self,
-            f"Refusing to compare runs: the {side} manifest is absent or incomplete — "
-            f"missing {', '.join(self.fields) if self.fields else 'everything'}",
-        )
-        self.differences = ()
+    return bool(spec) and _PINNED_VERSION.match(spec.strip()) is not None
 
 
-def _as_str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
+def recorded_atomic_version(resolved: str | None, requested: str | None) -> str | None:
+    """The Atomic version a manifest may record, or ``None`` when it has none.
+
+    ``resolved`` is what the container reported after install; ``requested`` is
+    the ``--version`` spec. Recording ``requested`` unconditionally was the
+    defect: with ``version=next`` and a failed version probe, two runs of
+    different builds both recorded ``next`` and would compare as equal. A moving
+    request that could not be resolved therefore records nothing.
+    """
+    if resolved:
+        return resolved
+    if is_pinned_version(requested):
+        return requested
+    return None
 
 
 def _read_json(path: Path) -> object | None:
@@ -178,15 +103,12 @@ def _read_json(path: Path) -> object | None:
         return None
 
 
-DIRTY_SUFFIX = "-dirty"
+def _as_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def submodule_revision(path: str, *, repo_root: Path | None = None) -> str | None:
     """The revision that actually ran: the checked-out head, else the gitlink pin.
-
-    Preflight reports a drifted or dirty working tree as a failure; the manifest
-    has to record what that tree contained, because a number produced by
-    modified code was not produced by the pin.
 
     A dirty tree still reports its clean ``HEAD``, so the SHA alone would let an
     edited corpus or pier compare equal to an untouched run. Appending
@@ -253,7 +175,6 @@ def job_identity(job_dir: Path) -> tuple[str | None, int | None]:
         run_id = _as_str(result.get("id"))
     if run_id is None and job_dir.name:
         run_id = job_dir.name
-
     return run_id, _seed_from_job_config(_read_json(job_dir / "config.json"))
 
 
@@ -279,7 +200,11 @@ def manifest_for_agent_logs_dir(
 
 
 def write_manifest(directory: Path, manifest: RunManifest) -> Path | None:
-    """Write ``atomic-manifest.json`` into ``directory``. Never raises."""
+    """Write ``atomic-manifest.json`` into ``directory``. Never raises.
+
+    It also runs on pier's cancel and outer-except paths, where raising would
+    replace the in-flight exception.
+    """
     path = directory / MANIFEST_FILENAME
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -287,56 +212,3 @@ def write_manifest(directory: Path, manifest: RunManifest) -> Path | None:
     except OSError:
         return None
     return path
-
-
-def read_manifest(path: Path) -> RunManifest | None:
-    """Read a manifest from a file or from a directory containing one."""
-    target = path / MANIFEST_FILENAME if path.is_dir() else path
-    return RunManifest.from_json(_read_json(target))
-
-
-def manifest_differences(
-    left: RunManifest,
-    right: RunManifest,
-    *,
-    fields: Sequence[str] = COMPARABLE_FIELDS,
-) -> tuple[tuple[str, object, object], ...]:
-    """Return every comparable field on which two manifests disagree."""
-    left_json: Mapping[str, object] = left.to_json()
-    right_json: Mapping[str, object] = right.to_json()
-    return tuple(
-        (field, left_json.get(field), right_json.get(field))
-        for field in fields
-        if left_json.get(field) != right_json.get(field)
-    )
-
-
-def _require_complete(manifest: RunManifest | None, side: str) -> RunManifest:
-    if manifest is None:
-        raise IncompleteManifestError(side=side, fields=REQUIRED_FIELDS)
-    absent = missing_fields(manifest)
-    if absent:
-        raise IncompleteManifestError(side=side, fields=absent)
-    return manifest
-
-
-def compare_manifests(left: RunManifest | None, right: RunManifest | None) -> None:
-    """Raise unless two complete manifests describe comparable runs.
-
-    ``None`` means the manifest was absent or unreadable — which is what
-    ``read_manifest`` returns for a directory that has none — and an incomplete
-    manifest proves nothing either. Both refuse with
-    :class:`IncompleteManifestError` before any field is diffed, so two empty
-    manifests can never compare as equal.
-
-    The comparison is over :data:`COMPARABLE_FIELDS` and takes no ``fields``
-    argument: a caller passing ``fields=()`` could otherwise make two wholly
-    different runs compare clean, which is the one thing this function exists to
-    prevent. Narrowed diffs are available from :func:`manifest_differences`,
-    which reports rather than decides.
-    """
-    complete_left = _require_complete(left, "left")
-    complete_right = _require_complete(right, "right")
-    differences = manifest_differences(complete_left, complete_right)
-    if differences:
-        raise ManifestMismatchError(differences)

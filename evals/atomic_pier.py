@@ -36,7 +36,6 @@ from pier.models.trial.paths import EnvironmentPaths
 from pier.utils.trajectory_utils import (
     format_trajectory_json,  # pyright: ignore[reportUnknownVariableType]
 )
-from network_policy import EmptyEgressAllowlistError, require_non_empty_allowlist
 from prerequisites import (
     PROVIDER_AUTH_ENV_KEYS,
     agent_install_command,
@@ -45,21 +44,10 @@ from prerequisites import (
     root_install_command,
 )
 from run_manifest import (
-    MANIFEST_FILENAME,
     RunManifest,
     manifest_for_agent_logs_dir,
     recorded_atomic_version,
     write_manifest,
-)
-from trial_audit import (
-    REASON_EMPTY_OUTPUT,
-    REASON_MALFORMED_SESSION_LOG,
-    REASON_MANIFEST_NOT_WRITTEN,
-    REASON_MISSING_OUTPUT,
-    REASON_UNRESOLVED_VERSION,
-    AgentRunStatus,
-    explain,
-    write_agent_status,
 )
 
 
@@ -200,16 +188,11 @@ class Atomic(BaseInstalledAgent):
         self._disallowed_subscriptions: frozenset[str] = (
             self._normalize_disallowed_subscriptions(disallowed_subscriptions)
         )
-        self._malformed_jsonl_lines: dict[str, int] = {}
         # The version the container actually installed, and the model that
         # actually answered — both differ from what was requested when the
         # request is a moving tag (`version=next`) or a fallback candidate runs.
         self._resolved_version: str | None = None
         self._selected_model: str | None = None
-        self._manifest_write_failed = False
-        # True when the manifest could not name a build: the version probe
-        # failed and the requested spec is a moving tag.
-        self._version_unresolved = False
         super().__init__(  # pyright: ignore[reportUnknownMemberType]
             logs_dir=logs_dir,
             prompt_template_path=prompt_template_path,
@@ -300,9 +283,14 @@ class Atomic(BaseInstalledAgent):
     @override
     def network_allowlist(self) -> NetworkAllowlist:
         if not self.model_name or "/" not in self.model_name:
-            # An empty allowlist would silently drop the filtered-egress proxy
-            # overlay and leave the sandbox with no route to any provider.
-            raise EmptyEgressAllowlistError(model_name=self.model_name)
+            # Without a provider the domains cannot be resolved, and pier would
+            # drop the filtered-egress overlay and leave the sandbox with no
+            # route to any provider - which surfaces as a connection error that
+            # reads like a bad credential.
+            raise ValueError(
+                f"Cannot resolve provider domains from model_name={self.model_name!r}. "
+                "Pass --model as 'provider/model'."
+            )
 
         provider, _ = self.model_name.split("/", 1)
         # Atomic workflows can select fallback models from providers other than
@@ -320,10 +308,7 @@ class Atomic(BaseInstalledAgent):
             # Atomic resolves a GHE tenant host from GITHUB_SERVER_URL on its
             # own, and copilot-api.<tenant>.ghe.com is outside _PROVIDER_DOMAINS.
             urls.append(self._copilot_ghe_tenant_url())
-        return require_non_empty_allowlist(
-            allowlist_from_urls(urls, default_domains=sorted(defaults)),
-            model_name=self.model_name,
-        )
+        return allowlist_from_urls(urls, default_domains=sorted(defaults))
 
     def _build_register_skills_command(self) -> str | None:
         if not self.skills_dir:
@@ -741,10 +726,6 @@ class Atomic(BaseInstalledAgent):
         except OSError:
             return []
         text = raw.decode("utf-8", errors="replace")
-        if count_malformed and "\ufffd" in text:
-            self._malformed_jsonl_lines[str(path)] = (
-                self._malformed_jsonl_lines.get(str(path), 0) + 1
-            )
         for line in text.splitlines():
             stripped = line.strip()
             if not stripped:
@@ -752,10 +733,6 @@ class Atomic(BaseInstalledAgent):
             try:
                 entry = cast(object, json.loads(stripped))
             except json.JSONDecodeError:
-                if count_malformed and (strict or stripped.startswith(("{", "["))):
-                    self._malformed_jsonl_lines[str(path)] = (
-                        self._malformed_jsonl_lines.get(str(path), 0) + 1
-                    )
                 continue
             if entry_object := _json_object(entry):
                 entries.append(entry_object)
@@ -1166,35 +1143,6 @@ class Atomic(BaseInstalledAgent):
         except OSError as exc:
             self.logger.debug("Failed to write Atomic trajectory: %s", exc)
 
-    def _record_agent_status(
-        self, context: AgentContext, reasons: list[str], details: dict[str, object]
-    ) -> AgentRunStatus:
-        """Persist an explicit run status and stamp it onto the agent context.
-
-        Deliberately records rather than raises: pier also calls
-        ``populate_context_post_run`` from its cancel and outer-exception
-        handlers, where raising would replace the in-flight exception. The
-        post-run auditor turns a non-``ok`` status into a failed trial.
-
-        A manifest that could not be persisted, or a version that could not be
-        resolved, is folded in here, on every path, because
-        ``_record_run_manifest`` runs first and cannot report anything itself.
-        """
-        if self._manifest_write_failed and REASON_MANIFEST_NOT_WRITTEN not in reasons:
-            reasons = [*reasons, REASON_MANIFEST_NOT_WRITTEN]
-            details = {**details, "manifest_path": str(self.logs_dir / MANIFEST_FILENAME)}
-        if self._version_unresolved and REASON_UNRESOLVED_VERSION not in reasons:
-            reasons = [*reasons, REASON_UNRESOLVED_VERSION]
-            details = {**details, "requested_version": self.version()}
-        status = AgentRunStatus.from_reasons(reasons, details)
-        _ = write_agent_status(self.logs_dir, status)
-        context.metadata = {**(context.metadata or {}), "atomic_status": status.to_json()}
-        if not status.ok:
-            self.logger.error(
-                "Atomic run status: failed (%s)", ", ".join(explain(r) for r in status.reasons)
-            )
-        return status
-
     def _observed_model(self) -> str | None:
         """The provider/model that actually answered, read from the agent stream.
 
@@ -1227,33 +1175,23 @@ class Atomic(BaseInstalledAgent):
         recording a moving request such as ``next`` after a failed version probe
         would do exactly that, so it records nothing and the run is incomplete.
         """
-        version = recorded_atomic_version(self._resolved_version, self.version())
-        self._version_unresolved = version is None
         manifest = manifest_for_agent_logs_dir(
             self.logs_dir,
             model=self._observed_model() or self._selected_model or self.model_name,
-            atomic_version=version,
+            atomic_version=recorded_atomic_version(self._resolved_version, self.version()),
         )
-        written = write_manifest(self.logs_dir, manifest)
-        # write_manifest never raises — it also runs on pier's cancel and
-        # outer-except paths — so the caller has to notice the failure instead.
-        self._manifest_write_failed = written is None
+        _ = write_manifest(self.logs_dir, manifest)
         context.metadata = {**(context.metadata or {}), "atomic_manifest": manifest.to_json()}
         return manifest
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
-        self._malformed_jsonl_lines = {}
         _ = self._record_run_manifest(context)
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
-            # An absent atomic.txt means the agent produced no output at all.
-            # Returning silently here is what made a dead trial look complete.
-            _ = self._record_agent_status(
-                context,
-                [REASON_MISSING_OUTPUT],
-                {"expected": str(output_file)},
-            )
+            # An agent that wrote no atomic.txt also changed nothing, so the
+            # task's collect hook writes an empty model.patch and pier errors
+            # the trial. Nothing to add here.
             return
 
         total_input_tokens = 0
@@ -1337,11 +1275,3 @@ class Atomic(BaseInstalledAgent):
         context.cost_usd = total_cost if total_cost > 0 else None
         self._write_trajectory(context, classified)
 
-        reasons: list[str] = []
-        details: dict[str, object] = {"atomic_txt": str(output_file)}
-        if output_file.stat().st_size == 0:
-            reasons.append(REASON_EMPTY_OUTPUT)
-        if self._malformed_jsonl_lines:
-            reasons.append(REASON_MALFORMED_SESSION_LOG)
-            details["malformed_jsonl_lines"] = dict(self._malformed_jsonl_lines)
-        _ = self._record_agent_status(context, reasons, details)

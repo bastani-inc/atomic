@@ -78,22 +78,19 @@ uv run pier run \
   --debug
 ```
 
-Then audit it. The audit's exit code is the verdict, not the console output:
+Pier itself is the verdict: a trial whose `model.patch` is missing or empty is
+recorded as errored, so check `n_errored_trials` in the job result.
 
 ```bash
-uv run python -c 'from trial_audit import audit_job; import pathlib; a = audit_job(pathlib.Path("jobs/atomic-smoke")); print(a.describe()); raise SystemExit(0 if a.ok else 1)'
+jq '.n_errored_trials, .n_completed_trials' jobs/atomic-smoke/result.json
+find jobs/atomic-smoke -name model.patch -size -1c   # any empty patch is a dead trial
 ```
 
 Each trial directory under `jobs/atomic-smoke/` holds the agent's JSON stream
 (`agent/atomic.txt`), session transcripts (`agent/atomic-sessions/`), the patch
-the task collected (`artifacts/model.patch`), and two files worth reading when
-something looks wrong:
-
-- `agent/atomic-status.json` — the adapter's own verdict. `failed` names a
-  reason, such as `missing-atomic.txt`, rather than leaving a dead trial looking
-  complete.
-- `agent/atomic-manifest.json` — run ID, seed, model, Atomic version, and both
-  submodule SHAs. It records what actually ran, so two runs can be compared.
+the task collected (`artifacts/model.patch`), and `agent/atomic-manifest.json`
+— run ID, seed, model, Atomic version, and both submodule SHAs, recording what
+actually ran so two runs can be compared.
 
 ## 5. Full benchmark
 
@@ -140,10 +137,9 @@ Atomic older than the CLI the adapter targets, so it read the prompt terminator
 as a flag and started with no task. The trial finishes with an empty
 `model.patch`. Pin a current version.
 
-**`EmptyEgressAllowlistError`** — pass `--model` as `provider/model`. The agent
-runs behind a filtered proxy built from the model's provider; with no provider
-the allowlist is empty, and the model call would otherwise fail as a generic
-connection error that reads like a bad credential.
+**`Cannot resolve provider domains from model_name=…`** — pass `--model` as
+`provider/model`. Without a provider the sandbox gets no egress route, and the
+run would otherwise die as a connection error that reads like a bad credential.
 
 **`421 Misdirected Request` on Copilot** — force the endpoint:
 `--agent-env COPILOT_API_TARGET=api.githubcopilot.com` (GHES:
