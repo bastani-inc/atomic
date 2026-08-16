@@ -43,6 +43,7 @@ import type {
 	SessionHeader,
 	SessionInfo,
 	SessionListProgress,
+	SessionNameState,
 	SessionTreeNode,
 	SessionWorkflowMetadata,
 } from "./session-manager-types.ts";
@@ -296,6 +297,15 @@ export class SessionManager {
 
 	/** Get the current session name from the latest session_info entry, if any. */
 	getSessionName(): string | undefined {
+		return this.getSessionNameState().name;
+	}
+
+	/**
+	 * Get the session name state. `hasName` is true for a session that was named and
+	 * then cleared even though `name` is undefined; a never-named session reports
+	 * `hasName: false`. Read-side only: the JSONL already records the distinction.
+	 */
+	getSessionNameState(): SessionNameState {
 		return getLatestSessionName(this.getEntries());
 	}
 

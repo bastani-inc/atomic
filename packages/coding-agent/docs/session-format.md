@@ -307,6 +307,8 @@ Session metadata (e.g., user-defined display name). Set via `/name`, `--name` / 
 
 The session name is displayed in the session selector (`/resume`) instead of the first message when set.
 
+Appending a `session_info` entry with an empty `name` clears the title. The distinction is durable: a cleared session keeps its trailing empty-name entry, while a never-named session has no `session_info` entry at all. Readers can tell them apart through `getSessionNameState()` (`{ hasName: false }` for never-named, `{ hasName: true }` for cleared) and through the `hasName` flag on listed `SessionInfo` rows; the bare `name` string is `undefined` in both cases.
+
 ### SessionSummaryEntry
 
 A generated one-line description of the session, written automatically once the agent goes idle and shown in the session selector. Never sent to the LLM.
@@ -433,7 +435,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `appendModelChange(provider, modelId)` - Record model change
 - `appendCompaction(compactedText, firstKeptEntryId, tokensBefore, details)` - Add a durable verbatim-line compaction boundary; pass `null` when no pre-boundary message is retained
 - `appendCustomEntry(customType, data?)` - Extension state (not in context)
-- `appendSessionInfo(name)` - Set session display name
+- `appendSessionInfo(name)` - Set session display name; an empty string clears it
 - `appendSessionSummary(summary, summarizedThroughId, usage?)` - Store a generated resume-picker summary, anchored to the message it describes
 - `appendCustomMessageEntry(customType, content, display, details?)` - Extension message (in context)
 - `appendLabelChange(targetId, label)` - Set/clear label
@@ -454,7 +456,8 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
 - `getEntries()` - All entries (excluding header)
 - `getHeader()` - Session header metadata
-- `getSessionName()` - Get display name from latest session_info entry
+- `getSessionName()` - Get display name from latest session_info entry (`undefined` when cleared or never named)
+- `getSessionNameState()` - Get the name state: `{ hasName: false }` when never named, `{ hasName: true }` when the latest entry cleared it, `{ hasName: true, name }` when currently named
 - `getCwd()` - Working directory
 - `getSessionDir()` - Session storage directory
 - `getSessionId()` - Session UUID

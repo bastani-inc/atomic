@@ -238,6 +238,7 @@ export {
 	type SessionInfoEntry,
 	SessionManager,
 	type SessionMessageEntry,
+	type SessionNameState,
 	type SessionTreeNode,
 	type SessionWorkflowMetadata,
 	sessionEntryToContextMessages,

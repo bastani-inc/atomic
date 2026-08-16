@@ -156,12 +156,15 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let firstMessage = "";
 		const allMessages: string[] = [];
 		let name: string | undefined;
+		let hasName = false;
 
 		for (const entry of entries) {
-			// Extract session name (use latest, including explicit clears)
+			// Extract session name state (use latest, including explicit clears:
+			// a latest empty name means cleared, no session_info entry means never named)
 			if (entry.type === "session_info") {
 				const infoEntry = entry as SessionInfoEntry;
 				name = infoEntry.name?.trim() || undefined;
+				hasName = true;
 			}
 
 			if (entry.type !== "message") continue;
@@ -202,6 +205,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			id: (header as SessionHeader).id,
 			cwd,
 			name,
+			...(hasName ? { hasName: true } : {}),
 			parentSessionPath,
 			...(internal ? { internal } : {}),
 			...(workflow ? { workflow } : {}),

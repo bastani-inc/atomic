@@ -17,6 +17,7 @@ import {
 	type SessionHeader,
 	type SessionInfoEntry,
 	type SessionMessageEntry,
+	type SessionNameState,
 	type SessionSummaryEntry,
 	type SessionWorkflowMetadata,
 	type ThinkingLevelChangeEntry,
@@ -199,16 +200,18 @@ export function getLatestSessionSummary(entries: FileEntry[]): SessionSummaryEnt
 	return undefined;
 }
 
-export function getLatestSessionName(entries: SessionEntry[]): string | undefined {
-	// Walk entries in reverse to find the latest session_info entry.
-	// Empty names explicitly clear the session title.
+export function getLatestSessionName(entries: SessionEntry[]): SessionNameState {
+	// Walk entries in reverse to find the latest session_info entry. An existing entry
+	// with an empty name is an explicit clear, not a never-named session: the fact that
+	// a session was named is separate from the name it currently holds (upstream 7bdb16c2).
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		if (entry.type === "session_info") {
-			return entry.name?.trim() || undefined;
+			const name = entry.name?.trim() || undefined;
+			return { hasName: true, ...(name !== undefined ? { name } : {}) };
 		}
 	}
-	return undefined;
+	return { hasName: false };
 }
 
 export function createCustomMessageEntry<T = unknown>(

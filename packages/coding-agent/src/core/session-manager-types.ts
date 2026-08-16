@@ -135,6 +135,25 @@ export interface SessionInfoEntry extends SessionEntryBase {
 	name?: string;
 }
 
+/**
+ * Session name read state, mirroring pi's has_session_name / session_name pair
+ * (upstream 7bdb16c2): the fact that a session was ever named is separate from the
+ * name it currently holds. The distinction is already durable in the JSONL — a clear
+ * appends a `session_info` entry with an empty name, a never-named session has none —
+ * so this is a read-side shape, not a storage change.
+ *
+ * - `{ hasName: false }` — no `session_info` entry exists; the session was never named.
+ * - `{ hasName: true }` — the latest `session_info` entry has an empty name; the session
+ *   was named and then cleared.
+ * - `{ hasName: true, name: "…" }` — the session currently holds this name.
+ */
+export interface SessionNameState {
+	/** True when a `session_info` entry exists, even if its latest name is empty (cleared). */
+	hasName: boolean;
+	/** Current name. Undefined for both a cleared and a never-named session. */
+	name?: string;
+}
+
 /** Session summary metadata entry. */
 export interface SessionSummaryEntry extends SessionEntryBase {
 	type: "session_summary";
@@ -211,8 +230,13 @@ export interface SessionInfo {
 	id: string;
 	/** Working directory where the session was started. Empty string for old sessions. */
 	cwd: string;
-	/** User-defined display name from session_info entries. */
+	/**
+	 * User-defined display name from session_info entries. Undefined both for a
+	 * never-named session and for one whose name was cleared; `hasName` separates them.
+	 */
 	name?: string;
+	/** True when a session_info entry exists, even if the name was later cleared. */
+	hasName?: boolean;
 	/** Path to the parent session (if this session was forked). */
 	parentSessionPath?: string;
 	/** True when this session was created by automated machinery (e.g. a workflow stage). */
@@ -248,4 +272,5 @@ export type ReadonlySessionManager = Pick<
 	| "getEntries"
 	| "getTree"
 	| "getSessionName"
+	| "getSessionNameState"
 >;

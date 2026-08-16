@@ -273,6 +273,7 @@ function createHarnessSessionManager(metadataId: string, sessionFile: string | u
 		getEntries: () => unsupportedHarnessOperation("sessionManager.getEntries()"),
 		getTree: () => unsupportedHarnessOperation("sessionManager.getTree()"),
 		getSessionName: () => unsupportedHarnessOperation("sessionManager.getSessionName()"),
+		getSessionNameState: () => unsupportedHarnessOperation("sessionManager.getSessionNameState()"),
 	};
 }
 
