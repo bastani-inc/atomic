@@ -965,9 +965,9 @@ When a meaningful source boundary improves clarity, reuse, ownership, or testabi
 - deterministic helpers with their own testable behavior; and
 - reusable child workflow definitions.
 
-Put those workflow-specific modules in a workflow-specific subdirectory below the top-level discovery directory. Project and user discovery scans only top-level `.ts`/`.js` files in the workflow directory; the scan is non-recursive, so these support modules are not scanned as extra top-level workflow candidates. Use `.js` import extensions from TypeScript source, following the repository convention.
+Put those support modules in a subdirectory below the top-level discovery directory — either one owned by a single workflow or a shared support directory for several workflows. Project and user discovery scans only top-level `.ts`/`.js`/`.mjs`/`.cjs` files in the workflow directory; the scan is non-recursive, so support modules in subdirectories are not scanned as extra top-level workflow candidates. Every top-level candidate in any of those four extensions is imported and each of its exports is shape-checked, so a support module left at the top level produces definition diagnostics for its non-workflow exports regardless of extension. Use `.js` import extensions from TypeScript source, following the repository convention.
 
-The repository uses this shape in `.atomic/workflows/release-docs.ts`: the entry file keeps the graph and imports deterministic helpers from `.atomic/workflows/lib/release-docs.ts`. A valid layout for a custom workflow is:
+The repository uses this shape in `.atomic/workflows/release-docs.ts`: the entry file keeps the graph and imports deterministic helpers from `.atomic/workflows/lib/release-docs.ts`, a shared support directory that also holds the separate `publish-release` helper. A workflow-owned subdirectory is an equally valid layout for a custom workflow:
 
 ```text
 .atomic/workflows/code-review.ts

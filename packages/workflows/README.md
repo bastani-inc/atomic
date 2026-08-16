@@ -88,9 +88,9 @@ Keep a small, readable workflow in one entry file. Do not split short one-use pr
 
 At a meaningful source boundary that improves clarity, reuse, ownership, or testability, keep the graph and control flow in the top-level workflow entry file and extract cohesive concerns: long or reused prompt builders; shared TypeBox schemas and workflow-specific types; model-policy constants shared by several stages; deterministic helpers with their own testable behavior; or reusable child workflow definitions.
 
-Put workflow-specific modules in a workflow-specific subdirectory below the top-level discovery directory. Project and user discovery scans only top-level `.ts`/`.js` files in the workflow directory; the scan is non-recursive, so support modules are not scanned as extra top-level workflow candidates. Use `.js` import extensions from TypeScript source.
+Put support modules in a subdirectory below the top-level discovery directory — either one owned by a single workflow or a shared support directory for several workflows. Project and user discovery scans only top-level `.ts`/`.js`/`.mjs`/`.cjs` files in the workflow directory; the scan is non-recursive, so support modules in subdirectories are not scanned as extra top-level workflow candidates. Use `.js` import extensions from TypeScript source.
 
-The existing `.atomic/workflows/release-docs.ts` keeps its graph in the entry file and imports deterministic helpers from `.atomic/workflows/lib/release-docs.ts`. For example:
+The existing `.atomic/workflows/release-docs.ts` keeps its graph in the entry file and imports deterministic helpers from `.atomic/workflows/lib/release-docs.ts`, a shared support directory that also holds the separate `publish-release` helper. For example:
 
 ```text
 .atomic/workflows/code-review.ts
