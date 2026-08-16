@@ -2258,25 +2258,31 @@ ctx.tool<TValue extends WorkflowSerializableValue>(
 
 Runs arbitrary TypeScript code as a tracked, non-attachable durable workflow graph node and caches its serializable result by call order plus the content hash of `name` and `args`. The node is created before `fn` runs and may appear before, between, after, or without model stages. A completed call replays without rerunning `fn`, so use this primitive for workflow-owned durable side effects; keep pure computation as ordinary TypeScript.
 
-**Cancellation.** Every callback receives a `WorkflowToolContext` whose `signal` aborts when the run is cancelled, when the run is gracefully quit, or when this single node is aborted with `workflow({ action: "quit"|"interrupt", runId, stageId: "<tool node id or name>" })`. Forward it to `fetch`, a child process, or any client that accepts an `AbortSignal` so a stuck call can be stopped:
+**Cancellation and deadlines.** Every callback receives a `WorkflowToolContext` whose `signal` aborts when the run is cancelled, when the run is gracefully quit, or when this single node is aborted with `workflow({ action: "quit"|"interrupt", runId, stageId: "<tool node id or name>" })`. Forward it to `fetch`, a child process, or any client that accepts an `AbortSignal` so a stuck call can be stopped:
 
 ```ts
-await ctx.tool("fetch-dataset", { source }, async ({ signal }) => {
-  const response = await fetch(source, { signal });
-  return await response.text();
-});
+await ctx.tool(
+  "fetch-dataset",
+  { source },
+  async ({ signal }) => {
+    const response = await fetch(source, { signal });
+    return await response.text();
+  },
+  { timeoutMs: 45 * 60_000 },
+);
 ```
 
-Zero-argument callbacks stay valid — `async () => { ... }` still compiles and runs — but a callback that ignores its signal cannot be stopped: quit abandons it after a bounded wait and reports its owning run and node id, and it keeps running until it finishes on its own. A cancelled call writes no replayable checkpoint, so resume re-executes exactly that call at the same ordinal and node id; under `failureMode: "return"` it also writes one inspection-only `tool-failure:` record, which is never a replay cache hit.
+Zero-argument callbacks stay valid — `async () => { ... }` still compiles and runs. When `timeoutMs` is set, a callback that ignores its signal is released after the per-attempt deadline, but any child process or network request it started can keep running until it finishes on its own; forwarding the supplied signal is required for cancellation to stop that underlying work. Without a deadline, quit still abandons an ignored callback after a bounded wait and reports its owning run and node id. A cancelled call writes no replayable checkpoint, so resume re-executes exactly that call at the same ordinal and node id; under `failureMode: "return"` it also writes one inspection-only `tool-failure:` record, which is never a replay cache hit.
 
 **Options:**
 - `failureMode` — `"throw"` keeps the default throw-on-failure behavior; `"return"` returns a typed success or failure outcome after retries.
-- `retriesAllowed` — retries failures when `true`; default `false`.
+- `retriesAllowed` — retries failures when `true`; default `false`. Retries alone do not bound a callback that hangs because a hung attempt never fails.
 - `maxAttempts` — positive integer maximum when retries are enabled; default `3`. Invalid enabled retry bounds throw before the callback runs.
 - `intervalMs` — initial retry interval; default `1000`.
 - `backoffRate` — retry interval multiplier; default `2`.
+- `timeoutMs` — optional positive finite deadline in milliseconds applied to each callback attempt. Invalid values throw before the callback runs; each retry gets a fresh deadline and `AbortSignal`, and expiry is handled as an attempt failure.
 
-Retries share one signal per logical call, so an abort stops the current attempt and its backoff sleep instead of starting another attempt.
+With `timeoutMs`, each retry receives a fresh signal and deadline. Run cancellation and operator abort remain cancellation rather than timeout, and a callback that completes before its deadline is unchanged. Omitting `timeoutMs` keeps the existing unbounded callback path.
 
 See [`ctx.tool` — durable cached tool execution](#ctxtool--durable-cached-tool-execution) for durable failure replay, process-output safety, explicit repair handoffs, and cancellation behavior.
 
@@ -3289,7 +3295,7 @@ Recoverable output is explicit data flow. Atomic does not add a failed tool outc
 
 Cancellation, closed tool admission, and durable-storage faults still throw. They never become ordinary `{ ok: false }` callback outcomes. Omitting `failureMode: "return"` also keeps the existing behavior: an exhausted callback error rejects `ctx.tool` and fails the workflow unless author code catches it. Atomic persists that failed node and the root's selected tool link for later inspection, but excludes the failure record from the replay cache, so a resume or rerun calls the function again. Command failures that expose `exitCode`, `stdout`, or `stderr` remain failures even when a wrapper also uses cancellation-like text or codes; only a real run cancellation that wins the terminal race produces a killed/cancelled root.
 
-**Per-node cancellation.** Each logical `ctx.tool` call runs under its own `AbortController`, combined with the run's signal and handed to the callback as `{ signal }`. A run abort cascades to every live node; `workflow({ action: "quit"|"interrupt", runId, stageId })` naming one tool node aborts exactly that node and leaves its siblings alone. All retries of one call share that single signal.
+**Per-node cancellation and per-attempt deadlines.** Each logical `ctx.tool` call runs under its own `AbortController`, combined with the run's signal and handed to the callback as `{ signal }`. A run abort cascades to every live node; `workflow({ action: "quit"|"interrupt", runId, stageId })` naming one tool node aborts exactly that node and leaves its siblings alone. Without `timeoutMs`, retries share that logical call signal. With `timeoutMs`, every attempt gets a fresh signal and deadline; expiry aborts that attempt and becomes an ordinary attempt failure, while run cancellation and operator abort remain cancellation.
 
 A cancelled call is recorded as `cancelled`, not `failed`, and is never a run failure by itself: it writes no replayable `tool:` checkpoint and no `return_failure` outcome even under `failureMode: "return"`, so a cancellation can never replay as data. Return mode does keep exactly one inspection-only `tool-failure:` record carrying the cancellation message, written for every cancellation timing — while the callback awaits, when the callback throws, and when the callback fulfills after the abort but before persistence. That id is excluded from replay lookup, so `getToolCheckpoint()` still misses and the call runs again. A callback that ignores its signal and returns late is caught before persistence, so its value cannot become a checkpoint either. Resume recomputes the same ordinal and `argsHash` from authored order, so the re-run occupies the same `tool:<argsHash>` graph node instead of creating a new one.
 
@@ -3310,7 +3316,7 @@ export default workflow({
         const res = await fetch(ctx.inputs.source, { signal });
         return await res.text();
       },
-      { retriesAllowed: true, maxAttempts: 3 },
+      { retriesAllowed: true, maxAttempts: 3, timeoutMs: 45 * 60_000 },
     );
 
     // Subsequent stages use the cached result.
@@ -3328,7 +3334,7 @@ for (let iteration = 1; iteration <= 2; iteration += 1) {
     "run-tests",
     { iteration },
     async () => runCommand(["bun", "test"]),
-    { failureMode: "return", retriesAllowed: true, maxAttempts: 2 },
+    { failureMode: "return", retriesAllowed: true, maxAttempts: 2, timeoutMs: 10 * 60_000 },
   );
 
   if (tests.ok) break;

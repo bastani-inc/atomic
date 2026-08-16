@@ -181,6 +181,9 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 	) {
 		throw new RangeError("atomic-workflows: ctx.tool maxAttempts must be a positive integer");
 	}
+	if (options?.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
+		throw new RangeError("atomic-workflows: ctx.tool timeoutMs must be a positive finite number");
+	}
 	const returnFailure = options?.failureMode === "return";
 	const identityMode = returnFailure ? { failureMode: "return" as const } : {};
 	const callKey = durableHash({ name, args, ...identityMode });
@@ -267,6 +270,63 @@ interface LiveToolInvocation<T extends WorkflowSerializableValue> {
 	readonly returnFailure: boolean;
 }
 
+class WorkflowToolTimeoutError extends Error {
+	constructor(toolName: string, timeoutMs: number) {
+		super(`atomic-workflows: ctx.tool ${toolName} timed out after ${timeoutMs}ms`);
+		this.name = "TimeoutError";
+	}
+}
+
+type ToolCallbackAttemptResult<T> =
+	| { readonly kind: "value"; readonly value: T }
+	| { readonly kind: "error"; readonly error: unknown };
+
+function abortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled");
+}
+
+/** Run one callback attempt with a fresh signal and deadline. */
+async function executeTimedToolAttempt<T extends WorkflowSerializableValue>(
+	toolName: string,
+	runId: string,
+	fn: (toolCtx: WorkflowToolContext) => Promise<T>,
+	baseSignal: AbortSignal,
+	timeoutMs: number,
+): Promise<T> {
+	const timeoutController = new AbortController();
+	const attemptSignal = AbortSignal.any([baseSignal, timeoutController.signal]);
+	const callbackResult: Promise<ToolCallbackAttemptResult<T>> = runCallback(
+		{ kind: "workflow.ctx_tool", name: toolName, runId },
+		() => fn({ signal: attemptSignal }),
+	).then(
+		(value) => ({ kind: "value" as const, value }),
+		(error: unknown) => ({ kind: "error" as const, error }),
+	);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let onAbort: (() => void) | undefined;
+	const timeoutResult = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			if (baseSignal.aborted) return;
+			const timeoutError = new WorkflowToolTimeoutError(toolName, timeoutMs);
+			timeoutController.abort(timeoutError);
+			reject(timeoutError);
+		}, timeoutMs);
+	});
+	const cancellationResult = new Promise<never>((_, reject) => {
+		onAbort = () => reject(abortReason(baseSignal));
+		if (baseSignal.aborted) onAbort();
+		else baseSignal.addEventListener("abort", onAbort, { once: true });
+	});
+	try {
+		const result = await Promise.race([callbackResult, timeoutResult, cancellationResult]);
+		if (result.kind === "value") return result.value;
+		throw result.error;
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+		if (onAbort !== undefined) baseSignal.removeEventListener("abort", onAbort);
+	}
+}
+
 /**
  * Execute one uncached tool call under its own abort controller.
  *
@@ -302,9 +362,13 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 		const result = await executeWithRetries(
 			() => {
 				attempts += 1;
-				return runCallback({ kind: "workflow.ctx_tool", name, runId: input.workflowId }, () =>
-					fn({ signal: toolSignal }),
-				).catch((error: unknown) => {
+				const callback =
+					options?.timeoutMs === undefined
+						? runCallback({ kind: "workflow.ctx_tool", name, runId: input.workflowId }, () =>
+								fn({ signal: toolSignal }),
+							)
+						: executeTimedToolAttempt(name, input.workflowId, fn, toolSignal, options.timeoutMs);
+				return callback.catch((error: unknown) => {
 					callbackError = error;
 					throw error;
 				});

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added search inside attached workflow stage chats. `Ctrl+Shift+F` in a focused stage chat opens a find box over that chat rather than the main transcript behind it, and searches the entire stage transcript — every row, not only the visible window — including every row of a long live answer still streaming and rows far above the viewport. Live, paused, and read-only archived stage chats are all searchable; an archived question card with no transcript declines the key. Opening, navigation, and closing route through the four `tui.altScreen.search*` actions, so remapping them moves the stage-chat search too, and a search bound onto a scroll-shaped key still opens the box. `escape` closes the find box without interrupting the stage or closing the pane, `ctrl+f` still queues a follow-up, matches highlight with the same theme colors and attributes as the main transcript search, and scrolling stays live underneath the box ([#2385](https://github.com/bastani-inc/atomic/issues/2385)).
+- Added optional per-attempt `timeoutMs` deadlines to `ctx.tool`. Expiry aborts the attempt signal, records a timeout-specific diagnostic, participates in retries, and follows the existing throwing or typed `failureMode: "return"` behavior; each retry gets a fresh signal and deadline, while omitted timeouts preserve existing behavior ([#2424](https://github.com/bastani-inc/atomic/issues/2424)).
 
 ### Changed
 

@@ -156,6 +156,8 @@ export interface WorkflowToolOptions {
 	readonly maxAttempts?: number;
 	readonly intervalMs?: number;
 	readonly backoffRate?: number;
+	/** Maximum duration in milliseconds for each callback attempt. */
+	readonly timeoutMs?: number;
 }
 
 export type WorkflowToolReturnOptions = WorkflowToolOptions & { readonly failureMode: "return" };
