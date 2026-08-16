@@ -1,5 +1,5 @@
-// @generated vendored verbatim from oh-my-pi packages/hashline @ 15b5c1397fc -- DO NOT EDIT.
-// Parity source for the Atomic hashline edit engine (issue #1483); adapted only for Atomic's Node runtime (relative imports, Bun->Node host calls, erasable constructor syntax).
+// Hashline engine origin: can1357/oh-my-pi packages/hashline @ 15b5c1397fc.
+// This file carries Atomic-maintained local modifications authored in Atomic (not copied from upstream); see ./PROVENANCE.md and ./LICENSE.upstream.
 /**
  * Stateful, line-oriented classifier for hashline diff text.
  *
@@ -120,15 +120,22 @@ interface NumberScan {
 	nextIndex: number;
 }
 
-function scanLineNumber(line: string, index: number, end: number): NumberScan | null {
+function scanLineNumber(line: string, index: number, end: number, lineNum = 0): NumberScan | null {
 	if (index >= end || !isNonZeroDigitCode(line.charCodeAt(index))) return null;
-	let lineNumber = 0;
 	let nextIndex = index;
-	while (nextIndex < end) {
-		const code = line.charCodeAt(nextIndex);
-		if (!isDigitCode(code)) break;
-		lineNumber = lineNumber * 10 + (code - CHAR_ZERO);
-		nextIndex++;
+	while (nextIndex < end && isDigitCode(line.charCodeAt(nextIndex))) nextIndex++;
+	const rawNumber = line.slice(index, nextIndex);
+	let lineNumber = 0;
+	for (let cursor = index; cursor < nextIndex; cursor++) {
+		const digit = line.charCodeAt(cursor) - CHAR_ZERO;
+		if (lineNumber > Math.floor((Number.MAX_SAFE_INTEGER - digit) / 10)) {
+			const prefix = lineNum > 0 ? `line ${lineNum}: ` : "";
+			throw new Error(
+				`${prefix}line anchor ${JSON.stringify(rawNumber)} is not a safe integer; ` +
+					`line numbers must be positive safe integers no greater than ${Number.MAX_SAFE_INTEGER}.`,
+			);
+		}
+		lineNumber = lineNumber * 10 + digit;
 	}
 	return { line: lineNumber, nextIndex };
 }
@@ -137,7 +144,7 @@ function scanLineNumber(line: string, index: number, end: number): NumberScan | 
 export function parseLid(raw: string, lineNum: number): Anchor {
 	const end = trimEndIndex(raw);
 	const numberStart = skipWhitespace(raw, 0, end);
-	const number = scanLineNumber(raw, numberStart, end);
+	const number = scanLineNumber(raw, numberStart, end, lineNum);
 	if (number === null || skipWhitespace(raw, number.nextIndex, end) !== end) {
 		throw new Error(
 			`line ${lineNum}: expected a line number such as ${describeAnchorExamples("119")}; ` +
@@ -179,9 +186,15 @@ function scanRangeSeparator(line: string, index: number, end: number): number | 
 	return cursor;
 }
 
-function scanHeaderRange(line: string, index = 0, end = trimEndIndex(line), allowSingle = false): RangeScan | null {
+function scanHeaderRange(
+	line: string,
+	index = 0,
+	end = trimEndIndex(line),
+	allowSingle = false,
+	lineNum = 0,
+): RangeScan | null {
 	const numberStart = skipWhitespace(line, index, end);
-	const start = scanLineNumber(line, numberStart, end);
+	const start = scanLineNumber(line, numberStart, end, lineNum);
 	if (start === null) return null;
 	const afterFirst = scanRangeSeparator(line, start.nextIndex, end);
 	if (afterFirst === null) {
@@ -191,7 +204,7 @@ function scanHeaderRange(line: string, index = 0, end = trimEndIndex(line), allo
 			nextIndex: skipWhitespace(line, start.nextIndex, end),
 		};
 	}
-	const endNumber = scanLineNumber(line, afterFirst, end);
+	const endNumber = scanLineNumber(line, afterFirst, end, lineNum);
 	if (endNumber === null) return null;
 	return {
 		range: { start: { line: start.line }, end: { line: endNumber.line } },
@@ -230,11 +243,11 @@ function consumeOptionalColon(line: string, index: number, end: number): number 
 	return cursor < end && line.charCodeAt(cursor) === CHAR_COLON ? skipWhitespace(line, cursor + 1, end) : cursor;
 }
 
-function scanInsertTarget(line: string, index: number, end: number): TargetScan | null {
+function scanInsertTarget(line: string, index: number, end: number, lineNum = 0): TargetScan | null {
 	const cursor = skipWhitespace(line, index, end);
 	const beforeEnd = scanKeyword(line, cursor, end, HL_INSERT_BEFORE);
 	if (beforeEnd !== null) {
-		const anchor = scanLineNumber(line, skipWhitespace(line, beforeEnd, end), end);
+		const anchor = scanLineNumber(line, skipWhitespace(line, beforeEnd, end), end, lineNum);
 		if (anchor === null) return null;
 		const nextIndex = consumeOptionalColon(line, anchor.nextIndex, end);
 		return { target: { kind: "insert_before", anchor: { line: anchor.line } }, nextIndex };
@@ -246,12 +259,12 @@ function scanInsertTarget(line: string, index: number, end: number): TargetScan 
 		// before falling back to a literal `insert after N:` anchor.
 		const blockEnd = scanKeyword(line, skipWhitespace(line, afterEnd, end), end, HL_BLOCK_KEYWORD);
 		if (blockEnd !== null) {
-			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end);
+			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end, lineNum);
 			if (anchor === null) return null;
 			const nextIndex = consumeOptionalColon(line, anchor.nextIndex, end);
 			return { target: { kind: "insert_after_block", anchor: { line: anchor.line } }, nextIndex };
 		}
-		const anchor = scanLineNumber(line, skipWhitespace(line, afterEnd, end), end);
+		const anchor = scanLineNumber(line, skipWhitespace(line, afterEnd, end), end, lineNum);
 		if (anchor === null) return null;
 		const nextIndex = consumeOptionalColon(line, anchor.nextIndex, end);
 		return { target: { kind: "insert_after", anchor: { line: anchor.line } }, nextIndex };
@@ -263,7 +276,7 @@ function scanInsertTarget(line: string, index: number, end: number): TargetScan 
 	return null;
 }
 
-function scanHunkAnchor(line: string, start: number, end: number): TargetScan | null {
+function scanHunkAnchor(line: string, start: number, end: number, lineNum = 0): TargetScan | null {
 	const cursor = skipWhitespace(line, start, end);
 	const replaceEnd = scanKeyword(line, cursor, end, HL_REPLACE_KEYWORD);
 	if (replaceEnd !== null) {
@@ -272,14 +285,14 @@ function scanHunkAnchor(line: string, start: number, end: number): TargetScan | 
 		// `replace N..M:` range.
 		const blockEnd = scanKeyword(line, skipWhitespace(line, replaceEnd, end), end, HL_BLOCK_KEYWORD);
 		if (blockEnd !== null) {
-			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end);
+			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end, lineNum);
 			if (anchor === null) return null;
 			return {
 				target: { kind: "block", anchor: { line: anchor.line } },
 				nextIndex: consumeOptionalColon(line, anchor.nextIndex, end),
 			};
 		}
-		const range = scanHeaderRange(line, replaceEnd, end, true);
+		const range = scanHeaderRange(line, replaceEnd, end, true, lineNum);
 		if (range === null) return null;
 		return {
 			target: { kind: "replace", range: range.range },
@@ -293,20 +306,20 @@ function scanHunkAnchor(line: string, start: number, end: number): TargetScan | 
 		// and no trailing colon.
 		const blockEnd = scanKeyword(line, skipWhitespace(line, deleteEnd, end), end, HL_BLOCK_KEYWORD);
 		if (blockEnd !== null) {
-			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end);
+			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end, lineNum);
 			if (anchor === null) return null;
 			const next = skipWhitespace(line, anchor.nextIndex, end);
 			if (next < end && line.charCodeAt(next) === CHAR_COLON) return null;
 			return { target: { kind: "delete_block", anchor: { line: anchor.line } }, nextIndex: next };
 		}
-		const range = scanHeaderRange(line, deleteEnd, end, true);
+		const range = scanHeaderRange(line, deleteEnd, end, true, lineNum);
 		if (range === null) return null;
 		const next = skipWhitespace(line, range.nextIndex, end);
 		if (next < end && line.charCodeAt(next) === CHAR_COLON) return null;
 		return { target: { kind: "delete", range: range.range }, nextIndex: next };
 	}
 	const insertEnd = scanKeyword(line, cursor, end, HL_INSERT_KEYWORD);
-	if (insertEnd !== null) return scanInsertTarget(line, insertEnd, end);
+	if (insertEnd !== null) return scanInsertTarget(line, insertEnd, end, lineNum);
 	return null;
 }
 
@@ -314,11 +327,11 @@ interface ParsedHunkHeader {
 	target: BlockTarget;
 }
 
-function tryParseHunkHeader(line: string): ParsedHunkHeader | null {
+function tryParseHunkHeader(line: string, lineNum = 0): ParsedHunkHeader | null {
 	const end = trimEndIndex(line);
 	const start = skipWhitespace(line, 0, end);
 	if (start >= end) return null;
-	const scan = scanHunkAnchor(line, start, end);
+	const scan = scanHunkAnchor(line, start, end, lineNum);
 	if (scan === null) return null;
 	if (scan.nextIndex !== end) return null;
 	return { target: scan.target };
@@ -402,7 +415,7 @@ function classifyLine(line: string, lineNum: number): Token {
 		line.startsWith(HL_DELETE_KEYWORD, lead) ||
 		line.startsWith(HL_INSERT_KEYWORD, lead);
 	if (isHunkLead) {
-		const hunk = tryParseHunkHeader(line);
+		const hunk = tryParseHunkHeader(line, lineNum);
 		if (hunk !== null) return { kind: "op-block", lineNum, target: hunk.target };
 	}
 	if (firstCode === CHAR_PAYLOAD_REPLACE) return { kind: "payload-literal", lineNum, text: line.slice(1) };
@@ -450,7 +463,11 @@ export class Tokenizer {
 	}
 
 	isOp(line: string): boolean {
-		return tryParseHunkHeader(line) !== null;
+		try {
+			return tryParseHunkHeader(line) !== null;
+		} catch {
+			return false;
+		}
 	}
 
 	isHeader(line: string): boolean {

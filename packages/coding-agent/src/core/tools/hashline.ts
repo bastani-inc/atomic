@@ -105,6 +105,7 @@ export function stripKnownHashlineCopiedContentWithMeta(
 	const stripped: string[] = [];
 	const snapshotLines = snapshot.content.split("\n");
 	let sawRow = false;
+	let lastCopiedLineNumber: number | undefined;
 	// Trailing tool chrome a model is likely to copy along with the hashline
 	// body: the read/search continuation footers, the write tool's own
 	// `Successfully wrote N bytes to <path>` confirmation (and its stripped-
@@ -135,9 +136,15 @@ export function stripKnownHashlineCopiedContentWithMeta(
 		const lineNumber = Number.parseInt(match[1] ?? "0", 10);
 		const strippedLine = match[2] ?? "";
 		if (snapshotLines[lineNumber - 1] !== strippedLine) return { content, stripped: false };
+		lastCopiedLineNumber = lineNumber;
 		stripped.push(strippedLine);
 	}
-	if (sawRow) return { content: stripped.join("\n"), stripped: true };
+	if (sawRow) {
+		let strippedContent = stripped.join("\n");
+		if (snapshot.content.endsWith("\n") && lastCopiedLineNumber === snapshotLines.length - 1) strippedContent += "\n";
+		return { content: strippedContent, stripped: true };
+	}
+
 	// Header + only tool chrome (e.g. a copied write confirmation
 	// `Successfully wrote N bytes to <path>`) names a known snapshot with no
 	// numbered body to recover — resolve to the snapshot's stored content.

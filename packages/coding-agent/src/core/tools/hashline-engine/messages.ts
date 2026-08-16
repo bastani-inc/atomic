@@ -1,5 +1,5 @@
-// @generated vendored verbatim from oh-my-pi packages/hashline @ 15b5c1397fc -- DO NOT EDIT.
-// Parity source for the Atomic hashline edit engine (issue #1483); adapted only for Atomic's Node runtime (relative imports, Bun->Node host calls, erasable constructor syntax).
+// Hashline engine origin: can1357/oh-my-pi packages/hashline @ 15b5c1397fc.
+// This file carries Atomic-maintained local modifications authored in Atomic (not copied from upstream); see ./PROVENANCE.md and ./LICENSE.upstream.
 /** Centralized error/warning text for the hashline parser, applier, and patcher. */
 
 import { formatNumberedLine, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format.js";
@@ -55,6 +55,9 @@ export const REPLACE_PAIR_COALESCED_OVERLAP_WARNING =
 /** Bare body rows auto-converted to literal `+` rows. */
 export const BARE_BODY_AUTO_PIPED_WARNING =
 	"Auto-prefixed bare body row(s) with `+`. Body rows must be `+TEXT` literal lines.";
+/** Explicit literal payload that resembles a valid hashline hunk header. */
+export const HUNK_LIKE_LITERAL_WARNING =
+	"Literal +TEXT row resembles a valid hunk header; it was kept as literal payload text.";
 
 /** Unified-diff-style `-` row in a hunk body. */
 export const MINUS_ROW_REJECTED =

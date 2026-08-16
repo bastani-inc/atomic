@@ -1,10 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
+import { containsRecognizableHashlineOperations, parsePatch } from "../src/core/tools/hashline-engine/index.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { splitReadLineSelector } from "../src/core/tools/read-selectors.ts";
 import { createSearchToolDefinition } from "../src/core/tools/search.ts";
@@ -12,6 +14,7 @@ import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 
 const tempDirs: string[] = [];
 const hashlineStore = createHashlineSnapshotStore();
+const hashlineEngineDir = join(dirname(fileURLToPath(import.meta.url)), "../src/core/tools/hashline-engine");
 
 async function createTempDir(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "atomic-hashline-tools-"));
@@ -855,5 +858,345 @@ describe("hashline file tool parity", () => {
 			),
 		).rejects.toThrow(/not from this session/);
 		expect(await readFile(file, "utf8")).toBe("one\ntwo");
+	});
+	it("rejects unsafe integer hashline anchors", () => {
+		expect(() => parsePatch("replace 9007199254740992..9007199254740992:\n+value")).toThrow(/safe integer/);
+	});
+	it("rejects expanded numeric ranges above 100,000 lines", () => {
+		expect(() => parsePatch("delete 1..100001")).toThrow(/100,000/);
+	});
+	it("accepts expanded numeric ranges at the 100,000-line limit", () => {
+		expect(parsePatch("delete 1..100000").edits).toHaveLength(100000);
+	});
+	it("preserves hunk-looking explicit payloads and warns", () => {
+		const parsed = parsePatch("replace 1..1:\n+replace 5..9:");
+		expect(parsed.edits.some((edit) => edit.kind === "insert" && edit.text === "replace 5..9:")).toBe(true);
+		expect(parsed.warnings).toContain(
+			"Literal +TEXT row resembles a valid hunk header; it was kept as literal payload text.",
+		);
+	});
+	it("keeps explicit payload text literal when its hunk-looking number is unsafe", () => {
+		const payload = "replace 9007199254740992..9007199254740992:";
+		const parsed = parsePatch(`replace 1..1:\n+${payload}`);
+		expect(parsed.edits.some((edit) => edit.kind === "insert" && edit.text === payload)).toBe(true);
+	});
+	it("does not warn for a normal explicit payload", () => {
+		const parsed = parsePatch("replace 1..1:\n+ordinary content");
+		expect(parsed.edits.some((edit) => edit.kind === "insert" && edit.text === "ordinary content")).toBe(true);
+		expect(parsed.warnings).not.toContain(
+			"Literal +TEXT row resembles a valid hunk header; it was kept as literal payload text.",
+		);
+	});
+	it("omits the synthetic numbered row after a terminal newline", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "terminal.txt"), "a\n", "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-terminal-newline",
+				{ path: "terminal.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("\n1:a");
+		expect(output).not.toContain("\n2:");
+	});
+	it("keeps a genuine blank row before the terminal newline", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "blank-before-terminal.txt"), "a\n\n", "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-genuine-blank",
+				{ path: "blank-before-terminal.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("\n1:a\n2:");
+		expect(output).not.toContain("\n3:");
+	});
+	it("keeps numbered output unchanged without a terminal newline", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "no-terminal.txt"), "a\nb", "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-no-terminal-newline",
+				{ path: "no-terminal.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("\n1:a\n2:b");
+		expect(output).not.toContain("\n3:");
+	});
+	it("preserves terminal-newline bytes for raw reads", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "raw-terminal.txt"), "a\n", "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-raw-terminal-newline",
+				{ path: "raw-terminal.txt:raw" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toBe("a\n");
+	});
+	it("keeps a genuine blank row at the line truncation boundary", async () => {
+		const dir = await createTempDir();
+		const lines = Array.from({ length: 3001 }, (_, index) => (index === 2999 ? "" : `line-${index + 1}`));
+		await writeFile(join(dir, "line-truncated.txt"), `${lines.join("\n")}\n`, "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-line-truncated-blank",
+				{ path: "line-truncated.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("\n3000:");
+		expect(output).toContain("[Showing lines 1-3000 of 3001. Continue with path selector :3001.]");
+	});
+	it("keeps a genuine blank row at the byte truncation boundary", async () => {
+		const dir = await createTempDir();
+		const lines = Array.from({ length: 800 }, (_, index) => (index === 423 ? "" : "é".repeat(60)));
+		await writeFile(join(dir, "byte-truncated.txt"), `${lines.join("\n")}\n`, "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-byte-truncated-blank",
+				{ path: "byte-truncated.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("\n424:");
+		expect(output).toContain("[Showing lines 1-424 of 800 (50.0KB limit). Continue with path selector :425.]");
+	});
+	it("selector reads agree with whole-file output without a terminal sentinel", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "selector-terminal.txt"), "a\nb\nc\n", "utf8");
+		const read = createReadToolDefinition(dir, { hashlineStore });
+		const wholeFile = text(
+			await read.execute(
+				"read-selector-whole",
+				{ path: "selector-terminal.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		for (const selector of ["selector-terminal.txt:1-3", "selector-terminal.txt:1+3", "selector-terminal.txt:2-3"]) {
+			const selected = text(
+				await read.execute(`read-${selector}`, { path: selector }, undefined, undefined, {} as ExtensionContext),
+			);
+			expect(selected).toBe(wholeFile);
+			expect(selected).not.toContain("\n4:");
+		}
+	});
+	it("classifies unsafe hashline anchors without throwing", () => {
+		expect(() => containsRecognizableHashlineOperations("replace 999999999999999999999..2:")).not.toThrow();
+		expect(containsRecognizableHashlineOperations("replace 999999999999999999999..2:")).toBe(false);
+	});
+	it("renders CRLF whole-file reads without a synthetic row", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "crlf.txt"), "a\r\nb\r\nc\r\n", "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-crlf-whole",
+				{ path: "crlf.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("[crlf.txt#D988]\n1:a\n2:b\n3:c");
+		expect(output).not.toContain("\n4:");
+		expect(output).not.toContain("\r");
+	});
+	it("keeps CRLF selector reads aligned with the whole-file read", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "crlf-selector.txt"), "a\r\nb\r\nc\r\n", "utf8");
+		const read = createReadToolDefinition(dir, { hashlineStore });
+		const whole = text(
+			await read.execute(
+				"read-crlf-selector-whole",
+				{ path: "crlf-selector.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		for (const [path, expected] of [
+			["crlf-selector.txt:1-3", whole],
+			["crlf-selector.txt:2", "[crlf-selector.txt#D988]\n2:b\n3:c"],
+		] as const) {
+			const selected = text(
+				await read.execute(`read-${path}`, { path }, undefined, undefined, {} as ExtensionContext),
+			);
+			expect(selected).toBe(expected);
+			expect(selected).not.toContain("\r");
+			expect(selected).not.toContain("\n4:");
+		}
+	});
+	it("reports CRLF beyond-EOF selectors using real line counts", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "crlf-eof.txt"), "a\r\nb\r\nc\r\n", "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-crlf-eof",
+				{ path: "crlf-eof.txt:4" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("Requested line 4 is beyond end of file (3 lines total)");
+	});
+	it("keeps a genuine blank final CRLF row visible", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "crlf-blank.txt"), "a\r\n\r\n", "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-crlf-blank",
+				{ path: "crlf-blank.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("[crlf-blank.txt#4F66]\n1:a\n2:");
+		expect(output).not.toContain("\n3:");
+	});
+	it("keeps raw CRLF bytes unchanged", async () => {
+		const dir = await createTempDir();
+		const source = "a\r\nb\r\nc\r\n";
+		await writeFile(join(dir, "crlf-raw.txt"), source, "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-crlf-raw",
+				{ path: "crlf-raw.txt:raw" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toBe(source);
+	});
+	it("keeps a genuine blank row at the CRLF truncation boundary", async () => {
+		const dir = await createTempDir();
+		const lines = Array.from({ length: 3001 }, (_, index) => (index === 2999 ? "" : `line-${index + 1}`));
+		await writeFile(join(dir, "crlf-truncated.txt"), `${lines.join("\r\n")}\r\n`, "utf8");
+		const output = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-crlf-truncated",
+				{ path: "crlf-truncated.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(output).toContain("\n3000:");
+		expect(output).toContain("[Showing lines 1-3000 of 3001. Continue with path selector :3001.]");
+	});
+	it("reports the full unsafe anchor with its parser line number", () => {
+		const anchor = "99999999999999999999";
+		expect(() => parsePatch(`delete ${anchor}`)).toThrow(
+			new RegExp(`line 1: line anchor ${JSON.stringify(anchor)} is not a safe integer`),
+		);
+	});
+	it("round-trips copied numbered output with a terminal newline", async () => {
+		const dir = await createTempDir();
+		const content = "a\n";
+		await writeFile(join(dir, "source.txt"), content, "utf8");
+		const copied = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-copy-terminal-newline",
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-copy-terminal-newline",
+			{ path: "destination.txt", content: copied },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "destination.txt"), "utf8")).toBe(content);
+	});
+	it("round-trips copied numbered output without adding a terminal newline", async () => {
+		const dir = await createTempDir();
+		const content = "hello";
+		await writeFile(join(dir, "source.txt"), content, "utf8");
+		const copied = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-copy-no-terminal-newline",
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-copy-no-terminal-newline",
+			{ path: "destination.txt", content: copied },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "destination.txt"), "utf8")).toBe(content);
+	});
+	it("round-trips a genuine final blank line before the terminal newline", async () => {
+		const dir = await createTempDir();
+		const content = "a\n\n";
+		await writeFile(join(dir, "source.txt"), content, "utf8");
+		const copied = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-copy-final-blank",
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-copy-final-blank",
+			{ path: "destination.txt", content: copied },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "destination.txt"), "utf8")).toBe(content);
+	});
+	it("keeps maintained hashline provenance aligned with source headers", async () => {
+		const provenance = await readFile(join(hashlineEngineDir, "PROVENANCE.md"), "utf8");
+		const license = await readFile(join(hashlineEngineDir, "LICENSE.upstream"), "utf8");
+		expect(license).toContain("Copyright (c) 2025 Mario Zechner");
+		expect(license).toContain("Copyright (c) 2025-2026 Can Bölük");
+		const locallyModifiedFiles = Array.from(provenance.matchAll(/^- `([^`]+)`:/gm), (match) => match[1]).filter(
+			(fileName): fileName is string => fileName !== undefined,
+		);
+		const modifiedEngineFiles = ["format.ts", "messages.ts", "parser.ts", "tokenizer.ts"];
+		expect(locallyModifiedFiles).toEqual(expect.arrayContaining([...modifiedEngineFiles, "normalize.ts"]));
+		const headers = await Promise.all(
+			modifiedEngineFiles.map(async (fileName) => {
+				const source = await readFile(join(hashlineEngineDir, fileName), "utf8");
+				return source.split("\n", 1)[0] ?? "";
+			}),
+		);
+		expect(new Set(headers).size).toBe(1);
+		for (const fileName of (await readdir(hashlineEngineDir)).filter((name) => locallyModifiedFiles.includes(name))) {
+			const source = await readFile(join(hashlineEngineDir, fileName), "utf8");
+			const header = source.split("\n", 1)[0] ?? "";
+			expect(header).not.toMatch(/vendored verbatim.*DO NOT EDIT/);
+		}
 	});
 });

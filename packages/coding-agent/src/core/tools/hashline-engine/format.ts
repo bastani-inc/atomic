@@ -1,5 +1,5 @@
-// @generated vendored verbatim from oh-my-pi packages/hashline @ 15b5c1397fc -- DO NOT EDIT.
-// Parity source for the Atomic hashline edit engine (issue #1483); adapted only for Atomic's Node runtime (relative imports, Bun->Node host calls, erasable constructor syntax).
+// Hashline engine origin: can1357/oh-my-pi packages/hashline @ 15b5c1397fc.
+// This file carries Atomic-maintained local modifications authored in Atomic (not copied from upstream); see ./PROVENANCE.md and ./LICENSE.upstream.
 /**
  * Hashline format primitives: sigils, separators, regex fragments, and
  * display helpers. These are the single source of truth for the parser, the
@@ -39,6 +39,8 @@ export const HL_FILE_HASH_SEP = "#";
 
 /** Separator between two line numbers in a range, e.g. `5..10`. */
 export const HL_RANGE_SEP = "..";
+/** Maximum number of concrete lines a numeric range may expand into. */
+export const HL_MAX_EXPANDED_RANGE_LINES = 100_000;
 
 /** Separator between a line number and displayed line content in hashline mode. */
 export const HL_LINE_BODY_SEP = ":";

@@ -1,26 +1,39 @@
-// @generated vendored verbatim from oh-my-pi packages/hashline @ 15b5c1397fc -- DO NOT EDIT.
-// Parity source for the Atomic hashline edit engine (issue #1483); adapted only for Atomic's Node runtime (relative imports, Bun->Node host calls, erasable constructor syntax).
+// Hashline engine origin: can1357/oh-my-pi packages/hashline @ 15b5c1397fc.
+// This file carries Atomic-maintained local modifications authored in Atomic (not copied from upstream); see ./PROVENANCE.md and ./LICENSE.upstream.
 /**
  * Token-driven state machine that turns a stream of {@link Token}s into a
  * flat list of {@link Edit}s. Sits between the {@link Tokenizer} and the
  * applier.
  */
-import { HL_PAYLOAD_REPLACE } from "./format.js";
+import { HL_MAX_EXPANDED_RANGE_LINES, HL_PAYLOAD_REPLACE } from "./format.js";
 import {
 	BARE_BODY_AUTO_PIPED_WARNING,
 	DELETE_BLOCK_TAKES_NO_BODY,
 	DELETE_TAKES_NO_BODY,
 	EMPTY_BLOCK,
 	EMPTY_INSERT,
+	HUNK_LIKE_LITERAL_WARNING,
 	MINUS_ROW_REJECTED,
 } from "./messages.js";
 import { stripOneLeadingHashlinePrefix } from "./prefixes.js";
 import { type BlockTarget, cloneCursor, type ParsedRange, type Token, Tokenizer } from "./tokenizer.js";
 import type { Anchor, Cursor, Edit } from "./types.js";
 
+const HUNK_HEADER_TOKENIZER = new Tokenizer();
+function isHunkHeader(text: string): boolean {
+	return HUNK_HEADER_TOKENIZER.isOp(text);
+}
+
 function validateRangeOrder(range: ParsedRange, lineNum: number): void {
 	if (range.end.line < range.start.line) {
 		throw new Error(`line ${lineNum}: range ${range.start.line}..${range.end.line} ends before it starts.`);
+	}
+	const expandedLineCount = range.end.line - range.start.line + 1;
+	if (expandedLineCount > HL_MAX_EXPANDED_RANGE_LINES) {
+		throw new Error(
+			`line ${lineNum}: range ${range.start.line}..${range.end.line} expands to ${expandedLineCount} lines; ` +
+				`numeric ranges are limited to ${HL_MAX_EXPANDED_RANGE_LINES.toLocaleString("en-US")} lines.`,
+		);
 	}
 }
 
@@ -224,6 +237,9 @@ export class Executor {
 		}
 		if (pending.target.kind === "delete") throw new Error(`line ${lineNum}: ${DELETE_TAKES_NO_BODY}`);
 		if (pending.target.kind === "delete_block") throw new Error(`line ${lineNum}: ${DELETE_BLOCK_TAKES_NO_BODY}`);
+		if (isHunkHeader(text) && !this.#warnings.includes(HUNK_LIKE_LITERAL_WARNING)) {
+			this.#warnings.push(HUNK_LIKE_LITERAL_WARNING);
+		}
 		this.#commitDeferredBlanks(pending);
 		pending.payloads.push({ kind: "literal", text, lineNum });
 	}

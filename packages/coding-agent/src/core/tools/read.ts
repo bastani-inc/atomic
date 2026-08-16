@@ -710,7 +710,13 @@ export function createReadToolDefinition(
 									isNotebookPath(absolutePath) && !rawOutput
 										? readEditableNotebookText(absolutePath, effectivePath)
 										: buffer.toString("utf-8");
-								let allLines = textContent.split("\n");
+								// Numbered output uses the same LF-normalized text as its formatters. Keep raw reads
+								// on the source bytes so :raw preserves CRLF and terminal-newline bytes exactly.
+								const numberedTextContent = rawOutput ? textContent : textContent.replace(/\r\n/g, "\n");
+								const sourceLines = numberedTextContent.split("\n");
+								// A terminal newline separates real lines; omit only its synthetic split item.
+								let allLines =
+									rawOutput || !numberedTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
 								let conflictLineNumbers: number[] | undefined;
 								if (conflictsOnly) {
 									registerConflictBlocks(cwd, parseConflictBlocks(absolutePath, textContent));
