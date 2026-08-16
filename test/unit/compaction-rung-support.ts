@@ -17,6 +17,10 @@ import type {
 } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { resolvePlannerRequest } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 
+// Re-export so tests can set the tail estimate on a preparation the same way
+// `prepareCompactionBoundary` does, without depending on the private WeakMap.
+export { setKeptTailTokenEstimate } from "../../packages/coding-agent/src/core/compaction/compaction-boundary.js";
+
 export const PARAMETERS: VerbatimCompactionParameters = {
 	compression_ratio: 0.5,
 	preserve_recent: 2,

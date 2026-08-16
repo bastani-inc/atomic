@@ -22,7 +22,12 @@ const stats: VerbatimCompactionStats = {
 };
 
 function render(rung: "planned" | "extension" | "fresh"): string {
-	const component = new CompactionBoundaryMessageComponent({ text: "[User]: retained", stats, rung });
+	const component = new CompactionBoundaryMessageComponent({
+		text: "[User]: retained",
+		stats,
+		rung,
+		displayTokensBefore: 100,
+	});
 	return stripVTControlCharacters(component.render(200).join("\n"));
 }
 
