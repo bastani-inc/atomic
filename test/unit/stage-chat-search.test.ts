@@ -13,13 +13,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { getKeybindings, ScrollView, setKeybindings, Text, type TuiAltScreen, VStack } from "@earendil-works/pi-tui";
-import chalk from "chalk";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	isFullscreenViewportAction,
 	shouldHandleFullscreenViewportInput,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import { chalk } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-deps.ts";
 import { createFullscreenTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.ts";
 import type { Theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-class.ts";
 import { loadThemeFromContent } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";

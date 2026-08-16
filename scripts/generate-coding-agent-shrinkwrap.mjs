@@ -3,10 +3,12 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { satisfies } from "semver";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const codingAgentDir = join(repoRoot, "packages/coding-agent");
+const codingAgentLockPrefix = "packages/coding-agent/";
 const rootLockfilePath = join(repoRoot, "package-lock.json");
 const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
 const internalPackageNames = new Set(["@bastani/atomic-natives"]);
@@ -224,6 +226,36 @@ function getInternalWorkspaces(lockPackages) {
 	return workspaces;
 }
 
+function publishedLockPath(lockPath) {
+	return lockPath.startsWith(codingAgentLockPrefix) ? lockPath.slice(codingAgentLockPrefix.length) : lockPath;
+}
+
+function choosePublishedPath(lockPath, packageName, outputFrom, addedPaths, sourceToOutput) {
+	const existingOutputPath = sourceToOutput.get(lockPath);
+	if (existingOutputPath !== undefined) {
+		return existingOutputPath;
+	}
+
+	const baseOutputPath = publishedLockPath(lockPath);
+	if (!addedPaths.has(baseOutputPath)) {
+		return baseOutputPath;
+	}
+
+	let parent = outputFrom;
+	while (parent) {
+		const nestedOutputPath = `${parent}/node_modules/${packageName}`;
+		if (!addedPaths.has(nestedOutputPath)) {
+			return nestedOutputPath;
+		}
+		parent = posix.dirname(parent);
+		if (parent === ".") {
+			break;
+		}
+	}
+
+	throw new Error(`Cannot place ${packageName} resolved from ${lockPath} in the published shrinkwrap`);
+}
+
 function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
 	const candidateDirs = [];
 	let current = fromLockPath;
@@ -273,28 +305,38 @@ function addGeneratedInternalPackage(shrinkwrapPackages, addedPaths, queue, name
 	addedPaths.add(outputPath);
 
 	for (const dependencyName of Object.keys(packageDependencies(entry))) {
-		queue.push({ name: dependencyName, from: outputPath });
+		queue.push({ name: dependencyName, from: outputPath, outputFrom: outputPath });
 	}
 }
 
-function addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue, name, from) {
+function addExternalPackage(
+	lockPackages,
+	shrinkwrapPackages,
+	addedPaths,
+	sourceToOutput,
+	queue,
+	name,
+	from,
+	outputFrom,
+) {
 	const lockPath = resolveExternalDependency(lockPackages, name, from);
-	if (addedPaths.has(lockPath)) {
+	if (sourceToOutput.has(lockPath)) {
 		return;
 	}
 
 	const entry = lockPackages[lockPath];
-	shrinkwrapPackages[lockPath] = copyLockEntry(entry);
-	addedPaths.add(lockPath);
+	const outputPath = choosePublishedPath(lockPath, name, outputFrom, addedPaths, sourceToOutput);
+	shrinkwrapPackages[outputPath] = copyLockEntry(entry);
+	addedPaths.add(outputPath);
+	sourceToOutput.set(lockPath, outputPath);
 
 	for (const dependencyName of Object.keys(packageDependencies(entry))) {
-		queue.push({ name: dependencyName, from: lockPath });
+		queue.push({ name: dependencyName, from: lockPath, outputFrom: outputPath });
 	}
 }
 
 function validateShrinkwrap(shrinkwrap, internalNames) {
 	const errors = [];
-	const includedPaths = new Set(Object.keys(shrinkwrap.packages));
 	const includedPackageNames = new Set();
 	const seenAllowedInstallScriptPackages = new Set();
 
@@ -338,13 +380,24 @@ function validateShrinkwrap(shrinkwrap, internalNames) {
 	}
 
 	for (const [lockPath, entry] of Object.entries(shrinkwrap.packages)) {
-		for (const dependencyName of Object.keys(packageDependencies(entry))) {
-			const dependencyIncluded = [...includedPaths].some(
-				(candidate) =>
-					candidate === `node_modules/${dependencyName}` || candidate.endsWith(`/node_modules/${dependencyName}`),
-			);
-			if (!dependencyIncluded) {
+		for (const [dependencyName, dependencyRange] of Object.entries(packageDependencies(entry))) {
+			let dependencyPath;
+			try {
+				dependencyPath = resolveExternalDependency(shrinkwrap.packages, dependencyName, lockPath);
+			} catch {
 				errors.push(`${lockPath || "root"} dependency ${dependencyName} is missing`);
+				continue;
+			}
+
+			const dependencyEntry = shrinkwrap.packages[dependencyPath];
+			if (!dependencyEntry?.version) {
+				errors.push(`${lockPath || "root"} dependency ${dependencyName} is missing`);
+				continue;
+			}
+			if (!satisfies(dependencyEntry.version, dependencyRange)) {
+				errors.push(
+					`${lockPath || "root"} dependency ${dependencyName}@${dependencyRange} resolves to ${dependencyEntry.version}`,
+				);
 			}
 		}
 	}
@@ -375,8 +428,13 @@ async function generateShrinkwrap() {
 		"": copyPackageJsonEntry(codingAgentPackage, { includeName: true }),
 	};
 	const addedPaths = new Set([""]);
+	const sourceToOutput = new Map();
 	const internalNames = new Set();
-	const queue = Object.keys(packageDependencies(codingAgentPackage)).map((name) => ({ name, from: "" }));
+	const queue = Object.keys(packageDependencies(codingAgentPackage)).map((name) => ({
+		name,
+		from: "packages/coding-agent",
+		outputFrom: "",
+	}));
 
 	while (queue.length > 0) {
 		const item = queue.shift();
@@ -394,7 +452,16 @@ async function generateShrinkwrap() {
 			continue;
 		}
 
-		addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue, item.name, item.from);
+		addExternalPackage(
+			lockPackages,
+			shrinkwrapPackages,
+			addedPaths,
+			sourceToOutput,
+			queue,
+			item.name,
+			item.from,
+			item.outputFrom,
+		);
 	}
 
 	const shrinkwrap = {

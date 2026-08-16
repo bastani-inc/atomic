@@ -26,6 +26,11 @@ test("the generated shrinkwrap matches the committed one", async () => {
 		"packages/coding-agent/npm-shrinkwrap.json is stale; run `npm run shrinkwrap:coding-agent`",
 	);
 });
+test("the published tree keeps coding-agent dependencies on satisfying versions", async () => {
+	const generated = await generateShrinkwrap();
+	assert.equal(generated.packages["node_modules/chalk"]?.version, "6.0.0");
+	assert.equal(generated.packages["node_modules/markit-ai/node_modules/chalk"]?.version, "5.6.2");
+});
 
 test("the shrinkwrap is derived from the lockfile npm ci verifies", async () => {
 	const generated = await generateShrinkwrap();
@@ -35,13 +40,21 @@ test("the shrinkwrap is derived from the lockfile npm ci verifies", async () => 
 	assert.equal(generated.name, "@bastani/atomic");
 
 	// Every resolved dependency must carry the exact version and integrity the
-	// root lockfile pinned. A shrinkwrap that drifted from it would ship users a
-	// dependency set no CI job ever installed -- which is precisely what two
-	// coexisting lockfiles allowed before install moved to npm.
+	// root lockfile pinned. Remapped workspace-local paths are matched by their
+	// integrity because the published tree is rooted at packages/coding-agent.
+	// A shrinkwrap that drifted from the root lock would ship users a dependency
+	// set no CI job ever installed -- which is precisely what two coexisting
+	// lockfiles allowed before install moved to npm.
 	let compared = 0;
 	for (const [path, entry] of Object.entries(generated.packages)) {
 		if (path === "" || entry.version === undefined) continue;
-		const source = lock.packages[path];
+		const pathSource = lock.packages[path];
+		const source =
+			pathSource?.integrity === entry.integrity
+				? pathSource
+				: Object.values(lock.packages).find(
+						(candidate) => candidate.integrity !== undefined && candidate.integrity === entry.integrity,
+					);
 		// Workspace packages are links in the root lockfile and carry no version of
 		// their own; the shrinkwrap materialises them.
 		if (source === undefined || source.link === true || source.version === undefined) continue;
