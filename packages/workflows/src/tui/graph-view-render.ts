@@ -4,7 +4,7 @@ import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
 import { GRAPH_HEADER_ROWS, GraphViewLayout, graphLayoutNaturalHeight } from "./graph-view-layout.js";
 import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
-import { APP_ACTION, isKeybindingsLike } from "./keybindings-adapter.js";
+import { APP_ACTION, isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
 import { renderPromptCard } from "./prompt-card.js";
 import { renderSwitcher } from "./switcher.js";
@@ -33,9 +33,8 @@ interface ToolDetailFrame {
 	readonly lines: readonly string[];
 }
 
-function toolExpandKey(piKeybindings: unknown): string {
-	if (!isKeybindingsLike(piKeybindings)) return "ctrl+o";
-	const keys = piKeybindings.getKeys?.(APP_ACTION.toolsExpand);
+function toolExpandKey(piKeybindings: KeybindingsLike | undefined): string {
+	const keys = piKeybindings?.getKeys?.(APP_ACTION.toolsExpand);
 	if (keys === undefined) return "ctrl+o";
 	return keys.join("/");
 }
@@ -177,7 +176,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 				theme: this.graphTheme,
 				width: blockWidth,
 				expanded: this.toolDetailExpanded,
-				expandKey: toolExpandKey(this.piKeybindings),
+				expandKey: toolExpandKey(isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined),
 			}),
 		};
 		this.detailFrame = frame;
