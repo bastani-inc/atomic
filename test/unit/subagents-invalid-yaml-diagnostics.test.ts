@@ -116,11 +116,13 @@ describe("invalid-YAML agent files produce load diagnostics", () => {
 		});
 
 		assert.match(report, /- agents: total 0/);
-		assert.match(
-			report,
-			new RegExp(
-				`- agents: warning — ${skippedPath}: invalid YAML frontmatter \\(Nested mappings are not allowed\\); file skipped`,
+		// The path is data, not a pattern: on Windows it contains backslashes, which a
+		// RegExp reads as escapes and which therefore never match the reported line.
+		assert.ok(
+			report.includes(
+				`- agents: warning — ${skippedPath}: invalid YAML frontmatter (Nested mappings are not allowed); file skipped`,
 			),
+			report,
 		);
 	});
 
