@@ -21,33 +21,33 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.js";
-import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.ts";
-import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import { getArtifactsDir } from "../shared/artifacts.ts";
-import { formatDuration, shortenPath } from "../shared/formatters.ts";
-import { resolveCurrentSessionId } from "../shared/session-identity.ts";
-import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
-import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
-import { registerSlashCommands } from "../slash/slash-commands.ts";
+import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
+import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
+import { getArtifactsDir } from "../shared/artifacts.js";
+import { formatDuration, shortenPath } from "../shared/formatters.js";
+import { resolveCurrentSessionId } from "../shared/session-identity.js";
+import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.js";
+import { registerSlashSubagentBridge } from "../slash/slash-bridge.js";
+import { registerSlashCommands } from "../slash/slash-commands.js";
 import {
 	clearSlashSnapshots,
 	getSlashRenderableSnapshot,
 	resolveSlashMessageDetails,
 	restoreSlashFinalSnapshots,
 	type SlashMessageDetails,
-} from "../slash/slash-live-state.ts";
+} from "../slash/slash-live-state.js";
 import {
 	advanceResultPulseFrame,
 	renderLiveSubagentResult,
 	renderSubagentResult,
 	type SubagentResultRenderState,
 	stopResultAnimations,
-} from "../tui/render.ts";
-import { loadConfig } from "./config.ts";
-import { parseSubagentNotifyContent } from "./notification-content.ts";
-import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
-import { SubagentParams } from "./schemas.ts";
-import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
+} from "../tui/render.js";
+import { loadConfig } from "./config.js";
+import { parseSubagentNotifyContent } from "./notification-content.js";
+import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.js";
+import { SubagentParams } from "./schemas.js";
+import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 
 export {
 	PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT,
@@ -56,8 +56,8 @@ export {
 	PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT,
 	PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT,
 	registerPromptTemplateBridgeRequestSettlement,
-} from "../slash/prompt-template-bridge.ts";
-export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
+} from "../slash/prompt-template-bridge.js";
+export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 
 import {
 	DEFAULT_ARTIFACT_CONFIG,
@@ -65,18 +65,18 @@ import {
 	SLASH_RESULT_TYPE,
 	SUBAGENT_CONTROL_EVENT,
 	type SubagentState,
-} from "../shared/types.ts";
-import { beginApiLifecycle, getApiScopedSet } from "./api-lifecycle.ts";
+} from "../shared/types.js";
+import { beginApiLifecycle, getApiScopedSet } from "./api-lifecycle.js";
 import {
 	clearPendingForegroundControlNotices,
 	formatSubagentControlNotice,
 	handleSubagentControlNotice,
 	SUBAGENT_CONTROL_MESSAGE_TYPE,
 	type SubagentControlMessageDetails,
-} from "./control-notices.ts";
-import { createSubagentStartupMaintenance } from "./startup-maintenance.ts";
+} from "./control-notices.js";
+import { createSubagentStartupMaintenance } from "./startup-maintenance.js";
 
-export { loadConfig } from "./config.ts";
+export { loadConfig } from "./config.js";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {

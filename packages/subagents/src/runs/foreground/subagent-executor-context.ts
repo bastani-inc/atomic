@@ -2,17 +2,17 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
+import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 	resolveSubagentIntercomTarget,
-} from "../../intercom/intercom-bridge.ts";
-import { getArtifactsDir } from "../../shared/artifacts.ts";
-import { createForkContextResolver } from "../../shared/fork-context.ts";
-import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import { buildReadInstruction } from "../../shared/settings.ts";
+} from "../../intercom/intercom-bridge.js";
+import { getArtifactsDir } from "../../shared/artifacts.js";
+import { createForkContextResolver } from "../../shared/fork-context.js";
+import { resolveCurrentSessionId } from "../../shared/session-identity.js";
+import { buildReadInstruction } from "../../shared/settings.js";
 import {
 	type ArtifactConfig,
 	checkSubagentDepth,
@@ -20,28 +20,28 @@ import {
 	resolveSubagentDepthPolicy,
 	type SubagentToolResult,
 	subagentDepthBlockedMessage,
-} from "../../shared/types.ts";
+} from "../../shared/types.js";
 
 import {
 	createNestedRoute,
 	resolveInheritedNestedRouteFromEnv,
 	resolveNestedParentAddressFromEnv,
 	writeNestedEvent,
-} from "../inprocess/runtime-support/nested-api.ts";
-import { resolveControlConfig } from "../shared/subagent-control.ts";
+} from "../inprocess/runtime-support/nested-api.js";
+import { resolveControlConfig } from "../shared/subagent-control.js";
 import {
 	applyAgentDefaultContext,
 	normalizeRepeatedParallelCounts,
 	toExecutionErrorResult,
 	validateExecutionInput,
 	withForkContext,
-} from "./subagent-executor-input.ts";
+} from "./subagent-executor-input.js";
 import type {
 	ExecutionContextBuildResult,
 	ExecutorDeps,
 	ResolvedExecutorDeps,
 	SubagentParamsLike,
-} from "./subagent-executor-types.ts";
+} from "./subagent-executor-types.js";
 
 export function checkDepthForExecution(
 	ctx: ExtensionContext,

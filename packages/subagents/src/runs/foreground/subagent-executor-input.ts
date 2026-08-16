@@ -1,6 +1,6 @@
 import type { AgentConfig } from "../../agents/agents.js";
-import type { Details, SubagentToolResult } from "../../shared/types.ts";
-import type { SubagentParamsLike, TaskParam } from "./subagent-executor-types.ts";
+import type { Details, SubagentToolResult } from "../../shared/types.js";
+import type { SubagentParamsLike, TaskParam } from "./subagent-executor-types.js";
 
 export function validateExecutionInput(
 	params: SubagentParamsLike,

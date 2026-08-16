@@ -4,8 +4,8 @@
 
 import type { AgentSessionEvent, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { CandidateModelResolver } from "./model-resolution.ts";
-import type { NestedRouteInfo } from "./types-nested.ts";
+import type { CandidateModelResolver } from "./model-resolution.js";
+import type { NestedRouteInfo } from "./types-nested.js";
 import type {
 	ArtifactConfig,
 	ControlConfig,
@@ -15,7 +15,7 @@ import type {
 	OutputMode,
 	ResolvedControlConfig,
 	SingleResult,
-} from "./types-results.ts";
+} from "./types-results.js";
 
 // ============================================================================
 // Display

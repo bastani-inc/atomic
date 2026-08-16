@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getEnvValue } from "@bastani/atomic";
-import { type AgentLoadDiagnostic, loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.ts";
-import { applyBuiltinOverrides, readMergedSubagentSettings } from "./agent-overrides.ts";
+import { type AgentLoadDiagnostic, loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.js";
+import { applyBuiltinOverrides, readMergedSubagentSettings } from "./agent-overrides.js";
 import {
 	BUILTIN_AGENTS_DIR,
 	getProjectAgentSettingsPath,
@@ -12,14 +12,14 @@ import {
 	getUserAgentSettingsPath,
 	getUserAgentSettingsPaths,
 	resolveNearestProjectAgentDirs,
-} from "./agent-paths.ts";
-import { mergeAgentsForScope } from "./agent-selection.ts";
+} from "./agent-paths.js";
+import { mergeAgentsForScope } from "./agent-selection.js";
 import {
 	type AgentConfig,
 	type AgentDiscoveryResult,
 	type AgentScope,
 	EMPTY_SUBAGENT_SETTINGS,
-} from "./agent-types.ts";
+} from "./agent-types.js";
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDirOld = getUserAgentDirs();

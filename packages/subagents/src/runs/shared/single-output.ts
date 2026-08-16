@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { OutputMode, SavedOutputReference, SubagentAttemptStatus } from "../../shared/types.ts";
+import type { OutputMode, SavedOutputReference, SubagentAttemptStatus } from "../../shared/types.js";
 
 export interface SingleOutputSnapshot {
 	exists: boolean;

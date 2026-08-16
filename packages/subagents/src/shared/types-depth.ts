@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionContext, SessionWorkflowMetadata } from "@bastani/atomic";
-import { DEFAULT_SUBAGENT_MAX_DEPTH, MAX_SUBAGENT_NESTING_DEPTH } from "./types-runtime.ts";
+import { DEFAULT_SUBAGENT_MAX_DEPTH, MAX_SUBAGENT_NESTING_DEPTH } from "./types-runtime.js";
 
 // Depth is admission state carried in the typed child policy, not process environment.
 

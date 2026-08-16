@@ -1,1 +1,1 @@
-export { runSingleInProcess, runSync } from "./inprocess-run-sync.ts";
+export { runSingleInProcess, runSync } from "./inprocess-run-sync.js";

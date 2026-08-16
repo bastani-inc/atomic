@@ -5,7 +5,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { APP_NAME } from "@bastani/atomic";
-import type { ArtifactConfig, MaxOutputConfig } from "./types-results.ts";
+import type { ArtifactConfig, MaxOutputConfig } from "./types-results.js";
 
 // Constants
 // ============================================================================

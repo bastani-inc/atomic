@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { AgentProgress, Details } from "../shared/types.ts";
+import type { AgentProgress, Details } from "../shared/types.js";
 
 export function progressRenderKey(progress: Partial<AgentProgress> | undefined): string {
 	if (!progress) return "";

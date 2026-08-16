@@ -5,7 +5,7 @@ import type {
 	ControlEventType,
 	ControlNotificationChannel,
 	ResolvedControlConfig,
-} from "../../shared/types.ts";
+} from "../../shared/types.js";
 
 const CONTROL_EVENT_TYPES: ControlEventType[] = ["active_long_running", "needs_attention"];
 const CONTROL_NOTIFICATION_CHANNELS: ControlNotificationChannel[] = ["event", "intercom"];

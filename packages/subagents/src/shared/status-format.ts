@@ -1,4 +1,4 @@
-import type { ActivityState } from "./types.ts";
+import type { ActivityState } from "./types.js";
 
 type StepStatus = "pending" | "running" | "complete" | "completed" | "failed" | "paused";
 type StepStatusLike = { status: StepStatus };

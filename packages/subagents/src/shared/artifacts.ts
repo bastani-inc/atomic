@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentConfigPaths } from "@bastani/atomic";
-import { appendToActiveEventWriter } from "./event-jsonl-writer.ts";
+import { appendToActiveEventWriter } from "./event-jsonl-writer.js";
 import { publishFileExclusive, unlinkIfPresent } from "./exclusive-file-publication.js";
-import { type ArtifactPaths, TEMP_ARTIFACTS_DIR } from "./types.ts";
+import { type ArtifactPaths, TEMP_ARTIFACTS_DIR } from "./types.js";
 
 const CLEANUP_MARKER_FILE = ".last-cleanup";
 const CLEANUP_LOCK_FILE = ".cleanup.lock";

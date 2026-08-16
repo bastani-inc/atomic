@@ -1,7 +1,7 @@
-import type { NestedRunSummary, SubagentState } from "../../../shared/types.ts";
-import { MAX_NESTED_CHILDREN } from "./nested-core.ts";
-import { projectNestedEvents } from "./nested-registry.ts";
-import { terminal } from "./nested-sanitize.ts";
+import type { NestedRunSummary, SubagentState } from "../../../shared/types.js";
+import { MAX_NESTED_CHILDREN } from "./nested-core.js";
+import { projectNestedEvents } from "./nested-registry.js";
+import { terminal } from "./nested-sanitize.js";
 
 export function attachRootChildrenToSteps<T extends { children?: NestedRunSummary[]; index?: number }>(
 	rootRunId: string,

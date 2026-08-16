@@ -1,14 +1,14 @@
 import type { AgentConfig } from "../../agents/agents.js";
-import { normalizeSkillInput } from "../../agents/skills.ts";
-import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";
-import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
+import { normalizeSkillInput } from "../../agents/skills.js";
+import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
+import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.js";
+import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
 	resolveStepBehavior,
 	type StepOverrides,
 	suppressProgressForReadOnlyTask,
 	writeInitialProgressFile,
-} from "../../shared/settings.ts";
+} from "../../shared/settings.js";
 import {
 	type AgentProgress,
 	type ArtifactPaths,
@@ -19,25 +19,25 @@ import {
 	type SingleResult,
 	type SubagentToolResult,
 	wrapForkTask,
-} from "../../shared/types.ts";
-import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
+} from "../../shared/types.js";
+import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
-import { resolveModelCandidate } from "../shared/model-fallback.ts";
-import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
-import { recordRun } from "../shared/run-history.ts";
-import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
-import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.ts";
-import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.ts";
-import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.ts";
+import { resolveModelCandidate } from "../shared/model-fallback.js";
+import { aggregateParallelOutputs } from "../shared/parallel-utils.js";
+import { recordRun } from "../shared/run-history.js";
+import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
+import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.js";
+import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.js";
+import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
 	rememberForegroundRun,
 	replaceForegroundRunChild,
-} from "./subagent-executor-status.ts";
-import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.ts";
+} from "./subagent-executor-status.js";
+import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.js";
 import {
 	buildParallelModeError,
 	buildParallelWorktreeSuffix,
@@ -45,7 +45,7 @@ import {
 	createParallelWorktreeSetup,
 	findDuplicateParallelOutputPath,
 	resolveParallelTaskCwd,
-} from "./subagent-executor-worktree.ts";
+} from "./subagent-executor-worktree.js";
 
 export async function runParallelPath(
 	data: ExecutionContextData,

@@ -1,6 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Details } from "../../shared/types.ts";
-import { isRetryableModelFailure } from "../shared/model-fallback.ts";
+import type { Details } from "../../shared/types.js";
+import { isRetryableModelFailure } from "../shared/model-fallback.js";
 
 export type RunSyncUpdate = AgentToolResult<Details>;
 

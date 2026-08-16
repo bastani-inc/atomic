@@ -1,6 +1,6 @@
-import type { SubagentToolResult } from "../../shared/types.ts";
-import { findSubagentControl, listSubagentControls } from "./control-registry.ts";
-import type { ModelCandidate } from "./runner.ts";
+import type { SubagentToolResult } from "../../shared/types.js";
+import { findSubagentControl, listSubagentControls } from "./control-registry.js";
+import type { ModelCandidate } from "./runner.js";
 
 function canonicalChildren(control: NonNullable<ReturnType<typeof findSubagentControl>>) {
 	return [...control.listChildren()].sort((left, right) => left.path.localeCompare(right.path));

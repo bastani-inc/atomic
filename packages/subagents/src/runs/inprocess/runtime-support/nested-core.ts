@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type NestedRouteInfo, type NestedRunSummary, TEMP_ROOT_DIR } from "../../../shared/types.ts";
-import { MAX_SUBAGENT_NESTING_DEPTH } from "../../../shared/types-runtime.ts";
-import { registerInProcessNestedRoute } from "../nested-routing.ts";
-import { isSafeNestedPathId, type NestedPathEntry } from "./nested-paths.ts";
+import { type NestedRouteInfo, type NestedRunSummary, TEMP_ROOT_DIR } from "../../../shared/types.js";
+import { MAX_SUBAGENT_NESTING_DEPTH } from "../../../shared/types-runtime.js";
+import { registerInProcessNestedRoute } from "../nested-routing.js";
+import { isSafeNestedPathId, type NestedPathEntry } from "./nested-paths.js";
 
 export const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 export const ROUTE_FILE = "route.json";

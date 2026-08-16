@@ -1,4 +1,4 @@
-import type { ResolvedControlConfig } from "../../shared/types.ts";
+import type { ResolvedControlConfig } from "../../shared/types.js";
 
 interface LongRunningNoticeMetrics {
 	startedAt: number;

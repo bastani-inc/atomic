@@ -9,7 +9,7 @@ import {
 	getBuiltinPackagePaths,
 	getProjectConfigDirs,
 } from "@bastani/atomic";
-import type { SkillSource } from "./skills.ts";
+import type { SkillSource } from "./skills.js";
 
 export interface SkillSearchPath {
 	path: string;

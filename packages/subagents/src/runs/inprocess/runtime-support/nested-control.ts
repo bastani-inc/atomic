@@ -6,7 +6,7 @@ import {
 	hasInProcessNestedRoute,
 	readInProcessControlRequests,
 	readInProcessControlResults,
-} from "../nested-routing.ts";
+} from "../nested-routing.js";
 import {
 	assertSafeId,
 	clampNumber,
@@ -18,8 +18,8 @@ import {
 	type NestedRoute,
 	stringValue,
 	validateRouteShape,
-} from "./nested-core.ts";
-import { writeRouteRecord } from "./nested-registry.ts";
+} from "./nested-core.js";
+import { writeRouteRecord } from "./nested-registry.js";
 
 export function parseNestedControlRequest(content: string, route: NestedRoute): NestedControlRequestRecord | undefined {
 	if (Buffer.byteLength(content, "utf-8") > MAX_NESTED_EVENT_BYTES) return undefined;

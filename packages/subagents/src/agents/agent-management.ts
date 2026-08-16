@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
-import type { SubagentToolResult } from "../shared/types.ts";
+import type { SubagentToolResult } from "../shared/types.js";
 import {
 	allAgents,
 	applyAgentConfig,
@@ -19,8 +19,8 @@ import {
 	result,
 	sanitizeName,
 	skillsWarning,
-} from "./agent-management-helpers.ts";
-import { serializeAgent } from "./agent-serializer.ts";
+} from "./agent-management-helpers.js";
+import { serializeAgent } from "./agent-serializer.js";
 import {
 	type AgentConfig,
 	type AgentSource,

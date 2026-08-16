@@ -5,7 +5,7 @@
 import type { SessionStats } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai/compat";
-import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-nested.ts";
+import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-nested.js";
 
 export interface MaxOutputConfig {
 	bytes?: number;

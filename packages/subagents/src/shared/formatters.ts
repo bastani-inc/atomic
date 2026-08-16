@@ -2,8 +2,8 @@
  * Formatting utilities for display output
  */
 
-import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.ts";
-import type { Usage } from "./types.ts";
+import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.js";
+import type { Usage } from "./types.js";
 
 /**
  * Format token count with k suffix for large numbers

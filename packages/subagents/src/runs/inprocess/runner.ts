@@ -24,20 +24,20 @@ import {
 	SubagentControl,
 } from "@bastani/atomic-natives";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import type { AgentConfig } from "../../agents/agent-types.ts";
+import type { AgentConfig } from "../../agents/agent-types.js";
 import {
 	buildSkillInjection,
 	isSubagentOrchestrationSkillSelector,
 	resolveSkillsFromCatalog,
-} from "../../agents/skills.ts";
-import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
+} from "../../agents/skills.js";
+import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
 import {
 	getSubagentCodexFastModeSettings,
 	resolveSubagentCodexFastModeScope,
 	resolveSubagentModelFastMode,
-} from "../../shared/fast-mode.ts";
-import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.ts";
-import { resolveEffectiveThinking } from "../../shared/model-info.ts";
+} from "../../shared/fast-mode.js";
+import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
+import { resolveEffectiveThinking } from "../../shared/model-info.js";
 import {
 	type AgentProgress,
 	type ArtifactPaths,
@@ -45,10 +45,10 @@ import {
 	type MaxOutputConfig,
 	normalizeMaxSubagentDepth,
 	truncateOutput,
-} from "../../shared/types.ts";
-import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.ts";
-import { type InProcessNestedResumeOutcome, registerInProcessNestedAttempt } from "./nested-routing.ts";
-import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.ts";
+} from "../../shared/types.js";
+import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
+import { type InProcessNestedResumeOutcome, registerInProcessNestedAttempt } from "./nested-routing.js";
+import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
 
 export type ChildStatus = NativeAgentStatus;
 export type ContinuationReason = "intercom-coordination";

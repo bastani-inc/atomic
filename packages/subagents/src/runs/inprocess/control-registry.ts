@@ -1,5 +1,5 @@
 import type { ChildIdentity } from "@bastani/atomic-natives";
-import { createSubagentControl, type ParentContext, type SubagentControlRuntime } from "./runner.ts";
+import { createSubagentControl, type ParentContext, type SubagentControlRuntime } from "./runner.js";
 
 /**
  * Host-local registry for the Rust control planes owned by the current Atomic

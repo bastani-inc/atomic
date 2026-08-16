@@ -5,9 +5,9 @@
  * focused sibling modules that hold the concrete type groups and helpers.
  */
 
-export * from "./types-config.ts";
-export * from "./types-depth.ts";
-export * from "./types-nested.ts";
-export * from "./types-output.ts";
-export * from "./types-results.ts";
-export * from "./types-runtime.ts";
+export * from "./types-config.js";
+export * from "./types-depth.js";
+export * from "./types-nested.js";
+export * from "./types-output.js";
+export * from "./types-results.js";
+export * from "./types-runtime.js";

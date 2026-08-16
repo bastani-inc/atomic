@@ -1,13 +1,13 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { CodexFastModeResolvedSettings, CodexFastModeScope } from "@bastani/atomic";
-import type { AgentConfig } from "../../agents/agent-types.ts";
-import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.ts";
+import type { AgentConfig } from "../../agents/agent-types.js";
+import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import {
 	getSubagentCodexFastModeSettings,
 	resolveSubagentCodexFastModeScope,
 	resolveSubagentModelFastMode,
-} from "../../shared/fast-mode.ts";
+} from "../../shared/fast-mode.js";
 import type {
 	AgentProgress,
 	ArtifactPaths,
@@ -17,12 +17,12 @@ import type {
 	SingleResult,
 	SubagentToolResult,
 	Usage,
-} from "../../shared/types.ts";
-import { getOrCreateSubagentControl } from "../inprocess/control-registry.ts";
-import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.ts";
-import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
-import { buildModelCandidates } from "../shared/model-fallback.ts";
-import { registerExecutionIntercomDetach } from "./execution-intercom-detach.ts";
+} from "../../shared/types.js";
+import { getOrCreateSubagentControl } from "../inprocess/control-registry.js";
+import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.js";
+import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.js";
+import { buildModelCandidates } from "../shared/model-fallback.js";
+import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js";
 
 function emptyUsage(): Usage {
 	return {

@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import {
 	type Details,
 	SLASH_SUBAGENT_CANCEL_EVENT,
@@ -8,13 +8,13 @@ import {
 	SLASH_SUBAGENT_RESPONSE_EVENT,
 	SLASH_SUBAGENT_STARTED_EVENT,
 	SLASH_SUBAGENT_UPDATE_EVENT,
-} from "../shared/types.ts";
+} from "../shared/types.js";
 import {
 	type BridgeRequestSettlement,
 	emitBridgeEvent,
 	readBridgeRequestSettlement,
 	rejectStoppedBridgeRequest,
-} from "./bridge-settlement.ts";
+} from "./bridge-settlement.js";
 
 interface SlashSubagentRequest {
 	requestId: string;

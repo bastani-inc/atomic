@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import type { AgentConfig, AgentScope } from "../../agents/agents.js";
-import type { IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
-import type { ModelInfo } from "../../shared/model-info.ts";
+import type { IntercomBridgeState } from "../../intercom/intercom-bridge.js";
+import type { ModelInfo } from "../../shared/model-info.js";
 import type {
 	ArtifactConfig,
 	ControlConfig,
@@ -11,9 +11,9 @@ import type {
 	SUBAGENT_ACTIONS,
 	SubagentState,
 	SubagentToolResult,
-} from "../../shared/types.ts";
-import type { ChildModePolicy } from "../inprocess/child-policy.ts";
-import type { runSync } from "./execution.ts";
+} from "../../shared/types.js";
+import type { ChildModePolicy } from "../inprocess/child-policy.js";
+import type { runSync } from "./execution.js";
 
 export interface TaskParam {
 	agent: string;
@@ -66,7 +66,7 @@ export interface SubagentExecutorRuntimeDeps {
 export interface ExecutorDeps {
 	pi: ExtensionAPI;
 	state: SubagentState;
-	config: import("../../shared/types.ts").ExtensionConfig;
+	config: import("../../shared/types.js").ExtensionConfig;
 	tempArtifactsDir: string;
 	getSubagentSessionRoot: (parentSessionFile: string | null) => string;
 	expandTilde: (p: string) => string;

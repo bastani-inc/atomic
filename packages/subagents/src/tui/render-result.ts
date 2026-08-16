@@ -1,19 +1,19 @@
 import { getMarkdownTheme, keyHintIfBound } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
-import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.ts";
-import type { AgentProgress, Details } from "../shared/types.ts";
-import { getSingleResultOutput } from "../shared/utils.ts";
-import { modelThinkingBadge } from "./render-event-formatting.ts";
-import { getTermWidth, type Theme, truncLine } from "./render-layout.ts";
-import { buildMultiProgressLabel, resultRowLabel } from "./render-progress.ts";
+import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.js";
+import type { AgentProgress, Details } from "../shared/types.js";
+import { getSingleResultOutput } from "../shared/utils.js";
+import { modelThinkingBadge } from "./render-event-formatting.js";
+import { getTermWidth, type Theme, truncLine } from "./render-layout.js";
+import { buildMultiProgressLabel, resultRowLabel } from "./render-progress.js";
 import {
 	advanceResultPulseFrame,
 	clearResultAnimationTimer,
 	type ResultAnimationContext,
-} from "./render-result-animation.ts";
-import { renderMultiCompact, renderSingleCompact } from "./render-result-compact.ts";
-import { subagentResultRenderKey } from "./render-stable-output.ts";
+} from "./render-result-animation.js";
+import { renderMultiCompact, renderSingleCompact } from "./render-result-compact.js";
+import { subagentResultRenderKey } from "./render-stable-output.js";
 import {
 	buildLiveStatusLine,
 	displayProgressDurationMs,
@@ -22,7 +22,7 @@ import {
 	getToolCallLines,
 	hasEmptyTextOutputWithoutOutputTarget,
 	snapshotNowForProgress,
-} from "./render-status-progress.ts";
+} from "./render-status-progress.js";
 
 export function renderLiveSubagentResult(
 	result: AgentToolResult<Details>,

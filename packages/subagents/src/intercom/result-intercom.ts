@@ -14,7 +14,7 @@ import {
 	type SubagentResultIntercomPayload,
 	type SubagentResultStatus,
 	type SubagentRunMode,
-} from "../shared/types.ts";
+} from "../shared/types.js";
 
 export function resolveSubagentResultStatus(input: {
 	status?: SubagentAttemptStatus;

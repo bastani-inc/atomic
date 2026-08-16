@@ -4,7 +4,7 @@ import {
 	type McpConfig,
 	type MetadataCache,
 	resolveMcpDirectToolNamesFromConfig,
-} from "./mcp-direct-tool-allowlist.ts";
+} from "./mcp-direct-tool-allowlist.js";
 
 describe("resolveMcpDirectToolNamesFromConfig", () => {
 	it("filters direct MCP tools that collide with builtin search", () => {

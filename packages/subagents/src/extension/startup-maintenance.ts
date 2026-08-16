@@ -1,8 +1,8 @@
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import { cleanupOldNestedRuntimeDirs } from "../runs/inprocess/runtime-support/nested-api.ts";
-import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
-import type { SubagentState } from "../shared/types.ts";
+import { cleanupOldNestedRuntimeDirs } from "../runs/inprocess/runtime-support/nested-api.js";
+import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.js";
+import type { SubagentState } from "../shared/types.js";
 
 export interface SubagentStartupMaintenance {
 	scheduleStartupCleanup(): void;

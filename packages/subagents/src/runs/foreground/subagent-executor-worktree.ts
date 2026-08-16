@@ -1,8 +1,8 @@
 import * as path from "node:path";
-import type { ResolvedStepBehavior } from "../../shared/settings.ts";
-import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.ts";
-import { resolveChildCwd } from "../../shared/utils.ts";
-import { resolveSingleOutputPath } from "../shared/single-output.ts";
+import type { ResolvedStepBehavior } from "../../shared/settings.js";
+import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.js";
+import { resolveChildCwd } from "../../shared/utils.js";
+import { resolveSingleOutputPath } from "../shared/single-output.js";
 import {
 	createWorktrees,
 	diffWorktrees,
@@ -10,8 +10,8 @@ import {
 	formatWorktreeDiffSummary,
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
-} from "../shared/worktree.ts";
-import type { TaskParam } from "./subagent-executor-types.ts";
+} from "../shared/worktree.js";
+import type { TaskParam } from "./subagent-executor-types.js";
 
 export function buildParallelModeError(message: string): SubagentToolResult {
 	return {

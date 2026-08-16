@@ -3,13 +3,13 @@
  */
 
 import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
-import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import {
 	SUBAGENT_COMPLETE_EVENT,
 	SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT,
 	type SubagentAttemptStatus,
-} from "../../shared/types.ts";
-import type { CompletionNotificationEnvelope } from "./completion-notification.ts";
+} from "../../shared/types.js";
+import type { CompletionNotificationEnvelope } from "./completion-notification.js";
 
 interface SubagentStepResult {
 	agent: string;

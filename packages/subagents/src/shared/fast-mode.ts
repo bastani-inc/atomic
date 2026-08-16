@@ -5,7 +5,7 @@ import {
 	SettingsManager,
 	shouldApplyCodexFastModeForScope,
 } from "@bastani/atomic";
-import { splitKnownThinkingSuffix } from "./model-info.ts";
+import { splitKnownThinkingSuffix } from "./model-info.js";
 
 export interface ResolveSubagentModelFastModeInput {
 	model?: string;

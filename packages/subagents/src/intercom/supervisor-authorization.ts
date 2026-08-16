@@ -1,5 +1,5 @@
 import { isStaleExtensionContextError } from "@bastani/atomic";
-import type { IntercomEventBus } from "../shared/types.ts";
+import type { IntercomEventBus } from "../shared/types.js";
 
 export const SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT = "subagent:supervisor-authorization";
 

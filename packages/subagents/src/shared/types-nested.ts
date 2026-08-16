@@ -9,7 +9,7 @@ import type {
 	SubagentResultStatus,
 	SubagentRunMode,
 	TokenUsage,
-} from "./types-results.ts";
+} from "./types-results.js";
 
 export type NestedRunState = "queued" | "running" | "complete" | "failed" | "paused";
 export type NestedOwnerState = "live" | "gone" | "unknown";

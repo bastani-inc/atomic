@@ -10,9 +10,9 @@ import {
 	clearSkillPathDiscoveryCache,
 	inferSkillSource,
 	type SkillSearchPath,
-} from "./skills-paths.ts";
+} from "./skills-paths.js";
 
-export { __setGlobalNpmRootExecSyncForTest } from "./skills-paths.ts";
+export { __setGlobalNpmRootExecSyncForTest } from "./skills-paths.js";
 
 export type SkillSource =
 	| "project"

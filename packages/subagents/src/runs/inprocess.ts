@@ -1,1 +1,1 @@
-export * from "./inprocess/index.ts";
+export * from "./inprocess/index.js";

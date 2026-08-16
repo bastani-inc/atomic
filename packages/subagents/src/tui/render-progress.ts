@@ -1,5 +1,5 @@
-import { formatAgentRunningLabel } from "../shared/status-format.ts";
-import type { Details } from "../shared/types.ts";
+import { formatAgentRunningLabel } from "../shared/status-format.js";
+import type { Details } from "../shared/types.js";
 
 export function isDoneResult(result: Details["results"][number]): boolean {
 	const status = result.progress?.status;

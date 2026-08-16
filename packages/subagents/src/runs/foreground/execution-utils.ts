@@ -1,4 +1,4 @@
-import type { AgentProgress, SingleResult, Usage } from "../../shared/types.ts";
+import type { AgentProgress, SingleResult, Usage } from "../../shared/types.js";
 
 export const artifactOutputByResult = new WeakMap<SingleResult, string>();
 export const modelFailureSignalByResult = new WeakMap<SingleResult, unknown>();

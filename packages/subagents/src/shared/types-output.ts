@@ -2,7 +2,7 @@
  * Output truncation helpers.
  */
 
-import type { MaxOutputConfig } from "./types-results.ts";
+import type { MaxOutputConfig } from "./types-results.js";
 
 interface TruncationResult {
 	text: string;

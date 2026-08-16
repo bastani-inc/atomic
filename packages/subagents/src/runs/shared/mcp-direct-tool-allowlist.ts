@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getProjectConfigDirs } from "@bastani/atomic";
-import { getAgentDir } from "../../shared/utils.ts";
+import { getAgentDir } from "../../shared/utils.js";
 
 const CACHE_VERSION = 1;
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;

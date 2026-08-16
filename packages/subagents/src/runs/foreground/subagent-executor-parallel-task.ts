@@ -1,9 +1,9 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
-import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
-import type { ModelInfo } from "../../shared/model-info.ts";
-import type { CandidateModelResolver } from "../../shared/model-resolution.ts";
-import { buildTaskInstructions, type ResolvedStepBehavior } from "../../shared/settings.ts";
+import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.js";
+import type { ModelInfo } from "../../shared/model-info.js";
+import type { CandidateModelResolver } from "../../shared/model-resolution.js";
+import { buildTaskInstructions, type ResolvedStepBehavior } from "../../shared/settings.js";
 import type {
 	AgentProgress,
 	ArtifactConfig,
@@ -13,15 +13,15 @@ import type {
 	SingleResult,
 	SubagentState,
 	SubagentToolResult,
-} from "../../shared/types.ts";
-import { workflowSessionMetadataFromContext } from "../../shared/types-depth.ts";
-import { mapConcurrent } from "../../shared/utils.ts";
+} from "../../shared/types.js";
+import { workflowSessionMetadataFromContext } from "../../shared/types-depth.js";
+import { mapConcurrent } from "../../shared/utils.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
-import { currentModelFullId } from "../shared/model-fallback.ts";
-import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.ts";
-import type { WorktreeSetup } from "../shared/worktree.ts";
-import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.ts";
-import { resolveParallelTaskCwd } from "./subagent-executor-worktree.ts";
+import { currentModelFullId } from "../shared/model-fallback.js";
+import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
+import type { WorktreeSetup } from "../shared/worktree.js";
+import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
+import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 
 interface ForegroundParallelRunInput {
 	tasks: TaskParam[];
@@ -47,7 +47,7 @@ interface ForegroundParallelRunInput {
 	modelOverrides: (string | undefined)[];
 	behaviors: ResolvedStepBehavior[];
 	firstProgressIndex: number;
-	controlConfig: import("../../shared/types.ts").ResolvedControlConfig;
+	controlConfig: import("../../shared/types.js").ResolvedControlConfig;
 	onControlEvent?: (event: ControlEvent) => void;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	orchestratorIntercomTarget?: string;

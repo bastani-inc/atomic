@@ -1,15 +1,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { normalizeMaxSubagentDepth } from "../shared/types.ts";
-import { splitToolList } from "./agent-overrides.ts";
-import { shouldPreserveAgentExtraField } from "./agent-serializer.ts";
+import { normalizeMaxSubagentDepth } from "../shared/types.js";
+import { splitToolList } from "./agent-overrides.js";
+import { shouldPreserveAgentExtraField } from "./agent-serializer.js";
 import {
 	type AgentConfig,
 	type AgentSource,
 	defaultInheritProjectContext,
 	defaultInheritSkills,
 	defaultSystemPromptMode,
-} from "./agent-types.ts";
+} from "./agent-types.js";
 import { type FrontmatterValue, parseFrontmatter } from "./frontmatter.js";
 import { buildRuntimeName, parsePackageName } from "./identity.js";
 

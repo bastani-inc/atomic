@@ -1,5 +1,5 @@
-import type { IntercomEventBus } from "../../shared/types.ts";
-import { SUBAGENT_COMPLETE_EVENT } from "../../shared/types.ts";
+import type { IntercomEventBus } from "../../shared/types.js";
+import { SUBAGENT_COMPLETE_EVENT } from "../../shared/types.js";
 
 export interface CompletionNotificationEnvelope extends Record<string, unknown> {
 	notificationId: string;

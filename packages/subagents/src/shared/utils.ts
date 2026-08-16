@@ -5,8 +5,8 @@
 import * as path from "node:path";
 import { getAgentDir as getAtomicAgentDir } from "@bastani/atomic";
 import type { Message } from "@earendil-works/pi-ai/compat";
-import { formatToolCall } from "./formatters.ts";
-import type { AgentProgress, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
+import { formatToolCall } from "./formatters.js";
+import type { AgentProgress, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.js";
 
 // ============================================================================
 // File System Utilities
@@ -339,4 +339,4 @@ export function extractTextFromContent(content: unknown): string {
 // Concurrency Utilities
 // ============================================================================
 
-export { mapConcurrent } from "../runs/shared/parallel-utils.ts";
+export { mapConcurrent } from "../runs/shared/parallel-utils.js";

@@ -5,8 +5,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_NAME, createChildProcessEnvironment, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
 import type { AgentConfig } from "../agents/agents.js";
-import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.ts";
-import { getAgentDir } from "../shared/utils.ts";
+import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.js";
+import { getAgentDir } from "../shared/utils.js";
 
 const PI_INTERCOM_PACKAGE_NAME = "pi-intercom";
 

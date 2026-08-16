@@ -1,5 +1,5 @@
-import { runSync } from "./execution.ts";
-import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.ts";
+import { runSync } from "./execution.js";
+import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
 
 const defaultSubagentExecutorRuntimeDeps: SubagentExecutorRuntimeDeps = {
 	runSync,

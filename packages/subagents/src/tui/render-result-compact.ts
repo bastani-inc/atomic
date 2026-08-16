@@ -1,11 +1,11 @@
 import { keyHintIfBound } from "@bastani/atomic";
 import { type Component, Container, Text } from "@earendil-works/pi-tui";
-import { shortenPath } from "../shared/formatters.ts";
-import type { AgentProgress, Details } from "../shared/types.ts";
-import { getSingleResultOutput } from "../shared/utils.ts";
-import { modelThinkingBadge } from "./render-event-formatting.ts";
-import { getTermWidth, pulseGlyph, type Theme, truncLine } from "./render-layout.ts";
-import { buildMultiProgressLabel, resultRowLabel } from "./render-progress.ts";
+import { shortenPath } from "../shared/formatters.js";
+import type { AgentProgress, Details } from "../shared/types.js";
+import { getSingleResultOutput } from "../shared/utils.js";
+import { modelThinkingBadge } from "./render-event-formatting.js";
+import { getTermWidth, pulseGlyph, type Theme, truncLine } from "./render-layout.js";
+import { buildMultiProgressLabel, resultRowLabel } from "./render-progress.js";
 import {
 	buildLiveStatusLine,
 	compactCurrentActivity,
@@ -18,7 +18,7 @@ import {
 	snapshotNowForProgress,
 	statJoin,
 	themeBold,
-} from "./render-status-progress.ts";
+} from "./render-status-progress.js";
 
 export function renderSingleCompact(
 	d: Details,

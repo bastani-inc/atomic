@@ -1,5 +1,5 @@
 import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
-import { type IntercomBridgeState, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { type IntercomBridgeState, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import {
 	attachNestedChildrenToResultChildren,
 	buildSubagentResultIntercomPayload,
@@ -7,7 +7,7 @@ import {
 	formatSubagentResultReceipt,
 	resolveSubagentResultStatus,
 	stripDetailsOutputsForIntercomReceipt,
-} from "../../intercom/result-intercom.ts";
+} from "../../intercom/result-intercom.js";
 import {
 	type ControlEvent,
 	type Details,
@@ -18,17 +18,17 @@ import {
 	type SubagentRunMode,
 	type SubagentState,
 	type SubagentToolResult,
-} from "../../shared/types.ts";
-import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.ts";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
-import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.ts";
+} from "../../shared/types.js";
+import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.js";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
+import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.js";
 import {
 	formatControlIntercomMessage,
 	formatControlNoticeMessage,
 	shouldNotifyControlEvent,
-} from "../shared/subagent-control.ts";
-import { deliverLocalCompletionNotification } from "./completion-notification.ts";
-import type { ExecutionContextData, ExecutorDeps, ForegroundControl } from "./subagent-executor-types.ts";
+} from "../shared/subagent-control.js";
+import { deliverLocalCompletionNotification } from "./completion-notification.js";
+import type { ExecutionContextData, ExecutorDeps, ForegroundControl } from "./subagent-executor-types.js";
 
 export function getForegroundControl(state: SubagentState, runId: string | undefined): ForegroundControl | undefined {
 	if (runId) return state.foregroundControls.get(runId);

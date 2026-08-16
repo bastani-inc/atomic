@@ -3,7 +3,7 @@
  */
 
 import { Type } from "typebox";
-import { MAX_PARALLEL_TASKS, MAX_SUBAGENT_NESTING_DEPTH, SUBAGENT_ACTIONS } from "../shared/types.ts";
+import { MAX_PARALLEL_TASKS, MAX_SUBAGENT_NESTING_DEPTH, SUBAGENT_ACTIONS } from "../shared/types.js";
 
 const SkillOverride = Type.Unsafe({
 	anyOf: [{ type: "array", items: { type: "string" } }, { type: "boolean" }, { type: "string" }],

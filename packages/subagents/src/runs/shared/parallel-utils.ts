@@ -22,7 +22,7 @@ export interface ParallelTaskResult {
 	agent: string;
 	taskIndex?: number;
 	output: string;
-	status: import("../../shared/types.ts").SubagentAttemptStatus;
+	status: import("../../shared/types.js").SubagentAttemptStatus;
 	error?: string;
 	model?: string;
 	fastMode?: boolean;

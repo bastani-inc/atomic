@@ -14,7 +14,7 @@ export {
 	resumeInProcessNestedAttempt,
 	subscribeInProcessControlRequests,
 	unregisterInProcessNestedRoute,
-} from "./nested-routing.ts";
+} from "./nested-routing.js";
 export type {
 	AdmissionRefusal,
 	AdmittedResult,
@@ -36,7 +36,7 @@ export type {
 	RunningAttempt,
 	TerminalStatus,
 	TerminationCauseName,
-} from "./runner.ts";
+} from "./runner.js";
 export {
 	AdmittedChild,
 	admit_child_session,
@@ -47,4 +47,4 @@ export {
 	run_child_attempt,
 	SubagentControlRuntime,
 	terminate_child_attempt,
-} from "./runner.ts";
+} from "./runner.js";

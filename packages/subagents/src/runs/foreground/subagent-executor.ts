@@ -1,25 +1,25 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import { handleManagementAction } from "../../agents/agent-management.ts";
-import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
-import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
-import { buildDoctorReport } from "../../extension/doctor.ts";
+import { handleManagementAction } from "../../agents/agent-management.js";
+import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
+import { clearPendingForegroundControlNotices } from "../../extension/control-notices.js";
+import { buildDoctorReport } from "../../extension/doctor.js";
 import {
 	INTERCOM_BRIDGE_MARKER,
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 	resolveSubagentIntercomTarget,
-} from "../../intercom/intercom-bridge.ts";
-import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
-import { getArtifactsDir } from "../../shared/artifacts.ts";
-import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.ts";
-import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
+} from "../../intercom/intercom-bridge.js";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
+import { getArtifactsDir } from "../../shared/artifacts.js";
+import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
+import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
 	injectSingleProgressInstruction,
 	resolveSingleProgress,
 	writeInitialProgressFile,
-} from "../../shared/settings.ts";
+} from "../../shared/settings.js";
 import {
 	DEFAULT_ARTIFACT_CONFIG,
 	getCurrentSubagentDepth,
@@ -30,34 +30,34 @@ import {
 	SUBAGENT_ACTIONS,
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
-} from "../../shared/types.ts";
+} from "../../shared/types.js";
 import {
 	inspectInProcessChildStatus,
 	interruptInProcessChild,
 	resumeInProcessChild,
-} from "../inprocess/control-status.ts";
+} from "../inprocess/control-status.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
-import { currentModelFullId } from "../shared/model-fallback.ts";
-import { resolveControlConfig } from "../shared/subagent-control.ts";
-import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.ts";
-import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.ts";
-import { runParallelPath } from "./subagent-executor-parallel.ts";
-import { resolveRequestedCwd } from "./subagent-executor-resume.ts";
-import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.ts";
-import { createForwardSingleUpdate, runSinglePath } from "./subagent-executor-single.ts";
+import { currentModelFullId } from "../shared/model-fallback.js";
+import { resolveControlConfig } from "../shared/subagent-control.js";
+import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.js";
+import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
+import { runParallelPath } from "./subagent-executor-parallel.js";
+import { resolveRequestedCwd } from "./subagent-executor-resume.js";
+import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
+import { createForwardSingleUpdate, runSinglePath } from "./subagent-executor-single.js";
 import {
 	foregroundStatusResult,
 	getForegroundControl,
 	notifyDetachedForegroundChildExit,
 	replaceForegroundRunChild,
 	retainedForegroundStatusResult,
-} from "./subagent-executor-status.ts";
+} from "./subagent-executor-status.js";
 import {
 	type ExecutorDeps,
 	isManagementActionsRestricted,
 	type ResolvedExecutorDeps,
 	type SubagentParamsLike,
-} from "./subagent-executor-types.ts";
+} from "./subagent-executor-types.js";
 
 async function resumeRetainedForegroundChild(
 	params: SubagentParamsLike,
@@ -191,7 +191,7 @@ const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 const READ_ONLY_MANAGEMENT_ACTIONS = new Set(["list", "get", "status", "doctor"]);
 const FANOUT_REFUSAL_MESSAGE = "Subagent fanout is not authorized for this child.";
 
-export type { SubagentExecutorRuntimeDeps, SubagentParamsLike } from "./subagent-executor-types.ts";
+export type { SubagentExecutorRuntimeDeps, SubagentParamsLike } from "./subagent-executor-types.js";
 
 async function handleManagementRequest(input: {
 	params: SubagentParamsLike;

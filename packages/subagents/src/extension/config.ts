@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import { getAgentConfigPaths } from "@bastani/atomic";
-import type { ExtensionConfig } from "../shared/types.ts";
+import type { ExtensionConfig } from "../shared/types.js";
 
 export function loadConfig(): ExtensionConfig {
 	for (const configPath of getAgentConfigPaths("extensions", "subagent", "config.json")) {

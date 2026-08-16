@@ -1,6 +1,6 @@
-import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
-import type { ModelAttempt } from "../../shared/types.ts";
-import type { AvailableModelInfo } from "./model-fallback.ts";
+import { splitKnownThinkingSuffix } from "../../shared/model-info.js";
+import type { ModelAttempt } from "../../shared/types.js";
+import type { AvailableModelInfo } from "./model-fallback.js";
 
 export interface FilteredModelCandidates {
 	candidates: string[];

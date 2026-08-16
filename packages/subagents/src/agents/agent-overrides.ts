@@ -1,13 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getProjectAgentSettingsPath, getUserAgentSettingsPath } from "./agent-paths.ts";
+import { getProjectAgentSettingsPath, getUserAgentSettingsPath } from "./agent-paths.js";
 import {
 	type AgentConfig,
 	type BuiltinAgentOverrideBase,
 	type BuiltinAgentOverrideConfig,
 	EMPTY_SUBAGENT_SETTINGS,
 	type SubagentSettings,
-} from "./agent-types.ts";
+} from "./agent-types.js";
 
 export function splitToolList(rawTools: string[] | undefined): { tools?: string[]; mcpDirectTools?: string[] } {
 	const mcpDirectTools: string[] = [];

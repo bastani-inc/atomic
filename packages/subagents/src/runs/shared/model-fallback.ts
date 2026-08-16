@@ -9,8 +9,8 @@ import {
 	type ModelInfo as AvailableModelInfo,
 	splitKnownThinkingSuffix,
 	THINKING_LEVELS,
-} from "../../shared/model-info.ts";
-import type { Usage } from "../../shared/types.ts";
+} from "../../shared/model-info.js";
+import type { Usage } from "../../shared/types.js";
 
 export type { AvailableModelInfo, ModelFallbackFailureKind, ModelFallbackFailureSignal, ModelFallbackFailureSource };
 export { errorMessage, isRetryableModelFailure, modelFailureMessage, normalizeModelFailureSignal };

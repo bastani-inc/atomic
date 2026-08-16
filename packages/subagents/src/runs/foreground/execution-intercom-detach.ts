@@ -2,9 +2,9 @@ import {
 	INTERCOM_DETACH_REQUEST_EVENT,
 	INTERCOM_DETACH_RESPONSE_EVENT,
 	type RunSyncOptions,
-} from "../../shared/types.ts";
-import { IntercomDetachReservations } from "./execution-detach-reservations.ts";
-import { type IntercomDetachRoute, matchesIntercomDetachRoute } from "./execution-detach-route.ts";
+} from "../../shared/types.js";
+import { IntercomDetachReservations } from "./execution-detach-reservations.js";
+import { type IntercomDetachRoute, matchesIntercomDetachRoute } from "./execution-detach-route.js";
 
 interface ExecutionIntercomDetachState {
 	readonly isUnavailable: () => boolean;

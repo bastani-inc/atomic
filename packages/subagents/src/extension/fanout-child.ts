@@ -5,22 +5,22 @@ import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
 import { APP_NAME } from "@bastani/atomic";
 
 import { discoverAgents } from "../agents/agents.js";
-import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
-import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
-import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import type { ChildModePolicy } from "../runs/inprocess/child-policy.ts";
-import { hasInProcessNestedRoute, subscribeInProcessControlRequests } from "../runs/inprocess/nested-routing.ts";
+import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.js";
+import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.js";
+import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
+import type { ChildModePolicy } from "../runs/inprocess/child-policy.js";
+import { hasInProcessNestedRoute, subscribeInProcessControlRequests } from "../runs/inprocess/nested-routing.js";
 import {
 	type NestedRoute,
 	readNestedControlRequests,
 	resolveNestedRouteFromEnv,
 	writeNestedControlResult,
-} from "../runs/inprocess/runtime-support/nested-api.ts";
-import { getArtifactsDir } from "../shared/artifacts.ts";
-import type { Details, SubagentState } from "../shared/types.ts";
-import { beginApiLifecycle } from "./api-lifecycle.ts";
-import { loadConfig } from "./config.ts";
-import { SubagentParams } from "./schemas.ts";
+} from "../runs/inprocess/runtime-support/nested-api.js";
+import { getArtifactsDir } from "../shared/artifacts.js";
+import type { Details, SubagentState } from "../shared/types.js";
+import { beginApiLifecycle } from "./api-lifecycle.js";
+import { loadConfig } from "./config.js";
+import { SubagentParams } from "./schemas.js";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {

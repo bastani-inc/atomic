@@ -9,7 +9,7 @@ import {
 } from "@bastani/atomic";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.js";
-import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import {
 	type SingleResult,
 	SLASH_RESULT_TYPE,
@@ -19,10 +19,10 @@ import {
 	SLASH_SUBAGENT_STARTED_EVENT,
 	SLASH_SUBAGENT_UPDATE_EVENT,
 	type SubagentState,
-} from "../shared/types.ts";
-import { registerBridgeRequestSettlement } from "./bridge-settlement.ts";
-import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.ts";
-import { applySlashUpdate, buildSlashInitialResult, failSlashResult, finalizeSlashResult } from "./slash-live-state.ts";
+} from "../shared/types.js";
+import { registerBridgeRequestSettlement } from "./bridge-settlement.js";
+import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.js";
+import { applySlashUpdate, buildSlashInitialResult, failSlashResult, finalizeSlashResult } from "./slash-live-state.js";
 
 interface InlineConfig {
 	output?: string | false;

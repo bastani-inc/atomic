@@ -1,8 +1,8 @@
-import { formatDuration, formatTokens, formatToolCall } from "../shared/formatters.ts";
-import { formatActivityLabel } from "../shared/status-format.ts";
-import type { AgentProgress, Details } from "../shared/types.ts";
-import { getDisplayItems } from "../shared/utils.ts";
-import { getTermWidth, pulseGlyph, type Theme } from "./render-layout.ts";
+import { formatDuration, formatTokens, formatToolCall } from "../shared/formatters.js";
+import { formatActivityLabel } from "../shared/status-format.js";
+import type { AgentProgress, Details } from "../shared/types.js";
+import { getDisplayItems } from "../shared/utils.js";
+import { getTermWidth, pulseGlyph, type Theme } from "./render-layout.js";
 
 export function extractOutputTarget(task: string): string | undefined {
 	const writeToMatch = task.match(/\[Write to:\s*([^\]\n]+)\]/i);

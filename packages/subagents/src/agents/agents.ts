@@ -2,24 +2,24 @@
  * Agent discovery and configuration public surface.
  */
 
-export { discoverAgents, discoverAgentsAll } from "./agent-discovery.ts";
-export type { AgentDirLoadResult, AgentLoadDiagnostic } from "./agent-loaders.ts";
-export { loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.ts";
+export { discoverAgents, discoverAgentsAll } from "./agent-discovery.js";
+export type { AgentDirLoadResult, AgentLoadDiagnostic } from "./agent-loaders.js";
+export { loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.js";
 export {
 	buildBuiltinOverrideConfig,
 	removeBuiltinAgentOverride,
 	saveBuiltinAgentOverride,
-} from "./agent-overrides.ts";
+} from "./agent-overrides.js";
 export type {
 	AgentConfig,
 	AgentDefaultContext,
 	AgentScope,
 	AgentSource,
 	BuiltinAgentOverrideBase,
-} from "./agent-types.ts";
+} from "./agent-types.js";
 export {
 	defaultInheritProjectContext,
 	defaultInheritSkills,
 	defaultSystemPromptMode,
-} from "./agent-types.ts";
+} from "./agent-types.js";
 export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.js";

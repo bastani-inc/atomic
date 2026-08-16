@@ -1,14 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { normalizeSkillInput } from "../../agents/skills.ts";
-import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";
-import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
+import { normalizeSkillInput } from "../../agents/skills.js";
+import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
+import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.js";
+import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
 	injectSingleProgressInstruction,
 	resolveSingleProgress,
 	writeInitialProgressFile,
-} from "../../shared/settings.ts";
+} from "../../shared/settings.js";
 import {
 	type AgentProgress,
 	type ArtifactPaths,
@@ -18,27 +18,27 @@ import {
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
 	wrapForkTask,
-} from "../../shared/types.ts";
-import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
+} from "../../shared/types.js";
+import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
-import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
-import { recordRun } from "../shared/run-history.ts";
+import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.js";
+import { recordRun } from "../shared/run-history.js";
 import {
 	finalizeSingleOutput,
 	injectSingleOutputInstruction,
 	normalizeSingleOutputOverride,
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
-} from "../shared/single-output.ts";
+} from "../shared/single-output.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
 	rememberForegroundRun,
 	replaceForegroundRunChild,
-} from "./subagent-executor-status.ts";
-import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
+} from "./subagent-executor-status.js";
+import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.js";
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
 	const error = result.error || "Failed";

@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import { controlNotificationKey, formatControlNoticeMessage } from "../runs/shared/subagent-control.ts";
-import type { ControlEvent, SubagentState } from "../shared/types.ts";
+import { controlNotificationKey, formatControlNoticeMessage } from "../runs/shared/subagent-control.js";
+import type { ControlEvent, SubagentState } from "../shared/types.js";
 
 export const SUBAGENT_CONTROL_MESSAGE_TYPE = "subagent_control_notice";
 
