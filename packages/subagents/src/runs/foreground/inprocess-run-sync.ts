@@ -287,7 +287,7 @@ export async function runSingleInProcess(
 						: {}),
 				}
 			: undefined,
-		artifactJsonlPath: options.artifactConfig?.includeJsonl !== false ? artifactPaths?.jsonlPath : undefined,
+		artifactJsonlPath: options.artifactConfig?.includeJsonl === true ? artifactPaths?.jsonlPath : undefined,
 		...(fallbackCandidates.length ? { fallbackModels: fallbackCandidates } : {}),
 		onProgress: options.onUpdate
 			? (progress) => {

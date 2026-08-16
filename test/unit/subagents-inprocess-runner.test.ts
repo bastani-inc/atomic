@@ -439,6 +439,35 @@ test("parallel siblings share one control plane and persist distinct terminal ar
 	}
 });
 
+test("in-process artifacts with omitted artifact config honor the default JSONL opt-out", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-jsonl-default-"));
+	const artifactsDir = join(root, "artifacts");
+	clearSubagentControls();
+	try {
+		assert.equal(DEFAULT_ARTIFACT_CONFIG.includeJsonl, false);
+		const result = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+			cwd: root,
+			runId: "jsonl-default-parent",
+			sessionDir: join(root, "sessions"),
+			artifactsDir,
+			testSession: { output: "jsonl default" },
+		});
+
+		assert.equal(result.status, "ok");
+		assert.ok(result.artifactPaths);
+		assert.equal(existsSync(result.artifactPaths.jsonlPath), false);
+		assert.equal(existsSync(result.artifactPaths.outputPath), true);
+		assert.equal(existsSync(result.artifactPaths.metadataPath), true);
+		assert.deepEqual(
+			readdirSync(artifactsDir).filter((name) => name.endsWith(".jsonl") && name !== "run-history.jsonl"),
+			[],
+		);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("in-process artifacts with includeJsonl false do not create a JSONL artifact", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-jsonl-disabled-"));
 	const artifactsDir = join(root, "artifacts");
