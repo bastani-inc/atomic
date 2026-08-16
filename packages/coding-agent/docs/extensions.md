@@ -1559,12 +1559,17 @@ pi.sendUserMessage([
 // During streaming - must specify delivery mode
 pi.sendUserMessage("Focus on error handling", { deliverAs: "steer" });
 pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
+
+// Opt in to extension command dispatch and skill/prompt template expansion
+pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
 ```
 
 **Options:**
 - `deliverAs` - Required when agent is streaming:
   - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
   - `"followUp"` - Waits for agent to finish all tools
+
+- `expandPromptTemplates` - Dispatch extension commands and expand skill commands and prompt templates instead of sending the text literally. Defaults to `false`, so an extension-authored message is sent as-is unless it opts in; an unknown command falls through to a literal send.
 
 When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
 

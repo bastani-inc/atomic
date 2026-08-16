@@ -25,7 +25,7 @@ Atomic loads themes from:
 - Settings: `themes` array with files or directories
 - CLI: `--theme <path>` (repeatable)
 
-Disable discovery with `--no-themes`.
+Disable discovery with `--no-themes`. `--theme <path>` loads a theme file; `--use-theme <name>` (see [Initial Theme](#initial-theme)) selects an already-loaded theme for this run without saving it.
 
 ## Selecting a Theme
 
@@ -40,6 +40,22 @@ Select a theme via `/settings` or in `settings.json`:
 Use `"theme": "light-theme/dark-theme"` for automatic mode. Atomic chooses the first theme when the terminal reports a light color scheme and the second theme for dark terminals, and it follows terminal color-scheme changes when supported.
 
 On first run, Atomic detects your terminal background and defaults to `dark` or `light`.
+
+### Initial Theme
+
+Start an interactive run with a theme without changing the saved setting:
+
+```bash
+atomic --use-theme light
+```
+
+To follow terminal appearance, use the `lightTheme/darkTheme` form:
+
+```bash
+atomic --use-theme light/dark
+```
+
+The CLI value is the initial theme for that run only. Choosing another theme later in `/settings` applies it immediately and saves it normally; an unknown theme name reports the ordinary theme error.
 
 ## Creating a Custom Theme
 
@@ -74,6 +90,8 @@ vim ~/.atomic/agent/themes/my-theme.json
     "thinkingText": "secondary",
     "selectedBg": "#2d2d30",
     "scrollbarThumb": "#555566",
+    "searchMatchBg": "#2d2d30",
+    "searchMatchText": "",
     "userMessageBg": "#2d2d30",
     "userMessageText": "",
     "customMessageBg": "#2d2d30",
@@ -150,14 +168,14 @@ vim ~/.atomic/agent/themes/my-theme.json
 
 - `name` is required, must be unique, and must not contain `/`.
 - `vars` is optional. Define reusable colors here, then reference them in `colors` or `workingIndicator`.
-- `colors` must define all 51 required tokens. `scrollbarThumb` is optional and falls back to `selectedBg` when omitted.
+- `colors` must define all 51 required tokens. `scrollbarThumb`, `searchMatchBg`, and `searchMatchText` are optional and fall back to `selectedBg`, `selectedBg`, and `text` respectively when omitted.
 - `workingIndicator` is optional and may override any subset of the six tones in the outward half of the ordinary `∀` ramp; Atomic derives omitted tones from selected background, accent, and text roles, then mirrors the palette back after `peak`. Explicit numeric values from 0 through 255 remain exact terminal palette indices. When a numeric index from 0 through 15 seeds an omitted tone, Atomic mixes from its built-in approximation of the common ANSI RGB value; the terminal still controls the actual appearance of the explicit index. Both explicit and derived tones update on theme hot reload.
 
 The `$schema` field enables editor auto-completion and validation.
 
 ## Color Tokens
 
-Every theme must define all 51 required color tokens. `scrollbarThumb` is optional and falls back to `selectedBg` when omitted.
+Every theme must define all 51 required color tokens. The optional tokens preserve compatibility with themes written before they existed: `scrollbarThumb` and `searchMatchBg` fall back to `selectedBg`, and `searchMatchText` falls back to `text`. Transcript search matches render as `searchMatchText` on `searchMatchBg` with an underline; the current match reverses that foreground/background pair and uses bold text.
 
 ### Core UI (11 colors)
 
@@ -175,12 +193,14 @@ Every theme must define all 51 required color tokens. `scrollbarThumb` is option
 | `text` | Default text (usually `""`) |
 | `thinkingText` | Thinking block text |
 
-### Backgrounds & Content (11 required, 1 optional)
+### Backgrounds & Content (11 required, 3 optional)
 
 | Token | Purpose |
 |-------|---------|
 | `selectedBg` | Selected line background |
 | `scrollbarThumb` | Fullscreen scrollbar thumb background; optional, falls back to `selectedBg` |
+| `searchMatchBg` | Transcript search match background and current-match text; optional, falls back to `selectedBg` |
+| `searchMatchText` | Transcript search match text and current-match background; optional, falls back to `text` |
 | `userMessageBg` | User message background |
 | `userMessageText` | User message text |
 | `customMessageBg` | Extension message background |

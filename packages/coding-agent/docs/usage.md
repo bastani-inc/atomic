@@ -239,7 +239,7 @@ For raw credential exports, stdout is empty on every non-zero exit but one. Once
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
 
-Interactive sessions always use fullscreen: the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures go first to a focused workflow graph or stage chat overlay; events those overlays do not consume fall through to the alternate-screen viewport. Non-overlay focused components do not block pi-tui's mouse path, so transcript scrolling, scrollbar interaction, and drag selection still work.
+Interactive sessions always use fullscreen: the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures go first to a focused workflow graph or stage chat overlay; events those overlays do not consume fall through to the alternate-screen viewport. Non-overlay focused components do not block pi-tui's mouse path, so transcript scrolling, scrollbar interaction, and drag selection still work. The `fullscreenExitOutput` setting controls what exiting prints: `"transcript"` (the default) paints the final transcript plus a session resume hint on the main screen, while `"resume-hint"` restores the previous screen and prints only the resume hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
 
 In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
 
@@ -282,7 +282,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`.
+Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`. The `defaultTools` setting selects which built-in tools a session starts with — including none, with an empty array — while extension and custom tools stay enabled; see [Settings](/settings#tools).
 
 ### Project Trust Options
 
@@ -319,6 +319,7 @@ atomic --no-extensions -e ./my-extension.ts
 |--------|-------------|
 | `--system-prompt <text>` | Replace default prompt; context files and skills are still appended |
 | `--append-system-prompt <text>` | Append to system prompt |
+| `--use-theme <name[/name]>` | Set the interactive theme for this run without saving it; see [Themes](/themes#initial-theme) |
 | `--offline` | Disable startup network operations, including update checks, package updates, and telemetry |
 | `--verbose` | Force verbose startup |
 | `-h`, `--help` | Show help |

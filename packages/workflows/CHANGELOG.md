@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `open-claude-design` removes the `max_refinements` input, the `approved_for_export` and `refinements_completed` outputs, and the `<artifact_dir>/feedback/` feedback artifact. A run now performs one `generate-1`, an optional live review, and export; callers must stop supplying, reading, or expecting those fields and artifacts ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
 
+### Added
+
+- Added search inside attached workflow stage chats. `Ctrl+Shift+F` in a focused stage chat opens a find box over that chat rather than the main transcript behind it, and searches the entire stage transcript — every row, not only the visible window — including every row of a long live answer still streaming and rows far above the viewport. Live, paused, and read-only archived stage chats are all searchable; an archived question card with no transcript declines the key. Opening, navigation, and closing route through the four `tui.altScreen.search*` actions, so remapping them moves the stage-chat search too, and a search bound onto a scroll-shaped key still opens the box. `escape` closes the find box without interrupting the stage or closing the pane, `ctrl+f` still queues a follow-up, matches highlight with the same theme colors and attributes as the main transcript search, and scrolling stays live underneath the box ([#2385](https://github.com/bastani-inc/atomic/issues/2385)).
+
 ### Changed
 
 - Synchronized the complete bundled `impeccable` skill tree from upstream `skill-v4.0.3` (`68b1129634a1cdd9a0ba50b27376c71b4b083ae8`) to `skill-v4.1.1` (`5a149f3fdb1b5793f10567233b1dcab98fc305fd`), adding persisted Live roots, framework-aware injection, prompt embedding, CSS acceptance checks, Svelte AST support, mount verification, UI-surface contracts, and the latest detector and design guidance. The sync removes obsolete `scripts/live/ui-core.mjs`, keeps the Cursor-only `scripts/hook-before-edit.mjs` omitted, and retains Atomic's package-path and security adaptations ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).

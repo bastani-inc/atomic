@@ -55,6 +55,8 @@ type AgentEvent =
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
 ```
 
+On the wire, Atomic narrows `message_update`: every record carries the streaming delta in `assistantMessageEvent` (with its cumulative `partial` field stripped), the latest cumulative provider-reported `usage`, and — only when the provider reported one — `endTurn`, the provider's explicit end-of-turn signal (pi-ai's `AssistantMessage.endTurn`, for example OpenAI Codex `end_turn`). The `usage` object may remain zero until completion when a provider only reports usage at the end. A non-assistant message on this event is a protocol violation and throws rather than emitting an invented zeroed usage.
+
 ## Message Types
 
 Base messages come from `@earendil-works/pi-ai` (installed as an Atomic dependency):
@@ -81,7 +83,7 @@ Followed by events as they occur:
 {"type":"agent_start"}
 {"type":"turn_start"}
 {"type":"message_start","message":{"role":"assistant","content":[],...}}
-{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Hello",...}}
+{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","delta":"Hello",...}}
 {"type":"message_end","message":{...}}
 {"type":"turn_end","message":{...},"toolResults":[]}
 {"type":"agent_end","messages":[...]}

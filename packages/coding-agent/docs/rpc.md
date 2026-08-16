@@ -954,24 +954,37 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
 
 ### message_update (Streaming)
 
-Emitted during streaming of assistant messages. Carries only the streaming delta.
+Emitted during streaming of assistant messages. Carries the streaming delta plus the latest cumulative usage.
 
-`message_update` deliberately omits any cumulative snapshot: there is no `message`
+`message_update` deliberately omits the cumulative message snapshot: there is no `message`
 field, and `assistantMessageEvent` has no `partial`. `message_start` provides the
 initial message, the deltas build it, and `message_end` provides the final
 authoritative message. Repeating a snapshot on every frame would make the bytes
 written per assistant turn grow with the square of its length.
 
+The top-level `usage` field carries the latest cumulative provider-reported usage; it may
+remain zero until completion when a provider does not report usage during streaming. When
+the provider reports an explicit end-of-turn signal (pi-ai's `AssistantMessage.endTurn`,
+for example OpenAI Codex `end_turn`), the update carries it as a top-level `endTurn`
+boolean — present only when the provider reported one.
+
 ```json
 {
   "type": "message_update",
+  "usage": {
+    "input": 100,
+    "output": 1,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 101,
+    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}
+  },
   "assistantMessageEvent": {
     "type": "text_delta",
     "contentIndex": 0,
     "delta": "Hello "
   }
 }
-```
 
 The `assistantMessageEvent` field contains one of these delta types:
 
@@ -992,10 +1005,10 @@ The `assistantMessageEvent` field contains one of these delta types:
 
 Example streaming a text response:
 ```json
-{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}
-{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
-{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}
-{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world"}}
+{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}
+{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world"}}
 ```
 
 ### tool_execution_start / tool_execution_update / tool_execution_end
@@ -1465,7 +1478,7 @@ The `content` field can be a string or an array of `TextContent`/`ImageContent` 
 }
 ```
 
-Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`. A streaming message carries `"pending"` until the terminal event replaces it, so a client that switches on the reason needs that case; a completed message never carries it. On the wire the pending reason appears on the `message_start` message — `message_update` frames carry no message at all — and `message_end` carries the terminal reason.
+Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`. A streaming message carries `"pending"` until the terminal event replaces it, so a client that switches on the reason needs that case; a completed message never carries it. On the wire the pending reason appears on the `message_start` message — `message_update` frames carry no message at all — and `message_end` carries the terminal reason. A provider that reports an explicit end-of-turn signal (pi-ai's `AssistantMessage.endTurn`, for example OpenAI Codex `end_turn`) sets `endTurn: true` on the assistant message; `message_update` frames echo it as a top-level boolean only when the provider reported one.
 
 ### ToolResultMessage
 

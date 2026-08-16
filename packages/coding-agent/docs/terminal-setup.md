@@ -6,9 +6,20 @@ Atomic uses the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboa
 
 On normal interactive TTY startup, Atomic starts a short-lived raw keyboard capture before deferred resources finish loading and keeps it active until the TUI input handler is mounted. Text typed before the prompt box is fully mounted is replayed into the editor. Enter-submitted ordinary prompts are queued for the prompt loop once startup is ready; command-like submissions such as `/settings` or `!pwd` are replayed as standalone editor submissions through normal command routing. If a command-like submission is captured, later captured submissions wait behind it and replay in original input order after that command is routed, so a later ordinary prompt cannot run before the earlier command and commands are not merged with following prompts. Startup work that can affect correctness, such as project trust prompts, resume/session selectors, cross-project session confirmations, explicit resource flags, metadata commands, non-TTY input, or explicit provider/model selection, still stays on the synchronous path instead of using this pre-session capture.
 
-## Kitty, iTerm2
+## Kitty
 
-Work out of the box.
+Works out of the box.
+
+## iTerm2
+
+Key reporting works out of the box. In the fullscreen TUI, Atomic owns the viewport, so iTerm2 sends mouse-wheel reports instead of scrolling its native scrollback. With iTerm2's default fast-trackpad behavior, those reports can lose most of an accelerated wheel delta, making fullscreen scrolling much slower than iTerm2's native scrolling.
+
+If fast mouse-wheel gestures move only about one line at a time in Atomic:
+
+1. Open **iTerm2 → Settings → Advanced**.
+2. Search for **Trackpad scrolls fast?** and set it to **No**.
+
+This is an iTerm2-wide workaround and may also change native trackpad scrolling. The underlying behavior is tracked in [iTerm2 issue 9619](https://gitlab.com/gnachman/iterm2/-/work_items/9619).
 
 ## Apple Terminal
 
@@ -41,6 +52,8 @@ If you want `SHIFT+Enter` to keep working in tmux via that remap, add `ctrl+j` t
   "tui.input.newLine": ["shift+enter", "ctrl+j"]
 }
 ```
+
+In the fullscreen TUI, links remain clickable, but Ghostty does not show its hover underline or lower-left URL preview while Atomic captures mouse input. Hold `Shift+Command` on macOS or `Shift+Ctrl` on Linux to use Ghostty's native link handling.
 
 ## WezTerm
 

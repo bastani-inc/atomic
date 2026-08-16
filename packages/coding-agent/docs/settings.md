@@ -108,6 +108,7 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 |---------|------|---------|-------------|
 | `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, a Catppuccin built-in, or custom) |
 | `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. |
+| `fullscreenExitOutput` | string | `"transcript"` | Fullscreen exit output: `"transcript"` prints the final transcript and session resume hint, while `"resume-hint"` restores the terminal's previous screen and prints only the resume hint. Settable from `/settings` |
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
@@ -128,7 +129,7 @@ Interactive sessions always use the fullscreen renderer. The transcript scrolls 
 
 The fullscreen renderer keeps minimum sizes for nested layout stacks during resize, and transient fullscreen notices stack instead of replacing a notice that is still visible.
 
-The alternate screen restores the terminal's prior contents on exit, so an interactive transcript does not remain in terminal scrollback. Use `/export` before exit for an HTML copy, or resume the saved session later to review it in Atomic.
+The alternate screen normally restores the terminal's prior contents on exit, so an interactive transcript does not remain in terminal scrollback. The `fullscreenExitOutput` setting changes what exiting prints: `"transcript"` (the default) paints the final transcript plus a session resume hint on the main screen, while `"resume-hint"` restores the previous screen and prints only the resume hint. Use `/export` before exit for an HTML copy, or resume the saved session later to review it in Atomic.
 
 Ctrl+G in main chat, embedded chat, and extension editor dialogs uses one shared asynchronous launcher. Atomic chooses `externalEditor`, then `$VISUAL`, then `$EDITOR`, then Notepad on Windows or `nano` elsewhere. Each edit uses a private `atomic-editor-*` directory containing only `prompt.md`, removes the directory recursively afterward, and never scans the system temporary directory. A successful empty edit is preserved; a failed editor leaves the original text unchanged, and the TUI always restarts and renders after the editor exits.
 
@@ -305,6 +306,36 @@ When `images.autoResize` is enabled, Atomic normalizes images before sending the
 
 Normally the package manager's global modules location is queried using `root -g`. As a special case, if the first element of `npmCommand` is `"bun"`, the modules location will instead be queried with `pm bin -g`.
 
+On Windows, JSON paths must use forward slashes or escaped backslashes:
+
+```json
+{
+  "shellPath": "C:/Program Files/Git/bin/bash.exe"
+}
+```
+
+```json
+{
+  "shellPath": "C:\\Program Files\\Git\\bin\\bash.exe"
+}
+```
+
+### Tools
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `defaultTools` | string[] | - | Built-in tools enabled at startup. When omitted, Atomic uses its standard defaults |
+
+`defaultTools` selects the built-in tools a session starts with. Extension and SDK custom tools stay enabled regardless:
+
+```json
+{
+  "defaultTools": ["bash", "edit", "write"]
+}
+```
+
+An empty array starts with no built-in tools while preserving extension and custom tools. `--tools` replaces this behavior with a strict allowlist covering all tools, `--no-tools` disables all tools, and `--no-builtin-tools` disables only the built-in defaults. `--exclude-tools` filters the resulting list. A project `defaultTools` array replaces the global array.
+
 ### Sessions
 
 | Setting | Type | Default | Description |
@@ -342,7 +373,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 
 Mermaid code blocks render as themed Unicode diagrams in interactive transcripts when they fit the available width. `"off"` keeps the Markdown fence, `"final"` renders only finalized responses, and `"streaming"` also renders partial assistant responses. Invalid or too-wide diagrams remain as code, and rendering is display-only: stored messages and model context keep the original Markdown. LaTeX rendering is also display-only and converts supported expressions to terminal-friendly Unicode math; set `markdown.latex` to `false` to keep the source form.
 
-The installed pi-tui 0.84.1 LaTeX renderer also handles whitespace and matrix layouts correctly.
+The installed pi-tui 0.84.2 LaTeX renderer also handles whitespace and matrix layouts correctly.
 
 ### Resources
 
