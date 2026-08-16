@@ -20,10 +20,10 @@ import type {
 import type {
 	VerbatimCompactionDetails,
 	VerbatimCompactionResult,
-} from "../../packages/coding-agent/src/core/compaction/index.ts";
-import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { CompactionBoundaryMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/compaction-boundary-message.ts";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+} from "../../packages/coding-agent/src/core/compaction/index.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { CompactionBoundaryMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/compaction-boundary-message.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	preparation,
 	region,
@@ -152,12 +152,14 @@ test("fresh compaction with tail dropped: percentReduction is not negative", asy
 	);
 	assert.equal(result.rung, "fresh");
 	assert.equal(result.keptTail, false);
-	// When the tail is dropped, tokensBefore = region.tokenEstimate (no tail added)
-	// and tokensAfter = compactedTextTokens (no tail added). The region is fully
-	// retained in a fresh rung, so percentReduction should be 0 or near 0.
+	// When the tail is dropped, tokensBefore still includes the tail estimate
+	// (the tail was present in the original context), but tokensAfter does not
+	// (the tail is gone). This correctly reflects the context reduction from
+	// dropping the protected tail.
+	assert.equal(result.stats.tokensBefore, reg.tokenEstimate + 200_000);
 	assert.ok(
-		result.stats.percentReduction >= 0,
-		`expected percentReduction >= 0, got ${result.stats.percentReduction}`,
+		result.stats.percentReduction > 0,
+		`expected percentReduction > 0 for dropped tail, got ${result.stats.percentReduction}`,
 	);
 });
 
@@ -294,7 +296,10 @@ test("computeWholeContextStats: tail does not cancel when dropped", () => {
 	const compactedText = reg.lines.join("\n"); // fresh rung: everything retained
 	const stats = regionStats(reg, compactedText);
 	const widened = computeWholeContextStats(stats, reg, tailEstimate, false);
-	// No tail on either side: tokensBefore = region.tokenEstimate, tokensAfter = region text tokens
-	assert.equal(widened.tokensBefore, reg.tokenEstimate);
+	// Tail was present in the original context (tokensBefore includes it) but is
+	// gone from the result (tokensAfter does not). The ratio reflects the real
+	// context reduction from dropping the protected tail.
+	assert.equal(widened.tokensBefore, reg.tokenEstimate + tailEstimate);
 	assert.equal(widened.tokensAfter, stats.tokensAfter);
+	assert.ok(widened.percentReduction > 0);
 });

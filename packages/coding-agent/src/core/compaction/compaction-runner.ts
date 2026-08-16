@@ -95,10 +95,13 @@ function hardInputLimitFor(model: Model<Api>): number {
  *
  * Both `tokensBefore` and `tokensAfter` are computed with the same estimator:
  * a region term (char/4 heuristic from `region.tokenEstimate` and the compacted
- * text) plus an explicit tail estimate from the same heuristic family. When the
- * tail survives compaction it appears on both sides and cancels in the ratio;
- * when the fresh rung drops the tail it correctly does not cancel, because the
- * tail really is gone.
+ * text) plus an explicit tail estimate from the same heuristic family.
+ *
+ * `tokensBefore` always includes the tail estimate because the tail was present
+ * in the original context regardless of whether it survives compaction. When the
+ * tail survives it appears on both sides and cancels in the ratio; when the
+ * fresh rung drops the tail it correctly does not cancel, because the tail
+ * really is gone from the after side.
  *
  * This does **not** clamp the percentage: a genuine expansion may still be
  * negative.
@@ -112,10 +115,8 @@ export function computeWholeContextStats(
 	tailEstimate: number,
 	keptTail: boolean,
 ): VerbatimCompactionStats {
-	const beforeTail = region.tokenEstimate;
-	const afterTail = keptTail ? tailEstimate : 0;
-	const tokensBefore = beforeTail + (keptTail ? tailEstimate : 0);
-	const tokensAfter = regionStats.tokensAfter + afterTail;
+	const tokensBefore = region.tokenEstimate + tailEstimate;
+	const tokensAfter = regionStats.tokensAfter + (keptTail ? tailEstimate : 0);
 	const percentReduction = tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / tokensBefore) * 1000) / 10;
 	return {
 		...regionStats,
