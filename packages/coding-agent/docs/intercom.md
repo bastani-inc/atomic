@@ -11,18 +11,18 @@ Atomic bundles `@bastani/intercom`, a first-party extension for direct 1:1 messa
 
 **Key capabilities:**
 - **Session messaging** - `send`, `ask` (blocking, 10-minute timeout), `reply`, `pending`, `list`, and `status` via the `intercom` tool
-- **Session discovery** - List connected sessions with name, short ID, working directory, model, and live status
+- **Runtime groups** - `join` or `leave` named groups without restarting; joined sessions keep their broker IDs and subagents inherit the joined group
+- **Session discovery** - List connected sessions with name, full session ID, working directory, model, and live status
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
 - **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
 - **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
-- **Run notifications** - Workflows and subagents deliver async results and control notices to a parent session over Intercom
-- **Bundled skill** - `/skill:intercom` provides planner-worker and escalation-handling patterns
+- **Run notifications** - Workflows and subagents deliver run results and control notices to a parent session over Intercom
+- **Bundled skill** - `/skill:intercom` provides planner-worker, group, and escalation-handling patterns
 
 **Example use cases:**
 - Planner–worker splits across two terminals
 - Research → implementation context handoffs
 - Supervisor decisions and structured interviews for delegated subagents
-- Async workflow/subagent completion and needs-attention notices
 - Pair debugging between sessions
 
 ## Table of Contents
@@ -74,20 +74,20 @@ The agent can list sessions and send messages using the `intercom` tool. Tool ca
 // List active sessions
 intercom({ action: "list" })
 // → **Current session:**
-// → • executor (20d43841) — ~/projects/api (claude-sonnet-4) [self, idle]
+// → • executor (20d43841-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [self, idle]
 // → **Other sessions:**
-// → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
+// → • research (6332faab-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
 
 // Send a message
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
 // → Message sent to research
 
-// The short ID printed by list is also a valid target
-intercom({ action: "ask", to: "6332faab", message: "Which validation path should I use?" })
+// The full session ID printed by list is also a valid target
+intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which validation path should I use?" })
 
 // Check connection status
 intercom({ action: "status" })
-// → Connected: Yes, Session ID: abc123, Active sessions: 3
+// → Connected: Yes, Session ID: abc12345-1111-4222-8333-123456789abc, Active sessions: 3
 
 // Send with attachments (code snippets, files, or context)
 intercom({
@@ -131,35 +131,45 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Atomic process on the machine.
 
-Name sessions with `/name` so they can target each other (for example `/name planner` and `/name worker`). If a session is unnamed, Intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers keep showing the transcript snippet instead of a generic name.
+Name sessions with `/name` so they can target each other (for example `/name planner` and `/name worker`). If a session is unnamed, Intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d-1111-4222-8333-123456789abc` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers keep showing the transcript snippet instead of a generic name.
 
 ## The intercom Tool
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action` | string | `"list"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `to` | string | Exact session name, exact full ID, or unique ID prefix (for send/ask, or to disambiguate reply) |
+| `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
+| `to` | string | Exact session name or exact full session ID (for send/ask, or targeted reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
-| `group` | string | Read-only group filter for `list`/`status` (peek who is in a named group). Ignored/locked for `send`/`ask` — those always use your own group and error on a different group. |
+| `group` | string | Group name for `join`; read-only group filter for `list`/`status`. `send`/`ask` stay locked to the current group. |
 
 ### Actions
 
 | Action | Behavior |
 |--------|----------|
-| `list` | Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed short ID is a valid target. |
+| `join` | Moves the session into a trimmed named group and creates it if needed. The action waits for broker acknowledgement before changing local inheritance state. `default` is the shared group; `true` and `auto` are reserved for subagent auto-groups. |
+| `leave` | Returns the session to its resolved home group from startup. It takes no `group` parameter. |
+| `list` | Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed full session ID is a valid target. |
 | `send` | Fire-and-forget delivery. Requires `to` and `message`; returns delivery confirmation or the delivery-failure reason. Cannot message the current session. |
 | `ask` | Sends a message and blocks until the recipient replies (10-minute timeout). The reply is returned as the tool result, so the agent continues in the same turn. |
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
 | `pending` | Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. |
-| `status` | Shows connection status, session ID, and the total count of active sessions. |
+| `status` | Shows connection status, session ID, current group, and the count of active sessions in that group. A `group` filter remains a read-only peek. |
+
+To put two plain chat sessions in a private named group, have both call:
+
+```typescript
+intercom({ action: "join", group: "api-review" })
+```
+
+The broker updates presence in place and sends a `session_left` event to the old group and a `session_joined` event to the new one. Session IDs do not change. A session that stays in `default` cannot list, resolve, or message the joined peers. Use `intercom({ action: "leave" })` to return to the home group resolved at startup; rejected or unacknowledged changes leave the local membership state unchanged. Joining a group does not widen isolation; `contact_supervisor` remains the only capability-based cross-group path.
 
 Sent and received messages are recorded in session history as `intercom_sent` / `intercom_received` entries.
 
 ### Targeting Sessions
 
-Target lookup resolves an exact full ID first, then an exact case-insensitive name, then a unique session-ID prefix. If a prefix matches multiple sessions, Intercom reports every match and asks for a longer ID or exact name instead of guessing. Resolving a prefix to the current session triggers the normal self-target rejection ("Cannot message the current session"). Targeting is also **group-scoped** — see [Groups](#groups) below.
+Target lookup accepts only an exact full session ID or an exact case-insensitive session name. Targeting is also **group-scoped** — see [Groups](#groups) below.
 
 ### Groups
 
@@ -243,7 +253,7 @@ When Atomic's [subagent runtime](/subagents) admits a delegated child, the child
 
 `contact_supervisor` is registered from the typed admission record. The record binds the supervisor target, canonical child identity, child index, session name, and any broker-issued capability to that in-process child session; none of those values are inherited from environment variables. If the parent did not grant supervisor coordination, the session receives only the regular `intercom` tool.
 
-The child identity remains stable across foreground continuation, `async: true`, interruption, and cold resume. Intercom detach uses the same in-process continuation as async work, so the jobs widget and the eventual bounded terminal envelope retain one canonical path.
+The child identity remains stable across foreground continuation, interruption, and cold resume. Intercom detach uses the same in-process continuation as foreground coordination, so the terminal envelope retains one canonical path.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -327,16 +337,15 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 ## Workflow and Subagent Notifications
 
-Intercom is also the delivery channel for async run results and control notices from [workflows](/workflows) and [subagents](/subagents).
+Intercom is also the delivery channel for workflow run results and subagent control notices from [workflows](/workflows) and [subagents](/subagents).
 
 ### Workflow Delivery Modes
 
-Programmatic `workflow()` calls accept an `intercom` option that controls how async direct-run results and control notices reach a parent session:
+Programmatic `workflow()` calls accept an `intercom` option that controls how asynchronous direct-run results and control notices reach a parent session:
 
 ```typescript
 workflow({
   tasks: [{ agent: "worker", task: "..." }],
-  async: true,
   intercom: { delivery: "result" },
 })
 ```
@@ -348,17 +357,18 @@ workflow({
 | `parentSession` | string | Target session for delivery; resolved from args or the Intercom port when omitted |
 | `notifyOn` | array | Control events to deliver: `"active_long_running"`, `"needs_attention"`, `"completed"`, `"failed"` |
 
-When neither `enabled` nor `delivery` is set, async direct `parallel` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from async direct runs as user-visible workflow output.
+When neither `enabled` nor `delivery` is set, direct `parallel` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from direct runs as user-visible workflow output.
 
 While a workflow stage generation is open, incoming Intercom messages are admitted through the stage session's native steering/follow-up queue. If that stage is busy running a foreground subagent, Atomic synchronously reserves the message in the stage generation before starting the exact child's probe/commit detach handshake. Model-visible queue insertion waits inside that reservation until detach is acknowledged or the owner is unclaimed/disappears, so terminal stage close cannot overtake and silently drop the message. The stage drains the admitted delivery before publishing its terminal snapshot. A destination-side admission failure returns a correlated actionable error to a blocking asker instead of waiting for the 10-minute reply timeout.
+
 ### Subagent Control Notices
 
 The `subagent` tool's `control` options select which control events notify the parent and over which channels:
 
 - **`notifyOn`** — defaults to `["active_long_running", "needs_attention"]`
-- **`notifyChannels`** — defaults to `["event", "async", "intercom"]` (all that are available)
+- **`notifyChannels`** — defaults to `["event", "intercom"]` (all that are available)
 
-Async subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `subagent({ action: "doctor" })` reports Intercom bridge availability and whether Intercom is enabled in config.
+Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `subagent({ action: "doctor" })` reports Intercom bridge availability and whether Intercom is enabled in config.
 
 If live child-to-parent coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first `contact_supervisor` or `intercom` call. Fresh child sessions receive the bundled Intercom wrapper through normal package discovery unless an explicit `extensions` allowlist excludes it.
 
@@ -366,7 +376,7 @@ If live child-to-parent coordination is needed, invoke `intercom({ action: "stat
 
 During a foreground subagent run, Atomic probes for the exact live foreground owner before delivery: the matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before messages enter the parent's model-visible steering queue. A commit accepted by one member of a foreground parallel group releases supervision for all active siblings while retaining their in-process session ownership, allowing the aggregate tool call to return. If the owner disappears between probe and commit, a still-current receiver uses its ordinary fallback route rather than dropping the broker-delivered message. Blocking calls stay alive until the exact threaded reply; generation cancellation or replacement invalidates stale handshakes.
 
-For delegated background children, queued messages and terminal lifecycle notices are ordered per child: pre-terminal messages are admitted FIFO and atomically together with the paused, completed, or failed notice, exact terminal-identity deduplication prevents double admission, failed dispatches remain retryable, and correlated ask replies bypass unrelated queued sends. See [Subagents](/subagents) for the full coordination contract.
+For delegated children, queued messages and terminal lifecycle notices are ordered per child: pre-terminal messages are admitted FIFO and atomically together with the paused, completed, or failed notice, exact terminal-identity deduplication prevents double admission, failed dispatches remain retryable, and correlated ask replies bypass unrelated queued sends. See [Subagents](/subagents) for the full coordination contract.
 
 ## Configuration
 
@@ -488,6 +498,6 @@ Use a shared-room messenger for multi-agent swarms working on one shared task. U
 ## Related Docs
 
 - [Subagents](/subagents) for delegated child runs, foreground coordination, and result delivery.
-- [Workflows](/workflows) for multi-stage automation and async run notifications.
+- [Workflows](/workflows) for multi-stage automation and run notifications.
 - [Skills](/skills) for reusable instructions like `/skill:intercom`.
 - [Usage](/usage) for environment variables and the bundled-extension overview.

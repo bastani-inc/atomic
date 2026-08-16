@@ -165,23 +165,6 @@ describe("local resource parity", () => {
 		expect(updates.some((value) => value.includes("a.txt"))).toBe(true);
 	});
 
-	it("uses oh-my-pi bash async detail shape", async () => {
-		const dir = await tempDir();
-		const bash = createBashToolDefinition(dir, {
-			asyncEnabled: true,
-			operations: { exec: async () => ({ exitCode: 0 }) },
-		});
-		const result = await bash.execute(
-			"bash-async",
-			{ command: "true", async: true },
-			undefined,
-			undefined,
-			{} as never,
-		);
-		expect(result.details?.async).toMatchObject({ type: "bash", state: "running" });
-		expect(result.details?.timeoutSeconds).toBe(300);
-	});
-
 	it("strips leading cd into cwd for normal execution when cwd is omitted", async () => {
 		const dir = await tempDir();
 		let execCommand = "";
@@ -246,10 +229,6 @@ describe("local resource parity", () => {
 		expect(JSON.stringify((bash.parameters as { properties: Record<string, unknown> }).properties.env)).toContain(
 			"^[A-Za-z_][A-Za-z0-9_]*$",
 		);
-		expect(
-			(createBashToolDefinition(dir, { asyncEnabled: true }).parameters as { properties: Record<string, unknown> })
-				.properties.async,
-		).toBeTruthy();
 		const findParams = createFindToolDefinition(dir).parameters as {
 			properties: { paths: { minItems?: number }; timeout: { minimum?: number; maximum?: number } };
 		};

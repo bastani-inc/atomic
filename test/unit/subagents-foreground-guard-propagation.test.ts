@@ -11,19 +11,9 @@ interface MinimalRunSyncOptions {
 	workflowStageSubagentGuard?: boolean;
 }
 
-interface MinimalAsyncSingleParams {
-	maxSubagentDepth?: number;
-	workflowStageSubagentGuard?: boolean;
-}
-
 interface CapturedRunSyncCall {
 	agentName: string;
 	options: MinimalRunSyncOptions;
-}
-
-interface CapturedAsyncSingleCall {
-	id: string;
-	params: MinimalAsyncSingleParams;
 }
 
 interface MinimalAgentConfig {
@@ -44,7 +34,6 @@ type ExecutorContextForTest = Parameters<ExecutorForTest["execute"]>[4];
 type ExecutorResultForTest = Awaited<ReturnType<ExecutorForTest["execute"]>>;
 
 const runSyncCalls: CapturedRunSyncCall[] = [];
-const asyncSingleCalls: CapturedAsyncSingleCall[] = [];
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
 const runSyncMock = vi.fn(
@@ -67,14 +56,6 @@ const runSyncMock = vi.fn(
 	},
 );
 
-const executeAsyncSingleMock = vi.fn((id: string, params: MinimalAsyncSingleParams) => {
-	asyncSingleCalls.push({ id, params });
-	return {
-		content: [{ type: "text" as const, text: "Launching in background..." }],
-		details: { mode: "single" as const, results: [] },
-	};
-});
-
 function makeAgent(name: string, maxSubagentDepth?: number): MinimalAgentConfig {
 	return {
 		name,
@@ -93,17 +74,11 @@ function makeState() {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
+		pendingForegroundControlNotices: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 }
 
@@ -157,15 +132,12 @@ function makeExecutor(agents: MinimalAgentConfig[]) {
 		} as unknown as ExecutorDepsForTest["pi"],
 		state: makeState(),
 		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
-		asyncByDefault: false,
 		tempArtifactsDir: path.join(tempRoot, "artifacts"),
 		getSubagentSessionRoot: () => path.join(tempRoot, "sessions"),
 		expandTilde: (p: string) => p,
 		discoverAgents: () => ({ agents }),
 		runtime: {
 			runSync: runSyncMock,
-			executeAsyncSingle: executeAsyncSingleMock,
-			isAsyncAvailable: () => true,
 		},
 	} satisfies ExecutorDepsForTest;
 	return createSubagentExecutor(deps);
@@ -177,9 +149,7 @@ function clearSubagentGuardEnv(): void {
 
 function resetCapturedCalls(): void {
 	runSyncCalls.length = 0;
-	asyncSingleCalls.length = 0;
 	runSyncMock.mockClear();
-	executeAsyncSingleMock.mockClear();
 }
 
 function assertNoErrorFlag(result: ExecutorResultForTest): void {
@@ -222,45 +192,6 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		);
 		assertNoErrorFlag(result);
 		assertGuardedRunSyncCalls(["alpha", "beta"]);
-	});
-
-	test("passes workflow-stage guard to async parallel children on the foreground executor", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-parallel-async-guard-"));
-		const executor = makeExecutor([makeAgent("alpha"), makeAgent("beta")]);
-		const result = await executor.execute(
-			"subagent",
-			{
-				tasks: [
-					{ agent: "alpha", task: "first" },
-					{ agent: "beta", task: "second" },
-				],
-				async: true,
-			},
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assertNoErrorFlag(result);
-		assert.equal(result.details.results[0]?.status, "continued");
-		assertGuardedRunSyncCalls(["alpha", "beta"]);
-	});
-
-	test("passes workflow-stage guard to an async single child", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-single-async-guard-"));
-		const executor = makeExecutor([makeAgent("alpha")]);
-		const result = await executor.execute(
-			"subagent",
-			{ agent: "alpha", task: "single task", async: true },
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-		assertNoErrorFlag(result);
-		assert.equal(runSyncCalls.length, 0);
-		assert.equal(asyncSingleCalls.length, 1);
-		assert.equal(asyncSingleCalls[0]!.params.maxSubagentDepth, 2);
-		assert.equal(asyncSingleCalls[0]!.params.workflowStageSubagentGuard, true);
 	});
 });
 
@@ -309,48 +240,7 @@ describe("per-agent maximum narrows every delegation mode", () => {
 		assertNoErrorFlag(result);
 		assert.deepEqual(cappedRunSyncDepths(), { capped: 1, uncapped: 2 });
 	});
-
-	test("an async single child receives its agent's tightened maximum", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-single-async-agent-max-"));
-		const executor = makeExecutor(cappedAgents());
-
-		const result = await executor.execute(
-			"subagent",
-			{ agent: "capped", task: "single task", async: true },
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-
-		assertNoErrorFlag(result);
-		assert.equal(asyncSingleCalls.length, 1);
-		assert.equal(asyncSingleCalls[0]!.params.maxSubagentDepth, 1);
-	});
-
-	test("async parallel children each receive their own agent's maximum", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-parallel-async-agent-max-"));
-		const executor = makeExecutor(cappedAgents());
-
-		const result = await executor.execute(
-			"subagent",
-			{
-				tasks: [
-					{ agent: "capped", task: "first" },
-					{ agent: "uncapped", task: "second" },
-				],
-				async: true,
-			},
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-		await new Promise<void>((resolve) => setImmediate(resolve));
-
-		assertNoErrorFlag(result);
-		assert.deepEqual(cappedRunSyncDepths(), { capped: 1, uncapped: 2 });
-	});
 });
-
 describe("retained foreground resume keeps the child's effective maximum", () => {
 	test("a resumed child keeps the maximum its agent definition narrowed", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-retained-resume-max-"));
@@ -380,8 +270,7 @@ describe("retained foreground resume keeps the child's effective maximum", () =>
 		);
 
 		assertNoErrorFlag(resumed);
-		assert.equal(asyncSingleCalls.length, 1);
-		assert.equal(asyncSingleCalls[0]!.params.maxSubagentDepth, 1);
+		assert.equal(runSyncCalls[1]?.options.maxSubagentDepth, 1);
 	});
 
 	test("a resumed child without its own agent cap keeps the stage maximum", async () => {
@@ -408,8 +297,7 @@ describe("retained foreground resume keeps the child's effective maximum", () =>
 		);
 
 		assertNoErrorFlag(resumed);
-		assert.equal(asyncSingleCalls.length, 1);
-		assert.equal(asyncSingleCalls[0]!.params.maxSubagentDepth, 2);
+		assert.equal(runSyncCalls[1]?.options.maxSubagentDepth, 2);
 	});
 
 	test("a widened agent definition cannot raise an already-retained child's maximum", async () => {
@@ -441,9 +329,8 @@ describe("retained foreground resume keeps the child's effective maximum", () =>
 		);
 
 		assertNoErrorFlag(resumed);
-		assert.equal(asyncSingleCalls.length, 1);
 		assert.equal(
-			asyncSingleCalls[0]!.params.maxSubagentDepth,
+			runSyncCalls[1]?.options.maxSubagentDepth,
 			1,
 			"the resume must use the limit recorded with the run, not the edited definition",
 		);

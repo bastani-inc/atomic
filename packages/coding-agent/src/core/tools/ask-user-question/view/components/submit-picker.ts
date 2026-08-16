@@ -1,5 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.ts";
+import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.ts";
 import type { StatefulView } from "../stateful-view.ts";
 
 const ACTIVE_POINTER = "❯ ";
@@ -60,7 +61,8 @@ export class SubmitPicker implements StatefulView<SubmitPickerProps> {
 			const pointer = active ? ACTIVE_POINTER : INACTIVE_POINTER;
 			const number = `${i + 1}${NUMBER_SEPARATOR}`;
 			const label = active ? this.theme.fg("accent", this.theme.bold(text)) : this.theme.fg("text", text);
-			lines.push(truncateToWidth(`${pointer}${number}${label}`, width, ""));
+			const rendered = truncateToWidth(`${pointer}${number}${label}`, width, "");
+			lines.push(`${rendered}${active ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
 		}
 		return lines;
 	}

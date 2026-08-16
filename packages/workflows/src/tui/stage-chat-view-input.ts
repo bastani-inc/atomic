@@ -1,6 +1,15 @@
-import { APP_ACTION, isKeybindingsLike, matchesAction } from "./keybindings-adapter.js";
+import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+import { getKeybindings } from "@earendil-works/pi-tui";
+
+import { APP_ACTION, isKeybindingsLike, matchesAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { defaultResponseFor, handlePromptCardInput, isPromptEscapeInput } from "./prompt-card.js";
+import {
+	closeStageChatSearch,
+	navigateStageChatSearch,
+	openStageChatSearch,
+	typeIntoStageChatSearch,
+} from "./stage-chat-search.js";
 import { releaseMountedCustomUi } from "./stage-chat-view-custom-ui.js";
 import { setComponentFocused, setEditorFocused } from "./stage-chat-view-render-helpers.js";
 import {
@@ -18,13 +27,28 @@ import { PROMPT_SCROLL_STEP_ROWS, type StageChatViewContext } from "./stage-chat
 import { Key, matchesKey } from "./text-helpers.js";
 
 export function handleStageChatInput(ctx: StageChatViewContext, data: string): boolean {
+	if (data === TRANSCRIPT_JUMP_TO_END_URL) return handleStageChatJumpToBottom(ctx, data);
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	// Only the default physical Ctrl+T belongs to the host thinking action. A
 	// user remap may reuse an editor key, so let that key reach the composer.
 	if (matchesKey(data, Key.ctrl("t")) && matchesAction(keybindings, data, APP_ACTION.thinkingToggle)) {
 		return false;
 	}
+	// An open find box answers its own close key before anything else in this
+	// function. Every later branch is a different reader intent — detach,
+	// dismiss a mounted custom UI, interrupt the stage, close the pane — and a
+	// reader who pressed Escape at a visible find box meant none of them. The
+	// custom-UI branch below is the one that made this ordering load-bearing:
+	// mounting happens between renders, so a frame can hold both an open box
+	// and a mounted UI, and the mounted UI would answer the same Escape.
+	if (ctx.search && isStageChatSearchCloseInput(ctx, data)) {
+		closeStageChatSearch(ctx);
+		return true;
+	}
 	if (matchesKey(data, Key.ctrl("x"))) {
+		// Leaving for the graph takes the find box with it: a chat reattached
+		// later opens on its transcript, not on someone's stale query.
+		closeStageChatSearch(ctx);
 		if (ctx.mountedCustomUi) releaseMountedCustomUi(ctx);
 		else {
 			const stage = currentStage(ctx);
@@ -35,13 +59,26 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		return true;
 	}
 	if (ctx.mountedCustomUi) {
-		return handleMountedCustomUiInput(ctx, data);
+		// A mounted custom UI replaces the transcript body; a find box left open
+		// over it would search rows nobody can see.
+		closeStageChatSearch(ctx);
+		if (handleMountedCustomUiInput(ctx, data)) return true;
+		// A key the custom UI declines is replayed to the fullscreen viewport
+		// (`interactive-tui.ts` routeViewportInput), and pi-tui answers
+		// `tui.altScreen.search` with a find box over the main transcript hidden
+		// behind this overlay — the exact misrouting this layer exists to stop.
+		// The search actions therefore end here, whatever the custom UI wanted.
+		return isStageChatSearchAction(ctx, data);
 	}
 	const stage = currentStage(ctx);
 	syncPromptState(ctx, stage?.pendingPrompt);
 	const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 	const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
 
+	// A prompt card, a blocked stage, or an archived prompt footprint swaps the
+	// transcript out of the body, so the search goes with it.
+	if (ctx.search && (ctx.promptState || isBlocked(ctx) || readOnlyPromptArchive)) closeStageChatSearch(ctx);
+	if (ctx.search) return handleStageChatSearchKeys(ctx, data);
 	if (ctx.promptState) {
 		if (handlePromptScrollInput(ctx, data, ctx.promptEditor === null)) return true;
 		handlePromptInput(ctx, data);
@@ -49,6 +86,24 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (handleToolsExpandInput(ctx, data)) return true;
 	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
+		return true;
+	}
+	if (handleStageChatJumpToBottom(ctx, data)) return true;
+	// Before the viewport, not after it. `handleScrollInput` answers *physical*
+	// PageUp/PageDown/Home/End, so a reader who bound `tui.altScreen.search` to
+	// one of them — a normal remap, and one the keybindings manager reports as
+	// search and nothing else — would watch the chat scroll and never get a find
+	// box. A bound action outranks a key the viewport recognises by shape.
+	// Search is the one fullscreen action this component must handle even in a
+	// small host or test harness that did not inject its keybinding manager. Use
+	// pi-tui's global manager in that case, which is also what the find input uses.
+	const searchKeybindings = stageSearchKeybindings(ctx);
+	if (
+		matchesAction(searchKeybindings, data, TUI_ACTION.altScreenSearch) &&
+		!isBlocked(ctx) &&
+		!readOnlyPromptArchive
+	) {
+		openStageChatSearch(ctx);
 		return true;
 	}
 	if (ctx.chatHost.handleScrollInput(data)) return true;
@@ -79,6 +134,91 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (blocked) return true;
 	return ctx.chatHost.handleInput(data);
 }
+
+/**
+ * Input while the find box is open.
+ *
+ * Navigation is the four `tui.altScreen.search*` actions and nothing else,
+ * exactly as pi-tui routes them for the fullscreen transcript
+ * (`tui-alt-screen.js` handleViewportInput). A reader who moves `searchNext`
+ * onto Ctrl+N has unbound Enter, and Enter must then type into the query
+ * The fallback manager is pi-tui's global manager, which owns the same default
+ * bindings as the find input, so small hosts without an injected manager keep
+ * the normal search controls.
+ *
+ * Escape is the contended key: the ladder in `handleStageChatInput` maps it to
+ * interrupt-the-stage or close-the-pane, and both are the wrong answer for a
+ * reader who only wants the find box gone. It is answered above that ladder,
+ * and only while a search is open; the check is repeated here so this function
+ * stays correct on its own terms rather than depending on its one caller.
+ *
+ * Scrolling stays live underneath, matching the fullscreen surface: a reader
+ * can page through the transcript without dismissing the box. Everything else
+ * is query text.
+ */
+function handleStageChatSearchKeys(ctx: StageChatViewContext, data: string): boolean {
+	const keybindings = stageSearchKeybindings(ctx);
+	if (isStageChatSearchCloseInput(ctx, data)) {
+		closeStageChatSearch(ctx);
+		return true;
+	}
+	if (matchesKey(data, Key.ctrl("c"))) {
+		closeStageChatSearch(ctx);
+		ctx.onClose();
+		return true;
+	}
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearchPrevious)) {
+		navigateStageChatSearch(ctx, -1);
+		return true;
+	}
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearchNext)) {
+		navigateStageChatSearch(ctx, 1);
+		return true;
+	}
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearch)) {
+		ctx.requestRender?.();
+		return true;
+	}
+	if (handleStageChatJumpToBottom(ctx, data)) return true;
+	if (ctx.chatHost.handleScrollInput(data)) return true;
+	typeIntoStageChatSearch(ctx, data);
+	return true;
+}
+
+/**
+ * The four fullscreen search actions, under whatever keys the reader bound
+ * them to.
+ */
+function isStageChatSearchAction(ctx: StageChatViewContext, data: string): boolean {
+	const keybindings = stageSearchKeybindings(ctx);
+	return (
+		matchesAction(keybindings, data, TUI_ACTION.altScreenSearch) ||
+		matchesAction(keybindings, data, TUI_ACTION.altScreenSearchNext) ||
+		matchesAction(keybindings, data, TUI_ACTION.altScreenSearchPrevious) ||
+		matchesAction(keybindings, data, TUI_ACTION.altScreenSearchClose)
+	);
+}
+
+/**
+ * What dismisses an open find box: the bound `tui.altScreen.searchClose`
+ * action. The fallback manager is pi-tui's global manager, which owns the same
+ * default Escape binding as the find input.
+ */
+function isStageChatSearchCloseInput(ctx: StageChatViewContext, data: string): boolean {
+	return matchesAction(stageSearchKeybindings(ctx), data, TUI_ACTION.altScreenSearchClose);
+}
+
+function stageSearchKeybindings(ctx: StageChatViewContext) {
+	return isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : getKeybindings();
+}
+
+function handleStageChatJumpToBottom(ctx: StageChatViewContext, data: string): boolean {
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	if (data !== TRANSCRIPT_JUMP_TO_END_URL && !matchesAction(keybindings, data, TUI_ACTION.altScreenBottom))
+		return false;
+	ctx.chatHost.scrollToBottom();
+	return true;
+}
 function handleToolsExpandInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	if (!matchesAction(keybindings, data, APP_ACTION.toolsExpand)) return false;
@@ -106,6 +246,10 @@ function handleMountedCustomUiInput(ctx: StageChatViewContext, data: string): bo
 	}
 	// Let scroll input reach the transcript so history stays scrollable while the
 	// question is shown, matching the standalone ask_user_question tool.
+	if (handleStageChatJumpToBottom(ctx, data)) {
+		ctx.requestRender?.();
+		return true;
+	}
 	if (ctx.chatHost.handleScrollInput(data)) {
 		ctx.requestRender?.();
 		return true;

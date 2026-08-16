@@ -1,0 +1,60 @@
+╭ 📨 From: probe (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ───────────────────────────────────────╮
+│Full ID probe delivery                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+╭ 📨 From: probe (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ───────────────────────────────────────╮
+│Full ID probe delivery                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+╭ 📨 From: probe (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ───────────────────────────────────────╮
+│Full ID probe delivery                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+╭ 📨 From: probe (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ───────────────────────────────────────╮
+│Full ID probe delivery                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+╭ 📨 From: tool-probe (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ──────────────────────────────────╮
+│Full ID tool delivery                                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+╭ 📨 From: tool-probe (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ──────────────────────────────────╮
+│Full ID tool delivery                                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+╭ 📨 From: tool-probe (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ──────────────────────────────────╮
+│Full ID tool delivery                                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+╭ 📨 From: tool-probe (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ──────────────────────────────────╮
+│Full ID tool delivery                                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+╭ 📨 From: worker (/Users/tonystark/Documents/projects/atomic-intercom-full-ids) ──────────────────────────────────────╮
+│Full ID tmux delivery                                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown
+
+                                                                                                           0.0%/0 (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+unknown • ~/Documents/projects/atomic-intercom-full-ids (detached) • planner
+● ADHD Mode • MCP: 0/1 servers

@@ -412,15 +412,19 @@ Sessions belong to an intercom group and can ONLY message sessions in the same g
 Usage:
   intercom({ action: "list" })                    → List sessions in your group
   intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
+  intercom({ action: "join", group: "name" })     → Join or create a named group
+  intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
-  intercom({ action: "status" })                  → Show connection status and your group`,
+  intercom({ action: "status" })                  → Show connection status and your group
+
+"default" is the shared group; "true" and "auto" are reserved for subagent auto-groups. Joining does not grant cross-group access; contact_supervisor remains the only cross-group path.`,
 		promptSnippet: "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
 		parameters: Type.Object({
-			action: Type.String({ description: "Action: 'list', 'send', 'ask', 'reply', 'pending', or 'status'" }),
-			to: Type.Optional(Type.String({ description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')" })),
+			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'" }),
+			to: Type.Optional(Type.String({ description: "Exact session name or exact full session ID (for 'send', 'ask', or targeted 'reply')" })),
 			message: Type.Optional(Type.String({ description: "Message to send (for 'send', 'ask', or 'reply' action)" })),
 			attachments: Type.Optional(Type.Array(Type.Object({
 				type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),
@@ -429,7 +433,7 @@ Usage:
 				language: Type.Optional(Type.String()),
 			}))),
 			replyTo: Type.Optional(Type.String({ description: "Message ID to reply to (for threading or responding to an 'ask')" })),
-			group: Type.Optional(Type.String({ description: "Read-only group filter for 'list'/'status'; 'send'/'ask' are locked to your own group." })),
+			group: Type.Optional(Type.String({ description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group." })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "intercom", args),
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),

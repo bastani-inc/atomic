@@ -87,17 +87,12 @@ function makeState() {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		asyncJobs: new Map(),
+		subagentInProgress: false,
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
+		pendingForegroundControlNotices: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 }
 
@@ -138,7 +133,6 @@ function makeExecutor(policy: SubagentChildPolicy): ExecutorForTest {
 		} as unknown as ExecutorDepsForTest["pi"],
 		state: makeState(),
 		config: { parallel: { concurrency: 4, maxTasks: 50 } },
-		asyncByDefault: false,
 		tempArtifactsDir: path.join(tempRoot, "artifacts"),
 		getSubagentSessionRoot: () => path.join(tempRoot, "sessions"),
 		expandTilde: (p: string) => p,
@@ -147,7 +141,6 @@ function makeExecutor(policy: SubagentChildPolicy): ExecutorForTest {
 		allowMutatingManagementActions: policy.managementActions === "full",
 		runtime: {
 			runSync: runSyncMock,
-			isAsyncAvailable: () => false,
 		},
 	} satisfies ExecutorDepsForTest;
 	const executor = createSubagentExecutor(deps);

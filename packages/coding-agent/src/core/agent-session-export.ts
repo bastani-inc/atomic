@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { theme } from "../modes/interactive/theme/theme.ts";
+import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SessionStats } from "./agent-session-types.ts";
@@ -19,7 +19,9 @@ export function getSessionStats(this: AgentSession): SessionStats {
 	let toolCalls = 0;
 	const totals = createUsageTotals();
 	for (const entry of this.sessionManager.getEntries()) {
-		if (entry.type === "branch_summary" && entry.usage) addUsageToTotals(totals, entry.usage);
+		if ((entry.type === "branch_summary" || entry.type === "session_summary") && entry.usage) {
+			addUsageToTotals(totals, entry.usage);
+		}
 		if (entry.type !== "message") continue;
 		totalMessages++;
 		const message = entry.message;
@@ -104,11 +106,20 @@ export function getContextUsage(this: AgentSession): ContextUsage | undefined {
 /**
  * Export session to HTML.
  * @param outputPath Optional output path (defaults to session directory)
+ * @param options Optional export presentation settings; `themeName` overrides the
+ * saved theme setting (e.g. with this run's --use-theme selection) when it names a
+ * registered theme.
  * @returns Path to exported file
  */
 
-export async function exportToHtml(this: AgentSession, outputPath?: string): Promise<string> {
-	const themeName = this.settingsManager.getTheme();
+export async function exportToHtml(
+	this: AgentSession,
+	outputPath?: string,
+	options: { themeName?: string } = {},
+): Promise<string> {
+	const themeName = [options.themeName, this.settingsManager.getTheme()].find(
+		(candidate) => candidate !== undefined && getThemeByName(candidate) !== undefined,
+	);
 	const [{ exportSessionToHtml }, { createToolHtmlRenderer }] = await Promise.all([
 		import("./export-html/index.ts"),
 		import("./export-html/tool-renderer.ts"),

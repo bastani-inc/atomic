@@ -1186,6 +1186,22 @@ pi.on("before_agent_start", (event, ctx) => {
 });
 ```
 
+### ctx.getSkillCatalog()
+
+Returns the current loader-owned skill catalog when the host provides one. Use it to resolve exact skill selectors, including source-qualified names such as `tdd@builtin`, without falling back to the bare precedence winner.
+
+```typescript
+pi.on("session_start", (_event, ctx) => {
+  const catalog = ctx.getSkillCatalog?.();
+  const resolved = catalog?.resolve("tdd@builtin");
+  if (resolved?.ok) {
+    ctx.ui.notify(`Using ${resolved.candidate.selector}`, "info");
+  }
+});
+```
+
+`pi.getCommands()` already includes the same advertised `/skill:name` and `/skill:name@source` names. See [Skill Commands](/skills#skill-commands).
+
 ## ExtensionCommandContext
 
 Command handlers receive `ExtensionCommandContext`, which extends `ExtensionContext` with session control methods. These are only available in commands because they can deadlock if called from event handlers.
@@ -1559,12 +1575,17 @@ pi.sendUserMessage([
 // During streaming - must specify delivery mode
 pi.sendUserMessage("Focus on error handling", { deliverAs: "steer" });
 pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
+
+// Opt in to extension command dispatch and skill/prompt template expansion
+pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
 ```
 
 **Options:**
 - `deliverAs` - Required when agent is streaming:
   - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
   - `"followUp"` - Waits for agent to finish all tools
+
+- `expandPromptTemplates` - Dispatch extension commands and expand skill commands and prompt templates instead of sending the text literally. Defaults to `false`, so an extension-authored message is sent as-is unless it opts in; an unknown command falls through to a literal send.
 
 When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
 
@@ -2713,6 +2734,8 @@ Custom component `handleInput` methods must return `true` when they consume an i
 
 Custom component `handleInput` methods must return `true` when they consume an input and `false` or `undefined` when they do not. In fullscreen mode, an unhandled viewport key continues to the transcript; remote components also fall through on a failed or timed-out reply. Return `true` for a handled key so it is not applied twice.
 
+A handler that returns a promise is judged when it settles: only a resolved `true` consumes the key, while `false`, `undefined`, and a rejection fall through to the viewport. A component with no `handleInput` declines everything, so viewport keys still scroll the transcript behind it.
+
 Pass `{ handlesCtrlC: true }` when the component binds Ctrl+C itself (cancel, skip, close). In isolated interactive sessions the host otherwise closes a component that owns input on the first Ctrl+C, so that a component which never resolves cannot trap the keyboard. See [Interactive callback isolation](#interactive-callback-isolation).
 
 See [TUI components](/tui) for the full component API.
@@ -2742,6 +2765,33 @@ const result = await ctx.ui.custom<string | null>(
 ```
 
 See [TUI components](/tui) for the full `OverlayOptions` API and [overlay-qa-tests.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for examples.
+
+Pass `{ reserveTranscriptRows: true }` for a blocking bottom-anchored dialog. A reserving overlay must set `overlayOptions.anchor` to `bottom-left`, `bottom-center`, or `bottom-right`; `row` and a nonzero `offsetY` are rejected because they invalidate the transcript-intersection model. Horizontal placement options remain supported. An overlay is composited over the transcript rather than measured into the layout, so without this option a tall dialog can cover the whole screen and the transcript rows it covers can never be scrolled above it. With it, the host bounds the overlay so at least six transcript rows stay visible. Top and bottom margins limit the wrapper before pi-tui composition, preventing a second fixed-head crop. Numeric and percentage `maxHeight` values are also resolved before active-row windowing and removed from the options passed to pi-tui. The host computes each visible bottom overlay's real intersection with the transcript and reserves the connected covered suffix once, so scrolling to the end keeps the newest output readable. A measured height change on mount or resize requests one automatic settling repaint. Margins, overlapping overlays, resize, and temporary visibility changes are reflected each frame. A temporarily hidden overlay — through `OverlayHandle.setHidden(true)` or a false `OverlayOptions.visible` result — contributes no intersection until it becomes visible again. Permanent handle removal, closure, and raw host removal release that exact overlay's registration; the shared reserve remains until its final overlay leaves. Leave the option unset for an overlay that is meant to take the screen, such as a full-screen graph. The built-in `ask_user_question` dialog sets it.
+
+```typescript
+const result = await ctx.ui.custom<string | null>(
+  (tui, theme, keybindings, done) => new MyDialog({ onClose: done }),
+  {
+    overlay: true,
+    reserveTranscriptRows: true,
+    overlayOptions: { anchor: "bottom-center", width: "100%" },
+  }
+);
+```
+
+A component mounted with `reserveTranscriptRows` always releases configured fullscreen transcript actions and vertical wheel input to the host viewport, including while a nested input has focus. The component keeps all other keyboard and mouse input, including text editing, arrows, confirmation, cancellation, and clicks. This rule applies only to reserving overlays; other focused overlays still receive page and wheel input first and can keep it by returning `true`.
+
+Bounding a tall dialog means dropping rows, and the host would otherwise have to guess which. Embed `OVERLAY_ACTIVE_ROW_MARKER` in the line your component most needs kept — the selected row of a list — and the host places what it keeps around that row instead of taking a fixed head, even when the effective `maxHeight` is only one row. The mark is a zero-width APC sequence that `visibleWidth` measures as zero, and the host strips it before the line is painted, so it never reaches the terminal. Embed it once per frame; the host uses the first line that carries it. The `ask_user_question` dialog marks every active selectable row, including single- and multi-select options, Next, Submit, Cancel, and inline sentinel rows. Focused pi-tui inputs also anchor the bound through their cursor marker, so arrow keys and text input stay visible on a 16-row terminal.
+
+```typescript
+import { OVERLAY_ACTIVE_ROW_MARKER } from "@bastani/atomic";
+
+render(width: number): string[] {
+  return this.items.map((item, index) =>
+    index === this.selected ? `${this.row(item, width)}${OVERLAY_ACTIVE_ROW_MARKER}` : this.row(item, width),
+  );
+}
+```
 
 ### Custom Editor
 

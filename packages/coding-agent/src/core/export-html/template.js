@@ -321,13 +321,14 @@
        * Matches the format: <skill name="..." location="...">\n...\n</skill>\n\nuser message
        */
       function parseSkillBlock(text) {
-        const match = text.match(/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
+        const match = text.match(/^<skill name="([^"]+)" location="([^"]+)"(?: candidate="([^"]+)")?>\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
         if (!match) return null;
         return {
           name: match[1],
           location: match[2],
-          content: match[3],
-          userMessage: match[4]?.trim() || undefined,
+          candidateId: match[3] || undefined,
+          content: match[4],
+          userMessage: match[5]?.trim() || undefined,
         };
       }
 

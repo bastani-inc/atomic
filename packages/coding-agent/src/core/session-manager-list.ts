@@ -7,6 +7,7 @@ import { getSessionsDir } from "../config.ts";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
+import { getLastConversationMessageId, getLatestSessionSummary } from "./session-manager-entries.ts";
 import { parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { isInternalHeader, readSessionHeader, sessionCwdMatches } from "./session-manager-storage.ts";
@@ -155,12 +156,15 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let firstMessage = "";
 		const allMessages: string[] = [];
 		let name: string | undefined;
+		let hasName = false;
 
 		for (const entry of entries) {
-			// Extract session name (use latest, including explicit clears)
+			// Extract session name state (use latest, including explicit clears:
+			// a latest empty name means cleared, no session_info entry means never named)
 			if (entry.type === "session_info") {
 				const infoEntry = entry as SessionInfoEntry;
 				name = infoEntry.name?.trim() || undefined;
+				hasName = true;
 			}
 
 			if (entry.type !== "message") continue;
@@ -186,11 +190,22 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 
 		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
 
+		// A summary describes the conversation up to one specific message. Anything newer makes it
+		// stale, and the picker falls back to the session name or the first message. Retirement by
+		// a later branch summary is handled inside getLatestSessionSummary, so the generation guard
+		// applies exactly the same rule.
+		const summaryEntry = getLatestSessionSummary(entries);
+		const summary =
+			summaryEntry?.summarizedThroughId === getLastConversationMessageId(entries)
+				? summaryEntry?.summary
+				: undefined;
+
 		return {
 			path: filePath,
 			id: (header as SessionHeader).id,
 			cwd,
 			name,
+			...(hasName ? { hasName: true } : {}),
 			parentSessionPath,
 			...(internal ? { internal } : {}),
 			...(workflow ? { workflow } : {}),
@@ -198,6 +213,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			modified,
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
+			summary,
 			allMessagesText: allMessages.join(" "),
 		};
 	} catch {

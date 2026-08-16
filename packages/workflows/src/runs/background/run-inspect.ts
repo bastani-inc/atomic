@@ -28,7 +28,7 @@ import type { WorkflowInputValues, WorkflowOutputValues } from "../../shared/typ
 export interface RunDetail {
 	readonly runId: string;
 	readonly name: string;
-	readonly status: RunStatus;
+	readonly status: RunStatus | "crashed";
 	readonly mode: "single" | "chain";
 	readonly startedAt: number;
 	readonly endedAt?: number;
@@ -54,6 +54,10 @@ export interface RunDetail {
 	readonly failedToolNodeId?: string;
 	readonly resumable?: boolean;
 	readonly retryAfterMs?: number;
+	/** Actionable guidance for a snapshot hydrated from durable storage. */
+	readonly resumeGuidance?: string;
+	/** True when a fresh durable owner is active in another Atomic process. */
+	readonly ownerActiveElsewhere?: boolean;
 	readonly blockedAt?: number;
 }
 

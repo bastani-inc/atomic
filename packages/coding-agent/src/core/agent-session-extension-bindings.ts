@@ -7,6 +7,7 @@ import type { ExtensionRunner } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { ResourceExtensionPaths } from "./resource-loader.ts";
+import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 
 export async function bindExtensions(this: AgentSession, bindings: ExtensionBindings): Promise<void> {
@@ -146,11 +147,11 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 			sourceInfo: template.sourceInfo,
 		}));
 
-		const skills: SlashCommandInfo[] = this._resourceLoader.getSkills().skills.map((skill) => ({
-			name: `skill:${skill.name}`,
-			description: skill.description,
+		const skills: SlashCommandInfo[] = getSkillCatalog(this._resourceLoader).commands.map((command) => ({
+			name: `skill:${command.name}`,
+			description: command.description,
 			source: "skill",
-			sourceInfo: skill.sourceInfo,
+			sourceInfo: command.sourceInfo,
 		}));
 
 		return [...extensionCommands, ...templates, ...skills];
@@ -251,6 +252,7 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 				})();
 			},
 			getSystemPrompt: () => this.systemPrompt,
+			getSkillCatalog: () => getSkillCatalog(this._resourceLoader),
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
 		},
 		{

@@ -28,6 +28,7 @@ import type {
 	ResourceLoaderReloadOptions,
 } from "./resource-loader-types.ts";
 import { type PackageSource, SettingsManager } from "./settings-manager.ts";
+import { buildSkillCatalog, type SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
 import type { SourceInfo } from "./source-info.ts";
 
@@ -71,6 +72,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private extensionsResult: LoadExtensionsResult;
 	private skills: Skill[];
 	private skillDiagnostics: ResourceDiagnostic[];
+	private skillCatalog: SkillCatalog;
 	private prompts: PromptTemplate[];
 	private promptDiagnostics: ResourceDiagnostic[];
 	private themes: Theme[];
@@ -153,6 +155,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
 		this.skills = [];
 		this.skillDiagnostics = [];
+		this.skillCatalog = buildSkillCatalog([]);
 		this.prompts = [];
 		this.promptDiagnostics = [];
 		this.themes = [];
@@ -182,6 +185,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] } {
 		return { skills: this.skills, diagnostics: this.skillDiagnostics };
+	}
+
+	getSkillCatalog(): SkillCatalog {
+		return this.skillCatalog;
 	}
 
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] } {

@@ -345,9 +345,6 @@ export function duplicateSessionNames(sessions: SessionInfo[]): Set<string> {
       .filter((name, index, names) => names.indexOf(name) !== index)
   );
 }
-function shortSessionId(sessionId: string): string {
-  return sessionId.slice(0, 8);
-}
 export function parseSubagentIntercomPayload(payload: unknown): { to: string; message: string; requestId?: string } | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
@@ -394,7 +391,7 @@ export function resolveIntercomPresenceName(sessionName: string | undefined, ses
     return trimmedName;
   }
   const normalizedSessionId = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;
-  return `${DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX}-${normalizedSessionId.slice(0, 8)}`;
+  return `${DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX}-${normalizedSessionId}`;
 }
 export function buildPresenceIdentity(pi: ExtensionAPI, sessionId: string): { name: string } {
   return {
@@ -406,7 +403,7 @@ export function formatSessionLabel(session: SessionInfo, duplicates: Set<string>
     return session.id;
   }
   return duplicates.has(session.name.toLowerCase())
-    ? `${session.name} (${shortSessionId(session.id)})`
+    ? `${session.name} (${session.id})`
     : session.name;
 }
 export function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: boolean): string {
@@ -416,7 +413,7 @@ export function formatSessionListRow(session: SessionInfo, currentCwd: string, i
   const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, session.status, groupTag]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
-  return `• ${name} (${shortSessionId(session.id)}) — ${session.cwd} (${session.model})${suffix}`;
+  return `• ${name} (${session.id}) — ${session.cwd} (${session.model})${suffix}`;
 }
 export function previewText(value: unknown, maxLength = 72): string | undefined {
   if (typeof value !== "string") {

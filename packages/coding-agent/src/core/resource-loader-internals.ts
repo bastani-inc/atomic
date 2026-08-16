@@ -7,6 +7,7 @@ import type { DefaultPackageManager, PathMetadata, ResolvedResource } from "./pa
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "./resource-loader-types.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
+import type { SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
 import type { SourceInfo } from "./source-info.ts";
 
@@ -50,6 +51,7 @@ export interface ResourceLoaderInternals {
 	extensionsResult: LoadExtensionsResult;
 	skills: Skill[];
 	skillDiagnostics: ResourceDiagnostic[];
+	skillCatalog: SkillCatalog;
 	prompts: PromptTemplate[];
 	promptDiagnostics: ResourceDiagnostic[];
 	themes: Theme[];

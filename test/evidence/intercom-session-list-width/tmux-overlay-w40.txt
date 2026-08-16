@@ -1,0 +1,40 @@
+ in.
+ Use it to implement tickets, research
+ a codebase, design a UI,
+ or build and run your own loops.
+ Run dynamic workflows and save the
+ ones you like for future use.
+ Start building a verifiable software
+ factory.
+
+ Type a message or slash command below
+ to continue normally.
+╭────────────────────────────────────╮
+│ Current Session                    │
+├────────────────────────────────────┤
+│                                    │
+│  worker [self]                     │
+│  c910cfd2-7798-4b3e-bed2-b3d1082bd…│
+│  /Users/tonystar…com-width-aware • │
+│                                    │
+├────────────────────────────────────┤
+│ Other Sessions                     │
+│                                    │
+│→ planner [same cwd]                │
+│  ab3514fa-360b-42b2-a1a1-827740c25…│
+│  /Users/tonystar…com-width-aware • │
+│                                    │
+├────────────────────────────────────┤
+│ Enter: Message • Escape/CTRL+C: Clo│
+╰────────────────────────────────────╯
+
+ Session name set: worker
+
+ ∀ Working...
+
+                           0.0%/0 (auto)
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+unknown • ~/Documents/projects/atomic...
+● ADHD Mode • MCP: 0/1 servers

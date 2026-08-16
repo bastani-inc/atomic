@@ -29,13 +29,17 @@ async function registerIsolatedTests(): Promise<void> {
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { mock } = await import("bun:test");
 	class TestComponent {}
-	const [{ ScrollView }, { VStack }] = await Promise.all([
+	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
 		import("@earendil-works/pi-tui/dist/components/scroll-view.js"),
 		import("@earendil-works/pi-tui/dist/components/v-stack.js"),
+		import("@earendil-works/pi-tui/dist/components/input.js"),
 	]);
 	mock.module("@earendil-works/pi-tui", () => ({
 		Box: TestComponent,
 		Editor: TestComponent,
+		// The stage-chat find box edits its query with pi-tui's own input.
+		Input,
+		getKeybindings: () => ({ matches: () => false }),
 		ScrollView,
 		VStack,
 		SelectList: TestComponent,
@@ -59,6 +63,13 @@ async function registerIsolatedTests(): Promise<void> {
 
 	mock.module("@bastani/atomic", () => ({
 		ChatSessionHost: TestComponent,
+		// Stage-chat search seams. Nothing here opens a find box, so these need
+		// only exist; the matcher itself is covered by its own tests.
+		findSearchMatches: () => [],
+		getSearchMatchKey: () => "",
+		highlightSearchMatchRow: (line: string) => line,
+		TranscriptFollowIndicator: TestComponent,
+		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
 		keyHint: (key: string) => key,
 		keyText: (key: string) => key,
 		rawKeyHint: (key: string) => key,

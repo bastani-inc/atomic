@@ -51,7 +51,9 @@ If the Codex backend reports that an OAuth/auth token was invalidated or revoked
 
 ### Codex Fast Mode
 
-Run `/fast` in interactive mode to enable OpenAI priority service tier separately for normal chat and workflow-stage sessions. The command is shown only when the current model scope includes a supported `openai/*` or `openai-codex/*` model. Workflow stages use the workflow setting, not the chat setting. When enabled for the active supported model, the UI appends `fast` after the model name in the chat footer and workflow stage model labels. Fast mode intentionally does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or custom OpenAI-compatible providers. Use workflow fast mode deliberately because parallel workflow fan-out can multiply priority-tier usage.
+Run `/fast` in interactive mode to enable OpenAI priority service tier separately for normal chat and workflow-stage sessions. The command is shown when the current model scope includes a supported `openai/*` or `openai-codex/*` model. A resolved provider alias also qualifies when it uses the shared `openai-codex-responses` transport. Workflow stages, nested `ctx.workflow(...)` stages, and subagents launched by those stages use the workflow setting, not the chat setting. Each fallback, retry, compaction-planner, and branch-summary request is evaluated against its effective model, so an eligible fallback gets the tier and an ineligible provider does not. When enabled for the active supported model, the UI appends `fast` after the model name in the chat footer, workflow stage model labels, and stage-launched subagent results. Fast mode intentionally does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers. Use workflow fast mode deliberately because parallel workflow fan-out can multiply priority-tier usage.
+
+The shared ChatGPT Codex transport sends the fast routing contract only after the final request payload contains `service_tier: priority`: `originator: codex_cli_rs` plus `x-codex-routing-hint: model=<effective-model>;tier=priority` on both HTTP/SSE and WebSocket transports. The same rule covers the stock provider, renamed providers, credential-resolved endpoints, and monitoring proxies that retain `api: "openai-codex-responses"`. WebSocket fallback, reconnect, and HTTP retry attempts reuse that identity; a final model or tier change drops a cached socket before reuse. Requests to the standard OpenAI API send only the tier. When Fast Mode is off, or a request hook changes the final tier away from `priority`, Atomic keeps the normal `originator: pi` identity and sends no routing hint.
 
 ### Claude Pro/Max
 
@@ -318,6 +320,94 @@ AI Gateway authentication uses `CLOUDFLARE_API_KEY` as `cf-aig-authorization`. U
 | Inline BYOK | Cloudflare token plus upstream `Authorization` header | The request supplies the upstream provider key |
 
 For normal Atomic usage, prefer unified billing or stored BYOK. Inline BYOK requires configuring an additional upstream `Authorization` header for the Cloudflare AI Gateway provider, for example via a `models.json` provider/model override.
+
+#### Workers AI binding (no API token)
+
+When Atomic's engine runs inside a Cloudflare Worker in the gateway's own account, requests can route through the [Workers AI binding](https://developers.cloudflare.com/ai-gateway/usage/workers-ai-binding/) (`env.AI`) instead of HTTPS. Binding calls are pre-authenticated in-account, so this path needs **no `CLOUDFLARE_API_KEY` at all**. Atomic re-exports the transport as `createGatewayBindingFetch` from `@bastani/atomic`.
+
+Declare the binding and the endpoint vars (the vars also satisfy the account/gateway resolution the gateway prefix needs):
+
+```toml
+# wrangler.toml
+[ai]
+binding = "AI"
+
+[vars]
+CLOUDFLARE_ACCOUNT_ID = "your-account-id"
+CLOUDFLARE_GATEWAY_ID = "your-gateway-slug"   # dash.cloudflare.com → AI → AI Gateway
+```
+
+Then register a provider override whose `streamSimple` swaps in the binding transport. The extension must be created where `env` is in scope — an inline extension factory passed to the resource loader does that:
+
+```typescript
+import {
+  CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+  createAgentSession,
+  createGatewayBindingFetch,
+  DefaultResourceLoader,
+  type AiGatewayBinding,
+} from "@bastani/atomic";
+import { streamSimple as anthropicStreamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
+
+// `AI` is the Workers AI binding; `AiGatewayBinding` is the structural type for it,
+// so the snippet needs no `@cloudflare/workers-types` dependency.
+interface Env {
+  AI: AiGatewayBinding;
+  CLOUDFLARE_ACCOUNT_ID: string;
+  CLOUDFLARE_GATEWAY_ID: string;
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const gatewayPrefix = `https://gateway.ai.cloudflare.com/v1/${env.CLOUDFLARE_ACCOUNT_ID}/${env.CLOUDFLARE_GATEWAY_ID}`;
+    const loader = new DefaultResourceLoader({
+      cwd: "/workspace",
+      agentDir: "/workspace/.atomic/agent",
+      extensionFactories: [
+        {
+          name: "cloudflare-gateway-binding",
+          factory: (pi) => {
+            pi.registerProvider("cloudflare-ai-gateway", {
+              // Placeholder credential: it marks the provider configured and becomes
+              // `cf-aig-authorization: Bearer cloudflare-gateway-binding`, which the
+              // transport strips before the binding call. Never sent to the gateway.
+              apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+              api: "anthropic-messages",
+              streamSimple: (model, context, options) =>
+                anthropicStreamSimple(
+                  {
+                    ...model,
+                    baseUrl: (model.baseUrl ?? gatewayPrefix)
+                      .replaceAll("{CLOUDFLARE_ACCOUNT_ID}", env.CLOUDFLARE_ACCOUNT_ID)
+                      .replaceAll("{CLOUDFLARE_GATEWAY_ID}", env.CLOUDFLARE_GATEWAY_ID)
+                  },
+                  context,
+                  {
+                    ...options,
+                    fetch: createGatewayBindingFetch({
+                      binding: env.AI,
+                      gateway: env.CLOUDFLARE_GATEWAY_ID,
+                      baseUrl: gatewayPrefix
+                    })
+                  }
+                )
+            });
+          }
+        }
+      ]
+    });
+
+    const { session } = await createAgentSession({
+      resourceLoader: loader
+      // Pass `model:` with a cloudflare-ai-gateway entry (e.g. claude-sonnet-4-5)
+      // resolved from your ModelRuntime, or leave it out to use the saved default.
+    });
+    // ...run the session and return a Response
+  }
+};
+```
+
+Every request under the gateway prefix becomes one `env.AI.gateway(id).run({ provider, endpoint, headers, query })` call in the provider's native wire format, so streaming behaves identically to the HTTPS route. The transport serves only its gateway-bound client: URLs outside the prefix, and in-prefix requests the universal endpoint cannot express (non-POST, non-JSON body), reject with a descriptive error rather than being forwarded. Repeat the same pattern with `@earendil-works/pi-ai/api/openai-completions` (or `openai-responses`) to cover the `/openai` and `/compat` passthrough models of the same provider.
 
 ### Cloudflare Workers AI
 

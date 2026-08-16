@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { Value } from "typebox/value";
 import { describe, test } from "vitest";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
@@ -24,6 +25,39 @@ describe("WorkflowParametersSchema", () => {
 			{ action: "reload", reason: "new workflow" },
 		];
 		for (const call of calls) assert.equal(Value.Check(WorkflowParametersSchema, call), true, JSON.stringify(call));
+	});
+
+	test("advertises boolean response payloads to providers", () => {
+		const response = (WorkflowParametersSchema as { properties: { response: { anyOf?: Array<{ type?: string }> } } })
+			.properties.response;
+		assert.deepEqual(
+			response.anyOf?.map((branch) => branch.type),
+			["string", "boolean", "number", "null", "array", "object"],
+		);
+	});
+
+	test("preserves boolean and string response payloads through provider argument validation", () => {
+		const workflowTool = {
+			name: "workflow",
+			description: "test workflow tool",
+			parameters: WorkflowParametersSchema,
+		};
+		const cases: readonly [boolean | string, boolean | string][] = [
+			[true, true],
+			[false, false],
+			["true", "true"],
+			["false", "false"],
+		];
+		for (const [response, expected] of cases) {
+			const validated = validateToolArguments(workflowTool, {
+				type: "toolCall",
+				id: "call-1",
+				name: "workflow",
+				arguments: { action: "send", response },
+			});
+			assert.equal(validated.response, expected);
+			assert.equal(typeof validated.response, typeof expected);
+		}
 	});
 
 	test("rejects every removed one-off execution argument", () => {

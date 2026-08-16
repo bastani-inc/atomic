@@ -30,6 +30,7 @@ import "./interactive-auth-routing.ts";
 import "./interactive-auth-login.ts";
 import "./interactive-slash-commands.ts";
 import "./interactive-hotkeys-debug.ts";
+import "./interactive-transcript-follow.ts";
 import "./interactive-bash-compact.ts";
 
 import { InteractiveModeBase } from "./interactive-mode-base.ts";

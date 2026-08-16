@@ -12,6 +12,7 @@ import type { Store } from "../shared/store.js";
 import type { RunStatus, StageNotice, StageStatus } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { PromptCardState } from "./prompt-card.js";
+import type { StageChatSearchState } from "./stage-chat-search.js";
 
 /** Unhosted fallback frame height used when no host terminal supplies rows. */
 export const VIEW_LINE_COUNT = 32;
@@ -135,6 +136,8 @@ export interface StageChatViewContext {
 	mountedCustomUi: MountedStageCustomUi | null;
 	mountingRequestId: string | null;
 	promptState: PromptCardState | null;
+	/** Open find-in-stage-chat session, or `null` when no search is open. */
+	search: StageChatSearchState | null;
 	promptEditor: EditorComponent | null;
 	promptEditorPromptId: string | null;
 	promptEditorSubmitFromEnter: boolean;

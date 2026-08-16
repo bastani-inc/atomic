@@ -20,6 +20,7 @@ import {
 } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
+import { getSkillCatalog } from "./skill-catalog.ts";
 
 type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
 
@@ -61,6 +62,11 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			preflightResult?.(true);
 			return;
 		}
+		// Real user input is on its way in, so a summary describing the previous turn is about
+		// to be stale; stop paying for it. Deliberately after the authorization boundary and
+		// the slash-command path, both of which must observe an untouched session. The
+		// generation discards itself via its token/anchor checks either way.
+		this.abortSessionSummary();
 		// A controlled pause is an admission gate, including the idle gap after
 		// abort settles. Preserve the raw user payload without running input hooks,
 		// compaction, or a provider turn; explicit resume makes it eligible again.
@@ -268,6 +274,67 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 		await this.waitForRetry();
 		await this._agentEventQueue;
 	}
+
+	await answerAdmittedQueuedMessage(this);
+}
+
+/**
+ * Answer a queued message the agent loop already admitted into the transcript but
+ * never replied to.
+ *
+ * `pauseQueuedMessages()` can only hold entries still sitting in the agent's own
+ * steering/follow-up queues. Once the loop has polled a message it lives inside the
+ * loop, is pushed into the transcript on the next iteration, and an interrupt at that
+ * moment leaves it with a contentless aborted assistant reply. The message is no
+ * longer queued and no longer held, so neither the pause release nor the queued
+ * continuation above schedules the turn it is waiting for (issue #2362).
+ *
+ * This is deliberately disjoint from the paused-hold contract: a *held* message is
+ * still released without starting a turn, while an *admitted* one gets its reply.
+ */
+async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void> {
+	const admitted = session._admittedQueuedMessageAwaitingReply;
+	// One attempt per admission: clear before continuing so an interrupt of the
+	// recovery turn ends the sequence instead of restarting it.
+	session._admittedQueuedMessageAwaitingReply = undefined;
+	if (admitted === undefined || session._disposed) return;
+	// An interrupt delivery already in flight aborts this reply and then starts its
+	// own turn, so continuing concurrently would reject the caller's prompt() with
+	// "Agent is already processing." Wait for it on the same boundary the resume
+	// path uses, then let the checks below re-read the transcript: a delivery that
+	// started its own turn changes the tail so they decline, while one that only
+	// joined a paused hold leaves the admitted message still waiting for its reply.
+	if (session._pendingInterruptDeliveries > 0) {
+		await session._interruptDeliveryQueue;
+		if (session._disposed) return;
+	}
+
+	const messages = session.agent.state.messages;
+	const reply = messages[messages.length - 1];
+	// Only an interrupt that produced nothing is recoverable. A partially streamed
+	// reply already answered the message; restarting it would duplicate output.
+	if (reply?.role !== "assistant" || reply.stopReason !== "aborted" || reply.content.length > 0) return;
+	const message = messages[messages.length - 2];
+	if (message?.role !== "user" || session._getUserMessageText(message) !== admitted) return;
+
+	// Drop the empty aborted reply from agent state so `continue()` resumes from the
+	// admitted user message. The session history keeps it, as the retry paths do.
+	session.agent.state.messages = messages.slice(0, -1);
+	// Publish this turn before it starts. It begins after the pause abort boundary
+	// resolves, so a submission that only waited for that boundary would race it
+	// and be rejected by the streaming guard while the queue is still paused.
+	const recovery = (async () => {
+		await session.agent.continue();
+		await session.waitForRetry();
+		await session._agentEventQueue;
+	})();
+	const settled = recovery.catch(() => undefined);
+	session._admittedRecoveryTurn = settled;
+	try {
+		await recovery;
+	} finally {
+		if (session._admittedRecoveryTurn === settled) session._admittedRecoveryTurn = undefined;
+	}
 }
 
 /**
@@ -351,16 +418,25 @@ export function _expandSkillCommand(this: AgentSession, text: string): string {
 	if (!text.startsWith("/skill:")) return text;
 
 	const spaceIndex = text.indexOf(" ");
-	const skillName = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
+	const selector = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
 	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
-
-	const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
-	if (!skill) return text; // Unknown skill, pass through
+	const resolution = getSkillCatalog(this.resourceLoader).resolve(selector);
+	if (!resolution.ok) {
+		if (selector.includes("@")) {
+			this._extensionRunner.emitError({
+				extensionPath: `skill:${selector}`,
+				event: "skill_expansion",
+				error: resolution.message,
+			});
+		}
+		return text;
+	}
+	const { skill, id } = resolution.candidate;
 
 	try {
 		const content = readFileSync(skill.filePath, "utf-8");
 		const body = stripFrontmatter(content).trim();
-		const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+		const skillBlock = `<skill name="${selector}" location="${skill.filePath}" candidate="${id}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
 		return args ? `${skillBlock}\n\n${args}` : skillBlock;
 	} catch (err) {
 		// Emit error like extension commands do
@@ -417,14 +493,24 @@ export async function followUp(this: AgentSession, text: string, images?: ImageC
 }
 
 /**
- * Internal: Queue a steering message (already expanded, no extension command check).
+ * Send a user message and trigger a turn.
+ *
+ * By default the text is delivered literally: extension commands are not
+ * dispatched and skill commands / prompt templates are not expanded. Set
+ * `expandPromptTemplates: true` to dispatch a registered extension or skill
+ * command (or expand a prompt template) instead of sending the raw text —
+ * with that option the message may DISPATCH a command rather than be sent.
+ *
+ * @param content User message content (string or content array)
+ * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
+ * @param options.expandPromptTemplates Whether to dispatch extension commands and expand skill commands and prompt templates. Default: false.
  */
-
 export async function sendUserMessage(
 	this: AgentSession,
 	content: string | (TextContent | ImageContent)[],
 	options?: {
 		deliverAs?: "steer" | "followUp";
+		expandPromptTemplates?: boolean;
 		__workflowDelivery?: PromptOptionsWithWorkflowDelivery["__workflowDelivery"];
 	},
 ): Promise<void> {
@@ -448,11 +534,12 @@ export async function sendUserMessage(
 		if (images.length === 0) images = undefined;
 	}
 
-	// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion.
-	// The private delivery hook lets workflow routing report and gate the branch
-	// selected after asynchronous input/compaction extension preflight.
+	// prompt() owns command dispatch and template expansion; the default (false)
+	// keeps every pre-existing caller sending literally. The private delivery hook
+	// lets workflow routing report and gate the branch selected after asynchronous
+	// input/compaction extension preflight.
 	await this.prompt(text, {
-		expandPromptTemplates: false,
+		expandPromptTemplates: options?.expandPromptTemplates ?? false,
 		streamingBehavior: options?.deliverAs,
 		images,
 		source: "extension",

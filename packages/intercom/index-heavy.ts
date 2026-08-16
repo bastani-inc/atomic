@@ -29,6 +29,7 @@ import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workfl
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
 import { resolveHomeGroup } from "./group.js";
+import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
@@ -66,6 +67,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let runtimeStarted = false;
   let runtimeGeneration = 0;
   let agentRunning = false;
+  let sessionHomeGroup: string | null = null;
+  let joinedGroup: string | null = null;
   const activeTools = new Map<string, string>();
   let replyTracker = new ReplyTracker();
   const replyWaiters = new ReplyWaiterSlot();
@@ -108,6 +111,23 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
     return config.status ? `${lifecycleStatus} · ${config.status}` : lifecycleStatus;
   }
+  function resolveSessionHomeGroup(): string {
+    return sessionHomeGroup ?? resolveHomeGroup(config, getLiveContext());
+  }
+  function currentIntercomGroup(): string {
+    return joinedGroup ?? resolveSessionHomeGroup();
+  }
+  function setJoinedGroup(group: string): void {
+    const sessionId = currentSessionId;
+    if (!sessionId) return;
+    setRuntimeIntercomGroup(sessionId, group);
+    joinedGroup = group;
+  }
+  function clearJoinedGroup(): void {
+    const sessionId = currentSessionId;
+    joinedGroup = null;
+    if (sessionId) clearRuntimeIntercomGroup(sessionId);
+  }
   function buildRegistration(): Omit<SessionInfo, "id"> {
     const liveContext = getLiveContext();
     if (!liveContext || !currentSessionId || sessionStartedAt === null) {
@@ -122,7 +142,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       startedAt: sessionStartedAt,
       lastActivity: Date.now(),
       status: currentStatus(),
-      group: resolveHomeGroup(config, getLiveContext()),
+      group: currentIntercomGroup(),
     };
   }
   function syncPresenceIdentity(sessionId: string): void {
@@ -150,7 +170,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return Boolean(resolvedTo && activeClient?.sessionId && resolvedTo === activeClient.sessionId)
       || targets.has(to.trim().toLowerCase());
   }
-  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, () => resolveHomeGroup(config, getLiveContext()));
+  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, currentIntercomGroup);
   const sendIncomingMessage = createIncomingMessageSender({
     pi,
     currentGeneration: () => runtimeGeneration,
@@ -408,7 +428,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           throw new Error("Intercom runtime no longer active");
         }
         client = nextClient;
-        if (nextClient.sessionId) process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
+        if (nextClient.sessionId) {
+          process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
+        }
         reconnectAttempt = 0;
         return nextClient;
       } catch (error) {
@@ -440,7 +462,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     ensureConnected,
     authorizeSupervisorChild: (childName) => supervisorAuthorizations.authorize(childName, () => ensureConnected("background")),
     resolveSessionTarget: resolveSessionTargetId,
-    homeGroup: () => resolveHomeGroup(config, getLiveContext()),
+    homeGroup: currentIntercomGroup,
   });
 
   registerIntercomLifecycle(pi, {
@@ -453,7 +475,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     incrementRuntimeGeneration: () => { runtimeGeneration += 1; foregroundDetachHandoff.reset(); return runtimeGeneration; },
     resetReconnectAttempt: () => { reconnectAttempt = 0; },
     clearReconnectTimer,
-    setRuntimeContext: (value) => { runtimeContext = value; },
+    setRuntimeContext: (value) => {
+      if (value === null) {
+        clearJoinedGroup();
+        sessionHomeGroup = null;
+      } else {
+        sessionHomeGroup = resolveHomeGroup(config, value);
+      }
+      runtimeContext = value;
+    },
     setCurrentSessionId: (value) => { currentSessionId = value; },
     setCurrentModel: (value) => { currentModel = value; },
     setSessionStartedAt: (value) => { sessionStartedAt = value; },
@@ -492,6 +522,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     syncPresenceIdentity,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     confirmSend: config.confirmSend,
+    homeGroup: resolveSessionHomeGroup,
+    setJoinedGroup,
+    clearJoinedGroup,
     replyTracker: () => replyTracker,
     hasReplyWaiter: () => replyWaiters.has(),
   });

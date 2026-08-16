@@ -4,9 +4,52 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-08-13
+
+Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.3` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Breaking Changes
+
+- Removed unique-ID-prefix targeting. `send`, `ask`, and `reply` now accept only an exact full session ID or an exact case-insensitive session name.
+
+### Added
+
+- Added the runtime `join` and `leave` actions for named group membership. Joining updates broker presence without changing the session ID, keeps `send`/`ask` group-isolated, lets later subagents inherit the joined group, and reports success only after broker acknowledgement. `default` remains explicit, while `true` and `auto` stay reserved for generated subagent groups ([#2334](https://github.com/bastani-inc/atomic/issues/2334)).
+
+### Changed
+
+- Intercom displays full session and message IDs everywhere: list rows, the session-list overlay, inbound message headers, reply-to lines, message-id result badges, and unnamed-session `subagent-chat-<id>` aliases.
+- In-process child identities and supervisor capabilities arrive through typed admission policy and are captured on each `IntercomClient` at connect time instead of being read from environment for every message. A descendant cannot inherit a parent's supervisor grant through process environment; legacy Atomic/Pi bridge metadata remains available for older hosts ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Detached broker processes now receive `AI_AGENT=atomic` for generic child-process attribution.
+
+### Fixed
+
+- Fixed the broker failing to start on standalone-binary installs, where every `intercom` call and every `subagent` delegation failed with `Intercom not connected: Intercom broker exited before startup with code 1`. The detached broker never inherits the host extension loader's `@bastani/atomic` alias and release archives ship no physical copy of that optional peer, so group resolution now reads `ATOMIC_INTERCOM_GROUP` (and the legacy `PI_INTERCOM_GROUP`) locally instead of importing the host package ([#2208](https://github.com/bastani-inc/atomic/issues/2208)).
+- Broker startup is far faster on every platform, because dropping that import keeps the whole coding-agent module graph out of it: measured spawn-to-socket-connectable startup went from 1104 ms minimum / 1318 ms average to 85 ms / 96 ms on Node with tsx, and from 252 ms / 260 ms to 17 ms / 18 ms on Bun. Readiness now polls at 10 ms with bounded backoff up to the previous 100 ms interval, and the overall startup timeout is unchanged ([#2208](https://github.com/bastani-inc/atomic/issues/2208)).
+- Broker stderr is no longer discarded. It is captured to `broker.log` in the agent's intercom directory, and both the "exited before startup" error and the readiness-timeout error quote the log path and a bounded tail of that output. The log is capped at 8 KiB by the broker itself, installed by the entrypoint's first import so a dependency cannot write ahead of the cap, and the cap covers `process.stderr.write`, `console.error`/`console.warn`, and default fatal printing for uncaught exceptions and unhandled rejections ([#2208](https://github.com/bastani-inc/atomic/issues/2208)).
+- Fixed the session-list overlay clipping full session IDs at narrow terminal widths by wrapping IDs onto dim rows and marking unavoidable truncation with a visible ellipsis; inline sender and reply-to IDs now also signal overflow.
+- Fixed relay and detach-handshake callbacks that finish after an extension reload turning a late delivery into an unhandled rejection. Stale event-bus emissions and subscription cleanup are best-effort, and stale-context detection uses the host's exported predicate instead of a duplicated error-message marker.
+
+## [0.9.13-alpha.3] - 2026-08-13
+
+### Breaking Changes
+
+- Removed unique-ID-prefix targeting. `send`, `ask`, and `reply` now accept only an exact full session ID or an exact case-insensitive session name.
+
+### Changed
+
+- Intercom now displays full session and message IDs everywhere: list rows, the session-list overlay, inbound message headers, reply-to lines, message-id result badges, and unnamed-session `subagent-chat-<id>` aliases.
+
+### Fixed
+
+- Fixed the session-list overlay clipping full session IDs at narrow terminal widths by wrapping IDs onto dim rows and marking unavoidable truncation with a visible ellipsis; inline sender and reply-to IDs now also signal overflow.
+
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Changed
 
 - Detached intercom broker processes now receive `AI_AGENT=atomic` for generic child-process attribution.
+- Added runtime `intercom` `join` and `leave` actions for named group membership. Joining updates broker presence without changing the session ID, keeps `send`/`ask` group-isolated, lets later subagents inherit the joined group, and reports success only after broker acknowledgement; `default` remains explicit while `true` and `auto` stay reserved for generated subagent groups ([#2334](https://github.com/bastani-inc/atomic/issues/2334)).
 
 ### Fixed
 - Fixed Intercom relay and detach-handshake callbacks that finish after an extension reload. Stale event-bus emissions and subscription cleanup are now best-effort, so runtime replacement does not turn a late delivery into an unhandled rejection.

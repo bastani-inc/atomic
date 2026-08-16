@@ -13,6 +13,7 @@ import {
 	type ResumeDurableResult,
 	resumeDurableWorkflow as resumeDurableWorkflowAdapter,
 } from "../durable/resume-runtime.js";
+import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
@@ -28,6 +29,7 @@ export interface DurableResumeRuntime {
 		workflowId: string,
 		options?: { readonly policy?: WorkflowExecutionPolicy; readonly actor?: WorkflowActor },
 	): Promise<ResumeDurableResult>;
+	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
 	prepareDurableResumable(workflowId?: string): Promise<readonly ResumableWorkflowEntry[]>;
 	prepareDurableCatalog?(): Promise<DurableWorkflowCatalogEntries>;
@@ -65,6 +67,10 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
 	return {
+		async inspectDurableWorkflow(workflowId) {
+			await deps.ensureReady();
+			return await inspectTargetedDurableWorkflow(getDurableBackend(), workflowId);
+		},
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
 			await deps.ensureReady();
 			const backend = getDurableBackend();

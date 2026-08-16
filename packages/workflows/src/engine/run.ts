@@ -296,6 +296,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		deps: durableStageDeps,
 		onStageSession: opts.onStageSession,
 		...(opts.parentRun === undefined ? { runSnapshot } : {}),
+		heartbeatIntervalMinutes: def.heartbeatIntervalMinutes,
 	});
 	const stageOptions: EngineStageRuntimeOptions = {
 		continuation: opts.continuation,

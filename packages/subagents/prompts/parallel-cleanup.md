@@ -40,7 +40,7 @@ Both scouts are read-only; `codebase-analyzer` cannot edit. Their reports are re
 
 Delegate only independent work too large for a handful of tool calls; do not delegate auditing your own work, and prefer one subagent over several. Parallelize independent reads; stay sequential when one result determines the next; synthesize after retrieval. Keep work within the requested scope.
 
-In **autofix** mode, an invocation containing the exact word `autofix` uses it as workflow control, not cleanup scope; remove it before identifying the target. After synthesis, launch one async `code-simplifier` writer with only the fixes-worth-doing-now list as scope. Validate and summarize. Do not apply optional improvements unless explicitly requested; if no fixes are worth doing now, do not edit.
+In **autofix** mode, an invocation containing the exact word `autofix` uses it as workflow control, not cleanup scope; remove it before identifying the target. After synthesis, launch one foreground `code-simplifier` writer with only the fixes-worth-doing-now list as scope. Validate and summarize. Do not apply optional improvements unless explicitly requested; if no fixes are worth doing now, do not edit.
 
 Without autofix mode, ask before applying fixes unless I already authorized addressing the cleanup feedback. End that request with a compact numbered menu, including when applicable:
 

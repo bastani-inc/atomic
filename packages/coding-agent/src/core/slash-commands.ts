@@ -149,7 +149,7 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	{
 		name: "open-claude-design",
 		description:
-			"AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → live-driven refinement → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate, then runs impeccable init for PRODUCT.md/DESIGN.md (references take precedence over project context). The user iteratively reviews the generated HTML.",
+			"AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → one live review session → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate, then runs impeccable init for PRODUCT.md/DESIGN.md (references take precedence over project context). The user reviews the generated HTML in one live session.",
 		inputs: {
 			prompt: {
 				description:
@@ -160,10 +160,6 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 				description:
 					"Discover beautiful, current reference designs from notable design websites (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.",
 				kind: "boolean",
-			},
-			max_refinements: {
-				description: "Maximum generate/user-feedback loop iterations (default 3).",
-				kind: "number",
 			},
 		},
 	},
@@ -324,8 +320,8 @@ export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand
 			"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|quit|pause|resume|inputs|reload] [args]",
 		getArgumentCompletions: getBundledWorkflowArgumentCompletions,
 	},
-	{ name: "run", description: "Run a subagent directly: /run agent[output=file] [task] [--bg] [--fork]" },
-	{ name: "parallel", description: "Run agents in parallel: /parallel scout task1 -> reviewer task2 [--bg] [--fork]" },
+	{ name: "run", description: "Run a subagent directly: /run agent[output=file] [task] [--fork]" },
+	{ name: "parallel", description: "Run agents in parallel: /parallel scout task1 -> reviewer task2 [--fork]" },
 	{ name: "subagents-doctor", description: "Show subagent diagnostics" },
 	{ name: "mcp", description: "Show MCP server status" },
 	{ name: "mcp-auth", description: "Authenticate with an MCP server (OAuth)" },

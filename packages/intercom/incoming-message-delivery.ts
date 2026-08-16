@@ -38,7 +38,7 @@ export function createIncomingMessageSender(input: {
 }
 
 export function buildIncomingCustomMessage(entry: InboundMessageEntry) {
-  const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
+  const senderDisplay = entry.from.name || entry.from.id;
   const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
   return {
     customType: "intercom_message" as const,

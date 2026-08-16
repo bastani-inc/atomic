@@ -24,6 +24,7 @@ import type {
 	DurableInactiveDeleteResult,
 	DurableWorkflowBackend,
 	DurableWorkflowCatalogEntries,
+	DurableWorkflowHydrationResult,
 	WorkflowRegistrationInput,
 } from "./backend.js";
 import {
@@ -209,6 +210,9 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 
 	hydrateWorkflow(_workflowId: string): Promise<void> {
 		return Promise.resolve();
+	}
+	hydrateWorkflowForInspection(_workflowId: string): Promise<DurableWorkflowHydrationResult> {
+		return Promise.resolve({ kind: "absent" });
 	}
 
 	hydrateResumableWorkflows(): Promise<void> {

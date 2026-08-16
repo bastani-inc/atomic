@@ -68,6 +68,13 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 		values: ["auto", "always", "hidden"],
 	});
 	insertAfter(items, "fullscreen-scrollbar", {
+		id: "fullscreen-exit-output",
+		label: "Fullscreen exit output",
+		description: "Print the transcript or only a session resume hint when exiting",
+		currentValue: config.fullscreenExitOutput,
+		values: ["transcript", "resume-hint"],
+	});
+	insertAfter(items, "fullscreen-exit-output", {
 		id: "editor-padding",
 		label: "Editor padding",
 		description: "Horizontal padding for input editor (0-3)",

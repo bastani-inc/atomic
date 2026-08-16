@@ -22,7 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { loadContext, extractPlatform } from './context.mjs';
-import { getCritiqueDir } from './lib/impeccable-paths.mjs';
+import { readLatestSnapshotAcrossTargets } from './critique-storage.mjs';
 
 /** Is there code here at all, or just context files / an empty repo? */
 function hasCode(cwd) {
@@ -34,34 +34,25 @@ function hasCode(cwd) {
 }
 
 /**
- * The most recent critique snapshot across all targets. Filenames are
- * timestamp-prefixed (`<iso>__<slug>.md`), so a lexical sort is chronological.
- * Parses the small frontmatter for score + P0/P1 counts.
+ * Summarize the most recent critique snapshot across all targets.
  */
 function latestCritique(cwd) {
   try {
-    const dir = getCritiqueDir(cwd);
-    if (!fs.existsSync(dir)) return null;
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
-    if (!files.length) return null;
-    const newest = files[files.length - 1];
-    const text = fs.readFileSync(path.join(dir, newest), 'utf-8');
-    const front = text.split('---')[1] || '';
-    const get = (k) => {
-      const m = front.match(new RegExp(`^${k}:\\s*(.+)$`, 'm'));
-      return m ? m[1].trim() : null;
-    };
+    const latest = readLatestSnapshotAcrossTargets({ cwd });
+    if (!latest) return null;
+    const get = (key) => latest.meta[key] ?? null;
     const num = (v) => {
+      if (v == null || (typeof v === 'string' && v.trim() === '')) return null;
       const n = Number(v);
       return Number.isFinite(n) ? n : null;
     };
     return {
       slug: get('slug'),
-      score: num(get('score')),
-      p0: num(get('p0')),
-      p1: num(get('p1')),
+      score: num(get('total_score') ?? get('score')),
+      p0: num(get('p0_count') ?? get('p0')),
+      p1: num(get('p1_count') ?? get('p1')),
       timestamp: get('timestamp'),
-      file: path.relative(cwd, path.join(dir, newest)),
+      file: path.relative(cwd, latest.path),
     };
   } catch {
     return null;

@@ -42,3 +42,54 @@ test("client uses the broker-confirmed supervisor id after registration", () => 
 
 	assert.equal(client.supervisorSessionId, "current-supervisor-session");
 });
+
+test("client sends runtime group changes as presence updates", () => {
+	const client = new IntercomClient();
+	const frames: Buffer[] = [];
+	const internals = client as unknown as {
+		socket: { destroyed: boolean; writableEnded: boolean; writable: boolean; write(data: Buffer): boolean };
+		_sessionId: string;
+	};
+	internals.socket = {
+		destroyed: false,
+		writableEnded: false,
+		writable: true,
+		write(data) {
+			frames.push(data);
+			return true;
+		},
+	};
+	internals._sessionId = "self";
+
+	assert.equal(client.updatePresence({ group: "named" }), true);
+	assert.deepEqual(JSON.parse(frames[0]!.subarray(4).toString("utf8")), {
+		type: "presence",
+		group: "named",
+	});
+});
+
+test("client resolves acknowledged runtime group changes", async () => {
+	const client = new IntercomClient();
+	const frames: Buffer[] = [];
+	const internals = client as unknown as {
+		socket: { destroyed: boolean; writableEnded: boolean; writable: boolean; write(data: Buffer): boolean };
+		_sessionId: string;
+		handleBrokerMessage(message: unknown): void;
+	};
+	internals.socket = {
+		destroyed: false,
+		writableEnded: false,
+		writable: true,
+		write(data) {
+			frames.push(data);
+			return true;
+		},
+	};
+	internals._sessionId = "self";
+
+	const result = client.updatePresenceAcked({ group: "named" });
+	const frame = JSON.parse(frames[0]!.subarray(4).toString("utf8")) as { requestId: string };
+	assert.equal(typeof frame.requestId, "string");
+	internals.handleBrokerMessage({ type: "presence_ack", requestId: frame.requestId, group: "named" });
+	assert.equal(await result, "named");
+});

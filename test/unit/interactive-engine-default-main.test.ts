@@ -378,6 +378,13 @@ async function invokeSlashCommand(
 	throw new Error(`Command '${name}' was never invoked after typing ${JSON.stringify(text)} (log: ${logPath})`);
 }
 
+// Structural: a real CLI host child that additionally wedges the engine, waits
+// out the unresponsive-child watchdog, and restarts the engine before the final
+// assertions. The bare default-sized literal this replaces silently lowered the
+// budget the moment the suite default rose; named per the per-test timeout
+// policy in AGENTS.md.
+const ENGINE_RESTART_TEST_TIMEOUT_MS = 120_000;
+
 serialTest(
 	"isolated default main lists and executes engine-only /workflow and /workflows while the host has no extensions",
 	async () => {
@@ -444,5 +451,5 @@ serialTest(
 			rmSync(temp, { recursive: true, force: true });
 		}
 	},
-	30_000,
+	ENGINE_RESTART_TEST_TIMEOUT_MS,
 );

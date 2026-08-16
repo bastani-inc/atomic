@@ -3,8 +3,8 @@
  *
  * A live session must keep its temp tree and `tool-results` directory out of the
  * sweeper's reach; a session that is gone must stop doing so, or the startup GC
- * can never collect the tree it exists to collect. Because a background writer
- * can outlive the session object that started it, the claim is refcounted.
+ * can never collect the tree it exists to collect. Claims are refcounted so
+ * multiple live sessions can share storage safely.
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -17,7 +17,6 @@ import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { createAsyncOutputAppender } from "../src/core/tools/bash-async-output.ts";
 import {
 	CLEANUP_MARKER_FILE,
 	runSessionTempCleanup,
@@ -26,7 +25,6 @@ import {
 import {
 	acquireProtectedPaths,
 	getProtectedSessionTempDirs,
-	getTempRootDir,
 	resetSessionTempDirStateForTesting,
 	resolveSessionTempDirPath,
 } from "../src/core/tools/session-temp-dir.ts";
@@ -135,36 +133,6 @@ describe("protected-path leases", () => {
 		assert.equal(getProtectedSessionTempDirs().has(tree), true, "the other holder's claim survives");
 		other.release();
 		assert.equal(getProtectedSessionTempDirs().has(tree), false);
-	});
-
-	it("keeps a tree an async spill writer is still using after its session let go", async () => {
-		const sessionTempDir = resolveSessionTempDirPath("writer-session");
-		mkdirSync(sessionTempDir, { recursive: true, mode: 0o700 });
-		const sessionLease = acquireProtectedPaths([sessionTempDir]);
-
-		const job: { output: string; fullOutputPath?: string } = { output: "" };
-		const appender = createAsyncOutputAppender(job, { persistAfterBytes: 8, sessionTempDir });
-		appender.append(Buffer.from("background output that spills\n", "utf8"));
-		assert.ok(job.fullOutputPath, "the writer opened a spill file");
-
-		// The session is disposed while the background job is still running.
-		sessionLease.release();
-		const ageTree = (): void => {
-			const seconds = (NOW - 60 * MS_PER_DAY) / 1000;
-			utimesSync(job.fullOutputPath!, seconds, seconds);
-			utimesSync(sessionTempDir, seconds, seconds);
-		};
-		ageTree();
-
-		sweepTempRoot(getTempRootDir());
-		assert.equal(existsSync(job.fullOutputPath), true, "the writer's own lease keeps the tree alive");
-
-		await appender.close();
-		// Closing flushes, which refreshes the mtime; age it again so the sweep is
-		// deciding on the lease rather than on freshness.
-		ageTree();
-		sweepTempRoot(getTempRootDir(), "again");
-		assert.equal(existsSync(sessionTempDir), false, "once the writer closes, the stale tree is reaped");
 	});
 });
 

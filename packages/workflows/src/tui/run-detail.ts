@@ -182,6 +182,7 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 	if (detail.error) {
 		rows.push(["error", detail.error.split("\n")[0] ?? ""]);
 	}
+	if (detail.resumeGuidance) rows.push(["guidance", detail.resumeGuidance]);
 	return rows;
 }
 
@@ -319,6 +320,8 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
 	switch (detail.status) {
 		case "running":
 			return [{ text: "● running", fg: theme.warning }];
+		case "crashed":
+			return [{ text: detail.resumable === true ? "✗ crashed · resumable" : "✗ crashed", fg: theme.error }];
 		case "paused":
 			return [{ text: "❚❚ paused", fg: theme.warning }];
 		case "completed":
@@ -342,6 +345,8 @@ function stateLabel(detail: RunDetail): string {
 	switch (detail.status) {
 		case "running":
 			return "● running";
+		case "crashed":
+			return detail.resumable === true ? "✗ crashed · resumable" : "✗ crashed";
 		case "paused":
 			return "❚❚ paused";
 		case "completed":
@@ -387,18 +392,26 @@ function renderIdentifierRows(id: string, width: number, theme?: GraphTheme): st
 }
 
 function renderDetailHintRows(detail: RunDetail, width: number, theme?: GraphTheme): string[] {
-	const prefix =
-		detail.endedAt === undefined
-			? detail.status === "paused"
-				? " ▸ workflow resume id="
-				: " ▸ workflow interrupt   id="
-			: " ▸ workflow resume id=";
-	const suffix =
-		detail.endedAt === undefined
-			? detail.status === "paused"
-				? "    continue workflow "
-				: "    cancel "
-			: "    reopen graph ";
+	const resumable =
+		(detail.status === "paused" && detail.resumable !== false) ||
+		(detail.resumable === true &&
+			(detail.status === "crashed" || detail.status === "failed" || detail.status === "blocked"));
+	const inspectOnly =
+		detail.ownerActiveElsewhere === true ||
+		(detail.status === "crashed" && !resumable) ||
+		(detail.endedAt !== undefined && !resumable);
+	const prefix = inspectOnly
+		? " ▸ workflow status id="
+		: resumable
+			? " ▸ workflow resume id="
+			: " ▸ workflow interrupt   id=";
+	const suffix = inspectOnly
+		? detail.ownerActiveElsewhere === true
+			? "    inspect; owner active elsewhere "
+			: "    inspect retained state "
+		: resumable
+			? "    continue workflow "
+			: "    cancel ";
 	const continuation = "    ";
 	const rows = wrapIdentifierLines(detail.runId, width, prefix, continuation);
 	const last = rows[rows.length - 1]!;

@@ -14,6 +14,7 @@ import type {
 	StageUserMessageContent,
 	WorkflowModelAttempt,
 	WorkflowModelCatalogPort,
+	WorkflowModelUsage,
 } from "../../shared/types.js";
 import {
 	buildModelCandidatesFromCatalog,
@@ -66,6 +67,58 @@ import {
 } from "./stage-runner-unresolved-overflow.js";
 
 type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"]>>;
+
+type StageMessage = StageSessionRuntime["messages"][number];
+type StageAssistantMessage = Extract<StageMessage, { role: "assistant" }>;
+
+type AttemptUsageTotals = {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	turns: number;
+};
+
+/**
+ * A present usage object is meaningful when any token bucket, the total token
+ * count, or the provider-reported total cost is positive. Reject the entire
+ * provider record when any aggregated value is non-finite or negative so
+ * malformed telemetry cannot poison a durable stage checkpoint.
+ */
+function hasMeaningfulUsage(usage: StageAssistantMessage["usage"] | undefined): boolean {
+	if (usage === undefined) return false;
+	const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.totalTokens, usage.cost.total];
+	return values.every((value) => Number.isFinite(value) && value >= 0) && values.some((value) => value > 0);
+}
+
+/**
+ * Aggregate the assistant-message usage admitted since the latched attempt
+ * boundary, plus usage accrued from error assistants that a retry restoration
+ * removed from the live transcript. Returns undefined when nothing meaningful
+ * was seen, so no `usage: undefined` enters the serializable attempt record.
+ */
+function usageForAttempt(
+	messages: readonly StageMessage[],
+	start: number,
+	discarded: AttemptUsageTotals,
+): WorkflowModelUsage | undefined {
+	const totals = { ...discarded };
+	let meaningful = totals.turns > 0;
+
+	for (const message of messages.slice(start)) {
+		if (message.role !== "assistant" || !hasMeaningfulUsage(message.usage)) continue;
+		totals.input += message.usage.input;
+		totals.output += message.usage.output;
+		totals.cacheRead += message.usage.cacheRead;
+		totals.cacheWrite += message.usage.cacheWrite;
+		totals.cost += message.usage.cost.total;
+		totals.turns += 1;
+		meaningful = true;
+	}
+
+	return meaningful ? totals : undefined;
+}
 
 interface ThrownErrorRetryState {
 	readonly controller: AbortController;
@@ -159,6 +212,17 @@ export class StageSessionController {
 	private sessionPromise: Promise<StageSessionRuntime> | undefined;
 	private reattachSessionFile: string | undefined;
 	private lastPromptStartIndex: number | undefined;
+	/** Message index latched once per high-level candidate prompt; never re-read later. */
+	private attemptUsageStartIndex: number | undefined;
+	/** Usage accrued from error assistants removed by retry restoration. */
+	private discardedAttemptUsage: AttemptUsageTotals = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: 0,
+		turns: 0,
+	};
 	private readonly terminatingToolCallIds = new Set<string>();
 	private latestStructuredOutputToolErrorValue: string | undefined;
 	private unsubscribeTerminateWatcher: (() => void) | undefined;
@@ -418,6 +482,7 @@ export class StageSessionController {
 				this.activeCandidateIndex = index;
 				this.selectedModel = candidate.id;
 				this.notifyModelFallbackMetaChange();
+				this.beginAttemptUsage(activeSession);
 				const { terminalScanStartIndex } = await this.promptWithThrownErrorRetry(
 					activeSession,
 					promptText,
@@ -564,6 +629,49 @@ export class StageSessionController {
 		return undefined;
 	}
 	/**
+	 * Latch a fresh high-level usage window against the active session. The
+	 * boundary is the message length before the candidate prompt, so retries,
+	 * pause/re-prompts, and recording never re-read a later index.
+	 */
+	private beginAttemptUsage(session: StageSessionRuntime): void {
+		this.attemptUsageStartIndex = session.messages.length;
+		this.discardedAttemptUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+	}
+
+	/**
+	 * Consume the current window exactly once. A session-creation failure has no
+	 * window: clear the latch instead of reading a previous session's messages.
+	 */
+	private takeAttemptUsage(session: StageSessionRuntime | undefined): WorkflowModelUsage | undefined {
+		const start = this.attemptUsageStartIndex;
+		const usage =
+			session === undefined || start === undefined
+				? undefined
+				: usageForAttempt(session.messages, start, this.discardedAttemptUsage);
+		this.clearAttemptUsage();
+		return usage;
+	}
+
+	private clearAttemptUsage(): void {
+		this.attemptUsageStartIndex = undefined;
+		this.discardedAttemptUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+	}
+
+	/**
+	 * Keep the usage of an error assistant that a retry restoration is about to
+	 * remove from the live transcript, so the final attempt total still counts it.
+	 */
+	private accrueDiscardedAttemptUsage(message: StageAssistantMessage): void {
+		if (!hasMeaningfulUsage(message.usage)) return;
+		this.discardedAttemptUsage.input += message.usage.input;
+		this.discardedAttemptUsage.output += message.usage.output;
+		this.discardedAttemptUsage.cacheRead += message.usage.cacheRead;
+		this.discardedAttemptUsage.cacheWrite += message.usage.cacheWrite;
+		this.discardedAttemptUsage.cost += message.usage.cost.total;
+		this.discardedAttemptUsage.turns += 1;
+	}
+
+	/**
 	 * Drop this attempt's failed input from live state before a same-candidate
 	 * retry, keeping unrelated concurrent messages. The durable transcript keeps
 	 * everything; this mirrors main-chat retry, which also only edits live state.
@@ -581,6 +689,12 @@ export class StageSessionController {
 	): StageSessionRuntime["messages"][number] | undefined {
 		const snapshotMessages = new Set(snapshot);
 		const admitted = session.messages.filter((message) => !snapshotMessages.has(message));
+		// Error assistants the filter below removes still carry real provider
+		// usage; accrue it before the splice so the retry total keeps it.
+		for (const message of admitted) {
+			if (message.role !== "assistant" || message.stopReason !== "error") continue;
+			this.accrueDiscardedAttemptUsage(message);
+		}
 		const failedAssistantIndex = admitted.findLastIndex(
 			(message) => message.role === "assistant" && message.stopReason === "error",
 		);
@@ -1054,9 +1168,12 @@ export class StageSessionController {
 				throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
 			throw this.staleCreationReason(startGeneration);
 		}
-		return attachCreatedStageSession(created, this.disposed, this.opts.stageName, (result) =>
+		const session = attachCreatedStageSession(created, this.disposed, this.opts.stageName, (result) =>
 			this.attachSession(result),
 		);
+		if (session instanceof Promise) return await session;
+		await this.opts.onSessionReady?.();
+		return session;
 	}
 
 	private attachSession(created: StageSessionRuntime | StageSessionCreateResult): StageSessionRuntime {
@@ -1175,11 +1292,17 @@ export class StageSessionController {
 		const resumedSession = this.session;
 		const resumedLabel = this.selectedModel ?? workflowModelId(resumedSession.model) ?? candidates[0]!.id;
 		this.notifyModelFallbackMetaChange();
+		this.beginAttemptUsage(resumedSession);
 		try {
 			const { terminalScanStartIndex } = await this.promptWithThrownErrorRetry(resumedSession, text, sdkOptions);
 			const terminalFailure = latestTerminalAssistantFailureSince(resumedSession.messages, terminalScanStartIndex);
 			if (terminalFailure === undefined || this.capturedStructuredOutputForAttempt()) {
-				this.modelAttempts.push({ model: resumedLabel, success: true });
+				const usage = this.takeAttemptUsage(resumedSession);
+				this.modelAttempts.push({
+					model: resumedLabel,
+					success: true,
+					...(usage === undefined ? {} : { usage }),
+				});
 				this.pendingFallbackWarnings.length = 0;
 				this.resumeCurrentSession = true;
 				return true;
@@ -1187,13 +1310,24 @@ export class StageSessionController {
 			throw new WorkflowPromptModelFailure(terminalFailure);
 		} catch (err) {
 			if (this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err)) {
-				this.modelAttempts.push({ model: resumedLabel, success: true });
+				const usage = this.takeAttemptUsage(resumedSession);
+				this.modelAttempts.push({
+					model: resumedLabel,
+					success: true,
+					...(usage === undefined ? {} : { usage }),
+				});
 				this.pendingFallbackWarnings.length = 0;
 				this.resumeCurrentSession = true;
 				return true;
 			}
 			const message = errorMessage(err);
-			this.modelAttempts.push({ model: resumedLabel, success: false, error: message });
+			const usage = this.takeAttemptUsage(resumedSession);
+			this.modelAttempts.push({
+				model: resumedLabel,
+				success: false,
+				...(usage === undefined ? {} : { usage }),
+				error: message,
+			});
 			if (this.opts.signal?.aborted || !isRetryableModelFailure(err)) {
 				this.modelWarnings.push(...this.pendingFallbackWarnings);
 				this.pendingFallbackWarnings.length = 0;
@@ -1233,10 +1367,12 @@ export class StageSessionController {
 			this.recordSuccessfulAttempt(candidate);
 			return "handled";
 		}
+		const usage = this.takeAttemptUsage(this.session);
 		this.modelAttempts.push({
 			model: candidate.id,
 			success: false,
 			...modelAttemptReasoning(candidate, this.effectiveStageOptions?.thinkingLevel),
+			...(usage === undefined ? {} : { usage }),
 			error: message,
 		});
 		if (this.opts.signal?.aborted || !isRetryableModelFailure(err) || index === candidates.length - 1) {
@@ -1258,10 +1394,12 @@ export class StageSessionController {
 	}
 
 	private recordSuccessfulAttempt(candidate: WorkflowResolvedModelCandidate): void {
+		const usage = this.takeAttemptUsage(this.session);
 		this.modelAttempts.push({
 			model: candidate.id,
 			success: true,
 			...modelAttemptReasoning(candidate, this.effectiveStageOptions?.thinkingLevel),
+			...(usage === undefined ? {} : { usage }),
 		});
 		this.pendingFallbackWarnings.length = 0;
 		this.resumeCurrentSession = true;

@@ -178,7 +178,7 @@ describe("renderRunDetail — themed", () => {
 		assert.doesNotMatch(plain, /○ pending/);
 	});
 
-	test("ended run swaps the action hint to resume and reports duration", () => {
+	test("ended non-resumable run offers read-only inspection and reports duration", () => {
 		const now = 1_000_000;
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const detail = detailFromRun(
@@ -201,6 +201,22 @@ describe("renderRunDetail — themed", () => {
 		assert.doesNotMatch(plain, /\([^)]*ago\)/);
 		assert.match(plain, /duration/);
 		assert.doesNotMatch(plain, /workflow interrupt/);
+		assert.match(plain, /workflow status\s+id=/);
+		assert.doesNotMatch(plain, /workflow resume/);
+	});
+
+	test("foreign-live durable detail does not promise local interruption", () => {
+		const detail: RunDetail = {
+			...detailFromRun(makeRun({ id: "foreign-live", name: "foreign-live", status: "running" })),
+			ownerActiveElsewhere: true,
+			resumeGuidance: "This workflow is actively running in another Atomic session.",
+		};
+		const plain = stripAnsi(renderRunDetail(detail, { theme: deriveGraphTheme({}), now: 2_000 }));
+
+		assert.match(plain, /workflow status\s+id=foreign-live/);
+		assert.match(plain, /owner active elsewhere/);
+		assert.doesNotMatch(plain, /workflow interrupt/);
+		assert.doesNotMatch(plain, /workflow resume/);
 	});
 
 	test("long and wide run detail values stay within the requested width", () => {

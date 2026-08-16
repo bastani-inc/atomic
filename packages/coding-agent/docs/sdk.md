@@ -46,7 +46,7 @@ const { session } = await createAgentSession({
 });
 ```
 
-`ModelRuntime.create()` accepts custom `authPath`, `modelsPath`, credential storage, and runtime auth overrides. `ModelRegistry` and `AuthStorage` remain available as Atomic's synchronous compatibility facades. Use `readStoredCredential(provider, authPath?)` for a lightweight read of one stored provider credential.
+`ModelRuntime.create()` accepts custom `authPath`, `modelsPath`, credential storage, and runtime auth overrides, plus the model-catalog options `allowModelNetwork`, `modelRefreshTimeoutMs`, `modelsStorePath`, and `modelsStore` (see [Model catalog persistence and refresh](#model-catalog-persistence-and-refresh)). `ModelRegistry` and `AuthStorage` remain available as Atomic's synchronous compatibility facades. Use `readStoredCredential(provider, authPath?)` for a lightweight read of one stored provider credential.
 
 Extensions supplied directly to SDK sessions can use the exported `InlineExtension` type. Extension APIs and event types include native `registerProvider(Provider)`, `registerEntryRenderer`, `entry_appended`, `before_provider_headers`, and `agent_settled`.
 
@@ -297,7 +297,7 @@ await session.followUp("After you're done, also do this");
 
 Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued).
 
-`pauseQueuedMessages()` is a synchronous admission gate. It moves existing raw steering/follow-up entries into a hold before an abort boundary and keeps later context-bearing arrivals—including trigger-turn custom messages, batches, interrupts, async job delivery, `sendUserMessage()`, and ordinary `prompt()` calls—queued without starting a provider turn. Content blocks, optional data, duplicate identities, raw text, message types, and the existing order within each queue kind are retained. Non-trigger custom messages remain history-only and do not invent a turn.
+`pauseQueuedMessages()` is a synchronous admission gate. It moves existing raw steering/follow-up entries into a hold before an abort boundary and keeps later context-bearing arrivals—including trigger-turn custom messages, batches, interrupts, `sendUserMessage()`, and ordinary `prompt()` calls—queued without starting a provider turn. Content blocks, optional data, duplicate identities, raw text, message types, and the existing order within each queue kind are retained. Non-trigger custom messages remain history-only and do not invent a turn.
 
 `resumeQueuedMessages()` releases that hold exactly once but does **not** itself start or continue a model turn. Its promise resolves to `true` only when raw held steering/follow-up work was released, and to `false` when no held raw work existed. The caller must use its existing explicit resume action (for example, the interactive chat submission or workflow resume boundary) to drive execution. `clearQueue()` clears the paused flag when it explicitly removes the final unowned held item; if a protected or interrupt-owned item remains, the gate stays paused.
 
@@ -484,6 +484,31 @@ If no model is provided:
 3. Falls back to first available model
 
 > See [examples/sdk/02-custom-model.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/02-custom-model.ts)
+
+#### Model catalog persistence and refresh
+
+`ModelRuntime.create()` restores cached catalogs from local persistence but does not contact
+pi.dev unless you opt in. `allowModelNetwork` (default `false`) enables a create-time network
+refresh, and `modelRefreshTimeoutMs` (default `15_000`) bounds how long that refresh may run
+before it is aborted. Pass `refreshOnCreate: false` to skip the initial catalog and
+availability refresh entirely; built-in models remain available.
+
+```typescript
+const refreshedRuntime = await ModelRuntime.create({
+  allowModelNetwork: true,
+  modelRefreshTimeoutMs: 15_000,
+});
+```
+
+Remote catalogs are persisted locally so later runtimes can restore them without a network
+request. The default file is `models-store.json` next to `models.json` — with the default
+`modelsPath` that is `~/.atomic/agent/models-store.json`. Set `modelsStorePath` to choose
+another location, or inject `modelsStore` to control persistence entirely; a runtime created
+with `modelsPath: null` keeps its store in memory. Network refreshes are throttled to once
+per provider every four hours unless forced. To force an immediate refresh, call
+`await modelRuntime.refresh({ allowNetwork: true, force: true, signal })`. Setting
+`ATOMIC_OFFLINE` (legacy alias `PI_OFFLINE`) disables model network access, and a
+`refresh()` call that omits `allowNetwork` follows that same runtime network policy.
 
 ### API Keys and OAuth
 

@@ -6,6 +6,10 @@ import { runGenerateAndFilter } from "./generate-and-filter-runner.js";
 export default workflow({
   name: "generate-and-filter",
   description: "Generate more independent candidates than needed, deduplicate and filter them by rubric, optionally judge them, and return a parent-consumable shortlist.",
+  // The 15-minute default, stated rather than inherited: this is a per-workflow
+  // product decision, so a future change to the global default must not silently
+  // re-cadence a long autonomous run.
+  heartbeatIntervalMinutes: 15,
   inputs: {
     prompt: Type.String({ description: "Prompt for candidate generation and selection." }),
     num_candidates: Type.Integer({ minimum: 2, maximum: 20, default: 8, description: "Number of independent candidates to generate." }),

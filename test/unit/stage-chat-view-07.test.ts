@@ -3,6 +3,7 @@ import { describe, test } from "vitest";
 import { setThemeInstance, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
+import { useAnsiColorEnvironment } from "../helpers/ansi-color-env.ts";
 import {
 	assert,
 	assistantTextMessage,
@@ -19,6 +20,13 @@ import {
 	setupRun,
 	stripAnsi,
 } from "./stage-chat-view-helpers.js";
+
+/**
+ * The mounted-stage working identity is asserted through its truecolor escape,
+ * and `stage-chat-view.test.ts` re-exports this shard, so pinning it here
+ * covers both entrypoints.
+ */
+useAnsiColorEnvironment();
 
 function renderLifecycleOrigin(view: StageChatView, width: number): string[] {
 	return view.render(width).map(stripAnsi);

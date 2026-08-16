@@ -37,8 +37,10 @@ from pier.utils.trajectory_utils import (
     format_trajectory_json,  # pyright: ignore[reportUnknownVariableType]
 )
 from prerequisites import (
+    PROVIDER_AUTH_ENV_KEYS,
     agent_install_command,
     atomic_runtime_environment_command,
+    is_valid_provider_auth,
     root_install_command,
 )
 
@@ -101,27 +103,10 @@ class Atomic(BaseInstalledAgent):
         "zai": ("ZAI_API_KEY",),
         "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
     }
-    _PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
-        "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
-        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
-        "github-copilot": ("COPILOT_GITHUB_TOKEN",),
-        "google": (
-            "GEMINI_API_KEY",
-            "GOOGLE_GENERATIVE_AI_API_KEY",
-            "GOOGLE_APPLICATION_CREDENTIALS",
-            "GOOGLE_API_KEY",
-        ),
-        "groq": ("GROQ_API_KEY",),
-        "kimi-coding": ("KIMI_API_KEY",),
-        "mistral": ("MISTRAL_API_KEY",),
-        "moonshotai": ("MOONSHOT_API_KEY",),
-        "moonshotai-cn": ("MOONSHOT_API_KEY",),
-        "openai": ("OPENAI_API_KEY",),
-        "openrouter": ("OPENROUTER_API_KEY",),
-        "xai": ("XAI_API_KEY",),
-        "zai": ("ZAI_API_KEY",),
-        "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
-    }
+    # Single source of truth lives in prerequisites.py so the preflight checks
+    # exactly the providers this adapter forwards. The import direction is
+    # one-way: prerequisites must never import an adapter.
+    _PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = PROVIDER_AUTH_ENV_KEYS
     _BASE_URL_ENV_KEYS: tuple[str, ...] = (
         "ANTHROPIC_BASE_URL",
         "GEMINI_API_BASE",
@@ -261,7 +246,14 @@ class Atomic(BaseInstalledAgent):
     @override
     def network_allowlist(self) -> NetworkAllowlist:
         if not self.model_name or "/" not in self.model_name:
-            return NetworkAllowlist()
+            # Without a provider the domains cannot be resolved, and pier would
+            # drop the filtered-egress overlay and leave the sandbox with no
+            # route to any provider - which surfaces as a connection error that
+            # reads like a bad credential.
+            raise ValueError(
+                f"Cannot resolve provider domains from model_name={self.model_name!r}. "
+                "Pass --model as 'provider/model'."
+            )
 
         provider, _ = self.model_name.split("/", 1)
         # Atomic workflows can select fallback models from providers other than
@@ -299,17 +291,9 @@ class Atomic(BaseInstalledAgent):
 
     @staticmethod
     def _is_valid_provider_auth(entry: object) -> bool:
-        auth = _json_object(entry)
-        if auth is None:
-            return False
-        credential_type = auth.get("type")
-        if credential_type == "api_key":
-            key = auth.get("key")
-            return isinstance(key, str) and bool(key)
-        if credential_type == "oauth":
-            access = auth.get("access")
-            return isinstance(access, str) and bool(access)
-        return False
+        # Same predicate the preflight applies, so "the preflight says I have a
+        # credential" and "the adapter will forward one" cannot disagree.
+        return is_valid_provider_auth(entry)
 
     def _load_provider_auths(self) -> dict[str, JsonObject]:
         merged: JsonObject = {}
@@ -519,6 +503,8 @@ class Atomic(BaseInstalledAgent):
         requested_provider, requested_model = self.model_name.split("/", 1)
         chain = self._model_chain(requested_provider, requested_model)
         provider, model = chain[0]
+        # The candidate the session actually launches on, which is not
+        # `self.model_name` when the requested provider has no credential here.
         fallback_settings_command = self._fallback_settings_command(chain)
         # Forward credentials for every Atomic-supported provider, not just the
         # top-level Pier --model provider: nested workflow/subagent model
@@ -671,25 +657,53 @@ class Atomic(BaseInstalledAgent):
         )
         return f"{message_fingerprint}:{usage_fingerprint}"
 
-    @staticmethod
-    def _read_jsonl(path: Path) -> list[JsonObject]:
+    def _read_jsonl(
+        self, path: Path, *, strict: bool = True, count_malformed: bool = True
+    ) -> list[JsonObject]:
+        """Parse a JSONL log, recording undecodable records instead of hiding them.
+
+        ``strict`` (the default, and what every session ``.jsonl`` uses) counts
+        **every** line that fails to parse: a session transcript is machine
+        written, so an undecodable line there is corruption however it starts.
+
+        ``strict=False`` is for ``atomic.txt`` alone, which interleaves Atomic's
+        human-readable diagnostics with its JSON event stream — one such banner
+        was observed in a live trial. There, only a line that *opens* a JSON
+        value and fails to finish it counts as truncation.
+
+        Blank lines stay tolerated in both modes. ``count_malformed=False`` reads
+        without tallying, for a pass that re-reads a file the metrics pass also
+        walks, so one bad line is not counted twice.
+
+        Bytes that are not valid UTF-8 are replaced rather than raised: a log
+        truncated mid-multibyte-character used to escape as an uncategorized
+        ``UnicodeDecodeError`` — which is a ``ValueError``, not an ``OSError`` —
+        and took the whole status write down with it, so the trial ended with an
+        adapter traceback and no ``atomic-status.json`` at all. It is corruption,
+        and it is now reported as corruption.
+        """
         entries: list[JsonObject] = []
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    entry = cast(object, json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-                if entry_object := _json_object(entry):
-                    entries.append(entry_object)
+            raw = path.read_bytes()
         except OSError:
             return []
+        text = raw.decode("utf-8", errors="replace")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = cast(object, json.loads(stripped))
+            except json.JSONDecodeError:
+                continue
+            if entry_object := _json_object(entry):
+                entries.append(entry_object)
         return entries
 
     def _read_session_header(self, session_file: Path) -> JsonObject | None:
-        for entry in self._read_jsonl(session_file):
+        # Counted by the metrics pass over the same file; skip the tally here so
+        # one malformed line is not reported twice.
+        for entry in self._read_jsonl(session_file, count_malformed=False):
             return entry if entry.get("type") == "session" else None
         return None
 
@@ -974,7 +988,13 @@ class Atomic(BaseInstalledAgent):
         seen_fingerprints: set[str],
     ) -> Trajectory | None:
         output_file = self.logs_dir / self._OUTPUT_FILENAME
-        events = self._read_jsonl(output_file) if output_file.exists() else []
+        # atomic.txt is tallied once, by the metrics pass in
+        # populate_context_post_run; this trajectory pass re-reads it.
+        events = (
+            self._read_jsonl(output_file, strict=False, count_malformed=False)
+            if output_file.exists()
+            else []
+        )
         entries = [
             {"type": "message", "message": event.get("message")}
             for event in events
@@ -1026,7 +1046,10 @@ class Atomic(BaseInstalledAgent):
         summarization_count = 0
         if main_files:
             root, count = self._trajectory_from_entries(
-                self._read_jsonl(main_files[0]), None, seen_ids, seen_fingerprints
+                self._read_jsonl(main_files[0], count_malformed=False),
+                None,
+                seen_ids,
+                seen_fingerprints,
             )
             summarization_count += count
         if root is None:
@@ -1037,7 +1060,7 @@ class Atomic(BaseInstalledAgent):
         subagents: list[Trajectory] = []
         for index, session_file in enumerate(subagent_files, start=1):
             trajectory, count = self._trajectory_from_entries(
-                self._read_jsonl(session_file),
+                self._read_jsonl(session_file, count_malformed=False),
                 f"atomic-session-{index}",
                 seen_ids,
                 seen_fingerprints,
@@ -1086,6 +1109,9 @@ class Atomic(BaseInstalledAgent):
     def populate_context_post_run(self, context: AgentContext) -> None:
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
+            # An agent that wrote no atomic.txt also changed nothing, so the
+            # task's collect hook writes an empty model.patch and pier errors
+            # the trial. Nothing to add here.
             return
 
         total_input_tokens = 0
@@ -1138,6 +1164,9 @@ class Atomic(BaseInstalledAgent):
                 seen_message_fingerprints.add(fingerprint)
 
         def read_session_messages(session_file: Path, *, count_usage: bool) -> None:
+            # Session transcripts are machine-written: any undecodable line is
+            # corruption, whatever byte it starts with. Each file is read once
+            # here (the two loops below are disjoint), so counts do not double.
             for entry in self._read_jsonl(session_file):
                 if entry.get("type") != "message":
                     continue
@@ -1147,7 +1176,7 @@ class Atomic(BaseInstalledAgent):
                 else:
                     mark_assistant_message_seen(message, entry.get("id"))
 
-        for event in self._read_jsonl(output_file):
+        for event in self._read_jsonl(output_file, strict=False):
             if event.get("type") == "message_end":
                 add_assistant_message_usage(event.get("message") or {})
 
@@ -1165,3 +1194,4 @@ class Atomic(BaseInstalledAgent):
         context.n_cache_tokens = total_cache_tokens
         context.cost_usd = total_cost if total_cost > 0 else None
         self._write_trajectory(context, classified)
+

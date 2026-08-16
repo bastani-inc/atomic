@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { TuiMainScreen } from "@earendil-works/pi-tui";
 import { expect, test } from "vitest";
+import { TranscriptFollowIndicator } from "../src/modes/interactive/components/transcript-follow-indicator.ts";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
@@ -37,14 +38,26 @@ test("InteractiveMode.init builds the fullscreen dock and preserves flat mount o
 			context.footerContainer,
 			context.widgetContainerBelow,
 		];
-		const flatMountOrder = [context.documentContainer, ...dockChildren];
+		const flatMountOrder = [
+			context.documentContainer,
+			context.pendingMessagesContainer,
+			context.statusContainer,
+			context.widgetContainerAbove,
+			context.usageMeter,
+			context.editorContainer,
+			context.footerContainer,
+			context.widgetContainerBelow,
+		];
 
 		// These are production components, not a hand-built test root. Their
 		// identities and order catch wiring changes before rendering.
 		expect(root.children).toHaveLength(2);
 		expect(rootTranscript).toBe(transcript);
 		expect(transcript.children).toEqual([context.documentContainer]);
-		expect(dock.children).toEqual(dockChildren);
+		expect(dock.children).toHaveLength(dockChildren.length + 1);
+		expect(dock.children[0]).toBeInstanceOf(TranscriptFollowIndicator);
+		expect(dock.children[1]).toBe(context.pendingMessagesContainer);
+		expect(dock.children.slice(1)).toEqual(dockChildren);
 		expect(tui.children).toEqual(flatMountOrder);
 
 		tui.renderNow();

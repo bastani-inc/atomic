@@ -126,6 +126,11 @@ export type {
 	WorkflowOutputsFromSchemas,
 	WorkflowProvidedInputsFromSchemas,
 } from "./shared/workflow-authoring-types.js";
+export type {
+	WorkflowHeartbeatEvent,
+	WorkflowHeartbeatEventDetails,
+	WorkflowHeartbeatIdentity,
+} from "./shared/workflow-heartbeat-contract.js";
 
 import type {
 	GitWorktreeSetupOptions,
@@ -250,6 +255,8 @@ export declare function workflow<
 export declare function keepContext(text: string): string;
 export declare const KEEP_CONTEXT_OPEN_TAG: string;
 export declare const KEEP_CONTEXT_CLOSE_TAG: string;
+export declare const DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES: 15;
+export declare const WORKFLOW_HEARTBEAT_CUSTOM_TYPE: "workflows:workflow-heartbeat";
 export declare function createRegistry<
 	TDefinitions extends readonly AnyWorkflowDefinition[] = readonly AnyWorkflowDefinition[],
 >(initial?: TDefinitions): WorkflowRegistry;

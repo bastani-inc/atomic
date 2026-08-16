@@ -12,6 +12,7 @@ import {
 import { boundedInteractiveModelRefresh } from "../../../core/bounded-model-refresh.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
+import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -161,7 +162,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private async refreshModels(): Promise<void> {
 		const outcome = await boundedInteractiveModelRefresh(
-			(options) => this.modelRuntime.refresh(options),
+			(options) => refreshModelCatalogs(this.modelRuntime, options),
 			{},
 			this.refreshAbortController.signal,
 		);

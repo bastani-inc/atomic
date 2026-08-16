@@ -132,7 +132,7 @@ async function loadSkillsFromDirInternal(
 ): Promise<LoadSkillsResult> {
 	const skills: Skill[] = [];
 	const diagnostics: ResourceDiagnostic[] = [];
-	if (!(await exists(dir))) return { skills, diagnostics };
+	if (!(await exists(dir))) return { skills, candidates: skills, diagnostics };
 	const startedAt = Date.now();
 	const root = rootDir ?? dir;
 	const ig = ignoreMatcher ?? ignore();
@@ -155,7 +155,7 @@ async function loadSkillsFromDirInternal(
 			const result = await loadSkillFromFile(fullPath, source);
 			if (result.skill) skills.push(result.skill);
 			diagnostics.push(...result.diagnostics);
-			return { skills, diagnostics };
+			return { skills, candidates: skills, diagnostics };
 		}
 		for (const entry of entries) {
 			await yieldToEventLoopIfSlow(startedAt, YIELD_AFTER_MS);
@@ -186,7 +186,7 @@ async function loadSkillsFromDirInternal(
 			diagnostics.push(...result.diagnostics);
 		}
 	} catch {}
-	return { skills, diagnostics };
+	return { skills, candidates: skills, diagnostics };
 }
 
 export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadSkillsResult> {
@@ -194,6 +194,7 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(agentDir ?? getAgentDir());
 	const skillMap = new Map<string, Skill>();
+	const candidates: Skill[] = [];
 	const realPathSet = new Set<string>();
 	const allDiagnostics: ResourceDiagnostic[] = [];
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
@@ -204,6 +205,8 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 		for (const skill of result.skills) {
 			const realPath = canonicalizePath(skill.filePath);
 			if (realPathSet.has(realPath)) continue;
+			realPathSet.add(realPath);
+			candidates.push(skill);
 			const existing = skillMap.get(skill.name);
 			if (existing) {
 				collisionDiagnostics.push({
@@ -219,7 +222,6 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 				});
 			} else {
 				skillMap.set(skill.name, skill);
-				realPathSet.add(realPath);
 			}
 		}
 	};
@@ -256,7 +258,8 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 				addSkills(await loadSkillsFromDirInternal(resolvedPath, source, true));
 			} else if (stats.isFile() && resolvedPath.endsWith(".md")) {
 				const result = await loadSkillFromFile(resolvedPath, source);
-				if (result.skill) addSkills({ skills: [result.skill], diagnostics: result.diagnostics });
+				if (result.skill)
+					addSkills({ skills: [result.skill], candidates: [result.skill], diagnostics: result.diagnostics });
 				else allDiagnostics.push(...result.diagnostics);
 			} else {
 				allDiagnostics.push({ type: "warning", message: "skill path is not a markdown file", path: resolvedPath });
@@ -266,5 +269,9 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 			allDiagnostics.push({ type: "warning", message, path: resolvedPath });
 		}
 	}
-	return { skills: Array.from(skillMap.values()), diagnostics: [...allDiagnostics, ...collisionDiagnostics] };
+	return {
+		skills: Array.from(skillMap.values()),
+		candidates,
+		diagnostics: [...allDiagnostics, ...collisionDiagnostics],
+	};
 }

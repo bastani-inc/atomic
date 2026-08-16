@@ -54,7 +54,7 @@ describe("workflow orchestrator statusline extension statuses", () => {
 		assert.match(rendered, /Other extension status/);
 	});
 
-	test("hides the i-have-adhd ADHD Mode badge while preserving other extension statuses", () => {
+	test("hides an externally installed i-have-adhd badge while preserving other extension statuses", () => {
 		const rendered = renderOverlay(
 			new Map([
 				["i-have-adhd", "● ADHD Mode"],

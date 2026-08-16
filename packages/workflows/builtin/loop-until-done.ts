@@ -6,6 +6,10 @@ import { runLoopUntilDone } from "./loop-until-done-runner.js";
 export default workflow({
   name: "loop-until-done",
   description: "Repeat evidence-producing work and independent completion evaluation against a durable ledger until done or an inspectable iteration-limit failure.",
+  // The 15-minute default, stated rather than inherited: this is a per-workflow
+  // product decision, so a future change to the global default must not silently
+  // re-cadence a long autonomous run.
+  heartbeatIntervalMinutes: 15,
   inputs: {
     prompt: Type.String({ description: "Objective whose explicit completion condition controls the bounded loop." }),
     max_iterations: Type.Integer({

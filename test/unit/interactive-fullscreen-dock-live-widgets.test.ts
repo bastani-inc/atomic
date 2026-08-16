@@ -1,13 +1,10 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ExtensionContext } from "../../packages/coding-agent/src/index.ts";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
 	type ProductionFullscreenContext,
 } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
-import type { AsyncJobState } from "../../packages/subagents/src/shared/types.js";
-import { renderWidget, stopWidgetAnimation } from "../../packages/subagents/src/tui/render-widget.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { installStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.js";
@@ -71,22 +68,6 @@ function makeRun(id: string, name: string, startedAt: number): RunSnapshot {
 	};
 }
 
-function makeJob(tool: string, updatedAt: number): AsyncJobState {
-	return {
-		asyncId: "subagent-live",
-		asyncDir: "/tmp/subagent-live",
-		status: "running",
-		mode: "single",
-		agents: ["subagent-live"],
-		currentTool: tool,
-		currentToolStartedAt: BASE_NOW,
-		startedAt: BASE_NOW,
-		updatedAt,
-		turnCount: 1,
-		toolCount: 1,
-	};
-}
-
 function makeHostUi(context: ProductionFullscreenContext["context"]): HostUi {
 	return context.createExtensionUIContext() as unknown as HostUi;
 }
@@ -101,7 +82,7 @@ afterEach(async () => {
 	activeContext = undefined;
 });
 
-test("keeps workflow and subagent live widgets rendered in the production sticky dock", async () => {
+test("keeps the workflow live widget rendered in the production sticky dock", async () => {
 	const now = vi.spyOn(Date, "now").mockReturnValue(BASE_NOW);
 	const timers = makeTimers();
 	activeContext = createProductionFullscreenContext();
@@ -109,13 +90,6 @@ test("keeps workflow and subagent live widgets rendered in the production sticky
 	const hostUi = makeHostUi(context);
 	const workflowStore = createStore();
 	const disposeWorkflowWidget = installStoreWidget({ ui: hostUi }, workflowStore, timers);
-	const subagentOwner = {};
-	const subagentContext = {
-		hasUI: true,
-		cwd: "/tmp/subagent-live",
-		ui: hostUi,
-		sessionManager: { getSessionId: () => "fullscreen-live-widgets" },
-	} as unknown as ExtensionContext;
 
 	try {
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -160,30 +134,8 @@ test("keeps workflow and subagent live widgets rendered in the production sticky
 			);
 			expect(tickedDockLines.some((line) => line.includes(`${elapsedMs / 1_000}s`))).toBe(true);
 		}
-
-		renderWidget(subagentContext, [makeJob("read", BASE_NOW)], subagentOwner);
-		tui.renderNow();
-		const subagentComponent = context.extensionWidgetsBelow.get("subagent-async");
-		if (!subagentComponent) throw new Error("subagent widget did not mount in the dock");
-		const withBothWidgets = getLayoutFrame(tui);
-		const bothDock = withBothWidgets.root.children[1]!;
-		const bothDockLines = withBothWidgets.lines.slice(bothDock.rect.y, bothDock.rect.y + bothDock.rect.height);
-		expect(bothDockLines.some((line) => line.includes("subagent-live"))).toBe(true);
-		expect(context.widgetContainerBelow.children).toContain(subagentComponent);
-		expect(context.widgetContainerBelow.children.indexOf(subagentComponent)).toBeGreaterThan(
-			context.widgetContainerBelow.children.indexOf(initialWorkflowComponent),
-		);
-
-		renderWidget(subagentContext, [makeJob("write", BASE_NOW + 2_000)], subagentOwner);
-		tui.renderNow();
-		expect(context.extensionWidgetsBelow.get("subagent-async")).toBe(subagentComponent);
-		const afterSubagent = getLayoutFrame(tui);
-		const afterDock = afterSubagent.root.children[1]!;
-		const afterDockLines = afterSubagent.lines.slice(afterDock.rect.y, afterDock.rect.y + afterDock.rect.height);
-		expect(afterDockLines.some((line) => line.includes("write"))).toBe(true);
 	} finally {
 		disposeWorkflowWidget();
-		stopWidgetAnimation(undefined, subagentOwner);
 		now.mockRestore();
 	}
 });

@@ -49,11 +49,12 @@ export interface CreateAgentSessionOptions {
 	/**
 	 * Optional allowlist of tool names.
 	 *
-	 * When omitted, pi enables the default built-in tools (read, bash, edit, write,
-	 * find, search, ask_user_question, todo) and leaves extension/custom tools enabled unless
-	 * `noTools` changes that default.
-	 * When provided, only the listed tool names are enabled, minus any names in
-	 * `excludedTools`.
+	 * When omitted, Atomic uses the `defaultTools` setting for the initial
+	 * built-in selection when configured. Otherwise it enables the default
+	 * built-in tools (read, bash, edit, write, find, search, ask_user_question,
+	 * todo). Extension/custom tools remain enabled unless `noTools` changes
+	 * that default. When provided, only the listed tool names are enabled,
+	 * minus any names in `excludedTools`.
 	 */
 	tools?: string[];
 	/**

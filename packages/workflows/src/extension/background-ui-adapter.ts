@@ -29,6 +29,7 @@
  *   src/tui/graph-view.ts pending-prompt rendering + key handling
  */
 
+import { requirePrimitivePromptAnswer } from "../shared/prompt-answer.js";
 import type { Store } from "../shared/store.js";
 import type { PendingPrompt, PromptKind } from "../shared/store-types.js";
 import type { WorkflowUIAdapter } from "../shared/types.js";
@@ -128,48 +129,26 @@ function fallbackForKind(descriptor: PromptDescriptor): unknown {
 export function buildBackgroundUIAdapter(store: Store, runId: string, signal?: AbortSignal): WorkflowUIAdapter {
 	return {
 		async input(prompt: string): Promise<string> {
-			const response = await ask(store, runId, { kind: "input", message: prompt }, signal);
-			return typeof response === "string" ? response : String(response ?? "");
+			const descriptor = { kind: "input" as const, message: prompt };
+			return requirePrimitivePromptAnswer(descriptor, await ask(store, runId, descriptor, signal)) as string;
 		},
 
 		async confirm(message: string): Promise<boolean> {
-			const response = await ask(store, runId, { kind: "confirm", message }, signal);
-			return response === true;
+			const descriptor = { kind: "confirm" as const, message };
+			return requirePrimitivePromptAnswer(descriptor, await ask(store, runId, descriptor, signal)) as boolean;
 		},
 
 		async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
 			if (options.length === 0) {
 				throw new Error("atomic-workflows: ctx.ui.select requires at least one option");
 			}
-			const response = await ask(
-				store,
-				runId,
-				{
-					kind: "select",
-					message,
-					choices: options,
-				},
-				signal,
-			);
-			if (typeof response === "string" && (options as readonly string[]).includes(response)) {
-				return response as T;
-			}
-			return options[0]!;
+			const descriptor = { kind: "select" as const, message, choices: options };
+			return requirePrimitivePromptAnswer(descriptor, await ask(store, runId, descriptor, signal)) as T;
 		},
 
 		async editor(initial?: string): Promise<string> {
-			const response = await ask(
-				store,
-				runId,
-				{
-					kind: "editor",
-					message: "Edit and save to continue.",
-					initial,
-				},
-				signal,
-			);
-			if (typeof response === "string") return response;
-			return initial ?? "";
+			const descriptor = { kind: "editor" as const, message: "Edit and save to continue.", initial };
+			return requirePrimitivePromptAnswer(descriptor, await ask(store, runId, descriptor, signal)) as string;
 		},
 	};
 }

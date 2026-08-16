@@ -25,6 +25,7 @@ import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool
 import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
+import { agentSessionSummaryMethods, type SessionSummaryRun } from "./agent-session-summary.ts";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
@@ -34,8 +35,6 @@ import type {
 	InterruptQueueHold,
 	ToolDefinitionEntry,
 } from "./agent-session-types.ts";
-import type { AsyncJobManager } from "./async/job-manager.js";
-import { createSessionAsyncJobManager } from "./async/session-manager.js";
 import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ExtensionCommandContextActions,
@@ -97,6 +96,20 @@ class AgentSessionBase {
 	protected _activeInterruptQueueHold: InterruptQueueHold | undefined = undefined;
 	protected _queuedMessagesPaused = false;
 	protected _queuedMessagesPauseAbortBoundary: Promise<void> | undefined = undefined;
+	/**
+	 * Text of a queued steering/follow-up message the agent loop already admitted
+	 * into the transcript and that has not received an assistant reply yet. The
+	 * pause hold cannot reach such a message, so an interrupt would otherwise
+	 * strand it (issue #2362).
+	 */
+	protected _admittedQueuedMessageAwaitingReply: string | undefined = undefined;
+	/**
+	 * Settlement boundary for the recovery turn that answers an already-admitted
+	 * queued message. It starts after the pause abort boundary resolves, so the
+	 * resume path must wait for it too or an ordinary submission made while it
+	 * streams is rejected by the streaming guard (issue #2362).
+	 */
+	protected _admittedRecoveryTurn: Promise<void> | undefined = undefined;
 	protected _workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined = undefined;
 	protected _activeInterruptAbortMessage: string | undefined = undefined;
 	protected _pendingNextTurnMessages: CustomMessage[] = [];
@@ -122,7 +135,13 @@ class AgentSessionBase {
 	protected _postToolCompactionPreflightError: string | undefined = undefined;
 	protected _pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined = undefined;
 	protected _terminatingToolCallIds = new Set<string>();
+	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
+	protected _sessionSummaryAbortController: AbortController | undefined = undefined;
+	protected _sessionSummaryToken = 0;
+	/** The summary request currently in flight, published so a later launch can join it. */
+	protected _sessionSummaryRun: SessionSummaryRun | undefined = undefined;
+	protected _lastSummarizedMessageId: string | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;
@@ -159,8 +178,6 @@ class AgentSessionBase {
 	protected _systemPromptTransform?: (prompt: string) => string;
 	protected _systemPromptOverride?: string;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
-	protected _asyncJobManager: AsyncJobManager;
-	protected _asyncJobManagerSessionId: symbol;
 	/** Protection claim on this session's temp tree and tool-results directory. */
 	protected _tempStorageLease: ProtectedPathLease | undefined;
 	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
@@ -225,9 +242,6 @@ class AgentSessionBase {
 			// Temp-storage housekeeping must never block session construction.
 		}
 		const internals = this as unknown as AgentSessionInternalSurface;
-		const asyncJobManagerHandle = createSessionAsyncJobManager(internals);
-		this._asyncJobManager = asyncJobManagerHandle.manager;
-		this._asyncJobManagerSessionId = asyncJobManagerHandle.sessionId;
 		internals._handleAgentEvent = internals._handleAgentEvent.bind(this);
 		this._unsubscribeAgent = this.agent.subscribe(internals._handleAgentEvent);
 		internals._installAgentToolHooks();
@@ -265,4 +279,5 @@ Object.assign(
 	agentSessionBashMethods,
 	agentSessionTreeMethods,
 	agentSessionExportMethods,
+	agentSessionSummaryMethods,
 );

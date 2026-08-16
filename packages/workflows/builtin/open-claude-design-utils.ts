@@ -17,7 +17,6 @@ export const OUTPUT_TYPES = [
 ] as const;
 export type OutputType = (typeof OUTPUT_TYPES)[number];
 export const DEFAULT_OUTPUT_TYPE: OutputType = "prototype";
-export const DEFAULT_MAX_REFINEMENTS = 3;
 
 type PromptSection = readonly [tag: string, content: string];
 
@@ -30,11 +29,6 @@ export function taggedPrompt(sections: readonly PromptSection[]): string {
     .join("\n\n");
 }
 
-export function positiveInteger(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : fallback;
-}
 
 export function normalizeOutputType(value: string | undefined): OutputType {
   return value !== undefined &&

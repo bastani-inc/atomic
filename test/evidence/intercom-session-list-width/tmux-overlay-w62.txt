@@ -1,0 +1,40 @@
+RESOURCES context ready · 19 skills · 14 prompts
+
+──────────────────────────────────────────────────────────────
+ Atomic is a verifiable coding agent runtime for building and
+ running
+ agent workflows you can feel confident in.
+ Use it to implement tickets, research a codebase, design a
+ UI,
+ or build and run your own loops.
+ Run dynamic workflows and save the ones you like for future
+ use.
+╭──────────────────────────────────────────────────────────╮
+│ Current Session                                          │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  worker (c910cfd2-7798-4b3e-bed2-b3d1082bdd18) [self]    │
+│  /Users/tonystark/Documents…tomic-intercom-width-aware • │
+│                                                          │
+├──────────────────────────────────────────────────────────┤
+│ Other Sessions                                           │
+│                                                          │
+│→ planner [same cwd]                                      │
+│  ab3514fa-360b-42b2-a1a1-827740c259fa                    │
+│  /Users/tonystark/Documents…tomic-intercom-width-aware • │
+│                                                          │
+├──────────────────────────────────────────────────────────┤
+│ Enter: Message • Escape/CTRL+C: Close                    │
+╰──────────────────────────────────────────────────────────╯
+ are/packages/coding-agent/docs/models.md
+
+ Session name set: worker
+
+ ∀ Working...
+
+                                                 0.0%/0 (auto)
+──────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────
+unknown • ~/Documents/projects/atomic-intercom-width-aware ...
+● ADHD Mode • MCP: 0/1 servers

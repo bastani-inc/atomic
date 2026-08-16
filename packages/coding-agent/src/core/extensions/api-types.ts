@@ -210,10 +210,15 @@ export interface ExtensionAPI {
 	/**
 	 * Send a user message to the agent. Always triggers a turn.
 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
+	 *
+	 * By default the text is sent literally. Set expandPromptTemplates to true to
+	 * dispatch a registered extension or skill command (or expand a prompt
+	 * template) — with that option the message may DISPATCH a command rather
+	 * than being sent. Default: false.
 	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */

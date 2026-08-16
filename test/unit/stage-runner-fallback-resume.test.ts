@@ -25,6 +25,7 @@ import type {
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { unresolvedContextOverflowFailure } from "../../packages/workflows/src/runs/foreground/stage-runner-unresolved-overflow.js";
+import { assistantMessageWithUsage, Type } from "./stage-runner-helpers.js";
 
 interface FakeSessionConfig {
 	/** Model object the session reports via `.model` (drives workflowModelId). */
@@ -33,12 +34,23 @@ interface FakeSessionConfig {
 	promptError?: Error;
 	/** Shared sink recording prompt/followUp/steer calls for assertions. */
 	calls?: Array<{ kind: "prompt" | "followUp" | "steer"; text: string }>;
+	/** Historical messages present in the session before the first prompt. */
+	history?: StageSessionRuntime["messages"];
+	/** When set, each prompt() appends a meaningful assistant message with this usage. */
+	assistantUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+	/** Optional per-prompt hook (e.g. a scripted structured_output tool call). */
+	onPrompt?: (text: string) => Promise<void> | void;
 }
 
 function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
+	const messages: StageSessionRuntime["messages"] = [...(config.history ?? [])];
 	const base: StageSessionRuntime = {
 		async prompt(text: string) {
 			config.calls?.push({ kind: "prompt", text });
+			if (config.assistantUsage !== undefined) {
+				messages.push(assistantMessageWithUsage(`stub:${text}`, config.assistantUsage));
+			}
+			await config.onPrompt?.(text);
 			if (config.promptError) throw config.promptError;
 			return `stub:${text}`;
 		},
@@ -64,7 +76,7 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
 		agent: Object.create(null) as StageSessionRuntime["agent"],
 		model: config.model as StageSessionRuntime["model"],
 		thinkingLevel: "off",
-		messages: [] as StageSessionRuntime["messages"],
+		messages,
 		isStreaming: false as StageSessionRuntime["isStreaming"],
 		async navigateTree() {
 			return { cancelled: true };
@@ -140,7 +152,22 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
 			// The reattach-resume create carries no model override (the SDK restores
 			// the saved model). Simulate a session that last worked on model-b.
 			if ((options?.model as unknown) === undefined) {
-				return makeFakeStageSession({ model: B });
+				return makeFakeStageSession({
+					model: B,
+					// Historical usage from the pre-completion transcript must never be
+					// charged to the follow-up attempt, even though it is large and
+					// distinct from the new response.
+					history: [
+						assistantMessageWithUsage("historical answer", {
+							input: 9999,
+							output: 8888,
+							cacheRead: 7777,
+							cacheWrite: 6666,
+							cost: 9.99,
+						}),
+					],
+					assistantUsage: { input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011 },
+				});
 			}
 			return makeFakeStageSession({ model: A });
 		}, createdWith);
@@ -166,6 +193,11 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
 			[{ model: "anthropic/model-b", success: true }],
 			"only the resumed working model should be attempted",
 		);
+		assert.deepEqual(
+			attempts.map((a) => a.usage),
+			[{ input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011, turns: 1 }],
+			"the reattached follow-up must charge only the new response, never the historical transcript",
+		);
 	});
 
 	test("restarts the full chain from the primary when the resumed model fails again", async () => {
@@ -173,13 +205,21 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
 		const opts = makeOpts((options) => {
 			// Resume attempt (no model override): saved model-b, but it now fails.
 			if ((options?.model as unknown) === undefined) {
-				return makeFakeStageSession({ model: B, promptError: new Error("rate limit exceeded") });
+				return makeFakeStageSession({
+					model: B,
+					promptError: new Error("rate limit exceeded"),
+					// The failed resumed response still carries real provider usage.
+					assistantUsage: { input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011 },
+				});
 			}
 			// Restarted chain: primary (model-a) fails, fallback (model-b) succeeds.
 			if ((options?.model as unknown) === "anthropic/model-a") {
 				return makeFakeStageSession({ model: A, promptError: new Error("rate limit exceeded") });
 			}
-			return makeFakeStageSession({ model: B });
+			return makeFakeStageSession({
+				model: B,
+				assistantUsage: { input: 111, output: 222, cacheRead: 333, cacheWrite: 444, cost: 0.111 },
+			});
 		}, createdWith);
 
 		const ctx = createStageContext(opts);
@@ -203,6 +243,57 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
 				{ model: "anthropic/model-b", success: true },
 			],
 			"resume failure is recorded, then the full chain runs from the primary",
+		);
+		assert.deepEqual(
+			attempts.map((a) => a.usage),
+			[
+				{ input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011, turns: 1 },
+				undefined,
+				{ input: 111, output: 222, cacheRead: 333, cacheWrite: 444, cost: 0.111, turns: 1 },
+			],
+			"the failed resumed attempt keeps its own usage and the restarted chain starts fresh windows",
+		);
+	});
+
+	test("a reattached structured-output success records usage before the caught branch returns", async () => {
+		const createdWith: CreateRecord[] = [];
+		let createOptions: StageSessionCreateOptions | undefined;
+		const base = makeOpts((options) => {
+			createOptions = options;
+			return makeFakeStageSession({
+				model: B,
+				promptError: new Error("429 rate limit exceeded after structured output"),
+				assistantUsage: { input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011 },
+				onPrompt: async () => {
+					const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
+					assert.ok(structuredTool);
+					await structuredTool.execute("structured-call", { ok: true }, undefined, undefined, undefined as never);
+				},
+			});
+		}, createdWith);
+		const opts: StageRunnerOpts = {
+			...base,
+			stageOptions: {
+				...base.stageOptions,
+				schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
+			},
+		};
+
+		const ctx = createStageContext(opts);
+		await ctx.__ensureSessionFromFile("/tmp/does-not-exist-structured-resume.jsonl");
+		await ctx.prompt("follow up");
+		await ctx.__dispose();
+
+		const attempts = ctx.__modelFallbackMeta().modelAttempts ?? [];
+		assert.deepEqual(
+			attempts.map((a) => ({ model: a.model, success: a.success })),
+			[{ model: "anthropic/model-b", success: true }],
+			"the caught structured-output branch records a resumed success",
+		);
+		assert.deepEqual(
+			attempts.map((a) => a.usage),
+			[{ input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011, turns: 1 }],
+			"usage is attached before the caught structured-output branch returns",
 		);
 	});
 });
@@ -346,7 +437,13 @@ describe("live (retained-session) follow-up resumes on the settled model (#1431 
 			if ((options?.model as unknown) === "anthropic/model-a") {
 				return makeFakeStageSession({ model: A, promptError: new Error("rate limit exceeded") });
 			}
-			return makeFakeStageSession({ model: B, calls: settledCalls });
+			// The settled fallback appends the same scripted usage on every prompt;
+			// a cumulative implementation would double it on the second record.
+			return makeFakeStageSession({
+				model: B,
+				calls: settledCalls,
+				assistantUsage: { input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011 },
+			});
 		}, createdWith);
 
 		const ctx = createStageContext(opts);
@@ -371,6 +468,15 @@ describe("live (retained-session) follow-up resumes on the settled model (#1431 
 				{ model: "anthropic/model-b", success: true },
 				{ model: "anthropic/model-b", success: true },
 			],
+		);
+		assert.deepEqual(
+			attempts.map((a) => a.usage),
+			[
+				undefined,
+				{ input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011, turns: 1 },
+				{ input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011, turns: 1 },
+			],
+			"each retained-session prompt gets its own window: the second record is not a cumulative total",
 		);
 	});
 });

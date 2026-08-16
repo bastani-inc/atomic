@@ -39,23 +39,12 @@ export function createChildSafeState(): SubagentState {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		asyncJobs: new Map(),
 		subagentInProgress: false,
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		// Child-safe stub: the parent extension owns watcher/coalescer/cleanup state.
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
 	};
 }
 
@@ -231,16 +220,10 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI, c
 		const config = loadConfig();
 		const state = createChildSafeState();
 		let nestedListenerCleanup: (() => void) | undefined;
-		lifecycle.setCleanup(() => {
-			nestedListenerCleanup?.();
-			for (const timer of state.cleanupTimers.values()) clearInterval(timer);
-			state.cleanupTimers.clear();
-		});
 		const executor = createSubagentExecutor({
 			pi,
 			state,
 			config,
-			asyncByDefault: config.asyncByDefault === true,
 			tempArtifactsDir: getArtifactsDir(null),
 			getSubagentSessionRoot,
 			expandTilde,
@@ -248,6 +231,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI, c
 			childPolicy,
 			allowMutatingManagementActions: childPolicy ? childPolicy.managementActions === "full" : false,
 		});
+		lifecycle.setCleanup(() => nestedListenerCleanup?.());
 
 		const tool: ToolDefinition<typeof SubagentParams, Details> = {
 			name: "subagent",

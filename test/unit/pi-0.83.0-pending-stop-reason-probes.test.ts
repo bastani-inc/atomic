@@ -31,6 +31,7 @@ import {
 	parseInteractiveEngineCommand,
 	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
+import { toJsonEvent } from "../../packages/coding-agent/src/modes/json-event.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../../packages/coding-agent/src/modes/rpc/jsonl.js";
 import type { RpcEvent } from "../../packages/coding-agent/src/modes/rpc/rpc-types.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
@@ -119,13 +120,17 @@ test("a whole pending-carrying turn survives the RPC projection unchanged", asyn
 		harness.setResponses([fauxAssistantMessage("done", { stopReason: "stop" })]);
 		await harness.session.prompt("hi");
 
-		const received = await projectThroughRpcWire(harness.events);
+		// RPC mode writes the wire projection, not the raw session event: since
+		// #7982 a `message_update` frame carries cumulative usage instead of the
+		// cumulative message snapshot.
+		const wireEvents = harness.events.map((event) => toJsonEvent(event));
+		const received = await projectThroughRpcWire(wireEvents);
 
 		assert.deepEqual(
 			received.map((event) => event.type),
 			harness.events.map((event) => event.type),
 		);
-		assert.deepEqual(received, JSON.parse(JSON.stringify(harness.events)) as RpcEvent[]);
+		assert.deepEqual(received, JSON.parse(JSON.stringify(wireEvents)) as RpcEvent[]);
 	} finally {
 		harness.cleanup();
 	}

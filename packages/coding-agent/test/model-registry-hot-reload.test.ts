@@ -57,6 +57,8 @@ describe("model config hot reload", () => {
 			getError: () => undefined,
 			getAvailableSnapshot: () => [],
 			getModel: () => undefined,
+			isNetworkRefreshEnabled: () => false,
+			getCatalogInputsGeneration: () => 0,
 			refresh,
 		} as unknown as ModelRuntime;
 		const tui = { requestRender: vi.fn() } as unknown as TUI;

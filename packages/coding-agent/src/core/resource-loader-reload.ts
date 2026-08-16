@@ -34,6 +34,7 @@ import {
 import { mergeResourcePaths, resolveResourcePath } from "./resource-loader-paths.ts";
 import { applyExtensionSourceInfo } from "./resource-loader-source-info.ts";
 import type { ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
+import { buildSkillCatalog } from "./skill-catalog.ts";
 import { endTimingSpan, resetTimings, startTimingSpan } from "./timings.ts";
 
 function getEnabledResources(
@@ -179,6 +180,7 @@ export async function reloadDefaultResourceLoader(
 		const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
 		state.skills = emptySkills?.skills ?? [];
 		state.skillDiagnostics = emptySkills?.diagnostics ?? [];
+		state.skillCatalog = buildSkillCatalog(state.skills);
 		state.lastPromptPaths = [];
 		const emptyPrompts = state.promptsOverride ? state.promptsOverride({ prompts: [], diagnostics: [] }) : undefined;
 		state.prompts = emptyPrompts?.prompts ?? [];

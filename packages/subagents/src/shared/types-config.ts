@@ -4,7 +4,8 @@
 
 import type { SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { NestedRouteInfo } from "./types-async.ts";
+import type { CandidateModelResolver } from "./model-resolution.ts";
+import type { NestedRouteInfo } from "./types-nested.ts";
 import type {
 	ArtifactConfig,
 	ControlConfig,
@@ -41,9 +42,8 @@ export interface IntercomEventBus {
 }
 
 export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
+export const SUBAGENT_COMPLETE_EVENT = "subagent:complete";
 export const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
-export const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
-export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -59,8 +59,6 @@ export interface RunSyncOptions {
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;
 	allowIntercomDetach?: boolean;
-	/** Start the admitted child and settle this call with a continued result immediately. */
-	backgroundContinuation?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onDetachedExit?: (result: SingleResult) => void;
 	/** Shared foreground-group signal used to release sibling supervision after one exact child commits Intercom detach. */
@@ -87,8 +85,6 @@ export interface RunSyncOptions {
 	index?: number;
 	sessionDir?: string;
 	sessionFile?: string;
-	/** Override the Atomic CLI entrypoint used by foreground child processes. */
-	piArgv1?: string;
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
@@ -104,21 +100,48 @@ export interface RunSyncOptions {
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
 	/** Providers known to the registry before auth filtering */
 	knownModelProviders?: string[];
+	/**
+	 * Resolve the selected `provider/model[:thinking]` candidate to a concrete
+	 * registry model. Without it the child session receives no model and a
+	 * fork-context child silently runs on the model restored from the parent's
+	 * session file.
+	 */
+	resolveCandidateModel?: CandidateModelResolver;
 	/** Current parent-session provider to prefer for ambiguous bare model ids */
 	preferredModelProvider?: string;
 	/** Current parent-session model to try after configured fallback models */
 	currentModel?: string;
+	/**
+	 * Current parent-session thinking level. Inherited by a child that pins no
+	 * model of its own — no frontmatter `model`, no `fallbackModels`, and no
+	 * per-call override — matching upstream pi #7897: a subagent dispatched
+	 * without a model runs on the dispatching session's model and thinking
+	 * level. An agent whose fallback chain selects its own first candidate
+	 * runs on that model, not the parent's, and keeps its own thinking
+	 * configuration.
+	 */
+	currentThinkingLevel?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
 	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */
-	testSession?: {
-		output?: string;
-		promptLogPath?: string;
-		/** Hold a test prompt open until the caller releases the supplied promise. */
-		promptGate?: Promise<void>;
-		/** Match AgentSession.abort() settling an active prompt without throwing. */
-		abortResolvesPrompt?: boolean;
-	};
+	testSession?:
+		| false
+		| {
+				output?: string;
+				promptLogPath?: string;
+				/** Hold a test prompt open until the caller releases the supplied promise. */
+				promptGate?: Promise<void>;
+				/** Match AgentSession.abort() settling an active prompt without throwing. */
+				abortResolvesPrompt?: boolean;
+				/** Emit a fallback event for tests that exercise live model metadata. */
+				fallbackModel?: string;
+				/** Emit the effective thinking level applied to the fallback candidate. */
+				fallbackThinkingLevel?: string;
+				/** Test-only session model exposed through the AgentSession accessors. */
+				sessionModel?: string;
+				/** Test-only effective thinking level exposed through the AgentSession accessors. */
+				sessionThinkingLevel?: string;
+		  };
 }
 
 export type IntercomBridgeMode = "off" | "fork-only" | "always";
@@ -134,8 +157,6 @@ interface TopLevelParallelConfig {
 }
 
 export interface ExtensionConfig {
-	asyncByDefault?: boolean;
-	forceTopLevelAsync?: boolean;
 	defaultSessionDir?: string;
 	maxSubagentDepth?: number;
 	control?: ControlConfig;

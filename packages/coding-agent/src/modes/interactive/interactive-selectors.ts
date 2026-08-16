@@ -48,7 +48,7 @@ InteractiveModeBase.prototype.showSelector = function (
 
 InteractiveModeBase.prototype.showFastModeSelector = function (this: InteractiveModeBase): void {
 	if (!this.hasCodexFastModeSupportedModels()) {
-		this.showWarning("Codex fast mode requires an available openai/* or openai-codex/* model.");
+		this.showWarning("Codex fast mode requires a supported OpenAI or shared ChatGPT Codex transport model.");
 		return;
 	}
 
@@ -95,7 +95,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				bashInterceptorEnabled: this.settingsManager.getBashInterceptorEnabled(),
 				thinkingLevel: this.session.thinkingLevel,
 				availableThinkingLevels: this.session.getAvailableThinkingLevels(),
-				currentTheme: this.settingsManager.getThemeSetting() || "dark",
+				currentTheme: this.themeController.getThemeSelection() || "dark",
 				terminalTheme: this.themeController.getTerminalTheme(),
 				availableThemes: getAvailableThemes(),
 				hideThinkingBlock: this.hideThinkingBlock,
@@ -107,6 +107,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				treeFilterMode: this.settingsManager.getTreeFilterMode(),
 				showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 				fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
+				fullscreenExitOutput: this.settingsManager.getFullscreenExitOutput(),
 				editorPaddingX: this.settingsManager.getEditorPaddingX(),
 				outputPad: this.settingsManager.getOutputPad(),
 				showCacheMissNotices: this.settingsManager.getShowCacheMissNotices(),
@@ -172,7 +173,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				},
 				onThemeChange: (themeSetting) => {
 					this.settingsManager.setTheme(themeSetting);
-					void this.themeController.applyFromSettings();
+					void this.themeController.setThemeSetting(themeSetting);
 				},
 				onThemePreview: (themeName) => this.themeController.preview(themeName),
 				onHideThinkingBlockChange: (hidden) => {
@@ -221,6 +222,9 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 					this.settingsManager.setFullscreenScrollbar(mode);
 					this.transcriptScrollView?.setScrollbar(mode);
 					this.ui.requestRender();
+				},
+				onFullscreenExitOutputChange: (output) => {
+					this.settingsManager.setFullscreenExitOutput(output);
 				},
 				onEditorPaddingXChange: (padding) => {
 					this.settingsManager.setEditorPaddingX(padding);

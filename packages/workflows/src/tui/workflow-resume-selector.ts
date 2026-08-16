@@ -191,6 +191,7 @@ function toPickerRow(session: SessionInfo): PiHostSessionPickerRow {
 		modifiedAt: session.modified.getTime(),
 		messageCount: session.messageCount,
 		firstMessage: session.firstMessage,
+		...(session.summary !== undefined ? { summary: session.summary } : {}),
 		allMessagesText: session.allMessagesText,
 		...(session.name !== undefined ? { name: session.name } : {}),
 		...(session.messageColor !== undefined ? { messageColor: session.messageColor } : {}),

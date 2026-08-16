@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { minimatch } from "minimatch";
 import type { Static, TSchema } from "typebox";
+import { getExperimentalToolSampling } from "../core/experimental.ts";
 import type { ExtensionContext, ToolDefinition } from "../core/extensions/types.ts";
 import type { ReadonlySessionManager } from "../core/session-manager.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
@@ -31,10 +32,19 @@ function createCodingAgentHarnessTool<TParameters extends TSchema, TDetails>(
 	options: CodingAgentToolDefinition<TParameters, TDetails>,
 ): CodingAgentHarnessTool {
 	const { definition, getContext } = options;
+	const experimentalSampling = getExperimentalToolSampling();
 	return {
 		...definition,
 		promptSnippet: definition.promptSnippet,
 		promptGuidelines: definition.promptGuidelines ? [...definition.promptGuidelines] : undefined,
+		// Compose rather than double-wrap: a definition that already constrains its
+		// own sampling (including an explicit `false` opt-out, e.g. a structured-output
+		// tool constraining its caller-supplied schema) keeps that constraint; only
+		// unconstrained definitions pick up the experimental strict default. When
+		// neither applies the key stays absent — key presence is semantic downstream.
+		...(definition.constrainedSampling === undefined && experimentalSampling === undefined
+			? {}
+			: { constrainedSampling: definition.constrainedSampling ?? experimentalSampling }),
 		execute: async (toolCallId, params, signal, onUpdate) =>
 			definition.execute(toolCallId, params as Static<TParameters>, signal, onUpdate, await getContext()),
 	};
@@ -263,6 +273,7 @@ function createHarnessSessionManager(metadataId: string, sessionFile: string | u
 		getEntries: () => unsupportedHarnessOperation("sessionManager.getEntries()"),
 		getTree: () => unsupportedHarnessOperation("sessionManager.getTree()"),
 		getSessionName: () => unsupportedHarnessOperation("sessionManager.getSessionName()"),
+		getSessionNameState: () => unsupportedHarnessOperation("sessionManager.getSessionNameState()"),
 	};
 }
 

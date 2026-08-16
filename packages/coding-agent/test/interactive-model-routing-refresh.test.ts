@@ -34,7 +34,11 @@ function createMode(
 		getModelCandidates: InteractiveModeBase.prototype.getModelCandidates,
 		session: {
 			scopedModels,
-			modelRuntime: { refresh, getAvailableSnapshot },
+			modelRuntime: {
+				refresh,
+				getAvailableSnapshot,
+				getCatalogInputsGeneration: () => 0,
+			},
 		},
 	};
 }

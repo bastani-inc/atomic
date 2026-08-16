@@ -147,6 +147,8 @@ export interface StageRunnerOpts {
 	defaultSessionDir?: string;
 	/** Internal: notifies the executor when an in-flight fallback changes model/fast metadata. */
 	onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
+	/** Internal: persist stage-session identity once the SDK has created its path. */
+	onSessionReady?: () => void | Promise<void>;
 }
 
 export interface InternalStageContext extends StageContext {

@@ -3,7 +3,16 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { buildSkillInjection, clearSkillCache, resolveSkills } from "../../packages/subagents/src/agents/skills.js";
+import { buildSkillCatalog } from "../../packages/coding-agent/src/core/skill-catalog.js";
+import type { Skill } from "../../packages/coding-agent/src/core/skills.js";
+import { createSyntheticSourceInfo } from "../../packages/coding-agent/src/core/source-info.js";
+import { skillsWarning } from "../../packages/subagents/src/agents/agent-management-helpers.js";
+import {
+	buildSkillInjection,
+	clearSkillCache,
+	resolveSkills,
+	resolveSkillsFromCatalog,
+} from "../../packages/subagents/src/agents/skills.js";
 import { moduleDir } from "../helpers/runtime.js";
 
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
@@ -90,11 +99,90 @@ describe("subagent skill resolution", () => {
 		assert.match(result.resolved[0]?.content ?? "", /# Project TDD/);
 	});
 
+	test("resolves qualified selectors through the live loader catalog without bare-name fallback", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagents-skills-catalog-"));
+		cleanupPaths.add(cwd);
+		const userPath = join(cwd, "user", "SKILL.md");
+		const builtinPath = join(cwd, "builtin", "SKILL.md");
+		mkdirSync(join(userPath, ".."), { recursive: true });
+		mkdirSync(join(builtinPath, ".."), { recursive: true });
+		writeFileSync(userPath, "---\nname: tdd\ndescription: User TDD\n---\n\nUser body\n", "utf-8");
+		writeFileSync(builtinPath, "---\nname: tdd\ndescription: Builtin TDD\n---\n\nBuiltin body\n", "utf-8");
+		const makeSkill = (filePath: string, bundled: boolean): Skill => ({
+			name: "tdd",
+			description: bundled ? "Builtin TDD" : "User TDD",
+			filePath,
+			baseDir: join(filePath, ".."),
+			disableModelInvocation: false,
+			sourceInfo: createSyntheticSourceInfo(filePath, {
+				source: bundled ? "/packages/subagents" : "local",
+				scope: bundled ? "temporary" : "user",
+				configurationOrigin: bundled ? "bundled" : "atomic",
+			}),
+		});
+		const user = makeSkill(userPath, false);
+		const builtin = makeSkill(builtinPath, true);
+		const catalog = buildSkillCatalog([user, builtin], [user]);
+
+		const exact = resolveSkillsFromCatalog(["tdd@builtin"], catalog, cwd);
+		const unknown = resolveSkillsFromCatalog(["tdd@missing"], catalog, cwd);
+
+		assert.deepEqual(exact.missing, []);
+		assert.equal(exact.resolved[0]?.name, "tdd@builtin");
+		assert.equal(exact.resolved[0]?.path, builtinPath);
+		assert.match(exact.resolved[0]?.content ?? "", /Builtin body/);
+		assert.deepEqual(unknown.resolved, []);
+		assert.deepEqual(unknown.missing, ["tdd@missing"]);
+		assert.equal(skillsWarning(cwd, ["tdd@builtin"], catalog), undefined);
+		assert.equal(skillsWarning(cwd, ["tdd@missing"], catalog), "Warning: skills not found: tdd@missing.");
+	});
+
 	test("does not resolve the builtin subagent orchestration skill for child injection", () => {
 		const result = resolveSkills(["subagent"], repoRoot);
 
 		assert.deepEqual(result.resolved, []);
 		assert.deepEqual(result.missing, ["subagent"]);
+	});
+
+	test("does not inject qualified subagent orchestration selectors through the catalog", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagents-skills-orchestration-"));
+		cleanupPaths.add(cwd);
+		const userPath = join(cwd, "user", "SKILL.md");
+		const builtinPath = join(cwd, "builtin", "SKILL.md");
+		mkdirSync(join(userPath, ".."), { recursive: true });
+		mkdirSync(join(builtinPath, ".."), { recursive: true });
+		writeFileSync(userPath, "---\nname: subagent\ndescription: User subagent\n---\n\nUser orchestration\n", "utf-8");
+		writeFileSync(
+			builtinPath,
+			"---\nname: subagent\ndescription: Builtin subagent\n---\n\nBuiltin orchestration\n",
+			"utf-8",
+		);
+		const makeSkill = (filePath: string, bundled: boolean): Skill => ({
+			name: "subagent",
+			description: bundled ? "Builtin subagent" : "User subagent",
+			filePath,
+			baseDir: join(filePath, ".."),
+			disableModelInvocation: false,
+			sourceInfo: createSyntheticSourceInfo(filePath, {
+				source: bundled ? "/packages/subagents" : "local",
+				scope: bundled ? "temporary" : "user",
+				configurationOrigin: bundled ? "bundled" : "atomic",
+			}),
+		});
+		const catalog = buildSkillCatalog(
+			[makeSkill(userPath, false), makeSkill(builtinPath, true)],
+			[makeSkill(userPath, false)],
+		);
+
+		const qualified = resolveSkillsFromCatalog(["subagent@builtin"], catalog, cwd);
+		const filesystemQualified = resolveSkills(["subagent@builtin"], cwd);
+
+		assert.deepEqual(qualified.resolved, []);
+		assert.deepEqual(qualified.missing, ["subagent@builtin"]);
+		assert.equal(catalog.resolve("subagent@builtin").ok, true);
+		assert.deepEqual(filesystemQualified.resolved, []);
+		assert.deepEqual(filesystemQualified.missing, ["subagent@builtin"]);
+		assert.equal(skillsWarning(cwd, ["subagent@builtin"], catalog), "Warning: skills not found: subagent@builtin.");
 	});
 
 	test("documents the debugger model, skills, tools, and coordination", () => {

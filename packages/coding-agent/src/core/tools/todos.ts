@@ -9,15 +9,18 @@
  *   { id, title, tags, status, created_at, assigned_to_session }
  * - After the JSON block comes optional markdown body text separated by a blank line.
  */
+import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { executeTodoToolAction } from "./todos-execute.ts";
 import { getTodosDirLabel } from "./todos-paths.ts";
 import { renderTodoCall, renderTodoResult } from "./todos-render.ts";
 import { TodoParams, type TodoToolDetails } from "./todos-types.ts";
 
-export const DEFAULT_PROMPT_GUIDANCE: string[] = [
-	"**To-do management**: If the user has a complex task that can be broken down into actionable steps, use the `todo` tool to create a task list before proceeding. This ensures clarity and alignment with the user's goals and that you have a way to track your work and ensure you are meeting the user's expectations.",
-];
+export const todoToolSystemPromptContribution = Object.freeze({
+	guidelines: Object.freeze([
+		"**To-do management**: If the user has a complex task that can be broken down into actionable steps, use the `todo` tool to create a task list before proceeding. This ensures clarity and alignment with the user's goals and that you have a way to track your work and ensure you are meeting the user's expectations.",
+	] as const),
+} as const);
 
 export function createTodoToolDefinition(
 	cwd: string = process.cwd(),
@@ -32,8 +35,9 @@ export function createTodoToolDefinition(
 			"Title is the short summary; body is long-form markdown notes (update replaces, append adds). " +
 			"Todo ids are shown as TODO-<hex>; id parameters accept TODO-<hex> or the raw hex filename. " +
 			"Claim tasks before working on them to avoid conflicts, and close them when complete.",
+		...experimentalToolSamplingProperty(),
 		parameters: TodoParams,
-		promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
+		promptGuidelines: [...todoToolSystemPromptContribution.guidelines],
 		execute: (_toolCallId, params, _signal, _onUpdate, ctx) => executeTodoToolAction(params, ctx),
 		renderCall: renderTodoCall,
 		renderResult: renderTodoResult,

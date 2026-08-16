@@ -31,7 +31,7 @@ import { sleep } from "../helpers/runtime.js";
 type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => void | Promise<void>;
 
 const SESSION_ID = "019f0000-aaaa-7bbb-8ccc-dddddddddddd";
-const SELF_ALIAS = "subagent-chat-019f0000";
+const SELF_ALIAS = "subagent-chat-019f0000-aaaa-7bbb-8ccc-dddddddddddd";
 
 function fixture(options: { rejectLateRoutes?: number } = {}) {
 	const handlers = new Map<string, Handler[]>();

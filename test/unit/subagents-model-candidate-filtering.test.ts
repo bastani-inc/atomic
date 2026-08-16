@@ -106,6 +106,7 @@ describe("subagent pre-spawn model candidate filtering", () => {
 				maxSubagentDepths: [0],
 				availableModels: [{ provider: "provider-b", id: "working", fullId: "provider-b/working" }],
 				knownModelProviders,
+				resolveCandidateModel: () => undefined,
 				modelOverrides: ["provider-a/stalled"],
 				behaviors: [{ output: false, outputMode: "inline", reads: false, progress: false, skills: false }],
 				firstProgressIndex: -1,
@@ -137,6 +138,98 @@ describe("subagent pre-spawn model candidate filtering", () => {
 
 			await runForegroundParallelTasks(input);
 			assert.deepEqual(captured, [{ knownModelProviders }]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	test("foreground parallel tasks keep model and thinking metadata per step", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-parallel-metadata-"));
+		try {
+			const modelOverrides = ["openai/gpt-5.1-codex", "anthropic/claude-sonnet-4"];
+			const input: Parameters<typeof runForegroundParallelTasks>[0] = {
+				tasks: [
+					{ agent: "fake-worker", task: "Codex task" },
+					{ agent: "fake-worker", task: "Claude task" },
+				],
+				taskTexts: ["Codex task", "Claude task"],
+				agents: [agentConfig()],
+				ctx: { cwd: dir } as Parameters<typeof runForegroundParallelTasks>[0]["ctx"],
+				intercomEvents: {} as Parameters<typeof runForegroundParallelTasks>[0]["intercomEvents"],
+				signal: new AbortController().signal,
+				runId: "parallel-metadata",
+				sessionDirForIndex: () => undefined,
+				sessionFileForIndex: () => undefined,
+				shareEnabled: false,
+				artifactConfig: {
+					enabled: false,
+					includeInput: false,
+					includeOutput: false,
+					includeJsonl: false,
+					includeMetadata: false,
+					cleanupDays: 0,
+				},
+				artifactsDir: dir,
+				paramsCwd: dir,
+				maxSubagentDepths: [0, 0],
+				availableModels: [],
+				knownModelProviders: [],
+				resolveCandidateModel: () => undefined,
+				modelOverrides,
+				behaviors: [
+					{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },
+					{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },
+				],
+				firstProgressIndex: -1,
+				controlConfig: {
+					enabled: false,
+					needsAttentionAfterMs: 1,
+					activeNoticeAfterMs: 1,
+					failedToolAttemptsBeforeAttention: 1,
+					notifyOn: [],
+					notifyChannels: [],
+				},
+				concurrencyLimit: 2,
+				liveResults: [],
+				liveProgress: [],
+				runtime: {
+					async runSync(_cwd, _agents, agentName, task, options) {
+						const model = options.modelOverride;
+						const thinking = model?.startsWith("openai/") ? "high" : "low";
+						return {
+							agent: agentName,
+							task,
+							status: "ok",
+							messages: [],
+							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+							model,
+							thinking,
+							finalOutput: "ok",
+							progress: {
+								index: options.index ?? 0,
+								agent: agentName,
+								status: "completed",
+								task,
+								model,
+								thinking,
+								recentTools: [],
+								recentOutput: [],
+								toolCount: 0,
+								tokens: 0,
+								durationMs: 0,
+							},
+						};
+					},
+				},
+			};
+
+			const results = await runForegroundParallelTasks(input);
+			assert.deepEqual(
+				results.map((result) => ({ model: result.model, thinking: result.thinking })),
+				[
+					{ model: modelOverrides[0], thinking: "high" },
+					{ model: modelOverrides[1], thinking: "low" },
+				],
+			);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

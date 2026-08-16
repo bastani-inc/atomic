@@ -1,5 +1,6 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.ts";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 
 /**
@@ -150,7 +151,13 @@ export class WrappingSelect implements Component {
 			const item = this.items[i];
 			if (!item) continue;
 			const isActive = i === this.selectedIndex && this.focused;
-			lines.push(...this.renderItem(item, i, isActive, width, numberWidth));
+			const itemLines = this.renderItem(item, i, isActive, width, numberWidth);
+			// Tell a bounding host which row it must not crop away (#2378). The mark
+			// is zero-width and the host strips it; see OVERLAY_ACTIVE_ROW_MARKER.
+			if (isActive && itemLines.length > 0) {
+				itemLines[0] = `${itemLines[0] ?? ""}${OVERLAY_ACTIVE_ROW_MARKER}`;
+			}
+			lines.push(...itemLines);
 		}
 
 		if (this.hasItemsOutsideWindow(startIndex, endIndex)) {

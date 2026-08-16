@@ -385,6 +385,7 @@ A natural-language request for a worktree does not configure runner isolation. I
 
 ```ts
 // .atomic/workflows/issue-to-pr.ts
+import { spawnSync } from "node:child_process";
 import { workflow } from "@bastani/workflows";
 import { Type, type Static } from "typebox";
 
@@ -396,12 +397,22 @@ const reviewDecision = Type.Object(
   { additionalProperties: false },
 );
 
+function spawnCommand(argv: readonly string[], cwd: string) {
+  const [command, ...args] = argv;
+  if (command === undefined) throw new Error("spawnCommand requires a command");
+  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  // A command that could not be spawned at all arrives on `error` with a null
+  // status, so it has to be raised here or it reads as an ordinary failure.
+  if (result.error) throw result.error;
+  return result;
+}
+
 function runCommand(argv: readonly string[], cwd: string): string {
-  const result = Bun.spawnSync([...argv], { cwd, stdout: "pipe", stderr: "pipe" });
-  const stdout = result.stdout.toString().trim();
-  const stderr = result.stderr.toString().trim();
-  if (result.exitCode !== 0) {
-    throw new Error(`${argv.join(" ")} failed (${result.exitCode})\n${stderr || stdout}`);
+  const result = spawnCommand(argv, cwd);
+  const stdout = (result.stdout ?? "").trim();
+  const stderr = (result.stderr ?? "").trim();
+  if (result.status !== 0) {
+    throw new Error(`${argv.join(" ")} failed (${result.status})\n${stderr || stdout}`);
   }
   return stdout;
 }
@@ -430,12 +441,12 @@ export default workflow({
     const baseRef = ctx.inputs.base_ref;
 
     await ctx.tool("select-feature-branch", { branch, base_ref: baseRef }, async () => {
-      const probe = Bun.spawnSync(
+      const probe = spawnCommand(
         ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-        { cwd, stdout: "pipe", stderr: "pipe" },
+        cwd,
       );
-      if (probe.exitCode === 0) return runCommand(["git", "switch", branch], cwd);
-      if (probe.exitCode !== 1) throw new Error(probe.stderr.toString().trim());
+      if (probe.status === 0) return runCommand(["git", "switch", branch], cwd);
+      if (probe.status !== 1) throw new Error((probe.stderr ?? "").trim());
       return runCommand(["git", "switch", "-c", branch, baseRef], cwd);
     });
 
@@ -726,7 +737,7 @@ Atomic bundles nine workflows: six reusable control-flow patterns, two autonomou
 | `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
 | `goal` | Durable goal ledger → bounded sub-agent orchestration → parallel review → deterministic reducer. | Autonomous implementation that needs receipts and reviewer-gated completion. |
 | `ralph` | Prompt refinement → codebase research → delegated implementation → multi-model review loop. | Research-first autonomous implementation with bounded review and repair. |
-| `open-claude-design` | Guided discovery and reference research → HTML generation → feedback loop → export and handoff. | UI, page, component, theme, or design-token work. |
+| `open-claude-design` | Guided discovery and reference research → HTML generation → live review session → export and handoff. | UI, page, component, theme, or design-token work. |
 
 Across these builtins, model-facing stages use compact, outcome-first contracts tuned for GPT-5.6, Claude Opus 5, and Claude Fable 5. Long artifacts and receipts are rendered before the final instruction, reporting stages ground completion claims in current tool evidence, and user-facing or downstream reports have explicit shape and length bounds. Orchestrators delegate only genuinely independent work that is too large for a handful of tool calls, rather than spawning agents to recheck their own work.
 
@@ -820,13 +831,20 @@ Inputs:
 |---|---|---|---|---|
 | `prompt` | text | yes | — | What to design. The discovery stage refines the brief, output type, and references. |
 | `discover_references` | boolean | no | `true` | Discover current design references and feed them to generation. |
-| `max_refinements` | number | no | `3` | Maximum generate/user-feedback loop iterations. |
 
-The workflow establishes or loads project design context, extracts user-provided references, can browse curated galleries, writes a live `preview.html`, and keeps separate generator and feedback session lineages. It exports an HTML spec and implementation handoff after approval. Browser-backed preview and feedback use the `playwright-cli` skill when available. Research context moves between stages as artifact files rather than inline prompt payloads: the composed project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery` reads the design context, and the generate and exporter stages read both files via `reads` with explicit read instructions. Only small bounded payloads — verbatim user annotations and the word-capped prior design summary — travel inline, so one oversized research result cannot become one oversized prompt message.
+The workflow establishes or loads project design context, extracts user-provided references, can browse curated galleries, writes one live `preview.html`, and exports an HTML spec and implementation handoff after the review session. Browser-backed preview and review use the `playwright-cli` skill when available. Research context moves between stages as artifact files rather than inline prompt payloads: the composed project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery`, `generate-1`, and `exporter` read the required files via `reads` with explicit read instructions.
 
-**Where the feedback gate appears.** The browser review inside a `user-feedback-*` stage is a long-poll, not an `awaiting_input` graph node, so the stage itself reports `running` while it waits. Each round therefore pauses first at a deterministic run-level prompt: the needs-attention badge fires, and the prompt names the preview path and `file://` URL. Answer `Start live review` to begin the browser session — the stage prints the live `http://` review URL in its first lines of output, visible via `/workflow connect <run-id>` — or `Skip remaining review rounds and export as-is` to accept the current design and move to export. In headless runs the gate is skipped and the review degrades as before. A feedback stage that fails outright fails the run; only a completed review with no requested changes counts as approval.
+**The run-level gate.** The browser review is a long-poll, not an `awaiting_input` graph node, so the run first pauses at a deterministic prompt that names the preview path and `file://` URL. Answer `Start live review` to open the browser session — the session-start stage prints the live `http://` review URL in its first lines of output, visible via `/workflow connect <run-id>` — or `Skip remaining review rounds and export as-is` to export the current preview without opening a session. In headless runs the gate is skipped.
 
-Declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. It has no implicit `result` output.
+**One live session, then export.** The `live` session is unbounded: the user picks elements, receives three on-brand variants, accepts edits that are written into `preview.html` in place, and steers the page until leaving. The workflow-owned loop ends on the helper's `exit` event, and the exporter receives the preview exactly as it stands. There is no second opinion, decision stage, or later review session.
+
+**The workflow owns the poll loop.** A `user-feedback-N-start` stage boots the session and prints the review URL, then durable `live-poll-N-M` tool nodes poll the helper. `live-generate-*`, `live-steer-*`, `live-manual_edit_apply-*`, and `live-variant_mount_failed-*` stages handle exactly the events that need a model; `live-reply-N-M` tool nodes acknowledge them with the event id followed by the reply status. Successful `variant_mounted` events are journal-only. `accept`, `discard`, and `prefetch` mint no model stage, and `timeout` is absorbed inside the poll node. A nonzero helper exit fails the workflow instead of being mistaken for a timeout. The loop ends only on `exit`; no summary stage runs afterward. The Impeccable skill ships inside Atomic and is always the copy used: the loop depends on `live-poll.mjs`'s CLI surface, reply ids and statuses, and event vocabulary, and the bundled scripts are versioned and tested with this workflow. A project-vendored copy is deliberately ignored. There is no model-driven fallback.
+
+**Live roots, adapters, and local boundaries.** Impeccable 4.1.1 resolves the selected app root once and reuses its persisted root manifest across helpers. Live injection supports SvelteKit, Nuxt, TanStack Start, Astro, Next.js, Vite, and static HTML. Configured files and generated adapter paths must stay project-relative, inside the real app root, and outside symlinked parents; invalid persisted roots fail before a helper changes directory or writes. The system-browser helper accepts only loopback HTTP(S) review URLs.
+
+**Ending the review is the user's job.** The session waits through any amount of silence — a poll timeout is not an ending — so the run advances only when the user clicks exit in the Impeccable overlay, closes the browser tab, or says `exit live`. The run-level gate says so before the session opens, and the session-start stage prints it again directly under the live review URL. Ending the session exports the design as it then stands: there is no further round and no confirmation step.
+
+No `<artifact_dir>/feedback/` directory, JSON record, Markdown copy, or annotated-snapshot copy is written. The declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. It has no implicit `result` output.
 
 ```text
 /workflow open-claude-design prompt="Refresh the settings page hierarchy"
@@ -848,6 +866,8 @@ Run open-claude-design to refresh the settings page hierarchy.
 If required inputs are missing or ambiguous, Atomic asks for them or opens the inline picker. Named runs execute in the background and return a full run id.
 
 ## Writing a Workflow
+
+**A workflow executes inside whichever host is running Atomic, so its code has to work on both.** Standalone binaries are Bun-compiled while npm installs run under Node, and the active host is what loads your workflow file — so a `Bun.*` global reaches a workflow only when Atomic itself is running under Bun, and fails with `Bun is not defined` otherwise. Installing Bun separately does not change this. Write workflow code against APIs both hosts provide: `node:child_process` instead of `Bun.spawn`/`Bun.spawnSync`, `node:fs` instead of `Bun.file`, `node:path` instead of Bun's path helpers. Every example on this page follows that rule; a snippet that deliberately requires one host is marked with a `host-specific:` comment naming it.
 
 Workflow files are TypeScript modules that export a workflow definition:
 
@@ -921,6 +941,7 @@ Authoring basics:
 - Workflow names normalize for lookup: trim, lowercase, convert whitespace/underscore to hyphen, remove other punctuation, and collapse hyphens.
 - `description` sets the listing text.
 - `autoAttach: true` opens the graph overlay when an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. Only exact `true` is retained on the compiled definition; omission and `false` do not opt a definition into auto-attachment. Existing input-form launch behavior is unchanged.
+- `heartbeatIntervalMinutes` declares the workflow's heartbeat cadence in minutes. Omission uses the `15`-minute default; `0` disables heartbeats for the workflow. Negative and non-finite values are rejected when the definition is authored. While a run is active, each boundary at `startedAt + n × interval` delivers a heartbeat card to the main chat as a queued steer that never interrupts an in-flight response. See [`heartbeatIntervalMinutes`](#heartbeatintervalminutes).
 - `inputs` declares typed user inputs.
 - `worktreeFromInputs` optionally maps input names to workflow-wide reusable Git worktree defaults.
 - `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
@@ -1208,7 +1229,7 @@ interface StageSessionRuntime {
 
 A session announces its queue by `queue_update`, so a queue that exists before Atomic's listeners reach that session is announced to nobody — which happens when a retiring session hands its pending messages to the session replacing it, and when a retained session is reopened for post-mortem chat holding what it was queued. Atomic reads these two methods once, as it attaches a session, and replays the missed snapshot to that stage's listeners; every later change still arrives as an ordinary event. An adapter that omits them loses nothing it had before: only a queue predating the attach is invisible, and a session that starts empty never had one.
 
-Externally produced traffic has a separate lifecycle rule. Intercom messages and async bash/subagent completion notices received while a workflow stage generation is still open are admitted through the stage AgentSession's native steering/follow-up queue. For a busy stage, admission into the generation boundary happens synchronously before the exact foreground subagent owner's probe/commit detach handshake; model-visible queue insertion waits inside that admitted delivery until the handshake is claimed or falls back after an unclaimed/vanished owner. A commit accepted within a parallel foreground group releases aggregate supervision for every active sibling while retaining their process and eventual-result ownership. Reserving admission before the asynchronous handshake prevents terminal close from overtaking an in-flight Intercom delivery, while waiting inside the reservation prevents a blocking child request from queueing behind either a single foreground tool call or a parallel aggregate still waiting on another child. The stage drains already-admitted work before publishing its terminal snapshot, including schema-backed turns that have already called `structured_output`.
+Externally produced traffic has a separate lifecycle rule. Intercom messages and subagent completion notices received while a workflow stage generation is still open are admitted through the stage AgentSession's native steering/follow-up queue. For a busy stage, admission into the generation boundary happens synchronously before the exact foreground subagent owner's probe/commit detach handshake; model-visible queue insertion waits inside that admitted delivery until the handshake is claimed or falls back after an unclaimed/vanished owner. A commit accepted within a parallel foreground group releases aggregate supervision for every active sibling while retaining their process and eventual-result ownership. Reserving admission before the asynchronous handshake prevents terminal close from overtaking an in-flight Intercom delivery, while waiting inside the reservation prevents a blocking child request from queueing behind either a single foreground tool call or a parallel aggregate still waiting on another child. The stage drains already-admitted work before publishing its terminal snapshot, including schema-backed turns that have already called `structured_output`.
 
 Closing the generation is atomic with admission: a notification admitted first belongs to that stage, while ordinary detached notifications arriving after close cannot reopen or mutate the completed stage and are surfaced once through the main-chat notification path instead. A blocking sibling `intercom.ask` is the deliberate exception: when the completed stage retains a valid conversation, Atomic schedules a post-mortem turn in that conversation so it can inspect the exact ask and reply without changing terminal workflow state. Failed running-stage admission and failed post-mortem admission return correlated actionable errors to the asker instead of consuming the full reply timeout.
 
@@ -1887,6 +1908,36 @@ readonly autoAttach?: boolean;
 
 Exact `true` opts interactive top-level named launches through `/workflow <name>` and the registered `workflow` tool into opening the graph overlay immediately. Omission and `false` do not opt in. This option does not affect headless launches, nested `ctx.workflow(...)` calls, or the existing input-form launch path. Compiled definitions retain this field only as literal `true`.
 
+### `heartbeatIntervalMinutes`
+
+```typescript
+readonly heartbeatIntervalMinutes?: number;
+```
+
+The heartbeat cadence for the workflow, in minutes, measured from the run's persisted start time. Omission resolves to the `15`-minute default and `0` explicitly disables heartbeats; negative and non-finite values are rejected with a `TypeError` when the definition is authored. Every compiled definition carries the resolved value, so consumers read a number rather than re-deriving the default.
+
+```ts
+export default workflow({
+  name: "audit-auth",
+  description: "Audit the authentication module.",
+  heartbeatIntervalMinutes: 30,
+  outputs: {},
+  run: async (ctx) => ({}),
+});
+```
+
+That example heartbeats every 30 minutes: a run started at 09:00 raises boundaries at 09:30, 10:00, 10:30, and so on, until it reaches a terminal state. Boundaries are `startedAt + n × interval` computed from the run's persisted start time, never from the previous delivery, so a slow delivery, a retry, or a restart cannot drift the cadence.
+
+Each heartbeat arrives in the main chat as a `workflows:workflow-heartbeat` card naming the workflow, the run id, the cadence, and elapsed run time, with `/workflow status <runId>` as the inspection hint. It is delivered as a queued steer that waits for the parent's next protocol-safe boundary, so it never interrupts a response that is already streaming. Only one heartbeat per run is outstanding at a time: an outstanding heartbeat holds its slot until its card is actually consumed into the conversation — not merely until the parent's turn ends, which can happen while the card is still queued or its queue is paused — so a boundary that falls before that is skipped rather than stacked behind it, and the cadence then resumes at the first future boundary. Pickup resolves the typed `workflows:workflow-heartbeat` entry and releases only the exact `runId + scheduledAt` identity, never a rendered-text match, so another custom message cannot free the slot by copying the card text. However long the parent stays busy, and however often its queue is paused, at most one unread heartbeat per run is ever waiting on a host that reports message consumption, which Atomic's chat host does.
+
+Paused runs emit nothing and are never backfilled. A resumed or restarted run picks up at the first future boundary on the original cadence rather than bursting the boundaries it missed. Holding to the *original* cadence across a durable resume takes one stored value: a resume re-dispatches under the original run id but records a fresh start time, so each run writes a single reserved durable anchor record as soon as it has durable progress of its own, before its first boundary comes due. The anchor is only ever read as the earlier of itself and the run's current start time, so it can restore the original cadence but can never move a boundary or raise one that was missed. A run that reaches a terminal state is re-checked immediately before a heartbeat is queued, again immediately before it is processed, and again before every delivery attempt including retries, so a run that finishes mid-flight stays silent. A card the host has already accepted into the parent's queue is past all three of those checks, so it is checked once more when the parent reads it — see the terminal-cleanup paragraphs below. When several runs are due at once, they reach the parent in `scheduledAt` order with the run id as the stable tie-break, and a heartbeat that has to be retried holds its place rather than letting a later one overtake it. Nested workflow runs never heartbeat the parent chat; only top-level runs do. A run keeps the cadence its own definition was authored with: editing, renaming, deleting, or reloading a workflow changes what the next launch uses, and leaves runs already in flight on their launch cadence — including across a durable resume, because the anchor record carries that cadence alongside the start time. A run that launched with heartbeats disabled and is later resumed in a new process is the one exception: a disabled run writes no durable record at all, so nothing preserves that it launched disabled and it adopts whatever the workflow then declares. Cadences below a millisecond are accepted; each raises its next boundary at the finest instant the clock can represent, and the one-outstanding-heartbeat rule still bounds delivery to one card per parent turn. Heartbeat cadences carry a documented representable upper limit. Above roughly 3 × 10^303 minutes, `startedAt + interval` exceeds the largest finite timestamp a double can hold, so the series has no first boundary: nothing is scheduled, no durable record is written, and `ATOMIC_WORKFLOW_DEBUG=1` says so. Such a cadence is still a valid positive interval and is still reported as authored, but it delivers no heartbeat. `0` remains the only value that declares heartbeats off.
+
+When a run reaches a terminal state — completed, failed, blocked, skipped, cancelled, or killed — one cleanup pass drops everything the cadence held for it: its armed wake-up, its next scheduled boundary, its outstanding slot, any heartbeat of its own still waiting in the delivery queue along with the retry timer that belonged to it, and its cadence and durable-anchor memos. Cleanup is idempotent: running it again on the same run creates no state, resurrects no schedule, and reports that there was nothing left to clear. It reacts to the run's observed state rather than to a transition event, which is what also makes it the recovery pass. At startup, and on every subsequent store change, a run that is already terminal has its stale durable anchor and any leftover queued record discarded rather than replayed, and its anchor is neither read nor rewritten; a run the store no longer holds at all is dropped the same way. Active runs are untouched by another run's cleanup, and recovery still selects the first future boundary rather than replaying a missed one ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
+
+A recoverable provider or rate-limit block is not the terminal `blocked` status: the run remains stored as `running` and resumable. It raises no new heartbeat while blocked, but keeps its cadence state and any card already waiting with the parent; cleanup runs only once the run's own status becomes terminal.
+
+A heartbeat the host has already accepted into the parent's queue is beyond that pass, because nothing withdraws a queued message. It is invalidated instead at the moment the parent reads it: the typed card's exact `runId + scheduledAt` identity must still be pending for a current nonterminal run. If the run has since reached a terminal state, this process no longer knows that run, or a durable resume has reused the run id with a later pending boundary, the old heartbeat is excluded from the model's context and cannot steer the parent. That covers all ways a stale card survives — one parked through a long turn while its run finished, one recovered from a previous process at startup, and one admitted before a same-ID durable resume. The card already rendered in your transcript is deliberately left alone: it is a true record that the heartbeat was raised, and rewriting scrollback after the fact would be worse than leaving it. Only the model-facing steer is invalidated.
+
 ### `inputs`
 
 ```typescript
@@ -1963,6 +2014,7 @@ interface WorkflowDefinition<
   readonly normalizedName: string;
   readonly description: string;
   readonly autoAttach?: true;
+  readonly heartbeatIntervalMinutes: number;
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };
@@ -2407,7 +2459,7 @@ Writes stage/task output to a path or disables output persistence with `false`. 
 
 The runner writes the stage's **final assistant message** to `output` after the stage ends, so that path belongs to the runner. A stage that declares `output:` also automatically gets a full, rendered, line-oriented transcript of its session, and one appended instruction telling the model that its final message becomes the artifact — the workflow definition does not need to describe any of this.
 
-An admitted external turn (for example, an async subagent completion) can arrive while the stage is still running and remains visible both to the model and in the companion transcript. The runner does not try to work out which turn was "really" the deliverable: that is an inference about intent, and an earlier revision that scored candidates by byte size got it wrong in both directions. If a late turn displaces the intended content, the transcript still holds it.
+An admitted external turn (for example, a subagent completion) can arrive while the stage is still running and remains visible both to the model and in the companion transcript. The runner does not try to work out which turn was "really" the deliverable: that is an inference about intent, and an earlier revision that scored candidates by byte size got it wrong in both directions. If a late turn displaces the intended content, the transcript still holds it.
 
 The companion transcript is written once under the durable Atomic config root at `~/.atomic/workflows/runs/<runId>/transcripts/` (or the equivalent configured agent root; `ATOMIC_WORKFLOW_ARTIFACT_DIR` overrides that root). It is never placed inside the repository tree or OS temporary storage: a home-scoped durable location survives both worktree deletion and OS temp purges, and staying outside the repo keeps full tool output — which may contain secrets — from being committed accidentally. Run-scoped artifact directories are pruned only when their durable/live run record is terminal (or the directory is an unowned orphan) and older than the exported `WORKFLOW_ARTIFACT_RETENTION_MS` policy. Running, paused, quit, blocked, and awaiting-input runs are exempt indefinitely because their artifacts are live resume dependencies. A **failed** run is terminal and does age out: it stays retryable, but the retention window is the grace period it gets, otherwise repeated recoverable failures would accumulate artifacts forever. When a terminal durable owner is aged out, the durable entry is deleted first; if authoritative deletion is unavailable or refuses, the artifact directory is preserved. Goal ledgers, Ralph implementation notes, and QA video paths share that same durable root and retention policy. The receipt names both absolute paths. Search the transcript with `rg`, then read only the narrow line ranges you need; do not read the whole transcript into a downstream prompt. The transcript is a secondary searchable record; the output artifact remains the curated handoff.
 
@@ -2631,7 +2683,7 @@ Sends a normal follow-on user turn to the retained stage session. This method st
 
 Native sessions accept strings or text/image content blocks. Non-native fallback adapters accept only strings and reject block arrays; `deliverAs` affects streaming delivery only, and follow-on turns retain the stage MCP scope.
 
-Externally produced Intercom and async bash/subagent notices admitted before the generation closes drain through the same session. When a busy stage owns a foreground subagent, exact-owner detach gets first refusal before Intercom enters this boundary; unclaimed traffic then uses normal stage admission. Traffic arriving after the atomic close boundary cannot reopen the completed stage and is surfaced once through the main-chat path instead.
+Externally produced Intercom and subagent notices admitted before the generation closes drain through the same session. When a busy stage owns a foreground subagent, exact-owner detach gets first refusal before Intercom enters this boundary; unclaimed traffic then uses normal stage admission. Traffic arriving after the atomic close boundary cannot reopen the completed stage and is surfaced once through the main-chat path instead.
 
 See [Stage follow-on user messages](#stage-follow-on-user-messages) for the full lifecycle and schema-backed example.
 
@@ -2762,6 +2814,8 @@ interface WorkflowModelAttempt extends WorkflowSerializableObject {
   readonly usage?: WorkflowModelUsage;
 }
 ```
+
+When a stage explicitly configures `model` or `fallbackModels`, each recorded attempt can include usage aggregated from meaningful assistant responses in that attempt. The four token buckets remain separate, `cost` sums the provider-reported total cost, and `turns` counts the assistant usage records included in the aggregate. Usage from earlier retained or reattached session history is excluded, while billed error responses removed during a same-model retry remain attributed to that attempt. The `usage` property is omitted when the provider reports no meaningful token or cost signal. Stages that use only the default model without explicit fallback configuration do not currently create model-attempt records.
 
 ### `WorkflowDetails`
 
@@ -2974,12 +3028,13 @@ Surface behavior:
 - **Draft preservation** - Leaving a stage preserves unsent composer and prompt drafts and keeps pending custom questions unresolved so they reappear when you attach again.
 - **Queued-message survival** - Steering and follow-up entries queued from a stage chat live on the stage session, not on the pane. Detaching to the graph and reattaching rehydrates the pending `Steering:` / `Follow-up:` rows, and while you are detached the stage's graph node shows a `✉ N queued` badge so a pending message stays visible without attaching. The attached chat shows the pending text; the detached node shows only their count. Both read one projection that the stage handle keeps current from the session's complete `queue_update` snapshots, so rows and badge shrink together as the agent consumes entries. That projection is fed by the events rather than by a concrete Atomic `AgentSession`, so a stage backed by a custom `AgentSessionAdapter` keeps this behavior as long as it publishes ordinary `queue_update` events; each snapshot replaces the previous steering and follow-up lists rather than adding to them. A queue can also outlive the session holding it — a stage session that fails over to a fallback model hands its pending messages to the session replacing it, and a completed stage reopened as a post-mortem chat is restored holding whatever it was queued. Those messages were announced before the projection could reach the new session, so Atomic reads it once as it attaches and the rows and badge show them too.
 - **Reserved keys** - `ctrl+d` and `q` do not navigate workflow surfaces; `ctrl+d` keeps its ordinary editor or prompt behavior where applicable, and `q` remains printable in text-owning prompts. Existing `esc`, `ctrl+c`, and graph `h` close/hide controls are unchanged.
+- **Find in stage chat** - `ctrl+shift+f` in an attached stage chat opens a find box over *that* chat rather than the main transcript behind it. It searches the whole stage transcript, not the rows currently on screen, including every row of a long live answer still streaming and rows far above the window; the selected match is scrolled into view and highlighted with the same `searchMatchBg`/`searchMatchText` theme colors, underline, and inverse-and-bold current match the main transcript search uses. Live, paused, and read-only archived stage chats are all searchable; an archived question card has no transcript to search and declines the key. Opening, navigating, and closing route through the four `tui.altScreen.search*` actions alone — the bound `tui.altScreen.search` action outranks a scroll-shaped key, so a search remapped onto `pageUp` still opens the box — so remapping them moves the stage-chat search with them. `escape` (the default `searchClose`) closes the box only — it does not interrupt the stage or close the pane — and `ctrl+f` still queues a follow-up. Scrolling stays live underneath the box, and detaching with `ctrl+x`, a prompt, or a mounted question closes it.
 - **Wheel and trackpad** - While the workflow graph is active, vertical wheel/trackpad gestures pan it up and down, and horizontal gestures pan wide graphs left and right when the terminal exposes horizontal wheel events. Focused graph and stage-chat overlays receive those gestures through the fullscreen application route, so scrolling stays inside the active workflow surface instead of falling through to terminal or main-chat scrollback.
 - **Fullscreen mouse routing and selection** - A focused workflow graph or attached stage chat overlay receives wheel/trackpad and click input through the host's application-owned input route before the fullscreen viewport. Events the overlay does not consume fall through to pi-tui's viewport, while non-overlay focused components leave pi-tui's transcript scrolling, scrollbar interaction, and drag-selection path intact. Graph panning, stage-chat scrolling, node click-to-attach, and drag or multi-click selection therefore work without a separate selection mode. Copy uses OSC 52; terminals that refuse OSC 52 writes still support the modifier-drag bypass (Shift/Option, as provided by the terminal). `ctrl+t` is not a workflow control: focused workflow overlays leave it to the host `app.thinking.toggle` action, while inline tree selectors keep `app.tree.filter.noTools`.
 - **Tool and node detail** - Attached stage chats match main chat's tool-detail expansion behavior while keeping expansion state local to the workflow UI context. Press Ctrl+O (the configurable `app.tools.expand` binding) to expand every visible workflow node and tool card, including single, parallel, and nested subagent progress, current tool activity, and artifact paths; press it again to collapse them. The toggle works for active, completed, and archived stage views, including at the supported 40-column terminal minimum. A mounted prompt, custom question, or other input-owning overlay keeps the key instead of changing it.
 - **Footer context** - An attached live stage chat carries the main chat's current-folder and Git-branch identity into its themed footer and mirrors live extension status lines such as the MCP server indicator. Branch changes trigger a repaint through the host's cached footer provider, and extension status changes are read from that same provider rather than recomputed by the workflow UI.
 - **Working animation lifecycle** - Ordinary attached-stage work keeps the same exact one-cell `∀` visible while following the active workflow theme's dark → accent → bright/bold → accent → dark luminance ramp every 88ms. Every agent and SDK turn resets to the dark regular phase with a fresh lifecycle-relative cadence; turn, terminal, error, replacement, and disposal cleanup stop the active timer without stale repaint. In an eligible retained-stage chat, every accepted idle follow-up — including a workflow-authored `stage.sendUserMessage(...)` after a prior turn ended — shows Working on admission or attach, including while Atomic restores a saved retained conversation, and keeps it through prompt startup, pre-turn compaction, and agent handoff. Attaching or remounting mid-delivery paints immediately rather than waiting for the turn's first event. A message queued into a live turn with `followUp`/`steer` uses that turn's existing status instead of starting a new one. A no-turn result, prompt or restore error, or terminal completion removes it; once the last accepted post-terminal delivery settles, a leftover start cannot bring it back. An accepted manual retry clears stale status from the prior prompt before showing new pre-stream activity. `NO_COLOR` retains regular/bold activity without foreground-color escapes. Reduced motion uses a static regular accent `∀` without an animation timer; factual automatic retry, fallback, compaction, cancellation, and error copy retains precedence.
-- **Async statusline** - If an async/background subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors the async summary so the background run remains visible; hide the graph with `h`, leave it with `ctrl+x`, or reconnect later to return to the full below-editor async widget.
+- **Subagent statusline** - If a subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors its summary so the run remains visible; hide the graph with `h`, leave it with `ctrl+x`, or reconnect later to return to the full below-editor widget.
 - **Run control** - Use `interrupt`, `pause`, and `resume` for resumable live work. Pause/interrupt holds a stage's queued steering and follow-up items in place without dequeuing them or starting continuation; `resume` releases those items once in their existing per-queue order, but queue release alone does not start a model turn. `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`.
 - **Rediscovery** - Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process ([Reloading workflow resources](#reloading-workflow-resources)).
 - **Status listing** - `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
@@ -3038,6 +3093,7 @@ workflow({ action: "reload", reason: "added team workflow" })
 Control behavior:
 
 - `runId` requires the full 36-character run UUID for every lifecycle and inspection action, including `status`. User-facing status surfaces print that exact value, so pass it back verbatim; typed prefixes are rejected with a distinct `Run id must be a full 36-character UUID` diagnostic rather than resolved. Because ids are matched exactly and are unique, no run target is ambiguous. Status lists and run pickers show top-level user-launched workflows; nested child runs are implementation details of the expanded parent graph.
+- `status`, `stages`, `stage`, and `transcript` with an explicit full `runId` first use the current session store, then perform one exact DBOS hydration when that id is absent locally. This is inspection only: Atomic does not claim ownership, change status, run workflow code, or resume the workflow. A stale durable `running` root is shown as `crashed` with its resumability and an explicit `/workflow resume <id>` hint; fresh work owned by another Atomic process remains `running`, offers read-only status guidance, and stays protected from local control or resume. Deleted/tombstoned, absent, malformed, cyclic, orphaned, nonreciprocal, out-of-scope, and duplicate-node records report distinct failures instead of inventing a partial graph. `status` without `runId` remains current-session-only and never scans durable history.
 - `status` without `runId` lists every top-level run in the session with a concise per-run summary: the full run id, workflow name, run status, started/ended timing with pause-adjusted elapsed time, currently active stages, and awaiting-input details (count plus the stage, prompt id, kind, and message for each pending human prompt). In-flight runs are listed first. The summaries carry the exact identifiers that `pause`/`resume`/`interrupt`/`quit`/`send` accept, so an orchestrating agent can list runs and act on them directly.
 - `statusFilter` narrows the `status` run listing: run statuses (`pending`, `running`, `paused`, `blocked`, `completed`, `failed`, `skipped`, `cancelled`, `killed`) match runs directly, `awaiting_input` selects runs with at least one stage awaiting input or pending human prompt, and `all` (the default) includes everything.
 - `format: "json"` on data-bearing inspection actions (`status`, `stages`, `stage`, `transcript`) returns the full structured result; the default text output for `status` is the concise per-run summary list.
@@ -3050,6 +3106,8 @@ Control behavior:
   - Atomic checks an already-terminal root before stage resolution, nested-owner routing, prompt inspection, retained-session probing or revival, handle lookup, message admission, and delivery selection. That rejection creates no agent session or handle, appends no transcript, starts no model/tool/file work, answers no input, and mutates no workflow/stage snapshot. Missing or malformed retained sessions receive the same root-terminal error without being probed.
   - Atomic checks the same shared terminal authority again at the final synchronous SDK message-admission boundary. If a live root terminates while retained-session creation is pending, the send fails with `WORKFLOW_TERMINAL`, disposes its unclaimed provisional session/handle, and admits no prompt, model request, tool/file work, transcript append, or workflow-state mutation. A user-driven attach or Intercom claim remains independent and keeps the retained handle.
   - Prompt answers on a nonterminal root can include `promptId` and can carry answer content in `response`, `text`, or `message`; structured UI prompts usually prefer `response`.
+  - Primitive HIL answers are normalized by prompt kind: `input` and `editor` require a text string; `confirm` accepts booleans or trimmed, case-insensitive `true`/`false`, `yes`/`y`, `no`/`n`, `approve`/`reject`, and `confirm`/`deny`; `select` accepts a trimmed, case-insensitive choice label or a 1-based numeric index.
+  - An answer that does not match the pending primitive prompt stays pending. Atomic returns a `noop` explaining the expected shape and, for `select`, the available choices; it never silently chooses the first option. Prompt-card answers from the interactive graph keep their existing typed path.
   - For a live idle, non-paused stage, `prompt`, `followUp`, and eligible `auto` delivery all start a fresh prompt immediately; an actively streaming `followUp` remains queued and `steer` remains steering, so neither starts a concurrent prompt. During controlled pause, every context-bearing delivery remains held instead. The result's `delivery` and message describe the action actually taken (`prompt`, `followUp`, `steer`, `answer`, or `resume`), not merely the requested mode. Explicit `resume` against a stage that is not paused is a truthful no-op, and explicit message deliveries cannot bypass a paused stage; resume it first.
   - Delivery timing is mode-specific and deterministic. `steer` (and `auto` against a streaming stage) enters the steering queue and is consumed after the current assistant response finishes its whole tool batch, before the next model request — never between two tool calls of the same response. `followUp` enters the follow-up queue and is consumed only when the agent would otherwise stop. Sequential sends keep submission order *within* the queue they select; there is no global FIFO across the two queues, so a steer submitted after a follow-up is still consumed first. Ordering is promised relative to admission into the selected queue, not relative to when a caller started a request whose session setup or admission finishes later.
   - While the root remains nonterminal, follow-up messaging to an eligible completed child stage can reuse its retained `sessionFile`. After the root terminates, use explicit `/workflow attach <run-id> <stage>` post-mortem chat instead; `workflow send` never admits a retained-session turn after terminal publication.
@@ -3065,6 +3123,7 @@ Control behavior:
 - `pause` is useful for pausing a live run or a single live stage without treating it as a destructive abort.
 - `resume` can target a stage with `stageId`; the target may be an exact stage id or an exact stage name. `message` is forwarded to paused work. For a live interrupted streaming prompt, Atomic preserves the existing prompt loop without duplicating the user message and injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` when required before normal readiness-gate completion. For a paused stage that was idle waiting for a new stage-chat turn, a non-empty message resumes the stage and starts exactly one fresh prompt containing that message; an empty resume releases the pause without creating a prompt.
 - An explicit workflow-tool `resume` target that is absent from the current session store triggers targeted DBOS discovery before Atomic returns `Run not found`. The target must be a full run UUID; an eligible exact ID resumes under the original workflow ID, and a malformed target is rejected before any durable lookup happens. Resource-loading and durable-backend failures remain visible. Ordinary workflow-tool `status` listing stays session-local and does not eagerly hydrate durable history.
+- Exact-id durable inspection is separate from resume. `status`, `stages`, `stage`, and `transcript` may hydrate one missing-local root for read-only inspection, but they never claim it or execute replay. Only an explicit `resume` action enters the claim-and-dispatch path.
 - Run-level `quit` gracefully pauses in-flight work, marks the run resumable, and leaves it available to `/workflow resume`. A run whose only in-flight work is a `ctx.tool` node is quit like any other: it pauses as resumable instead of reporting that there are no controllable stages.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
@@ -3152,6 +3211,8 @@ Deliberate control actions on a top-level run report themselves too. `/workflow 
 
 Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]`). A config that pins `notifyOn` explicitly keeps exactly the kinds it lists, so `notifyOn: ["failed"]` suppresses every control notice.
 
+**Heartbeats are separate from lifecycle notices.** A lifecycle notice reports a transition; a heartbeat reports that nothing has transitioned yet. While a top-level run is active, Atomic raises one `workflows:workflow-heartbeat` card per `startedAt + n × heartbeatIntervalMinutes` boundary, on the same queued-steer delivery (`triggerTurn`, `deliverAs: "steer"`, `persistWhenStreaming`) and the same notice-card renderer, under its own custom type. The cadence is per workflow definition — `15` minutes by default, `0` to disable — and is documented under [`heartbeatIntervalMinutes`](#heartbeatintervalminutes). `workflowNotifications.notifyOn` selects lifecycle kinds only; it does not list or filter heartbeats. Heartbeats stop when the run reaches a terminal state: one idempotent cleanup pass drops its timer, its schedule, and any heartbeat still queued inside the scheduler, a later process discards those records rather than replaying them, and a card the parent's queue had already accepted is excluded from the model's context when it is read ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
+
 Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, or `ctx.ui.custom<T>` when the workflow needs a decision. No builder-level declaration is required or supported.
 
 Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals. Workflow definitions do not declare HIL; runtime `ctx.ui.*` calls create prompt nodes. If the prompt lives inside an imported child workflow, it still appears in the same expanded parent graph so the user can focus and answer it without switching to a separate child status entry. When the attached stage has a pending prompt, its attribution banner is headed `AWAITING INPUT` and shows the full run id in a two-row identity block; the question and its options continue through the existing prompt UI below the banner.
@@ -3192,7 +3253,7 @@ Atomic workflows use **DBOS/Postgres as their sole persistent workflow backend**
 
 When the embedded binaries are unavailable for the platform, Atomic falls back to DBOS's reusable `dbos-db` Docker container. If no durable backend can be provisioned at all, workflows **degrade to a process-local in-memory backend with a loud warning** instead of refusing to run: the run executes normally, but its state does not survive the process and `/workflow resume` after exit has nothing to restore. Set `DBOS_SYSTEM_DATABASE_URL` to an existing Postgres to restore durability.
 
-**Multiple concurrent Atomic sessions.** Every Atomic process launches DBOS with a unique executor id, and running root workflows carry owner/heartbeat metadata refreshed by ordinary ≤30-second stage-timing checkpoints. **Running workflows are never resume targets**: a running row with a fresh heartbeat is hidden from every session's picker and refused by direct `/workflow resume <id>` — resuming a workflow that is executing elsewhere would double-dispatch it. Once the heartbeat goes stale (about two minutes after a crash), the workflow surfaces as a red `crashed` row.
+**Multiple concurrent Atomic sessions.** Every Atomic process launches DBOS with a unique executor id, and running root workflows carry owner/heartbeat metadata. Once an active model stage has a session path, Atomic records that identity after the stage-start record and awaits the checkpoint before the first model use, then runs serialized, unref'd liveness checkpoints on a bounded 30-second cadence for the root and nested scoped workflows. Each accepted checkpoint refreshes root metadata; timers stop on every stage exit and cannot keep Atomic alive. A persistent checkpoint fault fails the active stage instead of disappearing in a detached timer. A stage that is shutting down drains the checkpoint still in flight rather than abandoning it, so a failure that lands after the model turn finished is reported instead of discarded, and a stage whose final durability checkpoint fails is recorded as `failed` rather than `completed` — its caller receives the error and its concurrency slot is released either way. **Running workflows are never resume targets**: a running row with a fresh heartbeat is hidden from every session's picker and refused by direct `/workflow resume <id>` — resuming a workflow that is executing elsewhere would double-dispatch it. Once the heartbeat goes stale (about two minutes after a crash), an exact inspection or the resume picker reports the workflow as `crashed`.
 
 When two sessions race to resume the same paused workflow, a durable first-writer-wins claim decides exactly one winner; the loser reconciles to the authoritative state and reports that the workflow changed while resume was pending.
 
@@ -3203,7 +3264,7 @@ When two sessions race to resume the same paused workflow, a durable first-write
 - **Durable child identity before dispatch**: before a nested `ctx.workflow(...)` can run child code or a child side effect, Atomic persists and awaits a versioned boundary-start record containing its stable boundary and child run ids, root/parent ownership, source order and parents, composed replay scope, alias, workflow, lifecycle state, and a deterministic fingerprint of the definition plus exact validated inputs. Distinct-input parallel calls keep stable independent scopes even when restart reverses dispatch order; identical calls share that fingerprint and use their own ordinal. Replay validates and reuses that identity before allocating any UUID.
 - **Symmetric nested scopes**: child effects stay stored under the durable root, while every child sees only its own local checkpoint view. Each nesting layer strips exactly one scope and never suffix-matches sibling or root data, so the rule composes at any depth.
 - **Stable durable graph**: tool, stage, task, chain, parallel, and child-workflow checkpoints preserve stable source identity/order, parent DAG edges, actual status, owning-run/boundary metadata, timing, output summary, model, retained chat-session references, and exact `{ runId, stageId }` targets. Fresh-process resume and completed inspection reconstruct tool-only, nested-child, mixed, and parallel topology directly from DBOS.
-- **DBOS-only discovery**: `/workflow resume`, `/workflows`, completed inspection, deletion, and targeted lookup hydrate/query DBOS. Session JSONL remains only a chat transcript referenced by a current checkpoint; it is not a workflow catalog or discovery source.
+- **DBOS-only discovery and exact inspection**: `/workflow resume`, `/workflows`, completed inspection, deletion, and targeted lookup hydrate/query DBOS. An explicit full run id on `status`, `stages`, `stage`, or `transcript` hydrates only that root when the current-session store misses; a no-id status listing stays session-local. Session JSONL remains only a chat transcript referenced by a current checkpoint; it is not a workflow catalog or discovery source.
 - **Fail-closed compatibility**: prior local and pre-current records are not converted. A completed current-format child boundary created before boundary-start or invocation-fingerprint identity is accepted only when child checkpoints reciprocally prove the same root, parent run, boundary, child, and scope. Active records without a provable invocation fingerprint, and malformed, duplicate, stale, nonreciprocal, mixed, aliased, cyclic, orphaned, or unsupported topology, are hidden or refused before cache/control/child dispatch without inventing a child link or executing repair work.
 - **Topology validation boundary**: authoring and discovery guidance cannot prove dynamic acyclicity. Runtime topology work must validate each materialized parent edge incrementally during execution and replay, and DBOS hydration must reject cyclic restored topology before exposing cache, control, or child dispatch.
 - **Cross-session safety**: per-process executor identity, owner/heartbeat liveness on running handles, and claim-guarded status transitions prevent double dispatch when several Atomic sessions share the database.
@@ -3212,7 +3273,7 @@ When two sessions race to resume the same paused workflow, a durable first-write
 
 **Resume after editing a workflow.** Replay identity combines the workflow id with stable content hashes and call order. Child calls additionally bind the child definition to the exact validated input value, with a per-identical-invocation ordinal. Editing definitions, inputs, or `ctx.*` call structure can intentionally invalidate matches. Finish or delete retained runs before deploying incompatible workflow changes. Atomic refuses a stored child boundary whose fingerprint, replay scope, alias, workflow, ownership, source order, or parentage no longer matches instead of attaching it to the changed call site.
 
-Durable `/workflow resume` preserves completed stage metadata, active-stage elapsed time, total run elapsed time, source order and parent edges, actual lifecycle status, nested ownership, and exact control targets. A completed nested boundary, its completed child stages, `ctx.tool` effects, and answered `ctx.ui` responses are cache hits; only incomplete child or downstream parent work continues. Raw stage-chat prompt answers represented by `StageSnapshot.promptAnswerState` remain live-memory-only and are not DBOS-persisted. While an LM stage or task is active, repeated durable checkpoints refresh its accumulated pause-adjusted duration even when its session file does not change, and refresh the run's total accumulated elapsed time alongside it. Graceful quit forces an exact stage and run timing checkpoint even inside the ordinary 30-second update bucket; normal completion also persists the final accumulated run total.
+Durable `/workflow resume` preserves completed stage metadata, active-stage elapsed time, total run elapsed time, source order and parent edges, actual lifecycle status, nested ownership, and exact control targets. A completed nested boundary, its completed child stages, `ctx.tool` effects, and answered `ctx.ui` responses are cache hits; only incomplete child or downstream parent work continues. Raw stage-chat prompt answers represented by `StageSnapshot.promptAnswerState` remain live-memory-only and are not DBOS-persisted. While a model stage or task is active, Atomic persists its session identity as soon as the path exists and refreshes pause-adjusted duration plus root liveness at most once per serialized 30-second heartbeat. Nested stages route the same checkpoint through their scoped backend to the durable root. Graceful quit forces an exact stage and run timing checkpoint even inside the ordinary update bucket; normal completion also persists the final accumulated run total.
 
 Each new Atomic process that reopens unfinished work starts from the latest saved baseline, so repeated process-boundary resumes keep stable boundary/child ids, status, graph, and lifecycle duration cumulative without double-counting pauses. A stage paused at ten seconds resumes at ten seconds, and the main-chat dashboard reports prior-session elapsed plus current-session elapsed. Completed inspection uses that same accumulated run timing rather than DBOS record wall-clock age.
 
@@ -3314,7 +3375,7 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 
 Targets resolve across top-level live, resumable durable, and completed entries as one namespace, matched by full UUID only. An exact loadable paused top-level live target resumes directly from in-session state without enumerating the durable completed-history catalog; this keeps explicit live resume responsive even when retained durable history is large and preserves live-over-durable precedence for duplicate IDs. If a stale or concurrent catalog view presents the same failed root as both resumable and read-only history, the resumable durable target wins. Nested child runs remain excluded from this top-level target namespace even when addressed by an exact ID.
 
-The non-interactive `workflow({ action: "resume", runId: "<full-run-uuid>" })` surface uses the same durable resumable-target lookup behavior for explicit targets. If the target is absent locally, Atomic loads workflow resources, queries the authoritative DBOS resumable catalog, and only then reports a missing run. This targeted hydration does not change `workflow({ action: "status" })`: an empty session-local status before explicit resume does not imply that DBOS deleted the workflow.
+The non-interactive `workflow` surface uses exact targeted DBOS lookup for explicit ids. `resume` loads workflow resources, queries and revalidates the authoritative resumable record, then claims and dispatches only when the caller explicitly requested resume. `status`, `stages`, `stage`, and `transcript` hydrate one exact missing-local root into an isolated read-only snapshot and never dispatch. This targeted path does not change `workflow({ action: "status" })` without a run id: an empty session-local listing neither scans DBOS nor implies that DBOS deleted the workflow.
 
 A target that is not a full UUID is rejected before the combined catalog is consulted, so a truncated id never reaches durable lookup. Read-only inspection behavior is otherwise unchanged. A current completed or non-resumable failed backend row with valid graph checkpoints remains inspectable even if every retained stage conversation is unavailable. Missing, empty, directory, context-empty, or partially malformed transcript paths are stripped from chat attachment while the graph stays read-only and visible.
 
@@ -3327,7 +3388,7 @@ Validation uses the final retained transcript for a repeated stage replay key, s
 | **Internally cancelled workflow** | Marked `cancelled` in durable state and excluded from `/workflow resume` discovery. Start a new workflow run if you intentionally want to retry cancelled work. |
 | **Stage failure (recoverable)** | Workflow marked `failed` or `blocked` and remains resumable by default. `/workflow resume <id>` continues from the last completed checkpoint unless durable metadata explicitly sets `resumable: false`. |
 | **Stage failure (non-recoverable)** | Workflow marked `failed` or `blocked` with `resumable: false`, so it cannot resume execution. A failed root with saved checkpoint progress may still appear in read-only history for inspection; a blocked root does not. |
-| **Process crash** | Workflow remains `running` in durable state. On next session start, it appears in resume discovery when it has a durable checkpoint or pending prompt. Resume re-executes from the last completed checkpoint. |
+| **Process crash** | Workflow remains `running` in durable state. Exact-id status/inspection reconstructs its retained checkpoint DAG as `crashed` once the owner heartbeat is stale and shows whether explicit resume is available. `/workflow resume <id>` is still required to claim the root and continue from the last completed checkpoint. |
 | **`ctx.tool` retry/default failure** | When `retriesAllowed: true`, the tool function is retried with exponential backoff. Cancellation is checked before each attempt, during retry backoff, and through the callback's own `signal`. Without `failureMode: "return"`, an exhausted callback error propagates and the workflow fails. |
 | **Recoverable `ctx.tool` failure** | With `failureMode: "return"`, exhausted callback failures are durably returned after retries. The tool node remains failed, downstream handoff is explicit, and replay returns the same outcome with `cached: true`. Cancellation and storage faults still throw. |
 | **`ctx.tool` node quit/interrupt** | `quit`/`interrupt` with a tool node id or name aborts that call's signal, marks the node `cancelled`, and leaves sibling stages and tools running. The action returns `status: "cancelled"` with the separately observed `workflowStatus`; it never reports the run as paused. No replayable `tool:` checkpoint and no `return_failure` outcome are written — return mode writes only inspection metadata — so resume re-runs exactly that call at the same ordinal and node id. |
@@ -3906,9 +3967,9 @@ Workflow stages can use faster, higher-priority inference on supported providers
 
 ### Codex fast mode
 
-Use `/fast` to manage Codex fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; workflow stages use the workflow scope, not the chat scope.
+Use `/fast` to manage Codex fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; workflow stages use the workflow scope, not the chat scope. A stage inside a nested `ctx.workflow(...)` call keeps that workflow scope, and subagents launched by the stage inherit it.
 
-Fast mode is eligible only for supported `openai/*` and `openai-codex/*` providers. It does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or custom OpenAI-compatible providers. When Atomic applies fast mode, workflow stage displays keep the raw model id and expose `fast` as a separate marker/stage metadata indicator.
+Fast mode is eligible for supported `openai/*` and `openai-codex/*` providers and provider aliases that use the shared `openai-codex-responses` transport. It does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers. Atomic resolves the marker and request tier for the effective model on every fallback attempt, so a supported fallback can be fast even when the primary failed, while an unsupported fallback is not. Workflow stage model labels and stage-launched subagent result labels keep the raw model id and append a separate `fast` marker; graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
 
 Enable workflow fast mode deliberately for broad workflows: parallel fan-out and fallback attempts can multiply priority-tier requests and cost.
 
@@ -4678,17 +4739,28 @@ The parent should verify each child before creating the next boundary. If a gate
 The calls below are deliberately unrolled. Repeat the downstream shape for the planned slices, giving every call a fresh child boundary and distinct tracked nodes; do not reopen an ancestor or add a back-edge.
 
 ```ts
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import { workflow } from "@bastani/workflows";
 import { goal } from "@bastani/workflows/builtin";
 
+function spawnCommand(argv: readonly string[], cwd: string) {
+  const [command, ...args] = argv;
+  if (command === undefined) throw new Error("spawnCommand requires a command");
+  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  // A command that could not be spawned at all arrives on `error` with a null
+  // status, so it has to be raised here or it reads as an ordinary failure.
+  if (result.error) throw result.error;
+  return result;
+}
+
 function runCommand(argv: readonly string[], cwd: string): string {
-  const result = Bun.spawnSync([...argv], { cwd, stdout: "pipe", stderr: "pipe" });
-  const stdout = result.stdout.toString().trim();
-  const stderr = result.stderr.toString().trim();
-  if (result.exitCode !== 0) {
-    throw new Error(`${argv.join(" ")} failed (${result.exitCode})\n${stderr || stdout}`);
+  const result = spawnCommand(argv, cwd);
+  const stdout = (result.stdout ?? "").trim();
+  const stderr = (result.stderr ?? "").trim();
+  if (result.status !== 0) {
+    throw new Error(`${argv.join(" ")} failed (${result.status})\n${stderr || stdout}`);
   }
   return stdout;
 }
@@ -4719,28 +4791,28 @@ export default workflow({
         toolName,
         { branch, base_branch: baseBranch, git_worktree_dir: gitWorktreeDir },
         async () => {
-          const current = Bun.spawnSync(
+          const current = spawnCommand(
             ["git", "-C", worktreePath, "branch", "--show-current"],
-            { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+            repoRoot,
           );
-          if (current.exitCode === 0) {
-            const checkedOutBranch = current.stdout.toString().trim();
+          if (current.status === 0) {
+            const checkedOutBranch = (current.stdout ?? "").trim();
             if (checkedOutBranch !== branch) {
               throw new Error(`${worktreePath} is checked out on ${checkedOutBranch || "detached HEAD"}, expected ${branch}`);
             }
             return { branch, worktree: worktreePath };
           }
 
-          const branchProbe = Bun.spawnSync(
+          const branchProbe = spawnCommand(
             ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-            { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+            repoRoot,
           );
-          if (branchProbe.exitCode === 0) {
+          if (branchProbe.status === 0) {
             runCommand(["git", "worktree", "add", worktreePath, branch], repoRoot);
-          } else if (branchProbe.exitCode === 1) {
+          } else if (branchProbe.status === 1) {
             runCommand(["git", "worktree", "add", "-b", branch, worktreePath, baseBranch], repoRoot);
           } else {
-            throw new Error(branchProbe.stderr.toString().trim() || `could not inspect branch ${branch}`);
+            throw new Error((branchProbe.stderr ?? "").trim() || `could not inspect branch ${branch}`);
           }
           return { branch, worktree: worktreePath };
         },

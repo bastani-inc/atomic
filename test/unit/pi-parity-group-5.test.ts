@@ -63,8 +63,7 @@ function entry(id: string, message: AssistantMessage): SessionEntry {
 const prices = { getModel: () => ({ cost: { cacheRead: 0.1 } }) };
 
 describe("Group 5 parity", () => {
-	test("copy-last-message and paste fallback keybindings are registered", () => {
-		assert.equal(KEYBINDINGS["app.message.copy"].defaultKeys, "ctrl+x");
+	test("paste fallback keybinding is registered", () => {
 		assert.match(KEYBINDINGS["app.clipboard.pasteImage"].description, /text fallback/);
 	});
 
@@ -172,6 +171,7 @@ describe("Group 5 parity", () => {
 				treeFilterMode: "default",
 				showHardwareCursor: false,
 				fullscreenScrollbar: "auto",
+				fullscreenExitOutput: "transcript",
 				editorPaddingX: 0,
 				outputPad: 1,
 				showCacheMissNotices: false,

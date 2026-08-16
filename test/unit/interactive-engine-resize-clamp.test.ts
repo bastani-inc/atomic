@@ -208,6 +208,69 @@ test("remote custom-UI widget frames are clamped after a shrink", () => {
 	assertMaxWidth(widget.render(NARROW), NARROW, "widget stale frame after shrink");
 });
 
+test("remote custom-UI frames re-render when only the host height changes", () => {
+	const fake = makeFakeRuntime();
+	let rows = 20;
+	let hostComponent: { render(width: number): string[] } | undefined;
+	const ui = {
+		requestRender: () => {},
+		setWidget: () => {},
+		custom: (
+			factory: (
+				tui: unknown,
+				theme: unknown,
+				keybindings: unknown,
+				done: (result: unknown) => void,
+			) => { render(width: number): string[] },
+		) => {
+			hostComponent = factory(
+				{
+					terminal: {
+						columns: 100,
+						get rows() {
+							return rows;
+						},
+					},
+				},
+				{},
+				{},
+				() => {},
+			);
+			return new Promise(() => {});
+		},
+	} as unknown as ExtensionUIContext;
+	const controller = new RemoteComponentController(fake.runtime, ui, regularTuiRendererLifecycle);
+
+	fake.emit({
+		type: "engine_custom_open",
+		componentId: "custom_1",
+		overlay: true,
+	} as InteractiveEngineMessage);
+	assert.ok(hostComponent, "custom component was not mounted on the host");
+
+	hostComponent.render(80);
+	const initial = fake.commands.at(-1);
+	assert.equal(initial?.type, "engine_custom_render");
+	assert.equal(initial?.width, 80);
+	assert.equal(initial?.rows, 20);
+	const commandCount = fake.commands.length;
+
+	hostComponent.render(80);
+	assert.equal(fake.commands.length, commandCount, "unchanged dimensions sent a redundant render request");
+
+	rows = 12;
+	hostComponent.render(80);
+	const resized = fake.commands.at(-1);
+	assert.equal(resized?.type, "engine_custom_render");
+	assert.equal(resized?.width, 80);
+	assert.equal(resized?.rows, 12);
+	assert.equal(fake.commands.length, commandCount + 1, "height-only resize did not request a fresh frame");
+
+	hostComponent.render(80);
+	assert.equal(fake.commands.length, commandCount + 1, "unchanged resized dimensions sent a redundant request");
+	controller.dispose();
+});
+
 test("RemoteFrameWidthClamp memoizes and passes through fitting frames untouched", () => {
 	const clamp = new RemoteFrameWidthClamp();
 	const fitting = ["short", "also short"];

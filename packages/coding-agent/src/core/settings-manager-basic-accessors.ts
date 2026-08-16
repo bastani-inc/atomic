@@ -32,6 +32,7 @@ interface SettingsManagerBasicAccessors {
 	setShowCacheMissNotices(enabled: boolean): void;
 	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
 	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"): void;
+	getDefaultTools(): string[] | undefined;
 	getFallbackModels(): string[];
 	getTransport(): TransportSetting;
 	setTransport(transport: TransportSetting): void;
@@ -50,6 +51,7 @@ interface SettingsManagerBasicAccessors {
 	};
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean };
 	getBranchSummarySkipPrompt(): boolean;
+	getSessionSummarySettings(): { enabled: boolean };
 	getRetryEnabled(): boolean;
 	setRetryEnabled(enabled: boolean): void;
 	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number };
@@ -216,6 +218,15 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.save();
 	},
 
+	getDefaultTools() {
+		// Settings load unvalidated from disk, so guard the shape here the same
+		// way getFallbackModels() does: a non-array (or null) reads as unset,
+		// and non-string entries are dropped rather than passed through to the
+		// initial tool selection.
+		const tools = settingsInternals(this).settings.defaultTools;
+		return Array.isArray(tools) ? tools.filter((tool): tool is string => typeof tool === "string") : undefined;
+	},
+
 	getFallbackModels() {
 		return (settingsInternals(this).settings.fallbackModels ?? [])
 			.filter((model): model is string => typeof model === "string")
@@ -287,6 +298,12 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getBranchSummarySkipPrompt() {
 		return settingsInternals(this).settings.branchSummary?.skipPrompt ?? false;
+	},
+
+	getSessionSummarySettings() {
+		return {
+			enabled: settingsInternals(this).settings.sessionSummary?.enabled ?? true,
+		};
 	},
 
 	getRetryEnabled() {

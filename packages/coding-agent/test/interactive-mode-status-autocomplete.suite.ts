@@ -5,6 +5,9 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
+import { buildSkillCatalog, type SkillCatalog } from "../src/core/skill-catalog.ts";
+import type { Skill } from "../src/core/skills.ts";
+import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 describe("InteractiveMode.createExtensionUIContext addAutocompleteProvider", () => {
@@ -266,14 +269,21 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 		}
 	});
 
-	function createAutocompleteProvider(cwd: string, fdPath: string | null = null): AutocompleteProvider {
+	function createAutocompleteProvider(
+		cwd: string,
+		fdPath: string | null = null,
+		skillCatalog?: SkillCatalog,
+	): AutocompleteProvider {
 		type AutocompleteHost = {
 			session: {
 				scopedModels: [];
 				modelRuntime: { getAvailableSnapshot: () => [] };
 				promptTemplates: [];
 				extensionRunner: { getRegisteredCommands: () => [] };
-				resourceLoader: { getSkills: () => { skills: [] } };
+				resourceLoader: {
+					getSkills: () => { skills: Skill[]; diagnostics: [] };
+					getSkillCatalog?: () => SkillCatalog;
+				};
 			};
 			settingsManager: { getEnableSkillCommands: () => boolean };
 			skillCommands: Map<string, string>;
@@ -291,9 +301,15 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 				modelRuntime: { getAvailableSnapshot: () => [] },
 				promptTemplates: [],
 				extensionRunner: { getRegisteredCommands: () => [] },
-				resourceLoader: { getSkills: () => ({ skills: [] }) },
+				resourceLoader: {
+					getSkills: () => ({
+						skills: skillCatalog?.candidates.map((candidate) => candidate.skill) ?? [],
+						diagnostics: [],
+					}),
+					...(skillCatalog ? { getSkillCatalog: () => skillCatalog } : {}),
+				},
 			},
-			settingsManager: { getEnableSkillCommands: () => false },
+			settingsManager: { getEnableSkillCommands: () => skillCatalog !== undefined },
 			skillCommands: new Map(),
 			sessionManager: { getCwd: () => cwd },
 			fdPath,
@@ -330,6 +346,31 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 
 		expect(suggestions?.prefix).toBe('@"task');
 		expect(suggestions?.items.map((item) => item.value)).toEqual(['@"task brief.md"']);
+	});
+
+	test("offers every source-qualified collision command from the catalog", async () => {
+		const makeSkill = (filePath: string, scope: "user" | "temporary", bundled: boolean): Skill => ({
+			name: "review",
+			description: `${scope} review`,
+			filePath,
+			baseDir: join(filePath, ".."),
+			disableModelInvocation: false,
+			sourceInfo: createSyntheticSourceInfo(filePath, {
+				source: bundled ? "/packages/workflows" : "local",
+				scope,
+				configurationOrigin: bundled ? "bundled" : "atomic",
+			}),
+		});
+		const user = makeSkill("/tmp/user/review/SKILL.md", "user", false);
+		const builtin = makeSkill("/tmp/builtin/review/SKILL.md", "temporary", true);
+		const catalog = buildSkillCatalog([user, builtin], [user]);
+		const provider = createAutocompleteProvider("/tmp", null, catalog);
+		const line = "/skill:review@";
+		const suggestions = await provider.getSuggestions([line], 0, line.length, {
+			signal: new AbortController().signal,
+		});
+
+		expect(suggestions?.items.map((item) => item.value)).toEqual(["skill:review@user", "skill:review@builtin"]);
 	});
 
 	test("matches model command arguments across provider/model order", async () => {

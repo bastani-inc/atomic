@@ -26,6 +26,19 @@ function formatProjectTrustPrompt(cwd: string): string {
 	return `Trust project folder?\n${cwd}\n\nThis allows ${APP_TITLE} to load ${CONFIG_DIR_NAME} settings and resources, install missing project packages, and execute project extensions.`;
 }
 
+/**
+ * The prompt shown for a `-e` extension source outside the project.
+ *
+ * Named through `APP_TITLE` for the same reason as the project-folder prompt
+ * above: branding is configurable, so a hardcoded product name lies in a
+ * rebranded distribution. The `.atomic/.pi` directory names stay literal —
+ * they are the two compatibility paths the resource loader reads from that
+ * source, not a product name.
+ */
+export function formatBorrowedExtensionSourceTrustPrompt(source: string): string {
+	return `Trust extension source?\n${source}\n\nThis allows ${APP_TITLE} to load project-local .atomic/.pi resources and .agents/skills from this -e source, including extensions and workflows that can execute code.`;
+}
+
 async function selectProjectTrustOption(
 	cwd: string,
 	ctx: ProjectTrustContext,

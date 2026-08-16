@@ -415,7 +415,7 @@ test("cached recorder derives the durable catalog root through rootless parent a
 			version: DURABLE_STAGE_TOPOLOGY_VERSION,
 			stageId: "root-boundary",
 			parentIds: [],
-			run: { runId: ROOT_ID, runName: "guard-root-name", rootRunId: ROOT_ID },
+			run: { runId: ROOT_ID, runName: "guard-root-name" },
 		},
 	});
 	const cachedBoundary: DurableCompletedStageCheckpoint = {

@@ -52,7 +52,7 @@ export function createStageContext(input: {
 			try {
 				runtime.mcpScope.clear();
 			} finally {
-				runtime.captureStageSessionMeta();
+				void runtime.captureStageSessionMeta();
 				runtime.applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
 			}
 		}

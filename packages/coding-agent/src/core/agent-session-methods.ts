@@ -22,7 +22,6 @@ import type {
 	SessionStats,
 	ToolDefinitionEntry,
 } from "./agent-session-types.ts";
-import type { AsyncJobManager } from "./async/job-manager.js";
 import type { BashResult } from "./bash-executor.ts";
 import type {
 	CompactionUrgency,
@@ -175,7 +174,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	followUp(text: string, images?: ImageContent[]): Promise<void>;
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): Promise<void>;
 
 	_queueSteer(text: string, images?: ImageContent[]): Promise<void>;
@@ -231,6 +230,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
 	abortCompaction(): void;
 	abortBranchSummary(): void;
+	abortSessionSummary(): void;
+	_maybeGenerateSessionSummary(): Promise<void>;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): void;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
@@ -301,7 +302,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 
 	getSessionStats(): SessionStats;
 	getContextUsage(): ContextUsage | undefined;
-	exportToHtml(outputPath?: string): Promise<string>;
+	exportToHtml(outputPath?: string, options?: { themeName?: string }): Promise<string>;
 	exportToJsonl(outputPath?: string): string;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;
@@ -337,6 +338,7 @@ export interface AgentSessionPublicSurface
 		| "autoCompactionEnabled"
 		| "isRetrying"
 		| "autoRetryEnabled"
+		| "abortSessionSummary"
 		| "isBashRunning"
 		| "hasPendingBashMessages"
 		| "extensionRunner"
@@ -423,6 +425,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_queuedMessagesPaused: boolean;
 	_queuedMessagesPauseAbortBoundary: Promise<void> | undefined;
+	_admittedQueuedMessageAwaitingReply: string | undefined;
+	_admittedRecoveryTurn: Promise<void> | undefined;
 	_workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined;
 	_activeInterruptAbortMessage: string | undefined;
 	_pendingNextTurnMessages: CustomMessage[];
@@ -462,6 +466,11 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_subagentPolicy?: import("./extensions/index.ts").SubagentChildPolicy;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionMode: ExtensionMode;
+	_disposed: boolean;
+	_sessionSummaryAbortController: AbortController | undefined;
+	_sessionSummaryToken: number;
+	_sessionSummaryRun: import("./agent-session-summary.ts").SessionSummaryRun | undefined;
+	_lastSummarizedMessageId: string | undefined;
 	_extensionCommandContextActions?: ExtensionCommandContextActions;
 	_extensionShutdownHandler?: () => void;
 	_extensionErrorListener?: ExtensionErrorListener;
@@ -476,8 +485,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_systemPromptTransform?: (prompt: string) => string;
 	_systemPromptOverride?: string;
 	_lastAssistantMessage: AssistantMessage | undefined;
-	_asyncJobManager: AsyncJobManager;
-	_asyncJobManagerSessionId: symbol;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
 	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 }

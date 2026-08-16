@@ -8,6 +8,15 @@
 export type { Static, TSchema } from "typebox";
 export { KEEP_CONTEXT_CLOSE_TAG, KEEP_CONTEXT_OPEN_TAG, keepContext } from "./authoring/keep-context.js";
 export { workflow } from "./authoring/workflow.js";
+export type {
+	WorkflowHeartbeatEvent,
+	WorkflowHeartbeatEventDetails,
+	WorkflowHeartbeatIdentity,
+} from "./shared/workflow-heartbeat-contract.js";
+export {
+	DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
+	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+} from "./shared/workflow-heartbeat-contract.js";
 
 const REMOVED_RUN_WORKFLOW_MESSAGE =
 	"@bastani/workflows no longer exports runWorkflow; author workflows with workflow({...})";

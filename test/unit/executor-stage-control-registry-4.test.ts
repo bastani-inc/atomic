@@ -245,6 +245,7 @@ describe("executor — stage-control registry integration", () => {
 		const registry = createStageControlRegistry();
 		const store = createStore();
 		const sawStage = deferred<{ runId: string; stageId: string }>();
+		const promptStarted = deferred();
 		let sawStageResolved = false;
 		let streaming = false;
 		let promptResolve: (() => void) | undefined;
@@ -253,6 +254,7 @@ describe("executor — stage-control registry integration", () => {
 			...mockSession(),
 			async prompt() {
 				streaming = true;
+				promptStarted.resolve();
 				return new Promise<string | undefined>((resolve, reject) => {
 					promptResolve = () => {
 						streaming = false;
@@ -301,7 +303,7 @@ describe("executor — stage-control registry integration", () => {
 		const { runId, stageId } = await sawStage.promise;
 		const handle = registry.get(runId, stageId);
 		assert.ok(handle, "stage handle should be registered");
-		await waitForMicrotasks();
+		await promptStarted.promise;
 		assert.equal(store.runs()[0]?.status, "running");
 
 		await handle!.pause();

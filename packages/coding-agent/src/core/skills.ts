@@ -82,6 +82,8 @@ export interface Skill {
 
 export interface LoadSkillsResult {
 	skills: Skill[];
+	/** Every distinct real skill file in discovery order, including name-collision losers. */
+	candidates: Skill[];
 	diagnostics: ResourceDiagnostic[];
 }
 
@@ -181,7 +183,7 @@ function loadSkillsFromDirInternal(
 	const diagnostics: ResourceDiagnostic[] = [];
 
 	if (!existsSync(dir)) {
-		return { skills, diagnostics };
+		return { skills, candidates: skills, diagnostics };
 	}
 
 	const root = rootDir ?? dir;
@@ -217,7 +219,7 @@ function loadSkillsFromDirInternal(
 				skills.push(result.skill);
 			}
 			diagnostics.push(...result.diagnostics);
-			return { skills, diagnostics };
+			return { skills, candidates: skills, diagnostics };
 		}
 
 		for (const entry of entries) {
@@ -271,7 +273,7 @@ function loadSkillsFromDirInternal(
 		}
 	} catch {}
 
-	return { skills, diagnostics };
+	return { skills, candidates: skills, diagnostics };
 }
 
 function loadSkillFromFile(
@@ -392,6 +394,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	const resolvedAgentDir = resolvePath(agentDir ?? getAgentDir());
 
 	const skillMap = new Map<string, Skill>();
+	const candidates: Skill[] = [];
 	const realPathSet = new Set<string>();
 	const allDiagnostics: ResourceDiagnostic[] = [];
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
@@ -406,6 +409,8 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 			if (realPathSet.has(realPath)) {
 				continue;
 			}
+			realPathSet.add(realPath);
+			candidates.push(skill);
 
 			const existing = skillMap.get(skill.name);
 			if (existing) {
@@ -422,7 +427,6 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 				});
 			} else {
 				skillMap.set(skill.name, skill);
-				realPathSet.add(realPath);
 			}
 		}
 	}
@@ -467,7 +471,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 			} else if (stats.isFile() && resolvedPath.endsWith(".md")) {
 				const result = loadSkillFromFile(resolvedPath, source);
 				if (result.skill) {
-					addSkills({ skills: [result.skill], diagnostics: result.diagnostics });
+					addSkills({ skills: [result.skill], candidates: [result.skill], diagnostics: result.diagnostics });
 				} else {
 					allDiagnostics.push(...result.diagnostics);
 				}
@@ -482,6 +486,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	return {
 		skills: Array.from(skillMap.values()),
+		candidates,
 		diagnostics: [...allDiagnostics, ...collisionDiagnostics],
 	};
 }

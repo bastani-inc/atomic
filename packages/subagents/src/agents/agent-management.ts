@@ -34,7 +34,8 @@ import {
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 export type ManagementScope = "user" | "project";
-export type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry">;
+export type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry"> &
+	Pick<Partial<ExtensionContext>, "getSkillCatalog">;
 
 interface ManagementParams {
 	action?: string;
@@ -208,7 +209,7 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	if (mw) warnings.push(mw);
 	const fmw = fallbackModelsWarning(ctx, agent.fallbackModels);
 	if (fmw) warnings.push(fmw);
-	const sw = skillsWarning(ctx.cwd, agent.skills);
+	const sw = skillsWarning(ctx.cwd, agent.skills, ctx.getSkillCatalog?.());
 	if (sw) warnings.push(sw);
 	fs.writeFileSync(targetPath, serializeAgent(agent), "utf-8");
 	return result([`Created agent '${runtimeName}' at ${targetPath}.`, ...warnings].join("\n"));
@@ -262,7 +263,7 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 		if (warning) warnings.push(warning);
 	}
 	if (hasKey(cfg, "skills")) {
-		const warning = skillsWarning(ctx.cwd, updated.skills);
+		const warning = skillsWarning(ctx.cwd, updated.skills, ctx.getSkillCatalog?.());
 		if (warning) warnings.push(warning);
 	}
 	if (updated.name !== oldName) {

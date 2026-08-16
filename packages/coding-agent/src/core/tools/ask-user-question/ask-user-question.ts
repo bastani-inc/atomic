@@ -1,3 +1,5 @@
+import type { OverlayOptions } from "@earendil-works/pi-tui";
+import { experimentalToolSamplingProperty } from "../../experimental.ts";
 import type { ToolDefinition } from "../../extensions/types.ts";
 import { loadConfig, validateGuidanceFields } from "./config.ts";
 import { QuestionnaireSession } from "./state/questionnaire-session.ts";
@@ -17,6 +19,30 @@ import type { WrappingSelectItem } from "./view/components/wrapping-select.ts";
 
 const ERROR_NO_UI = "Error: UI not available (running in non-interactive mode)";
 
+/**
+ * Mount options for the blocking questionnaire (#2378).
+ *
+ * The dialog used to mount inline, inside the fullscreen dock, where it is a
+ * flex sibling of the transcript `ScrollView`. A tall side-by-side dialog then
+ * took the transcript's rows: on a 40-row terminal the transcript viewport
+ * collapsed from 34 rows to 6, and pi-tui derives its page step from that
+ * viewport (`viewportHeight - PAGE_SCROLL_OVERLAP`), so PageUp crawled two
+ * lines at a time through a six-line window.
+ *
+ * A bottom-anchored overlay is composited over the bottom rows instead of being
+ * measured into the layout, so the transcript keeps its full viewport height
+ * and its full page step. `reserveTranscriptRows` is what makes those rows
+ * observable rather than merely addressable: the host bounds this overlay so a
+ * transcript strip always survives, and extends the transcript's scroll extent
+ * by the rows the overlay still covers, so the newest output can be raised into
+ * that strip. No `maxHeight` — the host's bound is tighter, and letting pi-tui
+ * slice as well would make the measured overlay height wrong.
+ */
+export const QUESTIONNAIRE_OVERLAY_OPTIONS: OverlayOptions = {
+	anchor: "bottom-center",
+	width: "100%",
+};
+
 export function buildItemsForQuestion(question: QuestionData): WrappingSelectItem[] {
 	const items: WrappingSelectItem[] = question.options.map((o) => ({
 		kind: "option",
@@ -30,13 +56,15 @@ export function buildItemsForQuestion(question: QuestionData): WrappingSelectIte
 	return items;
 }
 
-export const DEFAULT_PROMPT_SNIPPET = `Ask the user up to ${MAX_QUESTIONS} structured questions (${MIN_OPTIONS}-${MAX_OPTIONS} options each) when requirements are ambiguous`;
-export const DEFAULT_PROMPT_GUIDELINES: string[] = [
-	`Use ask_user_question whenever the user's request is underspecified and you cannot proceed without concrete decisions — you can ask up to ${MAX_QUESTIONS} questions per invocation.`,
-	`Each question MUST have ${MIN_OPTIONS}-${MAX_OPTIONS} options. Every option requires a concise label (1-5 words) and a description explaining what the choice means or its trade-offs. The user can additionally type a custom answer ("Type something." row is appended automatically to single-select questions) or pick "Chat about this" to abandon the questionnaire.`,
-	`Set multiSelect: true when multiple answers are valid; this suppresses the "Type something." row. Provide an options[].preview markdown string when an option benefits from richer side-by-side context (mockups, code snippets, diagrams, configs) — single-select only. NOTE: any non-empty preview on a single-select question ALSO suppresses the "Type something." row (no room in the side-by-side layout); "Chat about this" remains the escape hatch. If you recommend a specific option, make it the first option and append "(Recommended)" to its label.`,
-	"Do not stack multiple ask_user_question calls back-to-back — group all clarifying questions into one invocation.",
-];
+export const askUserQuestionToolSystemPromptContribution = Object.freeze({
+	snippet: `Ask the user up to ${MAX_QUESTIONS} structured questions (${MIN_OPTIONS}-${MAX_OPTIONS} options each) when requirements are ambiguous`,
+	guidelines: Object.freeze([
+		`Use ask_user_question whenever the user's request is underspecified and you cannot proceed without concrete decisions — you can ask up to ${MAX_QUESTIONS} questions per invocation.`,
+		`Each question MUST have ${MIN_OPTIONS}-${MAX_OPTIONS} options. Every option requires a concise label (1-5 words) and a description explaining what the choice means or its trade-offs. The user can additionally type a custom answer ("Type something." row is appended automatically to single-select questions) or pick "Chat about this" to abandon the questionnaire.`,
+		`Set multiSelect: true when multiple answers are valid; this suppresses the "Type something." row. Provide an options[].preview markdown string when an option benefits from richer side-by-side context (mockups, code snippets, diagrams, configs) — single-select only. NOTE: any non-empty preview on a single-select question ALSO suppresses the "Type something." row (no room in the side-by-side layout); "Chat about this" remains the escape hatch. If you recommend a specific option, make it the first option and append "(Recommended)" to its label.`,
+		"Do not stack multiple ask_user_question calls back-to-back — group all clarifying questions into one invocation.",
+	] as const),
+} as const);
 
 export function createAskUserQuestionToolDefinition(): ToolDefinition<typeof QuestionParamsSchema, unknown> {
 	const guidance = validateGuidanceFields(loadConfig().guidance);
@@ -62,8 +90,9 @@ Use the optional \`preview\` field on options when presenting concrete artifacts
 - Configuration examples
 
 Preview content is rendered as markdown in a monospace box. Multi-line text with newlines is supported. When any option has a preview, the UI switches to a side-by-side layout with a vertical option list on the left and preview on the right. Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).`,
-		promptSnippet: guidance.promptSnippet ?? DEFAULT_PROMPT_SNIPPET,
-		promptGuidelines: guidance.promptGuidelines ?? DEFAULT_PROMPT_GUIDELINES,
+		promptSnippet: guidance.promptSnippet ?? askUserQuestionToolSystemPromptContribution.snippet,
+		promptGuidelines: guidance.promptGuidelines ?? [...askUserQuestionToolSystemPromptContribution.guidelines],
+		...experimentalToolSamplingProperty(),
 		parameters: QuestionParamsSchema,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -83,14 +112,11 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 
 			// Suspend the animated working loader for the lifetime of the blocking dialog.
 			//
-			// The questionnaire mounts inline, directly below the status/working-loader row.
-			// That loader ticks every ~88ms and calls `requestRender()` on each frame. On a
-			// short terminal the (tall) side-by-side dialog pushes the loader line above the
-			// viewport top, so pi-tui's differential renderer sees `firstChanged < viewportTop`
-			// and falls back to a full clear+replay (`\x1b[2J\x1b[H\x1b[3J`) on every tick. The
-			// transcript is replayed before the dialog each time, which is the flicker. The
-			// loader conveys nothing while we're blocked on human input, so hide it for the
-			// duration and restore it once the dialog closes (on every path).
+			// The loader ticks every ~88ms and calls `requestRender()` on each frame, and it
+			// conveys nothing while we are blocked on human input. Hiding it for the duration
+			// keeps the frame behind the dialog static and avoids the differential renderer
+			// falling back to a full clear+replay (`\x1b[2J\x1b[H\x1b[3J`) on every tick.
+			// Restored once the dialog closes (on every path).
 			//
 			// Guarded: some hosts (e.g. the workflow stage-UI broker) pass a minimal UI
 			// context that only implements `custom`, so treat a missing loader control as a
@@ -108,7 +134,12 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 						});
 						return session.component;
 					},
-					{ signal },
+					{
+						signal,
+						overlay: true,
+						reserveTranscriptRows: true,
+						overlayOptions: QUESTIONNAIRE_OVERLAY_OPTIONS,
+					},
 				);
 
 				return buildQuestionnaireResponse(result, typed);

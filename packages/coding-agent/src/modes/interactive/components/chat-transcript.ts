@@ -271,6 +271,11 @@ export class ScrollableComponentViewport implements Component {
 	private lastComponentRowCounts: readonly number[] = [];
 	private lastWidth = 0;
 	private maxScroll = 0;
+	/**
+	 * Absolute row `scrollTo` asked for, still waiting for the render that can
+	 * honour it. See `scrollTo` for why the request has to outlive the call.
+	 */
+	private pendingScrollRow: number | undefined;
 
 	setComponents(components: readonly Component[]): void {
 		this.components = components;
@@ -290,10 +295,12 @@ export class ScrollableComponentViewport implements Component {
 	}
 
 	scrollToBottom(): void {
+		this.pendingScrollRow = undefined;
 		this.scrollFromBottom = 0;
 	}
 
 	scrollToTop(): void {
+		this.pendingScrollRow = undefined;
 		this.scrollFromBottom = this.maxScroll;
 	}
 
@@ -301,8 +308,56 @@ export class ScrollableComponentViewport implements Component {
 		// Positive deltas move toward newer content; negative deltas move up
 		// into older history. Store the offset from the sticky bottom so new
 		// streaming output can keep following when the offset is zero.
+		this.pendingScrollRow = undefined;
 		this.scrollFromBottom -= deltaRows;
 		this.clampScroll();
+	}
+
+	/**
+	 * Park the viewport with `row` as its first visible row.
+	 *
+	 * The absolute counterpart of `scrollBy`, for a caller that already knows
+	 * which row it wants on screen — transcript search revealing a match it
+	 * found outside the current window.
+	 *
+	 * The request is *also* recorded for the next render, and that is the half
+	 * that matters. `scrollFromBottom` is a distance from the bottom, so the
+	 * row it names moves whenever the stack grows; and the render that follows
+	 * re-derives the offset from the previous frame's layout to hold a
+	 * scrolled-up reader's content still, which would drag this request back
+	 * with it. A caller who has just measured rows the last render never saw —
+	 * every live search — would otherwise be answered with the old layout's
+	 * clamp and the old frame's anchor. The next render resolves the row
+	 * against the layout it actually paints; any other scroll before then
+	 * withdraws the request.
+	 */
+	scrollTo(row: number): void {
+		const requestedRow = Number.isNaN(row) ? 0 : Math.max(0, Math.floor(row));
+		this.pendingScrollRow = requestedRow;
+		const target = Math.min(this.maxScroll, requestedRow);
+		this.scrollFromBottom = this.maxScroll - target;
+		this.clampScroll();
+	}
+
+	/**
+	 * Total rows the component stack occupies at `width`, on and off screen.
+	 *
+	 * This measures rather than paints: it is what lets a search read the whole
+	 * transcript instead of the window the reader happens to be parked on.
+	 */
+	rowCount(width: number): number {
+		return this.measureComponentRows(width).reduce((sum, rows) => sum + rows.rowCount, 0);
+	}
+
+	/**
+	 * Rows `startRow` (inclusive) through `endRow` (exclusive) of the whole
+	 * stack, independent of the current scroll offset. Deliberately not paired
+	 * with `supportsRowWindow`: a viewport is a scroll container rather than a
+	 * windowed component, and an enclosing viewport must keep measuring it by
+	 * its visible height.
+	 */
+	renderRows(width: number, startRow: number, endRow: number): string[] {
+		return this.renderVisibleRows(this.measureComponentRows(width), width, startRow, endRow);
 	}
 
 	handleInput(data: string): boolean {
@@ -359,7 +414,14 @@ export class ScrollableComponentViewport implements Component {
 		// transcript built without a cache key is not windowed, but it is still
 		// one component spanning the anchor and still knows its own rows.
 		const segments = componentRows.map((rows) => rows.segments);
-		if (this.scrollFromBottom > 0 && this.lastWidth === width) {
+		const pendingScrollRow = this.pendingScrollRow;
+		this.pendingScrollRow = undefined;
+		if (pendingScrollRow !== undefined) {
+			// An absolute request outranks the anchor: the caller measured this
+			// frame's rows and named one of them. Re-deriving the anchor here
+			// would answer with the previous frame's layout instead.
+			this.scrollFromBottom = maxScroll - Math.min(maxScroll, pendingScrollRow);
+		} else if (this.scrollFromBottom > 0 && this.lastWidth === width) {
 			const previousMaxScroll = Math.max(0, this.lastLineCount - this.visibleRows);
 			const anchorRow = Math.max(0, previousMaxScroll - this.scrollFromBottom);
 			const shift = rowsShiftedAboveAnchor(

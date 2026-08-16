@@ -24,9 +24,13 @@ function normalizeWhitespaceLower(text: string): string {
 }
 
 function getSessionSearchText(session: SessionInfo): string {
-	return `${session.id} ${session.name ?? ""} ${session.allMessagesText} ${session.cwd}`;
+	return `${session.id} ${session.name ?? ""} ${session.summary ?? ""} ${session.allMessagesText} ${session.cwd}`;
 }
 
+/**
+ * True while the session currently holds a non-empty name. A name that was cleared
+ * (`hasName` true, `name` undefined) filters as unnamed: the picker has no title to show.
+ */
 export function hasSessionName(session: SessionInfo): boolean {
 	return Boolean(session.name?.trim());
 }

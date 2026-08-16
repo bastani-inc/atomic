@@ -15,6 +15,7 @@ import {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
 	createInProcessChildPromptBehavior,
+	createInProcessChildSystemPromptTransform,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 
 const tempDirs: string[] = [];
@@ -108,6 +109,43 @@ describe("in-process child prompt construction", () => {
 		} finally {
 			session.dispose();
 		}
+	});
+
+	test("strips inherited qualified subagent orchestration skill names from child prompts", () => {
+		const transform = createInProcessChildSystemPromptTransform(policy({ inheritSkills: true }));
+		const transformed = transform(
+			[
+				"BASE_CHILD_PROMPT",
+				'<skill name="subagent@builtin" location="/skills/subagent/SKILL.md" candidate="skill_abc">',
+				"PARENT_ORCHESTRATION_BODY",
+				"</skill>",
+				"<available_skills>",
+				"  <skill>",
+				"    <name>subagent@builtin</name>",
+				"    <description>parent-only</description>",
+				"  </skill>",
+				"</available_skills>",
+			].join("\n"),
+		);
+
+		assert.doesNotMatch(transformed, /PARENT_ORCHESTRATION_BODY/);
+		assert.doesNotMatch(transformed, /<name>\s*subagent@builtin\s*<\/name>/);
+		assert.doesNotMatch(transformed, /<skill name=["']subagent@builtin["']/);
+		assert.match(transformed, /BASE_CHILD_PROMPT/);
+	});
+
+	test("keeps explicitly selected skill injection after inherited skills are stripped", () => {
+		const transform = createInProcessChildSystemPromptTransform(
+			policy({ inheritSkills: false }),
+			'<skill name="tdd@builtin">\nEXPLICIT_SKILL_SENTINEL\n</skill>',
+		);
+		const transformed = transform(
+			"BASE_CHILD_PROMPT\n\nThe following skills provide specialized instructions for specific tasks.\n\n<skills>\nINHERITED_SKILL_SENTINEL\n</skills>\nCurrent date: 2026-08-14",
+		);
+
+		assert.doesNotMatch(transformed, /INHERITED_SKILL_SENTINEL/);
+		assert.match(transformed, /EXPLICIT_SKILL_SENTINEL/);
+		assert.match(transformed, /<skill name="tdd@builtin">/);
 	});
 
 	test("constructs the fanout boundary only for a fanout-authorized child", async () => {

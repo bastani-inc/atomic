@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import * as undici from "undici";
+import { installCodexFastModeWebSocketIdentity } from "./codex-fast-mode-transport.ts";
 
 export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 600_000;
 
@@ -144,5 +145,9 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 	if (shouldInstallGlobals) {
 		installUndiciGlobals();
 		installedGlobalFetch = globalThis.fetch;
+		// Undici replaces the WebSocket constructor pi-ai caches on first use.
+		// The wrapper only rewrites a shared Codex request carrying Atomic's
+		// final-payload routing marker, so all other handshakes stay unchanged.
+		installCodexFastModeWebSocketIdentity();
 	}
 }

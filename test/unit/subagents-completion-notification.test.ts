@@ -6,8 +6,8 @@ import {
 	createExtensionRuntime,
 	loadExtensionFromFactory,
 } from "../../packages/coding-agent/src/core/extensions/loader.js";
-import { deliverLocalCompletionNotification } from "../../packages/subagents/src/runs/background/completion-notification.js";
-import registerSubagentNotify from "../../packages/subagents/src/runs/background/notify.js";
+import { deliverLocalCompletionNotification } from "../../packages/subagents/src/runs/foreground/completion-notification.js";
+import registerSubagentNotify from "../../packages/subagents/src/runs/foreground/notify.js";
 
 async function loadNotifyRegistration(
 	eventBus: ReturnType<typeof createEventBus>,
@@ -134,7 +134,7 @@ test("queued child messages drain before a direct terminal notification", () => 
 	};
 	registerSubagentNotify(pi as never);
 
-	events.emit("subagent:async-complete", {
+	events.emit("subagent:complete", {
 		id: "ordering-run",
 		runId: "ordering-run",
 		agent: "worker",
@@ -252,7 +252,7 @@ test("keeps a surviving notification handler when replacement cleanup throws", (
 	const firstCleanup = registerSubagentNotify(pi as never);
 
 	assert.doesNotThrow(() => registerSubagentNotify(pi as never));
-	events.emit("subagent:async-complete", {
+	events.emit("subagent:complete", {
 		id: "surviving-handler-run",
 		agent: "worker",
 		status: "ok",
@@ -262,7 +262,7 @@ test("keeps a surviving notification handler when replacement cleanup throws", (
 	assert.equal(onCalls, 2);
 	assert.equal(sends, 1);
 	firstCleanup();
-	events.emit("subagent:async-complete", {
+	events.emit("subagent:complete", {
 		id: "after-cleanup-run",
 		agent: "worker",
 		status: "ok",
@@ -302,7 +302,7 @@ test("keeps the existing completion subscription when replacement registration f
 	assert.equal(onCalls, 2, "the rejected replacement still attempted one subscription");
 	assert.ok(registry.get(pi), "the rejected replacement keeps the existing registry entry");
 
-	events.emit("subagent:async-complete", {
+	events.emit("subagent:complete", {
 		id: "surviving-registration-run",
 		agent: "worker",
 		status: "ok",
@@ -311,7 +311,7 @@ test("keeps the existing completion subscription when replacement registration f
 	});
 	assert.equal(sent.length, 1, "the existing handler survives the rejected replacement");
 	firstCleanup();
-	events.emit("subagent:async-complete", {
+	events.emit("subagent:complete", {
 		id: "after-cleanup-run",
 		agent: "worker",
 		status: "ok",
@@ -351,7 +351,7 @@ test("delivers completions through a replacement API after invalidation", async 
 	assert.notStrictEqual(old.pi, replacement.pi, "reload creates a distinct extension API");
 	assert.equal(registry.get(old.pi), undefined, "the invalidated API no longer owns a registry entry");
 	assert.ok(registry.get(replacement.pi), "the replacement API owns the live registry entry");
-	replacement.pi.events.emit("subagent:async-complete", {
+	replacement.pi.events.emit("subagent:complete", {
 		id: "replacement-registration-run",
 		agent: "worker",
 		status: "ok",
@@ -452,7 +452,7 @@ test("rolls back a failed replacement before activation can expose a registry en
 	assert.equal(registry.get(pi), undefined, "failed activation leaves no notification registry entry");
 	assert.equal(activeHandlers.has(registeredHandlers[1]!), false, "the failed replacement is unsubscribed");
 
-	events.emit("subagent:async-complete", {
+	events.emit("subagent:complete", {
 		id: "rolled-back-run",
 		agent: "worker",
 		status: "ok",

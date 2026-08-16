@@ -4,6 +4,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
+import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
@@ -506,6 +507,7 @@ export function createSearchToolDefinition(
 		label: "search",
 		description: "Search file contents with a regex across files, directories, globs, and internal URLs.",
 		promptSnippet: searchToolSystemPromptContribution.snippet,
+		...experimentalToolSamplingProperty(),
 		parameters: searchSchema,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const resourceCtx = ctx as InternalResourceContext | undefined;

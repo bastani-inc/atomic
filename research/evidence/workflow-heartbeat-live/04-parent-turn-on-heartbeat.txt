@@ -1,0 +1,50 @@
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ workflow-heartbeat-live-evidence is running: 1 tool node park-tool, no model stages yet.           
+
+ Next: run /workflow connect 7d50804a-a470-4ff8-9f18-e69c7332b9f5 to watch it live.                 
+
+╭ WORKFLOW HEARTBEAT ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ♥ Workflow "workflow-heartbeat-live-evidence" is still running                                                                                                                                       │
+│ workflow  workflow-heartbeat-live-evidence                                                                                                                                                           │
+│ run       7d50804a-a470-4ff8-9f18-e69c7332b9f5                                                                                                                                                       │
+│ cadence   1-minute                                                                                                                                                                                   │
+│ elapsed   1m                                                                                                                                                                                         │
+│ ▸ /workflow status 7d50804a-a470-4ff8-9f18-e69c7332b9f5                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...                                      
+
+workflow: list retained runs                      
+╭ RUN workflow-heartbeat-live-evidence  ● running ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  7d50804a-a470-4ff8-9f18-e69c7332b9f5                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      workflow-heartbeat-live-evidence                                                                                                                                                       │
+│ state         ● running                                                                                                                                                                              │
+│ mode          single                                                                                                                                                                                 │
+│ started       16:01:00                                                                                                                                                                               │
+│ elapsed       1m 2s                                                                                                                                                                                  │
+│                                                                                                                                                                                                      │
+│ TOOLS                                                                                                                                                                                                │
+│ ● park-tool       running   1m 2s                                                                                                                                                                    │
+│                                                                                                                                                                                                      │
+│ ▸ workflow interrupt   id=7d50804a-a470-4ff8-9f18-e69c7332b9f5    cancel                                                                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ On goal, no action needed. Letting it continue.  
+
+ State at 1m: still on park-tool (node 1, running since start), 0 model stages, 0 completed nodes. Nothing stalled or errored — a long-running tool node is expected to sit like this.                  
+
+ Next: nothing from you. I'll report again at the next heartbeat, or run /workflow connect 7d50804a-a470-4ff8-9f18-e69c7332b9f5 if you want to watch.                                                   
+
+                                                                                                                                 ↑3.2k • ↓693 • R104k • W18k • CH98.3% • $0.196 (sub) • 3.1%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(github-copilot) claude-opus-5 high • /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/workflow-heartbeat-live-dkJuv8/project                                                                   
+● ADHD Mode                                       
+
+╭ BACKGROUND  1 run  ● 1 running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ●  7d50804a-a470-4ff8-9f18-e69c7332b9f5                                                                                                                                                            │
+│     workflow-heartbeat-live-evidence · single · 1m 46s                                                                                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

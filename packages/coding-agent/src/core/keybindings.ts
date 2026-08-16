@@ -25,7 +25,6 @@ export interface AppKeybindings {
 	"app.editor.external": true;
 	"app.message.followUp": true;
 	"app.message.dequeue": true;
-	"app.message.copy": true;
 	"app.clipboard.pasteImage": true;
 	"app.session.new": true;
 	"app.session.tree": true;
@@ -63,6 +62,13 @@ declare module "@earendil-works/pi-tui" {
 
 export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
+	// pi-tui 0.84.2's transcript-search defaults (`ctrl+shift+f`, plus
+	// `enter`/`shift+enter`/`ctrl+g`/`ctrl+shift+g`/`escape` while its find box
+	// is focused) are inherited as they ship. Atomic routes every
+	// `tui.altScreen.*` action through `FULLSCREEN_VIEWPORT_ACTIONS`
+	// (`modes/interactive/interactive-mode-base.ts`), so a focused overlay is
+	// offered `ctrl+shift+f` before the viewport opens a search behind it, and
+	// the matches are themed through `searchMatchBg`/`searchMatchText`.
 	"app.interrupt": { defaultKeys: "escape", description: "Cancel or abort" },
 	"app.clear": { defaultKeys: "ctrl+c", description: "Clear editor" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when editor is empty" },
@@ -104,7 +110,6 @@ export const KEYBINDINGS = {
 		defaultKeys: "alt+up",
 		description: "Restore queued messages",
 	},
-	"app.message.copy": { defaultKeys: "ctrl+x", description: "Copy last agent message" },
 	"app.clipboard.pasteImage": {
 		defaultKeys: process.platform === "win32" ? "alt+v" : "ctrl+v",
 		description: "Paste image from clipboard (text fallback)",
@@ -249,7 +254,6 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	externalEditor: "app.editor.external",
 	followUp: "app.message.followUp",
 	dequeue: "app.message.dequeue",
-	copyLastMessage: "app.message.copy",
 	pasteImage: "app.clipboard.pasteImage",
 	newSession: "app.session.new",
 	tree: "app.session.tree",

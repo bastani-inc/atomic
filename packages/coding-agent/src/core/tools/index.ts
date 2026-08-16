@@ -197,7 +197,7 @@ export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions)
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
 		createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
-		createBashToolDefinition(cwd, { asyncEnabled: true, ...options?.bash }),
+		createBashToolDefinition(cwd, options?.bash),
 		createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
 		createWriteToolDefinition(cwd, { ...options?.write, hashlineStore }),
 		createFindToolDefinition(cwd, options?.find),
@@ -219,7 +219,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return {
 		read: createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
-		bash: createBashToolDefinition(cwd, { asyncEnabled: true, ...options?.bash }),
+		bash: createBashToolDefinition(cwd, options?.bash),
 		edit: createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
 		write: createWriteToolDefinition(cwd, { ...options?.write, hashlineStore }),
 		find: createFindToolDefinition(cwd, options?.find),
@@ -234,7 +234,7 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
 		createReadTool(cwd, { ...options?.read, hashlineStore }),
-		createBashTool(cwd, { asyncEnabled: true, ...options?.bash }),
+		createBashTool(cwd, options?.bash),
 		createEditTool(cwd, { ...options?.edit, hashlineStore }),
 		createWriteTool(cwd, { ...options?.write, hashlineStore }),
 		createFindTool(cwd, options?.find),
@@ -256,7 +256,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return {
 		read: createReadTool(cwd, { ...options?.read, hashlineStore }),
-		bash: createBashTool(cwd, { asyncEnabled: true, ...options?.bash }),
+		bash: createBashTool(cwd, options?.bash),
 		edit: createEditTool(cwd, { ...options?.edit, hashlineStore }),
 		write: createWriteTool(cwd, { ...options?.write, hashlineStore }),
 		find: createFindTool(cwd, options?.find),

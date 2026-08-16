@@ -25,7 +25,7 @@ function result(index: number): SingleResult {
 		task: `task-${index}`,
 		status: "continued",
 		path: `child-${index}`,
-		envelope: "Child continued in background.",
+		envelope: "Child detached for intercom coordination.",
 		detached: true,
 		messages: [],
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
@@ -63,6 +63,7 @@ test("one parallel child's supervisor detach releases every active foreground si
 		maxSubagentDepths: [0, 0, 0],
 		availableModels: [],
 		knownModelProviders: [],
+		resolveCandidateModel: () => undefined,
 		modelOverrides: [undefined, undefined, undefined],
 		behaviors: [
 			{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },

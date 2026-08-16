@@ -13,8 +13,11 @@ Atomic accepts environment variables for configuration, provider credentials, an
 | `ATOMIC_SKIP_VERSION_CHECK` | `PI_SKIP_VERSION_CHECK` | Skip automatic startup version checks; explicit self-update still checks |
 | `ATOMIC_TELEMETRY` | `PI_TELEMETRY` | Enable/disable install/update telemetry |
 | `ATOMIC_REDUCED_MOTION` | `PI_REDUCED_MOTION` | Use static reduced-motion presentation |
+| `ATOMIC_EXPERIMENTAL` | `PI_EXPERIMENTAL` | Set to `1` to enable experimental features: built-in tool definitions request strict JSON-schema constrained sampling (`prefer`), and the footer shows an `xp` badge |
 
 `PI_CACHE_RETENTION=long` is a provider/upstream prompt-cache option and intentionally has no Atomic-prefixed alias. `VISUAL` and `EDITOR` select the Ctrl+G external editor when `externalEditor` is unset.
+
+`PI_TUI_ESC_TIMEOUT` belongs to the installed pi-tui renderer and also keeps its upstream name: it sets how long the renderer waits after a lone `ESC` before treating it as the Escape key, in milliseconds. The default is `100` over SSH and `10` otherwise; increase it if Alt-key input is misread as Escape.
 
 ## Subprocess attribution
 
@@ -26,7 +29,7 @@ Provider keys include `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_K
 
 ## Bash session environment
 
-Every built-in, factory-created, direct, foreground/background, workflow-stage, and isolated bash execution receives one execution-time snapshot:
+Every built-in, factory-created, direct, workflow-stage, and isolated bash execution receives one execution-time snapshot:
 
 | Atomic variable | Exact Pi alias | Value |
 |---|---|---|

@@ -274,7 +274,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		assert.deepEqual(orchestration?.constraints, { disableWorkflowTool: true, maxSubagentDepth: 5 });
 		assert.equal(typeof orchestration?.lateMessageRouter?.routeMessage, "function");
 		await orchestration?.lateMessageRouter?.routeMessage({
-			customType: "async-job-result",
+			customType: "late-result",
 			content: "late result",
 			display: true,
 		});
@@ -339,7 +339,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 
 		await assert.rejects(async () => {
 			await orchestration?.lateMessageRouter?.routeMessage({
-				customType: "async-job-result",
+				customType: "late-result",
 				content: "late",
 				display: true,
 			});
@@ -400,7 +400,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 
 		await assert.rejects(
 			orchestration!.lateMessageRouter!.routeMessages([
-				{ customType: "async-job-result", content: "late", display: true },
+				{ customType: "late-result", content: "late", display: true },
 			]),
 			(error: unknown) => isStaleExtensionContextError(error),
 		);
@@ -466,9 +466,9 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		await assert.rejects(
 			() =>
 				orchestration!.lateMessageRouter!.routeMessages([
-					{ customType: "async-job-result", content: "first", display: true },
-					{ customType: "async-job-result", content: "second", display: true },
-					{ customType: "async-job-result", content: "third", display: true },
+					{ customType: "late-result", content: "first", display: true },
+					{ customType: "late-result", content: "second", display: true },
+					{ customType: "late-result", content: "third", display: true },
 				]),
 			/injected route failure/,
 		);

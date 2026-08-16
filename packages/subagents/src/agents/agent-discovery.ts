@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getEnvValue } from "@bastani/atomic";
-import { loadAgentsFromDir } from "./agent-loaders.ts";
+import { type AgentLoadDiagnostic, loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.ts";
 import { applyBuiltinOverrides, readMergedSubagentSettings } from "./agent-overrides.ts";
 import {
 	BUILTIN_AGENTS_DIR,
@@ -60,6 +60,7 @@ export function discoverAgentsAll(cwd: string): {
 	projectDir: string | null;
 	userSettingsPath: string;
 	projectSettingsPath: string | null;
+	diagnostics: AgentLoadDiagnostic[];
 } {
 	const userDirOld = getUserAgentDirs();
 	const userDirNew = path.join(os.homedir(), ".agents");
@@ -71,20 +72,24 @@ export function discoverAgentsAll(cwd: string): {
 	const userSettings = userSettingsLoad.settings;
 	const projectSettings = projectSettingsLoad.settings;
 
+	const diagnostics: AgentLoadDiagnostic[] = [];
+	const loadDir = (dir: string, source: "builtin" | "user" | "project"): AgentConfig[] => {
+		const result = loadAgentsFromDirWithDiagnostics(dir, source);
+		diagnostics.push(...result.diagnostics);
+		return result.agents;
+	};
+
 	const builtin = applyBuiltinOverrides(
-		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
+		loadDir(BUILTIN_AGENTS_DIR, "builtin"),
 		userSettings,
 		projectSettings,
 		userSettingsPath,
 		projectSettingsPath,
 	);
-	const user = [
-		...userDirOld.flatMap((dir) => loadAgentsFromDir(dir, "user")),
-		...loadAgentsFromDir(userDirNew, "user"),
-	];
+	const user = [...userDirOld.flatMap((dir) => loadDir(dir, "user")), ...loadDir(userDirNew, "user")];
 	const projectMap = new Map<string, AgentConfig>();
 	for (const dir of projectDirs) {
-		for (const agent of loadAgentsFromDir(dir, "project")) {
+		for (const agent of loadDir(dir, "project")) {
 			projectMap.set(agent.name, agent);
 		}
 	}
@@ -106,5 +111,6 @@ export function discoverAgentsAll(cwd: string): {
 		projectDir,
 		userSettingsPath,
 		projectSettingsPath,
+		diagnostics,
 	};
 }

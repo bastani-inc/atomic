@@ -9,6 +9,8 @@ import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
+const PRESENCE_ACK_TIMEOUT_MS = 5000;
+
 
 export interface SendOptions {
   text: string;
@@ -24,6 +26,13 @@ export interface SendResult {
   delivered: boolean;
   reason?: string;
 }
+export interface PresenceUpdates {
+  name?: string;
+  status?: string;
+  model?: string;
+  group?: string;
+}
+
 
 export interface SupervisorAuthorization extends SupervisorRegistration {
   childName: string;
@@ -42,6 +51,8 @@ export class IntercomClient extends EventEmitter {
   private _messageSource: Message["source"] | undefined;
   private pendingSends = new PendingSendRegistry();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  private pendingPresence = new Map<string, { resolve: (group: string) => void; reject: (error: Error) => void }>();
+
   private pendingSupervisorAuthorizations = new Map<string, {
     resolve: (authorization: SupervisorAuthorization) => void;
     reject: (error: Error) => void;
@@ -53,9 +64,12 @@ export class IntercomClient extends EventEmitter {
     this.pendingSends.rejectAll(error);
     for (const pending of this.pendingLists.values()) pending.reject(error);
     for (const pending of this.pendingSupervisorAuthorizations.values()) pending.reject(error);
+    for (const pending of this.pendingPresence.values()) pending.reject(error);
     this.pendingLists.clear();
     this.pendingSupervisorAuthorizations.clear();
+    this.pendingPresence.clear();
   }
+
 
   get sessionId(): string | null {
     return this._sessionId;
@@ -331,6 +345,26 @@ export class IntercomClient extends EventEmitter {
         this.emit("presence_update", brokerMessage.session);
         break;
       }
+      case "presence_ack": {
+        if (typeof brokerMessage.requestId !== "string" || typeof brokerMessage.group !== "string") {
+          throw new Error("Invalid presence_ack message");
+        }
+        const pending = this.pendingPresence.get(brokerMessage.requestId);
+        if (!pending) return;
+        this.pendingPresence.delete(brokerMessage.requestId);
+        pending.resolve(brokerMessage.group);
+        break;
+      }
+      case "presence_failed": {
+        if (typeof brokerMessage.requestId !== "string" || typeof brokerMessage.reason !== "string") {
+          throw new Error("Invalid presence_failed message");
+        }
+        const pending = this.pendingPresence.get(brokerMessage.requestId);
+        if (!pending) return;
+        this.pendingPresence.delete(brokerMessage.requestId);
+        pending.reject(new Error(brokerMessage.reason));
+        break;
+      }
       case "error": {
         if (typeof brokerMessage.error !== "string") {
           throw new Error("Invalid error message");
@@ -482,14 +516,47 @@ export class IntercomClient extends EventEmitter {
     }
     return acquired.attempt.promise;
   }
-  updatePresence(updates: { name?: string; status?: string; model?: string }): void {
+  updatePresence(updates: PresenceUpdates): boolean {
     if (this.disconnecting) {
-      return;
+      return false;
     }
     const socket = this.socket;
     if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) {
-      return;
+      return false;
     }
     writeMessage(socket, { type: "presence", ...updates });
+    return true;
+  }
+
+  updatePresenceAcked(updates: PresenceUpdates): Promise<string> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const wrappedResolve = (group: string): void => {
+        clearTimeout(timeout);
+        resolve(group);
+      };
+      const wrappedReject = (error: Error): void => {
+        clearTimeout(timeout);
+        reject(error);
+      };
+      const timeout = setTimeout(() => {
+        if (!this.pendingPresence.delete(requestId)) return;
+        reject(new Error("Presence update timeout"));
+      }, PRESENCE_ACK_TIMEOUT_MS);
+      this.pendingPresence.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
+      try {
+        writeMessage(socket, { type: "presence", ...updates, requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingPresence.delete(requestId);
+        reject(toError(error));
+      }
+    });
   }
 }

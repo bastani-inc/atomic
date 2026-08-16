@@ -1,5 +1,7 @@
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
-import { store } from "../shared/store.js";
+import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
+import { type Store, store } from "../shared/store.js";
+import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import {
@@ -14,8 +16,14 @@ import {
 } from "./workflow-stage-results.js";
 import { resolveToolRunTarget, resolveToolStageTarget } from "./workflow-targets.js";
 
-export function workflowStagesResult(args: WorkflowToolArgs): WorkflowToolResult {
-	const target = resolveToolRunTarget(args, "No active run to inspect.");
+export interface WorkflowInspectionSource {
+	readonly store?: Store;
+	readonly allowLiveHandles?: boolean;
+}
+
+export function workflowStagesResult(args: WorkflowToolArgs, source?: WorkflowInspectionSource): WorkflowToolResult {
+	const activeStore = source?.store ?? store;
+	const target = resolveToolRunTarget(args, "No active run to inspect.", activeStore);
 	const filter = args.statusFilter ?? "all";
 	if (target.kind === "all") {
 		return {
@@ -35,22 +43,24 @@ export function workflowStagesResult(args: WorkflowToolArgs): WorkflowToolResult
 			error: target.message,
 		};
 	}
-	const run = store.runs().find((r) => r.id === target.runId);
-	const stages = (run?.stages ?? [])
-		.filter((stage) => filter === "all" || stage.status === filter)
-		.map(summarizeStage);
+	const stageSnapshots =
+		source?.store === undefined
+			? (activeStore.runs().find((run) => run.id === target.runId)?.stages ?? [])
+			: expandWorkflowGraph(readGraphStoreSnapshot(activeStore), target.runId).stages;
+	const stages = stageSnapshots.filter((stage) => filter === "all" || stage.status === filter).map(summarizeStage);
 	return { action: "stages", runId: target.runId, filter, stages };
 }
 
-export function workflowStageResult(args: WorkflowToolArgs): WorkflowToolResult {
-	const target = resolveToolRunTarget(args, "No active run to inspect.");
+export function workflowStageResult(args: WorkflowToolArgs, source?: WorkflowInspectionSource): WorkflowToolResult {
+	const activeStore = source?.store ?? store;
+	const target = resolveToolRunTarget(args, "No active run to inspect.", activeStore);
 	if (target.kind === "all") {
 		return { action: "stage", runId: "--all", error: "Stage inspection requires a single run." };
 	}
 	if (target.kind === "malformed" || target.kind === "not_found") {
 		return { action: "stage", runId: target.target, error: target.message };
 	}
-	const stage = resolveToolStageTarget(target.runId, args.stageId);
+	const stage = resolveToolStageTarget(target.runId, args.stageId, activeStore);
 	if (!stage.ok || stage.stageId === undefined) {
 		return {
 			action: "stage",
@@ -59,7 +69,7 @@ export function workflowStageResult(args: WorkflowToolArgs): WorkflowToolResult 
 		};
 	}
 	const stageRunId = stage.runId ?? target.runId;
-	const run = store.runs().find((r) => r.id === stageRunId);
+	const run = activeStore.runs().find((r) => r.id === stageRunId);
 	const snapshot = run?.stages.find((s) => s.id === stage.stageId);
 	return snapshot
 		? { action: "stage", runId: stageRunId, stage: cloneStage(snapshot) }
@@ -70,8 +80,12 @@ export function workflowStageResult(args: WorkflowToolArgs): WorkflowToolResult 
 			};
 }
 
-export function workflowTranscriptResult(args: WorkflowToolArgs): WorkflowToolResult {
-	const target = resolveToolRunTarget(args, "No active run to inspect.");
+export function workflowTranscriptResult(
+	args: WorkflowToolArgs,
+	source?: WorkflowInspectionSource,
+): WorkflowToolResult {
+	const activeStore = source?.store ?? store;
+	const target = resolveToolRunTarget(args, "No active run to inspect.", activeStore);
 	if (target.kind === "all") {
 		return {
 			action: "transcript",
@@ -92,7 +106,7 @@ export function workflowTranscriptResult(args: WorkflowToolArgs): WorkflowToolRe
 			truncated: false,
 		};
 	}
-	const stage = resolveToolStageTarget(target.runId, args.stageId);
+	const stage = resolveToolStageTarget(target.runId, args.stageId, activeStore);
 	if (!stage.ok || stage.stageId === undefined) {
 		return {
 			action: "transcript",
@@ -104,9 +118,10 @@ export function workflowTranscriptResult(args: WorkflowToolArgs): WorkflowToolRe
 		};
 	}
 	const stageRunId = stage.runId ?? target.runId;
-	const run = store.runs().find((r) => r.id === stageRunId);
+	const run = activeStore.runs().find((r) => r.id === stageRunId);
 	const snapshot = run?.stages.find((s) => s.id === stage.stageId);
-	const liveHandle = stageControlRegistry.get(stageRunId, stage.stageId);
+	const liveHandle =
+		source?.allowLiveHandles === false ? undefined : stageControlRegistry.get(stageRunId, stage.stageId);
 	if (liveHandle !== undefined) {
 		const sessionFile = liveHandle.sessionFile ?? snapshot?.sessionFile;
 		const sessionId = liveHandle.sessionId ?? snapshot?.sessionId;

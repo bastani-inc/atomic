@@ -52,7 +52,7 @@ metadata:
 
 # tmux
 
-Use for existing interactive tmux sessions. For one-shot commands, use normal shell. For new non-interactive background jobs, use background execution.
+Use for existing interactive tmux sessions. For one-shot commands, use normal shell. When a command must outlive a tool call, start it inside an interactive tmux session; Atomic tools do not provide background execution.
 
 On Windows, use [psmux](https://github.com/psmux/psmux), the native Windows tmux-compatible multiplexer. psmux automatically provides the `tmux` alias, so keep using the `tmux` commands below; no command changes are needed.
 

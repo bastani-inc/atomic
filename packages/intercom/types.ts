@@ -48,7 +48,7 @@ export type ClientMessage =
   | { type: "list"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
-  | { type: "presence"; name?: string; status?: string; model?: string };
+  | { type: "presence"; name?: string; status?: string; model?: string; group?: string; requestId?: string };
 
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; supervisorSessionId?: string }
@@ -59,6 +59,8 @@ export type BrokerMessage =
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }
+  | { type: "presence_ack"; requestId: string; group: string }
+  | { type: "presence_failed"; requestId: string; reason: string }
   | { type: "error"; error: string }
   | { type: "delivered"; messageId: string; attemptId?: string }
   | { type: "delivery_failed"; messageId: string; reason: string; attemptId?: string };

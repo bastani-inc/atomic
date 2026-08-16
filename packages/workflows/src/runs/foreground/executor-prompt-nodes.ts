@@ -2,6 +2,7 @@ import type { DurableStageTopology } from "../../durable/types.js";
 import type { DurableUiReplayRequest } from "../../durable/ui-primitive.js";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
+import { requirePrimitivePromptAnswer } from "../../shared/prompt-answer.js";
 import { withPromptCallerStack } from "../../shared/prompt-callsite-context.js";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
@@ -221,8 +222,16 @@ export function buildPromptNodeUiAdapter(input: {
 		if (shouldReplay) {
 			await Promise.resolve();
 			input.throwIfWorkflowExitSelected();
+			let response = replayAnswer.value;
+			try {
+				if (!isCustom) response = requirePrimitivePromptAnswer(descriptor, response);
+			} catch (err) {
+				applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(err));
+				await finalizePromptStage("failed");
+				throw err;
+			}
 			await finalizePromptStage("completed");
-			return replayAnswer.value;
+			return response;
 		}
 
 		try {
@@ -323,9 +332,10 @@ export function buildPromptNodeUiAdapter(input: {
 					},
 				);
 			});
+			const normalizedResponse = requirePrimitivePromptAnswer(descriptor, response);
 			await waitForExplicitResume();
 			await finalizePromptStage("completed");
-			return response;
+			return normalizedResponse;
 		} catch (err) {
 			if (input.signal.aborted) {
 				input.preserveWorkflowExitSkippedReason(stageSnapshot, "run-aborted");
@@ -355,22 +365,17 @@ export function buildPromptNodeUiAdapter(input: {
 			});
 		},
 		async input(promptText: string): Promise<string> {
-			const response = await ask({ kind: "input", message: promptText });
-			return typeof response === "string" ? response : String(response ?? "");
+			return (await ask({ kind: "input", message: promptText })) as string;
 		},
 		async confirm(message: string): Promise<boolean> {
-			const response = await ask({ kind: "confirm", message });
-			return response === true;
+			return (await ask({ kind: "confirm", message })) as boolean;
 		},
 		async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
 			if (options.length === 0) throw new Error("atomic-workflows: ctx.ui.select requires at least one option");
-			const response = await ask({ kind: "select", message, choices: options });
-			if (typeof response === "string" && (options as readonly string[]).includes(response)) return response as T;
-			return options[0]!;
+			return (await ask({ kind: "select", message, choices: options })) as T;
 		},
 		async editor(initial?: string): Promise<string> {
-			const response = await ask({ kind: "editor", message: "Edit and save to continue.", initial });
-			return typeof response === "string" ? response : (initial ?? "");
+			return (await ask({ kind: "editor", message: "Edit and save to continue.", initial })) as string;
 		},
 		async custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
 			const response = await ask(customPromptDescriptor(factory, options));

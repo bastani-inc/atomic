@@ -1,8 +1,9 @@
+import type { SkillCatalog } from "@bastani/atomic";
 import { MAX_SUBAGENT_NESTING_DEPTH, type SubagentToolResult } from "../shared/types.ts";
 import type { ManagementContext, ManagementScope } from "./agent-management.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import { discoverAgentsAll, parsePackageName } from "./agents.ts";
-import { discoverAvailableSkills } from "./skills.ts";
+import { discoverAvailableSkills, resolveSkillsFromCatalog } from "./skills.ts";
 
 export function result(text: string, isError = false): SubagentToolResult {
 	return { content: [{ type: "text", text }], isError, details: { mode: "management", results: [] } };
@@ -105,10 +106,11 @@ export function fallbackModelsWarning(
 		: undefined;
 }
 
-export function skillsWarning(cwd: string, skills: string[] | undefined): string | undefined {
+export function skillsWarning(cwd: string, skills: string[] | undefined, catalog?: SkillCatalog): string | undefined {
 	if (!skills || skills.length === 0) return undefined;
-	const available = new Set(discoverAvailableSkills(cwd).map((s) => s.name));
-	const missing = skills.filter((s) => !available.has(s));
+	const missing = catalog
+		? resolveSkillsFromCatalog(skills, catalog, cwd).missing
+		: skills.filter((skill) => !new Set(discoverAvailableSkills(cwd).map((entry) => entry.name)).has(skill));
 	return missing.length ? `Warning: skills not found: ${missing.join(", ")}.` : undefined;
 }
 

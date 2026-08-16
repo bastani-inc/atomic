@@ -20,8 +20,15 @@ const serialTest = process.platform === "win32" ? test.sequential.skip : test.se
 const prefix = "@@ATOMIC_TEST@@";
 const warning =
 	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
-const INTERACTIVE_STARTUP_TIMEOUT_MS = 30_000;
+const INTERACTIVE_STARTUP_TIMEOUT_MS = 60_000;
 const INTERACTIVE_REPORT_TIMEOUT_MS = 30_000;
+// Structural: the test spawns the real interactive CLI host under Bun and waits
+// for a full engine bootstrap before the first assertion. Under full vitest
+// file parallelism on a loaded machine that startup alone can exceed the suite
+// default, so the budget is named here per the per-test timeout policy in
+// AGENTS.md; the startup wait above stays smaller so its rich diagnostic
+// (recent reports plus the stderr tail) fires before the budget does.
+const INTERACTIVE_CLI_TEST_TIMEOUT_MS = 120_000;
 
 interface Report {
 	type?: string;
@@ -223,6 +230,10 @@ serialTest(
 				lastChangelogVersion: "0.0.0",
 				firstRunOnboardingStartedVersion: "0.0.0",
 				onboardedVersion: "0.0.0",
+				// The request count below is the point of this test: one provider turn for the
+				// cycled prompt, none from the fallback path. The idle session-summary launch
+				// would add an unrelated second request to the same fake provider.
+				sessionSummary: { enabled: false },
 			}),
 		);
 		writeFileSync(
@@ -353,5 +364,5 @@ serialTest(
 			rmSync(root, { recursive: true, force: true });
 		}
 	},
-	30_000,
+	INTERACTIVE_CLI_TEST_TIMEOUT_MS,
 );

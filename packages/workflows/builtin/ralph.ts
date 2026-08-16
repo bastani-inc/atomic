@@ -13,6 +13,10 @@ import { runRalphWorkflow } from "./ralph-runner.js";
 export default workflow({
   name: "ralph",
   description: "Raw prompt → research-prompt-refinement → research → orchestrate → multi-model parallel review loop with bounded iteration and immutable acceptance criteria. When launching follow-up ralph runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the prompt text and set create_pr=true instead when preparing the workflow inputs.",
+  // The 15-minute default, stated rather than inherited: this is a per-workflow
+  // product decision, so a future change to the global default must not silently
+  // re-cadence a long autonomous run.
+  heartbeatIntervalMinutes: 15,
   inputs: {
     prompt: Type.String({ description: "The task or goal to research, execute, and refine. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead." }),
     acceptance_criteria: Type.Optional(Type.String({ description: "Original immutable task contract this run must remain consistent with. Defaults to prompt. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here." })),

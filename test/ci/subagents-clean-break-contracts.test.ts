@@ -126,6 +126,7 @@ function scanPath(file: string): boolean {
 test("the clean-break env bridge and CLI-child protocol stay absent", () => {
 	const files = trackedFiles();
 	for (const relative of files.filter(scanPath)) {
+		assert.equal(existsSync(join(root, relative)), true, `${relative} listed by git but missing from disk`);
 		const source = guardedSource(relative);
 		for (const envName of deletedEnvNames()) {
 			assert.equal(source.includes(envName), false, `${relative} reintroduced deleted environment key ${envName}`);

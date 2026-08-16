@@ -17,7 +17,6 @@ import {
 	isSingleGenericAbortTextContent,
 	replacementAbortContent,
 } from "./agent-session-types.ts";
-import { disposeSessionAsyncJobManager } from "./async/session-manager.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
 import type {
 	MessageEndEvent,
@@ -142,12 +141,18 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			const steeringIndex = this._steeringMessages.indexOf(messageText);
 			if (steeringIndex !== -1) {
 				this._steeringMessages.splice(steeringIndex, 1);
+				// The loop already polled this message out of the agent queue, so the
+				// pause hold can no longer reach it and Escape can no longer restore it
+				// to the editor. Record it so an interrupt that kills its reply before
+				// any output can still schedule that reply (issue #2362).
+				this._admittedQueuedMessageAwaitingReply = messageText;
 				this._emitQueueUpdate();
 			} else {
 				// Check follow-up queue
 				const followUpIndex = this._followUpMessages.indexOf(messageText);
 				if (followUpIndex !== -1) {
 					this._followUpMessages.splice(followUpIndex, 1);
+					this._admittedQueuedMessageAwaitingReply = messageText;
 					this._emitQueueUpdate();
 				}
 			}
@@ -291,6 +296,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		this._resolveRetry();
 		this._contextOverflowUnresolved = false;
 		await this._checkCompaction(msg);
+
 		// Compaction owns context overflow first. Only once it is disabled, fails,
 		// or reports the overflow unresolved may the chain spend a candidate on a
 		// larger-context model, so a compactable first overflow costs nothing.
@@ -306,6 +312,12 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		if (restoreAfterTurn && this._pendingPostCompactionContinuation === undefined) {
 			if (typeof this._restoreFallbackModel === "function") await this._restoreFallbackModel();
 		}
+		// Launched last so the fallback lifecycle wins: a switch above returns before this line, and
+		// the restore has already put `this.model` back to the user's selection, which the launch
+		// reads synchronously before it parks on waitForIdle(). Guarded like the fallback methods
+		// above because the fallback suites drive this function on a synthetic session.
+		if (event.type === "agent_end" && typeof this._maybeGenerateSessionSummary === "function")
+			void this._maybeGenerateSessionSummary();
 	}
 }
 
@@ -502,17 +514,22 @@ export function _disconnectFromAgent(this: AgentSession): void {
  */
 
 export function dispose(this: AgentSession): void {
+	// Terminal and idempotent: callers legitimately dispose more than once (an explicit dispose
+	// followed by a harness teardown), and the steps below are not all safe to repeat.
+	if (this._disposed) return;
+	// Summary work queued before its AbortController exists cannot be reached by
+	// abortSessionSummary(), so disposal is recorded as state that every checkpoint consults.
+	this._disposed = true;
+	// A background summary must never keep the process alive past shutdown.
+	this.abortSessionSummary();
 	// Fail closed while protected input remains queued, or flush a consumed
 	// reconciliation before invalidation can discard its recovery state.
 	prepareProtectedStreamingCustomMessagesForDisposal(this);
 	this._extensionRunner.invalidate(STALE_EXTENSION_CONTEXT_MESSAGE);
-	disposeSessionAsyncJobManager(this._asyncJobManager, this._asyncJobManagerSessionId);
 	this._disconnectFromAgent();
 	this._eventListeners = [];
 	cleanupSessionResources(this.sessionId);
-	// Last: an async spill writer started by this session holds its own lease, so
-	// releasing here stops protecting a tree nothing is using without cutting a
-	// writer that outlived the session object.
+	// Releasing the session lease stops protecting a tree that is no longer in use.
 	this._tempStorageLease?.release();
 	this._tempStorageLease = undefined;
 }

@@ -76,7 +76,7 @@ export const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", 
  * the clock. This fixes the frozen/stuttering spinner from issue #1084.
  *
  * IMPORTANT: a wall-clock spinner only stays flicker-free for widgets pinned to
- * the bottom of the buffer (e.g. the below-editor async widget), where every
+ * the bottom of the buffer (e.g. a below-editor widget), where every
  * tick stays inside the viewport. Content rendered into chat scrollback (live
  * foreground subagent results) can scroll above the viewport fold; there, even
  * a single-cell spinner diff forces pi-tui into a destructive full-screen +
@@ -135,9 +135,9 @@ export function pulseGlyph(frame?: number): string {
 }
 
 /**
- * Running async/background subagent pulse. It reuses the exact foreground pulse
- * glyph frames while accepting an explicit frame advanced by the widget only on
- * real async progress/status updates, matching foreground result semantics.
+ * Running subagent pulse. It reuses the exact foreground pulse glyph frames
+ * while accepting an explicit frame advanced by the renderer on real progress
+ * updates, matching foreground result semantics.
  */
 export function runningPulseGlyph(frame?: number): string {
 	return pulseGlyph(frame);

@@ -40,6 +40,166 @@ const liteparseAdaptations: ReadonlyArray<readonly [atomic: string, canonical: s
 ];
 const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df93835d9a206bae6958c5e3c841c";
 
+// pbakaus/impeccable authoritative `.agents/skills/impeccable` distribution:
+// skill-v4.1.1 at 5a149f3fdb1b5793f10567233b1dcab98fc305fd
+// prior skill-v4.0.3 at 68b1129634a1cdd9a0ba50b27376c71b4b083ae8
+const impeccableTree = `
+SKILL.md
+agents/impeccable_asset_producer.toml
+agents/impeccable_documenter.toml
+agents/impeccable_finish_reviewer.toml
+agents/impeccable_manual_edit_applier.toml
+agents/openai.yaml
+reference/adapt.md
+reference/adapt.native.md
+reference/android.md
+reference/animate.md
+reference/audit.md
+reference/audit.native.md
+reference/bolder.md
+reference/clarify.md
+reference/colorize.md
+reference/craft-floor.md
+reference/craft.md
+reference/critique.md
+reference/degraded/asset-producer.md
+reference/degraded/documenter.md
+reference/degraded/finish-reviewer.md
+reference/degraded/manual-edit-applier.md
+reference/delight.md
+reference/distill.md
+reference/doctor.md
+reference/document.md
+reference/extract.md
+reference/harden.md
+reference/hooks.md
+reference/init.md
+reference/ios.md
+reference/layout.md
+reference/live-setup.md
+reference/live.md
+reference/new-work.md
+reference/onboard.md
+reference/operate.md
+reference/optimize.md
+reference/overdrive.md
+reference/polish.md
+reference/quieter.md
+reference/routing.md
+reference/shape.md
+reference/typeset.md
+reference/visualize.md
+scripts/command-metadata.json
+scripts/concept-seed.mjs
+scripts/context-signals.mjs
+scripts/context.mjs
+scripts/critique-storage.mjs
+scripts/detect-csp.mjs
+scripts/detect.mjs
+scripts/detector/browser/injected/index.mjs
+scripts/detector/cli/main.mjs
+scripts/detector/design-system.mjs
+scripts/detector/detect-antipatterns-browser.js
+scripts/detector/detect-antipatterns.mjs
+scripts/detector/engines/browser/detect-url.mjs
+scripts/detector/engines/regex/detect-text.mjs
+scripts/detector/engines/static-html/css-cascade.mjs
+scripts/detector/engines/static-html/detect-html.mjs
+scripts/detector/engines/visual/screenshot-contrast.mjs
+scripts/detector/findings.mjs
+scripts/detector/node/file-system.mjs
+scripts/detector/profile/profiler.mjs
+scripts/detector/registry/antipatterns.mjs
+scripts/detector/rules/checks.mjs
+scripts/detector/shared/color.mjs
+scripts/detector/shared/constants.mjs
+scripts/detector/shared/fonts.mjs
+scripts/detector/shared/inline-ignores.mjs
+scripts/detector/shared/page.mjs
+scripts/doctor.mjs
+scripts/embed-prompt.mjs
+scripts/generate-image.mjs
+scripts/hook-admin.mjs
+scripts/hook-lib.mjs
+scripts/hook.mjs
+scripts/lib/artifact-schema.mjs
+scripts/lib/composition-catalog.mjs
+scripts/lib/concept-catalog.mjs
+scripts/lib/design-parser.mjs
+scripts/lib/impeccable-config.mjs
+scripts/lib/impeccable-paths.mjs
+scripts/lib/is-generated.mjs
+scripts/lib/open-system-browser.mjs
+scripts/lib/provider.mjs
+scripts/lib/roll-selection.mjs
+scripts/lib/staleness-deep.mjs
+scripts/lib/staleness-notice.mjs
+scripts/lib/staleness.mjs
+scripts/lib/surface-briefs.mjs
+scripts/lib/target-args.mjs
+scripts/lib/target-slug.mjs
+scripts/lib/template-extensions.mjs
+scripts/live-accept.mjs
+scripts/live-browser-dom.js
+scripts/live-browser-session.js
+scripts/live-browser.js
+scripts/live-commit-manual-edits.mjs
+scripts/live-complete.mjs
+scripts/live-copy-edit-agent.mjs
+scripts/live-discard-manual-edits.mjs
+scripts/live-inject.mjs
+scripts/live-insert.mjs
+scripts/live-manual-edit-evidence.mjs
+scripts/live-poll.mjs
+scripts/live-resume.mjs
+scripts/live-server.mjs
+scripts/live-status.mjs
+scripts/live-target.mjs
+scripts/live-wrap.mjs
+scripts/live.mjs
+scripts/live/accept-css.mjs
+scripts/live/accept-verify.mjs
+scripts/live/browser-script-parts.mjs
+scripts/live/completion.mjs
+scripts/live/event-validation.mjs
+scripts/live/frameworks/astro.mjs
+scripts/live/frameworks/detect-utils.mjs
+scripts/live/frameworks/index.mjs
+scripts/live/frameworks/journal.mjs
+scripts/live/frameworks/nextjs.mjs
+scripts/live/frameworks/nuxt.mjs
+scripts/live/frameworks/script-src.mjs
+scripts/live/frameworks/static-html.mjs
+scripts/live/frameworks/sveltekit.mjs
+scripts/live/frameworks/tag-strategy.mjs
+scripts/live/frameworks/tanstack-start.mjs
+scripts/live/frameworks/vite-generic.mjs
+scripts/live/generation-preflight.mjs
+scripts/live/insert-ui.mjs
+scripts/live/instructions.mjs
+scripts/live/manual-apply.mjs
+scripts/live/manual-edit-routes.mjs
+scripts/live/manual-edits-buffer.mjs
+scripts/live/poll-lanes.mjs
+scripts/live/roots.mjs
+scripts/live/session-store.mjs
+scripts/live/source-lock.mjs
+scripts/live/source-search.mjs
+scripts/live/svelte-ast.mjs
+scripts/live/svelte-component.mjs
+scripts/live/sveltekit-adapter.mjs
+scripts/live/tanstack-adapter.mjs
+scripts/live/ui-surfaces.mjs
+scripts/live/vocabulary.mjs
+scripts/modern-screenshot.umd.js
+scripts/palette.mjs
+scripts/pin.mjs
+scripts/serve-question.mjs
+scripts/surface-brief.mjs
+`
+	.trim()
+	.split("\n");
+
 function sha256(contents: string | Buffer): string {
 	return createHash("sha256").update(contents).digest("hex");
 }
@@ -197,12 +357,14 @@ describe("synced upstream skill trees", () => {
 			"scripts/live/browser-script-parts.mjs",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.0\.3\r?$/m);
+		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.1\.1\r?$/m);
 		for (const stale of [
 			"reference/brand.md",
 			"reference/codex.md",
 			"reference/interaction-design.md",
 			"reference/product.md",
+			"scripts/hook-before-edit.mjs",
+			"scripts/live/ui-core.mjs",
 		]) {
 			assert.equal(existsSync(join(workflowSkills, "impeccable", stale)), false, `stale upstream file: ${stale}`);
 		}
@@ -217,6 +379,38 @@ describe("synced upstream skill trees", () => {
 			"skills/impeccable/scripts/live/svelte-component.mjs",
 			"skills/impeccable/scripts/lib/provider.mjs",
 		]);
+	});
+
+	test("ships the exact Impeccable 4.1.1 tree with authoritative provider constants and modes", () => {
+		const skillRoot = join(workflowSkills, "impeccable");
+		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
+		const provider = readFileSync(join(skillRoot, "scripts/lib/provider.mjs"), "utf8");
+		assert.match(provider, /IMPECCABLE_COMMAND_PREFIX = "\$"/u);
+		assert.match(provider, /IMPECCABLE_PROVIDER_ID = "agents"/u);
+
+		const packed = packedPaths(join(root, "packages/workflows"));
+		assert.deepEqual(
+			packed.filter((path) => path.startsWith("skills/impeccable/")),
+			impeccableTree.map((path) => `skills/impeccable/${path}`),
+		);
+
+		const staged = spawnSyncCollect(["git", "ls-files", "--stage", "--", "packages/workflows/skills/impeccable"], {
+			cwd: root,
+			env: createGitEnvironment(),
+		});
+		assert.equal(staged.exitCode, 0, staged.stderr.toString());
+		const entries = staged.stdout
+			.toString()
+			.trim()
+			.split("\n")
+			.map((line) => {
+				const [metadata, path] = line.split("\t");
+				return `${metadata.split(" ")[0]} ${path}`;
+			});
+		assert.deepEqual(
+			entries,
+			impeccableTree.map((path) => `100644 packages/workflows/skills/impeccable/${path}`),
+		);
 	});
 
 	test("ships the exact canonical LiteParse tree with no undocumented drift", () => {

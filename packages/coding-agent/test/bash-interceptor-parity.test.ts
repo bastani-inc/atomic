@@ -78,12 +78,11 @@ describe("bash interceptor parity", () => {
 		).rejects.toThrow(/Invalid bash env name/);
 	});
 
-	it("does not block rules for unavailable tools and rejects unsupported runtime modes", async () => {
+	it("does not block rules for unavailable tools and preserves PTY handling", async () => {
 		const dir = await createTempDir();
 		const bash = createBashToolDefinition(dir, {
 			interceptorEnabled: true,
 			availableTools: ["bash"],
-			asyncEnabled: true,
 			operations: {
 				exec: async (_command, _cwd, { onData }) => {
 					onData(Buffer.from("allowed"));
@@ -96,14 +95,6 @@ describe("bash interceptor parity", () => {
 				await bash.execute("bash-cat", { command: "cat file.txt" }, undefined, undefined, {} as ExtensionContext),
 			),
 		).toBe("allowed");
-		const asyncResult = await bash.execute(
-			"bash-async",
-			{ command: "echo hi", async: true },
-			undefined,
-			undefined,
-			{} as ExtensionContext,
-		);
-		expect(asyncResult.details?.async?.jobId).toBeTruthy();
 		expect(
 			text(
 				await bash.execute(

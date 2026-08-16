@@ -42,6 +42,9 @@ export function getSearchableText(node: SessionTreeNode): string {
 			parts.push("title");
 			if (entry.name) parts.push(entry.name);
 			break;
+		case "session_summary":
+			parts.push("session summary", entry.summary);
+			break;
 		case "model_change":
 			parts.push("model", entry.modelId);
 			break;
@@ -139,6 +142,9 @@ export function getEntryDisplayText(
 			result = entry.name
 				? [theme.fg("dim", "[title: "), theme.fg("dim", entry.name), theme.fg("dim", "]")].join("")
 				: [theme.fg("dim", "[title: "), theme.italic(theme.fg("dim", "empty")), theme.fg("dim", "]")].join("");
+			break;
+		case "session_summary":
+			result = theme.fg("dim", `[session summary]: `) + normalizeText(entry.summary);
 			break;
 		default:
 			result = "";

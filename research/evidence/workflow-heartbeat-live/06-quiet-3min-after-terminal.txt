@@ -1,0 +1,50 @@
+
+ Continuing.                                      
+
+ State at 3m: identical to 1m and 2m — park-tool running, 0 stages, 0 completions, no errors. Three checks, zero progress signals; the node has no visible internal steps to report, so I cannot tell   
+ slow from parked from status alone.              
+
+ Next: tell me "quit it" and I'll stop the run, or "keep waiting" and I'll stop commenting until it changes state.                                                                                      
+
+╭ WORKFLOW COMPLETE ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ Workflow "workflow-heartbeat-live-evidence" completed                                                                                                                                              │
+│ workflow  workflow-heartbeat-live-evidence                                                                                                                                                           │
+│ run       7d50804a-a470-4ff8-9f18-e69c7332b9f5                                                                                                                                                       │
+│ launched  user                                                                                                                                                                                       │
+│ duration  3m 20s                                                                                                                                                                                     │
+│ ▸ /workflow status 7d50804a-a470-4ff8-9f18-e69c7332b9f5                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+workflow: list retained runs                      
+╭ RUN workflow-heartbeat-live-evidence  ✓ completed ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  7d50804a-a470-4ff8-9f18-e69c7332b9f5                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      workflow-heartbeat-live-evidence                                                                                                                                                       │
+│ state         ✓ completed                                                                                                                                                                            │
+│ mode          single                                                                                                                                                                                 │
+│ started       16:01:00                                                                                                                                                                               │
+│ ended         16:04:20                                                                                                                                                                               │
+│ duration      3m 20s                                                                                                                                                                                 │
+│                                                                                                                                                                                                      │
+│ TOOLS                                                                                                                                                                                                │
+│ ✓ park-tool       completed 3m 20s                                                                                                                                                                   │
+│                                                                                                                                                                                                      │
+│ ARTIFACTS                                                                                                                                                                                            │
+│ result        {"parked":"parked-until-timeout"}                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│ ▸ workflow status id=7d50804a-a470-4ff8-9f18-e69c7332b9f5    inspect retained state                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Done — run completed in 3m 20s.                  
+
+ Result: park-tool finished with "parked-until-timeout"; run output { parked: "parked-until-timeout" }. One tool node, no model stages, no failures. The 3 minutes of no visible progress was the tool  
+ waiting out its own timeout, as designed.        
+
+ Next: nothing pending. Tell me what you want built or checked next.                                
+
+                                                                                                                                 ↑15k • ↓1.5k • R297k • W20k • CH98.2% • $0.387 (sub) • 3.4%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(github-copilot) claude-opus-5 high • /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/workflow-heartbeat-live-dkJuv8/project                                                                   
+● ADHD Mode                                       

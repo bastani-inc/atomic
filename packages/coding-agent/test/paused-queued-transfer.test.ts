@@ -4,7 +4,6 @@ import { afterEach, describe, expect, test } from "vitest";
 import { StageSessionReplacement } from "../../workflows/src/runs/foreground/stage-runner-replacement.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.ts";
-import { createSessionAsyncDeliveryHandler } from "../src/core/async/session-manager.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "../src/core/extensions/index.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
 import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
@@ -429,7 +428,7 @@ describe("paused queue stage-session transfer", () => {
 		expect(late).toEqual(["first-admitted-after-seal"]);
 	});
 
-	test("accepted protected async commit remains on the replacement after sealing", async () => {
+	test("accepted protected result commit remains on the replacement after sealing", async () => {
 		const source = await createHarness();
 		const target = await createHarness();
 		harnesses.push(source, target);
@@ -440,29 +439,23 @@ describe("paused queue stage-session transfer", () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 
-		const deliverAsync = createSessionAsyncDeliveryHandler({
-			sendCustomMessage(message, options) {
-				return source.session.sendCustomMessage(message, {
-					...options,
-					persistWhenStreaming: true,
-					stageAdmissionBarrier: () => {
-						entered.resolve();
-						return release.promise;
-					},
-				});
+		const delivery = source.session.sendCustomMessage(
+			{
+				customType: "late-reconciliation",
+				content: "\tprotected exact result payload  \n",
+				display: true,
+				details: { id: "protected-4" },
 			},
-		});
-		const delivery = deliverAsync({
-			customType: "async-job-result",
-			content: "\tprotected exact async payload  \n",
-			display: true,
-			details: {
-				jobId: "protected-4",
-				type: "bash",
-				status: "completed",
-				command: "printf protected",
+			{
+				triggerTurn: true,
+				deliverAs: "followUp",
+				persistWhenStreaming: true,
+				stageAdmissionBarrier: () => {
+					entered.resolve();
+					return release.promise;
+				},
 			},
-		});
+		);
 		await entered.promise;
 		sourceInternal.transferWorkflowStageDeliveriesTo(target.session);
 		boundary.seal();
@@ -472,7 +465,7 @@ describe("paused queue stage-session transfer", () => {
 		expect(late).toEqual([]);
 		expect(
 			target.session.messages.filter(
-				(message) => message.role === "custom" && message.customType === "async-job-result",
+				(message) => message.role === "custom" && message.customType === "late-reconciliation",
 			),
 		).toHaveLength(1);
 		expect(targetInternal._protectedStreamingCustomMessages).toHaveLength(1);

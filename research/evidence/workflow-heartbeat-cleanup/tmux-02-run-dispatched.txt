@@ -1,0 +1,90 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0                                                
+    ██████▙                ▟██████░░   (unknown) unknown                                            
+     ██████▙              ▟██████░░    /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/workflow-heartbeat-cleanup-evidence-0VQXEs/project                                                      
+      ██████▙            ▟██████░░                
+       ████████████████████████░░      We question,                                                 
+        ██████▛░░░░░░░░▜██████░░       we break away from what is accepted.                         
+         ██████▛      ▜██████░░        Engineering matters.                                         
+          ██████▛    ▜██████░░                    
+           ██████▛  ▜██████░░                     
+            ░████████████░░░                      
+              ░░░░░░░░░░░░                        
+
+RESOURCES context ready · 12 skills · 14 prompts  
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Atomic is a verifiable coding agent runtime for building and running                               
+ agent workflows you can feel confident in.       
+ Use it to implement tickets, research a codebase, design a UI,                                     
+ or build and run your own loops.                 
+ Run dynamic workflows and save the ones you like for future use.                                   
+ Start building a verifiable software factory.    
+
+ Type a message or slash command below to continue normally.                                        
+ If you have not connected a provider yet, run `/login` first.                                      
+ Run `/atomic` for guides or `/workflow list` to see built-in workflows.                            
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+ Warning: No models available. Use /login to log into a provider via OAuth or API key. See:                                                                                                             
+   /Users/tonystark/Documents/projects/atomic-hb-slice3/packages/coding-agent/docs/providers.md                                                                                                         
+   /Users/tonystark/Documents/projects/atomic-hb-slice3/packages/coding-agent/docs/models.md        
+
+╭ WORKFLOW STARTED ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ▶ Workflow "workflow-heartbeat-cleanup-evidence" started                                                                                                                                             │
+│ workflow  workflow-heartbeat-cleanup-evidence                                                                                                                                                        │
+│ run       e1998cf1-34c3-4270-b6cc-38db04eb9184                                                                                                                                                       │
+│ actor     user                                                                                                                                                                                       │
+│ duration  0ms                                                                                                                                                                                        │
+│ ▸ /workflow status e1998cf1-34c3-4270-b6cc-38db04eb9184                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: Unknown provider: unknown                 
+
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   e1998cf1-34c3-4270-b6cc-38db04eb9184                                                                                                                                                               │
+│ ●  workflow-heartbeat-cleanup-evidence  ● running                                                                                                                                                    │
+│   started in background                                                                                                                                                                              │
+│                                                                                                                                                                                                      │
+│ ▸ /workflow connect e1998cf1-34c3-4270-b6cc-38db04eb9184  see agents working · chat with and steer each stage                                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                                                           0.0%/0 (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+unknown • /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/workflow-heartbeat-cleanup-evidence-0VQXEs/project                                                                                   
+● ADHD Mode                                       
+
+╭ BACKGROUND  1 run  ● 1 running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ●  e1998cf1-34c3-4270-b6cc-38db04eb9184                                                                                                                                                            │
+│     workflow-heartbeat-cleanup-evidence · single · 0s                                                                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,25 @@
+
+atomic-intercom-full-ids on  HEAD (ddab8bf) [?] is 📦 v0.0.0 via 🦀 v1.97.0
+❯ ATOMIC_CODING_AGENT_DIR='/tmp/atomic-intercom-full-ids-e2e.TDaYLw/agent' ATOMI
+C_OFFLINE=1 bun /tmp/atomic-intercom-full-id-tool-probe.mjs
+TOOL_LIST_START
+**Current session** (group: default):
+• tool-probe (8796ba81-f05e-4f9c-b70c-090b68771334) — /Users/tonystark/Documents
+/projects/atomic-intercom-full-ids (probe) [self, idle]
+
+**Other sessions** (group: default):
+• planner (f996d39d-5efd-41f7-8b01-22769b77873f) — /Users/tonystark/Documents/pr
+ojects/atomic-intercom-full-ids (unknown) [same cwd, idle]
+• worker (737986a2-62da-4c43-92d3-8f343da5fddf) — /Users/tonystark/Documents/pro
+jects/atomic-intercom-full-ids (unknown) [same cwd, idle]
+TOOL_LIST_END
+TOOL_FULL_ID=f996d39d-5efd-41f7-8b01-22769b77873f
+TOOL_FULL_SEND=Message sent to f996d39d-5efd-41f7-8b01-22769b77873f
+TOOL_PREFIX=f996d39d
+TOOL_PREFIX_SEND=Message to "f996d39d" was not delivered: Session not found
+atomic-intercom-full-ids on  HEAD (ddab8bf) [?] is 📦 v0.0.0 via 🦀 v1.97.0
+❯
+
+
+
+

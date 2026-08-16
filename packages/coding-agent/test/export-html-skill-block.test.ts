@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 
 describe("export HTML skill block rendering", () => {
 	const templateJs = readFileSync(new URL("../src/core/export-html/template.js", import.meta.url), "utf-8");
+	const treeScript = readFileSync(
+		new URL("../src/core/export-html/template-js/tree-filter-render.js", import.meta.url),
+		"utf-8",
+	);
 
 	it("strips skill wrapper XML from user message rendering", () => {
 		// Skill commands store a structural wrapper in the raw user message:
@@ -11,6 +15,32 @@ describe("export HTML skill block rendering", () => {
 		// not the Pi-generated <skill>...</skill> XML tags.
 		expect(templateJs).toMatch(/parseSkillBlock/);
 		expect(templateJs).toMatch(/skillBlock\.userMessage/);
+	});
+
+	it("parses source-qualified skill blocks with stable candidate identity", () => {
+		const parserSource = treeScript.slice(
+			treeScript.indexOf("function parseSkillBlock"),
+			treeScript.indexOf("function getSearchableText"),
+		);
+		const parse = Function(`${parserSource}; return parseSkillBlock;`)() as (text: string) => {
+			name: string;
+			location: string;
+			candidateId?: string;
+			content: string;
+			userMessage?: string;
+		};
+
+		expect(
+			parse(
+				'<skill name="tdd@builtin" location="/skills/tdd/SKILL.md" candidate="skill_0123456789abcdef0123">\nBuiltin body\n</skill>\n\nrun tests',
+			),
+		).toEqual({
+			name: "tdd@builtin",
+			location: "/skills/tdd/SKILL.md",
+			candidateId: "skill_0123456789abcdef0123",
+			content: "Builtin body",
+			userMessage: "run tests",
+		});
 	});
 
 	it("renders skill invocation and user message as separate sibling blocks", () => {

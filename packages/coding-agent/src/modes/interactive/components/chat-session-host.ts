@@ -157,6 +157,41 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionBody(this.state, width, budget);
 	}
 
+	/**
+	 * Rows the body occupies at `width`, whether or not they are on screen.
+	 *
+	 * Pair with `renderBodyRows` to read the whole transcript — a stage-chat
+	 * search covers every row, not the window the reader is parked on. Both
+	 * measure the component stack the last `renderBody` installed, so call them
+	 * after at least one body render.
+	 */
+	bodyRowCount(width: number): number {
+		return this.state.bodyViewport.rowCount(width);
+	}
+
+	/** Body rows `startRow` (inclusive) to `endRow` (exclusive), unscrolled. */
+	renderBodyRows(width: number, startRow: number, endRow: number): string[] {
+		return this.state.bodyViewport.renderRows(width, startRow, endRow);
+	}
+
+	/**
+	 * Render a live assistant entry whole, or only its tail (the default).
+	 *
+	 * The tail window keeps a fast-streaming turn cheap for a reader following
+	 * the bottom of the body; it also drops everything above the last 240 lines
+	 * from what `bodyRowCount` and `renderBodyRows` report. A find box open on
+	 * this transcript therefore turns it off while it is open, or it would
+	 * answer "No matches" for text the stream printed a minute ago. Returns
+	 * whether the setting changed, so the caller can invalidate the rows that
+	 * were rendered under the old rule.
+	 */
+	setStreamingTailWindowEnabled(enabled: boolean): boolean {
+		if (this.state.streamingTailWindowEnabled === enabled) return false;
+		this.state.streamingTailWindowEnabled = enabled;
+		this.invalidate();
+		return true;
+	}
+
 	renderPendingMessages(width: number): string[] {
 		return renderChatSessionPendingMessages(this.state, width);
 	}
@@ -238,6 +273,15 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	scrollToBottom(): void {
 		this.state.bodyViewport.scrollToBottom();
+	}
+
+	/**
+	 * Park the body with absolute row `row` at the top of its window, clamped
+	 * to the last rendered layout. Used to reveal a search match the reader
+	 * cannot currently see.
+	 */
+	scrollBodyTo(row: number): void {
+		this.state.bodyViewport.scrollTo(row);
 	}
 
 	syncAnimationTick(): void {

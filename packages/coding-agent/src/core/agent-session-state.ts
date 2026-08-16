@@ -2,6 +2,7 @@ import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.ts";
+import { getSkillCatalog } from "./skill-catalog.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 
 export function getActiveToolNames(this: AgentSession): string[] {
@@ -107,7 +108,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): s
 	const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 	const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 	const appendSystemPrompt = loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
-	const loadedSkills = this._resourceLoader.getSkills().skills;
+	const loadedSkills = getSkillCatalog(this._resourceLoader).modelSkills();
 	const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
 	this._baseSystemPromptOptions = {

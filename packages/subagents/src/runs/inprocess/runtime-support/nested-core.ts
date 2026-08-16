@@ -7,7 +7,6 @@ import { registerInProcessNestedRoute } from "../nested-routing.ts";
 import { isSafeNestedPathId, type NestedPathEntry } from "./nested-paths.ts";
 
 export const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
-export const NESTED_RUNS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-runs");
 export const ROUTE_FILE = "route.json";
 export const REGISTRY_FILE = "registry.json";
 export const MAX_NESTED_EVENT_BYTES = 64 * 1024;
@@ -163,7 +162,6 @@ function cleanupOldSubdirectories(root: string, maxAgeDays: number): void {
 
 export function cleanupOldNestedRuntimeDirs(maxAgeDays: number): void {
 	cleanupOldSubdirectories(NESTED_EVENTS_DIR, maxAgeDays);
-	cleanupOldSubdirectories(NESTED_RUNS_DIR, maxAgeDays);
 }
 
 export function resolveNestedRouteFromEnv(_env: NodeJS.ProcessEnv = process.env): NestedRoute | undefined {
@@ -178,14 +176,6 @@ export function resolveNestedParentAddressFromEnv(
 	_env: NodeJS.ProcessEnv = process.env,
 ): { parentRunId: string; parentStepIndex?: number; depth: number; path: NestedPathEntry[] } | undefined {
 	return undefined;
-}
-
-export function resolveNestedAsyncDir(rootRunId: string, run: NestedRunSummary): string | undefined {
-	if (!run.asyncDir) return undefined;
-	const resolved = path.resolve(run.asyncDir);
-	const nestedRoot = path.resolve(NESTED_RUNS_DIR, rootRunId, run.id);
-	const relative = path.relative(nestedRoot, resolved);
-	return resolved === nestedRoot || (!relative.startsWith("..") && !path.isAbsolute(relative)) ? resolved : undefined;
 }
 
 export function clampNumber(value: unknown): number | undefined {

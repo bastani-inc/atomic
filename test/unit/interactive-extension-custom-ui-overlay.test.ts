@@ -153,3 +153,53 @@ test("an inline custom UI focuses the editor when nothing else owns input", asyn
 	assert.equal(stub.selectorDisposals, 1, "mounting inline must tear down the selector that owned the container");
 	assert.equal(stub.focused.at(-1), stub.mode.editor);
 });
+
+/**
+ * `handlesInternalUiAction` is what lets an overlay claim the OSC-8
+ * jump-to-bottom activation instead of scrolling the host transcript. In
+ * process it is declared as a mount option and has to reach the component
+ * itself, because that is where the host reads it.
+ */
+test("an in-process overlay declaring handlesInternalUiAction marks its component", async () => {
+	const stub = makeStub();
+	const component = { render: () => ["x"], handleInput: () => {}, invalidate: () => {} };
+	let done!: (result: unknown) => void;
+	const settled = InteractiveModeBase.prototype.showExtensionCustom.call(
+		stub.mode,
+		(_tui: unknown, _theme: unknown, _keys: unknown, complete: (result: unknown) => void) => {
+			done = complete;
+			return component;
+		},
+		{ overlay: true, handlesInternalUiAction: true },
+	);
+	await sleep(0);
+	assert.equal(
+		(component as { handlesInternalUiAction?: boolean }).handlesInternalUiAction,
+		true,
+		"the host reads the opt-in off the component, not off the mount options",
+	);
+	done(undefined);
+	await settled;
+});
+
+test("an in-process overlay that omits the opt-in leaves its component unmarked", async () => {
+	const stub = makeStub();
+	const component = { render: () => ["x"], handleInput: () => {}, invalidate: () => {} };
+	let done!: (result: unknown) => void;
+	const settled = InteractiveModeBase.prototype.showExtensionCustom.call(
+		stub.mode,
+		(_tui: unknown, _theme: unknown, _keys: unknown, complete: (result: unknown) => void) => {
+			done = complete;
+			return component;
+		},
+		{ overlay: true },
+	);
+	await sleep(0);
+	assert.equal(
+		(component as { handlesInternalUiAction?: boolean }).handlesInternalUiAction,
+		undefined,
+		"an unmarked overlay must leave the jump with the host transcript",
+	);
+	done(undefined);
+	await settled;
+});

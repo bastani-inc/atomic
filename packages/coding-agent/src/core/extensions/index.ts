@@ -222,4 +222,5 @@ export {
 	isToolCallEventType,
 	isWriteToolResult,
 } from "./types.ts";
+export { OVERLAY_ACTIVE_ROW_MARKER } from "./ui-types.ts";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";

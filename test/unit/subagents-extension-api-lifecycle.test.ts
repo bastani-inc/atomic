@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { ExtensionAPI } from "@bastani/atomic";
 import { test } from "vitest";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
-import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
+import { SUBAGENT_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
 import {
 	buildSlashInitialResult,
 	getSlashRenderableSnapshot,
@@ -75,14 +75,14 @@ test("full extension wiring keeps parent handlers alive across stage shutdown an
 	const stage = makeExtensionHarness();
 	registerSubagentExtension(parent.pi);
 	registerSubagentExtension(stage.pi);
-	assert.equal(parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 2, "parent owns tracker and notify handlers");
-	assert.equal(stage.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 2, "stage owns independent handlers");
+	assert.equal(parent.events.count(SUBAGENT_COMPLETE_EVENT), 1, "parent owns notify handler");
+	assert.equal(stage.events.count(SUBAGENT_COMPLETE_EVENT), 1, "stage owns independent notify handler");
 	const parentSlash = buildSlashInitialResult("shared-request", { agent: "worker", task: "parent task" }, parent.pi);
 	buildSlashInitialResult("shared-request", { agent: "worker", task: "stage task" }, stage.pi);
 
 	stage.shutdownHandlers[0]?.();
-	assert.equal(stage.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 0);
-	assert.equal(parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 2, "stage shutdown must preserve parent handlers");
+	assert.equal(stage.events.count(SUBAGENT_COMPLETE_EVENT), 0);
+	assert.equal(parent.events.count(SUBAGENT_COMPLETE_EVENT), 1, "stage shutdown must preserve parent handlers");
 	assert.equal(
 		getSlashRenderableSnapshot(parentSlash, parent.pi).result.details.results[0]?.task,
 		"parent task",
@@ -91,17 +91,13 @@ test("full extension wiring keeps parent handlers alive across stage shutdown an
 
 	registerSubagentExtension(parent.pi);
 	assert.equal(
-		parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT),
-		2,
+		parent.events.count(SUBAGENT_COMPLETE_EVENT),
+		1,
 		"same-API reload replaces rather than duplicates handlers",
 	);
 	parent.shutdownHandlers[0]?.();
-	assert.equal(
-		parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT),
-		2,
-		"stale shutdown cannot tear down the replacement",
-	);
-	parent.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+	assert.equal(parent.events.count(SUBAGENT_COMPLETE_EVENT), 1, "stale shutdown cannot tear down the replacement");
+	parent.events.emit(SUBAGENT_COMPLETE_EVENT, {
 		id: "full-extension-result",
 		agent: "worker",
 		success: true,
@@ -110,5 +106,5 @@ test("full extension wiring keeps parent handlers alive across stage shutdown an
 	});
 	assert.equal(parent.messages.length, 1);
 	parent.shutdownHandlers[1]?.();
-	assert.equal(parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 0);
+	assert.equal(parent.events.count(SUBAGENT_COMPLETE_EVENT), 0);
 });

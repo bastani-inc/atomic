@@ -153,7 +153,12 @@ async function workflowSlashHandler(
 		if (target && !target.startsWith("--")) {
 			const resolved = resolveRunId(target);
 			if (resolved.kind === "malformed") return fail(resolved.message);
-			if (resolved.kind === "not_found") return fail(`Run not found: ${target}`);
+			if (resolved.kind === "not_found") {
+				const durable = await deps.runtimeForContext(ctx).inspectDurableWorkflow(target);
+				if (durable.kind !== "found") return fail(durable.message);
+				emitChatSurface(pi, { kind: "detail", detail: durable.detail });
+				return;
+			}
 			const inspected = inspectRun(resolved.runId);
 			if (!inspected.ok) return fail(`Run not found: ${target}`);
 			emitChatSurface(pi, { kind: "detail", detail: inspected.detail });

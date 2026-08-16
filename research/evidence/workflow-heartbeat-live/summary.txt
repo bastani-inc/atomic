@@ -1,0 +1,6 @@
+run_id=7d50804a
+cadence_minutes=1
+cards_at_terminal=3
+cards_after_3min=3
+provider=live
+session_file=/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T//workflow-heartbeat-live-dkJuv8/agent/sessions/--private-var-folders-cr-lt2lnmhd0g7c3g_62423frp80000gn-T-workflow-heartbeat-live-dkJuv8-project--/2026-08-14T16-00-58-214Z_01a00101-4f66-7ab7-9759-7bc5f4610120.jsonl

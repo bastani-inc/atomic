@@ -84,10 +84,10 @@ The dedicated history actions always change history entries, regardless of the c
 
 ### TUI Fullscreen Viewport
 
-Interactive sessions always use this fullscreen viewport for the primary transcript scroll region. Mouse-wheel input scrolls the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects text and copies it to the clipboard.
+Interactive sessions always use this fullscreen viewport for the primary transcript scroll region. Mouse-wheel input scrolls the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler; the jump-to-bottom indicator's internal OSC 8 link returns the focused transcript surface to its live end, including an attached workflow stage chat. Dragging with the primary mouse button selects text and copies it to the clipboard. See [Terminal setup](/terminal-setup) for terminal-specific mouse and trackpad behavior.
 
 
-Fullscreen text selection comes from the installed pi-tui 0.84.1 renderer. Drag with the primary button to select characters; double-click selects a word and triple-click selects a line. Focus changes and non-drag clicks clear transient selection state, preventing a stale highlight from appearing. The renderer also reduces mouse tracking in tmux, Zellij, and GNU Screen.
+Fullscreen text selection comes from the installed pi-tui 0.84.2 renderer. Drag with the primary button to select characters; double-click selects a word and triple-click selects a line. Focus changes and non-drag clicks clear transient selection state, preventing a stale highlight from appearing. A drag release reported with the generic SGR button code also ends the selection. The renderer also reduces mouse tracking in tmux, Zellij, and GNU Screen.
 Fullscreen transcript bindings take precedence over editor bindings while the main editor has focus. The default unmodified navigation keys therefore control the transcript, while their `ctrl` variants continue to control the editor. When a fullscreen overlay or inline custom component has focus, Atomic sends matching viewport bindings to that component first. Returning `true` keeps the key local. For an in-process component, returning `false`, `undefined`, or `void` lets transcript scrolling handle it. A remote component's correlated reply falls through on `false`, failure, or timeout; `undefined` after disposal is dropped because that component no longer owns focus.
 
 | Key | Editor action | Fullscreen action |
@@ -97,8 +97,9 @@ Fullscreen transcript bindings take precedence over editor bindings while the ma
 | `pageUp`, `pageDown` | Editor | Transcript |
 | `ctrl+pageUp`, `ctrl+pageDown` | Editor | Editor |
 
-This routing remains configurable through the ordinary action bindings. For example, `"tui.altScreen.pageUp": "ctrl+pageUp"` makes `pageUp` control the editor and `ctrl+pageUp` control the transcript in fullscreen mode. Bind `tui.altScreen.halfPageUp` and `tui.altScreen.halfPageDown` for smaller transcript steps while keeping the full-page bindings. Setting `"tui.altScreen.pageUp": []` disables that transcript shortcut entirely. User bindings replace the defaults for that action.
+This routing remains configurable through the ordinary action bindings. For example, `"tui.altScreen.pageUp": "ctrl+pageUp"` makes `pageUp` control the editor and `ctrl+pageUp` control the transcript in fullscreen mode. Bind `tui.altScreen.halfPageUp` and `tui.altScreen.halfPageDown` for half-page steps, or `tui.altScreen.lineUp` and `tui.altScreen.lineDown` for single-line steps, while keeping the full-page bindings. Setting `"tui.altScreen.pageUp": []` disables that transcript shortcut entirely. User bindings replace the defaults for that action.
 When a fullscreen overlay or inline custom component owns focus, it receives matching `pageUp`, `pageDown`, `home`, `end`, and custom `tui.altScreen.*` bindings before transcript scrolling. Its handler returns `true` when it consumes the key; an unhandled result lets transcript scrolling proceed. Remote components receive a correlated reply and have a bounded fallback if the engine stalls. Mouse-wheel and click sequences follow the same focused-component route, so workflow graphs and stage chats can consume them before unhandled events fall through to the fullscreen viewport.
+The blocking `ask_user_question` dialog is pinned to the bottom of the screen as an overlay rather than measured into the layout, so opening it does not shrink the transcript viewport or the page step: `pageUp`, `pageDown`, `home`, `end`, and the wheel move by the same amount and reach every line of the scrollback, including the newest ones, in the strip that stays visible above the dialog. Those transcript actions still work while the Notes editor is open. Notes keeps ordinary text and edit actions, including the default `ctrl+home` and `ctrl+end`; a key moves the transcript instead only when configured for a `tui.altScreen.*` action. The dialog is bounded so the visible strip survives on a short terminal, and the active questionnaire row stays visible inside the bound as you move through single-select choices, multi-select choices, Next, Submit, Cancel, and inline inputs. It keeps its own arrow, `enter`, `tab`, `space`, `esc`, click, and selection input.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
@@ -106,10 +107,20 @@ When a fullscreen overlay or inline custom component owns focus, it receives mat
 | `tui.altScreen.pageDown` | `pageDown` | Scroll the transcript down by one page |
 | `tui.altScreen.halfPageUp` | *(none)* | Scroll the transcript up by half a page |
 | `tui.altScreen.halfPageDown` | *(none)* | Scroll the transcript down by half a page |
+| `tui.altScreen.lineUp` | *(none)* | Scroll the transcript up by one line |
+| `tui.altScreen.lineDown` | *(none)* | Scroll the transcript down by one line |
 | `tui.altScreen.previousPrompt` | `ctrl+shift+up` | Jump to the previous marked message |
 | `tui.altScreen.nextPrompt` | `ctrl+shift+down` | Jump to the next marked message |
+| `tui.altScreen.search` | `ctrl+shift+f` | Search the rendered transcript |
+| `tui.altScreen.searchNext` | `enter`, `ctrl+g` | Select the next search match while searching |
+| `tui.altScreen.searchPrevious` | `shift+enter`, `ctrl+shift+g` | Select the previous search match while searching |
+| `tui.altScreen.searchClose` | `escape` | Close transcript search |
 | `tui.altScreen.top` | `home` | Scroll to the beginning of the transcript |
 | `tui.altScreen.bottom` | `end` | Scroll to the transcript end and follow new output |
+
+`ctrl+shift+f` opens a find box over the transcript. Typing filters as you go, `enter` and `ctrl+g` move to the next match, `shift+enter` and `ctrl+shift+g` move to the previous one, and `escape` closes the box. While the find box has focus it keeps `escape`, `enter`, and `ctrl+g`, so those keys navigate the search rather than interrupting the turn, submitting the editor, or opening the external editor. Scrolling still works while a search is open: `pageUp`, `pageDown`, `home`, `end`, and the wheel move the transcript instead of the query cursor. Matches use the `searchMatchText` on `searchMatchBg` theme colors with an underline; the current match swaps that pair and adds bold. Both colors are optional in a theme file and fall back to `text` and `selectedBg`, so a theme written before they existed keeps working. See [Themes](/themes).
+
+A focused fullscreen overlay or inline custom component is offered `ctrl+shift+f` before the transcript is, on the same route as the scroll bindings above, so a component that owns a transcript of its own can search that one instead. An attached workflow stage chat does exactly that: it searches its own stage transcript — every row of it, not only the visible window — under the same four actions, and `escape` there closes the find box without interrupting the stage. See [Workflows](/workflows).
 
 On Windows, pressing the secondary mouse button in fullscreen pastes text from the system clipboard into the focused component.
 
@@ -117,15 +128,12 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.interrupt` | `escape` | Abort active or queued work and restore queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission |
+| `app.interrupt` | `escape` | Abort active or queued work and restore still-queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission. A message the agent already picked up is answered instead of restored |
 | `app.clear` | `ctrl+c` | Interrupt active or queued work, or terminate an unresponsive interactive engine; once idle, clear the editor (press twice while idle to exit) |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
 | `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image or text from clipboard |
-| `app.message.copy` | `ctrl+x` | Copy the last assistant message (or the selected message in `/tree`) |
-
-In fullscreen mode, a successful `app.message.copy` shortcut shows a short `Copied!` flash without adding a row to the fixed status dock. The `/copy` command keeps its normal status-line confirmation.
 
 When `app.clipboard.pasteImage` finds text rather than an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
 

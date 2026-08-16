@@ -58,7 +58,7 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
-If a session is unnamed, intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers can keep showing the transcript snippet instead of a generic `session-...` name.
+If a session is unnamed, intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d-1111-4222-8333-123456789abc` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers can keep showing the transcript snippet instead of a generic `session-...` name.
 
 ## Quick Start
 
@@ -78,20 +78,28 @@ The agent can list sessions and send messages using the `intercom` tool. Tool ca
 // List active sessions
 intercom({ action: "list" })
 // → **Current session:**
-// → • executor (20d43841) — ~/projects/api (claude-sonnet-4) [self, idle]
+// → • executor (20d43841-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [self, idle]
 // → **Other sessions:**
-// → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
+// → • research (6332faab-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
+
+// Join a named group (it is created if no session is there yet)
+intercom({ action: "join", group: "api-review" })
+// → Joined intercom group "api-review".
+
+// Return to the group's home resolved at session start
+intercom({ action: "leave" })
+// → Returned to home intercom group "default".
 
 // Send a message
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
 // → Message sent to research
 
-// The short ID printed by list is also a valid target
-intercom({ action: "ask", to: "6332faab", message: "Which validation path should I use?" })
+// The full session ID printed by list is also a valid target
+intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which validation path should I use?" })
 
 // Check connection status
 intercom({ action: "status" })
-// → Connected: Yes, Session ID: abc123, Active sessions: 3
+// → Connected: Yes, Session ID: abc12345-1111-4222-8333-123456789abc, Active sessions: 3
 
 // Send with attachments (code snippets, files, or context)
 intercom({
@@ -126,7 +134,7 @@ When a blocking `intercom.ask` targets a workflow stage that has already complet
 
 When a blocking ask reaches a sibling workflow stage during an active model/tool turn, the target reserves it synchronously in the open stage generation before any asynchronous foreground-owner detach handshake. Queue insertion waits inside that reservation, and stage finalization drains it before publishing the terminal snapshot. This prevents a structured-output or other terminal tool call from overtaking a mid-turn ask. If destination-side admission genuinely cannot complete, the asker receives an exact-thread actionable error instead of consuming the full 10-minute timeout.
 
-For delegated background children, queued messages and terminal lifecycle notices are ordered per child. Intercom claims the terminal child’s pre-terminal ordinary entries in FIFO order and atomically admits that prelude together with the paused, completed, or failed notice. A process-local companion bridge covers lazily loaded extensions whose event buses are distinct, while exact terminal-identity deduplication prevents double admission even when the successful terminal dispatch has no queued prelude. Failed dispatches remain retryable, and pause/resume/completion identities remain distinct. Other children’s entries remain independently queued, messages are not discarded, terminal admission does not wait for a separate model turn, and correlated ask replies still bypass unrelated queued sends.
+For delegated children, queued messages and terminal lifecycle notices are ordered per child. Intercom claims the terminal child’s pre-terminal ordinary entries in FIFO order and atomically admits that prelude together with the paused, completed, or failed notice. A process-local companion bridge covers lazily loaded extensions whose event buses are distinct, while exact terminal-identity deduplication prevents double admission even when the successful terminal dispatch has no queued prelude. Failed dispatches remain retryable, and pause/resume/completion identities remain distinct. Other children’s entries remain independently queued, messages are not discarded, terminal admission does not wait for a separate model turn, and correlated ask replies still bypass unrelated queued sends.
 
 ## Workflow: Planner-Worker Coordination
 
@@ -168,9 +176,12 @@ intercom({
   to: "planner",
   message: "Should retry apply to all endpoints or just idempotent ones? Also, max retry count and backoff strategy?"
 })
+
 // → Reply from planner: Only GET/PUT/DELETE — never POST. Max 3 retries, exponential backoff starting at 100ms.
 // Worker continues implementing with the answer, same turn, full context.
 ```
+
+To coordinate two plain chat sessions without changing their startup config, have each one call `intercom({ action: "join", group: "NAME" })`. Joining updates broker presence in place, so the broker broadcasts a leave to the old group and a join to `NAME` without changing the session ID; the tool reports success only after the broker acknowledges the new group. Calls to `list`, `status`, `send`, and `ask` then use `NAME`; sessions that stay in `default` cannot discover or message the joined peers. Call `intercom({ action: "leave" })` to return to the original resolved home group. `contact_supervisor` keeps its dedicated capability-based cross-group behavior.
 
 **Worker finds something unexpected — escalates and waits:**
 ```typescript
@@ -233,7 +244,7 @@ This workflow uses Atomic's in-process subagent admission. When the runtime admi
 
 `contact_supervisor` is registered from the typed admission record. The record binds the supervisor target, canonical child identity, child index, session name, and broker-issued capability to the child session; these values are not inherited from environment variables. If the parent does not grant supervisor coordination, the session falls back to the regular `intercom` tool.
 
-The child identity remains stable across foreground continuation, `async: true`, interruption, and cold resume. Intercom detach uses the same in-process continuation as async work, so the jobs widget and terminal envelope retain one canonical path.
+The child identity remains stable across foreground continuation, interruption, and cold resume. Intercom detach uses the same in-process continuation as foreground coordination, so the terminal envelope retains one canonical path.
 
 ### Three Reasons
 
@@ -322,11 +333,12 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action` | string | `"list"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `to` | string | Exact session name, exact full ID, or unique ID prefix (for send/ask, or to disambiguate reply) |
+| `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
+| `to` | string | Exact session name or exact full session ID (for send/ask, or targeted reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
+| `group` | string | Group name for `join`; read-only group filter for `list`/`status`. `send`/`ask` stay locked to the current group. |
 
 ### contact_supervisor
 
@@ -346,19 +358,23 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ### intercom actions
 
-**`list`** — Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. Every displayed short ID can be passed directly to `send`, `ask`, or targeted `reply`. Status is derived automatically from Pi lifecycle events: `idle`, `thinking`, or `tool:<name>`.
+**`join`** — Moves this session into the trimmed named group and creates that group when no peer is there yet. `default` is the shared default group. The names `true` and `auto` are reserved for subagent auto-groups and are rejected. Subagents launched after the join inherit the joined group.
 
-Target lookup preserves exact full IDs and exact case-insensitive names, then accepts a unique session-ID prefix. If a prefix matches multiple sessions, Intercom reports every match and asks for a longer ID or exact name instead of guessing. Resolving a prefix to the current session still triggers the normal self-target rejection.
+**`leave`** — Moves this session back to the resolved home group from session startup. It takes no `group` parameter.
+
+**`list`** — Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status. Every displayed full session ID can be passed directly to `send`, `ask`, or targeted `reply`.
+
+Target lookup accepts only an exact full session ID or an exact case-insensitive session name. Targeting is also **group-scoped** — see [Groups](#groups) below.
 
 **`send`** — Sends a message to the specified session. By default it sends immediately, including in interactive sessions. Set `confirmSend: true` in config if you want a confirmation dialog for non-reply sends. Replies that include `replyTo` skip confirmation. Returns delivery confirmation.
 
 **`ask`** — Sends a message and waits for the recipient to reply (10-minute timeout). The reply is returned as the tool result. No confirmation dialog. Only one pending `ask` is allowed per session at a time; if several blocking requests race (parallel `ask` calls, or `ask` alongside `contact_supervisor`), one wins the reservation and each other call returns a normal "Already waiting for a reply" tool error without disturbing the pending ask. Use this when the agent needs the answer to continue working.
 
-**`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass an exact name, exact full ID, or unique ID prefix in `to`, or inspect them with `pending` first. Under the hood this is still a normal `send` with the exact `replyTo` value.
+**`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass an exact name or exact full session ID in `to`, or inspect them with `pending` first. Under the hood this is still a normal `send` with the exact `replyTo` value.
 
 **`pending`** — Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. Useful when replying after the original triggered turn.
 
-**`status`** — Shows connection status, session ID, and total count of active sessions (including the current session).
+**`status`** — Shows connection status, session ID, current group, and the total count of active sessions in that group. A `group` filter remains a read-only peek.
 
 ## Keyboard Shortcuts
 

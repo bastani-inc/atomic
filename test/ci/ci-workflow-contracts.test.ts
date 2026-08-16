@@ -68,6 +68,40 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 });
 
 /**
+ * No package script may write a workspace selector after `npm run <script>`.
+ *
+ * Bun rewrites the literal `npm run` prefix inside a package script to
+ * `bun run`, and `bun run` has no `--workspace`/`--workspaces`: it forwards the
+ * flag to the script as a positional argument. `npm run typecheck
+ * --workspace=@bastani/atomic` therefore re-entered the *root* `typecheck`
+ * under Bun, appending one more copy of the flag on every pass, and recursed
+ * until it was killed -- so `bun run check` and `bun run typecheck` were
+ * unusable while `npm run check` passed.
+ *
+ * Writing the selector before the `run` verb (`npm --workspace=X run Y`) does
+ * not match Bun's prefix rewrite, so both runtimes reach npm's real workspace
+ * resolution. This asserts the ordering, which is the part Bun keys on.
+ */
+test("workspace selectors precede the run verb so Bun cannot rewrite them", async () => {
+	const manifests = [
+		"package.json",
+		...(await readdir(join(root, "packages"))).map((p) => `packages/${p}/package.json`),
+	];
+	for (const relative of manifests) {
+		const path = join(root, relative);
+		if (!existsSync(path)) continue;
+		const manifest = (await readJson(path)) as { scripts?: Record<string, string> };
+		for (const [name, command] of Object.entries(manifest.scripts ?? {})) {
+			assert.doesNotMatch(
+				command,
+				/\bnpm run\s+\S+\s+--workspaces?\b/u,
+				`${relative} script "${name}" puts a workspace selector after the run verb, which Bun turns into a positional argument: ${command}`,
+			);
+		}
+	}
+});
+
+/**
  * SQLite selectors must keep working on both runtimes, and their tests must
  * keep asserting on both.
  *
@@ -464,22 +498,54 @@ test("the shipped build toolchain and Bun do not float", async () => {
 test("each native leg declares its own measured job and compile budget", async () => {
 	const native = jobBlock(await readText(publishPath), "native-artifacts", "linux-binary-smoke");
 	assert.match(native, /^ {4}timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}$/mu);
-	assert.match(native, /- name: Build native binding\n\s+timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/u);
-	const legs = [
+	assert.match(
+		native,
+		/- name: Build native binding\n\s+id: native_build\n\s+continue-on-error: true\n\s+timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/u,
+	);
+	assert.match(
+		native,
+		/- name: Retry native binding\n\s+if: steps\.native_build\.outcome == 'failure'\n\s+timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/u,
+	);
+	const buildSteps = jobSteps(native).filter((step) => /(?:Build|Retry) native binding/u.test(step));
+	assert.deepEqual(
+		buildSteps.map((step) => /^name: .+$/mu.exec(step)?.[0]),
+		["name: Build native binding", "name: Retry native binding"],
+	);
+	assert.equal(
+		[...native.matchAll(/timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/gu)].length,
+		2,
+		"both native compile attempts need their own bounded timeout",
+	);
+	assert.match(buildSteps[0] as string, /continue-on-error: true/u);
+	assert.doesNotMatch(buildSteps[1] as string, /continue-on-error/u);
+	const legMatches = [
 		...native.matchAll(/platform: (\w+), arch: (\w+),[^}]*timeout_minutes: (\d+), build_timeout_minutes: (\d+)/gu),
-	].map(([, platform, arch, job, build]) => `${platform} ${arch} ${job}/${build}`);
+	];
+	const legs = legMatches.map(([, platform, arch, job, build]) => `${platform} ${arch} ${job}/${build}`);
 	assert.deepEqual(legs, [
-		"linux x64 7/5",
-		"linux arm64 8/5",
-		"linux x64 7/5",
-		"linux arm64 8/5",
-		"darwin x64 9/8",
-		"darwin arm64 5/5",
-		"win32 x64 10/5",
-		"win32 arm64 10/5",
+		"linux x64 16/5",
+		"linux arm64 17/5",
+		"linux x64 17/5",
+		"linux arm64 18/5",
+		"darwin x64 19/8",
+		"darwin arm64 12/5",
+		"win32 x64 20/5",
+		"win32 arm64 20/5",
 	]);
-	// The single blanket cap that covered six legs spanning 55s to 443s of real
-	// work must not come back.
+	// A cap sized on a green run's setup cancels the job mid-retry, which is the
+	// failure the retry exists to survive. Every leg must still contain the bounded
+	// recovery paths it owns: both zig attempts (linux), the CRT populate bound
+	// (win32), two compile attempts, and the artifact upload.
+	const RESERVED_BOUND_MINUTES: Record<string, number> = { linux: 2 + 2, win32: 8, darwin: 0 };
+	const UPLOAD_RESERVE_MINUTES = 1;
+	for (const [, platform, arch, job, build] of legMatches) {
+		const floor = (RESERVED_BOUND_MINUTES[platform as string] ?? 0) + 2 * Number(build) + UPLOAD_RESERVE_MINUTES;
+		assert.ok(
+			Number(job) >= floor,
+			`${platform} ${arch} job cap ${job} cannot contain its bounded recovery path (needs >= ${floor})`,
+		);
+	}
+	// No leg may fall back to the former blanket cap.
 	assert.doesNotMatch(native, /timeout-minutes: 15/u);
 });
 

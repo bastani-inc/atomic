@@ -15,6 +15,10 @@ import { DEFAULT_MAX_TURNS } from "./goal-types.js";
 export default workflow({
   name: "goal",
   description: "Goal Runner workflow with bounded sub-agent orchestration turns, immutable acceptance criteria, ledger artifacts, parallel reviewers, and reducer-gated completion. When launching follow-up goal runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the objective text and set create_pr=true instead when preparing the workflow inputs.",
+  // The 15-minute default, stated rather than inherited: this is a per-workflow
+  // product decision, so a future change to the global default must not silently
+  // re-cadence a long autonomous run.
+  heartbeatIntervalMinutes: 15,
   inputs: {
     objective: Type.String({ description: "The objective or delta for this Goal Runner workflow run. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead." }),
     acceptance_criteria: Type.Optional(Type.String({ description: "Original immutable task contract this run must remain consistent with. Defaults to objective. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here." })),

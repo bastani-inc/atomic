@@ -32,6 +32,8 @@
 
 		"selectedBg": "selectedBg",
 		"scrollbarThumb": "selectedBg",
+		"searchMatchBg": "selectedBg",
+		"searchMatchText": "",
 		"userMessageBg": "userMsgBg",
 		"userMessageText": "",
 		"customMessageBg": "customMsgBg",

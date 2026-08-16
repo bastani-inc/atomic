@@ -35,6 +35,18 @@ export interface SessionEntry {
 	readonly payload?: Record<string, WorkflowSerializableValue>;
 	readonly customType?: string;
 	readonly data?: Record<string, WorkflowSerializableValue>;
+	/**
+	 * The payload a custom-message entry was published with. Distinct from
+	 * `data`: this is what an extension passed as `details`, so a heartbeat entry
+	 * carries its `WorkflowHeartbeatEventDetails` here. Read only to recover a
+	 * heartbeat's identity structurally rather than by parsing its rendered text.
+	 *
+	 * `unknown` deliberately: the host declares this generic and any extension
+	 * may write any shape into it, so every reader narrows. Typing it as a known
+	 * record here would be a claim about other extensions' data that nothing
+	 * enforces.
+	 */
+	readonly details?: unknown;
 }
 
 export interface NormalizedSessionEntry {

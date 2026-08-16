@@ -46,17 +46,23 @@ function middleTruncate(text: string, maxWidth: number): string {
 
   return truncateToWidth(`${left}…${right}`, maxWidth, "");
 }
-
-function shortSessionId(sessionId: string): string {
-  return sessionId.slice(0, 8);
-}
-
-function sessionTitle(session: SessionInfo, options?: { self?: boolean; sameCwd?: boolean }): string {
+function sessionTitleLines(
+  session: SessionInfo,
+  availableWidth: number,
+  options?: { self?: boolean; sameCwd?: boolean },
+): string[] {
   const name = session.name || "Unnamed session";
   const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
-  return `${name} (${shortSessionId(session.id)})${suffix}`;
+  const title = `${name} (${session.id})${suffix}`;
+  if (visibleWidth(title) <= availableWidth) {
+    return [title];
+  }
+
+  const label = middleTruncate(`${name}${suffix}`, availableWidth);
+  const id = truncateToWidth(session.id, availableWidth, "…");
+  return [label, id];
 }
 
 export class SessionListOverlay implements Component {
@@ -135,7 +141,11 @@ export class SessionListOverlay implements Component {
     lines.push(row(this.theme.bold(" Current Session")));
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
     lines.push(row());
-    lines.push(row(`  ${this.theme.fg("dim", sessionTitle(this.currentSession, { self: true }))}`));
+    const currentTitleLines = sessionTitleLines(this.currentSession, Math.max(1, contentWidth - 2), { self: true });
+    lines.push(row(`  ${this.theme.fg("dim", currentTitleLines[0])}`));
+    for (const idLine of currentTitleLines.slice(1)) {
+      lines.push(row(`  ${this.theme.fg("dim", idLine)}`));
+    }
     lines.push(row(`  ${this.theme.fg("dim", `${middleTruncate(this.currentSession.cwd, Math.max(8, contentWidth - 4))} • ${this.currentSession.model}`)}`));
     lines.push(row());
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
@@ -156,10 +166,13 @@ export class SessionListOverlay implements Component {
         const isSelected = index === this.selectedIndex;
         const sameCwd = session.cwd === this.currentSession.cwd;
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
-        const title = sessionTitle(session, { sameCwd });
+        const titleLines = sessionTitleLines(session, Math.max(1, contentWidth - 2), { sameCwd });
         const pathText = `${middleTruncate(session.cwd, Math.max(8, contentWidth - 4))} • ${session.model}`;
 
-        lines.push(row(`${prefix}${isSelected ? this.theme.fg("accent", title) : title}`));
+        lines.push(row(`${prefix}${isSelected ? this.theme.fg("accent", titleLines[0]) : titleLines[0]}`));
+        for (const idLine of titleLines.slice(1)) {
+          lines.push(row(`  ${this.theme.fg("dim", idLine)}`));
+        }
         lines.push(row(`  ${this.theme.fg("dim", pathText)}`));
         if (index < endIndex - 1) {
           lines.push(row());

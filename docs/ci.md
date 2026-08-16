@@ -218,6 +218,24 @@ bun run scripts/cut-release.ts 0.9.10-alpha.1 --base main --push
 
 The tag push is the publication signal. Do not bump package versions directly on a release base.
 
+### npm registration preflight
+
+Before it touches anything, `scripts/cut-release.ts` asks npm whether every package the publisher publishes already exists. Both halves of the question come from `.github/workflows/publish.yml`, read out of the **release base commit** the cut is about to tag rather than out of the caller's checkout — `--base` names another branch as often as not, and that branch's workflow is the one that will publish. The payload is the `packages=(…)` array, and the registry is the `--registry` the publisher pins on its own npm commands (`https://registry.npmjs.org`). npm's `npm_config_registry` is deliberately ignored: a mirror answering "yes" for a name that does not exist on npmjs would clear a check whose whole job is to predict the publish.
+
+An unregistered name aborts the cut with nothing to unwind — no prune, no worktree, no version stamp, no tag. `publish.yml`'s own `npm view` call is an idempotency check that runs after the binaries are built, so without this preflight a name npm has never seen fails at the very end of a release.
+
+A genuine first publish is still possible, but only deliberately:
+
+```sh
+bun run scripts/cut-release.ts 0.9.10 --base main --push --allow-new
+```
+
+`--allow-new` covers only "npm has never heard of this name". A registry that cannot answer — unreachable, unauthorized, no npm at all, or a probe killed by a signal — stops the cut regardless, because an unreadable answer is not evidence that a package is new.
+
+### Inherited git environment
+
+`cut-release.ts` deletes every repository-local git variable — `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, and the rest of `git rev-parse --local-env-vars` — from its own process before its first git command. Git honors those over `-C <path>` and over a literal path argument alike, and the cut addresses every repository it touches by path: the checkout it reads, and the temporary worktree it stamps, commits, and tags. Running the script from a git hook, or from a workflow that runs under one, would otherwise stamp and tag a repository nobody is releasing.
+
 ## Build and validation jobs
 
 ### Native NAPI matrix
@@ -243,6 +261,8 @@ The build job downloads the eight same-run bindings, generates the eight platfor
 
 `native-artifacts` compiles for 20–30 s on Linux and Windows. Everything else in
 its budget is a third-party download, and two releases have been damaged by one.
+The native compile now has one bounded retry: the first attempt is allowed to
+finish with an error so the retry can run, while a second failure remains fatal.
 
 | Release | Run | Leg | Stall |
 | --- | --- | --- | --- |
@@ -255,8 +275,8 @@ stalled mirror was the job budget.
 
 **Step bounds are the stall detector; job caps are only hang detectors.** A job
 cap cannot distinguish a stall from slow work, and cancelling a job silently
-skips every job that `needs` it. Each acquisition step therefore carries its own
-`timeout-minutes`:
+skips every job that `needs` it. Each acquisition or compile attempt therefore
+carries its own `timeout-minutes`:
 
 | Step | Bound | Basis |
 | --- | --- | --- |
@@ -265,19 +285,33 @@ skips every job that `needs` it. Each acquisition step therefore carries its own
 | `taiki-e/install-action` | 3 min | |
 | `apt-get` LLVM install | 5 min | |
 | `cargo-xwin xwin cache xwin` | 8 min | 1.27× the worst measured full CRT/SDK download (6 m 19 s) |
-| `Build native binding` | `matrix.build_timeout_minutes` | that leg's measured p100 compile × ≥1.4 |
+| `Build native binding`, plus one retry | `matrix.build_timeout_minutes` each | each attempt keeps the leg's measured p100 compile bound; a stall costs at most two bounds and the retry fails loudly if needed |
 
-Job caps replace the former blanket `timeout-minutes: 15`, which was 16× the
-real work of the fastest leg and 2× that of the slowest:
+The former blanket 15-minute job cap is replaced by per-leg caps. A cap has to
+contain every bounded recovery path the leg owns, not the time a green run
+happened to take: a cap sized on observed setup cancels the job part-way through
+the retry, which is the exact failure the retry exists to survive. Two steps are
+therefore reserved at their bound rather than at their measurement — both
+`setup-zig` attempts (2 + 2 min, Linux) and `cargo-xwin xwin cache xwin` (8 min,
+Windows, whose measured cost is its cache-miss path) — and every leg reserves one
+minute for `upload-artifact`, measured at 4 s or less.
 
-| Leg | Healthy p100 | Cap |
-| --- | --- | --- |
-| linux x64 | 107 s | 7 min |
-| linux arm64 | 233 s | 8 min |
-| darwin x64 | 387 s | 9 min |
-| darwin arm64 | 61 s after the checkout change | 5 min |
-| win32 x64 | 351 s | 10 min |
-| win32 arm64 | 443 s | 10 min |
+We measured setup from job start to `Build native binding` over six successful
+publishes (`31689424903`, `31634036246`, `31060235600`, `30892885915`,
+`30889823603`, `30835115933`). The cap arithmetic is `ceil(measured setup minus
+the steps reserved at their bound) + those bounds + 2 x build_timeout_minutes +
+1 upload`:
+
+| Leg | Setup p100 (excl. reserved) | Reserved at bound | Build timeout | Cap arithmetic | Job cap |
+| --- | ---: | ---: | ---: | --- | ---: |
+| linux-x64-gnu | 46 − 18 = 28 s | zig 4 min | 5 min | 1 + 4 + 2 x 5 + 1 = 16 | 16 min |
+| linux-arm64-gnu | 128 − 8 = 120 s | zig 4 min | 5 min | 2 + 4 + 2 x 5 + 1 = 17 | 17 min |
+| linux-x64-musl | 107 − 3 = 104 s | zig 4 min | 5 min | 2 + 4 + 2 x 5 + 1 = 17 | 17 min |
+| linux-arm64-musl | 142 − 5 = 137 s | zig 4 min | 5 min | 3 + 4 + 2 x 5 + 1 = 18 | 18 min |
+| darwin-x64 | 98 s | — | 8 min | 2 + 2 x 8 + 1 = 19 | 19 min |
+| darwin-arm64 | 26 s | — | 5 min | 1 + 2 x 5 + 1 = 12 | 12 min |
+| win32-x64-msvc | 291 − 249 = 42 s | xwin 8 min | 5 min | 1 + 8 + 2 x 5 + 1 = 20 | 20 min |
+| win32-arm64-msvc | 384 − 343 = 41 s | xwin 8 min | 5 min | 1 + 8 + 2 x 5 + 1 = 20 | 20 min |
 
 `native-artifacts` sets an explicit `name:`, so these matrix columns do not
 rename its jobs. Re-measure before tightening any of them further, and never

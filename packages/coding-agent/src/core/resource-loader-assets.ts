@@ -11,7 +11,8 @@ import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs, resolveResourcePath } from "./resource-loader-paths.ts";
 import { findSourceInfoForPath, getDefaultSourceInfoForPath } from "./resource-loader-source-info.ts";
-import type { Skill } from "./skills.ts";
+import { buildSkillCatalog, decorateSkillDiagnostics } from "./skill-catalog.ts";
+import type { LoadSkillsResult, Skill } from "./skills.ts";
 import { loadSkillsAsync } from "./skills-async.ts";
 
 const RESOURCE_LOAD_YIELD_AFTER_MS = 8;
@@ -27,19 +28,27 @@ async function existsAsync(path: string): Promise<boolean> {
 
 function applySkillsResult(
 	loader: DefaultResourceLoader,
-	skillsResult: { skills: Skill[]; diagnostics: ResourceDiagnostic[] },
+	skillsResult: LoadSkillsResult,
 	metadataByPath?: Map<string, PathMetadata>,
 ): void {
 	const state = resourceInternals(loader);
-	const resolvedSkills = state.skillsOverride ? state.skillsOverride(skillsResult) : skillsResult;
-	state.skills = resolvedSkills.skills.map((skill) => ({
+	const withSourceInfo = (skill: Skill): Skill => ({
 		...skill,
 		sourceInfo:
 			findSourceInfoForPath(loader, skill.filePath, state.extensionSkillSourceInfos, metadataByPath) ??
 			skill.sourceInfo ??
 			getDefaultSourceInfoForPath(loader, skill.filePath),
-	}));
-	state.skillDiagnostics = resolvedSkills.diagnostics;
+	});
+	const sourcedResult = {
+		skills: skillsResult.skills.map(withSourceInfo),
+		diagnostics: skillsResult.diagnostics,
+	};
+	const resolvedSkills = state.skillsOverride ? state.skillsOverride(sourcedResult) : sourcedResult;
+	state.skills = resolvedSkills.skills.map(withSourceInfo);
+	const retainedNames = new Set(state.skills.map((skill) => skill.name));
+	const candidates = skillsResult.candidates.map(withSourceInfo).filter((skill) => retainedNames.has(skill.name));
+	state.skillCatalog = buildSkillCatalog(candidates, state.skills);
+	state.skillDiagnostics = decorateSkillDiagnostics(resolvedSkills.diagnostics, state.skillCatalog);
 }
 
 export async function updateSkillsFromPathsAsync(
@@ -50,7 +59,7 @@ export async function updateSkillsFromPathsAsync(
 	const state = resourceInternals(loader);
 	const skillsResult =
 		state.noSkills && skillPaths.length === 0
-			? { skills: [], diagnostics: [] }
+			? { skills: [], candidates: [], diagnostics: [] }
 			: await loadSkillsAsync({ cwd: state.cwd, agentDir: state.agentDir, skillPaths, includeDefaults: false });
 	applySkillsResult(loader, skillsResult, metadataByPath);
 }

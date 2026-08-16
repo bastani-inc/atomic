@@ -9,6 +9,8 @@ import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import {
 	shouldApplyCodexFastMode,
 	streamWithCodexFastMode,
+	usesChatGptCodexTransport,
+	withChatGptCodexTransportRouting,
 	withCodexFastModePayload,
 	withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
@@ -181,12 +183,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
+	// `defaultTools` narrows only the initial BUILT-IN selection. It must not
+	// narrow `allowedToolNames`: a narrow allowlist would drop every extension
+	// and SDK custom tool (workflow, subagent, intercom, mcp, web_search, ...)
+	// for any user who configures it (upstream 4d9aa837 + companion fix 541045ae).
+	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const initialActiveToolNames: string[] = options.tools
 		? [...options.tools]
 		: options.noTools
 			? []
-			: [...defaultToolNames];
+			: [...(configuredDefaultToolNames ?? defaultToolNames)];
 
 	let agent: Agent;
 
@@ -259,6 +266,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				apiKey: authResult?.auth.apiKey,
 				headers: authResult?.auth.headers ?? compatibility?.headers,
 				baseUrl: authResult?.auth.baseUrl,
+				env: authResult?.env,
 			};
 			const requestModel =
 				auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
@@ -289,9 +297,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				throw new Error(`No API key found for "${model.provider}"`);
 			}
 			const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
+				requestModel,
 				{
 					...streamOptions,
 					apiKey: auth.apiKey,
+					env: auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined,
 					timeoutMs,
 					websocketConnectTimeoutMs,
 					maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
@@ -303,9 +313,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (usesExtensionStream) {
 				return modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
 			}
-			return fastModeEnabled
-				? streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions)
-				: modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
+			if (fastModeEnabled) {
+				return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
+			}
+			const transportOptions =
+				usesChatGptCodexTransport(requestModel) && codexFastModeStreamOptions
+					? withChatGptCodexTransportRouting(requestModel, codexFastModeStreamOptions, false)
+					: codexFastModeStreamOptions;
+			return modelRuntime.streamSimple(requestModel, context, transportOptions);
 		},
 		onPayload: async (payload, model) => {
 			const fastModeEnabled = isCodexFastModeEnabled(model);

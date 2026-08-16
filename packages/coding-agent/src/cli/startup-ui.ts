@@ -30,7 +30,13 @@ async function clearStartupTui(ui: TUI): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 25));
 }
 
-async function detectStartupTheme(ui: TUI): Promise<TerminalTheme> {
+/**
+ * Detect the terminal theme for first-run setup. The colour-scheme (DSR 996)
+ * and background (OSC 11) probes start concurrently through
+ * `detectTerminalThemeForAuto`, so a terminal that answers neither costs one
+ * timeout window instead of two. Exported for probe-concurrency coverage.
+ */
+export async function detectStartupTheme(ui: TUI): Promise<TerminalTheme> {
 	return detectTerminalThemeForAuto({ ui, timeoutMs: 100 });
 }
 

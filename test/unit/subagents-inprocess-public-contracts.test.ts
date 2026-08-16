@@ -1,25 +1,19 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import type { ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, test } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
-import { createAsyncJobTracker } from "../../packages/subagents/src/runs/background/async-job-tracker.js";
+import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { executeAsyncSingle } from "../../packages/subagents/src/runs/inprocess/background-single.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
-import {
-	SUBAGENT_ASYNC_COMPLETE_EVENT,
-	SUBAGENT_ASYNC_STARTED_EVENT,
-	type SubagentState,
-} from "../../packages/subagents/src/shared/types.js";
-import { stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
+import type { SubagentState } from "../../packages/subagents/src/shared/types.js";
 import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 type EventHandler = (data: unknown) => void;
@@ -65,19 +59,12 @@ function state(cwd: string): SubagentState {
 	const value: SubagentState = {
 		baseCwd: cwd,
 		currentSessionId: "parent-session",
-		asyncJobs: new Map(),
 		subagentInProgress: false,
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 	states.push(value);
 	return value;
@@ -121,7 +108,6 @@ function executor(
 		} as unknown as ExecutorDeps["pi"],
 		state: currentState,
 		config: { maxSubagentDepth: 5, parallel: { concurrency: 4, maxTasks: 50 } },
-		asyncByDefault: false,
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
@@ -143,13 +129,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	stopWidgetAnimation();
 	clearSubagentControls();
-	for (const currentState of states.splice(0)) {
-		if (currentState.poller) clearInterval(currentState.poller);
-		for (const timer of currentState.cleanupTimers.values()) clearTimeout(timer);
-		currentState.cleanupTimers.clear();
-	}
 	for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -276,45 +256,50 @@ test("public parallel worktree mode gives each task an isolated checkout", async
 		.filter((line) => line.startsWith("worktree "));
 	assert.equal(remainingWorktrees.length, 1);
 });
-
 test("public interrupt and resume actions accept both bare run ids and canonical child paths", async () => {
-	const cwd = makeRoot();
-	let gate = Promise.withResolvers<void>();
-	let promptLogPath = join(cwd, "prompt-bare.log");
-	const events = new TestEvents();
-	const completions: Array<{
-		status?: string;
-		envelope?: string;
-		result?: { status?: string; envelope?: string; stats?: { sessionId?: string } };
-	}> = [];
-	events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (payload) => completions.push(payload as (typeof completions)[number]));
-	const { execute } = executor(cwd, events, {
-		executeAsyncSingle: (id, params) =>
-			executeAsyncSingle(id, {
-				...params,
-				testSession: { output: "resumed ok", promptGate: gate.promise, promptLogPath, abortResolvesPrompt: true },
-			}),
-	});
-	const ctx = context(cwd);
-
 	for (const form of ["bare", "canonical"] as const) {
-		gate = Promise.withResolvers<void>();
-		promptLogPath = join(cwd, `prompt-${form}.log`);
-		const launched = await execute.execute(
-			`launch-${form}`,
-			{ agent: "qa-echo", task: `wait for ${form} management`, async: true, artifacts: false },
+		const cwd = makeRoot();
+		const gate = Promise.withResolvers<void>();
+		const promptLogPath = join(cwd, `prompt-${form}.log`);
+		const { execute } = executor(cwd, new TestEvents(), {
+			runSync: async (parentCwd, agents, agentName, task, options) =>
+				runSync(parentCwd, agents, agentName, task, {
+					...options,
+					testSession: {
+						output: "resumed ok",
+						promptGate: gate.promise,
+						promptLogPath,
+						abortResolvesPrompt: true,
+					},
+				}),
+		});
+		const ctx = context(cwd);
+		const running = execute.execute(
+			`foreground-${form}`,
+			{ agent: "qa-echo", task: `wait for ${form} management`, artifacts: false },
 			new AbortController().signal,
 			undefined,
 			ctx,
 		);
-		const bareId = launched.details.asyncId;
-		const canonicalPath = launched.details.results[0]?.path;
-		assert.ok(bareId);
-		assert.ok(canonicalPath);
-		const id = form === "bare" ? bareId : canonicalPath;
+
 		for (let attempt = 0; attempt < 200 && !existsSync(promptLogPath); attempt++) await sleep(5);
-		assert.equal(existsSync(promptLogPath), true, "child prompt should start before management actions");
-		assert.match(readFileSync(promptLogPath, "utf8"), /wait for/);
+		assert.equal(existsSync(promptLogPath), true, "foreground child prompt should start before management actions");
+
+		const status = await execute.execute(
+			`status-${form}`,
+			{ action: "status" },
+			new AbortController().signal,
+			undefined,
+			ctx,
+		);
+		const statusText = text(status);
+		const liveStatus = /^Parent: (\S+)\n(\S+\/\S+) — running \(loaded\)$/m.exec(statusText);
+		const runId = liveStatus?.[1];
+		const childPath = liveStatus?.[2];
+		assert.ok(runId, statusText);
+		assert.ok(childPath, statusText);
+		assert.match(childPath, new RegExp(`^${runId}/qa-echo_1$`));
+		const id = form === "bare" ? runId : childPath;
 
 		const interrupted = await execute.execute(
 			`interrupt-${form}`,
@@ -325,13 +310,9 @@ test("public interrupt and resume actions accept both bare run ids and canonical
 		);
 		assert.equal(interrupted.isError, undefined, text(interrupted));
 		assert.match(text(interrupted), /Interrupt requested/);
-		const completion = completions.at(-1);
-		assert.equal(completion?.status, "interrupted");
-		assert.equal(completion?.result?.status, "interrupted");
-		assert.ok(completion?.result?.stats?.sessionId, "the typed interrupted result must retain session stats");
-		assert.equal(completion?.envelope, "Interrupted");
-		assert.equal(completion?.result?.envelope, "Interrupted");
-		assert.doesNotMatch(JSON.stringify(completion), /unknown attempt/i);
+		const paused = await running;
+		assert.match(text(paused), /Run paused after interrupt/);
+
 		gate.resolve();
 		const resumed = await execute.execute(
 			`resume-${form}`,
@@ -343,47 +324,4 @@ test("public interrupt and resume actions accept both bare run ids and canonical
 		assert.equal(resumed.isError, undefined, text(resumed));
 		assert.match(text(resumed), /resumed ok/);
 	}
-});
-
-test("a terminal run is removed from the live jobs widget and is not rehydrated", async () => {
-	const cwd = makeRoot();
-	const gate = Promise.withResolvers<void>();
-	const events = new TestEvents();
-	const { execute, state: currentState } = executor(cwd, events, {
-		executeAsyncSingle: (id, params) =>
-			executeAsyncSingle(id, {
-				...params,
-				testSession: { output: "terminal", promptGate: gate.promise },
-			}),
-	});
-	const tracker = createAsyncJobTracker(
-		{ events } as unknown as Pick<ExtensionAPI, "events">,
-		currentState,
-		join(cwd, "async"),
-		{ completionRetentionMs: 0 },
-	);
-	events.on(SUBAGENT_ASYNC_STARTED_EVENT, tracker.handleStarted);
-	events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, tracker.handleComplete);
-	const completed = Promise.withResolvers<void>();
-	events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, () => completed.resolve());
-	const ctx = context(cwd);
-
-	const launched = await execute.execute(
-		"widget-terminal",
-		{ agent: "qa-echo", task: "finish after release", async: true, artifacts: false },
-		new AbortController().signal,
-		undefined,
-		ctx,
-	);
-	const runId = launched.details.asyncId;
-	assert.ok(runId);
-	assert.ok(currentState.asyncJobs.has(runId));
-
-	gate.resolve();
-	await completed.promise;
-	await sleep(10);
-	assert.equal(currentState.asyncJobs.has(runId), false);
-
-	tracker.hydrateActiveJobs(ctx);
-	assert.equal(currentState.asyncJobs.has(runId), false, "terminal registry state must stay out of the live widget");
 });

@@ -64,6 +64,15 @@ export {
 	runCallback,
 	runSynchronousCallback,
 } from "./core/callback-activity.ts";
+// Cloudflare AI Gateway over the Workers AI binding (no API token; see docs/providers.md)
+export {
+	type AiGatewayBinding,
+	type AiGatewayBindingGateway,
+	type AiGatewayUniversalRequestLike,
+	CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+	createGatewayBindingFetch,
+	type GatewayBindingFetchOptions,
+} from "./core/cloudflare-gateway-binding.ts";
 export {
 	CODEX_FAST_MODE_SERVICE_TIER,
 	type CodexFastModeResolvedSettings,
@@ -77,7 +86,14 @@ export {
 	isCodexFastModeSupportedProvider,
 	shouldApplyCodexFastMode,
 	shouldApplyCodexFastModeForScope,
+	usesChatGptCodexTransport,
+	usesFirstPartyCodexRouting,
+	withCodexFastModeHeaders,
 } from "./core/codex-fast-mode.ts";
+export {
+	CODEX_FAST_MODE_ORIGINATOR,
+	CODEX_FAST_MODE_ROUTING_HEADER,
+} from "./core/codex-fast-mode-transport.ts";
 // Compaction
 export {
 	type BranchPreparation,
@@ -124,6 +140,11 @@ export {
 } from "./core/flattened-tool-arguments.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
+export {
+	RUNTIME_INTERCOM_GROUP_ENV,
+	readRuntimeIntercomGroup,
+	runtimeIntercomGroupEnvKey,
+} from "./core/intercom-runtime-group.ts";
 export { convertToLlm } from "./core/messages.ts";
 export type {
 	ModelFallbackFailureKind,
@@ -159,8 +180,17 @@ export type {
 	ResourceCollision,
 	ResourceDiagnostic,
 	ResourceLoader,
+	SkillCandidate,
+	SkillCatalog,
+	SkillCatalogCommand,
+	SkillResolution,
 } from "./core/resource-loader.ts";
-export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+export {
+	buildSkillCatalog,
+	DefaultResourceLoader,
+	getSkillCatalog,
+	loadProjectContextFiles,
+} from "./core/resource-loader.ts";
 export { nextRetryDecision, type RetryDecision, type RetryPolicySettings } from "./core/retry-policy.ts";
 // SDK for programmatic usage
 export {
@@ -227,6 +257,7 @@ export {
 	type SessionInfoEntry,
 	SessionManager,
 	type SessionMessageEntry,
+	type SessionNameState,
 	type SessionTreeNode,
 	type SessionWorkflowMetadata,
 	sessionEntryToContextMessages,
@@ -376,6 +407,9 @@ export {
 	ExtensionInputComponent,
 	ExtensionSelectorComponent,
 	FooterComponent,
+	findSearchMatches,
+	getSearchMatchKey,
+	highlightSearchMatchRow,
 	keyHint,
 	keyHintIfBound,
 	keyText,
@@ -399,6 +433,12 @@ export {
 	ThinkingSelectorComponent,
 	ToolExecutionComponent,
 	type ToolExecutionOptions,
+	TRANSCRIPT_JUMP_TO_END_URL,
+	TranscriptFollowIndicator,
+	type TranscriptSearchHighlightRange,
+	type TranscriptSearchHighlightStyles,
+	type TranscriptSearchMatch,
+	type TranscriptSearchSegment,
 	TreeSelectorComponent,
 	truncateToVisualLines,
 	UsageMeterComponent,

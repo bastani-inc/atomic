@@ -50,6 +50,24 @@ export type ExtensionCustomComponent = Omit<Component, "handleInput"> & {
 	dispose?(): void;
 };
 
+/**
+ * Zero-width mark a custom component may embed in the line it most needs kept
+ * on screen — the selected row of a list, say.
+ *
+ * A `reserveTranscriptRows` overlay is bounded against the terminal height, and
+ * on a short terminal that bound has to drop rows. Without a mark the host can
+ * only guess, and it guessed wrong: it kept a fixed number of rows from the top,
+ * so on a 16-to-22-row terminal the selected option was cropped away and the
+ * dialog looked frozen under the arrow keys. With the mark the host windows what
+ * it keeps around that row instead.
+ *
+ * It is an APC sequence, so pi-tui's `visibleWidth` measures it as zero and
+ * terminals ignore it — the same mechanism as pi-tui's own `CURSOR_MARKER`, but
+ * private to Atomic and stripped by the host before the line is painted. Embed
+ * it once per frame; the host uses the first line that carries it.
+ */
+export const OVERLAY_ACTIVE_ROW_MARKER = "\u001B_atomic:active\u0007";
+
 export interface ChatRenderSettings {
 	hideThinkingBlock: boolean;
 	hiddenThinkingLabel: string;
@@ -114,6 +132,8 @@ export interface HostSessionPickerRow {
 	modifiedAt: number;
 	messageCount: number;
 	firstMessage: string;
+	/** Generated resume summary. Absent when never generated, or stale against the latest message. */
+	summary?: string;
 	allMessagesText?: string;
 	name?: string;
 	/** Optional semantic color for synthetic selector rows. */
@@ -256,6 +276,17 @@ export interface ExtensionUIContext {
 			 * never resolves can never trap the keyboard.
 			 */
 			handlesCtrlC?: boolean;
+			/** Declare that this component claims internal UI actions such as the jump-to-bottom URL. */
+			handlesInternalUiAction?: boolean;
+			/**
+			 * Overlay-only. Bound this overlay's height so a transcript strip stays
+			 * visible, and extend the transcript's scroll extent by the rows it
+			 * still covers, so every line of the scrollback can be brought above it.
+			 *
+			 * Set it for a blocking bottom-anchored dialog. Leave it unset for an
+			 * overlay that is meant to take the screen, such as a full-screen graph.
+			 */
+			reserveTranscriptRows?: boolean;
 			/** AbortSignal to programmatically dismiss the custom UI. */
 			signal?: AbortSignal;
 			/** Overlay positioning/sizing options. Can be static or a function for dynamic updates. */

@@ -14,13 +14,11 @@ export function formatTokens(n: number): string {
 
 export function formatModelThinking(model?: string, thinking?: string, fastMode?: boolean): string {
 	const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
-	let displayModel = parsed?.baseModel ?? model;
+	// Keep the full `provider/model` id so subagent lines read exactly like the
+	// main chat's model display; only a known thinking suffix is split off.
+	const displayModel = parsed?.baseModel ?? model;
 	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
 	const displayThinking = parsed?.thinkingSuffix ? parsed.thinkingSuffix.slice(1) : explicitThinking;
-	if (displayModel) {
-		const slashIdx = displayModel.lastIndexOf("/");
-		if (slashIdx !== -1) displayModel = displayModel.slice(slashIdx + 1);
-	}
 	const parts = [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined].filter(Boolean);
 	if (fastMode && parts.length > 0) parts.push("fast");
 	return parts.join(" · ");
@@ -29,7 +27,7 @@ export function formatModelThinking(model?: string, thinking?: string, fastMode?
 /**
  * Format usage statistics into a compact string
  */
-export function formatUsage(u: Usage, model?: string): string {
+export function formatUsage(u: Usage): string {
 	const parts: string[] = [];
 	if (u.turns) parts.push(`${u.turns} turn${u.turns > 1 ? "s" : ""}`);
 	if (u.input) parts.push(`in:${formatTokens(u.input)}`);
@@ -37,7 +35,6 @@ export function formatUsage(u: Usage, model?: string): string {
 	if (u.cacheRead) parts.push(`R${formatTokens(u.cacheRead)}`);
 	if (u.cacheWrite) parts.push(`W${formatTokens(u.cacheWrite)}`);
 	if (u.cost) parts.push(`$${u.cost.toFixed(4)}`);
-	if (model) parts.push(model);
 	return parts.join(" ");
 }
 

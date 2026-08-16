@@ -3,10 +3,9 @@ import type { SessionInfo } from "./types.js";
 export type SessionTargetResolution =
   | { kind: "resolved"; session: SessionInfo }
   | { kind: "ambiguous_name"; matches: readonly SessionInfo[] }
-  | { kind: "ambiguous_prefix"; matches: readonly SessionInfo[] }
   | { kind: "not_found" };
 
-/** Resolve an Intercom session by exact ID, exact case-insensitive name, or unique ID prefix. */
+/** Resolve an Intercom session by exact ID or exact case-insensitive name. */
 export function resolveSessionTarget(
   sessions: readonly SessionInfo[],
   nameOrId: string,
@@ -26,13 +25,6 @@ export function resolveSessionTarget(
     return { kind: "ambiguous_name", matches: exactNames };
   }
 
-  const prefixedIds = sessions.filter((session) => session.id.startsWith(target));
-  if (prefixedIds.length === 1) {
-    return { kind: "resolved", session: prefixedIds[0]! };
-  }
-  if (prefixedIds.length > 1) {
-    return { kind: "ambiguous_prefix", matches: prefixedIds };
-  }
   return { kind: "not_found" };
 }
 
@@ -42,12 +34,6 @@ export function sessionTargetFailureReason(
 ): string {
   if (resolution.kind === "ambiguous_name") {
     return `Multiple sessions named "${target}" are connected. Use the session ID instead.`;
-  }
-  if (resolution.kind === "ambiguous_prefix") {
-    const labels = resolution.matches
-      .map((session) => `${session.name ?? "Unnamed session"} (${session.id})`)
-      .join(", ");
-    return `Ambiguous session ID prefix "${target}" matches: ${labels}. Use a longer ID or an exact session name.`;
   }
   return "Session not found";
 }

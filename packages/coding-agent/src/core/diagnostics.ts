@@ -7,6 +7,10 @@ export interface ResourceCollision {
 	loserPath: string;
 	winnerSource?: string; // e.g., "npm:foo", "git:...", "local"
 	loserSource?: string;
+	winnerCandidateId?: string;
+	loserCandidateId?: string;
+	winnerSelector?: string;
+	loserSelector?: string;
 }
 
 export type OverlappingResourceType = "tool" | "command" | "prompt" | "flag" | "shortcut";

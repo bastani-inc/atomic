@@ -5,7 +5,7 @@
 import type { SessionStats } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai/compat";
-import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-async.ts";
+import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-nested.ts";
 
 export interface MaxOutputConfig {
 	bytes?: number;
@@ -46,7 +46,7 @@ export interface TokenUsage {
 
 export type ActivityState = "active_long_running" | "needs_attention";
 export type ControlEventType = "active_long_running" | "needs_attention";
-export type ControlNotificationChannel = "event" | "async" | "intercom";
+export type ControlNotificationChannel = "event" | "intercom";
 
 export interface ControlConfig {
 	enabled?: boolean;
@@ -122,7 +122,6 @@ export type PublicNestedRunSummary = Pick<
 	| "parentAgent"
 	| "depth"
 	| "path"
-	| "asyncDir"
 	| "sessionId"
 	| "sessionFile"
 	| "intercomTarget"
@@ -169,10 +168,7 @@ export interface SubagentResultIntercomPayload {
 	mode: SubagentRunMode;
 	status: SubagentResultStatus;
 	summary: string;
-	source: "foreground" | "async";
 	children: SubagentResultIntercomChild[];
-	asyncId?: string;
-	asyncDir?: string;
 	agent?: string;
 	index?: number;
 	artifactPath?: string;
@@ -189,6 +185,12 @@ export interface AgentProgress {
 	status: "pending" | "running" | "completed" | "failed" | "detached";
 	activityState?: ActivityState;
 	task: string;
+	/** Effective model for this live attempt, including fallback changes. */
+	model?: string;
+	/** Effective thinking level for this live attempt. */
+	thinking?: string;
+	/** Whether Codex fast mode applies to this attempt. */
+	fastMode?: boolean;
 	skills?: string[];
 	lastActivityAt?: number;
 	currentTool?: string;
@@ -245,6 +247,7 @@ export interface SingleResult {
 	messages?: Message[];
 	usage: Usage;
 	model?: string;
+	thinking?: string;
 	fastMode?: boolean;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
@@ -271,8 +274,6 @@ export interface Details {
 	context?: "fresh" | "fork";
 	results: SingleResult[];
 	controlEvents?: ControlEvent[];
-	asyncId?: string;
-	asyncDir?: string;
 	progress?: AgentProgress[];
 	totalSteps?: number;
 	progressSummary?: ProgressSummary;

@@ -221,10 +221,19 @@ describe("released changelog sections", () => {
 					break;
 				}
 			}
-			assert.ok(
-				anchor,
-				`no version in ${relativePath} resolves to a local tag; fetch tags before running this suite`,
-			);
+			if (!anchor) {
+				// A first-release package has a version section but no tag yet — the tag
+				// is created by cut-release only after the changelog PR merges — so it has
+				// no released sections and immutability holds vacuously. Pass only when
+				// tags are actually present: an empty tag list means the suite ran without
+				// fetching tags and would otherwise pass every file blindly.
+				const tagsPresent = git(["tag", "--list"]).trim().length > 0;
+				assert.ok(
+					tagsPresent,
+					`no version in ${relativePath} resolves to a local tag; fetch tags before running this suite`,
+				);
+				return;
+			}
 
 			const tagged = parseChangelogAtTag(anchor.tag, relativePath);
 			const taggedIndex = tagged.findIndex((entry) => entry.version === anchor.entry.version);

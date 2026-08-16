@@ -24,6 +24,27 @@ describe("tool run-control actions", () => {
 		const runtime = createExtensionRuntime({ registry });
 		return makeExecuteWorkflowTool(runtime, () => undefined);
 	}
+	function seedPendingPrimitivePrompt(
+		runId: string,
+		kind: "input" | "confirm" | "select" | "editor",
+		choices?: readonly string[],
+	): void {
+		store.recordRunStart(makeInflightRun(runId));
+		store.recordStageStart(runId, {
+			id: "stage-prompt-kind",
+			name: "prompt",
+			status: "awaiting_input",
+			parentIds: [],
+			toolEvents: [],
+		});
+		store.recordStagePendingPrompt(runId, "stage-prompt-kind", {
+			id: "prompt-kind",
+			kind,
+			message: "Prompt",
+			...(choices === undefined ? {} : { choices }),
+			createdAt: Date.now(),
+		});
+	}
 
 	function _makeDispatchTrackingWorkflowHandler(): {
 		handler: ReturnType<typeof makeExecuteWorkflowTool>;
@@ -96,6 +117,118 @@ describe("tool run-control actions", () => {
 			?.stages.find((s) => s.id === "stage-prompt-1");
 		assert.equal(stage?.pendingPrompt, undefined);
 		assert.equal(store.getStagePromptAnswer(runId, "stage-prompt-1")?.answerSource, "workflow_tool");
+	});
+	test.sequential('makeExecuteWorkflowTool stores boolean true for the observed string "true" confirm answer', async () => {
+		// Reproduces run 86dbfd4d-7123-4894-967c-7856227bc708: the retained assistant
+		// tool call carried `response: "true"` (a JSON string), and the pre-fix sinks
+		// turned it into `confirmed: false`.
+		const runId = testRunId(`stage-tool-send-string-true-${Date.now()}`);
+		seedPendingPrimitivePrompt(runId, "confirm");
+		const handler = makeToolHandler();
+		const result = await handler(
+			{ action: "send", runId, stageId: "prompt", delivery: "answer", response: "true" },
+			{} as never,
+		);
+
+		assert.equal((result as { status: string }).status, "ok");
+		const stored = store.getStagePromptAnswer(runId, "stage-prompt-kind");
+		assert.equal(stored?.value, true);
+		assert.equal(typeof stored?.value, "boolean");
+	});
+	test.sequential("makeExecuteWorkflowTool coerces primitive prompt answers by kind", async () => {
+		const cases = [
+			{ kind: "confirm" as const, field: "text" as const, value: " YES ", expected: true },
+			{ kind: "confirm" as const, field: "response" as const, value: true, expected: true },
+			{ kind: "confirm" as const, field: "response" as const, value: "true", expected: true },
+			{ kind: "confirm" as const, field: "text" as const, value: "no", expected: false },
+			{ kind: "confirm" as const, field: "response" as const, value: false, expected: false },
+			{
+				kind: "input" as const,
+				field: "text" as const,
+				value: "  keep whitespace  ",
+				expected: "  keep whitespace  ",
+			},
+			{
+				kind: "input" as const,
+				field: "message" as const,
+				value: "  message route  ",
+				expected: "  message route  ",
+			},
+			{
+				kind: "editor" as const,
+				field: "response" as const,
+				value: "  edited verbatim  ",
+				expected: "  edited verbatim  ",
+			},
+			{ kind: "select" as const, field: "text" as const, value: "  BLUE ", expected: "Blue" },
+			{ kind: "select" as const, field: "response" as const, value: 2, expected: "Blue" },
+		] as const;
+
+		for (const [index, testCase] of cases.entries()) {
+			const runId = testRunId(`stage-tool-send-coerce-${index}`);
+			const choices = testCase.kind === "select" ? (["Red", "Blue"] as const) : undefined;
+			seedPendingPrimitivePrompt(runId, testCase.kind, choices);
+			const handler = makeToolHandler();
+			const result = await handler(
+				{
+					action: "send",
+					runId,
+					stageId: "prompt",
+					delivery: "answer",
+					[testCase.field]: testCase.value,
+				},
+				{} as never,
+			);
+
+			assert.equal(result.action, "send");
+			assert.equal((result as { status: string }).status, "ok", JSON.stringify(testCase));
+			assert.equal(
+				store.getStagePromptAnswer(runId, "stage-prompt-kind")?.value,
+				testCase.expected,
+				JSON.stringify(testCase),
+			);
+		}
+	});
+
+	test.sequential("makeExecuteWorkflowTool rejects unusable primitive answers without resolving the prompt", async () => {
+		const cases = [
+			{
+				kind: "confirm" as const,
+				value: "maybe",
+				expectation: /boolean.*true\/false.*yes\/y.*no\/n/i,
+			},
+			{ kind: "input" as const, value: true, expectation: /text string in response, text, or message/i },
+			{ kind: "editor" as const, value: null, expectation: /text string in response, text, or message/i },
+			{
+				kind: "select" as const,
+				value: "not a choice",
+				expectation: /choice label.*1-based numeric index/i,
+			},
+		] as const;
+
+		for (const [index, testCase] of cases.entries()) {
+			const runId = testRunId(`stage-tool-send-invalid-${index}`);
+			const choices = testCase.kind === "select" ? (["Red", "Blue"] as const) : undefined;
+			seedPendingPrimitivePrompt(runId, testCase.kind, choices);
+			const handler = makeToolHandler();
+			const result = await handler(
+				{
+					action: "send",
+					runId,
+					stageId: "prompt",
+					delivery: "answer",
+					response: testCase.value,
+				},
+				{} as never,
+			);
+
+			const send = result as { status: string; message: string };
+			assert.equal(send.status, "noop", JSON.stringify(testCase));
+			assert.match(send.message, testCase.expectation, JSON.stringify(testCase));
+			if (testCase.kind === "select") assert.match(send.message, /Red.*Blue/);
+			assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt?.id, "prompt-kind");
+			assert.equal(store.getStagePromptAnswer(runId, "stage-prompt-kind"), undefined);
+		}
 	});
 
 	test.sequential("makeExecuteWorkflowTool refuses workflow send answers for custom prompt nodes", async () => {

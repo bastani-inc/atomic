@@ -109,7 +109,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		prompt += `\nModel name (used for commit attribution): ${modelName}`;
 		prompt += `\nModel reasoning level: ${modelReasoningLevel}`;
 		prompt += `\nCurrent date: ${date}`;
-		prompt += `\nCurrent working directory: ${promptCwd}`;
+		prompt += `\nCurrent working directory: ${promptCwd}\n`;
 
 		return prompt;
 	}
@@ -213,7 +213,7 @@ Atomic documentation (read only when the user asks about customizing Atomic itse
 	prompt += `\nModel name (used for commit attribution): ${modelName}`;
 	prompt += `\nModel reasoning level: ${modelReasoningLevel}`;
 	prompt += `\nCurrent date: ${date}`;
-	prompt += `\nCurrent working directory: ${promptCwd}`;
+	prompt += `\nCurrent working directory: ${promptCwd}\n`;
 
 	return prompt;
 }

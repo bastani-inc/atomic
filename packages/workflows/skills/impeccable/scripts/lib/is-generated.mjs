@@ -41,6 +41,9 @@ export function isGeneratedFile(filePath, options = {}) {
 
 function isGitIgnored(absPath, cwd) {
   try {
+    // argv form, never a shell: this runs on every file the live-mode source
+    // walk reaches, so a hostile filename embedding $(...) or backticks must
+    // not be interpretable (issue #476). JSON.stringify is not shell quoting.
     execFileSync('git', ['check-ignore', '--quiet', '--', absPath], {
       cwd,
       stdio: 'ignore',

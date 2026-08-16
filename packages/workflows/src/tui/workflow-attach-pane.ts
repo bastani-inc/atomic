@@ -8,7 +8,11 @@
  * `stage-chat-view.ts`, and `stage-control-registry.ts`.
  */
 
-import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
+import {
+	type ChatMessageRenderOptions,
+	type ReadonlyFooterDataProvider,
+	TRANSCRIPT_JUMP_TO_END_URL,
+} from "@bastani/atomic";
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
@@ -340,6 +344,11 @@ export class WorkflowAttachPane implements Component {
 			if (this._shouldQuarantineStagePromptEnter(data)) return true;
 			return this.chatView.handleInput(data);
 		}
+		// The overlay opts into internal UI actions for the whole adapter, so the
+		// graph view is offered the jump URL too. It draws no follow indicator and
+		// has nothing to jump to: decline so the host transcript stays the fallback
+		// instead of swallowing the activation.
+		if (data === TRANSCRIPT_JUMP_TO_END_URL) return false;
 		if (this._shouldQuarantineGraphEnter(data)) return true;
 		return this.graphView.handleInput(data);
 	}

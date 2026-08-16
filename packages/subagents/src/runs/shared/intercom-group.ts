@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-
-interface OrchestrationCarrier {
-	orchestrationContext?: { intercomGroup?: string } | undefined;
-}
+import { readRuntimeIntercomGroup } from "@bastani/atomic";
 
 /** Normalize agent-serialized auto-group sentinels without changing real group names. */
 export function normalizeAutoGroupSentinel(group: string | true | undefined): string | true | undefined {
@@ -11,8 +8,27 @@ export function normalizeAutoGroupSentinel(group: string | true | undefined): st
 	return sentinel === "true" || sentinel === "auto" ? true : group;
 }
 
-/** Read the inherited stage/session intercom group from the extension context (never from process.env). */
+/** Runtime joins are intentionally inherited before static child policy and stage context. */
+function runtimeIntercomGroup(sessionId: string | undefined): string | undefined {
+	return readRuntimeIntercomGroup(sessionId);
+}
+
+interface OrchestrationCarrier {
+	orchestrationContext?: { intercomGroup?: string } | undefined;
+	subagentPolicy?: { intercomGroup?: string } | undefined;
+	sessionManager?: { getSessionId(): string } | undefined;
+}
+
+/**
+ * Read the live joined group before the admitted child or static stage group. The runtime env
+ * entry is a deliberate exception to the no-process-env rule for admission capabilities: it
+ * carries only the current group so children launched after `join` follow their parent.
+ */
 export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
+	const runtimeGroup = runtimeIntercomGroup(ctx?.sessionManager?.getSessionId());
+	if (runtimeGroup !== undefined) return runtimeGroup;
+	const policyGroup = ctx?.subagentPolicy?.intercomGroup;
+	if (typeof policyGroup === "string" && policyGroup.trim().length > 0) return policyGroup.trim();
 	const group = ctx?.orchestrationContext?.intercomGroup;
 	return typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
 }

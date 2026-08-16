@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type net from "node:net";
 import { test } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
+import { handleBrokerPresence } from "../../packages/intercom/broker/presence-handler.js";
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
@@ -19,6 +20,7 @@ interface Harness {
 	sessions: Map<string, BrokerConnectedSession>;
 	writes: Array<{ socket: net.Socket; message: BrokerMessage }>;
 	supervisorCache: SupervisorChannelCache;
+	presence: (from: net.Socket, msg: Record<string, unknown>, fromId: string) => void;
 	send: (from: net.Socket, msg: Record<string, unknown>, fromId: string) => void;
 	sockets: Record<string, net.Socket>;
 }
@@ -39,6 +41,10 @@ function harness(defs: Array<[id: string, name: string, group: string | undefine
 		writes,
 		supervisorCache,
 		sockets,
+		presence: (from, msg, fromId) =>
+			handleBrokerPresence(from, msg as never, fromId, sessions, (socket, value) =>
+				writes.push({ socket, message: value }),
+			),
 		send: (from, msg, fromId) =>
 			handleBrokerSend(
 				from,
@@ -58,6 +64,67 @@ function failureReason(h: Harness): string {
 		.find((m): m is Extract<BrokerMessage, { type: "delivery_failed" }> => m.type === "delivery_failed");
 	return failure?.reason ?? "";
 }
+test("presence group changes move membership and split broadcasts by group", () => {
+	const h = harness([
+		["moved", "moved", "default"],
+		["default-peer", "default-peer", "default"],
+		["named-peer", "named-peer", "teamA"],
+		["other", "other", "teamB"],
+	]);
+
+	h.presence(h.sockets.moved!, { type: "presence", group: "teamA", requestId: "join-1" }, "moved");
+	assert.equal(h.sessions.get("moved")?.info.group, "teamA");
+	assert.equal(
+		h.writes.some((w) => w.socket === h.sockets["default-peer"] && w.message.type === "session_left"),
+		true,
+	);
+	assert.equal(
+		h.writes.some((w) => w.socket === h.sockets["named-peer"] && w.message.type === "session_joined"),
+		true,
+	);
+	assert.equal(
+		h.writes.some((w) => w.socket === h.sockets.other),
+		false,
+	);
+	assert.deepEqual(h.writes.find((w) => w.socket === h.sockets.moved && w.message.type === "presence_ack")?.message, {
+		type: "presence_ack",
+		requestId: "join-1",
+		group: "teamA",
+	});
+
+	h.send(h.sockets["default-peer"]!, { type: "send", to: "moved", message: message("cross-group") }, "default-peer");
+	assert.equal(
+		h.writes.some((w) => w.socket === h.sockets.moved && w.message.type === "message"),
+		false,
+	);
+	assert.match(failureReason(h), /different intercom group/i);
+
+	h.send(h.sockets["named-peer"]!, { type: "send", to: "moved", message: message("same-group") }, "named-peer");
+	assert.equal(
+		h.writes.some((w) => w.socket === h.sockets.moved && w.message.type === "message"),
+		true,
+	);
+});
+
+test("presence rejects an invalid runtime group without changing membership", () => {
+	const h = harness([
+		["a", "alice", "default"],
+		["b", "bob", "default"],
+	]);
+
+	h.presence(h.sockets.a!, { type: "presence", group: "AUTO", requestId: "invalid-1" }, "a");
+	assert.equal(h.sessions.get("a")?.info.group, "default");
+	assert.deepEqual(h.writes.find((w) => w.socket === h.sockets.a && w.message.type === "presence_failed")?.message, {
+		type: "presence_failed",
+		requestId: "invalid-1",
+		reason: 'Invalid presence group: Intercom group name "AUTO" is reserved; choose another name',
+	});
+	assert.equal(
+		h.writes.some((w) => w.socket === h.sockets.b && w.message.type === "session_left"),
+		false,
+	);
+});
+
 test("same-group send is delivered", () => {
 	const h = harness([
 		["a", "alice", "teamA"],

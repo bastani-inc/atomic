@@ -107,6 +107,14 @@ describe("DbosDurableBackend (mock SDK)", () => {
 	});
 
 	test("stage checkpoint envelope round-trips hydration metadata", () => {
+		const usage = {
+			input: 101,
+			output: 23,
+			cacheRead: 47,
+			cacheWrite: 5,
+			cost: 0.0042,
+			turns: 2,
+		};
 		const cp: DurableStageCheckpoint = {
 			kind: "stage",
 			workflowId: "wf-stage-meta",
@@ -124,7 +132,7 @@ describe("DbosDurableBackend (mock SDK)", () => {
 			model: "gpt-test",
 			fastMode: true,
 			attemptedModels: ["gpt-test"],
-			modelAttempts: [{ model: "gpt-test", success: true }],
+			modelAttempts: [{ model: "gpt-test", success: true, usage }],
 			topology: { version: 1, stageId: "review", parentIds: [] },
 		};
 
@@ -133,6 +141,11 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		assert.equal(env.durationMs, 2000);
 		assert.equal(env.result, "review passed");
 		assert.deepEqual(env.attemptedModels, ["gpt-test"]);
+		const encodedAttempts = env.modelAttempts;
+		assert.ok(Array.isArray(encodedAttempts));
+		const encodedAttempt = encodedAttempts[0];
+		assert.ok(encodedAttempt !== null && typeof encodedAttempt === "object" && !Array.isArray(encodedAttempt));
+		assert.deepEqual(encodedAttempt.usage, usage);
 
 		const decoded = decodeToCheckpoint("wf-stage-meta", "stage:review:1", env);
 		assert.ok(decoded?.kind === "stage");
@@ -144,6 +157,80 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		assert.equal(decoded.fastMode, true);
 		assert.deepEqual(decoded.attemptedModels, ["gpt-test"]);
 		assert.equal(decoded.modelAttempts?.[0]?.success, true);
+		assert.deepEqual(decoded.modelAttempts?.[0]?.usage, usage);
+	});
+
+	test("stage checkpoint without model usage round-trips without a usage property", () => {
+		const cp: DurableStageCheckpoint = {
+			kind: "stage",
+			workflowId: "wf-stage-nousage",
+			checkpointId: "stage:review:2",
+			name: "review",
+			replayKey: "stage:review:2",
+			output: { verdict: "pass" },
+			completedAt: 3000,
+			topology: { version: 1, stageId: "review", parentIds: [] },
+			modelAttempts: [{ model: "gpt-test", success: true }],
+		};
+
+		const env = encodeCheckpoint(cp);
+		assert.ok(Array.isArray(env.modelAttempts));
+		const encodedAttempt = env.modelAttempts[0];
+		assert.ok(encodedAttempt !== null && typeof encodedAttempt === "object" && !Array.isArray(encodedAttempt));
+		assert.equal(Object.hasOwn(encodedAttempt, "usage"), false);
+		const decoded = decodeToCheckpoint("wf-stage-nousage", "stage:review:2", env);
+		assert.ok(decoded?.kind === "stage");
+		assert.equal(Object.hasOwn(decoded.modelAttempts?.[0] ?? {}, "usage"), false);
+	});
+
+	test("rejects non-numeric, non-finite, or negative nested model usage at the decode boundary", () => {
+		const cp: DurableStageCheckpoint = {
+			kind: "stage",
+			workflowId: "wf-stage-malformed",
+			checkpointId: "stage:review:3",
+			name: "review",
+			replayKey: "stage:review:3",
+			output: { verdict: "pass" },
+			completedAt: 3000,
+			topology: { version: 1, stageId: "review", parentIds: [] },
+			modelAttempts: [{ model: "gpt-test", success: true }],
+		};
+		const base = encodeCheckpoint(cp);
+		const malformedEnvelopes: DbosCheckpointEnvelope[] = [
+			{
+				...base,
+				modelAttempts: [
+					{
+						model: "gpt-test",
+						success: true,
+						usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: "0.0042", turns: 1 },
+					},
+				],
+			},
+			{
+				...base,
+				modelAttempts: [
+					{
+						model: "gpt-test",
+						success: true,
+						usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: Number.POSITIVE_INFINITY, turns: 1 },
+					},
+				],
+			},
+			{
+				...base,
+				modelAttempts: [
+					{
+						model: "gpt-test",
+						success: true,
+						usage: { input: 1, output: 2, cacheRead: -3, cacheWrite: 4, cost: 0.0042, turns: 1 },
+					},
+				],
+			},
+		];
+		for (const env of malformedEnvelopes) {
+			assert.equal(decodeToCheckpoint("wf-stage-malformed", "stage:review:3", env), undefined);
+		}
 	});
 
 	test("flush waits for queued async checkpoint writes", async () => {

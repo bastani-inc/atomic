@@ -1,10 +1,10 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Component } from "@earendil-works/pi-tui";
-import type { AsyncJobState, Details } from "../../packages/subagents/src/shared/types.js";
+import type { Details } from "../../packages/subagents/src/shared/types.js";
 import { PULSE_FRAMES, RUNNING_FRAMES, type renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
 
-export type { AgentToolResult, AsyncJobState, Component, Details, ExtensionContext };
+export type { AgentToolResult, Component, Details, ExtensionContext };
 
 export type RenderTheme = Parameters<typeof renderSubagentResult>[2];
 

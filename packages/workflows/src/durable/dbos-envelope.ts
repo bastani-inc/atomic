@@ -477,7 +477,8 @@ function isModelUsage(value: WorkflowSerializableValue): boolean {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	const usage = value as Record<string, WorkflowSerializableValue>;
 	return ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"].every(
-		(key) => usage[key] === undefined || (typeof usage[key] === "number" && Number.isFinite(usage[key])),
+		(key) =>
+			usage[key] === undefined || (typeof usage[key] === "number" && Number.isFinite(usage[key]) && usage[key] >= 0),
 	);
 }
 

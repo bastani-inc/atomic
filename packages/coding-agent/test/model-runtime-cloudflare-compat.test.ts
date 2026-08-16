@@ -20,7 +20,7 @@ async function createCloudflareRuntime(): Promise<{ modelRuntime: ModelRuntime; 
 describe("Cloudflare compatibility auth", () => {
 	it("resolves Cloudflare headers and caller-controlled endpoint environment through ModelRuntime", async () => {
 		const { modelRuntime } = await createCloudflareRuntime();
-		const model = modelRuntime.getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
+		const model = modelRuntime.getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
 		expect(model).toBeDefined();
 
 		const resolution = await modelRuntime.getAuth(model!);
@@ -34,7 +34,7 @@ describe("Cloudflare compatibility auth", () => {
 
 	it("keeps Cloudflare headers and environment when its credential has no endpoint", async () => {
 		const { modelRegistry } = await createCloudflareRuntime();
-		const model = modelRegistry.find("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
+		const model = modelRegistry.find("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
 		expect(model).toBeDefined();
 
 		const auth = await modelRegistry.getApiKeyAndHeaders(model!);

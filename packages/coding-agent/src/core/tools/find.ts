@@ -9,6 +9,7 @@ import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
+import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
@@ -387,6 +388,7 @@ export function createFindToolDefinition(
 		label: "find",
 		description: "Find filesystem paths by glob; use search when you need content matches instead of path matches.",
 		promptSnippet: findToolSystemPromptContribution.snippet,
+		...experimentalToolSamplingProperty(),
 		parameters: findSchema,
 		async execute(_toolCallId, params: FindToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
 			return new Promise((resolve, reject) => {
@@ -642,7 +644,7 @@ export function createFindToolDefinition(
 							);
 							return;
 						}
-						const fdPath = await ensureTool("fd", true);
+						const fdPath = await ensureTool("fd");
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));
 							return;

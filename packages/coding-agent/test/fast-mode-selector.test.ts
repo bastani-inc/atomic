@@ -20,7 +20,7 @@ describe("FastModeSelectorComponent", () => {
 		const rendered = plainRender(selector);
 
 		expect(rendered).toContain("Codex fast mode");
-		expect(rendered).toContain("Priority tier for supported openai/* and openai-codex/* models.");
+		expect(rendered).toContain("Priority tier for supported OpenAI and shared ChatGPT Codex transports.");
 		expect(rendered).toContain("Chat");
 		expect(rendered).toContain("Workflow stages");
 		expect(rendered).toContain("[○ OFF]");

@@ -1,0 +1,20 @@
+Heartbeat records from the live session JSONL
+============================================
+
+1. runId=7d50804a-a470-4ff8-9f18-e69c7332b9f5
+   scheduledAt=1786723320119
+   intervalMinutes=1
+   startedAt=1786723260119
+
+2. runId=7d50804a-a470-4ff8-9f18-e69c7332b9f5
+   scheduledAt=1786723380119
+   intervalMinutes=1
+   startedAt=1786723260119
+
+3. runId=7d50804a-a470-4ff8-9f18-e69c7332b9f5
+   scheduledAt=1786723440119
+   intervalMinutes=1
+   startedAt=1786723260119
+
+gaps between consecutive boundaries (ms): [60000, 60000]
+A 1-minute cadence anchored to the persisted start time gives exactly 60000 ms.

@@ -75,20 +75,11 @@ function makeState(): ExecutorDeps["state"] {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
+		pendingForegroundControlNotices: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
 	};
 }
 
@@ -129,7 +120,6 @@ function makeExecutor(input: {
 		} as unknown as ExecutorDeps["pi"],
 		state: makeState(),
 		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } } as ExecutorDeps["config"],
-		asyncByDefault: false,
 		tempArtifactsDir: join(input.cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(input.cwd, "sessions"),
 		expandTilde: (p) => p,

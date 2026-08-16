@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-08-13
+
+Cumulative release of the `0.9.13-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Added
+
+- Added the Rust `SubagentControl` N-API surface that backs Atomic's in-process subagents: canonical child identities, RAII spawn reservations, turn-scoped execution guards, LRU residency, status watches, and an explicit 100 ms interruption grace ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
+### Changed
+
+- Child termination is awaitable across the N-API boundary, so the 100 ms cooperative grace no longer blocks the JavaScript thread, and termination causes are reported on child identities and status-watch updates ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Generated N-API string enums are literal TypeScript unions, so strict isolated-module consumers can use subagent statuses and causes without ambient const-enum errors ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
 ## [0.9.13-alpha.1] - 2026-08-05
 
 ### Added

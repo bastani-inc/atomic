@@ -31,6 +31,7 @@ function createSettingsConfig(): SettingsConfig {
 		treeFilterMode: "default",
 		showHardwareCursor: false,
 		fullscreenScrollbar: "auto",
+		fullscreenExitOutput: "transcript",
 		editorPaddingX: 0,
 		outputPad: 1,
 		showCacheMissNotices: false,

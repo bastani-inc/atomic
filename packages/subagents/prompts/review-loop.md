@@ -16,7 +16,7 @@ Use the `subagent` tool and specialist roles rather than a generic worker or rev
 
 Default to at most 3 review rounds unless I set another cap. A round is a fresh-context inspection of the current diff after a writer pass.
 
-If the invocation requests implementation, first launch one async writer for the approved scope: `debugger` for correctness-shaped work or `code-simplifier` for refinement-shaped work. If the current diff is already the target, begin with review. Launch the planned work as an async/background set of tasks or continue with follow-up runs after each completion. Because launches are non-interactive, resolve questions with me first. Use one writer against the active worktree at a time unless I explicitly request isolated worktrees.
+If the invocation requests implementation, first launch one foreground writer for the approved scope: `debugger` for correctness-shaped work or `code-simplifier` for refinement-shaped work. If the current diff is already the target, begin with review. Continue with follow-up runs after each completion. Because launches are non-interactive, resolve questions with me first. Use one writer against the active worktree at a time unless I explicitly request isolated worktrees.
 
 Each review round uses fresh context. Reviewers inspect repository instructions, relevant files, and the current diff directly, without main-conversation history, and cannot edit; explicitly put `debugger` in inspect-only mode. Choose angles from the change. Common angles are correctness/regressions, failure modes, and pattern fit; add external-spec or prior-decision coverage when applicable. Prefer three strong reviewers over many vague ones.
 
@@ -24,7 +24,7 @@ Delegate only independent work too large for a handful of tool calls; do not del
 
 After each round, synthesize blockers or scope/product/architecture decisions needing approval, fixes worth doing now, optional improvements, and feedback to ignore or defer with a short reason. Assess findings rather than applying them blindly. Pause for my approval before a writer acts on any unapproved product, scope, or architecture decision.
 
-An async implementation writer's handoff transitions into review; it is not final completion unless I requested writer-only work, review-only output, or a stop after implementation. When implementation is authorized and fixes are worth doing now, launch one async writer to apply only the synthesized fixes—`debugger` for correctness or `code-simplifier` for cleanup. Require it to preserve approved scope, run focused validation, and report changed files, commands with exit codes, validation evidence, surprises, and unfinished work.
+The implementation writer's handoff transitions into review; it is not final completion unless I requested writer-only work, review-only output, or a stop after implementation. When implementation is authorized and fixes are worth doing now, launch one foreground writer to apply only the synthesized fixes—`debugger` for correctness or `code-simplifier` for cleanup. Require it to preserve approved scope, run focused validation, and report changed files, commands with exit codes, validation evidence, surprises, and unfinished work.
 
 Run another review round after a fix only when it made material changes or addressed non-trivial findings. Do not loop for optional polish, speculative improvements, or already deferred findings.
 

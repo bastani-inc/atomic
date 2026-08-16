@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-08-13
+
+Cumulative release of the `0.9.13-alpha.2` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Changed
+
+- GitHub, credential-store, and Bun subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution.
+- Query rewriting and summary-review model calls now go through Atomic's model runtime, so registered custom providers and resolved request authentication apply.
+
+### Fixed
+
+- Frames and thumbnails returned by `fetch_content` now honor the host's `images.autoResize` processing before they enter session history.
+- Background content fetches that complete after an extension reload no longer throw through stale runtime handles. Non-stale failures still raise a visible error notification, pending state stays alive until notification admission settles, and stale-context checks use the host's exported predicate instead of a copied error-message marker.
+
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Changed
 
 - GitHub, credential-store, and Bun subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution.

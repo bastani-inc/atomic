@@ -78,6 +78,13 @@ export async function navigateTree(
 		label,
 	};
 
+	// Moving the leaf invalidates any session summary still in flight: it was generated from the
+	// branch we are leaving. Its anchor can survive the move — a `branch_summary` is not a
+	// conversation message, and navigating to an existing assistant message leaves the last
+	// message id unchanged — so the anchor check alone would let it persist against the new
+	// branch. Cancelling here is what the signal check before persistence keys off.
+	this.abortSessionSummary();
+
 	// Set up abort controller for summarization
 	this._branchSummaryAbortController = new AbortController();
 	if (this._compactionReason === undefined) this._compactionReason = "branchSummary";

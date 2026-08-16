@@ -1,4 +1,3 @@
-import type { TuiAltScreen } from "@earendil-works/pi-tui";
 import { computeCacheWaste } from "../../core/cache-stats.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
@@ -120,7 +119,7 @@ InteractiveModeBase.prototype.handleExportCommand = async function (
 			const filePath = this.session.exportToJsonl(outputPath);
 			this.showStatus(`Session exported to: ${filePath}`);
 		} else {
-			const filePath = await this.session.exportToHtml(outputPath);
+			const filePath = await this.session.exportToHtml(outputPath, { themeName: theme.name });
 			this.showStatus(`Session exported to: ${filePath}`);
 		}
 	} catch (error: unknown) {
@@ -239,7 +238,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	// Export to a temp file
 	const tmpFile = path.join(os.tmpdir(), "session.html");
 	try {
-		await this.session.exportToHtml(tmpFile);
+		await this.session.exportToHtml(tmpFile, { themeName: theme.name });
 	} catch (error: unknown) {
 		this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		return;
@@ -321,10 +320,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	}
 };
 
-InteractiveModeBase.prototype.handleCopyCommand = async function (
-	this: InteractiveModeBase,
-	options: { flashConfirmation?: boolean } = {},
-): Promise<void> {
+InteractiveModeBase.prototype.handleCopyCommand = async function (this: InteractiveModeBase): Promise<void> {
 	const text = this.session.getLastAssistantText();
 	if (!text) {
 		this.showError("No agent messages to copy yet.");
@@ -333,8 +329,7 @@ InteractiveModeBase.prototype.handleCopyCommand = async function (
 
 	try {
 		await copyToClipboard(text);
-		if (options.flashConfirmation && this.ui.mode === "fullscreen") (this.ui as TuiAltScreen).flash("Copied!");
-		else this.showStatus("Copied last agent message to clipboard");
+		this.showStatus("Copied last agent message to clipboard");
 	} catch (error) {
 		this.showError(error instanceof Error ? error.message : String(error));
 	}

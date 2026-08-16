@@ -40,7 +40,7 @@ export type {
 export {
 	AdmittedChild,
 	admit_child_session,
-	continue_in_background,
+	continue_detached,
 	createSubagentControl,
 	deliver_child_result,
 	reload_cold_child,

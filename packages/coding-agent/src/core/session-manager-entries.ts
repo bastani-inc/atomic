@@ -17,6 +17,8 @@ import {
 	type SessionHeader,
 	type SessionInfoEntry,
 	type SessionMessageEntry,
+	type SessionNameState,
+	type SessionSummaryEntry,
 	type SessionWorkflowMetadata,
 	type ThinkingLevelChangeEntry,
 } from "./session-manager-types.ts";
@@ -145,16 +147,71 @@ export function createSessionInfoEntry(
 	};
 }
 
-export function getLatestSessionName(entries: SessionEntry[]): string | undefined {
-	// Walk entries in reverse to find the latest session_info entry.
-	// Empty names explicitly clear the session title.
+export function createSessionSummaryEntry(
+	summary: string,
+	summarizedThroughId: string,
+	usage: Usage | undefined,
+	byId: { has(id: string): boolean },
+	parentId: string | null,
+): SessionSummaryEntry {
+	return {
+		type: "session_summary",
+		...entryBase(byId, parentId),
+		summary: summary.trim(),
+		summarizedThroughId,
+		usage,
+	};
+}
+
+/**
+ * Anchor for a session summary: the newest user/assistant message entry.
+ *
+ * Both sides of the freshness check call this so they cannot drift apart. Tool results and
+ * non-message entries are ignored, and an assistant turn made only of tool calls still counts —
+ * it carries no text, but it is a real conversation step.
+ */
+export function getLastConversationMessageId(entries: FileEntry[]): string | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type !== "message") continue;
+		const role = entry.message.role;
+		if (role === "user" || role === "assistant") return entry.id;
+	}
+	return undefined;
+}
+
+/**
+ * Latest generated resume summary that has not been retired, entry and all.
+ *
+ * Returns the entry rather than its text: callers need `summarizedThroughId` alongside the
+ * summary to decide whether it still describes the conversation.
+ *
+ * A `branch_summary` written afterwards retires it, because the branch it described was
+ * abandoned. Both the picker and the generation guard call this, so a retired summary is hidden
+ * from the picker *and* lets a replacement be generated; splitting the two rules leaves such a
+ * session showing fallback text forever.
+ */
+export function getLatestSessionSummary(entries: FileEntry[]): SessionSummaryEntry | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type === "branch_summary") return undefined;
+		if (entry.type === "session_summary") return entry;
+	}
+	return undefined;
+}
+
+export function getLatestSessionName(entries: SessionEntry[]): SessionNameState {
+	// Walk entries in reverse to find the latest session_info entry. An existing entry
+	// with an empty name is an explicit clear, not a never-named session: the fact that
+	// a session was named is separate from the name it currently holds (upstream 7bdb16c2).
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		if (entry.type === "session_info") {
-			return entry.name?.trim() || undefined;
+			const name = entry.name?.trim() || undefined;
+			return { hasName: true, ...(name !== undefined ? { name } : {}) };
 		}
 	}
-	return undefined;
+	return { hasName: false };
 }
 
 export function createCustomMessageEntry<T = unknown>(

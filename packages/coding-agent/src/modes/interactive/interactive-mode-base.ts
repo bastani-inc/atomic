@@ -6,7 +6,7 @@ import { isKeyRelease, isViewportTUI, type ScrollView, type TuiInputListener } f
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
-import type { MermaidRenderingMode } from "../../core/settings-manager.ts";
+import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/settings-manager.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.ts";
 import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
@@ -15,6 +15,7 @@ import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
+import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import {
 	type AgentSession,
 	type AgentSessionRuntime,
@@ -54,18 +55,58 @@ import type {} from "./interactive-mode-surface.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
-import { createInteractiveTui, createInteractiveTuiReference, type InteractiveTui } from "./interactive-tui.ts";
+import {
+	createInteractiveTui,
+	createInteractiveTuiReference,
+	handleFocusedOverlayInternalUiAction,
+	type InteractiveTui,
+	type InternalUiActionResult,
+} from "./interactive-tui.ts";
 
-const FULLSCREEN_VIEWPORT_ACTIONS = [
+/** Move the transcript and nothing else: what a reserving overlay may release. */
+const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
 	"tui.altScreen.pageUp",
 	"tui.altScreen.pageDown",
 	"tui.altScreen.halfPageUp",
 	"tui.altScreen.halfPageDown",
+	"tui.altScreen.lineUp",
+	"tui.altScreen.lineDown",
 	"tui.altScreen.previousPrompt",
 	"tui.altScreen.nextPrompt",
 	"tui.altScreen.top",
 	"tui.altScreen.bottom",
 ] as const;
+
+/** Open and drive pi-tui's find box over the transcript. */
+const FULLSCREEN_SEARCH_ACTIONS = [
+	"tui.altScreen.search",
+	"tui.altScreen.searchNext",
+	"tui.altScreen.searchPrevious",
+	"tui.altScreen.searchClose",
+] as const;
+
+const FULLSCREEN_VIEWPORT_ACTIONS = [...FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS, ...FULLSCREEN_SEARCH_ACTIONS] as const;
+
+export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
+	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
+}
+
+/**
+ * Whether a key scrolls the transcript, as opposed to driving a search over it.
+ * A reserving overlay — the `ask_user_question` dialog, an extension component
+ * with `reserveTranscriptRows` — declines these so the strip above it still
+ * pages and jumps (#2378), and keeps everything else.
+ *
+ * The search actions are deliberately excluded. Their default keys include
+ * `enter`, `shift+enter`, `escape`, and `ctrl+g`, which such a dialog owns for
+ * submit, cancel, and its own editing; and pi-tui acts on `searchNext`,
+ * `searchPrevious`, and `searchClose` only while its find box holds focus,
+ * which cannot be true while the dialog does. Releasing them would drop those
+ * keys into a viewport that ignores them.
+ */
+export function isFullscreenTranscriptScrollAction(data: string, keybindings: KeybindingsManager): boolean {
+	return FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS.some((action) => keybindings.matches(data, action));
+}
 
 /**
  * Decide whether the fullscreen viewport should run before the focused
@@ -73,6 +114,51 @@ const FULLSCREEN_VIEWPORT_ACTIONS = [
  * `AtomicTuiAltScreen`, so this policy does not duplicate terminal grammars.
  * Mouse deferral is limited to actual overlays so inline components do not
  * disable pi-tui's application-owned transcript selection path.
+ *
+ * **Who owns viewport keys while an overlay is focused.** pi-tui 0.84.2 added
+ * `shouldDeferViewportInputToOverlay()` (upstream #7894) and answers "the
+ * overlay". Atomic answers "the overlay first, the transcript with whatever it
+ * declines" (#2378 / PR #2381): the actions in `FULLSCREEN_VIEWPORT_ACTIONS`
+ * and wheel reports are offered to the focused overlay, and
+ * `AtomicTuiAltScreen` replays what it does not consume into pi-tui's viewport
+ * listener. Atomic's answer stands, because a mounted dialog that keeps its
+ * selection keys must not also freeze the transcript behind it.
+ *
+ * **The list covers every `tui.altScreen.*` action pi-tui defines**, transcript
+ * search included. A focused overlay therefore gets first refusal on
+ * `ctrl+shift+f` as well as on the scroll keys, which is what keeps a search
+ * scoped to the surface the reader is looking at instead of opening a find box
+ * over the main transcript hidden behind it. An action a focused overlay
+ * declines still reaches the transcript, so the shortcut is never simply lost.
+ *
+ * **A focused overlay with no `handleInput` is still an overlay.** The handler
+ * is optional — `ExtensionCustomComponent` marks it `handleInput?` and
+ * `docs/tui.md` documents it as optional — and a component that cannot answer
+ * declines by definition. Answering "the viewport owns it" for that shape
+ * would hand the key to pi-tui, whose native deferral then drops it because an
+ * overlay holds focus, so the transcript would freeze behind a component that
+ * never asked for the key. A handler-less overlay therefore takes the same
+ * route as one that returns `false`: nothing to offer, then replay. Only a
+ * focused component that is *not* an overlay keeps the shortcut, because
+ * pi-tui defers nothing to it.
+ *
+ * **Exemption: pi-tui's find box.** `focusedIsViewportSearch` reports whether
+ * the focused overlay is the transcript-search box pi-tui mounts itself, which
+ * is viewport chrome rather than an application overlay. It gets no first
+ * offer: input goes straight to pi-tui, which exempts its own find box from
+ * native deferral, so the transcript keeps scrolling while a search is open and
+ * `home`/`end` scroll rather than move the query cursor — upstream's behavior
+ * exactly. Everything the viewport does not claim still falls through to the
+ * find box, so typing edits the query. Callers without a find box omit it.
+ *
+ * **Order matters: the host thinking toggle outranks the exemption.**
+ * `app.thinking.toggle` is a documented, remappable host action, and it is
+ * dispatched from `onOverlayUnhandledInput`, which only the gated route runs.
+ * Exempting the find box first would send that key to pi-tui instead and drop
+ * the toggle for as long as a search had focus. The gated route answers it
+ * before the find box sees it (`interactive-tui.ts:routeViewportInput`),
+ * because the binding may be a bare letter (`docs/keybindings.md`) and pi-tui's
+ * `Input` types a printable character into the query rather than rejecting it.
  */
 export function shouldHandleFullscreenViewportInput(
 	focused: Component | null,
@@ -81,11 +167,16 @@ export function shouldHandleFullscreenViewportInput(
 	isMouseInput: boolean,
 	focusedIsOverlay: boolean,
 	keybindings: KeybindingsManager,
+	focusedIsViewportSearch = false,
 ): boolean {
-	if (focused === editor || !focused?.handleInput) return true;
-	if (isMouseInput) return !focusedIsOverlay;
+	if (focused === editor || !focused) return true;
+	if (!focused.handleInput && !focusedIsOverlay) return true;
+	// The find box is exempt from mouse deferral too: a wheel report over the
+	// transcript scrolls it rather than reaching the query.
+	if (isMouseInput) return focusedIsViewportSearch || !focusedIsOverlay;
 	if (focusedIsOverlay && keybindings.matches(data, "app.thinking.toggle")) return false;
-	return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
+	if (focusedIsViewportSearch) return true;
+	return !isFullscreenViewportAction(data, keybindings);
 }
 
 function isCommandLikeStartupInput(text: string): boolean {
@@ -138,6 +229,7 @@ export class InteractiveModeBase {
 		data: string,
 		isMouseInput: boolean,
 		focusedIsOverlay: boolean,
+		focusedIsViewportSearch: boolean,
 	): boolean => {
 		return shouldHandleFullscreenViewportInput(
 			this.renderer.getFocusedComponent(),
@@ -146,9 +238,12 @@ export class InteractiveModeBase {
 			isMouseInput,
 			focusedIsOverlay,
 			this.keybindings,
+			focusedIsViewportSearch,
 		);
 	};
 	private readonly onOverlayUnhandledInput = (data: string): boolean => this.handleOverlayUnhandledInput(data);
+	private readonly onOverlayInternalUiAction = (url: string): InternalUiActionResult =>
+		handleFocusedOverlayInternalUiAction(this.renderer, url);
 
 	/** Dispatch the host thinking action after a focused workflow overlay declines input. */
 	handleOverlayUnhandledInput(data: string): boolean {
@@ -268,6 +363,9 @@ export class InteractiveModeBase {
 
 	lastStatusText: Text | undefined = undefined;
 
+	/** Leading spacer added once for the managed-tool startup status block. */
+	managedToolStatusStarted = false;
+
 	// Streaming message tracking
 	streamingComponent: AssistantMessageComponent | undefined = undefined;
 
@@ -363,6 +461,8 @@ export class InteractiveModeBase {
 	pendingInlineCustomUiFocus: Component | undefined = undefined;
 
 	hostCustomUiStateListeners = new Set<HostCustomUiStateListener>();
+
+	transcriptOverlayReserve: TranscriptOverlayReserve | undefined = undefined;
 
 	themeController: InteractiveThemeController;
 
@@ -469,9 +569,22 @@ export class InteractiveModeBase {
 		}
 	}
 
-	stopInteractiveTui(): void {
-		while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
-		this.ui.stop();
+	stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
+		const isFullscreen = this.renderer.mode === "fullscreen";
+		if (isFullscreen && fullscreenExitOutput === "transcript") {
+			// Atomic has no regular renderer to switch into, so pi-tui's own
+			// exit paint is the only painter: its stop renders the layout root
+			// at natural height onto the main screen. The docked fullscreen
+			// layout squeezes its scroll view to `basis` (one row) at natural
+			// height, so hand it the document container directly — the exit
+			// paint then carries the whole transcript. Drop overlays first so
+			// what gets painted is the transcript, not the focused dialog.
+			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
+			if (isViewportTUI(this.renderer)) this.renderer.setLayoutRoot(this.documentContainer);
+		}
+		// `resume-hint` keeps whatever the alternate screen held: the prior
+		// shell contents reappear and shutdown prints only the resume line.
+		this.ui.stop({ preserveScreen: isFullscreen && fullscreenExitOutput === "resume-hint" });
 	}
 
 	declare options: InteractiveModeOptions;
@@ -486,6 +599,9 @@ export class InteractiveModeBase {
 		});
 		this.runtimeHost.setRebindSession(async () => {
 			await this.rebindCurrentSession();
+			// A rebound session can carry a different settings manager; re-apply
+			// the theme so the live selection tracks the session that is current.
+			await this.themeController.applyFromSettings();
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
@@ -495,6 +611,11 @@ export class InteractiveModeBase {
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
+			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
+			onInternalUiAction: () => {
+				this.jumpToTranscriptEnd();
+				return undefined;
+			},
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
@@ -540,12 +661,12 @@ export class InteractiveModeBase {
 
 		// Register themes from resource loader and initialize
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-		this.themeController = new InteractiveThemeController(
-			this.ui,
-			this.settingsManager,
-			(message) => this.showError(message),
-			() => this.updateEditorBorderColor(),
-		);
+		this.themeController = new InteractiveThemeController(this.ui, {
+			getSettingsManager: () => this.settingsManager,
+			showError: (message) => this.showError(message),
+			onChanged: () => this.updateEditorBorderColor(),
+			initialThemeSetting: options.initialThemeSetting,
+		});
 		this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
 			runtimeHost,
 			this.createExtensionUIContext(),

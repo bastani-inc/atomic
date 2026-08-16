@@ -57,6 +57,11 @@ export async function resumeQueuedMessages(this: AgentSession, beforeRelease?: (
 		}
 	}
 	if (this._pendingInterruptDeliveries > 0) await this._interruptDeliveryQueue;
+	// An admitted-message recovery turn is a session-owned turn starter that begins
+	// after the abort boundary settles. Releasing while it streams would let the
+	// caller's follow-on prompt hit the streaming guard (issue #2362).
+	const recoveryTurn = this._admittedRecoveryTurn;
+	if (recoveryTurn !== undefined) await recoveryTurn;
 	if (!this._queuedMessagesPaused) return false;
 	beforeRelease?.();
 	const hold = this._activeInterruptQueueHold;

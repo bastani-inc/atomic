@@ -14,16 +14,15 @@ import {
 	resumeInProcessNestedAttempt,
 } from "../../packages/subagents/src/runs/inprocess/nested-routing.ts";
 import {
-	type AttemptOutcome,
 	type ChildSpec,
-	continue_in_background,
 	inProcessChildBuiltinPackagePaths,
-	type RunningAttempt,
 	SubagentControlRuntime,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
 import { sleep } from "../helpers/runtime.ts";
+
+const LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS = 120_000;
 
 function sampleAgent(): AgentConfig {
 	return {
@@ -98,6 +97,42 @@ test("in-process child loading includes bundled subagent resources", () => {
 	const stageWorkflowsPath = stagePaths.find((source) => basename(packagePath(source)) === "workflows");
 	assert.deepEqual(stageWorkflowsPath, { source: packagePath(workflowsPath), extensions: [] });
 });
+
+test(
+	"a live in-process child resolves qualified skills and reports missing selectors",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-skill-catalog-"));
+		const agentDir = join(root, "agent");
+		const userSkillDir = join(agentDir, "skills", "tdd");
+		const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+		mkdirSync(userSkillDir, { recursive: true });
+		writeFileSync(
+			join(userSkillDir, "SKILL.md"),
+			"---\nname: tdd\ndescription: User TDD\n---\n\nUser-only TDD body\n",
+			"utf-8",
+		);
+		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+		clearSubagentControls();
+		try {
+			const result = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+				cwd: root,
+				runId: "live-qualified-skill",
+				sessionDir: join(root, "sessions"),
+				testSession: false,
+				skills: ["tdd@builtin", "missing-skill"],
+			});
+
+			assert.deepEqual(result.skills, ["tdd@builtin"]);
+			assert.equal(result.skillsWarning, "Skills not found: missing-skill");
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+			clearSubagentControls();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS,
+);
 
 test("admission resolves restricted child management and explicit fanout policy", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-policy-"));
@@ -237,26 +272,6 @@ test("a run's effective maximum reaches the admitted child policy", async () => 
 	}
 });
 
-function emptyOutcome(): AttemptOutcome {
-	return {
-		status: "error",
-		cause: "fixture",
-		stats: {
-			sessionFile: undefined,
-			sessionId: "fixture",
-			userMessages: 0,
-			assistantMessages: 0,
-			toolCalls: 0,
-			toolResults: 0,
-			totalMessages: 0,
-			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			cost: 0,
-		},
-		path: "parent/analysis_1",
-		envelope: "fixture",
-	};
-}
-
 test("admission refuses a child whose parent is already at depth five", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-depth-"));
 	try {
@@ -283,48 +298,106 @@ test("cold reload refuses a path outside the trusted session root", () => {
 	}
 });
 
-test("background continuation rejects an attempt that is no longer running", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-continue-"));
+test("launch metadata uses the session's effective thinking level", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-metadata-"));
+	const gate = Promise.withResolvers<void>();
 	try {
-		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
+		const control = new SubagentControlRuntime({ path: "thinking-parent", depth: 0 }, join(root, "sessions"));
 		control.registerAgents([sampleAgent()]);
-		const admitted = control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 }).admitted;
+		const admitted = control.admitChildSession(
+			{
+				...sampleSpec(root),
+				testSession: {
+					promptGate: gate.promise,
+					sessionModel: "anthropic/non-reasoning-fixture",
+					sessionThinkingLevel: "off",
+				},
+			},
+			{ path: "thinking-parent", depth: 0 },
+		).admitted;
 		assert.ok(admitted);
-		const running: RunningAttempt = {
-			id: 1,
-			child: admitted,
-			candidate: {},
-			startedAt: Date.now(),
-			status: "ok",
-			promise: Promise.resolve(emptyOutcome()),
-		};
-		assert.throws(() => continue_in_background(control, running, "async-requested"), /requires a running attempt/);
+		const neverAbort = new AbortController().signal;
+		const running = control.startAttempt(
+			admitted,
+			{ modelId: "anthropic/non-reasoning-fixture", thinkingLevel: "xhigh" },
+			{ abort: neverAbort, interrupt: neverAbort },
+			{ fastModeForModel: () => false },
+		);
+
+		assert.equal(running.currentModel, "anthropic/non-reasoning-fixture");
+		assert.equal(running.currentThinking, "off");
+		assert.equal(running.currentFastMode, false);
+		assert.deepEqual(control.getChildMetadata(admitted.identity.path), {
+			model: "anthropic/non-reasoning-fixture",
+			thinking: "off",
+			fastMode: false,
+		});
+
+		gate.resolve();
+		assert.equal((await running.promise).status, "ok");
 	} finally {
+		gate.resolve();
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("background continuation returns the child identity before the in-process session finishes", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-background-"));
+test("launch metadata does not invent a default thinking level", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-default-"));
 	const gate = Promise.withResolvers<void>();
-	const terminal = Promise.withResolvers<Awaited<ReturnType<typeof runSingleInProcess>>>();
 	try {
-		const result = await runSingleInProcess(root, sampleAgent(), "continue this task", {
-			cwd: root,
-			runId: "background-run",
-			sessionDir: join(root, "sessions"),
-			backgroundContinuation: true,
-			testSession: { promptGate: gate.promise },
-			onDetachedExit: (completed) => terminal.resolve(completed),
-		});
-		assert.equal(result.status, "continued");
-		assert.equal(result.detached, true);
-		assert.equal(result.detachedReason, "async-requested");
-		assert.match(result.path ?? "", /^background-run\//);
+		const control = new SubagentControlRuntime({ path: "thinking-default-parent", depth: 0 }, join(root, "sessions"));
+		control.registerAgents([sampleAgent()]);
+		const admitted = control.admitChildSession(
+			{ ...sampleSpec(root), testSession: { promptGate: gate.promise } },
+			{ path: "thinking-default-parent", depth: 0 },
+		).admitted;
+		assert.ok(admitted);
+		const neverAbort = new AbortController().signal;
+		const running = control.startAttempt(
+			admitted,
+			{ modelId: "anthropic/non-reasoning-fixture" },
+			{ abort: neverAbort, interrupt: neverAbort },
+			{ fastModeForModel: () => false },
+		);
 
+		assert.equal(running.currentThinking, undefined);
+		assert.equal(control.getChildMetadata(admitted.identity.path)?.thinking, undefined);
 		gate.resolve();
-		const completed = await terminal.promise;
-		assert.equal(completed.status, "ok");
+		assert.equal((await running.promise).status, "ok");
+	} finally {
+		gate.resolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("launch metadata preserves configured thinking without a model", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-config-"));
+	const gate = Promise.withResolvers<void>();
+	try {
+		const control = new SubagentControlRuntime({ path: "thinking-config-parent", depth: 0 }, join(root, "sessions"));
+		control.registerAgents([sampleAgent()]);
+		const admitted = control.admitChildSession(
+			{
+				...sampleSpec(root),
+				agent: { ...sampleAgent(), thinking: "high" },
+				testSession: { promptGate: gate.promise },
+			},
+			{ path: "thinking-config-parent", depth: 0 },
+		).admitted;
+		assert.ok(admitted);
+		const neverAbort = new AbortController().signal;
+		const running = control.startAttempt(
+			admitted,
+			{},
+			{ abort: neverAbort, interrupt: neverAbort },
+			{ fastModeForModel: () => false },
+		);
+
+		assert.equal(running.currentModel, undefined);
+		assert.equal(running.currentThinking, "high");
+		assert.equal(control.getChildMetadata(admitted.identity.path)?.thinking, "high");
+		gate.resolve();
+		assert.equal((await running.promise).status, "ok");
 	} finally {
 		gate.resolve();
 		rmSync(root, { recursive: true, force: true });

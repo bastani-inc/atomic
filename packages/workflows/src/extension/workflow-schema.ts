@@ -1,5 +1,33 @@
 import { type Static, Type } from "typebox";
 
+/**
+ * Advertise the JSON value types accepted by workflow-send responses.
+ *
+ * `Type.Unknown()` emits `{}`, which tells a provider nothing about this
+ * property. A retained session shows an assistant tool call that answered a
+ * `ctx.ui.confirm` prompt with the string `"true"` rather than a boolean, so
+ * naming the accepted types is worth doing. It is not the runtime fix: no
+ * inspected host or pi-ai layer converts a boolean to a string, and prompt-kind
+ * normalization happens at the pending-prompt boundary, not in provider
+ * argument validation.
+ *
+ * String comes first so validation does not convert text answers to booleans.
+ */
+const WorkflowResponseSchema = Type.Union(
+	[
+		Type.String(),
+		Type.Boolean(),
+		Type.Number(),
+		Type.Null(),
+		Type.Array(Type.Unknown()),
+		Type.Record(Type.String(), Type.Unknown()),
+	],
+	{
+		description:
+			"Answer payload for a pending stage prompt. Primitive prompts accept text strings, booleans, or numeric select indexes according to the prompt kind; structured prompts may accept JSON arrays or objects.",
+	},
+);
+
 export const WorkflowParametersSchema = Type.Object(
 	{
 		workflow: Type.Optional(
@@ -114,11 +142,7 @@ export const WorkflowParametersSchema = Type.Object(
 				description: "Text to send to a stage for prompt answers, steering, follow-ups, or resume messages.",
 			}),
 		),
-		response: Type.Optional(
-			Type.Unknown({
-				description: "Structured response payload for answering a pending stage prompt.",
-			}),
-		),
+		response: Type.Optional(WorkflowResponseSchema),
 		delivery: Type.Optional(
 			Type.Union(
 				[

@@ -1,6 +1,7 @@
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
+import type { ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import { existsSync, statSync } from "fs";
 import { resolve } from "path";
+import { APP_TITLE } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
@@ -17,6 +18,7 @@ import {
 	createSessionFilePath,
 	createSessionHeader,
 	createSessionInfoEntry,
+	createSessionSummaryEntry,
 	createThinkingLevelChangeEntry,
 	getEntriesWithoutHeader,
 	getLatestSessionName,
@@ -41,6 +43,7 @@ import type {
 	SessionHeader,
 	SessionInfo,
 	SessionListProgress,
+	SessionNameState,
 	SessionTreeNode,
 	SessionWorkflowMetadata,
 } from "./session-manager-types.ts";
@@ -92,11 +95,11 @@ export class SessionManager {
 		if (existsSync(this.sessionFile)) {
 			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
 
-			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as an Atomic session, fail without modifying it.
+			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as a session, fail without modifying it.
 			if (this.fileEntries.length === 0) {
 				const explicitPath = this.sessionFile;
 				if (statSync(explicitPath).size > 0) {
-					throw new Error(`Session file is not a valid Atomic session: ${explicitPath}`);
+					throw new Error(`Session file is not a valid ${APP_TITLE} session: ${explicitPath}`);
 				}
 				this.newSession();
 				this.sessionFile = explicitPath;
@@ -284,8 +287,25 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Append a generated resume summary anchored to the message it describes. Returns entry id. */
+	appendSessionSummary(summary: string, summarizedThroughId: string, usage?: Usage): string {
+		if (!this.byId.has(summarizedThroughId)) throw new Error(`Entry ${summarizedThroughId} not found`);
+		const entry = createSessionSummaryEntry(summary, summarizedThroughId, usage, this.byId, this.leafId);
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Get the current session name from the latest session_info entry, if any. */
 	getSessionName(): string | undefined {
+		return this.getSessionNameState().name;
+	}
+
+	/**
+	 * Get the session name state. `hasName` is true for a session that was named and
+	 * then cleared even though `name` is undefined; a never-named session reports
+	 * `hasName: false`. Read-side only: the JSONL already records the distinction.
+	 */
+	getSessionNameState(): SessionNameState {
 		return getLatestSessionName(this.getEntries());
 	}
 

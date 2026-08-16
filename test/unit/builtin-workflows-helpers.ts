@@ -59,8 +59,21 @@ export interface MockCalls {
 	readonly uiSelects: { message: string; options: readonly string[] }[];
 }
 
+/**
+ * What a mocked stage returns. A plain string is the stage's final text, and a
+ * schema-backed stage parses it as the structured answer. The object form
+ * separates the two, which is how the reported failure looked: a resume
+ * continuation replaced the final text while the structured answer the stage
+ * had already finalized stood. cross-ref: issue #2401.
+ */
+export type MockTaskResponse =
+	| string
+	| { readonly text: string; readonly structured?: WorkflowTaskResult["structured"] };
+
 interface MockResponders {
-	task?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
+	/** Sets `ctx.cwd`, which builtins use to resolve project-local scripts. */
+	cwd?: string;
+	task?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => MockTaskResponse | undefined;
 	sessionFile?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
 	parallel?: (
 		steps: readonly WorkflowTaskStep[],
@@ -152,17 +165,22 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 		calls.prompts[name] = [...(calls.prompts[name] ?? []), text];
 		calls.taskOptions[name] = [...(calls.taskOptions[name] ?? []), options];
 		const override = responders.task?.(name, options, calls);
-		const resultText = override ?? `[mock-task:${name}] ${text.slice(0, 80)}`;
+		const overrideText = typeof override === "string" ? override : override?.text;
+		const resultText = overrideText ?? `[mock-task:${name}] ${text.slice(0, 80)}`;
 		if (typeof options.output === "string" && responders.skipOutputWrites?.includes(name) !== true) {
 			mkdirSync(dirname(options.output), { recursive: true });
 			writeFileSync(options.output, resultText);
 		}
 		let structured: WorkflowTaskResult["structured"] | undefined;
 		if (options.schema !== undefined) {
-			try {
-				structured = JSON.parse(resultText) as WorkflowTaskResult["structured"];
-			} catch {
-				structured = undefined;
+			const declared = typeof override === "string" ? undefined : override?.structured;
+			if (declared !== undefined) structured = declared;
+			else {
+				try {
+					structured = JSON.parse(resultText) as WorkflowTaskResult["structured"];
+				} catch {
+					structured = undefined;
+				}
 			}
 		}
 		return makeTaskResult(name, resultText, responders.sessionFile?.(name, options, calls), structured);
@@ -171,6 +189,7 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 	const ctx: WorkflowRunContext<TInputs> & { calls: MockCalls } = {
 		inputs,
 		calls,
+		...(responders.cwd === undefined ? {} : { cwd: responders.cwd }),
 		exit: () => {
 			throw new Error("ctx.exit should not be used by builtin workflow mocks");
 		},
@@ -223,6 +242,12 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 			calls.tool.push(name);
 			const override = responders.tool?.(name, args, calls);
 			if (override !== undefined) return override as T;
+			// open-claude-design's review loop polls the impeccable live helper
+			// through these nodes. Running them for real would spawn a ten-minute
+			// long-poll against a server no test starts, so a test that cares
+			// supplies its own events and every other test sees an ended session.
+			if (name.startsWith("live-poll-")) return { type: "exit", raw: '{"type":"exit"}' } as unknown as T;
+			if (name.startsWith("live-reply-")) return { code: 0, stdout: "", stderr: "" } as unknown as T;
 			return fn({ signal: new AbortController().signal });
 		},
 	};

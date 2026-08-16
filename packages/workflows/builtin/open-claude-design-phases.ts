@@ -6,17 +6,16 @@ import {
   taggedPrompt,
 } from "./open-claude-design-utils.js";
 import {
-  assertUserAnnotationsThreaded,
-  hasMeaningfulFeedback,
-  persistPreviewFeedback,
-  toPreviewFeedback,
-  userAnnotationsBlock,
-  type PreviewFeedback,
-} from "./open-claude-design-feedback.js";
+  buildLiveEventPrompt,
+  buildLiveSessionStartPrompt,
+  needsModel,
+  pollLiveEvent,
+  replyLiveEvent,
+  replyTokenFor,
+} from "./open-claude-design-live-protocol.js";
 import {
   LIVE_REVIEW_GATE_OPTIONS,
   buildLiveReviewGateMessage,
-  buildLivePreviewDisplayPrompt,
   isUiUnavailableRejection,
   type LiveReviewGateUi,
 } from "./open-claude-design-setup.js";
@@ -27,6 +26,8 @@ const GROUNDED_REPORTING =
 type DesignContext = {
   task(name: string, options: object): Promise<WorkflowTaskResult>;
   parallel(steps: readonly object[], options: { readonly task: string }): Promise<WorkflowTaskResult[]>;
+  /** Durable tool node; the live review loop is built from these. */
+  tool<T>(name: string, args: object, fn: (handle: { readonly signal: AbortSignal }) => Promise<T>): Promise<T>;
 };
 
 type ModelConfig = Record<string, object | string | readonly string[]>;
@@ -48,10 +49,8 @@ type RefineOptions = {
   readonly designContext: DesignContext;
   readonly prompt: string;
   readonly outputType: string;
-  readonly maxRefinements: number;
   readonly previewPath: string;
   readonly previewFileUrl: string;
-  readonly artifactDir: string;
   readonly browserBootstrapRules: string;
   /** Path to the persisted design-context.md artifact (issue #2121). */
   readonly designContextFile: string;
@@ -63,117 +62,116 @@ type RefineOptions = {
   readonly ui: LiveReviewGateUi;
 };
 
-export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ readonly latestDesign: string; readonly approvedForExport: boolean; readonly refinementCount: number; }> {
-  const { designContext, prompt, outputType, maxRefinements, previewPath, previewFileUrl, artifactDir, browserBootstrapRules, designContextFile, referencesFile, designModelConfig, workflowCwd } = options;
+/**
+ * Generate a design, then review it in one live session.
+ *
+ * The live session is itself unbounded: the user picks elements, accepts
+ * on-brand variants written into `preview.html` in place, and steers, until
+ * they leave. The preview is exported as it stands when the session ends.
+ */
+export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ readonly latestDesign: string }> {
+  const { designContext, prompt, outputType, previewPath, previewFileUrl, browserBootstrapRules, designContextFile, referencesFile, designModelConfig, workflowCwd } = options;
   const importContext = options.importContext ?? "";
-  let latestDesign = "";
-  let latestGenerateSessionFile: string | undefined;
-  let latestUserFeedbackSessionFile: string | undefined;
-  let pendingFeedback: PreviewFeedback | undefined;
-  let approvedForExport = false;
-  let refinementCount = 0;
 
-  for (let iteration = 1; iteration <= maxRefinements; iteration += 1) {
-    const generateStageName = `generate-${iteration}`;
-    const generatePrompt = pendingFeedback === undefined
-      ? buildInitialGeneratePrompt({
-          prompt,
-          outputType,
-          previewPath,
-          designContextFile,
-          referencesFile,
-          importContext,
-        })
-      : buildGenerateRevisionPrompt({
-          prompt,
-          outputType,
-          previewPath,
-          designContextFile,
-          referencesFile,
-          latestDesign,
-          importContext,
-          feedback: pendingFeedback,
-        });
-    if (pendingFeedback !== undefined) {
-      assertUserAnnotationsThreaded(generatePrompt, [pendingFeedback], generateStageName);
-    }
+  // Large research context travels by artifact file (`reads` + explicit read
+  // instructions in the prompt), not as an inline payload (issue #2121).
+  const generated = await designContext.task("generate-1", {
+    prompt: buildInitialGeneratePrompt({
+      prompt,
+      outputType,
+      previewPath,
+      designContextFile,
+      referencesFile,
+      importContext,
+    }),
+    reads: [designContextFile, referencesFile],
+    ...designModelConfig,
+  });
 
-    // Large research context travels by artifact file (`reads` + explicit
-    // read instructions in the prompt), not as an inline `previous` payload,
-    // so a single oversized research result cannot become a single oversized
-    // prompt message (issue #2121). Only the revision loop threads the small,
-    // word-capped prior design summary inline.
-    const generated = await designContext.task(generateStageName, {
-      prompt: generatePrompt,
-      reads: [designContextFile, referencesFile],
-      ...(pendingFeedback === undefined
-        ? {}
-        : { previous: { name: "current-design", text: latestDesign } }),
-      ...designModelConfig,
-      ...forkContinuationOptions(latestGenerateSessionFile),
+  // The browser review waits on a long-poll rather than an awaiting-input
+  // stage, so raise the run-level prompt before opening the session. Only the
+  // executor's unavailable-UI rejection degrades to running the review;
+  // lifecycle failures must propagate and stop the workflow.
+  const gateChoice = await options.ui
+    .select(
+      buildLiveReviewGateMessage({ round: 1, previewPath, previewFileUrl }),
+      LIVE_REVIEW_GATE_OPTIONS,
+    )
+    .catch((error: unknown) => {
+      if (isUiUnavailableRejection(error)) return LIVE_REVIEW_GATE_OPTIONS[0];
+      throw error;
     });
-    latestDesign = generated.text;
-    latestGenerateSessionFile = generated.sessionFile ?? latestGenerateSessionFile;
-    refinementCount = iteration;
-
-    // Deterministic live-review gate (issue #2060): the user-feedback stage
-    // waits on a browser long-poll that never sets `awaiting_input`, so raise
-    // a run-level `ctx.ui` prompt first. It fires the needs-attention badge,
-    // names the preview URL, and syncs the review to the user's presence.
-    // Only the executor's unavailable-UI rejection (headless / no adapter)
-    // degrades to running the review; lifecycle failures such as interruption
-    // or a failed durable checkpoint must propagate and stop the workflow.
-    const gateChoice = await options.ui
-      .select(
-        buildLiveReviewGateMessage({ iteration, maxRefinements, previewPath, previewFileUrl }),
-        LIVE_REVIEW_GATE_OPTIONS,
-      )
-      .catch((error: unknown) => {
-        if (isUiUnavailableRejection(error)) return LIVE_REVIEW_GATE_OPTIONS[0];
-        throw error;
-      });
-    if (gateChoice === LIVE_REVIEW_GATE_OPTIONS[1]) {
-      approvedForExport = true;
-      break;
-    }
-
-    // A rejected feedback stage propagates and fails the run (issue #2123;
-    // the #1499 catch-then-approve path). Browser/tooling trouble never
-    // rejects: playwright-cli is auto-installed up front, the runner exits
-    // early when the browser is unavailable, and the stage prompt requires a
-    // degraded non-empty report instead of failing. What rejects here is
-    // model/infra failure — provider errors, fallback exhaustion, broken
-    // session forks — and that must never be laundered into approval. Only a
-    // resolved result with no meaningful notes means the user approved.
-    const userFeedbackResult = await designContext.task(`user-feedback-${iteration}`, {
-      prompt: buildLivePreviewDisplayPrompt({
-        previewPath,
-        previewFileUrl,
-        browserBootstrapRules,
-        iteration,
-        maxRefinements,
-      }),
-      ...designModelConfig,
-      ...forkContinuationOptions(latestUserFeedbackSessionFile),
+  if (gateChoice === LIVE_REVIEW_GATE_OPTIONS[0]) {
+    await runLiveReviewSession({
+      designContext,
+      round: 1,
+      reviewStageName: "user-feedback-1",
+      previewPath,
+      previewFileUrl,
+      browserBootstrapRules,
+      designModelConfig,
+      workflowCwd,
     });
-
-    latestUserFeedbackSessionFile =
-      userFeedbackResult.sessionFile ?? latestUserFeedbackSessionFile;
-    const feedback = toPreviewFeedback({
-      iteration,
-      stageName: `user-feedback-${iteration}`,
-      result: userFeedbackResult,
-    });
-    persistPreviewFeedback({ artifactDir, workflowCwd, feedback });
-
-    if (!hasMeaningfulFeedback(feedback)) {
-      approvedForExport = true;
-      break;
-    }
-    pendingFeedback = feedback;
   }
 
-  return { latestDesign, approvedForExport, refinementCount };
+  return { latestDesign: generated.text };
+}
+
+type LiveReviewSessionOptions = {
+  readonly designContext: DesignContext;
+  readonly round: number;
+  readonly reviewStageName: string;
+  readonly previewPath: string;
+  readonly previewFileUrl: string;
+  readonly browserBootstrapRules: string;
+  readonly designModelConfig: ModelConfig;
+  readonly workflowCwd: string;
+};
+
+/**
+ * Run one live review session until the helper emits its terminal `exit` event.
+ *
+ * The workflow owns the poll loop: `ctx.tool` polls and replies, and the model
+ * is called back only for the events that need it. Termination is the helper's
+ * `exit` event rather than a model's judgment that a review looked finished,
+ * which is what prevents a poll timeout from ending an active review.
+ */
+async function runLiveReviewSession(options: LiveReviewSessionOptions): Promise<void> {
+  const { designContext, round, reviewStageName, previewPath, previewFileUrl, browserBootstrapRules, designModelConfig, workflowCwd } = options;
+  let sessionFile: string | undefined;
+
+  const start = await designContext.task(`${reviewStageName}-start`, {
+    prompt: buildLiveSessionStartPrompt({ previewPath, previewFileUrl, browserBootstrapRules, round }),
+    ...designModelConfig,
+  });
+  sessionFile = start.sessionFile;
+
+  for (let index = 1; ; index += 1) {
+		// `timeout` is absorbed inside the poll, so an idle hour costs no nodes and
+		// never looks like an ending.
+		const event = await designContext.tool(`live-poll-${round}-${index}`, { round, index }, async ({ signal }) =>
+			pollLiveEvent({ workflowCwd, signal }),
+		);
+		if (event.type === "exit") break;
+		// `variant_mounted` is journal-only. All other non-model events are
+		// acknowledged by the helper itself and do not mint a model stage.
+		if (!needsModel(event)) continue;
+		if (event.id === undefined || event.id.length === 0) {
+			throw new Error(`Live ${event.type} event is missing its id`);
+		}
+		const response = await designContext.task(`live-${event.type}-${round}-${index}`, {
+			prompt: buildLiveEventPrompt({ event, previewPath }),
+			...designModelConfig,
+			...forkContinuationOptions(sessionFile),
+		});
+		sessionFile = response.sessionFile ?? sessionFile;
+		const status = replyTokenFor(event);
+		await designContext.tool(
+			`live-reply-${round}-${index}`,
+			{ round, index, eventId: event.id, status },
+			async ({ signal }) => replyLiveEvent({ workflowCwd, event, status, signal }),
+		);
+  }
 }
 
 function buildInitialGeneratePrompt(args: {
@@ -231,60 +229,6 @@ function buildInitialGeneratePrompt(args: {
   ]);
 }
 
-function buildGenerateRevisionPrompt(args: {
-  readonly prompt: string;
-  readonly outputType: string;
-  readonly previewPath: string;
-  readonly designContextFile: string;
-  readonly referencesFile: string;
-  readonly latestDesign: string;
-  readonly importContext: string;
-  readonly feedback: PreviewFeedback;
-}): string {
-  const annotations = userAnnotationsBlock([args.feedback]);
-  return taggedPrompt([
-    [
-      "design_context_file",
-      `Read the file at ${args.designContextFile} for the project design context (PRODUCT.md/DESIGN.md summary) and the ds-* design-system evidence.`,
-    ],
-    [
-      "reference_inspiration_file",
-      `Read the file at ${args.referencesFile} for the curated reference inspiration.`,
-    ],
-    ["reference_context", args.importContext],
-    ["reference_precedence", REFERENCE_PRECEDENCE],
-    ["preview_artifact_path", args.previewPath],
-    ["user_feedback", annotations.text],
-    ["current_design_summary", args.latestDesign],
-    ["html_rules", HTML_PREVIEW_RULES],
-    ["anti_design_slop_rules", ANTI_SLOP_RULES],
-    ["role", "You are an opinionated staff design engineer."],
-    [
-      "objective",
-      `Revise the ${args.outputType} for: ${args.prompt}. Update the preview in place from only the latest live-review feedback, applying impeccable \`craft\` and \`polish\` with restraint rather than adding an internal critique.`,
-    ],
-    [
-      "instructions",
-      [
-        "Read the current HTML at preview_artifact_path. Treat <user_feedback> as the only refinement brief; do not invent critique, screenshot, audit, or gate findings.",
-        "Address every user note and accepted live change visibly, or identify its DESIGN.md/reference-precedence conflict in the summary.",
-        `Overwrite ${args.previewPath} with one revised self-contained HTML file; do not branch or create extra previews.`,
-        "Preserve strong decisions unless feedback requires change; add no unrelated features or abstractions.",
-      ].join("\n"),
-    ],
-    [
-      "output_format",
-      [
-        "In at most 400 words, return Markdown, not the HTML body:",
-        "1. Revised artifact (path only)",
-        "2. User feedback addressed (each note/live change and its application or conflict)",
-        "3. Changes applied",
-        "4. Trade-offs / unresolved user feedback",
-        GROUNDED_REPORTING,
-      ].join("\n"),
-    ],
-  ]);
-}
 
 type ExportOptions = {
   readonly designContext: DesignContext;
@@ -316,7 +260,7 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
       ],
       [
         "reference_inspiration_file",
-        `Read the file at ${referencesFile} for the curated reference research that informed the approved design; use it wherever the spec cites visual direction or reference provenance.`,
+        `Read the file at ${referencesFile} for the curated reference research that informed the final design; use it wherever the spec cites visual direction or reference provenance.`,
       ],
       ["preview_artifact_path", previewPath],
       ["spec_artifact_path", specPath],
@@ -326,12 +270,12 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
       ["role", "You are an opinionated staff design engineer."],
       [
         "objective",
-        `Export the final ${outputType} for "${prompt}" as a rich browser-readable HTML spec. Apply impeccable \`document\` and embed or link the approved preview so implementation reviewers see the agreed design.`,
+        `Export the final ${outputType} for "${prompt}" as a rich browser-readable HTML spec. Apply impeccable \`document\` and embed or link the final preview so implementation reviewers see the design as exported.`,
       ],
       [
         "instructions",
         [
-          "First read the design-context file named above, then read preview_artifact_path as the canonical approved design, and use the Write tool to create one self-contained HTML5 file at spec_artifact_path.",
+          "First read the design-context file named above, then read preview_artifact_path as the canonical final design, and use the Write tool to create one self-contained HTML5 file at spec_artifact_path.",
           "In order, include: sticky header with title/status/run id; Executive Summary; Live Preview embedding the full preview via `<iframe srcdoc=\"...\">` or a side-by-side rendered copy in `<article class=\"preview-frame\">`; the six DESIGN.md sections (Overview, Colors, Typography, Elevation, Components, Do's and Don'ts) rendered with swatches, tables, and code blocks; Implementation handoff (Recommended files + components, Implementation steps, Usage example, Accessibility & responsive checklist, Validation commands, Known limitations); and an appendix linking the raw preview path.",
           "Use dense legible typography, generous whitespace, monospaced code, rendered hex/oklch swatches, and copy-to-clipboard hints in HTML comments.",
           `Show the absolute preview path (${previewPath}) and file URL (${previewFileUrl}) prominently. Preserve assumptions and limitations; introduce no requirement absent from the final design or DESIGN.md.`,
@@ -375,8 +319,8 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
           "instructions",
           [
             `Use the bootstrap rules, run \`playwright-cli open ${specFileUrl}\`, and if a browser executable is missing follow those rules and retry once before \`playwright-cli snapshot\`.`,
-            "Do not run `show --annotate` or invite changes because no refinement pass remains.",
-            `Prominently print the manual paths:\n- Final spec: ${specPath}\n- Approved preview: ${previewPath}`,
+            "Do not run `show --annotate` or invite changes because the review session has ended.",
+            `Prominently print the manual paths:\n- Final spec: ${specPath}\n- Preview: ${previewPath}`,
             "Unavailable tooling must not block the workflow; return the structured summary.",
           ].join("\n"),
         ],

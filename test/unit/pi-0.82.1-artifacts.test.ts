@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
-import { assertPiRuntimeAssets } from "../../packages/coding-agent/scripts/assert-pi-runtime-assets.js";
+import {
+	assertPiRuntimeAssets,
+	expectedPiVersion,
+} from "../../packages/coding-agent/scripts/assert-pi-runtime-assets.js";
 import { moduleDir, readJson, readText } from "../helpers/runtime.js";
 
 /**
@@ -27,48 +30,53 @@ interface Lockfile {
 const root = join(moduleDir(import.meta.url), "../..");
 const distBuiltinDir = join(root, "packages/coding-agent/dist/builtin");
 const distAppPath = join(root, "packages/coding-agent/dist/app.js");
-const piVersion = "0.84.1";
+/**
+ * One constant drives the whole version contract: the runtime-asset assertion
+ * (which reads the installed `@earendil-works/pi-ai`), the lockfile entries, and
+ * the workspace manifest ranges below.
+ */
+const piVersion = expectedPiVersion;
 const expectedArtifacts = new Map([
 	[
 		"@earendil-works/pi-agent-core",
 		{
-			integrity: "sha512-evyzXYWCLQGmcaBYHlmSku02r8qoN4SGI60GZABo6iV+H+nqX+P9ud8fEZ4GmRq9mUSREvvfX+w9dA9ThF9C6w==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.84.1.tgz",
+			integrity: "sha512-8Pn3wSCxj0cfo5I6jxQYVB/3uuQRmHhAlEclyjqpOuMEdQMIODHizRogv56FLdbU+dTiGnybeHQ2N+sV1/L2YA==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.84.2.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-ai",
 		{
-			integrity: "sha512-wMsAdJMxuNri08vLqTyYVI201DQQezGhPSTkzYsHdw5dYX3rCNwEmSvpaAwhi7ELKI/2tE/CEgSWg/6iRxSgdQ==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.84.1.tgz",
+			integrity: "sha512-6MzsrYIYNVlE7SfpbL2yYb67Qo58p/7Q+xWG1RZvoX1P80aRCHSod2/13aFpxkow1lPO2LEh3c495J0Gwmyjig==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.84.2.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-client",
 		{
-			integrity: "sha512-/V5hGHE4Zq+jG0GtwIB9PyBUOGd6gBLZ7lkQYFKchKnxYHeH3rmWC5xw4kpnZKKBuBuFTdLVbU9vEjlAGMMb2A==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-0.84.1.tgz",
+			integrity: "sha512-/RFSPhD/bZbpOp1oJj+UneSUFSgZhWxzcSENUY+8+8xhoBrWXMYI2t77XNx4Yf+c8YK2qTHquForhNcelYpXvg==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-0.84.2.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-protocol",
 		{
-			integrity: "sha512-Ox1pciyeSPGEEUcxvR0/dJcrY7C6hrEGA8y71rOsvSIUlXN1Cbp/be/eoL71OGDBk5O97TeQPfWN6Ju/2Ehjww==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-0.84.1.tgz",
+			integrity: "sha512-jbBh03fkeckWEroHpcZBr4w5/Ibat8WwdXFlXHivYQImrQNFtLpDeL0t1cku4hmK0q3pceIRQHkw4fwbM4YILQ==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-0.84.2.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-tui",
 		{
-			integrity: "sha512-udeXFbgEhJ6JiB0uguwNVNkDy2FENfmtQwPcY+/iJ8GWeq18wkal1tKqa5YyeH0IqtX1vG0cGh8zfSYzyzVuLA==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.84.1.tgz",
+			integrity: "sha512-ds2TLihOnM5sLJB3VpXV6y0uR5efVuHf4MN7yDpsty6hA2DUO/EDVzjp/0od0G2JslzVLMjT8T8zavtxVb+qbg==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.84.2.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-telemetry",
 		{
-			integrity: "sha512-180/xGJtsq7IoR3p9EKWjRd0e9M4DkxInhlo9xyD7prDC7Qrhqq+nhvwrW0lFjPfXcEI2FSHmGCSyvSJE9GsaQ==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-0.84.1.tgz",
+			integrity: "sha512-wg5caea7uIv1BHRBm2Y116RvFG4oSAiP5qk9tA2463PDGIr4K8M1Ceyyg5DOpF/shUUl0gk826yQJAeAcHYB9g==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-0.84.2.tgz",
 		},
 	],
 ]);
@@ -106,13 +114,13 @@ if (!existsSync(distAppPath)) {
 	);
 }
 
-test("Pi v0.84.1 source declarations and lockfiles stay synchronized", async () => {
+test("Pi v0.84.2 source declarations and lockfiles stay synchronized", async () => {
 	let declarationCount = 0;
 	for (const [workspace, names] of declarations) {
 		const manifest = await readJson<Manifest>(join(root, workspace, "package.json"));
 		assert.equal(manifest.version, "0.0.0");
 		for (const name of names) {
-			assert.equal(manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name], "^0.84.1");
+			assert.equal(manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name], `^${piVersion}`);
 			declarationCount++;
 		}
 	}
@@ -139,7 +147,7 @@ test("Pi v0.84.1 source declarations and lockfiles stay synchronized", async () 
 	for (const lock of [npmLock, shrinkwrap]) {
 		assert.equal(
 			lock.packages["node_modules/@earendil-works/pi-agent-core"]?.dependencies?.["@earendil-works/pi-ai"],
-			"^0.84.1",
+			`^${piVersion}`,
 		);
 	}
 });
@@ -166,6 +174,24 @@ test("protobufjs 7.6.5 is pinned in source and every packaged lock", async () =>
 	assert.equal(generator.includes("protobufjs@7.6.4"), false);
 });
 
+// pi-ai 0.84.2 replaced the Mistral SDK with a native HTTP transport (upstream
+// 9dd90a49). The dependency is gone from the tree; a stale entry in either lock
+// would still be installed for users, because npm-shrinkwrap.json ships inside
+// @bastani/atomic.
+test("the Mistral SDK is absent from every packaged lock", async () => {
+	for (const path of ["package-lock.json", "packages/coding-agent/npm-shrinkwrap.json"]) {
+		const lock = await readJson<Lockfile>(join(root, path));
+		for (const [lockPath, entry] of Object.entries(lock.packages)) {
+			assert.equal(lockPath.includes("@mistralai/mistralai"), false, `${path}: ${lockPath}`);
+			assert.equal(
+				Object.hasOwn(entry.dependencies ?? {}, "@mistralai/mistralai"),
+				false,
+				`${path}: ${lockPath} still depends on @mistralai/mistralai`,
+			);
+		}
+	}
+});
+
 test("installed Pi runtime includes generated model data and bundled OAuth adapters", () => {
 	assertPiRuntimeAssets({ nodeModulesRoot: join(root, "node_modules") });
 });
@@ -180,7 +206,7 @@ test("binary pipelines require generated Pi model data and OAuth assets", async 
 	assert.ok(releaseBuilder.includes("assert-pi-runtime-assets.ts --node-modules"));
 });
 
-publishArtifactTest("Pi v0.84.1 generated publish artifacts match source declarations", async () => {
+publishArtifactTest("Pi v0.84.2 generated publish artifacts match source declarations", async () => {
 	for (const [workspace, names] of declarations) {
 		if (workspace === "packages/coding-agent") continue;
 		const source = await readJson<Manifest>(join(root, workspace, "package.json"));
@@ -196,6 +222,6 @@ publishArtifactTest("Pi v0.84.1 generated publish artifacts match source declara
 	}
 });
 
-binaryAppTest("standalone app bundle embeds Pi v0.84.1 catalog and OAuth runtime markers", () => {
+binaryAppTest("standalone app bundle embeds Pi v0.84.2 catalog and OAuth runtime markers", () => {
 	assertPiRuntimeAssets({ nodeModulesRoot: join(root, "node_modules"), appBundlePath: distAppPath });
 });

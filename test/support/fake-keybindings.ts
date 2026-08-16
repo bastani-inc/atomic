@@ -26,6 +26,11 @@ const DEFAULTS: Readonly<Record<string, readonly string[]>> = {
 	"app.tools.expand": ["\x0f"],
 	// Ctrl+T in legacy, Kitty CSI-u, and modifyOtherKeys encodings.
 	"app.thinking.toggle": ["\x14", "\x1b[116;5u", "\x1b[116;5:1u", "\x1b[27;5;116~"],
+	// Fullscreen transcript search actions used by the stage-chat overlay.
+	"tui.altScreen.search": ["\x1b[102;6u"],
+	"tui.altScreen.searchNext": ["\r", "\n", "\x07"],
+	"tui.altScreen.searchPrevious": ["\x1b[13;2u", "\x1b\r", "\x1b[103;6u"],
+	"tui.altScreen.searchClose": ["\x1b"],
 	"tui.editor.cursorUp": ["\x1b[A"],
 	"tui.editor.cursorDown": ["\x1b[B"],
 	// ctrl+b — readline backward-char (default pi-tui binding for cursorLeft)

@@ -83,7 +83,7 @@ export function resolveIntercomSessionTarget(sessionName: string | undefined, se
 	const trimmedName = sessionName?.trim();
 	if (trimmedName) return trimmedName;
 	const normalizedSessionId = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;
-	return `${DEFAULT_INTERCOM_TARGET_PREFIX}-${normalizedSessionId.slice(0, 8)}`;
+	return `${DEFAULT_INTERCOM_TARGET_PREFIX}-${normalizedSessionId}`;
 }
 
 function sanitizeIntercomTargetPart(value: string): string {

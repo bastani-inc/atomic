@@ -192,6 +192,48 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
 		assert.equal(piUi.confirmCalls.length, 0);
 		assert.equal(piUi.inputCalls.length, 0);
 	});
+	test("prompt-node UI sink coerces text and index answers without first-choice fallback", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+
+		const def = workflow({
+			name: "hil-kind-aware-bg",
+			description: "",
+			inputs: {},
+			outputs: {
+				proceed: Type.Optional(Type.Any()),
+				choice: Type.Optional(Type.Any()),
+				text: Type.Optional(Type.Any()),
+				edited: Type.Optional(Type.Any()),
+			},
+			run: async (ctx) => {
+				const proceed = await ctx.ui.confirm("ok?");
+				const choice = await ctx.ui.select("Pick", ["first", "second"] as const);
+				const text = await ctx.ui.input("text?");
+				const edited = await ctx.ui.editor("initial");
+				return { proceed, choice, text, edited };
+			},
+		});
+
+		const accepted = runDetached(def, {}, { store, cancellation, jobs });
+		const confirm = await waitForStagePendingPrompt(store, accepted.runId);
+		store.resolveStagePendingPrompt(accepted.runId, confirm.stageId, confirm.promptId, " YES ");
+		const select = await waitForStagePendingPrompt(store, accepted.runId);
+		store.resolveStagePendingPrompt(accepted.runId, select.stageId, select.promptId, 2);
+		const input = await waitForStagePendingPrompt(store, accepted.runId);
+		store.resolveStagePendingPrompt(accepted.runId, input.stageId, input.promptId, "  exact input  ");
+		const editor = await waitForStagePendingPrompt(store, accepted.runId);
+		store.resolveStagePendingPrompt(accepted.runId, editor.stageId, editor.promptId, "  exact edit  ");
+
+		await waitForRunEnded(store, accepted.runId);
+		assert.deepEqual(store.runs().find((run) => run.id === accepted.runId)?.result, {
+			proceed: true,
+			choice: "second",
+			text: "  exact input  ",
+			edited: "  exact edit  ",
+		});
+	});
 
 	test("killing the run rejects any outstanding HIL awaiter", async () => {
 		const store = createStore();

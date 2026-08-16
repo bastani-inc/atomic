@@ -14,6 +14,7 @@ from harbor.agents.installed.base import (
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from prerequisites import (
+    PROVIDER_AUTH_ENV_KEYS,
     agent_install_command,
     atomic_runtime_environment_command,
     root_install_command,
@@ -27,22 +28,28 @@ class Atomic(BaseInstalledAgent):
     _LOG_SESSION_DIR = f"/logs/agent/{_SESSION_DIR_NAME}"
     _OPENAI_CODEX_PROVIDER = "openai-codex"
     _AUTH_UPLOAD_TARGET = "/tmp/atomic-subscription-auth.json"
+    # Shared with the Pier adapter and the credential preflight so the three
+    # cannot disagree about which providers are supported. Harbor keeps
+    # `huggingface`, which Pier disables: Pier's restricted-egress allowlist
+    # would have to grant huggingface.co, which also serves git repos and
+    # datasets, while Harbor builds no such overlay.
     _PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
-        "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
-        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
-        "github-copilot": ("COPILOT_GITHUB_TOKEN",),
-        "google": (
-            "GEMINI_API_KEY",
-            "GOOGLE_GENERATIVE_AI_API_KEY",
-            "GOOGLE_APPLICATION_CREDENTIALS",
-            "GOOGLE_API_KEY",
-        ),
-        "groq": ("GROQ_API_KEY",),
+        **PROVIDER_AUTH_ENV_KEYS,
         "huggingface": ("HF_TOKEN",),
-        "mistral": ("MISTRAL_API_KEY",),
-        "openai": ("OPENAI_API_KEY",),
-        "openrouter": ("OPENROUTER_API_KEY",),
-        "xai": ("XAI_API_KEY",),
+    }
+    # What `run()` forwards into the sandbox: every credential above, plus the
+    # region and Vertex routing variables and the credential-free Codex
+    # subscription.
+    _PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
+        **_PROVIDER_AUTH_ENV_KEYS,
+        "amazon-bedrock": (*_PROVIDER_AUTH_ENV_KEYS["amazon-bedrock"], "AWS_REGION"),
+        "google": (
+            *_PROVIDER_AUTH_ENV_KEYS["google"],
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+        ),
+        "openai-codex": (),
     }
 
     CLI_FLAGS = [
@@ -353,34 +360,13 @@ class Atomic(BaseInstalledAgent):
         provider, model = chain[0]
 
         env: dict[str, str] = {}
-        provider_env_keys: dict[str, tuple[str, ...]] = {
-            "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"),
-            "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
-            "github-copilot": ("COPILOT_GITHUB_TOKEN",),
-            "google": (
-                "GEMINI_API_KEY",
-                "GOOGLE_GENERATIVE_AI_API_KEY",
-                "GOOGLE_APPLICATION_CREDENTIALS",
-                "GOOGLE_CLOUD_PROJECT",
-                "GOOGLE_CLOUD_LOCATION",
-                "GOOGLE_GENAI_USE_VERTEXAI",
-                "GOOGLE_API_KEY",
-            ),
-            "groq": ("GROQ_API_KEY",),
-            "huggingface": ("HF_TOKEN",),
-            "mistral": ("MISTRAL_API_KEY",),
-            "openai": ("OPENAI_API_KEY",),
-            "openai-codex": (),
-            "openrouter": ("OPENROUTER_API_KEY",),
-            "xai": ("XAI_API_KEY",),
-        }
         # Forward credentials for every provider in the fallback chain, not just
         # the selected one: a main-chat fallback attempt needs its own key
         # inside the sandbox.
         keys = [
             key
             for candidate_provider, _ in chain
-            for key in provider_env_keys.get(candidate_provider, ())
+            for key in self._PROVIDER_ENV_KEYS.get(candidate_provider, ())
         ]
 
         for key in keys:
@@ -465,16 +451,29 @@ class Atomic(BaseInstalledAgent):
 
     @staticmethod
     def _read_session_header(session_file: Path) -> dict[str, object] | None:
+        """Return the first JSONL record of a session file, or ``None``.
+
+        Decoded with replacement, like every other reader here. Strict text
+        decoding raised ``UnicodeDecodeError`` — a ``ValueError``, so neither
+        ``OSError`` nor ``JSONDecodeError`` caught it — on a first line
+        truncated mid-UTF-8, and that killed ``populate_context_post_run``
+        before it could write any status at all. A truncated header is exactly
+        the corruption S6 requires the run to report, so it must answer
+        ``None`` and let the message reader count the malformed line.
+        """
         try:
-            with session_file.open(encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    header = json.loads(line)
-                    return header if isinstance(header, dict) else None
-        except (OSError, json.JSONDecodeError, TypeError):
+            text = session_file.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
             return None
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                header = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            return header if isinstance(header, dict) else None
         return None
 
     def _should_count_session_file(
@@ -493,6 +492,8 @@ class Atomic(BaseInstalledAgent):
     def populate_context_post_run(self, context: AgentContext) -> None:
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
+            # An agent that wrote no atomic.txt also changed nothing, so the
+            # task's collect hook writes an empty model.patch. Nothing to add.
             return
 
         total_input_tokens = 0
@@ -545,27 +546,34 @@ class Atomic(BaseInstalledAgent):
                 seen_message_fingerprints.add(fingerprint)
 
         def read_session_messages(session_file: Path, *, count_usage: bool) -> None:
+            # Decode defensively: invalid UTF-8 is corruption, and raising
+            # UnicodeDecodeError here (a ValueError, not an OSError) used to take
+            # the whole status write down with it.
             try:
-                with session_file.open(encoding="utf-8") as handle:
-                    for line in handle:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(entry, dict) or entry.get("type") != "message":
-                            continue
-                        message = entry.get("message")
-                        if count_usage:
-                            add_assistant_message_usage(message, entry.get("id"))
-                        else:
-                            mark_assistant_message_seen(message, entry.get("id"))
+                text = session_file.read_bytes().decode("utf-8", errors="replace")
             except OSError:
                 return
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict) or entry.get("type") != "message":
+                    continue
+                message = entry.get("message")
+                if count_usage:
+                    add_assistant_message_usage(message, entry.get("id"))
+                else:
+                    mark_assistant_message_seen(message, entry.get("id"))
 
-        for line in output_file.read_text().splitlines():
+        try:
+            output_text = output_file.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            output_text = ""
+        for line in output_text.splitlines():
             line = line.strip()
             if not line:
                 continue

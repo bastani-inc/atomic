@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs";
 import { isStaleExtensionContextError } from "@bastani/atomic";
 import {
 	type Details,
@@ -76,7 +75,6 @@ function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth 
 			...(part.stepIndex !== undefined ? { stepIndex: part.stepIndex } : {}),
 			...(part.agent ? { agent: part.agent } : {}),
 		})),
-		...(run.asyncDir ? { asyncDir: run.asyncDir } : {}),
 		...(run.sessionId ? { sessionId: run.sessionId } : {}),
 		...(run.sessionFile ? { sessionFile: run.sessionFile } : {}),
 		...(run.intercomTarget ? { intercomTarget: run.intercomTarget } : {}),
@@ -191,39 +189,14 @@ export interface GroupedResultIntercomMessageInput {
 	to: string;
 	runId: string;
 	mode: SubagentRunMode;
-	source: "foreground" | "async";
 	children: SubagentResultIntercomChild[];
-	asyncId?: string;
-	asyncDir?: string;
-}
-
-function asyncResumeGuidance(input: {
-	source: "foreground" | "async";
-	children: SubagentResultIntercomChild[];
-	asyncId?: string;
-}): string | undefined {
-	if (input.source !== "async" || !input.asyncId) return undefined;
-	const resumable = input.children.filter(
-		(child) => typeof child.sessionPath === "string" && fs.existsSync(child.sessionPath),
-	);
-	if (input.children.length === 1 && resumable.length === 1) {
-		return `Revive: subagent({ action: "resume", id: "${input.asyncId}", message: "..." })`;
-	}
-	if (resumable.length > 0) {
-		const firstIndex = resumable[0]?.index ?? input.children.indexOf(resumable[0]!);
-		return `Revive child: subagent({ action: "resume", id: "${input.asyncId}", index: ${firstIndex}, message: "..." })`;
-	}
-	return "Resume: unavailable; no child session file was persisted.";
 }
 
 function formatSubagentResultIntercomMessage(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	status: SubagentResultStatus;
-	source: "foreground" | "async";
 	children: SubagentResultIntercomChild[];
-	asyncId?: string;
-	asyncDir?: string;
 }): string {
 	const counts = countStatuses(input.children);
 	const lines: string[] = [
@@ -234,32 +207,21 @@ function formatSubagentResultIntercomMessage(input: {
 		`Status: ${input.status}`,
 		`Children: ${formatStatusCounts(counts)}`,
 	];
-	if (input.asyncId) lines.push(`Async id: ${input.asyncId}`);
-	if (input.asyncDir) lines.push(`Async dir: ${input.asyncDir}`);
-	const resumeGuidance = asyncResumeGuidance(input);
-	if (resumeGuidance) lines.push(resumeGuidance);
 	if (input.children.some((child) => child.intercomTarget)) {
-		lines.push("");
 		lines.push(
-			input.source === "async"
-				? "Previous intercom targets below identify child sessions used while they were running. Inspect artifacts or session logs if resume is unavailable."
-				: "Intercom targets below identify child sessions used while they were running; completed child sessions may no longer be reachable. Inspect artifacts or session logs for follow-up.",
+			"",
+			"Intercom targets below identify child sessions used while they were running; completed child sessions may no longer be reachable. Inspect artifacts or session logs for follow-up.",
 		);
 	}
 
 	for (let index = 0; index < input.children.length; index++) {
 		const child = input.children[index]!;
-		lines.push("");
-		lines.push(`${index + 1}. ${child.agent} — ${child.status}`);
-		if (child.intercomTarget)
-			lines.push(
-				`${input.source === "async" ? "Previous intercom target" : "Run intercom target"}: ${child.intercomTarget}`,
-			);
+		lines.push("", `${index + 1}. ${child.agent} — ${child.status}`);
+		if (child.intercomTarget) lines.push(`Run intercom target: ${child.intercomTarget}`);
 		if (child.artifactPath) lines.push(`Output artifact: ${child.artifactPath}`);
 		if (child.sessionPath) lines.push(`Session: ${child.sessionPath}`);
 		lines.push(...formatNestedResultLines(child.children));
-		lines.push("Summary:");
-		lines.push(child.summary);
+		lines.push("Summary:", child.summary);
 	}
 
 	return lines.join("\n");
@@ -282,10 +244,7 @@ export function buildSubagentResultIntercomPayload(
 		mode: input.mode,
 		status,
 		summary,
-		source: input.source,
 		children,
-		...(input.asyncId ? { asyncId: input.asyncId } : {}),
-		...(input.asyncDir ? { asyncDir: input.asyncDir } : {}),
 		...(firstChild?.agent ? { agent: firstChild.agent } : {}),
 		...(firstChild?.index !== undefined ? { index: firstChild.index } : {}),
 		...(firstChild?.artifactPath ? { artifactPath: firstChild.artifactPath } : {}),

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CODEX_FAST_MODE_SERVICE_TIER } from "../src/core/codex-fast-mode.ts";
+import { CODEX_FAST_MODE_ORIGINATOR, CODEX_FAST_MODE_ROUTING_HEADER } from "../src/core/codex-fast-mode-transport.ts";
 import type { OrchestrationContext } from "../src/core/extensions/index.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -343,6 +344,89 @@ describe("createAgentSession codex fast mode", () => {
 		}
 	});
 
+	it("routes a renamed provider through the shared Codex proxy transport", async () => {
+		const provider = "codex-proxy";
+		const api = "openai-codex-responses" as const;
+		const model = {
+			...createModel(provider, api),
+			id: "gpt-5.6-sol",
+			baseUrl: "https://monitor.example/backend-api",
+		};
+		const tokenPayload = Buffer.from(
+			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
+		).toString("base64url");
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		await authStorage.modify(provider, async () => ({
+			type: "api_key",
+			key: `header.${tokenPayload}.signature`,
+		}));
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: join(agentDir, "models.json"),
+			allowModelNetwork: false,
+		});
+		modelRuntime.registerProvider(provider, {
+			api,
+			apiKey: "credential-fallback",
+			baseUrl: model.baseUrl,
+			models: [model],
+		});
+		registeredProviders.push({ registry: modelRuntime, provider });
+		let capturedUrl: string | undefined;
+		let capturedHeaders: Headers | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				capturedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				capturedHeaders = new Headers(init?.headers);
+				const completedEvent = {
+					type: "response.completed",
+					response: {
+						id: "resp_alias",
+						status: "completed",
+						service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+						usage: {
+							input_tokens: 0,
+							input_tokens_details: { cached_tokens: 0 },
+							output_tokens: 0,
+							total_tokens: 0,
+						},
+					},
+				};
+				return new Response(`data: ${JSON.stringify(completedEvent)}\n\ndata: [DONE]\n\n`, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		try {
+			const stream = await session.agent.streamFunction(
+				model,
+				{ messages: [] },
+				{
+					sessionId: session.sessionId,
+					transport: "sse",
+				},
+			);
+			await stream.result();
+
+			expect(capturedUrl).toBe("https://monitor.example/backend-api/codex/responses");
+			expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_MODE_ORIGINATOR);
+			expect(capturedHeaders?.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
+		} finally {
+			session.dispose();
+		}
+	});
 	it("does not overwrite an existing provider payload service_tier", async () => {
 		const captured = await captureFastModeRequest({
 			provider: "openai",

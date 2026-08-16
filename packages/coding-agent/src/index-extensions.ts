@@ -136,6 +136,7 @@ export {
 	isStaleExtensionContextError,
 	isToolCallEventType,
 	isWriteToolResult,
+	OVERLAY_ACTIVE_ROW_MARKER,
 	STALE_EXTENSION_CONTEXT_MARKER,
 	wrapRegisteredTool,
 	wrapRegisteredTools,

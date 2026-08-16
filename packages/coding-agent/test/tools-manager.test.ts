@@ -46,7 +46,7 @@ describe("managed tool downloads", () => {
 			return new Response("download unavailable", { status: 404 });
 		});
 
-		await expect(ensureTool("fd", true)).resolves.toBeUndefined();
+		await expect(ensureTool("fd")).resolves.toBeUndefined();
 
 		expect(releaseAttempts).toBe(3);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(3);
@@ -65,11 +65,31 @@ describe("managed tool downloads", () => {
 			}
 			return new Response("unexpected request", { status: 404 });
 		});
-
-		await expect(ensureTool("fd", true)).resolves.toBeUndefined();
+		await expect(ensureTool("fd")).resolves.toBeUndefined();
 
 		expect(archiveAttempts).toBe(3);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(1);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith(archiveUrlPrefix))).toHaveLength(3);
+	});
+
+	it("reports an offline skip through onStatus and never writes to the console", async () => {
+		vi.stubEnv(ENV_OFFLINE, "1");
+		const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const statuses: import("../src/utils/tools-manager.ts").ToolStatus[] = [];
+
+		await expect(ensureTool("fd", (status) => statuses.push(status))).resolves.toBeUndefined();
+
+		expect(statuses).toEqual([
+			{ type: "warning", message: "fd not found. Offline mode enabled, skipping download." },
+		]);
+		expect(consoleLog).not.toHaveBeenCalled();
+		expect(consoleError).not.toHaveBeenCalled();
+	});
+
+	it("no longer contains any console write, silent flag or not", () => {
+		// The fullscreen alternate screen makes any console write here a frame
+		// corruption; guard the whole function against reintroduction.
+		expect(ensureTool.toString()).not.toContain("console.");
 	});
 });

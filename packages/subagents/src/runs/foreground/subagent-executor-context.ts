@@ -22,10 +22,6 @@ import {
 	subagentDepthBlockedMessage,
 } from "../../shared/types.ts";
 
-function applyForceTopLevelAsyncOverride<T extends { async?: boolean }>(params: T, depth: number, force: boolean): T {
-	return depth === 0 && force ? { ...params, async: true } : params;
-}
-
 import {
 	createNestedRoute,
 	resolveInheritedNestedRouteFromEnv,
@@ -81,11 +77,7 @@ export function prepareExecutionContext(input: {
 	if (normalized.error) return { error: normalized.error };
 	const normalizedParams = normalized.params!;
 
-	let effectiveParams = applyForceTopLevelAsyncOverride(
-		normalizedParams,
-		depth,
-		deps.config.forceTopLevelAsync === true,
-	);
+	let effectiveParams = normalizedParams;
 
 	const scope = resolveExecutionAgentScope(effectiveParams.agentScope);
 	const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
@@ -124,7 +116,6 @@ export function prepareExecutionContext(input: {
 	} catch (error) {
 		return { error: toExecutionErrorResult(effectiveParams, error) };
 	}
-	const effectiveAsync = effectiveParams.async ?? deps.asyncByDefault;
 	const controlConfig = resolveControlConfig(deps.config.control, effectiveParams.control);
 
 	const artifactConfig: ArtifactConfig = {
@@ -176,30 +167,22 @@ export function prepareExecutionContext(input: {
 		artifactConfig,
 		artifactsDir,
 		parentDepth: depth,
-		effectiveAsync,
 		controlConfig,
 		intercomBridge,
 		nestedRoute,
 	};
 
 	const foregroundMode: "single" | "parallel" = hasTasks ? "parallel" : "single";
-	const foregroundControl = effectiveAsync
-		? undefined
-		: {
-				runId,
-				mode: foregroundMode,
-				startedAt: Date.now(),
-				updatedAt: Date.now(),
-				currentAgent: undefined,
-				currentIndex: undefined,
-				currentActivityState: undefined,
-				nestedRoute,
-				interrupt: undefined,
-			};
-	if (foregroundControl) {
-		deps.state.foregroundControls.set(runId, foregroundControl);
-		deps.state.lastForegroundControlId = runId;
-	}
+	const foregroundControl = {
+		runId,
+		mode: foregroundMode,
+		startedAt: Date.now(),
+		updatedAt: Date.now(),
+		nestedRoute,
+		interrupt: undefined,
+	};
+	deps.state.foregroundControls.set(runId, foregroundControl);
+	deps.state.lastForegroundControlId = runId;
 
 	const writeNestedForegroundEvent = (
 		type: "subagent.nested.started" | "subagent.nested.completed",

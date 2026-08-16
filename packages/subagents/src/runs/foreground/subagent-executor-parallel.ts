@@ -2,6 +2,7 @@ import type { AgentConfig } from "../../agents/agents.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";
+import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
 import {
 	resolveStepBehavior,
 	type StepOverrides,
@@ -21,7 +22,7 @@ import {
 } from "../../shared/types.ts";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
-import { sharedAutoGroupForSet } from "../shared/intercom-group.ts";
+import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
 import { recordRun } from "../shared/run-history.ts";
@@ -212,6 +213,7 @@ export async function runParallelPath(
 			workflowStageSubagentGuard,
 			availableModels,
 			knownModelProviders,
+			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),
 			modelOverrides,
 			behaviors,
 			firstProgressIndex: parallelProgressPrecreated ? -1 : firstProgressIndex,

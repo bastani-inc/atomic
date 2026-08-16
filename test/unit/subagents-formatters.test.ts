@@ -6,20 +6,39 @@ describe("subagent formatModelThinking", () => {
 	test("appends fast after model and inferred thinking suffix", () => {
 		assert.equal(
 			formatModelThinking("openai/gpt-5.1-codex:medium", undefined, true),
-			"gpt-5.1-codex · thinking medium · fast",
+			"openai/gpt-5.1-codex · thinking medium · fast",
 		);
 	});
 
 	test("omits fast when fast mode metadata is missing or disabled", () => {
-		assert.equal(formatModelThinking("openai/gpt-5.1-codex:medium"), "gpt-5.1-codex · thinking medium");
+		assert.equal(formatModelThinking("openai/gpt-5.1-codex:medium"), "openai/gpt-5.1-codex · thinking medium");
 		assert.equal(
 			formatModelThinking("openai/gpt-5.1-codex:medium", undefined, false),
-			"gpt-5.1-codex · thinking medium",
+			"openai/gpt-5.1-codex · thinking medium",
 		);
 	});
 
 	test("appends fast after explicit thinking metadata", () => {
-		assert.equal(formatModelThinking("openai/gpt-5.1-codex", "high", true), "gpt-5.1-codex · thinking high · fast");
+		assert.equal(
+			formatModelThinking("openai/gpt-5.1-codex", "high", true),
+			"openai/gpt-5.1-codex · thinking high · fast",
+		);
+	});
+
+	test("keeps the provider prefix so the line matches the main chat model display", () => {
+		assert.equal(formatModelThinking("anthropic/claude-fable-5", "high"), "anthropic/claude-fable-5 · thinking high");
+		assert.equal(formatModelThinking("anthropic/claude-fable-5"), "anthropic/claude-fable-5");
+	});
+
+	test("keeps every segment of a multi-segment routed model id", () => {
+		assert.equal(
+			formatModelThinking("openrouter/anthropic/claude-fable-5:max"),
+			"openrouter/anthropic/claude-fable-5 · thinking max",
+		);
+	});
+
+	test("splits only a known thinking suffix", () => {
+		assert.equal(formatModelThinking("openai/gpt-5.1-codex:preview"), "openai/gpt-5.1-codex:preview");
 	});
 });
 

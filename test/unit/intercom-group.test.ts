@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
+import { runtimeIntercomGroupEnvKey } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
-import { DEFAULT_GROUP, normalizeGroup, resolveHomeGroup } from "../../packages/intercom/group.js";
+import {
+	DEFAULT_GROUP,
+	normalizeGroup,
+	resolveHomeGroup,
+	validateRuntimeGroup,
+} from "../../packages/intercom/group.js";
+import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "../../packages/intercom/runtime-group.js";
 
 const ENV_KEYS = ["ATOMIC_INTERCOM_GROUP", "PI_INTERCOM_GROUP"] as const;
+const RUNTIME_SESSION_KEYS = ["session-a", "session-b", "session-1", "session-2"] as const;
 const saved: Record<string, string | undefined> = {};
 
 afterEach(() => {
@@ -11,6 +19,7 @@ afterEach(() => {
 		else process.env[key] = saved[key];
 		delete saved[key];
 	}
+	for (const sessionId of RUNTIME_SESSION_KEYS) clearRuntimeIntercomGroup(sessionId);
 });
 
 function setEnv(key: string, value: string | undefined): void {
@@ -24,42 +33,85 @@ test("normalizeGroup collapses empty/whitespace/undefined to default and trims n
 	assert.equal(normalizeGroup(null), DEFAULT_GROUP);
 	assert.equal(normalizeGroup(""), DEFAULT_GROUP);
 	assert.equal(normalizeGroup("   "), DEFAULT_GROUP);
-	assert.equal(normalizeGroup("default"), "default");
+	assert.equal(normalizeGroup("default"), DEFAULT_GROUP);
 	assert.equal(normalizeGroup("  teamA  "), "teamA");
 });
 
-test("resolveHomeGroup precedence: orchestrationContext > env > config > default", () => {
+test("validateRuntimeGroup trims named groups and permits explicit default", () => {
+	assert.equal(validateRuntimeGroup("  teamA  "), "teamA");
+	assert.equal(validateRuntimeGroup("default"), DEFAULT_GROUP);
+	assert.throws(() => validateRuntimeGroup(""), /non-empty/);
+	assert.throws(() => validateRuntimeGroup("   "), /non-empty/);
+	assert.throws(() => validateRuntimeGroup("true"), /reserved/);
+	assert.throws(() => validateRuntimeGroup(" AUTO "), /reserved/);
+});
+
+test("runtime group entries stay isolated per session and clean up independently", () => {
+	setRuntimeIntercomGroup("session-a", "group-a");
+	setRuntimeIntercomGroup("session-b", "group-b");
+	assert.equal(process.env[runtimeIntercomGroupEnvKey("session-a")], "group-a");
+	assert.equal(process.env[runtimeIntercomGroupEnvKey("session-b")], "group-b");
+
+	clearRuntimeIntercomGroup("session-a");
+	assert.equal(process.env[runtimeIntercomGroupEnvKey("session-a")], undefined);
+	assert.equal(process.env[runtimeIntercomGroupEnvKey("session-b")], "group-b");
+	clearRuntimeIntercomGroup("session-b");
+});
+
+test("home resolution ignores a joined runtime entry and gives admitted policy the narrowest scope", () => {
+	setEnv("ATOMIC_INTERCOM_GROUP", undefined);
+	setEnv("PI_INTERCOM_GROUP", undefined);
+	setRuntimeIntercomGroup("session-1", "runtimeGroup");
+	const sessionContext = {
+		sessionManager: { getSessionId: () => "session-1" },
+	};
+	assert.equal(resolveHomeGroup({ group: "configGroup" }, sessionContext), "configGroup");
+	assert.equal(
+		resolveHomeGroup(
+			{ group: "configGroup" },
+			{
+				...sessionContext,
+				subagentPolicy: { intercomGroup: "policyGroup" },
+				orchestrationContext: { intercomGroup: "contextGroup" },
+			},
+		),
+		"policyGroup",
+	);
+});
+
+test("resolveHomeGroup precedence: subagentPolicy > orchestrationContext > env > config > default", () => {
 	setEnv("ATOMIC_INTERCOM_GROUP", undefined);
 	setEnv("PI_INTERCOM_GROUP", undefined);
 
-	// orchestrationContext wins over everything
 	setEnv("ATOMIC_INTERCOM_GROUP", "envGroup");
 	assert.equal(
 		resolveHomeGroup({ group: "configGroup" }, { orchestrationContext: { intercomGroup: "ctxGroup" } }),
 		"ctxGroup",
 	);
+	assert.equal(
+		resolveHomeGroup(
+			{ group: "configGroup" },
+			{
+				subagentPolicy: { intercomGroup: "policyGroup" },
+				orchestrationContext: { intercomGroup: "ctxGroup" },
+			},
+		),
+		"policyGroup",
+	);
 
-	// env wins over config when no context group
 	assert.equal(resolveHomeGroup({ group: "configGroup" }, {}), "envGroup");
 
-	// legacy PI_ env is honored via getEnvValue fallback
 	setEnv("ATOMIC_INTERCOM_GROUP", undefined);
 	setEnv("PI_INTERCOM_GROUP", "legacyGroup");
 	assert.equal(resolveHomeGroup({ group: "configGroup" }, {}), "legacyGroup");
 
-	// config used when no env/context
 	setEnv("PI_INTERCOM_GROUP", undefined);
 	assert.equal(resolveHomeGroup({ group: "configGroup" }, {}), "configGroup");
-
-	// default when nothing set
 	assert.equal(resolveHomeGroup({}, {}), DEFAULT_GROUP);
 	assert.equal(resolveHomeGroup(undefined, undefined), DEFAULT_GROUP);
 });
 
 test("a defined-but-empty ATOMIC_INTERCOM_GROUP shadows the legacy PI_INTERCOM_GROUP", () => {
-	// `getEnvValue` returned the first `!== undefined` value across [ATOMIC_*, PI_*], so an empty
-	// ATOMIC value yields "" and never falls back to the legacy name. The local helper uses `??`
-	// to keep that exactly; `||` would wrongly resolve "legacy" here.
 	setEnv("ATOMIC_INTERCOM_GROUP", "");
 	setEnv("PI_INTERCOM_GROUP", "legacy");
 
@@ -67,11 +119,9 @@ test("a defined-but-empty ATOMIC_INTERCOM_GROUP shadows the legacy PI_INTERCOM_G
 	assert.equal(resolveHomeGroup(undefined, {}), DEFAULT_GROUP);
 	assert.equal(resolveHomeGroup({ group: "configured" }, { orchestrationContext: { intercomGroup: "ctx" } }), "ctx");
 
-	// A whitespace-only ATOMIC value shadows the legacy name the same way.
 	setEnv("ATOMIC_INTERCOM_GROUP", "   ");
 	assert.equal(resolveHomeGroup({ group: "configured" }, {}), "configured");
 
-	// Only an entirely absent ATOMIC value defers to the legacy name.
 	setEnv("ATOMIC_INTERCOM_GROUP", undefined);
 	assert.equal(resolveHomeGroup({ group: "configured" }, {}), "legacy");
 });

@@ -1,4 +1,6 @@
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import type { PiCustomComponent } from "../../packages/workflows/src/extension/ui-surface.js";
 import {
 	type AgentSession,
@@ -10,6 +12,7 @@ import {
 	makeFakeKeybindings,
 	makeHandle,
 	makePendingPrompt,
+	makeTestTui,
 	RETURN_HINT_TEXT,
 	StageChatView,
 	StageUiBroker,
@@ -19,6 +22,69 @@ import {
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
+	test("honors a remapped jump-to-bottom binding while custom UI is mounted", async () => {
+		const previousKeybindings = getKeybindings();
+		const keybindings = new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+e" });
+		setKeybindings(keybindings);
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "pending");
+		const broker = new StageUiBroker(store);
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: makeTestTui(12),
+			piTheme: {},
+			piKeybindings: keybindings,
+			stageUiBroker: broker,
+		});
+		const abortController = new AbortController();
+		try {
+			for (let i = 0; i < 18; i++) {
+				for (const ch of `custom-follow-msg-${i}`) view.handleInput(ch);
+				view.handleInput(String.fromCharCode(13));
+				await flush();
+				await flush();
+			}
+			view.render(96);
+			assert.equal(view.handleInput(`${String.fromCharCode(27)}[5~`), true);
+			assert.ok(view._bodyScrollFromBottom > 0);
+
+			const pending = broker.requestCustomUi(
+				"run-1",
+				"stage-a",
+				(_tui, _theme, _keybindings, _done): PiCustomComponent => ({
+					render: () => ["custom question"],
+					handleInput: () => true,
+					invalidate: () => {},
+				}),
+				undefined,
+				abortController.signal,
+			);
+			pending.catch(() => {});
+			await flush();
+			const scrolled = stripTerminalSequences(view.render(96).join("\n"));
+			assert.ok(scrolled.includes("Jump to bottom (ctrl+e) ↓"));
+			assert.ok(scrolled.includes("custom question"));
+
+			assert.equal(view.handleInput(String.fromCharCode(5)), true);
+			assert.equal(view._bodyScrollFromBottom, 0);
+			const bottom = stripTerminalSequences(view.render(96).join("\n"));
+			assert.ok(!bottom.includes("Jump to bottom"));
+			assert.ok(bottom.includes("custom question"));
+		} finally {
+			abortController.abort();
+			view.dispose();
+			setKeybindings(previousKeybindings);
+		}
+	});
+
 	test("keeps mounted custom UI above structured stage pending prompts", async () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");

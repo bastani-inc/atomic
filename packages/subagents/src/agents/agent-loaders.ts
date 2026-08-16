@@ -10,7 +10,7 @@ import {
 	defaultInheritSkills,
 	defaultSystemPromptMode,
 } from "./agent-types.ts";
-import { parseFrontmatter } from "./frontmatter.ts";
+import { type FrontmatterValue, parseFrontmatter } from "./frontmatter.ts";
 import { buildRuntimeName, parsePackageName } from "./identity.ts";
 
 function listFilesRecursive(dir: string, predicate: (fileName: string) => boolean): string[] {
@@ -45,8 +45,74 @@ function parseCommaSeparatedList(value: string | undefined): string[] | undefine
 	return parsed && parsed.length > 0 ? parsed : undefined;
 }
 
-export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
+/**
+ * Narrow a frontmatter value to its scalar spelling. A YAML sequence where a
+ * scalar belongs (`model: [anthropic, x]`) reads as undefined rather than a
+ * stringified list, matching upstream's `typeof` narrowing.
+ */
+function frontmatterString(value: FrontmatterValue | undefined): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * Narrow a frontmatter value to a boolean. The real YAML parser yields true
+ * booleans for the unquoted spellings `serializeAgent` itself writes
+ * (`interactive: true`); quoted or hand-written `"true"`/`"false"` strings
+ * from the legacy line-reader era stay accepted.
+ */
+function frontmatterBoolean(value: FrontmatterValue | undefined): boolean | undefined {
+	if (typeof value === "boolean") return value;
+	if (value === "true") return true;
+	if (value === "false") return false;
+	return undefined;
+}
+
+/**
+ * Normalize a frontmatter `tools` value to a list of tool names.
+ *
+ * Both spellings are valid YAML and both are in use (upstream pi #7598):
+ *
+ *     tools: read, bash        # string, comma-separated
+ *     tools: [read, bash]      # flow sequence
+ *     tools:                   # block sequence
+ *       - read
+ *       - bash
+ *
+ * so accept either. Anything else yields no tools rather than throwing: this
+ * runs inside agent discovery, where a single bad file must not take down
+ * every other agent in the same directory.
+ */
+function parseToolList(value: FrontmatterValue | undefined): string[] | undefined {
+	const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+	const tools = raw
+		.filter((tool): tool is string => typeof tool === "string")
+		.map((tool) => tool.trim())
+		.filter(Boolean);
+	return tools.length > 0 ? tools : undefined;
+}
+
+export interface AgentLoadDiagnostic {
+	/** Absolute path of the skipped file. */
+	path: string;
+	/** Why the file was skipped, from the YAML parser when it threw. */
+	message: string;
+}
+
+export interface AgentDirLoadResult {
+	agents: AgentConfig[];
+	diagnostics: AgentLoadDiagnostic[];
+}
+
+/**
+ * Load every agent file in a directory, collecting a diagnostic per file
+ * skipped for invalid YAML frontmatter. The real YAML parser is stricter
+ * than the line reader it replaced (`description: Deploy: fast` is a
+ * nested-mapping error, not a description), so without this record those
+ * files would vanish from discovery with no signal.
+ */
+export function loadAgentsFromDirWithDiagnostics(dir: string, source: AgentSource): AgentDirLoadResult {
 	const agents: AgentConfig[] = [];
+	const diagnostics: AgentLoadDiagnostic[] = [];
 
 	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md"))) {
 		let content: string;
@@ -56,59 +122,61 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter(content);
-
-		if (!frontmatter.name || !frontmatter.description) {
+		const { frontmatter, body, parseError } = parseFrontmatter(content);
+		if (parseError !== undefined) {
+			diagnostics.push({ path: filePath, message: parseError });
 			continue;
 		}
 
-		const localName = frontmatter.name;
-		const parsedPackage = parsePackageName(frontmatter.package, `Agent '${localName}' package`);
+		// Sequences are legal frontmatter but not valid `name`/`description`
+		// spellings; a file whose identity fields are not plain strings is
+		// skipped whole, exactly as upstream's loader does.
+		const localName = frontmatterString(frontmatter.name);
+		const description = frontmatterString(frontmatter.description);
+		if (!localName || !description) {
+			continue;
+		}
+
+		const parsedPackage = parsePackageName(frontmatterString(frontmatter.package), `Agent '${localName}' package`);
 		if (parsedPackage.error) continue;
 		const packageName = parsedPackage.packageName;
 		const runtimeName = buildRuntimeName(localName, packageName);
 
-		const rawTools = parseCommaSeparatedList(frontmatter.tools);
+		const rawTools = parseToolList(frontmatter.tools);
 		const parsedTools = splitToolList(rawTools);
-		const defaultReads = parseCommaSeparatedList(frontmatter.defaultReads);
-		const skillStr = frontmatter.skill || frontmatter.skills;
+		const inheritProjectContextRaw = frontmatterBoolean(frontmatter.inheritProjectContext);
+		const inheritSkillsRaw = frontmatterBoolean(frontmatter.inheritSkills);
+		const defaultContextRaw = frontmatterString(frontmatter.defaultContext);
+		const extensionsRaw = frontmatterString(frontmatter.extensions);
+		const systemPromptModeRaw = frontmatterString(frontmatter.systemPromptMode);
+		const defaultReads = parseCommaSeparatedList(frontmatterString(frontmatter.defaultReads));
+		const skillStr = frontmatterString(frontmatter.skill) || frontmatterString(frontmatter.skills) || undefined;
 		const skills = parseCommaSeparatedList(skillStr);
-		const fallbackModels = parseCommaSeparatedList(frontmatter.fallbackModels);
-		const fallbackThinkingLevels = parseCommaSeparatedList(frontmatter.fallbackThinkingLevels);
+		const fallbackModels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackModels));
+		const fallbackThinkingLevels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackThinkingLevels));
+		const inheritProjectContext = inheritProjectContextRaw ?? defaultInheritProjectContext(localName);
+		const inheritSkills = inheritSkillsRaw ?? defaultInheritSkills();
 		const systemPromptMode =
-			frontmatter.systemPromptMode === "replace"
+			systemPromptModeRaw === "replace"
 				? "replace"
-				: frontmatter.systemPromptMode === "append"
+				: systemPromptModeRaw === "append"
 					? "append"
 					: defaultSystemPromptMode(localName);
-		const inheritProjectContext =
-			frontmatter.inheritProjectContext === "true"
-				? true
-				: frontmatter.inheritProjectContext === "false"
-					? false
-					: defaultInheritProjectContext(localName);
-		const inheritSkills =
-			frontmatter.inheritSkills === "true"
-				? true
-				: frontmatter.inheritSkills === "false"
-					? false
-					: defaultInheritSkills();
 		const defaultContext =
-			frontmatter.defaultContext === "fork"
+			defaultContextRaw === "fork"
 				? ("fork" as const)
-				: frontmatter.defaultContext === "fresh"
+				: defaultContextRaw === "fresh"
 					? ("fresh" as const)
 					: undefined;
-
 		let extensions: string[] | undefined;
-		if (frontmatter.extensions !== undefined) {
-			extensions = frontmatter.extensions
+		if (extensionsRaw !== undefined) {
+			extensions = extensionsRaw
 				.split(",")
 				.map((extension) => extension.trim())
 				.filter(Boolean);
 		}
 
-		const extraFields: Record<string, string> = {};
+		const extraFields: Record<string, FrontmatterValue> = {};
 		for (const [key, value] of Object.entries(frontmatter)) {
 			if (shouldPreserveAgentExtraField(key)) extraFields[key] = value;
 		}
@@ -119,13 +187,13 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			name: runtimeName,
 			localName,
 			packageName,
-			description: frontmatter.description,
+			description,
 			tools: parsedTools.tools,
 			mcpDirectTools: parsedTools.mcpDirectTools,
-			model: frontmatter.model,
+			model: frontmatterString(frontmatter.model),
 			fallbackModels,
 			fallbackThinkingLevels,
-			thinking: frontmatter.thinking,
+			thinking: frontmatterString(frontmatter.thinking),
 			systemPromptMode,
 			inheritProjectContext,
 			inheritSkills,
@@ -135,14 +203,18 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			filePath,
 			skills,
 			extensions,
-			output: frontmatter.output,
+			output: frontmatterString(frontmatter.output),
 			defaultReads,
-			defaultProgress: frontmatter.defaultProgress === "true",
-			interactive: frontmatter.interactive === "true",
+			defaultProgress: frontmatterBoolean(frontmatter.defaultProgress) === true,
+			interactive: frontmatterBoolean(frontmatter.interactive) === true,
 			maxSubagentDepth: parsedMaxSubagentDepth,
 			extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
 		});
 	}
 
-	return agents;
+	return { agents, diagnostics };
+}
+
+export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
+	return loadAgentsFromDirWithDiagnostics(dir, source).agents;
 }

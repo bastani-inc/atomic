@@ -14,6 +14,7 @@ export type ThemeColor =
 	| "dim"
 	| "text"
 	| "thinkingText"
+	| "searchMatchText"
 	| "userMessageText"
 	| "customMessageText"
 	| "customMessageLabel"
@@ -52,11 +53,21 @@ export type ThemeColor =
 export type ThemeBg =
 	| "selectedBg"
 	| "scrollbarThumb"
+	| "searchMatchBg"
 	| "userMessageBg"
 	| "customMessageBg"
 	| "toolPendingBg"
 	| "toolSuccessBg"
 	| "toolErrorBg";
+
+/**
+ * Colors a theme may omit. Each one resolves from a color every theme already
+ * defines, so a theme written before the token existed keeps validating and
+ * keeps rendering: `searchMatchText` falls back to `text` and `searchMatchBg`
+ * to `selectedBg`.
+ */
+type OptionalThemeColor = "searchMatchText";
+type OptionalThemeBg = "scrollbarThumb" | "searchMatchBg";
 
 export type WorkingIndicatorTone = "dark" | "lift" | "muted" | "accent" | "bright" | "peak";
 
@@ -70,9 +81,10 @@ export class Theme {
 	private workingIndicatorColors: Map<WorkingIndicatorTone, string>;
 
 	constructor(
-		fgColors: Record<ThemeColor, string | number>,
-		bgColors: Record<Exclude<ThemeBg, "scrollbarThumb">, string | number> &
-			Partial<Record<"scrollbarThumb", string | number>>,
+		fgColors: Record<Exclude<ThemeColor, OptionalThemeColor>, string | number> &
+			Partial<Record<OptionalThemeColor, string | number>>,
+		bgColors: Record<Exclude<ThemeBg, OptionalThemeBg>, string | number> &
+			Partial<Record<OptionalThemeBg, string | number>>,
 		mode: ColorMode,
 		options: {
 			name?: string;
@@ -86,13 +98,18 @@ export class Theme {
 		this.sourceInfo = options.sourceInfo;
 		this.mode = mode;
 		this.fgColors = new Map();
-		for (const [key, value] of Object.entries(fgColors) as [ThemeColor, string | number][]) {
+		const foregrounds = {
+			...fgColors,
+			searchMatchText: fgColors.searchMatchText ?? fgColors.text,
+		};
+		for (const [key, value] of Object.entries(foregrounds) as [ThemeColor, string | number][]) {
 			this.fgColors.set(key, fgAnsi(value, mode));
 		}
 		this.bgColors = new Map();
 		const backgrounds = {
 			...bgColors,
 			scrollbarThumb: bgColors.scrollbarThumb ?? bgColors.selectedBg,
+			searchMatchBg: bgColors.searchMatchBg ?? bgColors.selectedBg,
 		};
 		for (const [key, value] of Object.entries(backgrounds) as [ThemeBg, string | number][]) {
 			this.bgColors.set(key, bgAnsi(value, mode));

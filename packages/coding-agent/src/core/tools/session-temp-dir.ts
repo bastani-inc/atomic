@@ -2,8 +2,8 @@
  * Owner- and session-scoped temp storage for tool output files.
  *
  * Every file a tool spills to the system temp directory (bash overflow logs,
- * async bash logs, `OutputAccumulator` spill files, and the in-memory-session
- * tool-result fallback) lands under:
+ * `OutputAccumulator` spill files, and the in-memory-session tool-result fallback)
+ * lands under:
  *
  * ```text
  * <tmpdir>/<APP_NAME>-<owner>/<sanitized-session-id>/
@@ -22,6 +22,10 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { APP_NAME } from "../../config.ts";
 import { getErrnoCode } from "./errno.ts";
+import {
+	resetWindowsDirectorySecurityStateForTesting,
+	verifyWindowsDirectorySecurity,
+} from "./windows-directory-security.ts";
 
 /** Directory mode for every directory this module creates (owner-only). */
 export const SESSION_TEMP_DIR_MODE = 0o700;
@@ -70,9 +74,9 @@ let cachedOwnerComponent: string | undefined;
  * digest of the raw identity keeps distinct accounts on distinct roots, with
  * the readable component in front so the directory stays recognizable.
  *
- * This prevents collision; it is not owner verification. POSIX separately
- * proves ownership through `verifyOwnedDirectory`, which has no portable
- * Windows equivalent here.
+ * This prevents collision; it is not owner verification. Ownership is proven
+ * separately by `verifyOwnedDirectory` — a uid check on POSIX, an owner-SID
+ * and DACL check on Windows.
  *
  * Exported as a pure function so the collision property can be tested directly:
  * its only caller reaches this branch on Windows, which a POSIX test host
@@ -205,19 +209,17 @@ export class TempDirRefusedError extends Error {
  * A looser mode is tightened and re-checked; a component owned by another
  * account, or one whose mode cannot be tightened, is refused rather than used.
  *
- * Windows has no uid or POSIX mode to check, so only the symlink and directory
- * checks apply there. That is a real gap, not an oversight: an existing root is
- * adopted without proving its owner SID or that its DACL is restrictive, so on a
- * host where the system temp directory has been redirected to a shared location,
- * a local attacker who can pre-create the (predictable) root can have this
- * account's persisted tool output written into a tree they control. Closing it
- * needs a real principal identity and an ACL read, neither of which Node exposes
- * — `lstatSync` reports uid/gid 0 on Windows — so it means a native binding or a
- * PowerShell `Get-Acl` per directory creation. Tracked in bastani-inc/atomic#2245
- * rather than bolted on here; the default Windows temp directory is per-user,
- * which is what keeps this narrow. Domain-qualifying the principal (see
- * `windowsPrincipal`) stops two accounts *colliding* by accident, which is a
- * different problem and is not a substitute for verification.
+ * Windows has no uid or POSIX mode, so the proof comes from the security
+ * descriptor instead: the owner SID must be a trusted principal and the DACL
+ * must grant access to trusted principals only
+ * (see `windows-directory-security.ts`). Node exposes neither — `lstatSync`
+ * reports uid/gid 0 on Windows — so the read goes through a PowerShell
+ * `Get-Acl` subprocess. Successful verifications are cached per path per
+ * process, keyed to the directory's metadata identity so a swapped directory
+ * or an in-place DACL edit forces a fresh read. Domain-qualifying the
+ * principal (see `windowsPrincipal`) stops two accounts *colliding* by
+ * accident, which is a different problem and is not a substitute for this
+ * verification.
  */
 function verifyOwnedDirectory(path: string, known?: Stats): void {
 	let stat = known ?? lstatSync(path);
@@ -228,6 +230,10 @@ function verifyOwnedDirectory(path: string, known?: Stats): void {
 		throw new TempDirRefusedError(path, "it is not a directory");
 	}
 	if (process.platform === "win32") {
+		const refusal = verifyWindowsDirectorySecurity(path);
+		if (refusal !== undefined) {
+			throw new TempDirRefusedError(path, refusal);
+		}
 		return;
 	}
 	const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -369,11 +375,10 @@ let activeSessionId: string | undefined;
  * Refcounted protection for directories the sweeper must not reap.
  *
  * A count rather than a set, because protection has more than one holder and
- * more than one lifetime: a session protects its own tree, an async spill writer
- * outlives the session object it started under, and one session can be replaced
- * by another wrapping the same paths. Releasing one holder must not unprotect a
- * directory another is still writing to, and a session that is gone must stop
- * protecting a tree the startup sweep exists to collect.
+ * more than one lifetime: a session protects its own tree, and one session can
+ * be replaced by another wrapping the same paths. Releasing one holder must not
+ * unprotect a directory another is still using, and a session that is gone must
+ * stop protecting a tree the startup sweep exists to collect.
  */
 const protectedPathCounts = new Map<string, number>();
 
@@ -431,4 +436,5 @@ export function resetSessionTempDirStateForTesting(): void {
 	ensuredDirs.clear();
 	cachedOwnerComponent = undefined;
 	cachedBaseTempDirs = undefined;
+	resetWindowsDirectorySecurityStateForTesting();
 }

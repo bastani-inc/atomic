@@ -1,7 +1,6 @@
 /**
- * The bash overflow log, the bash tool's `Full output:` path, and the async bash
- * spill log all land inside the session temp directory instead of the bare
- * system temp directory.
+ * The bash overflow log and the bash tool's `Full output:` path land inside the
+ * session temp directory instead of the bare system temp directory.
  */
 import assert from "node:assert/strict";
 import {
@@ -23,7 +22,6 @@ import { afterAll, beforeAll, describe, it } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import type { BashOperations } from "../src/core/tools/bash.ts";
 import { createBashToolDefinition } from "../src/core/tools/bash.ts";
-import { createAsyncOutputAppender } from "../src/core/tools/bash-async-output.ts";
 import { OutputAccumulator } from "../src/core/tools/output-accumulator.ts";
 import {
 	getTempRootDir,
@@ -138,19 +136,6 @@ describe("bash overflow logs live in the session temp directory", () => {
 		assert.ok(isInside(sessionTempDir, savedPath), `${savedPath} is not inside ${sessionTempDir}`);
 		assert.equal(result.details?.fullOutputPath, savedPath);
 		assert.equal(await waitForFile(savedPath), true);
-	});
-
-	it("writes async bash spill logs under the session temp directory", async () => {
-		const sessionTempDir = resolveSessionTempDirPath(SESSION_ID);
-		const job = { output: "" };
-		const appender = createAsyncOutputAppender(job, { persistAfterBytes: 16, sessionTempDir });
-		appender.append(Buffer.from(OVERSIZED_OUTPUT, "utf8"));
-		await appender.close();
-
-		const path = (job as { fullOutputPath?: string }).fullOutputPath;
-		assert.ok(path, "expected an async spill log path");
-		assert.ok(isInside(sessionTempDir, path), `${path} is not inside ${sessionTempDir}`);
-		assert.equal(readFileSync(path, "utf8").length, OVERSIZED_OUTPUT.length);
 	});
 
 	it("defaults an accumulator without an explicit directory to the active session tree", async () => {

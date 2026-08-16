@@ -6,6 +6,10 @@ import { runTournament } from "./tournament-runner.js";
 export default workflow({
   name: "tournament",
   description: "Run several independent whole-task attempts through a balanced pairwise judging bracket and return an auditable winner.",
+  // The 15-minute default, stated rather than inherited: this is a per-workflow
+  // product decision, so a future change to the global default must not silently
+  // re-cadence a long autonomous run.
+  heartbeatIntervalMinutes: 15,
   inputs: {
     prompt: Type.String({ description: "Task every competing agent must attempt independently." }),
     num_attempts: Type.Integer({

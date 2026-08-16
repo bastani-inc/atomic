@@ -14,12 +14,15 @@ import {
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.js";
 import { resolveSessionTargetId } from "./session-target.js";
-import { normalizeGroup } from "./group.js";
+import { normalizeGroup, validateRuntimeGroup } from "./group.js";
 
 interface IntercomToolDeps {
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
+  homeGroup(): string;
+  setJoinedGroup(group: string): void;
+  clearJoinedGroup(): void;
   confirmSend: boolean;
   /**
    * Atomically reserve the single reply-waiter slot. Returns a structured
@@ -49,20 +52,26 @@ cross-group sends are rejected by the broker. Ungrouped sessions share the "defa
 Usage:
   intercom({ action: "list" })                    → List sessions in your group
   intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
+  intercom({ action: "join", group: "name" })     → Join or create a named group
+  intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
-  intercom({ action: "status" })                  → Show connection status and your group`,
+  intercom({ action: "status" })                  → Show connection status and your group
+
+The "join" action changes this session's group in place. "default" is the shared
+default group; "true" and "auto" are reserved for subagent auto-groups. Joining
+does not grant cross-group access: contact_supervisor is the only cross-group path.`,
     promptSnippet:
       "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
 
     parameters: Type.Object({
       action: Type.String({
-        description: "Action: 'list', 'send', 'ask', 'reply', 'pending', or 'status'",
+        description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')",
+        description: "Exact session name or exact full session ID (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -77,7 +86,7 @@ Usage:
         description: "Message ID to reply to (for threading or responding to an 'ask')",
       })),
       group: Type.Optional(Type.String({
-        description: "Read-only group filter for 'list'/'status' (peek who is in a named group). 'send'/'ask' are always locked to your own group; passing a different group errors.",
+        description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group.",
       })),
     }),
 
@@ -94,7 +103,6 @@ Usage:
       }
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
-
       const { action, to, message, attachments, replyTo, group } = params;
       const requestedGroup = typeof group === "string" && group.trim() ? normalizeGroup(group) : undefined;
       const resolveOwnGroup = async (): Promise<string> => {
@@ -114,6 +122,75 @@ Usage:
       }
 
       switch (action) {
+        case "join": {
+          let targetGroup: string;
+          try {
+            targetGroup = validateRuntimeGroup(group);
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: getErrorMessage(error) }],
+              isError: true,
+              details: { error: true },
+            };
+          }
+          try {
+            const acknowledgedGroup = await connectedClient.updatePresenceAcked({ group: targetGroup });
+            if (acknowledgedGroup !== targetGroup) {
+              throw new Error(`Broker acknowledged group "${acknowledgedGroup}" instead of "${targetGroup}"`);
+            }
+            deps.setJoinedGroup(targetGroup);
+            return {
+              content: [{ type: "text", text: `Joined intercom group "${targetGroup}".` }],
+              isError: false,
+              details: { group: targetGroup },
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Failed to join group: ${getErrorMessage(error)}` }],
+              isError: true,
+              details: { error: true },
+            };
+          }
+        }
+
+        case "leave": {
+          if (typeof group === "string" && group.trim().length > 0) {
+            return {
+              content: [{ type: "text", text: "The 'leave' action does not accept a group; it returns to the resolved home group." }],
+              isError: true,
+              details: { error: true },
+            };
+          }
+          let targetGroup: string;
+          try {
+            targetGroup = validateRuntimeGroup(deps.homeGroup());
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Cannot leave intercom group: ${getErrorMessage(error)}` }],
+              isError: true,
+              details: { error: true },
+            };
+          }
+          try {
+            const acknowledgedGroup = await connectedClient.updatePresenceAcked({ group: targetGroup });
+            if (acknowledgedGroup !== targetGroup) {
+              throw new Error(`Broker acknowledged group "${acknowledgedGroup}" instead of "${targetGroup}"`);
+            }
+            deps.clearJoinedGroup();
+            return {
+              content: [{ type: "text", text: `Returned to home intercom group "${targetGroup}".` }],
+              isError: false,
+              details: { group: targetGroup },
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Failed to leave group: ${getErrorMessage(error)}` }],
+              isError: true,
+              details: { error: true },
+            };
+          }
+        }
+
         case "list": {
           try {
             const mySessionId = connectedClient.sessionId;

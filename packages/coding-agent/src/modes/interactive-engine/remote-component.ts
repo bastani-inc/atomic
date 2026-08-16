@@ -5,12 +5,21 @@ import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } 
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
 import { TerminalModeController } from "./terminal-mode-controller.ts";
 
+export type RemoteComponentRuntime = Pick<
+	IsolatedInteractiveRuntime,
+	"onEngineMessage" | "onGenerationEnded" | "sendEngineCommand"
+>;
+
+export type RemoteComponentUI = Pick<ExtensionUIContext, "custom" | "requestRender" | "setWidget">;
+
 interface MountedRemoteComponent {
 	component: RemoteComponent;
 	done: (result: JsonValue | undefined) => void;
 	engineDone: boolean;
 	/** The extension declared that this component binds Ctrl+C itself. */
 	handlesCtrlC: boolean;
+	/** The extension declared that this component claims internal UI actions. */
+	handlesInternalUiAction: boolean;
 	handle?: OverlayHandle;
 	widgetKey?: string;
 }
@@ -28,8 +37,10 @@ interface PendingInput {
 
 class RemoteComponent implements Component {
 	wantsKeyRelease = true;
+	readonly handlesInternalUiAction: boolean;
 	private lines = ["Loading remote component…"];
 	private width = 0;
+	private rows = 0;
 	private requestId = 0;
 	private inputRequestId = 0;
 	private appliedRequestId = 0;
@@ -39,32 +50,36 @@ class RemoteComponent implements Component {
 	private readonly frameClamp = new RemoteFrameWidthClamp();
 
 	private readonly componentId: string;
-	private readonly runtime: IsolatedInteractiveRuntime;
+	private readonly runtime: RemoteComponentRuntime;
 	private readonly requestRender: () => void;
 	private readonly getRows: () => number;
 
 	constructor(
 		componentId: string,
-		runtime: IsolatedInteractiveRuntime,
+		runtime: RemoteComponentRuntime,
 		requestRender: () => void,
 		getRows: () => number,
+		handlesInternalUiAction = false,
 	) {
 		this.componentId = componentId;
 		this.runtime = runtime;
 		this.requestRender = requestRender;
 		this.getRows = getRows;
+		this.handlesInternalUiAction = handlesInternalUiAction;
 	}
 
 	render(width: number): string[] {
-		if (!this.disposed && (this.dirty || width !== this.width)) {
+		const rows = this.getRows();
+		if (!this.disposed && (this.dirty || width !== this.width || rows !== this.rows)) {
 			this.width = width;
+			this.rows = rows;
 			this.dirty = false;
 			this.runtime.sendEngineCommand({
 				type: "engine_custom_render",
 				componentId: this.componentId,
 				requestId: ++this.requestId,
 				width,
-				rows: this.getRows(),
+				rows,
 			});
 		}
 		// The engine child re-renders asynchronously; until the fresh frame
@@ -168,14 +183,10 @@ export class RemoteComponentController {
 	private readonly terminalModes: TerminalModeController;
 	private readonly unsubscribeTuiRendererReplaced: () => void;
 
-	private readonly runtime: IsolatedInteractiveRuntime;
-	private readonly ui: ExtensionUIContext;
+	private readonly runtime: RemoteComponentRuntime;
+	private readonly ui: RemoteComponentUI;
 
-	constructor(
-		runtime: IsolatedInteractiveRuntime,
-		ui: ExtensionUIContext,
-		tuiRendererLifecycle: TuiRendererLifecycle,
-	) {
+	constructor(runtime: RemoteComponentRuntime, ui: RemoteComponentUI, tuiRendererLifecycle: TuiRendererLifecycle) {
 		this.runtime = runtime;
 		this.ui = ui;
 		this.terminalModes = new TerminalModeController(() => tuiRendererLifecycle.isFullscreen());
@@ -291,6 +302,8 @@ export class RemoteComponentController {
 					message.widgetKey,
 					message.widgetPlacement,
 					message.handlesCtrlC === true,
+					message.handlesInternalUiAction === true,
+					message.reserveTranscriptRows === true,
 				);
 				break;
 			case "engine_custom_close":
@@ -330,6 +343,8 @@ export class RemoteComponentController {
 		widgetKey?: string,
 		widgetPlacement?: "aboveEditor" | "belowEditor",
 		handlesCtrlC = false,
+		handlesInternalUiAction = false,
+		reserveTranscriptRows = false,
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
@@ -339,8 +354,16 @@ export class RemoteComponentController {
 				this.runtime,
 				() => this.ui.requestRender(),
 				() => rows,
+				handlesInternalUiAction,
 			);
-			this.mounted.set(componentId, { component, done: () => {}, engineDone: false, handlesCtrlC, widgetKey });
+			this.mounted.set(componentId, {
+				component,
+				done: () => {},
+				engineDone: false,
+				handlesCtrlC,
+				handlesInternalUiAction,
+				widgetKey,
+			});
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
@@ -360,8 +383,9 @@ export class RemoteComponentController {
 						this.runtime,
 						() => this.ui.requestRender(),
 						() => tui.terminal.rows,
+						handlesInternalUiAction,
 					);
-					mounted = { component, done, engineDone: false, handlesCtrlC };
+					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so a buffered
 					// autowrap control emitted before the mount frame applies to the host TTY.
@@ -371,6 +395,8 @@ export class RemoteComponentController {
 				{
 					overlay,
 					deferInlineCustomUiFocus,
+					handlesInternalUiAction,
+					reserveTranscriptRows,
 					overlayOptions: overlayOptions(options),
 					onHandle: (handle) => {
 						if (mounted) mounted.handle = handle;

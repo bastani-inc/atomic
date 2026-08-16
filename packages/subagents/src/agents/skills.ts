@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { SkillCatalog } from "@bastani/atomic";
 import {
 	buildSkillPaths,
 	clearSkillPathDiscoveryCache,
@@ -24,7 +25,7 @@ export type SkillSource =
 	| "builtin"
 	| "unknown";
 
-interface ResolvedSkill {
+export interface ResolvedSkill {
 	name: string;
 	path: string;
 	content: string;
@@ -51,6 +52,16 @@ let loadSkillsCache: { cwd: string; skills: CachedSkillEntry[]; timestamp: numbe
 const LOAD_SKILLS_CACHE_TTL_MS = 5000;
 
 const SUBAGENT_ORCHESTRATION_SKILL = "subagent";
+
+/** Bare skill name from `/skill:name` or `/skill:name@qualifier`. */
+export function skillSelectorBaseName(selector: string): string {
+	const separator = selector.indexOf("@");
+	return separator === -1 ? selector : selector.slice(0, separator);
+}
+
+export function isSubagentOrchestrationSkillSelector(selector: string): boolean {
+	return skillSelectorBaseName(selector) === SUBAGENT_ORCHESTRATION_SKILL;
+}
 
 const SOURCE_PRIORITY: Record<SkillSource, number> = {
 	project: 700,
@@ -206,9 +217,10 @@ export function resolveSkillPath(skillName: string, cwd: string): { path: string
 }
 
 function readSkill(skillName: string, skillPath: string, source: SkillSource): ResolvedSkill | undefined {
+	const cacheKey = `${skillPath}\0${skillName}`;
 	try {
 		const stat = fs.statSync(skillPath);
-		const cached = skillCache.get(skillPath);
+		const cached = skillCache.get(cacheKey);
 		if (cached && cached.mtime === stat.mtimeMs) {
 			return cached.skill;
 		}
@@ -222,7 +234,7 @@ function readSkill(skillName: string, skillPath: string, source: SkillSource): R
 			source,
 		};
 
-		skillCache.set(skillPath, { mtime: stat.mtimeMs, skill });
+		skillCache.set(cacheKey, { mtime: stat.mtimeMs, skill });
 		if (skillCache.size > MAX_CACHE_SIZE) {
 			const firstKey = skillCache.keys().next().value;
 			if (firstKey) skillCache.delete(firstKey);
@@ -235,6 +247,52 @@ function readSkill(skillName: string, skillPath: string, source: SkillSource): R
 	}
 }
 
+function catalogSkillSource(
+	skillPath: string,
+	cwd: string,
+	catalogSource: {
+		readonly scope: "user" | "project" | "temporary";
+		readonly origin: "package" | "top-level";
+		readonly configurationOrigin?: string;
+	},
+): SkillSource {
+	if (catalogSource.configurationOrigin === "bundled") return "builtin";
+	if (catalogSource.scope === "project") return catalogSource.origin === "package" ? "project-package" : "project";
+	if (catalogSource.scope === "user") return catalogSource.origin === "package" ? "user-package" : "user";
+	return inferSkillSource(skillPath, cwd);
+}
+
+export function resolveSkillsFromCatalog(
+	skillNames: string[],
+	catalog: SkillCatalog,
+	cwd: string,
+): { resolved: ResolvedSkill[]; missing: string[] } {
+	const resolved: ResolvedSkill[] = [];
+	const missing: string[] = [];
+	for (const name of skillNames) {
+		const selector = name.trim();
+		if (!selector) continue;
+		if (isSubagentOrchestrationSkillSelector(selector)) {
+			missing.push(selector);
+			continue;
+		}
+		const resolution = catalog.resolve(selector);
+		if (!resolution.ok) {
+			missing.push(selector);
+			continue;
+		}
+		const candidate = resolution.candidate;
+		const skill = readSkill(
+			selector,
+			candidate.skill.filePath,
+			catalogSkillSource(candidate.skill.filePath, cwd, candidate.skill.sourceInfo),
+		);
+		if (skill) resolved.push(skill);
+		else missing.push(selector);
+	}
+	return { resolved, missing };
+}
+
 export function resolveSkills(skillNames: string[], cwd: string): { resolved: ResolvedSkill[]; missing: string[] } {
 	const resolved: ResolvedSkill[] = [];
 	const missing: string[] = [];
@@ -242,7 +300,7 @@ export function resolveSkills(skillNames: string[], cwd: string): { resolved: Re
 	for (const name of skillNames) {
 		const trimmed = name.trim();
 		if (!trimmed) continue;
-		if (trimmed === SUBAGENT_ORCHESTRATION_SKILL) {
+		if (isSubagentOrchestrationSkillSelector(trimmed)) {
 			missing.push(trimmed);
 			continue;
 		}

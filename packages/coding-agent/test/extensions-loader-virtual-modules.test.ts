@@ -45,6 +45,15 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
 	});
+
+	it("maps the Codex Responses API before the broad pi-ai compat alias", () => {
+		const aliases = extensionLoaderTestHooks.getAliases();
+		const target = aliases["@earendil-works/pi-ai/api/openai-codex-responses"];
+
+		expect(target).toMatch(/[\\/]dist[\\/]api[\\/]openai-codex-responses\.js$/);
+		expect(fs.existsSync(target!)).toBe(true);
+		expect(target).not.toBe(aliases["@earendil-works/pi-ai"]);
+	});
 	it(
 		"maps pi-tui layout helpers through both loader resolution paths",
 		async () => {
@@ -58,6 +67,29 @@ describe("extension loader pi-ai compat aliases", () => {
 				expect(typeof layout.getScrollbarGeometry).toBe("function");
 				expect(typeof layout.getScrollViewBox).toBe("function");
 				expect(typeof layout.renderLayoutFrame).toBe("function");
+			}
+			expect(modules[specifiers[0]]).toBe(modules[specifiers[1]]);
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"maps the Cloudflare gateway binding transport through both loader resolution paths",
+		async () => {
+			// Re-exported from `@bastani/atomic`, so jiti-loaded extensions that import
+			// the host entry reach this specifier; without its own alias key it falls
+			// through to the compat/root prefix alias and fails to load.
+			const specifiers = [
+				"@earendil-works/pi-ai/api/cloudflare-gateway-binding",
+				"@mariozechner/pi-ai/api/cloudflare-gateway-binding",
+			] as const;
+			const aliases = extensionLoaderTestHooks.getAliases();
+			const modules = await extensionLoaderTestHooks.loadVirtualModules();
+			for (const specifier of specifiers) {
+				expect(aliases[specifier]).toMatch(/[\\/]cloudflare-gateway-binding\.js$/);
+				expect(fs.existsSync(aliases[specifier]!)).toBe(true);
+				const binding = modules[specifier] as { createGatewayBindingFetch?: object };
+				expect(typeof binding.createGatewayBindingFetch).toBe("function");
 			}
 			expect(modules[specifiers[0]]).toBe(modules[specifiers[1]]);
 		},

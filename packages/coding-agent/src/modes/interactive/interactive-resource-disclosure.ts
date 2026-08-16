@@ -31,7 +31,9 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 		lines.push(
 			theme.fg(
 				"dim",
-				`    ${theme.fg("success", "✓")} ${this.formatPathWithSource(first.winnerPath, this.findSourceInfoForPath(first.winnerPath, sourceInfos))}`,
+				`    ${theme.fg("success", "✓")} ${this.formatPathWithSource(first.winnerPath, this.findSourceInfoForPath(first.winnerPath, sourceInfos))}${
+					first.winnerSelector ? ` (default /skill:${name}; exact /skill:${first.winnerSelector})` : ""
+				}`,
 			),
 		);
 		for (const d of collisionList) {
@@ -39,7 +41,9 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 				lines.push(
 					theme.fg(
 						"dim",
-						`    ${theme.fg("warning", "✗")} ${this.formatPathWithSource(d.collision.loserPath, this.findSourceInfoForPath(d.collision.loserPath, sourceInfos))} (skipped)`,
+						`    ${theme.fg("warning", d.collision.loserSelector ? "•" : "✗")} ${this.formatPathWithSource(d.collision.loserPath, this.findSourceInfoForPath(d.collision.loserPath, sourceInfos))}${
+							d.collision.loserSelector ? ` (/skill:${d.collision.loserSelector})` : " (skipped)"
+						}`,
 					),
 				);
 			}

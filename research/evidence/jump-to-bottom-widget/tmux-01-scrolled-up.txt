@@ -1,0 +1,14 @@
+ Warning: Anthropic subscription auth is active. Third-party harness usage draws from extra usage
+ and is billed per token, not your Claude plan limits. Manage extra usage at
+ https://claude.ai/settings/usage.
+
+                                     ┌────────────────────────┐
+                                     │ Jump to bottom (end) ↓ │
+                                     └────────────────────────┘
+
+                                          ↑2 • ↓22 • W40k • CH0.0% • $0.253 (sub) • 4.0%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • ~/Documents/projects/atomic-jump-to-bottom (feat/jump-to-bottom)
+● ADHD Mode • MCP: 0/1 servers

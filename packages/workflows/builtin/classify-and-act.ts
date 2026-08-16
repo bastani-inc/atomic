@@ -8,6 +8,10 @@ export const DEFAULT_ACTION_CATEGORIES = ["analysis", "implementation", "researc
 export default workflow({
   name: "classify-and-act",
   description: "Classify a task with structured confidence, route deterministically to an isolated category action, and ask for human selection when confidence is low.",
+  // The 15-minute default, stated rather than inherited: this is a per-workflow
+  // product decision, so a future change to the global default must not silently
+  // re-cadence a long autonomous run.
+  heartbeatIntervalMinutes: 15,
   inputs: {
     prompt: Type.String({ description: "Task to classify and execute." }),
     categories: Type.Array(Type.String({ minLength: 1 }), {

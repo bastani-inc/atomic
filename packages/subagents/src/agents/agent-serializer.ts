@@ -1,4 +1,6 @@
+import { stringify } from "yaml";
 import type { AgentConfig } from "./agents.ts";
+import type { FrontmatterValue } from "./frontmatter.ts";
 import { frontmatterNameForConfig } from "./identity.ts";
 
 export const KNOWN_FIELDS = new Set([
@@ -33,6 +35,25 @@ export function shouldPreserveAgentExtraField(key: string): boolean {
 function joinComma(values: string[] | undefined): string | undefined {
 	if (!values || values.length === 0) return undefined;
 	return values.join(", ");
+}
+
+/**
+ * Render one extra frontmatter field through the real YAML emitter so an
+ * unknown custom field survives an agent update without changing meaning.
+ * The yaml package quotes scalars a hand-joined spelling corrupts: `a #b`
+ * would open a comment mid-flow-sequence and leave the file unparseable,
+ * `a, b` would split into two items, `a: b` would start a nested mapping,
+ * and an unquoted `""` or `"true"` would change type on re-parse. Keys are
+ * emitted by the same call, so a custom key that needs quoting gets it.
+ * Sequences render as block collections and may span several lines; nested
+ * maps are dropped at parse (they have no agent-frontmatter spelling) and
+ * so never reach this path. Every emitted shape re-parses to itself, so
+ * load → serialize → load is stable.
+ */
+function serializeExtraFieldEntry(key: string, value: FrontmatterValue): string[] {
+	return stringify({ [key]: value }, { lineWidth: 0 })
+		.trimEnd()
+		.split("\n");
 }
 
 export function serializeAgent(config: AgentConfig): string {
@@ -80,7 +101,7 @@ export function serializeAgent(config: AgentConfig): string {
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {
 			if (!shouldPreserveAgentExtraField(key)) continue;
-			lines.push(`${key}: ${value}`);
+			lines.push(...serializeExtraFieldEntry(key, value));
 		}
 	}
 

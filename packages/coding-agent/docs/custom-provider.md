@@ -196,7 +196,7 @@ The `api` field determines which streaming implementation is used:
 | `openai-responses` | OpenAI Responses API |
 | `azure-openai-responses` | Azure OpenAI Responses API |
 | `openai-codex-responses` | OpenAI Codex Responses API |
-| `mistral-conversations` | Mistral SDK Conversations/Chat streaming |
+| `mistral-conversations` | Native Mistral Chat Completions streaming |
 | `google-generative-ai` | Google Generative AI API |
 | `google-vertex` | Google Vertex AI API |
 | `bedrock-converse-stream` | Amazon Bedrock Converse API |
@@ -373,18 +373,19 @@ interface OAuthCredentials {
 
 ## Custom Streaming API
 
-For providers with non-standard APIs, implement `streamSimple`. Study the existing provider implementations before writing your own:
-
+For providers with non-standard APIs, implement `streamSimple`. Study the existing streaming implementations before writing your own:
 
 **Reference implementations:**
 
-Atomic uses provider implementations from its installed `@earendil-works/pi-ai` dependency. Inspect the compiled declarations and JavaScript under `node_modules/@earendil-works/pi-ai/dist/providers/`, including:
-- `anthropic.d.ts` / `anthropic.js` - Anthropic Messages API
-- `mistral.d.ts` / `mistral.js` - Mistral Conversations API
+Atomic uses provider implementations from its installed `@earendil-works/pi-ai` dependency. The streaming implementations behind the `api` field live under `node_modules/@earendil-works/pi-ai/dist/api/`, including:
+- `anthropic-messages.d.ts` / `anthropic-messages.js` - Anthropic Messages API
+- `mistral-conversations.d.ts` / `mistral-conversations.js` - Mistral Conversations/Chat streaming
 - `openai-completions.d.ts` / `openai-completions.js` - OpenAI Chat Completions
 - `openai-responses.d.ts` / `openai-responses.js` - OpenAI Responses API
-- `google.d.ts` / `google.js` - Google Generative AI
-- `amazon-bedrock.d.ts` / `amazon-bedrock.js` - AWS Bedrock
+- `google-generative-ai.d.ts` / `google-generative-ai.js` - Google Generative AI
+- `bedrock-converse-stream.d.ts` / `bedrock-converse-stream.js` - Amazon Bedrock Converse API
+Per-vendor provider configurations (base URLs, auth, model catalogs) live under `dist/providers/`, for example `anthropic.d.ts` / `anthropic.js` and `mistral.d.ts` / `mistral.js`.
+
 ### Stream Pattern
 
 All providers follow the same pattern:

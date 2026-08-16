@@ -11,6 +11,7 @@ import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { normalizeGroup } from "../group.js";
+import { handleBrokerPresence } from "./presence-handler.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -252,29 +253,13 @@ class IntercomBroker {
       }
 
       case "presence": {
-        const session = this.sessions.get(currentId);
-        if (session) {
-          if (clientMessage.name !== undefined) {
-            if (typeof clientMessage.name !== "string") {
-              throw new Error("Invalid presence name");
-            }
-            session.info.name = clientMessage.name;
-          }
-          if (clientMessage.status !== undefined) {
-            if (typeof clientMessage.status !== "string") {
-              throw new Error("Invalid presence status");
-            }
-            session.info.status = clientMessage.status;
-          }
-          if (clientMessage.model !== undefined) {
-            if (typeof clientMessage.model !== "string") {
-              throw new Error("Invalid presence model");
-            }
-            session.info.model = clientMessage.model;
-          }
-          session.info.lastActivity = Date.now();
-          this.broadcastToGroup({ type: "presence_update", session: session.info }, session.info.group, currentId);
-        }
+        handleBrokerPresence(
+          socket,
+          clientMessage,
+          currentId,
+          this.sessions,
+          (target, message) => writeMessage(target, message),
+        );
         break;
       }
 

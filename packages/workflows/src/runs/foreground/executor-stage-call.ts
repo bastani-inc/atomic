@@ -107,7 +107,9 @@ export function createTrackedStageCaller(input: {
 			const suppressQueuedContinuation = reason === "paused-queued-user-message";
 			if (suppressQueuedContinuation) runtime.state.suppressQueuedUserMessageContinuation = true;
 			try {
-				result = (await raceAbort(runtime.innerCtx.prompt(RESUME_CONTINUATION_PROMPT), runtime.signal)) as T;
+				result = (await runtime.raceStageSessionHeartbeat(
+					raceAbort(runtime.innerCtx.prompt(RESUME_CONTINUATION_PROMPT), runtime.signal),
+				)) as T;
 			} finally {
 				if (suppressQueuedContinuation) runtime.state.suppressQueuedUserMessageContinuation = false;
 			}
@@ -134,61 +136,69 @@ export function createTrackedStageCaller(input: {
 		}
 
 		const trackStageLifecycle = !runtime.state.stageFinalized;
-		let refreshedParentIds: readonly string[] | undefined;
-		if (
-			trackStageLifecycle &&
-			!input.hasContinuation &&
-			runtime.stageSnapshot.startedAt === undefined &&
-			!input.hasScopedParents
-		) {
-			const actualParentIds = runtime.scheduler.tracker.currentParents();
-			const sameParents =
-				actualParentIds.length === runtime.stageSnapshot.parentIds.length &&
-				actualParentIds.every((value) => runtime.stageSnapshot.parentIds.includes(value));
-			if (!sameParents) {
-				runtime.scheduler.tracker.replaceParents(runtime.stageId, actualParentIds);
-				refreshedParentIds = actualParentIds;
-			}
-		}
-		if (trackStageLifecycle) {
-			const now = Date.now();
-			const hasNoExplicitModelConfig =
-				input.options?.model === undefined && input.options?.fallbackModels === undefined;
-			const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
+		let applyTerminalStageState: (() => void) | undefined;
+		// Set only alongside the successful "completed" terminal state, so a failed
+		// final durable checkpoint can replace it without touching a real
+		// failure/skip classification recorded by the catch block.
+		let terminalStateIsSuccess = false;
+		try {
+			let refreshedParentIds: readonly string[] | undefined;
 			if (
-				callOptions.eagerSession &&
-				!promptAdapterHandlesInitialPrompt &&
-				(hasNoExplicitModelConfig ||
-					(await hasExplicitFastModeCandidate({
-						model: input.options?.model,
-						fallbackModels: input.options?.fallbackModels,
-						models: runtime.opts.models,
-					})))
+				trackStageLifecycle &&
+				!input.hasContinuation &&
+				runtime.stageSnapshot.startedAt === undefined &&
+				!input.hasScopedParents
 			) {
-				try {
-					await runtime.innerCtx.__ensureSession();
-					runtime.captureStageSessionMeta();
-				} catch (err) {
-					if (!(err instanceof Error && err.message.includes("prompt adapter not configured"))) throw err;
+				const actualParentIds = runtime.scheduler.tracker.currentParents();
+				const sameParents =
+					actualParentIds.length === runtime.stageSnapshot.parentIds.length &&
+					actualParentIds.every((value) => runtime.stageSnapshot.parentIds.includes(value));
+				if (!sameParents) {
+					runtime.scheduler.tracker.replaceParents(runtime.stageId, actualParentIds);
+					refreshedParentIds = actualParentIds;
 				}
 			}
-			if (refreshedParentIds !== undefined) {
-				runtime.scheduler.setStageParentIds(runtime.stageSnapshot, refreshedParentIds);
+			if (trackStageLifecycle) {
+				const now = Date.now();
+				const hasNoExplicitModelConfig =
+					input.options?.model === undefined && input.options?.fallbackModels === undefined;
+				const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
+				if (
+					callOptions.eagerSession &&
+					!promptAdapterHandlesInitialPrompt &&
+					(hasNoExplicitModelConfig ||
+						(await hasExplicitFastModeCandidate({
+							model: input.options?.model,
+							fallbackModels: input.options?.fallbackModels,
+							models: runtime.opts.models,
+						})))
+				) {
+					try {
+						await runtime.innerCtx.__ensureSession();
+					} catch (err) {
+						if (!(err instanceof Error && err.message.includes("prompt adapter not configured"))) throw err;
+					}
+				}
+				if (refreshedParentIds !== undefined) {
+					runtime.scheduler.setStageParentIds(runtime.stageSnapshot, refreshedParentIds);
+				}
+				runtime.stageSnapshot.status = "running";
+				runtime.stageSnapshot.startedAt ??= rebasedStageStartedAt(input.options?.durableAccumulatedDurationMs, now);
+				runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
+				// Publish every graph-visible live write before this task can yield.
+				runtime.activeStore.recordStageStart(runtime.runId, runtime.stageSnapshot);
+				runtime.appendStageStartOnce();
+				const sessionMeta = runtime.innerCtx.__sessionMeta();
+				if (sessionMeta.sessionId !== undefined || sessionMeta.sessionFile !== undefined) {
+					await runtime.captureStageSessionMeta({ awaitDurable: true });
+				}
+				runtime.startStageSessionHeartbeat();
+			} else {
+				runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
 			}
-			runtime.stageSnapshot.status = "running";
-			runtime.stageSnapshot.startedAt ??= rebasedStageStartedAt(input.options?.durableAccumulatedDurationMs, now);
-			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
-			// Publish every graph-visible live write before this task can yield.
-			runtime.activeStore.recordStageStart(runtime.runId, runtime.stageSnapshot);
-			runtime.appendStageStartOnce();
-		} else {
-			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
-		}
 
-		runtime.mcpScope.apply();
+			runtime.mcpScope.apply();
 
-		let applyTerminalStageState: (() => void) | undefined;
-		try {
 			const abortSession = (): void => {
 				void runtime.innerCtx.abort().catch(() => {});
 			};
@@ -198,7 +208,7 @@ export function createTrackedStageCaller(input: {
 			try {
 				runtime.state.askUserQuestionObservedThisTurn = false;
 				runtime.state.chatAnswerObservedThisTurn = false;
-				result = await raceAbort(call(), runtime.signal);
+				result = await runtime.raceStageSessionHeartbeat(raceAbort(call(), runtime.signal));
 				const initialDrain = await drainResumeContinuations(result);
 				result = initialDrain.result;
 				let repeatReadinessAfterChatTurn = initialDrain.chatAnswerObserved;
@@ -226,12 +236,14 @@ export function createTrackedStageCaller(input: {
 							runtime.state.chatAnswerObservedThisTurn = false;
 							runtime.state.waitingForStageChatTurn = true;
 							try {
-								await raceAbort(
-									new Promise<void>((resolve) => {
-										resolveNextTurnEnd = resolve;
-										runtime.state.wakeWaitingForStageChatTurn = resolve;
-									}),
-									runtime.signal,
+								await runtime.raceStageSessionHeartbeat(
+									raceAbort(
+										new Promise<void>((resolve) => {
+											resolveNextTurnEnd = resolve;
+											runtime.state.wakeWaitingForStageChatTurn = resolve;
+										}),
+										runtime.signal,
+									),
 								);
 							} finally {
 								runtime.state.wakeWaitingForStageChatTurn = undefined;
@@ -254,7 +266,7 @@ export function createTrackedStageCaller(input: {
 				runtime.signal.removeEventListener("abort", abortSession);
 			}
 			await runtime.innerCtx.__closeGeneration();
-			runtime.captureStageSessionMeta();
+			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
 			if (
 				trackStageLifecycle &&
@@ -267,6 +279,7 @@ export function createTrackedStageCaller(input: {
 			if (trackStageLifecycle && runtime.state.stageFinalized) throw runtime.parallelFailFastError();
 			if (trackStageLifecycle) {
 				const assistantText = runtime.innerCtx.__getLastAssistantText();
+				terminalStateIsSuccess = true;
 				applyTerminalStageState = () => {
 					runtime.stageSnapshot.status = "completed";
 					if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
@@ -294,15 +307,36 @@ export function createTrackedStageCaller(input: {
 			// If finalizeStageSnapshot() throws, the limiter must still be released
 			// so the concurrency semaphore is not leaked.
 			// cross-ref: issue #1498 — durable finalization failures must not leak the stage limiter.
-			runtime.mcpScope.clear();
 			let finalizationError: { readonly thrown: true; readonly error: unknown } | undefined;
+			// Tracked separately from `finalizationError`: only a failed final durable
+			// checkpoint may rewrite an otherwise-successful terminal stage state.
+			let durableCheckpointError: { readonly thrown: true; readonly error: unknown } | undefined;
 			try {
-				await runtime.innerCtx.__closeGeneration();
-				runtime.captureStageSessionMeta();
+				runtime.mcpScope.clear();
 			} catch (err) {
 				finalizationError = { thrown: true, error: err };
 			}
+			try {
+				// Drain rather than stop: a checkpoint still in flight must be awaited
+				// here, or its late rejection is discarded with the cancelled timer.
+				await runtime.drainStageSessionHeartbeat();
+			} catch (err) {
+				durableCheckpointError = { thrown: true, error: err };
+			}
+			try {
+				await runtime.innerCtx.__closeGeneration();
+				await runtime.captureStageSessionMeta({ awaitDurable: true });
+			} catch (err) {
+				durableCheckpointError ??= { thrown: true, error: err };
+			}
+			finalizationError ??= durableCheckpointError;
 			if (trackStageLifecycle) {
+				// A stage whose final durability checkpoint failed must never be
+				// persisted as `completed` while its caller receives that rejection.
+				if (durableCheckpointError !== undefined && terminalStateIsSuccess) {
+					const failure = runtime.classifyExecutorFailure(durableCheckpointError.error);
+					applyTerminalStageState = () => applyFailureToStage(runtime.stageSnapshot, failure);
+				}
 				if (!runtime.state.stageFinalized) applyTerminalStageState?.();
 				// `finalizeStageSnapshot` calls the version-bumping `recordStageEnd`
 				// before its first yield, so the live write cannot outpace the cache.

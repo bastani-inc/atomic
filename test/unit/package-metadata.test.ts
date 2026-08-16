@@ -5,7 +5,6 @@ import { subset as semverSubset } from "semver";
 import { globSync } from "tinyglobby";
 import { describe, test } from "vitest";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
-import iHaveAdhdPackageJson from "../../packages/i-have-adhd/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
 import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json" };
 import nativesPackageJson from "../../packages/natives/package.json" with { type: "json" };
@@ -71,7 +70,6 @@ const PUBLISHED_DEPENDENCY_SECTIONS: readonly DependencySectionName[] = [
 ];
 
 const BUNDLED_PACKAGE_MANIFESTS: readonly PackageDependencySections[] = [
-	iHaveAdhdPackageJson,
 	workflowsPackageJson,
 	subagentsPackageJson,
 	mcpPackageJson,

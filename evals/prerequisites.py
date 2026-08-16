@@ -1,4 +1,8 @@
-"""Shared eval-sandbox provisioning for Atomic, tmux, and playwright-cli."""
+"""Shared eval-sandbox provisioning for the Atomic adapters.
+
+The shell-string builders that provision an eval sandbox (Atomic, tmux,
+playwright-cli), and the provider credential map both adapters forward.
+"""
 
 from __future__ import annotations
 
@@ -116,3 +120,65 @@ def agent_install_command(version_spec: str) -> str:
         f"npm install -g @bastani/atomic{version_spec} @playwright/cli; "
         f"{browser_setup}"
     )
+
+
+PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
+    "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
+    "github-copilot": ("COPILOT_GITHUB_TOKEN",),
+    "google": (
+        "GEMINI_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_API_KEY",
+    ),
+    "groq": ("GROQ_API_KEY",),
+    "kimi-coding": ("KIMI_API_KEY",),
+    "mistral": ("MISTRAL_API_KEY",),
+    "moonshotai": ("MOONSHOT_API_KEY",),
+    "moonshotai-cn": ("MOONSHOT_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "xai": ("XAI_API_KEY",),
+    "zai": ("ZAI_API_KEY",),
+    "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
+}
+"""Canonical provider → credential env keys for both run paths.
+
+``atomic_pier.Atomic._PROVIDER_AUTH_ENV_KEYS`` *is* this dict, and
+``atomic_harbor.Atomic`` builds its two maps from it, so the preflight and
+both adapters cannot disagree about which providers are supported. The import
+direction is one-way — the adapters import this module, so this module must
+never import an adapter.
+
+Harbor adds one provider it does not share: ``huggingface``. ``huggingface`` is
+not added here because the Pier adapter's ``_PROVIDER_DOMAINS`` deliberately
+disables it under restricted egress (huggingface.co also serves git repos and
+datasets), so admitting the credential would imply an egress rule the adapter
+refuses to grant. Harbor builds no such overlay, so the credential costs it
+nothing.
+
+Harbor used to keep an unrelated literal that omitted the Kimi, Moonshot and
+ZAI providers, which made the docs' promise that provider setup works the same
+on both paths false for exactly those three.
+"""
+
+def is_valid_provider_auth(entry: object) -> bool:
+    """True when an ``auth.json`` entry actually carries a usable credential.
+
+    Mirrors ``atomic_pier.Atomic._is_valid_provider_auth``, which delegates
+    here. A file existing is not a credential: ``{}`` has none, and an
+    ``api_key`` entry with an empty ``key`` has none either.
+    """
+    if not isinstance(entry, dict):
+        return False
+    credential_type = entry.get("type")
+    if credential_type == "api_key":
+        key = entry.get("key")
+        return isinstance(key, str) and bool(key)
+    if credential_type == "oauth":
+        access = entry.get("access")
+        return isinstance(access, str) and bool(access)
+    return False
+
+

@@ -8,7 +8,6 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { executeAsyncSingle } from "../../packages/subagents/src/runs/inprocess/background-single.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -83,19 +82,11 @@ function state(): ExecutorDeps["state"] {
 	return {
 		baseCwd: "",
 		currentSessionId: "parent",
-		asyncJobs: new Map(),
-		subagentInProgress: false,
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 }
 
@@ -111,19 +102,11 @@ function makeExecutor(root: string, gate: Promise<void>) {
 				...options,
 				testSession: { output: task, promptGate: gate },
 			}),
-		executeAsyncSingle: (id, params) =>
-			executeAsyncSingle(id, {
-				...params,
-				testSession: { output: params.task ?? "async", promptGate: gate },
-			}),
-		isAsyncAvailable: () => true,
-		formatAsyncStartedMessage: (headline) => `Launched: ${headline}`,
 	};
 	const executor = createSubagentExecutor({
 		pi,
 		state: state(),
 		config: { maxSubagentDepth: 5, parallel: { concurrency: 4, maxTasks: 50 } },
-		asyncByDefault: false,
 		tempArtifactsDir: join(root, "temp-artifacts"),
 		getSubagentSessionRoot: () => join(root, "sessions"),
 		expandTilde: (value) => value,
@@ -157,12 +140,12 @@ function makeExecutor(root: string, gate: Promise<void>) {
 
 /**
  * The process snapshot is taken while fixture turns are held open. It proves
- * that the real single, parallel, and async executor paths
- * do not add descendants to the Vitest worker. It does not assert the
- * interactive host's own engine topology or provider subprocesses outside this
- * runner boundary; those are covered by the coding-agent integration suites.
+ * that the real single and parallel foreground executor paths do not add
+ * descendants to the Vitest worker. It does not assert the interactive host's
+ * own engine topology or provider subprocesses outside this runner boundary;
+ * those are covered by the coding-agent integration suites.
  */
-test("single, parallel, and async subagent modes create no OS child processes", async () => {
+test("single and parallel subagent modes create no OS child processes", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-subagents-zero-process-"));
 	clearSubagentControls();
 	try {
@@ -204,22 +187,6 @@ test("single, parallel, and async subagent modes create no OS child processes", 
 			(await parallel).details.results.map((result) => result.status),
 			["ok", "ok", "ok"],
 		);
-
-		const asyncGate = Promise.withResolvers<void>();
-		const asyncExecutor = makeExecutor(root, asyncGate.promise);
-		const asyncBefore = probeChildren();
-		const launched = await asyncExecutor.executor.execute(
-			"async",
-			{ agent: "worker", task: "async", async: true },
-			new AbortController().signal,
-			undefined,
-			asyncExecutor.context,
-		);
-		assert.equal(launched.details.results[0]?.status, "continued");
-		await sleep(50);
-		assertNoNewChildren(asyncBefore, "async");
-		asyncGate.resolve();
-		await sleep(100);
 	} finally {
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });

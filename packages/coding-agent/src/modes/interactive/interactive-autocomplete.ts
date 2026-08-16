@@ -1,3 +1,4 @@
+import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import {
 	getInteractiveEngineRemoteCommandCompletions,
 	getInteractiveEngineRemoteCommands,
@@ -331,12 +332,12 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 	this.skillCommands.clear();
 	const skillCommandList: SlashCommand[] = [];
 	if (this.settingsManager.getEnableSkillCommands()) {
-		for (const skill of this.session.resourceLoader.getSkills().skills) {
-			const commandName = `skill:${skill.name}`;
-			this.skillCommands.set(commandName, skill.filePath);
+		for (const command of getSkillCatalog(this.session.resourceLoader).commands) {
+			const commandName = `skill:${command.name}`;
+			this.skillCommands.set(commandName, command.skill.filePath);
 			skillCommandList.push({
 				name: commandName,
-				description: this.prefixAutocompleteDescription(skill.description, skill.sourceInfo),
+				description: this.prefixAutocompleteDescription(command.description, command.sourceInfo),
 			});
 		}
 	}

@@ -44,6 +44,10 @@ export type DurableInactiveDeleteResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly reason: "not_found" | "running" };
 
+export type DurableWorkflowHydrationResult =
+	| { readonly kind: "current"; readonly handle: DurableWorkflowHandle }
+	| { readonly kind: "absent" | "deleted" | "malformed" };
+
 /** DBOS is the sole persistent implementation. In-memory is a test seam and the non-durable last-resort fallback. */
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
@@ -154,6 +158,8 @@ export interface DurableWorkflowBackend {
 
 	/** Hydrate one workflow from persistent storage. */
 	hydrateWorkflow(workflowId: string): Promise<void>;
+	/** Optional exact, read-only hydration classification for targeted inspection. */
+	hydrateWorkflowForInspection?(workflowId: string): Promise<DurableWorkflowHydrationResult>;
 	/** Hydrate all catalog candidates from persistent storage. */
 	hydrateResumableWorkflows(): Promise<void>;
 	promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string };
@@ -352,6 +358,11 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 	}
 
 	async hydrateWorkflow(_workflowId: string): Promise<void> {}
+	async hydrateWorkflowForInspection(workflowId: string): Promise<DurableWorkflowHydrationResult> {
+		const handle = this.getLoadableWorkflow(workflowId);
+		if (handle !== undefined) return { kind: "current", handle };
+		return { kind: this.deletedWorkflowIds.has(workflowId) ? "deleted" : "absent" };
+	}
 
 	async hydrateResumableWorkflows(): Promise<void> {}
 

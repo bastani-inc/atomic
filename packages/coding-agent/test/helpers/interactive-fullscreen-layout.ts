@@ -1,13 +1,17 @@
+import { tmpdir } from "node:os";
 import {
 	type Component,
 	Container,
 	type ScrollViewScrollbar,
 	type Terminal,
 	Text,
-	TuiAltScreen,
+	type TuiAltScreen,
 } from "@earendil-works/pi-tui";
 import { ENV_OFFLINE } from "../../src/config.ts";
+import { KeybindingsManager } from "../../src/core/keybindings.ts";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
+import { shouldHandleFullscreenViewportInput } from "../../src/modes/interactive/interactive-mode-base.ts";
+import { createFullscreenTui } from "../../src/modes/interactive/interactive-tui.ts";
 import { initTheme } from "../../src/modes/interactive/theme/theme.ts";
 
 export class RecordingTerminal implements Terminal {
@@ -130,7 +134,29 @@ export function createProductionFullscreenContext(
 	const terminal = new RecordingTerminal();
 	terminal.columns = options.columns ?? terminal.columns;
 	terminal.rows = options.rows ?? terminal.rows;
-	const tui = new TuiAltScreen(terminal);
+	// Build the renderer the way `InteractiveModeBase` does, gate included.
+	// A bare `TuiAltScreen` misses Atomic's `viewportInputGate`, and since
+	// pi-tui 0.84.2 defers viewport keys to a focused overlay on its own, a bare
+	// instance answers input routing questions this fixture claims to answer for
+	// production. `createFullscreenTui` rather than `createInteractiveTui`,
+	// because the latter falls back to `TuiMainScreen` under `TERM=dumb`.
+	const keybindings = new KeybindingsManager();
+	const editor = new Text("editor", 0, 0);
+	const tui = createFullscreenTui({
+		showHardwareCursor: false,
+		logDirectory: tmpdir(),
+		terminal,
+		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay, focusedIsViewportSearch) =>
+			shouldHandleFullscreenViewportInput(
+				tui.getFocusedComponent(),
+				editor,
+				data,
+				isMouseInput,
+				focusedIsOverlay,
+				keybindings,
+				focusedIsViewportSearch,
+			),
+	});
 	const headerContainer = new Container();
 	const documentContainer = new Container();
 	for (let index = 1; index <= (options.transcriptLines ?? 20); index += 1) {
@@ -142,7 +168,6 @@ export function createProductionFullscreenContext(
 	const widgetContainerAbove = new Container();
 	const widgetContainerBelow = new Container();
 	const usageMeter = new Text("usage", 0, 0);
-	const editor = new Text("editor", 0, 0);
 	const editorContainer = new Container();
 	editorContainer.addChild(editor);
 	const footer = new Text("footer", 0, 0);

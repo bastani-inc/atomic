@@ -1,0 +1,1719 @@
+commit 310411ba4666e207e1ce840ebadc8a5429f35398
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Aug 7 07:46:31 2026 +0200
+
+    Add [Unreleased] section for next cycle
+
+ packages/agent/CHANGELOG.md                        | 2 ++
+ packages/ai/CHANGELOG.md                           | 2 ++
+ packages/client/CHANGELOG.md                       | 2 ++
+ packages/coding-agent/CHANGELOG.md                 | 2 ++
+ packages/protocol/CHANGELOG.md                     | 2 ++
+ packages/server/CHANGELOG.md                       | 2 ++
+ packages/session-backends/sqlite-node/CHANGELOG.md | 2 ++
+ packages/telemetry/CHANGELOG.md                    | 2 ++
+ packages/tui/CHANGELOG.md                          | 2 ++
+ 9 files changed, 18 insertions(+)
+
+commit 102667952585134e99b5d86c9ff07dd28c86962c
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 08:56:05 2026 +0200
+
+    docs(agent): unreserve R3
+
+ packages/agent/docs/harness-v2.md | 2 --
+ 1 file changed, 2 deletions(-)
+
+commit 9d090bc5dcecf8f35354e09fe57413e57dea8e5b
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 09:10:14 2026 +0200
+
+    fix(agent): reject conflicting JSONL session creation
+
+ packages/agent/src/harness/session/jsonl/repo.ts  | 55 ++++++++++++++++++-----
+ packages/agent/test/harness/session/jsonl.test.ts | 26 ++++++++++-
+ 2 files changed, 70 insertions(+), 11 deletions(-)
+
+commit f27941774e2bf0ba94e1651dcbd7115c5172a690
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 09:20:02 2026 +0200
+
+    fix(agent): read JSONL headers when listing sessions
+
+ packages/agent/src/harness/session/jsonl/repo.ts  | 5 ++---
+ packages/agent/src/harness/session/jsonl/types.ts | 1 +
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+commit 80ef7ff0f493c87e870e1bb73f0fdf0666c6a8a4
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 09:47:29 2026 +0200
+
+    fix(agent): populate session types with doc comments from design doc
+
+ packages/agent/src/harness/session/types.ts | 25 ++++++++++++++++++-------
+ 1 file changed, 18 insertions(+), 7 deletions(-)
+
+commit f562a1a44f32fa52c345738c0079d12eb2c5cfba
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 09:55:13 2026 +0200
+
+    docs(agent): clarify branch query helpers
+
+ packages/agent/src/harness/session/session.ts | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+commit 87644c7b5749c255ac7ea96103c6531ebd7d0a46
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 10:18:48 2026 +0200
+
+    docs(agent): clarify branch query start requirement
+
+ packages/agent/src/harness/session/types.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 10474bd697b2270defa200998f16baf2166775a8
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 10:03:39 2026 +0200
+
+    fix(agent): refactor jsonl codec
+
+ packages/agent/src/harness/session/jsonl/codec.ts | 146 +++++++++++++---------
+ 1 file changed, 90 insertions(+), 56 deletions(-)
+
+commit e0900a6eaf6fb56312a868d9c06891129c4a5cbe
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 11:01:18 2026 +0200
+
+    docs(agent): clarify record query semantics
+
+ packages/agent/docs/harness-v2.md           | 12 +++++++++++-
+ packages/agent/src/harness/session/types.ts | 12 +++++++++++-
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+commit 709aa03194301afd008a07d64ff1bf12e4f7ece6
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 11:27:41 2026 +0200
+
+    docs(agent): add j6 typebox validation (#7768)
+
+ packages/agent/docs/harness-v2.md | 20 ++++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+commit f0feecd75250827b936b89664b6eab454c63528d
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Fri Aug 7 11:56:44 2026 +0200
+
+    fix(ai): update OpenCode completions fixture
+
+ packages/ai/test/openai-completions-tool-choice.test.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 958c13f25080b59d4b736193f972a8502a7a2f8b
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Fri Aug 7 11:56:52 2026 +0200
+
+    docs(agent): restart checkpoint after auto-compaction
+
+ packages/agent/docs/harness-v2.md | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+commit 4bf1bba203c699a0b79da669b084052c72b7a35a
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 12:32:20 2026 +0200
+
+    docs(agent): reserve I2
+
+ packages/agent/docs/harness-v2.md | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit 14ad9801be29948516cf55c65bcd864d5cf8ff9a
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 13:20:40 2026 +0200
+
+    feat(agent): add harness events subscription interface
+
+ packages/agent/src/harness/events.ts | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+commit 4a0e2f115ad46d34c19d200c6a71fa79d264092d
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 13:47:01 2026 +0200
+
+    fix(agent): complete JSONL crash and corruption handling
+
+ packages/agent/docs/harness-v2-test-matrix.md     |  16 +--
+ packages/agent/docs/harness-v2.md                 |   4 +-
+ packages/agent/src/harness/session/jsonl/repo.ts  |  11 ++-
+ packages/agent/test/harness/session/jsonl.test.ts | 115 ++++++++++++++++++++--
+ 4 files changed, 126 insertions(+), 20 deletions(-)
+
+commit fe10558eb3fa6d8fc3f6211bf1532e1659b9093d
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Fri Aug 7 14:16:50 2026 +0200
+
+    fix(ai): retry upstream request buffer failures
+
+ packages/ai/CHANGELOG.md       |  4 ++++
+ packages/ai/src/utils/retry.ts |  1 +
+ packages/ai/test/retry.test.ts | 11 +++++++++++
+ 3 files changed, 16 insertions(+)
+
+commit 7aca0d7b3e041a9e2b635e8370b2549f032932d6
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 14:27:35 2026 +0200
+
+    fix(agent): make JSONL decode errors explicit
+    
+    Return typed results from JSONL parsers, add file context during replay, and classify torn tails explicitly.
+
+ packages/agent/src/harness/session/jsonl/codec.ts  | 156 +++++++++++----------
+ packages/agent/src/harness/session/jsonl/errors.ts |  14 +-
+ packages/agent/src/harness/session/jsonl/repo.ts   |   9 +-
+ .../agent/src/harness/session/jsonl/storage.ts     |  49 ++++---
+ .../agent/test/harness/session/jsonl-codec.test.ts |  20 ++-
+ packages/agent/test/harness/session/jsonl.test.ts  |   2 +-
+ 6 files changed, 143 insertions(+), 107 deletions(-)
+
+commit 1dd2354052f7dd9fcdcc3097b87cf4b377853a74
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 13:41:14 2026 +0200
+
+    feat(agent): add buffered harness event watches
+    
+    This is incremental work towards I2 in the harness-v2.md plan.
+
+ packages/agent/src/harness/events.ts       | 66 +++++++++++++++++++++++++++++-
+ packages/agent/test/harness/events.test.ts | 44 ++++++++++++++++++++
+ 2 files changed, 109 insertions(+), 1 deletion(-)
+
+commit d1a305613ea6f9e5d5ddc9e08f27393f9b73b33c
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Aug 7 14:14:22 2026 +0200
+
+    feat(agent): add direct harness event listeners
+    
+    Part of I2, "passive events and watch buffering," in packages/agent/docs/harness-v2.md.
+
+ packages/agent/src/harness/events.ts       | 33 +++++++++++++++++++++++++++++-
+ packages/agent/test/harness/events.test.ts | 21 +++++++++++++++++++
+ 2 files changed, 53 insertions(+), 1 deletion(-)
+
+commit e7fb8eb2aca8a1126cc6f91b73ee38fd49ab7c59
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Fri Aug 7 16:13:16 2026 +0200
+
+    fix: no ctes in sqlite, delete indexes
+
+ packages/agent/docs/harness-v2.md                  |  7 ++
+ .../src/sqlite/migrations/001_initial.sql          |  6 +-
+ .../sqlite-node/src/sqlite/repo.ts                 |  9 ++-
+ .../src/sqlite/storage/branch-entries.ts           | 74 +++++++++++++++-------
+ .../sqlite-node/src/sqlite/storage/entries.ts      | 20 +++++-
+ .../sqlite-node/src/sqlite/storage/facts.ts        | 24 +++----
+ .../sqlite-node/test/migrations.test.ts            |  6 ++
+ 7 files changed, 103 insertions(+), 43 deletions(-)
+
+commit 541ed488d89dbe11395e4c108f448e1e253ae4c1
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 17:07:01 2026 +0200
+
+    docs(agent): remove legacy leaf entry requirements
+
+ packages/agent/docs/harness-v2.md | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+commit c3e7bc60a13b0a6fb80f7e8a867112ee4d10c92a
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 18:03:12 2026 +0200
+
+    feat(ai): preserve Codex end_turn for debugging (#7766)
+
+ packages/ai/src/api/openai-codex-responses.ts | 14 ++++++++++----
+ packages/ai/src/types.ts                      |  5 +++++
+ packages/ai/test/openai-codex-stream.test.ts  | 10 ++++++++--
+ packages/server/src/protocol.ts               |  1 +
+ 4 files changed, 24 insertions(+), 6 deletions(-)
+
+commit ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Aug 7 18:29:56 2026 +0200
+
+    feat(coding-agent): configure fullscreen exit output
+
+ packages/coding-agent/CHANGELOG.md                 |  4 +++
+ packages/coding-agent/docs/settings.md             |  1 +
+ packages/coding-agent/docs/usage.md                |  2 +-
+ packages/coding-agent/src/core/settings-manager.ts | 12 +++++++
+ packages/coding-agent/src/index.ts                 |  1 +
+ .../interactive/components/settings-selector.ts    | 13 +++++++
+ .../src/modes/interactive/interactive-mode.ts      | 18 ++++++----
+ packages/coding-agent/test/interactive-tui.test.ts | 12 +++----
+ .../coding-agent/test/settings-manager.test.ts     | 19 +++++++---
+ .../coding-agent/test/settings-selector.test.ts    | 40 +++++++++++++---------
+ 10 files changed, 86 insertions(+), 36 deletions(-)
+
+commit 5cfa30cc2c9efe107e322302f612c7cae56eaec2
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 7 21:58:51 2026 +0200
+
+    docs(agent): add required fromHook to v4 summary entries
+
+ packages/agent/docs/harness-v2.md | 35 ++++++++++++++++++++++-------------
+ 1 file changed, 22 insertions(+), 13 deletions(-)
+
+commit 4fbdc63ca364844c0166d3d4eabafb5cf8e7c2f3
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Fri Aug 7 22:55:48 2026 +0200
+
+    docs: require clear concrete explanations
+
+ AGENTS.md | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit 02bd2d1c628d0e01c71b7088443d3cb117495d2d
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Aug 7 22:59:56 2026 +0200
+
+    fix(ai): preserve Responses tool-call namespaces
+    
+    closes #7709
+
+ packages/agent/CHANGELOG.md                        |   4 +
+ packages/agent/src/proxy.ts                        |   3 +-
+ packages/agent/test/proxy.test.ts                  |  79 ++++++++
+ packages/ai/CHANGELOG.md                           |   1 +
+ packages/ai/src/api/openai-responses-shared.ts     |  19 +-
+ packages/ai/src/types.ts                           |   2 +
+ .../ai/test/openai-responses-namespace.test.ts     | 224 +++++++++++++++++++++
+ packages/server/src/protocol.ts                    |   2 +-
+ 8 files changed, 328 insertions(+), 6 deletions(-)
+
+commit e47b8e37a6211ebd0b2942fa87059d64f81eec02
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Aug 7 23:03:46 2026 +0200
+
+    feat(ai): use additional_tools for deferred tools
+    
+    closes #7709
+
+ package-lock.json                                  | 11 ++-
+ packages/ai/CHANGELOG.md                           |  4 ++
+ packages/ai/package.json                           |  2 +-
+ packages/ai/scripts/generate-models.ts             | 10 +++
+ packages/ai/src/api/openai-codex-responses.ts      |  8 ++-
+ packages/ai/src/api/openai-responses-shared.ts     | 11 ++-
+ packages/ai/src/api/openai-responses.ts            |  9 ++-
+ packages/ai/src/types.ts                           |  2 +
+ packages/ai/test/deferred-tools.test.ts            | 84 +++++++++++++++++++---
+ .../coding-agent/install-lock/package-lock.json    | 11 ++-
+ packages/coding-agent/npm-shrinkwrap.json          | 11 ++-
+ packages/coding-agent/src/core/model-config.ts     |  1 +
+ 12 files changed, 129 insertions(+), 35 deletions(-)
+
+commit 9dd90a49711d088b86fdd9b4aea575913a8328a8
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sat Aug 8 09:31:50 2026 +0200
+
+    fix(ai): replace Mistral SDK with native transport
+
+ package-lock.json                                  |  39 --
+ packages/ai/CHANGELOG.md                           |   1 +
+ packages/ai/package.json                           |   1 -
+ packages/ai/src/api/mistral-conversations.ts       | 378 +++++++++++++++---
+ packages/ai/test/lazy-module-load.test.ts          |   8 +-
+ packages/ai/test/mistral-http-transport.test.ts    | 427 +++++++++++++++++++++
+ packages/ai/test/mistral-raw-stop-reason.test.ts   |  78 ++--
+ packages/ai/test/stream.test.ts                    |   8 +-
+ packages/coding-agent/CHANGELOG.md                 |   4 +
+ packages/coding-agent/docs/custom-provider.md      |   2 +-
+ .../coding-agent/install-lock/package-lock.json    |  48 ---
+ packages/coding-agent/npm-shrinkwrap.json          |  48 ---
+ 12 files changed, 785 insertions(+), 257 deletions(-)
+
+commit 18dee5f0a89f41466e876cbbbfe77635cd250882
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sat Aug 8 12:06:16 2026 +0200
+
+    fix(tui): stop recompositing full-width rows in the alt-screen painter
+    
+    paintBox ran every visible text row through compositeTuiLine on every
+    frame, rebuilding each row string via ANSI/grapheme segmentation even
+    when nothing changed. Full-width boxes painting onto untouched rows now
+    assign the source line reference directly; padding is unnecessary since
+    rows are written with erase-line and the final width clamp still
+    truncates over-wide lines.
+    
+    Cuts alt-screen per-frame allocation churn 9-18x (test/render-churn-bench.ts)
+    and removes the fullscreen RSS penalty over regular mode on short
+    sessions (previously +11-29 MiB loaded, +26-36 MiB peak).
+
+ packages/tui/CHANGELOG.md                |   4 +
+ packages/tui/src/layout.ts               |  12 +-
+ packages/tui/test/render-churn-bench.ts  | 203 +++++++++++++++++++++++++++++++
+ packages/tui/test/tui-alt-screen.test.ts |   6 +-
+ 4 files changed, 220 insertions(+), 5 deletions(-)
+
+commit f8746767bc4627372e4c560ba7e28546a759f5ce
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sat Aug 8 12:06:19 2026 +0200
+
+    fix: handle npm 12 pack --json object output in local release script
+    
+    npm 12 returns an object keyed by package name instead of an array,
+    which broke packPackage with a TypeError.
+
+ scripts/local-release.mjs | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+commit 5ac9133655c78b600862eb22fc9a0e8be0cd66cc
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sat Aug 8 12:10:13 2026 +0200
+
+    fix: refresh nanoid to 3.3.17 in root lockfile
+
+ package-lock.json | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 6809fabbb4c7e17c256e850b3ea38ebf82613a54
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Sat Aug 8 12:10:09 2026 +0200
+
+    docs(agent): allow clearing session names
+
+ packages/agent/docs/harness-v2.md | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 368e013dec766724d892cfa5cc247d2f2bee8795
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Sat Aug 8 12:22:15 2026 +0200
+
+    chore(docs): fix ascii alignment in compaction docs
+
+ packages/coding-agent/docs/compaction.md | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+commit c185d412382581860a489b4959737bad1d119492
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Sat Aug 8 18:42:07 2026 +0200
+
+    fix(ai): send max_tokens to DeepSeek APIs
+    
+    Auto-detect DeepSeek in generated and runtime compatibility metadata so built-in and custom models use the supported token limit field.
+
+ packages/ai/CHANGELOG.md                           |  1 +
+ packages/ai/scripts/generate-models.ts             | 11 ++++--
+ packages/ai/src/api/openai-completions.ts          |  3 +-
+ .../ai/test/openai-completions-tool-choice.test.ts | 41 ++++++++++++++++++++++
+ 4 files changed, 53 insertions(+), 3 deletions(-)
+
+commit 7bdb16c28d794a5ff8e7485479c8e37eccd9a8d8
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Sat Aug 8 19:19:17 2026 +0200
+
+    feat(agent): support clearing session names
+
+ packages/agent/src/harness/session/jsonl/codec.ts  |  5 ++++-
+ .../agent/src/harness/session/jsonl/storage.ts     |  2 +-
+ packages/agent/src/harness/session/memory.ts       |  2 +-
+ packages/agent/src/harness/session/session.ts      |  2 +-
+ packages/agent/src/harness/session/state.ts        |  2 +-
+ .../src/harness/session/testing/conformance.ts     | 23 ++++++++++++++++++++++
+ packages/agent/src/harness/session/types.ts        |  6 +++---
+ .../agent/test/harness/session/jsonl-codec.test.ts |  5 +++--
+ .../sqlite-node/src/sqlite/repo.ts                 |  6 +++---
+ .../sqlite-node/src/sqlite/storage/sessions.ts     |  6 ++----
+ .../sqlite-node/test/repository.test.ts            | 21 +++++++++++++++++++-
+ .../sqlite-node/test/search.test.ts                | 21 +++++++-------------
+ 12 files changed, 69 insertions(+), 32 deletions(-)
+
+commit 025957c258fea91653ee73ecffdc4a659ed60945
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sat Aug 8 19:21:22 2026 +0200
+
+    docs(agent): reconcile durable harness design
+
+ packages/agent/docs/harness-v2.md | 2796 ++++++++++++++++++++++++++-----------
+ 1 file changed, 1982 insertions(+), 814 deletions(-)
+
+commit 4181f66e6b3ccbef760c2966ecd8b596b926fec6
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sat Aug 8 20:44:59 2026 +0200
+
+    docs(agent): tighten durable harness design
+
+ packages/agent/docs/harness-v2.md | 418 +++++++++++++++++++-------------------
+ 1 file changed, 208 insertions(+), 210 deletions(-)
+
+commit 45fac5bd517c371993b1781291d3a7971633a651
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sun Aug 9 01:36:21 2026 +0200
+
+    docs(agent): add explicit-state harness redesign
+
+ packages/agent/docs/harness-v2-state-machine.md | 798 ++++++++++++++++++++++++
+ 1 file changed, 798 insertions(+)
+
+commit 157aa19c8cfa3acdddfccc4dcfaff672ddf165c3
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sun Aug 9 01:45:19 2026 +0200
+
+    docs(agent): clarify explicit operation records
+
+ packages/agent/docs/harness-v2-state-machine.md | 93 +++++++++++++------------
+ 1 file changed, 47 insertions(+), 46 deletions(-)
+
+commit 936aff00918de1187f085f123c2812d8f2d67745
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sun Aug 9 02:11:00 2026 +0200
+
+    docs(agent): complete explicit-state harness design
+
+ packages/agent/docs/harness-v2-state-machine.md | 424 +++++++++++++++++++++++-
+ 1 file changed, 415 insertions(+), 9 deletions(-)
+
+commit 47610217098d9ba8f22d223fa7c1413f9f5fd759
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Mon Aug 10 08:03:46 2026 +0200
+
+    chore(docs): change 'reloads' phrasing in compaction docs
+
+ packages/coding-agent/docs/compaction.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 31b513e316ab2b5ec736268350635511297fa3c1
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Mon Aug 10 08:27:35 2026 +0200
+
+    chore(docs): change a bullet point in compaction docs
+
+ packages/coding-agent/docs/compaction.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 3059b813161b9408144ce394283d95b198e6df44
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Mon Aug 10 13:44:36 2026 +0200
+
+    docs(agent): add durable harness implementation spec
+
+ packages/agent/docs/agent-harness-spec.md | 2541 +++++++++++++++++++++++++++++
+ 1 file changed, 2541 insertions(+)
+
+commit afae6a1a998dbdfacc1004cbd26c6c6a99395bb2
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Mon Aug 10 15:22:18 2026 +0200
+
+    fix(ai): update stale Gemini test model
+
+ packages/ai/test/context-overflow.test.ts | 4 ++--
+ packages/ai/test/total-tokens.test.ts     | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+commit 6a214fab9577b16db06c00967c245caa0651b0f0
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 10 14:45:31 2026 +0000
+
+    chore: approve contributors from issue #7748
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 3709bef75e4f89508fe66f0e9d124c639de0695c
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Mon Aug 10 17:11:28 2026 +0200
+
+    docs(agent): clarify durable storage terminology
+
+ packages/agent/docs/agent-harness-spec.md | 701 +++++++++++++++---------------
+ 1 file changed, 342 insertions(+), 359 deletions(-)
+
+commit caf8fa6b521698d4bbd375f0716580b17af44fb5
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 10 16:48:17 2026 +0000
+
+    chore: approve contributors from issue #7828
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 0db3d3879a0affcf2e9f55b8c317150e31b34fb8
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 10 16:58:07 2026 +0000
+
+    chore: approve contributors from issue #7830
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit c1a4e86c01931e5f636485cf5d63bf1b76c2eb34
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 10 17:00:55 2026 +0000
+
+    chore: approve contributors from issue #7838
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 85b1efa147c67a6c656649178f702844eddb27fe
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 10 17:04:49 2026 +0000
+
+    chore: approve contributors from issue #7847
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit f858ae3e822489d6ef0fd9f72342b8fc214e9b95
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 10 17:09:47 2026 +0000
+
+    chore: approve contributors from issue #7867
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 52771a07b09609a2e4b153bd8d11ab62b3c7e0b7
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 10 17:13:46 2026 +0000
+
+    chore: approve contributors from issue #7876
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit c2b06f0934a937b3cf1e888931e22c144a1977c1
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 10 17:17:39 2026 +0000
+
+    chore: approve contributors from issue #7886
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 3dd4623eee136edb2a7a470aa8d4744519a84246
+Author: distributedlock <7084995+distributedlock@users.noreply.github.com>
+Date:   Mon Aug 10 13:18:05 2026 -0400
+
+    Fix prompt formatting for current working directory (#7887)
+
+ packages/coding-agent/src/core/system-prompt.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 24c3b5e4c04e892b006a904016e4c92de64a221c
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Mon Aug 10 20:46:58 2026 +0200
+
+    docs(agent): add storage and retention redesign proposal
+
+ .../agent/docs/agent-harness-storage-redesign.md   | 394 +++++++++++++++++++++
+ 1 file changed, 394 insertions(+)
+
+commit 98145a6c063f00303405ef91ad4a5314670702e9
+Author: muyiyr <940955635@qq.com>
+Date:   Tue Aug 11 03:46:42 2026 +0800
+
+    fix(ai): sanitize empty Bedrock tool argument keys (#7882)
+    
+    * fix(ai): sanitize empty Bedrock tool argument keys
+    
+    fixes #7782
+    
+    * fix(ai): preserve Bedrock tool argument semantics
+
+ packages/ai/src/api/bedrock-converse-stream.ts    |  16 ++-
+ packages/ai/test/bedrock-convert-messages.test.ts | 146 +++++++++++++++++++++-
+ 2 files changed, 156 insertions(+), 6 deletions(-)
+
+commit 7a6a1c2dbb5ef07040bac7a2b1c6a589a4f41e56
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Mon Aug 10 23:55:13 2026 +0200
+
+    docs(agent): add harness-v3 skeleton merging spec and storage redesign
+
+ packages/agent/docs/harness-v3.md | 140 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 140 insertions(+)
+
+commit 87142a8d50640e93d43fcb35123439d642bc0304
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 00:26:38 2026 +0200
+
+    docs(agent): write harness-v3 parts 0-2
+
+ packages/agent/docs/harness-v3.md | 838 ++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 804 insertions(+), 34 deletions(-)
+
+commit dea1b248f6e9ab5536ed46420b1755f4db4d4813
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 01:01:03 2026 +0200
+
+    docs(agent): write harness-v3 part 3
+
+ packages/agent/docs/harness-v3.md | 576 ++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 558 insertions(+), 18 deletions(-)
+
+commit 28657a2ffa6dbeccba74c166682e7a7ee547f5b4
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 01:16:18 2026 +0200
+
+    docs(agent): write harness-v3 parts 4-5
+
+ packages/agent/docs/harness-v3.md | 1176 ++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1163 insertions(+), 13 deletions(-)
+
+commit ec317e4ede466cf98617a4e664a834c5eb5f47e2
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 01:28:09 2026 +0200
+
+    docs(agent): write harness-v3 parts 6-7
+
+ packages/agent/docs/harness-v3.md | 247 +++++++++++++++++++++++++++++++++++---
+ 1 file changed, 230 insertions(+), 17 deletions(-)
+
+commit cd6852a123f2c0cc646a41a2a52f3711a603b822
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 01:39:13 2026 +0200
+
+    docs(agent): complete harness-v3 parts 8-9 and appendices
+
+ packages/agent/docs/harness-v3.md | 224 ++++++++++++++++++++++++++++++++++----
+ 1 file changed, 200 insertions(+), 24 deletions(-)
+
+commit 2f9e9298a50f0fdec09e00f9b81b9e5b001a3405
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 08:38:04 2026 +0200
+
+    docs(agent): remove superseded harness design documents
+
+ .../agent/docs/agent-harness-storage-redesign.md   |  394 -------
+ packages/agent/docs/harness-v2-state-machine.md    | 1205 --------------------
+ 2 files changed, 1599 deletions(-)
+
+commit 8431bfbead9a9a901ecea860e989e27799cb1d0d
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 08:45:04 2026 +0200
+
+    docs(agent): fix harness-v3 cold-read audit findings
+
+ packages/agent/docs/harness-v3.md | 27 ++++++++++++++++++---------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+commit cf5f35216bc8e13087f16163f5f868b52872e8a5
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 09:00:17 2026 +0200
+
+    docs(agent): record open harness-v3 audit findings
+
+ packages/agent/docs/harness-v3-audit-findings.md | 30 ++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+commit 9cb7f493e7b4a444ed66fbcb681d9e66c454eb3d
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 11 09:03:42 2026 +0200
+
+    docs(coding-agent): document AI_AGENT process marker
+    
+    closes #7747
+
+ packages/coding-agent/CHANGELOG.md                  | 1 +
+ packages/coding-agent/docs/environment-variables.md | 9 +++++++--
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+commit 75c7fd6623f19a1331d27d6ac0060d8bce890c84
+Author: muyiyr <940955635@qq.com>
+Date:   Tue Aug 11 15:07:12 2026 +0800
+
+    fix(ai): declare Cloudflare Responses strict tools (#7934)
+    
+    Fixes #7896
+
+ packages/ai/scripts/generate-models.ts           |  5 ++-
+ packages/ai/test/openai-responses-compat.test.ts | 52 ++++++++++++++++++++++++
+ 2 files changed, 56 insertions(+), 1 deletion(-)
+
+commit a4453b79bb8d66b5f385b28ae0e33843c947504a
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Tue Aug 11 10:07:53 2026 +0200
+
+    fix: sqlite time to number
+
+ packages/agent/src/harness/session/search.ts       |  4 ++--
+ .../src/sqlite/migrations/001_initial.sql          |  6 ++---
+ .../sqlite-node/src/sqlite/repo.ts                 | 26 ++++++----------------
+ .../sqlite-node/src/sqlite/search-backend.ts       |  2 +-
+ .../src/sqlite/storage/branch-entries.ts           |  2 +-
+ .../sqlite-node/src/sqlite/storage/entries.ts      |  4 ++--
+ .../sqlite-node/src/sqlite/storage/records.ts      |  4 ++--
+ .../sqlite-node/src/sqlite/storage/sessions.ts     |  6 ++---
+ .../sqlite-node/test/search.test.ts                |  2 ++
+ 9 files changed, 23 insertions(+), 33 deletions(-)
+
+commit b647d187932c76d4003728010daeed9c1b496a6a
+Author: 初心Yearth <Yearthmain@gmail.com>
+Date:   Tue Aug 11 16:49:19 2026 +0800
+
+    fix(ai): detect DeepSeek base URLs case-insensitively (#7933)
+
+ packages/ai/scripts/generate-models.ts                  | 4 ++--
+ packages/ai/src/api/openai-completions.ts               | 4 ++--
+ packages/ai/test/openai-completions-tool-choice.test.ts | 8 +++++++-
+ 3 files changed, 11 insertions(+), 5 deletions(-)
+
+commit 00121ed99939ba614ddda4c5739e49bc027d02d4
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 11 10:59:28 2026 +0200
+
+    feat(tui): add fullscreen transcript search (#7913)
+    
+    Search rendered primary scroll-view content with configurable navigation and theme-aware highlighting. Preserve manual scrolling and buffer fragmented mouse input during search.
+
+ packages/coding-agent/CHANGELOG.md                 |   5 +
+ packages/coding-agent/docs/keybindings.md          |   4 +
+ packages/coding-agent/docs/themes.md               |  10 +-
+ packages/coding-agent/docs/tui.md                  |   4 +-
+ .../src/modes/interactive/interactive-mode.ts      |   3 +
+ .../src/modes/interactive/theme/dark.json          |   2 +
+ .../src/modes/interactive/theme/light.json         |   2 +
+ .../src/modes/interactive/theme/theme-schema.json  |  10 +-
+ .../src/modes/interactive/theme/theme.ts           |  35 ++-
+ packages/coding-agent/test/scrollbar-theme.test.ts |  24 ++-
+ packages/coding-agent/test/test-theme-colors.ts    |   3 +
+ packages/tui/CHANGELOG.md                          |   8 +
+ packages/tui/README.md                             |   2 +-
+ packages/tui/src/alt-screen-search.ts              | 157 ++++++++++++++
+ packages/tui/src/components/scroll-view.ts         |  39 +++-
+ packages/tui/src/index.ts                          |   7 +-
+ packages/tui/src/keybindings.ts                    |  20 ++
+ packages/tui/src/stdin-buffer.ts                   |  10 +-
+ packages/tui/src/terminal.ts                       |   2 +-
+ packages/tui/src/tui-alt-screen.ts                 | 237 ++++++++++++++++++++-
+ packages/tui/test/keybindings.test.ts              |   4 +
+ packages/tui/test/stdin-buffer.test.ts             |  24 +++
+ packages/tui/test/tui-alt-screen.test.ts           | 100 +++++++++
+ 23 files changed, 680 insertions(+), 32 deletions(-)
+
+commit 24047f5dfb222ef7d26b554a0e576e5efa844024
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 11:01:05 2026 +0200
+
+    docs(agent): strip partitioning to informative section, finish audit fixes
+
+ packages/agent/docs/harness-v3-audit-findings.md |  30 --
+ packages/agent/docs/harness-v3.md                | 442 +++++++----------------
+ 2 files changed, 139 insertions(+), 333 deletions(-)
+
+commit 1279952de4a22f021bff7ee714e3aa18010a5378
+Author: Gators King <107609123+midastruth@users.noreply.github.com>
+Date:   Tue Aug 11 17:06:55 2026 +0800
+
+    feat(tui): add unbound single-line transcript scrolling actions (#7903)
+    
+    Add tui.altScreen.lineUp and tui.altScreen.lineDown keybinding actions
+    for one-line viewport scrolling in fullscreen TUI. Both are unbound by
+    default and can be configured via user keybindings.
+    
+    closes #7830
+    
+    Co-authored-by: midas <midas@traderdifferent.com>
+    Co-authored-by: Mario Zechner <badlogicgames@gmail.com>
+
+ packages/coding-agent/docs/keybindings.md |  4 +++-
+ packages/tui/CHANGELOG.md                 |  1 +
+ packages/tui/src/keybindings.ts           | 10 ++++++++++
+ packages/tui/src/tui-alt-screen.ts        |  8 ++++++++
+ packages/tui/test/keybindings.test.ts     |  2 ++
+ packages/tui/test/tui-alt-screen.test.ts  | 29 +++++++++++++++++++++++++++++
+ 6 files changed, 53 insertions(+), 1 deletion(-)
+
+commit 230029078d99d647ef7f9935c5ef87039d6aa0a4
+Author: Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>
+Date:   Tue Aug 11 04:09:30 2026 -0500
+
+    feat(ai): AI Gateway transport over the Cloudflare AI binding (#7901)
+    
+    Add createGatewayBindingFetch: a FetchFunction factory that intercepts
+    requests bound for an AI Gateway HTTPS endpoint and re-issues them
+    through the Workers AI binding's universal endpoint
+    (env.AI.gateway(id).run()). Binding calls are pre-authenticated
+    in-account, so Workers running inside the gateway's account need no
+    cf-aig-authorization API token.
+    
+    The shim is transport-only: it composes with the existing gateway
+    passthrough base URLs and every API implementation that honors
+    StreamOptions.fetch, preserving each provider's native wire format
+    (verified: workers-ai v1/chat/completions OpenAI-compat SSE streams
+    incrementally; anthropic v1/messages and openai responses route
+    end-to-end; cf-aig-log-id is present and readable via gateway getLog).
+    
+    Binding types are structural, so no @cloudflare/workers-types
+    dependency and no impact on browser bundling.
+    
+    Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+ packages/ai/src/api/cloudflare-gateway-binding.ts  | 192 ++++++++++++
+ .../ai/test/cloudflare-gateway-binding.test.ts     | 332 +++++++++++++++++++++
+ 2 files changed, 524 insertions(+)
+
+commit 06ed871679a39019d924ac8a0b80b7902a2db398
+Author: Arthur <powerfooi@outlook.com>
+Date:   Tue Aug 11 17:12:01 2026 +0800
+
+    fix(tui): prevent split Alt+Enter from interrupting (#7899)
+    
+    * fix(tui): prevent split Alt+Enter from interrupting
+    
+    Increase the escape-sequence timeout over SSH and allow high-latency terminals to override it with PI_TUI_ESC_TIMEOUT.
+    
+    Fixes #7876
+    
+    * docs(coding-agent): shorten escape timeout description
+    
+    ---------
+    
+    Co-authored-by: Mario Zechner <badlogicgames@gmail.com>
+
+ .../coding-agent/docs/environment-variables.md     |  1 +
+ packages/tui/src/terminal.ts                       | 21 +++++++++++++-
+ packages/tui/test/stdin-buffer.test.ts             | 30 ++++++++++++++++++++
+ packages/tui/test/terminal.test.ts                 | 32 ++++++++++++++++++++--
+ 4 files changed, 81 insertions(+), 3 deletions(-)
+
+commit e3798ca91f23a69c6833443005ec8a252f292efc
+Author: Dustin Spicuzza <dustin@virtualroadside.com>
+Date:   Tue Aug 11 05:12:34 2026 -0400
+
+    fix(coding-agent): inherit subagent session config (#7897)
+
+ .../examples/extensions/subagent/README.md         |  2 ++
+ .../examples/extensions/subagent/index.ts          | 24 +++++++++++++++++++---
+ 2 files changed, 23 insertions(+), 3 deletions(-)
+
+commit 4a879dd759936870ae4f6d424d5be465e7df55c6
+Author: Michael Renner <terrorobe@github.com>
+Date:   Tue Aug 11 11:13:37 2026 +0200
+
+    fix(tui): avoid repainting idle fullscreen sessions on focus loss (#7892)
+    
+    * fix(tui): avoid idle focus-loss repaint
+    
+    * fix(tui): skip zero-width focus-loss repaint
+    
+    * fix(tui): clarify focus-loss selection check
+
+ packages/tui/src/tui-alt-screen.ts       |  3 +-
+ packages/tui/test/tui-alt-screen.test.ts | 77 ++++++++++++++++++++++++++++++--
+ 2 files changed, 76 insertions(+), 4 deletions(-)
+
+commit b987ead3583d2d2d796868f062b811abfa9ccb52
+Author: Duncan Ogilvie <mr.exodia.tpodt@gmail.com>
+Date:   Tue Aug 11 11:14:28 2026 +0200
+
+    feat(agent): expose `expandPromptTemplates` in `sendUserMessage` (#7857)
+
+ packages/coding-agent/docs/extensions.md           |  4 ++
+ packages/coding-agent/src/core/agent-session.ts    |  8 +--
+ packages/coding-agent/src/core/extensions/types.ts |  7 ++-
+ .../test/suite/agent-session-prompt.test.ts        | 64 +++++++++++++++++++++-
+ 4 files changed, 75 insertions(+), 8 deletions(-)
+
+commit 2f8b4b42fecf2388f0f3326eab16c72eca3f62b0
+Author: Michael Yu <yzhg1983@163.com>
+Date:   Tue Aug 11 17:15:11 2026 +0800
+
+    fix(ai): expose low reasoning effort for native DeepSeek V4 Flash (#7807)
+
+ packages/ai/scripts/generate-models.ts  | 8 +++++++-
+ packages/ai/test/supports-xhigh.test.ts | 4 ++--
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+commit c0468b922c2e300eee1f136ce4f987e3e05ac898
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Tue Aug 11 09:20:47 2026 +0000
+
+    chore: approve contributors from issue #7908
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 536eb71794c99e409c2292641b22ede64886fed7
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Tue Aug 11 09:23:49 2026 +0000
+
+    chore: approve contributors from issue #7912
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 00eb2d1515e18e00940139f5e6568230a071f33c
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Tue Aug 11 09:28:46 2026 +0000
+
+    chore: approve contributors from issue #7919
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit f8c71c6a0693bc7f71f84e92783315d6a725a721
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 11:35:03 2026 +0200
+
+    docs: fix security policy typos
+    
+    Fixes #7935
+
+ SECURITY.md | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 9c53c47f8086190d0b433216fcfffae69d3e255f
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Tue Aug 11 09:49:08 2026 +0000
+
+    fix indent
+
+ packages/tui/test/stdin-buffer.test.ts | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+commit 7915cdac64abdb5fe8674d017e69f8c4f3bf6ff9
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 11 11:32:32 2026 +0200
+
+    feat(ai): add strict tool schema conversion
+
+ packages/ai/CHANGELOG.md                           |   1 +
+ packages/ai/src/api/anthropic-messages.ts          |   7 +-
+ packages/ai/src/api/bedrock-converse-stream.ts     |   7 +-
+ packages/ai/src/api/constrained-sampling.ts        | 137 ++++++++++++++++++++-
+ packages/ai/src/api/google-generative-ai.ts        |   8 +-
+ packages/ai/src/api/google-shared.ts               |  21 ++--
+ packages/ai/src/api/google-vertex.ts               |   8 +-
+ packages/ai/src/api/mistral-conversations.ts       |   4 +-
+ packages/ai/src/api/openai-completions.ts          |   3 +-
+ packages/ai/src/api/openai-responses-shared.ts     |   6 +-
+ packages/ai/src/utils/validation.ts                |  33 +++++
+ .../test/anthropic-eager-tool-input-compat.test.ts |   7 +-
+ packages/ai/test/constrained-sampling.test.ts      |  78 +++++++++++-
+ packages/ai/test/validation.test.ts                |  45 +++++++
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/src/core/experimental.ts     |   6 +
+ packages/coding-agent/src/core/tools/bash.ts       |   2 +
+ packages/coding-agent/src/core/tools/edit.ts       |   2 +
+ packages/coding-agent/src/core/tools/read.ts       |   2 +
+ packages/coding-agent/src/core/tools/write.ts      |   2 +
+ packages/coding-agent/src/server/create-harness.ts |   2 +
+ .../test/experimental-tool-strict-mode.test.ts     |  38 ++++++
+ 22 files changed, 391 insertions(+), 29 deletions(-)
+
+commit 452923b54a6c8b2f95b80157a8f6c7963f183101
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 11 12:37:45 2026 +0200
+
+    fix(tui): parse multiline LaTeX arguments
+    
+    Closes #7760
+
+ packages/coding-agent/CHANGELOG.md | 1 +
+ packages/tui/CHANGELOG.md          | 1 +
+ packages/tui/src/latex.ts          | 2 +-
+ packages/tui/test/latex.test.ts    | 1 +
+ 4 files changed, 4 insertions(+), 1 deletion(-)
+
+commit 2a95ef70db83a19cf5500f31dc4ff8247e04043e
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Tue Aug 11 12:52:39 2026 +0200
+
+    fix(tui): apply PI_TUI_ESC_TIMEOUT only to lone ESC
+    
+    Split StdinBuffer's incomplete-sequence wait from the lone-ESC wait so SSH and PI_TUI_ESC_TIMEOUT can reassemble split Alt+Enter without delaying Escape or mouse/CSI buffering.
+
+ packages/coding-agent/docs/environment-variables.md |  2 +-
+ packages/tui/src/stdin-buffer.ts                    | 18 +++++++++++++-----
+ packages/tui/src/terminal.ts                        |  2 +-
+ packages/tui/test/stdin-buffer.test.ts              | 19 +++++++++++++++++--
+ packages/tui/test/terminal.test.ts                  |  2 +-
+ 5 files changed, 33 insertions(+), 10 deletions(-)
+
+commit 43b4e057ac816f0c1da7a48f560344ad23a5c1a3
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:16:36 2026 +0200
+
+    docs(agent): fix implementation-readiness review findings
+
+ packages/agent/docs/harness-v3.md | 56 +++++++++++++++++++--------------------
+ 1 file changed, 28 insertions(+), 28 deletions(-)
+
+commit 9c75cd2f3a4a1f172b0a2f3cd99f40d8854b927c
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:21:12 2026 +0200
+
+    docs(agent): add transaction traces to orientation examples
+
+ packages/agent/docs/harness-v3.md | 34 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 33 insertions(+), 1 deletion(-)
+
+commit f132845654d07fcd83e51bce7f04a0feb499485e
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:21:55 2026 +0200
+
+    docs(agent): introduce the three stores before the worked examples
+
+ packages/agent/docs/harness-v3.md | 64 +++++++++++++++++++--------------------
+ 1 file changed, 32 insertions(+), 32 deletions(-)
+
+commit b75be04d92fa1919eeb92fecc3d6051e745922cf
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Tue Aug 11 13:27:48 2026 +0200
+
+    refactor: search (#7797)
+    
+    * refactor: search out of repo
+    
+    * fix: apply cases, no resolve for index on every hit
+    
+    * chore: tests
+    
+    * fix: use iterator and no open
+    
+    * refactor: public dir stuff in jsonl, source
+    
+    * cleanup and sqlite time number
+    
+    * fix: use storage for label search too, delete types
+    
+    * refactor: abstract some more
+    
+    * docs: example jsonl with elastic search
+    
+    * docs: Christian's md
+    
+    * refactor: simpler api surface
+    
+    * feat: rebuild
+    
+    * docs: consolidate
+    
+    * fix: use trigger for sqlite, cleanup indexable, add example in doc
+    
+    * chore: restore upstream responses shared
+    
+    * fix: delete metadata from jsonl search hit
+    
+    * fix: AsynIterable
+    
+    * refactor: scanning for memory, reuse
+    
+    * fix: dont export jsonlSessionDirectoryName
+    
+    * cleanup: more shared stuff
+    
+    * cleanup: why, jsonl?
+
+ packages/agent/docs/search.md                      | 276 +++++++++++++++++++++
+ packages/agent/src/harness/session/jsonl/repo.ts   | 122 +++++----
+ packages/agent/src/harness/session/search.ts       |  71 ------
+ packages/agent/src/index.ts                        |   2 +-
+ packages/agent/src/search/index.ts                 |  32 +++
+ packages/agent/src/search/scanning.ts              | 176 +++++++++++++
+ packages/agent/test/harness/session/search.test.ts | 125 ++++++++++
+ packages/session-backends/sqlite-node/README.md    |  13 +-
+ packages/session-backends/sqlite-node/src/index.ts |   9 +
+ .../sqlite-node/src/sqlite/search-backend.ts       | 122 ++++++---
+ .../session-backends/sqlite-node/src/sqlite/sql.ts |   4 +
+ .../sqlite-node/src/sqlite/types.ts                |   1 +
+ .../sqlite-node/test/repository.test.ts            |   2 +
+ .../sqlite-node/test/search.test.ts                | 176 ++++++++++---
+ 14 files changed, 949 insertions(+), 182 deletions(-)
+
+commit f98629b3991aa1c7938f21249f9d9f0f320fd432
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:35:45 2026 +0200
+
+    docs(agent): fix broken code fence in crash example
+
+ packages/agent/docs/harness-v3.md | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+commit 638ac112398e4934182138247776809ac81085d9
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:49:37 2026 +0200
+
+    docs(agent): resolve providers and tools at dispatch, drop lease machinery
+
+ packages/agent/docs/harness-v3.md | 71 ++++++++++++---------------------------
+ 1 file changed, 22 insertions(+), 49 deletions(-)
+
+commit bcd056a8cdbd980a793d271d3ecbc4d05e679695
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:50:06 2026 +0200
+
+    docs(agent): drop historical placement-payload rationale
+
+ packages/agent/docs/harness-v3.md | 2 --
+ 1 file changed, 2 deletions(-)
+
+commit 01701fd372f4e73aa1275f93a809f48fb529df94
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:51:13 2026 +0200
+
+    docs(agent): clarify register references vs immutable snapshots
+
+ packages/agent/docs/harness-v3.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit b8349db8543242b33d5d0f5051e0aec667afba59
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:53:33 2026 +0200
+
+    docs(agent): re-mint legacy ids at import, drop redundant register paragraph
+
+ packages/agent/docs/harness-v3.md | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+commit e1b444ba626a46c3fae0a7510e451871a9fbd551
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 13:55:39 2026 +0200
+
+    docs(agent): tighten identity section
+
+ packages/agent/docs/harness-v3.md | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+commit 2862eb4ed1463421d1d532041b7848d307508da7
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 14:01:40 2026 +0200
+
+    docs(agent): reword cancellation triage note
+
+ packages/agent/docs/harness-v3.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit a348560b1582540ff525926bd1036b1d8ac2f650
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 14:03:00 2026 +0200
+
+    docs(agent): drop historical changes appendix
+
+ packages/agent/docs/harness-v3.md | 45 +++++++--------------------------------
+ 1 file changed, 8 insertions(+), 37 deletions(-)
+
+commit e33e74450aa34d758c3f5bbac396f628142947bb
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 14:11:14 2026 +0200
+
+    docs(agent): replace historical rationale with direct statements
+
+ packages/agent/docs/harness-v3.md | 22 +++++++++-------------
+ 1 file changed, 9 insertions(+), 13 deletions(-)
+
+commit b3edf017021f802af9b76ab4d95cb555c5427352
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 11 14:25:53 2026 +0200
+
+    fix(ai): bound Copilot policy update concurrency
+
+ packages/ai/CHANGELOG.md                      |  1 +
+ packages/ai/src/auth/oauth/github-copilot.ts  | 13 +++---
+ packages/ai/test/github-copilot-oauth.test.ts | 62 +++++++++++++++++++++++++++
+ packages/coding-agent/CHANGELOG.md            |  1 +
+ 4 files changed, 72 insertions(+), 5 deletions(-)
+
+commit 2545585395aa02b48b3fb2fb406757893904cb5d
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 14:32:09 2026 +0200
+
+    docs(agent): one sqlite file per session, search becomes external
+
+ packages/agent/docs/harness-v3.md | 89 ++++++++++++++++++---------------------
+ 1 file changed, 40 insertions(+), 49 deletions(-)
+
+commit 47b021a6596e7d0b5d3338ff9679d8e90474114e
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 14:43:47 2026 +0200
+
+    docs(agent): add seq-ranged usage ledger scan
+
+ packages/agent/docs/harness-v3.md | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+commit 8d8c60da709b83f434f529c7b54ed224b2089cc1
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 14:53:28 2026 +0200
+
+    docs(agent): specify optional pull-based search service
+
+ packages/agent/docs/harness-v3.md | 49 +++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 47 insertions(+), 2 deletions(-)
+
+commit b6557f43ec3cc93b5808a073e44a7c2ded75978d
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 14:58:58 2026 +0200
+
+    docs(agent): make search a standalone service, open metadata-filter question
+
+ packages/agent/docs/harness-v3.md | 41 ++++++++++++++++++++++++++++++---------
+ 1 file changed, 32 insertions(+), 9 deletions(-)
+
+commit 51b45bc5bcecc37a3538af5b0eb3710cc1e2c3f7
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 15:27:21 2026 +0200
+
+    docs(agent): restructure build order into parallel storage and runtime tracks
+
+ packages/agent/docs/harness-v3.md | 51 +++++++++++++++++++--------------------
+ 1 file changed, 25 insertions(+), 26 deletions(-)
+
+commit 85a2060811a23f1580c13ab59a210b1409092837
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 15:29:18 2026 +0200
+
+    docs(agent): consolidate harness spec into harness.md
+
+ packages/agent/docs/agent-harness-spec.md         | 2524 -----------
+ packages/agent/docs/harness-v2-test-matrix.md     |  195 -
+ packages/agent/docs/harness-v2.md                 | 4612 ---------------------
+ packages/agent/docs/{harness-v3.md => harness.md} |    4 +-
+ 4 files changed, 1 insertion(+), 7334 deletions(-)
+
+commit 40a3d8556ab7fb4a6b4da20ffe1f5dfc08ec121d
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 11 15:31:27 2026 +0200
+
+    docs(agent): add table of contents
+
+ packages/agent/docs/harness.md | 75 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 75 insertions(+)
+
+commit 2a9b4ebc680053c64e31f635b0b22d5e22564001
+Author: Michael Renner <terrorobe@github.com>
+Date:   Tue Aug 11 16:57:05 2026 +0200
+
+    docs: document terminal-specific fullscreen mouse behavior (#7965)
+    
+    * docs(coding-agent): document iTerm2 fullscreen scroll workaround
+    
+    * docs(coding-agent): document Ghostty fullscreen link behavior
+
+ packages/coding-agent/docs/keybindings.md    |  2 +-
+ packages/coding-agent/docs/terminal-setup.md | 25 +++++++++++++++++++++++--
+ packages/coding-agent/docs/usage.md          |  2 +-
+ 3 files changed, 25 insertions(+), 4 deletions(-)
+
+commit 534bcbffb7e1e7551d9ee3572dfeb278e203e493
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 11 23:19:24 2026 +0200
+
+    fix(tui): handle LaTeX control spaces across line endings
+
+ packages/tui/CHANGELOG.md       |  1 +
+ packages/tui/src/latex.ts       |  7 +++++++
+ packages/tui/test/latex.test.ts | 12 ++++++++++++
+ 3 files changed, 20 insertions(+)
+
+commit 2e4d23959485279aa2da1a45103de2ea22d46395
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 12 10:02:32 2026 +0200
+
+    fix(tui): give focused fullscreen overlays wheel and viewport keys
+    
+    Skip TuiAltScreen viewport consume for wheel and alt-screen scroll
+    keys when a visible overlay has focus. Transcript search still owns
+    those events so the transcript can move while the find box is open.
+    
+    fixes #7894
+
+ packages/tui/CHANGELOG.md                |  1 +
+ packages/tui/src/tui-alt-screen.ts       |  6 +++
+ packages/tui/src/tui.ts                  |  7 +++
+ packages/tui/test/tui-alt-screen.test.ts | 93 ++++++++++++++++++++++++++++++++
+ 4 files changed, 107 insertions(+)
+
+commit 6d520c58d0b92cf420ab3b95d05ea75c59235cca
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 12 14:56:26 2026 +0200
+
+    chore(docs): fix ascii alignment in compaction docs
+
+ packages/coding-agent/docs/compaction.md | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 47b5119d09f00cb785409d53d74c4950acc7d803
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Wed Aug 12 15:16:05 2026 +0200
+
+    fix: trigger turn false should not start turn (#8022)
+
+ packages/coding-agent/src/core/agent-session.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 4d9aa837c2ec6e0ebc7599f7e724c7c19c06441e
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 12 15:26:42 2026 +0200
+
+    feat(coding-agent): add configurable default tools
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/docs/settings.md             | 16 ++++
+ packages/coding-agent/src/core/sdk.ts              | 16 ++--
+ packages/coding-agent/src/core/settings-manager.ts |  6 ++
+ .../test/default-tools-setting.test.ts             | 86 ++++++++++++++++++++++
+ .../coding-agent/test/settings-manager.test.ts     | 17 +++++
+ 6 files changed, 136 insertions(+), 6 deletions(-)
+
+commit 541045ae0e30ac0375fde429f8a8baa057c009db
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 12 15:42:55 2026 +0200
+
+    fix(coding-agent): preserve extension tools with defaults
+
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ packages/coding-agent/docs/settings.md             |  6 +-
+ packages/coding-agent/src/core/sdk.ts              | 13 ++--
+ packages/coding-agent/src/core/settings-manager.ts |  2 +-
+ .../test/default-tools-setting.test.ts             | 78 ++++++++++++++++++++--
+ 5 files changed, 82 insertions(+), 19 deletions(-)
+
+commit 9795d602306ef68a97585909e8e79f92a389057b
+Author: Ramiz Wachtler <ramiz@earendil.com>
+Date:   Wed Aug 12 16:25:38 2026 +0200
+
+    feat(coding-agent): add per-run theme selection (#7722)
+    
+    - add `--use-theme` for fixed and terminal-aware theme pairs
+    - keep invocation state non-persistent until an explicit selection
+    - preserve active themes across previews, reloads, and HTML exports
+
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/README.md                    |   1 +
+ packages/coding-agent/docs/themes.md               |  17 +++
+ packages/coding-agent/docs/usage.md                |   1 +
+ packages/coding-agent/src/cli/args.ts              |  10 ++
+ packages/coding-agent/src/core/agent-session.ts    |   8 +-
+ packages/coding-agent/src/main.ts                  |   5 +
+ .../src/modes/interactive/interactive-mode.ts      |  25 +++--
+ .../modes/interactive/theme/theme-controller.ts    |  49 ++++++--
+ packages/coding-agent/test/args.test.ts            |  14 +++
+ .../coding-agent/test/theme-controller.test.ts     | 125 +++++++++++++++++++++
+ 11 files changed, 232 insertions(+), 24 deletions(-)
+
+commit c93ea6ccf0a398c293641e8001db06b8f7997c79
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Thu Aug 13 00:32:26 2026 +0300
+
+    fix(coding-agent): preserve usage in streaming events (#7982)
+    
+    Fixes #7911
+
+ packages/coding-agent/docs/json.md                 | 10 ++++---
+ packages/coding-agent/docs/rpc.md                  | 19 ++++++++++---
+ packages/coding-agent/src/modes/json-event.ts      | 12 ++++++--
+ .../regressions/7911-json-stream-usage.test.ts     | 32 ++++++++++++++++++++++
+ 4 files changed, 62 insertions(+), 11 deletions(-)
+
+commit 581d75a89cea21e50d6a26df840352f94427f633
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Thu Aug 13 00:53:22 2026 +0200
+
+    docs(coding-agent): document model catalog refresh
+
+ packages/coding-agent/docs/sdk.md | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+commit 7d8c11d37f8d6687cc6688998fcb0d3db45e6151
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 13 09:43:36 2026 +0200
+
+    fix(coding-agent): share concurrent model catalog refreshes
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../modes/interactive/components/model-selector.ts |  3 +-
+ .../src/modes/interactive/interactive-mode.ts      |  9 ++-
+ .../src/modes/interactive/model-catalog-refresh.ts | 51 ++++++++++++++
+ .../test/model-catalog-refresh.test.ts             | 81 ++++++++++++++++++++++
+ .../regressions/7153-scoped-models-refresh.test.ts |  2 +-
+ 6 files changed, 140 insertions(+), 7 deletions(-)
+
+commit 46bb9a2c3bdb296b0d2179f7309ec6b79a7f3106
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Thu Aug 13 09:54:58 2026 +0200
+
+    docs(coding-agent): clarify Windows paths in settings
+
+ packages/coding-agent/docs/settings.md | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+commit 6f707eb36064e82af9c1320a7634f4dfad21049b
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Thu Aug 13 12:15:49 2026 +0200
+
+    fix(coding-agent): show managed-tool startup status in TUI
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/tools/find.ts       |  2 +-
+ packages/coding-agent/src/core/tools/grep.ts       |  2 +-
+ .../src/modes/interactive/interactive-mode.ts      | 48 ++++++++++++++++++----
+ packages/coding-agent/src/utils/tools-manager.ts   | 41 +++++++++---------
+ .../test/interactive-mode-startup-input.test.ts    | 18 ++++++++
+ .../test/interactive-mode-status.test.ts           | 24 +++++++++++
+ packages/coding-agent/test/tools-manager.test.ts   | 47 +++++++++++++++++++++
+ 8 files changed, 153 insertions(+), 30 deletions(-)
+
+commit 9d2ec7ffabe927bfad2214c1cee25b6632a78dcf
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Thu Aug 13 22:26:38 2026 +0200
+
+    fix(ai): use pi user agent for Kimi Coding requests
+
+ packages/ai/CHANGELOG.md                      |  1 +
+ packages/ai/scripts/generate-models.ts        |  5 -----
+ packages/ai/src/api/anthropic-messages.ts     | 24 +++++++++++++++++++---
+ packages/ai/src/api/openai-codex-responses.ts | 19 ++----------------
+ packages/ai/src/utils/pi-user-agent.ts        | 19 ++++++++++++++++++
+ packages/ai/test/anthropic-auth-token.test.ts | 29 +++++++++++++++++++++++++++
+ packages/ai/test/openai-codex-stream.test.ts  |  3 ++-
+ packages/coding-agent/CHANGELOG.md            |  1 +
+ 8 files changed, 75 insertions(+), 26 deletions(-)
+
+commit 5f7195c51eac43cdf329f813a7ef020d7bd74527
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 14 09:32:24 2026 +0200
+
+    fix(coding-agent): update Cloudflare compat test model
+
+ packages/coding-agent/test/model-runtime-cloudflare-compat.test.ts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit d268454e9c347c115ac334b4abd719216e34046b
+Author: alexsavio <alexsavio@users.noreply.github.com>
+Date:   Fri Aug 14 09:59:42 2026 +0200
+
+    fix(examples): accept array-form `tools` in the subagent example (#7598)
+    
+    `parseFrontmatter` runs a real YAML parser, so `tools: [read, bash]`
+    arrives as an array while `tools: read, bash` arrives as a string. The
+    loader only handled the string form and called `.split(",")`, which
+    throws on the array form.
+    
+    The throw escapes `loadAgentsFromDir` -- only `readdirSync` and
+    `readFileSync` are guarded -- so one agent file using the array form
+    broke discovery for every agent in that scope, not just itself.
+    
+    Normalize both spellings in one helper, and type the frontmatter fields
+    as `unknown` so the string assumptions are explicit. The previous
+    `parseFrontmatter<Record<string, string>>` annotation asserted a shape
+    the YAML parser never guarantees, which is what hid the mismatch from
+    tsc while `AgentConfig.tools` was already typed `string[]`.
+
+ .../examples/extensions/subagent/agents.ts         | 49 ++++++++++++++++++----
+ 1 file changed, 40 insertions(+), 9 deletions(-)
+
+commit 721e2768ee3b0850723a1f6d9ba54d62bff3ebac
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Fri Aug 14 08:03:33 2026 +0000
+
+    chore: approve contributors from issue #7973
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 6633618350a9d9ea91fdc11668442e771869a56f
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Fri Aug 14 10:09:35 2026 +0200
+
+    fix(coding-agent): update vulnerable nanoid dependency
+
+ package-lock.json                  | 6 +++---
+ packages/coding-agent/CHANGELOG.md | 1 +
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+commit 83aed2ba5829654694ac972ba40b8e89e83de089
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Fri Aug 14 10:11:15 2026 +0200
+
+    fix(tui): handle generic SGR mouse releases
+    
+    closes #7963
+
+ packages/tui/CHANGELOG.md                | 1 +
+ packages/tui/src/tui-alt-screen.ts       | 3 ++-
+ packages/tui/test/tui-alt-screen.test.ts | 8 ++++----
+ 3 files changed, 7 insertions(+), 5 deletions(-)
+
+commit e14afc648e10fb6c527ea88fa627091ada764306
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Fri Aug 14 10:22:36 2026 +0200
+
+    fix(coding-agent): collapse fallback tool output closes #7979
+
+ packages/coding-agent/CHANGELOG.md                   |  1 +
+ .../modes/interactive/components/tool-execution.ts   | 13 ++++++++++++-
+ .../test/tool-execution-component.test.ts            | 20 +++++++++++++++-----
+ 3 files changed, 28 insertions(+), 6 deletions(-)
+
+commit 0589435e7d4c56152ff850c9648ffcfb54a90959
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Fri Aug 14 08:49:18 2026 +0000
+
+    chore: approve contributors from issue #8007
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit f3c406a9b2d886ae6f4222c13f8ee7e26b87a0cf
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Fri Aug 14 08:51:32 2026 +0000
+
+    chore: approve contributors from issue #8018
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit c5b7cd2a33e3a412eaf35badc6bc641be201abdf
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Fri Aug 14 09:20:04 2026 +0000
+
+    chore: approve contributors from issue #8063
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 5093641a562cf9c78c0a8cf9af5d341418b7a112
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Fri Aug 14 11:25:40 2026 +0200
+
+    fix(ai): preserve Google length stops with tool calls
+    
+    closes #8059
+
+ packages/ai/CHANGELOG.md                        |  1 +
+ packages/ai/src/api/google-generative-ai.ts     |  2 +-
+ packages/ai/src/api/google-vertex.ts            |  2 +-
+ packages/ai/test/google-raw-stop-reason.test.ts | 56 +++++++++++++++++++++++++
+ 4 files changed, 59 insertions(+), 2 deletions(-)
+
+commit ab0dc51fcfd1e4c0f8c04ab685812b748f3b8a70
+Author: Anders Bech Mellson <mellson@icloud.com>
+Date:   Fri Aug 14 11:26:20 2026 +0200
+
+    fix(coding-agent): use APP_NAME in user-facing messages (#8067)
+    
+    APP_NAME is derived from piConfig.name so a rebranded distribution shows
+    its own name, and roughly 90 call sites already use it. Twelve
+    user-facing strings hardcoded "pi" instead, so those messages named the
+    upstream binary regardless of piConfig.name:
+    
+    - the trust project folder prompt
+    - "Restart pi for this to take effect." after a saved trust decision
+    - the "Start without extensions" hint on an extension load failure
+    - the invalid session file error
+    - the executable location in the self-update-unavailable notice
+    - the three auth command usage strings and the unknown auth command
+      error, which are printed next to `${APP_NAME} --help` in main.ts and
+      so contradicted it
+    - "is configured outside pi." in the provider setup dialog
+    - the uncaughtException line
+    
+    Output is unchanged for pi itself: piConfig has no name, so APP_NAME
+    falls back to "pi".
+
+ packages/coding-agent/src/cli/auth-command.ts                  |  9 +++++----
+ packages/coding-agent/src/core/project-trust.ts                |  4 ++--
+ packages/coding-agent/src/core/session-manager.ts              |  4 ++--
+ packages/coding-agent/src/main.ts                              |  2 +-
+ .../coding-agent/src/modes/interactive/interactive-mode.ts     | 10 +++++++---
+ packages/coding-agent/src/package-manager-cli.ts               |  2 +-
+ 6 files changed, 18 insertions(+), 13 deletions(-)
+
+commit 48bd3f424d4f26bc59d130ebc9589e838f252c06
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Fri Aug 14 09:41:22 2026 +0000
+
+    chore: approve contributors from issue #8092
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 4caa3c440baaf94c9fe9ec054e04b9528b0a07ef
+Author: Panoplos <makoto@dhyana.co>
+Date:   Fri Aug 14 11:46:46 2026 +0200
+
+    fix(tui): route selection copy through the host clipboard (#8110)
+    
+    TuiAltScreen.copySelectionToClipboard() wrote a bare OSC 52 sequence and
+    flashed "Copied!" unconditionally. Terminals that ignore OSC 52 clipboard
+    writes (macOS Terminal.app, VTE terminals, tmux without OSC 52 passthrough)
+    left the system clipboard untouched while the toast reported success.
+    
+    Add an injectable copySelection option to TuiAltScreenOptions (an async
+    handler returning whether the copy succeeded) and use it when provided,
+    falling back to the existing OSC 52 write otherwise. The coding agent now
+    injects its native clipboard implementation (clipboard addon + pbcopy /
+    wl-copy / xclip / xsel), so selection copy reaches the real clipboard and
+    the toast only fires on verified success, with "Copy failed" otherwise.
+    
+    Closes #7761
+    
+    Co-authored-by: 富永 誠 <makoto@credify.one>
+
+ .../src/modes/interactive/interactive-mode.ts      |  8 ++++
+ packages/tui/src/tui-alt-screen.ts                 | 20 ++++++++-
+ packages/tui/test/tui-alt-screen.test.ts           | 51 ++++++++++++++++++++++
+ 3 files changed, 77 insertions(+), 2 deletions(-)
+
+commit d10c974b940d7ce3c8439fcdf02d140f3a206458
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 14 09:46:51 2026 +0000
+
+    docs: audit changelogs since v0.84.1
+
+ packages/ai/CHANGELOG.md           |  7 +++++++
+ packages/coding-agent/CHANGELOG.md | 29 +++++++++++++++++++++++++++++
+ packages/tui/CHANGELOG.md          |  4 +++-
+ 3 files changed, 39 insertions(+), 1 deletion(-)
+
+commit 9b4adc823fa05f883565fa6b7a2ea58de3e39254
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 14 09:50:22 2026 +0000
+
+    docs: audit changelogs since v0.84.1
+
+ packages/coding-agent/CHANGELOG.md | 1 +
+ packages/tui/CHANGELOG.md          | 1 +
+ 2 files changed, 2 insertions(+)
+
+commit 914cf1472e715297caa30db4b9535d534a9eb718
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Aug 14 12:00:00 2026 +0200
+
+    Release v0.84.2
+
+ package-lock.json                                  | 60 +++++++++++-----------
+ packages/agent/CHANGELOG.md                        |  2 +-
+ packages/agent/package.json                        |  6 +--
+ packages/ai/CHANGELOG.md                           |  2 +-
+ packages/ai/package.json                           |  4 +-
+ packages/ai/src/image-models.generated.ts          | 45 ++++++++++++++++
+ packages/client/CHANGELOG.md                       |  2 +-
+ packages/client/package.json                       |  4 +-
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ .../custom-provider-anthropic/package-lock.json    |  4 +-
+ .../custom-provider-anthropic/package.json         |  2 +-
+ .../custom-provider-gitlab-duo/package.json        |  2 +-
+ .../examples/extensions/gondolin/package-lock.json |  4 +-
+ .../examples/extensions/gondolin/package.json      |  2 +-
+ .../examples/extensions/sandbox/package-lock.json  |  4 +-
+ .../examples/extensions/sandbox/package.json       |  2 +-
+ .../extensions/with-deps/package-lock.json         |  4 +-
+ .../examples/extensions/with-deps/package.json     |  2 +-
+ .../coding-agent/install-lock/package-lock.json    | 52 +++++++++----------
+ packages/coding-agent/install-lock/package.json    |  4 +-
+ packages/coding-agent/npm-shrinkwrap.json          | 46 ++++++++---------
+ packages/coding-agent/package.json                 | 12 ++---
+ packages/evals/package.json                        |  6 +--
+ packages/protocol/CHANGELOG.md                     |  2 +-
+ packages/protocol/package.json                     |  2 +-
+ packages/server/CHANGELOG.md                       |  2 +-
+ packages/server/package.json                       |  6 +--
+ packages/session-backends/sqlite-node/CHANGELOG.md |  2 +-
+ packages/session-backends/sqlite-node/package.json |  6 +--
+ packages/telemetry/CHANGELOG.md                    |  2 +-
+ packages/telemetry/package.json                    |  2 +-
+ packages/tui/CHANGELOG.md                          |  2 +-
+ packages/tui/package.json                          |  2 +-
+ 33 files changed, 173 insertions(+), 128 deletions(-)

@@ -178,6 +178,7 @@ export interface AgentSessionReloadOptions {
 }
 
 export interface PromptOptions {
+	/** Whether to dispatch extension commands and expand skill commands and prompt templates (default: true) */
 	expandPromptTemplates?: boolean;
 	images?: ImageContent[];
 	streamingBehavior?: "steer" | "followUp";

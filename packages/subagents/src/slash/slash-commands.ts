@@ -80,17 +80,10 @@ const parseAgentToken = (token: string): { name: string; config: InlineConfig } 
 	};
 };
 
-const extractExecutionFlags = (rawArgs: string): { args: string; bg: boolean; fork: boolean } => {
+const extractExecutionFlags = (rawArgs: string): { args: string; fork: boolean } => {
 	let args = rawArgs.trim();
-	let bg = false;
 	let fork = false;
-
 	while (true) {
-		if (args.endsWith(" --bg") || args === "--bg") {
-			bg = true;
-			args = args === "--bg" ? "" : args.slice(0, -5).trim();
-			continue;
-		}
 		if (args.endsWith(" --fork") || args === "--fork") {
 			fork = true;
 			args = args === "--fork" ? "" : args.slice(0, -7).trim();
@@ -98,8 +91,7 @@ const extractExecutionFlags = (rawArgs: string): { args: string; bg: boolean; fo
 		}
 		break;
 	}
-
-	return { args, bg, fork };
+	return { args, fork };
 };
 
 const makeAgentCompletions = (state: SubagentState, multiAgent: boolean) => (prefix: string) => {
@@ -413,14 +405,14 @@ const parseAgentArgs = (
 };
 export function registerSlashCommands(pi: ExtensionAPI, state: SubagentState): void {
 	pi.registerCommand("run", {
-		description: "Run a subagent directly: /run agent[output=file] [task] [--bg] [--fork]",
+		description: "Run a subagent directly: /run agent[output=file] [task] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(state, false),
 		handler: async (args, ctx) => {
-			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
+			const { args: cleanedArgs, fork } = extractExecutionFlags(args);
 			const input = cleanedArgs.trim();
 			const firstSpace = input.indexOf(" ");
 			if (!input) {
-				ctx.ui.notify("Usage: /run <agent> [task] [--bg] [--fork]", "error");
+				ctx.ui.notify("Usage: /run <agent> [task] [--fork]", "error");
 				return;
 			}
 			const { name: agentName, config: inline } = parseAgentToken(
@@ -442,16 +434,15 @@ export function registerSlashCommands(pi: ExtensionAPI, state: SubagentState): v
 			if (inline.outputMode !== undefined) params.outputMode = inline.outputMode;
 			if (inline.skill !== undefined) params.skill = inline.skill;
 			if (inline.model) params.model = inline.model;
-			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
 		},
 	});
 	pi.registerCommand("parallel", {
-		description: 'Run agents in parallel: /parallel scout "task1" -> reviewer "task2" [--bg] [--fork]',
+		description: 'Run agents in parallel: /parallel scout "task1" -> reviewer "task2" [--fork]',
 		getArgumentCompletions: makeAgentCompletions(state, true),
 		handler: async (args, ctx) => {
-			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
+			const { args: cleanedArgs, fork } = extractExecutionFlags(args);
 			const parsed = parseAgentArgs(state, cleanedArgs, "parallel", ctx);
 			if (!parsed) return;
 			const tasks = parsed.steps.map(({ name, config, task: stepTask }) => ({
@@ -465,7 +456,6 @@ export function registerSlashCommands(pi: ExtensionAPI, state: SubagentState): v
 				...(config.progress !== undefined ? { progress: config.progress } : {}),
 			}));
 			const params: SubagentParamsLike = { tasks, agentScope: "both" };
-			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
 		},

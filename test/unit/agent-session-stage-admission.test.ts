@@ -54,7 +54,7 @@ describe("AgentSession workflow-stage admission", () => {
 		const manager = SessionManager.inMemory();
 		manager.appendCustomMessageEntry(
 			"subagent-notify",
-			"async result",
+			"result",
 			true,
 			undefined,
 			undefined,
@@ -107,8 +107,8 @@ describe("AgentSession workflow-stage admission", () => {
 	test("late detached delivery routes externally without terminal stage mutation or duplication", async () => {
 		const current = harness();
 		await current.close();
-		await current.send("late completion", "async-job:job-1");
-		await current.send("late completion", "async-job:job-1");
+		await current.send("late completion", "late-result:job-1");
+		await current.send("late completion", "late-result:job-1");
 
 		assert.deepEqual(current.stage, []);
 		assert.deepEqual(current.external, ["late completion"]);
@@ -118,8 +118,14 @@ describe("AgentSession workflow-stage admission", () => {
 		const current = harness(false);
 		await current.close();
 
-		await assert.rejects(current.send("late completion", "async-job:job-1"), /closed without a late-message router/);
-		await assert.rejects(current.send("late completion", "async-job:job-1"), /closed without a late-message router/);
+		await assert.rejects(
+			current.send("late completion", "late-result:job-1"),
+			/closed without a late-message router/,
+		);
+		await assert.rejects(
+			current.send("late completion", "late-result:job-1"),
+			/closed without a late-message router/,
+		);
 		assert.deepEqual(current.stage, []);
 	});
 
@@ -147,11 +153,11 @@ describe("AgentSession workflow-stage admission", () => {
 		const delivery = sendCustomMessage.call(
 			surface as never,
 			{
-				customType: "async-job-result",
+				customType: "stage-result",
 				content: "finished",
 				display: true,
 			},
-			{ triggerTurn: true, stageAdmissionKey: "async-job:job-1" },
+			{ triggerTurn: true, stageAdmissionKey: "stage-result:job-1" },
 		);
 		await started.promise;
 		let closed = false;
@@ -199,16 +205,13 @@ describe("AgentSession workflow-stage admission", () => {
 	test("fallback replacement transfers already-admitted native queue entries", () => {
 		const notification = {
 			role: "custom",
-			customType: "async-job-result",
+			customType: "stage-result",
 			content: "done",
 			display: true,
 			timestamp: 1,
 		};
 		const restored: object[] = [];
-		let managerTransferred = false;
 		const target = {
-			_asyncJobManagerSessionId: Symbol("target"),
-			_asyncJobManager: {},
 			_pendingNextTurnMessages: [] as object[],
 			_queuedMessagesPaused: false,
 			_activeInterruptQueueHold: undefined,
@@ -222,12 +225,6 @@ describe("AgentSession workflow-stage admission", () => {
 			},
 		};
 		const source = {
-			_asyncJobManagerSessionId: Symbol("source"),
-			_asyncJobManager: {
-				transferSessionDeliveries() {
-					managerTransferred = true;
-				},
-			},
 			_activeInterruptQueueHold: undefined,
 			_pendingNextTurnMessages: [notification],
 			_queuedMessagesPaused: false,
@@ -240,6 +237,5 @@ describe("AgentSession workflow-stage admission", () => {
 		transferWorkflowStageDeliveriesTo.call(source as never, target);
 		assert.deepEqual(restored, [notification]);
 		assert.deepEqual(target._pendingNextTurnMessages, [notification]);
-		assert.equal(managerTransferred, true);
 	});
 });

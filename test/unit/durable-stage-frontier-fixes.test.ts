@@ -237,6 +237,14 @@ test("cached replay hydrates persisted stage timing, result, session, and model 
 		startedAt: Date.now(),
 	});
 	const completedKeys = new Map<string, string>();
+	const usage = {
+		input: 101,
+		output: 23,
+		cacheRead: 47,
+		cacheWrite: 5,
+		cost: 0.0042,
+		turns: 2,
+	};
 	const cp: DurableCompletedStageCheckpoint = {
 		kind: "stage",
 		workflowId: WORKFLOW_ID,
@@ -254,7 +262,7 @@ test("cached replay hydrates persisted stage timing, result, session, and model 
 		model: "gpt-test",
 		fastMode: true,
 		attemptedModels: ["gpt-test"],
-		modelAttempts: [{ model: "gpt-test", success: true }],
+		modelAttempts: [{ model: "gpt-test", success: true, usage }],
 	};
 
 	recordCachedStageIntoStore(store, WORKFLOW_ID, "hydrate", cp.replayKey, cp.output, completedKeys, [], cp);
@@ -269,4 +277,5 @@ test("cached replay hydrates persisted stage timing, result, session, and model 
 	assert.equal(stage.fastMode, true);
 	assert.deepEqual(stage.attemptedModels, ["gpt-test"]);
 	assert.equal(stage.modelAttempts?.[0]?.success, true);
+	assert.deepEqual(stage.modelAttempts?.[0]?.usage, usage);
 });

@@ -1,29 +1,23 @@
 /**
- * Top-level PARALLEL rendering must be byte-identical to its pre-removal
- * behaviour. Removing the sequential execution mode deleted the workflow-graph
- * snapshot that fed two renderer predicates, and a reduction that replaces
- * those predicates with newly-derived ones silently changes what a parallel run
- * displays. These tests pin the two places that regressed.
- *
- * Historical behaviour both cases reproduce:
- *   - `renderSubagentResult` derived `failed`/`paused` only from the workflow
- *     graph, which a top-level parallel run never populated. A parallel run with
- *     one errored child therefore read `failed`, never `paused`.
- *   - `widgetStats` gated running/done counts on `activeParallelGroup` — an
- *     active-state signal — not on the run's mode. A launched-but-not-yet-running
- *     parallel job therefore read `steps N`.
+ * Top-level PARALLEL rendering preserves result status labels and per-child
+ * model/thinking metadata across the foreground rendering paths. These tests
+ * cover errored, interrupted, and detached child statuses plus result rows.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import type { AsyncJobState } from "../../packages/subagents/src/shared/types.js";
 import { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
-import { widgetStats } from "../../packages/subagents/src/tui/render-event-formatting.js";
 import { type AgentToolResult, type Details, theme } from "./subagents-render-stability-helpers.js";
 
 function parallelChild(
 	agent: string,
 	status: "ok" | "error" | "interrupted" | "continued" | "skipped",
-	extra: { interrupted?: boolean; detached?: boolean } = {},
+	extra: {
+		interrupted?: boolean;
+		detached?: boolean;
+		model?: string;
+		thinking?: string;
+		fastMode?: boolean;
+	} = {},
 ): Details["results"][number] {
 	return {
 		agent,
@@ -74,38 +68,19 @@ describe("top-level parallel status reduction", () => {
 	});
 });
 
-describe("async parallel widget stats gate on active state, not mode", () => {
-	function job(overrides: Partial<AsyncJobState>): AsyncJobState {
-		return {
-			asyncId: "run-1",
-			asyncDir: "/tmp/run-1",
-			status: "running",
-			mode: "parallel",
-			agents: ["alpha", "beta"],
-			stepsTotal: 2,
-			startedAt: 0,
-			updatedAt: 0,
-			...overrides,
-		} as AsyncJobState;
-	}
-
-	test("a launched parallel job with no active group reads the step total", () => {
-		const stats = widgetStats(job({}), theme);
-		assert.match(stats, /steps 2/);
-		assert.doesNotMatch(stats, /agent running/);
-		assert.doesNotMatch(stats, /0\/2 done/);
-	});
-
-	test("an active parallel group reads running and done counts", () => {
-		const stats = widgetStats(job({ activeParallelGroup: true, runningSteps: 1, completedSteps: 0 }), theme);
-		assert.match(stats, /1 agent running/);
-		assert.match(stats, /0\/2 done/);
-		assert.doesNotMatch(stats, /steps 2/);
-	});
-
-	test("a single-agent job is unaffected", () => {
-		const stats = widgetStats(job({ mode: "single", agents: ["alpha"], stepsTotal: 1 }), theme);
-		assert.doesNotMatch(stats, /steps 1/);
-		assert.doesNotMatch(stats, /agent running/);
-	});
+test("parallel result rows keep each child's model and thinking metadata", () => {
+	const rendered = renderParallel([
+		parallelChild("alpha", "ok", {
+			model: "openai/gpt-5.1-codex",
+			thinking: "high",
+			fastMode: true,
+		}),
+		parallelChild("beta", "ok", {
+			model: "anthropic/claude-sonnet-4",
+			thinking: "low",
+		}),
+	]);
+	assert.match(rendered, /alpha.*gpt-5\.1-codex · thinking high · fast/);
+	assert.match(rendered, /beta.*claude-sonnet-4 · thinking low/);
+	assert.doesNotMatch(rendered, /claude-sonnet-4 · thinking low · fast/);
 });

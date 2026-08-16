@@ -1,29 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { AgentProgress, AsyncJobState, Details } from "../shared/types.ts";
-
-export function widgetRenderKey(job: AsyncJobState): string {
-	return JSON.stringify({
-		asyncDir: job.asyncDir,
-		status: job.status,
-		activityState: job.activityState,
-		lastActivityAt: job.lastActivityAt,
-		currentTool: job.currentTool,
-		currentToolStartedAt: job.currentToolStartedAt,
-		currentPath: job.currentPath,
-		turnCount: job.turnCount,
-		toolCount: job.toolCount,
-		mode: job.mode,
-		agents: job.agents,
-		steps: job.steps,
-		nestedChildren: job.nestedChildren,
-		stepsTotal: job.stepsTotal,
-		runningSteps: job.runningSteps,
-		completedSteps: job.completedSteps,
-		startedAt: job.startedAt,
-		updatedAt: job.updatedAt,
-		totalTokens: job.totalTokens,
-	});
-}
+import type { AgentProgress, Details } from "../shared/types.ts";
 
 export function progressRenderKey(progress: Partial<AgentProgress> | undefined): string {
 	if (!progress) return "";
@@ -40,14 +16,6 @@ export function progressRenderKey(progress: Partial<AgentProgress> | undefined):
 		progress.currentToolStartedAt ?? "",
 		progress.currentPath ?? "",
 	].join(":");
-}
-
-export function isRunningSubagentResult(result: AgentToolResult<Details>): boolean {
-	return (
-		result.details?.progress?.some((entry) => entry.status === "running") ||
-		result.details?.results.some((entry) => entry.progress?.status === "running") ||
-		false
-	);
 }
 
 export function subagentResultRenderKey(
@@ -75,7 +43,6 @@ export function subagentResultRenderKey(
 		options.isPartial ? "partial" : "final",
 		options.expanded ? "expanded" : "compact",
 		details.mode,
-		details.asyncId ?? "",
 		details.totalSteps ?? "",
 		progressRenderKey(details.progressSummary),
 		progressKeys.join("|"),

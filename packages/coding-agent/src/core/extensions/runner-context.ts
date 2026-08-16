@@ -4,6 +4,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
+import type { SkillCatalog } from "../skill-catalog.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
 import type {
@@ -45,6 +46,7 @@ export interface ExtensionContextSource {
 	getContextUsage(): ContextUsage | undefined;
 	compact(options?: CompactOptions): void;
 	getSystemPrompt(): string;
+	getSkillCatalog?(): SkillCatalog;
 }
 
 export interface ExtensionCommandContextSource extends ExtensionContextSource {
@@ -197,6 +199,14 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 			source.assertActive();
 			return source.getSystemPrompt();
 		},
+		...(source.getSkillCatalog
+			? {
+					getSkillCatalog: () => {
+						source.assertActive();
+						return source.getSkillCatalog!();
+					},
+				}
+			: {}),
 	};
 }
 

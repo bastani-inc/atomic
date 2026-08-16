@@ -3,6 +3,7 @@ import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { runCallback } from "../../core/callback-activity.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
+import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
@@ -501,12 +502,12 @@ export function createRpcCommandHandler({
 					});
 				}
 
-				for (const skill of session.resourceLoader.getSkills().skills) {
+				for (const skillCommand of getSkillCatalog(session.resourceLoader).commands) {
 					commands.push({
-						name: `skill:${skill.name}`,
-						description: skill.description,
+						name: `skill:${skillCommand.name}`,
+						description: skillCommand.description,
 						source: "skill",
-						sourceInfo: skill.sourceInfo,
+						sourceInfo: skillCommand.sourceInfo,
 					});
 				}
 

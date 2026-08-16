@@ -6,6 +6,10 @@ import { runFanOutAndSynthesize } from "./fan-out-and-synthesize-runner.js";
 export default workflow({
   name: "fan-out-and-synthesize",
   description: "Partition a task, run bounded independent artifact branches, then synthesize all evidence at an explicit barrier.",
+  // The 15-minute default, stated rather than inherited: this is a per-workflow
+  // product decision, so a future change to the global default must not silently
+  // re-cadence a long autonomous run.
+  heartbeatIntervalMinutes: 15,
   inputs: {
     prompt: Type.String({ description: "Task to partition, investigate, and synthesize." }),
     max_branches: Type.Integer({

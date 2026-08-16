@@ -13,7 +13,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { AgentSession } from "@bastani/atomic";
+import { type AgentSession, TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
 import { Key } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -234,6 +234,69 @@ describe("WorkflowAttachPane", () => {
 		assert.equal(pane._mode, "stage-chat");
 		const lines = pane.render(120);
 		assert.equal(lines.length, 44);
+		pane.dispose();
+	});
+});
+
+describe("WorkflowAttachPane internal UI actions", () => {
+	test("declines the transcript jump in graph mode, prompt card included", () => {
+		// The overlay declares `handlesInternalUiAction` for the whole adapter, so
+		// the graph view is offered the URL as well. It draws no follow indicator,
+		// so it must decline and leave the host transcript as the fallback.
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		const registry = createStageControlRegistry();
+		registry.register(makeHandle("run-1", "stage-a"));
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+			piTui: { terminal: { rows: 40 } },
+		});
+
+		assert.equal(pane._mode, "graph");
+		assert.equal(
+			pane.handleInput(TRANSCRIPT_JUMP_TO_END_URL),
+			false,
+			"the graph view must not swallow the jump activation",
+		);
+
+		// A legacy run-level prompt card claims every keystroke, so an ungated
+		// URL reached the card and was swallowed instead of falling back.
+		assert.equal(store.recordPendingPrompt("run-1", makePendingPrompt({ id: "run-prompt" })), true);
+		pane.render(120);
+		assert.equal(
+			pane.handleInput(TRANSCRIPT_JUMP_TO_END_URL),
+			false,
+			"a run-level prompt card must not consume the jump URL",
+		);
+		assert.equal(store.snapshot().runs[0]?.pendingPrompt?.id, "run-prompt", "the prompt must stay unanswered");
+		pane.dispose();
+	});
+
+	test("claims the transcript jump in stage-chat mode", () => {
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		const registry = createStageControlRegistry();
+		registry.register(makeHandle("run-1", "stage-a"));
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+			piTui: { terminal: { rows: 40 } },
+		});
+
+		pane.handleInput(Key.enter);
+		assert.equal(pane._mode, "stage-chat");
+		assert.equal(
+			pane.handleInput(TRANSCRIPT_JUMP_TO_END_URL),
+			true,
+			"the stage chat that drew the indicator claims its own jump",
+		);
 		pane.dispose();
 	});
 });

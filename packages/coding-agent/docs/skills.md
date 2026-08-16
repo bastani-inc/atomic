@@ -85,6 +85,21 @@ Skills register as `/skill:name` commands:
 /skill:pdf-tools extract      # Load skill with arguments
 ```
 
+When multiple real skill files declare the same name, Atomic keeps the existing precedence winner for the bare command and retains every distinct file as an exact candidate. Use a source-qualified command to select one explicitly:
+
+```bash
+/skill:review                  # Current precedence winner
+/skill:review@project          # Unique project candidate
+/skill:review@user             # Unique user candidate
+/skill:review@builtin          # Unique bundled candidate
+```
+
+`@project`, `@user`, and `@builtin` are available only when that family has one candidate in the collision. If a family contains multiple package candidates, Atomic advertises package-qualified aliases instead, such as `/skill:review@team-review` and `/skill:review@company-review`; the family selector is ambiguous and reports the exact choices. Autocomplete, `pi.getCommands()`, and RPC `get_commands` return the same advertised names.
+
+Qualified selection is exact. An unknown or ambiguous qualified selector reports an error and never falls back to the bare winner. Aliases are recalculated on reload, so a qualified alias disappears when its collision disappears. The model-visible skill list uses the same aliases, while the opaque candidate IDs stored in transcripts and collision diagnostics are internal identity, not command names.
+
+Subagent definitions and per-call `skills` overrides accept these same selectors. Live in-process children resolve them from their own loader catalog after resource reload; a missing or ambiguous selector is reported in the child result instead of silently selecting the bare skill. The parent-only `subagent` orchestration skill cannot be injected into a child, including qualified aliases such as `subagent@builtin`. Extensions can read the same catalog through `ctx.getSkillCatalog()`.
+
 Arguments after the command are appended to the skill content as `User: <args>`.
 
 Toggle skill commands via `/settings` in interactive mode or in `settings.json`:
@@ -194,7 +209,7 @@ Unknown frontmatter fields are ignored.
 
 **Exception:** Skills with missing description are not loaded.
 
-Name collisions (same name from different locations) warn and keep the first skill found.
+Name collisions (the same name from different real files) produce diagnostics and keep the existing first-winner precedence for `/skill:name`. Atomic also retains the other files as source-qualified candidates as described in [Skill Commands](#skill-commands).
 
 ## Example
 

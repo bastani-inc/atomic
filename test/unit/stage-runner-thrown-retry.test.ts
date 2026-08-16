@@ -10,6 +10,7 @@ import type { WorkflowFastModeSettingsManager } from "../../packages/workflows/s
 import { nextRetryDecision as workflowsNextRetryDecision } from "../../packages/workflows/src/runs/shared/retry.js";
 import {
 	assert,
+	assistantMessageWithUsage,
 	createStageContext,
 	flushMicrotasks,
 	makeMockSession,
@@ -110,6 +111,75 @@ describe("createStageContext — thrown model failure retry", () => {
 		assert.equal(await ctx.prompt("go"), "ok");
 		assert.equal(promptCalls, 3);
 		assert.equal(activeSession?.messages.length, 1);
+	});
+
+	test("a same-model retry keeps the dropped error assistant's usage in the attempt aggregate", async () => {
+		const messages: StageSessionRuntime["messages"] = [
+			// Historical transcript usage must never be charged to this attempt.
+			assistantMessageWithUsage("historical answer", {
+				input: 9999,
+				output: 8888,
+				cacheRead: 7777,
+				cacheWrite: 6666,
+				cost: 9.99,
+			}),
+		];
+		let promptCalls = 0;
+		const settings = retrySettings();
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return sessionWithSettings(
+					settings,
+					async () => {
+						promptCalls += 1;
+						messages.push({ role: "user", content: "go", timestamp: Date.now() } as never);
+						if (promptCalls === 1) {
+							messages.push(
+								assistantMessageWithUsage(
+									"failed attempt",
+									{ input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011 },
+									"error",
+								),
+							);
+							throw new Error("503 service unavailable");
+						}
+						messages.push(
+							assistantMessageWithUsage("final answer", {
+								input: 111,
+								output: 222,
+								cacheRead: 333,
+								cacheWrite: 444,
+								cost: 0.111,
+							}),
+						);
+						return "ok";
+					},
+					{ messages, getLastAssistantText: () => "ok" },
+				);
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({ adapters: { agentSession }, stageOptions: { model: "anthropic/primary" } }),
+		) as InternalStageContext;
+
+		assert.equal(await ctx.prompt("go"), "ok");
+		assert.equal(promptCalls, 2, "the same session must retry once and succeed");
+		assert.equal(
+			messages.filter((message) => message.role === "assistant" && message.stopReason === "error").length,
+			0,
+			"restore semantics must still drop the failed error assistant from the live transcript",
+		);
+		assert.deepEqual(
+			ctx.__modelFallbackMeta().modelAttempts,
+			[
+				{
+					model: "anthropic/primary",
+					success: true,
+					usage: { input: 122, output: 244, cacheRead: 366, cacheWrite: 488, cost: 0.122, turns: 2 },
+				},
+			],
+			"one attempt record sums only the retry-window responses and counts both turns",
+		);
 	});
 
 	test("keeps the admitted stage prompt when the retry continues the real session turn", async () => {
@@ -224,19 +294,47 @@ describe("createStageContext — thrown model failure retry", () => {
 		const promptCalls: string[] = [];
 		const created: string[] = [];
 		const disposed: string[] = [];
+		let primaryPromptCalls = 0;
 		const settings = retrySettings();
 		const agentSession: AgentSessionAdapter = {
 			async create(options) {
 				const model = modelFor(options);
 				created.push(model);
+				const messages: StageSessionRuntime["messages"] = [];
 				return sessionWithSettings(
 					settings,
 					async () => {
 						promptCalls.push(model);
-						if (model === "anthropic/primary") throw new Error("503 service unavailable");
+						if (model === "anthropic/primary") {
+							primaryPromptCalls += 1;
+							messages.push(
+								assistantMessageWithUsage(
+									`failed response ${primaryPromptCalls}`,
+									{
+										input: primaryPromptCalls,
+										output: primaryPromptCalls * 2,
+										cacheRead: primaryPromptCalls * 3,
+										cacheWrite: primaryPromptCalls * 4,
+										cost: primaryPromptCalls / 1000,
+									},
+									"error",
+								),
+							);
+							throw new Error("503 service unavailable");
+						}
+						messages.push(
+							assistantMessageWithUsage("fallback answer", {
+								input: 10,
+								output: 20,
+								cacheRead: 30,
+								cacheWrite: 40,
+								cost: 0.01,
+							}),
+						);
 						return "fallback answer";
 					},
 					{
+						messages,
 						dispose: () => {
 							disposed.push(model);
 						},
@@ -260,13 +358,19 @@ describe("createStageContext — thrown model failure retry", () => {
 		assert.deepEqual(promptCalls, ["anthropic/primary", "anthropic/primary", "anthropic/primary", "openai/fallback"]);
 		assert.deepEqual(created, ["anthropic/primary", "openai/fallback"]);
 		assert.deepEqual(disposed, ["anthropic/primary"]);
-		assert.deepEqual(
-			ctx.__modelFallbackMeta().modelAttempts?.map(({ model, success }) => ({ model, success })),
-			[
-				{ model: "anthropic/primary", success: false },
-				{ model: "openai/fallback", success: true },
-			],
-		);
+		assert.deepEqual(ctx.__modelFallbackMeta().modelAttempts, [
+			{
+				model: "anthropic/primary",
+				success: false,
+				error: "503 service unavailable",
+				usage: { input: 6, output: 12, cacheRead: 18, cacheWrite: 24, cost: 0.006, turns: 3 },
+			},
+			{
+				model: "openai/fallback",
+				success: true,
+				usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cost: 0.01, turns: 1 },
+			},
+		]);
 	});
 
 	test("retries session creation on the same candidate before advancing", async () => {
@@ -659,6 +763,16 @@ function realSessionProbe(
 						stopReason: "error",
 						errorMessage: "503 service unavailable",
 						content: [],
+						// Meaningful usage so retry-discard accounting keeps this response
+						// in the final attempt aggregate even though restore drops it.
+						usage: {
+							input: 11,
+							output: 22,
+							cacheRead: 33,
+							cacheWrite: 44,
+							totalTokens: 110,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.011 },
+						},
 					} as never);
 					throw new Error("503 service unavailable");
 				},
@@ -714,11 +828,25 @@ describe("createStageContext — continuation eligibility across admitted orderi
 			failCalls: 1,
 			admit: (messages, call) => {
 				if (call === 1) {
-					messages.push({
-						role: "assistant",
-						stopReason: "stop",
-						content: [{ type: "text", text: "partial" }],
-					} as never);
+					messages.push(
+						assistantMessageWithUsage("partial", {
+							input: 1,
+							output: 2,
+							cacheRead: 3,
+							cacheWrite: 4,
+							cost: 0.001,
+						}),
+					);
+				} else {
+					messages.push(
+						assistantMessageWithUsage("final", {
+							input: 111,
+							output: 222,
+							cacheRead: 333,
+							cacheWrite: 444,
+							cost: 0.111,
+						}),
+					);
 				}
 			},
 		});
@@ -730,10 +858,32 @@ describe("createStageContext — continuation eligibility across admitted orderi
 		assert.deepEqual(probe.continuedTranscripts, [], "an assistant tail is not a valid continuation");
 		assert.deepEqual(probe.promptTexts, ["do it", "do it"], "the retry must re-send the prompt instead");
 		assert.equal(userMessagesWithText(probe.messages, "do it"), 1, "the re-prompt must not duplicate the input");
+		assert.deepEqual(
+			ctx.__modelFallbackMeta().modelAttempts?.[0]?.usage,
+			{ input: 123, output: 246, cacheRead: 369, cacheWrite: 492, cost: 0.123, turns: 3 },
+			"the latched window includes the retained response, discarded error, and re-prompt response",
+		);
 	});
 
 	test("a pause during backoff drops the retained prompt and uses the resumed text", async () => {
-		const probe = realSessionProbe(retrySettings({ baseDelayMs: 1000 }), { failCalls: 1 });
+		const probe = realSessionProbe(retrySettings({ baseDelayMs: 1000 }), {
+			failCalls: 1,
+			// The replacement prompt's own response also carries usage, so a
+			// lastPromptStartIndex-based aggregate would see only this value.
+			admit: (messages, call) => {
+				if (call === 2) {
+					messages.push(
+						assistantMessageWithUsage("resumed answer", {
+							input: 111,
+							output: 222,
+							cacheRead: 333,
+							cacheWrite: 444,
+							cost: 0.111,
+						}),
+					);
+				}
+			},
+		});
 		const ctx = createStageContext(
 			makeOpts({ adapters: { agentSession: probe.agentSession }, stageOptions: { model: "anthropic/primary" } }),
 		) as InternalStageContext;
@@ -749,6 +899,11 @@ describe("createStageContext — continuation eligibility across admitted orderi
 		assert.deepEqual(probe.continuedTranscripts, [], "a resumed prompt does not continue the old turn");
 		assert.deepEqual(probe.promptTexts, ["do it", "resumed"]);
 		assert.equal(userMessagesWithText(probe.messages, "do it"), 0, "the abandoned input must not survive the resume");
+		assert.deepEqual(
+			ctx.__modelFallbackMeta().modelAttempts?.[0]?.usage,
+			{ input: 122, output: 244, cacheRead: 366, cacheWrite: 488, cost: 0.122, turns: 2 },
+			"the aggregate spans the original boundary: the pre-pause dropped error and the replacement response both count",
+		);
 	});
 
 	test("ctx.abort during backoff stops before any continuation", async () => {

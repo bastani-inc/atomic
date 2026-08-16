@@ -22,7 +22,7 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Task | Tool | Why |
 | --- | --- | --- |
 | Dependency install | `npm ci --ignore-scripts` | `package-lock.json` is the single verified lockfile. `npm ci` refuses to install when it and `package.json` disagree; nothing enforced that while two lockfiles coexisted |
-| Supply-chain gate | committed `.npmrc` | Byte-identical to pi's: `save-exact=true` and `min-release-age=2`. Binds every contributor's install, not just CI. `.github/dependabot.yml` carries the matching `cooldown` |
+| Install policy | committed `.npmrc` | `save-exact=true` matches pi. **`min-release-age=0` deliberately diverges** from pi's 2: Atomic adopts pi releases the same day they publish, which a nonzero cooldown blocks by construction. `.github/dependabot.yml` carries the matching `cooldown: 0`; the two must move together |
 | Build | `npm run build` | tsgo, not Bun; no behaviour change |
 | Lint / format | `biome check` (`npm run check`, `npm run format`) | pi's rule set exactly: recommended preset plus the same six overrides. Tab indent width 3, line width 120 |
 | Typecheck / check | `npm run check` (biome + `tsc --noEmit` + the coding-agent package's `tsgo -p tsconfig.build.json --noEmit` + shrinkwrap check) | pi runs biome + tsgo here. The second typecheck pass covers `packages/coding-agent`, which the root tsconfig excludes, under its own stricter build config (including `erasableSyntaxOnly`) |
@@ -50,7 +50,7 @@ a *toolchain* goal, not a CI-topology goal.
 ### Commands
 
 - `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
-- `npm install <pkg>` — add a dependency; `.npmrc` applies the 3-day release-age gate and `save-exact`
+- `npm install <pkg>` — add a dependency; `.npmrc` applies `save-exact`. There is no release-age gate: `min-release-age=0`
 - `npm run check` — `tsc --noEmit`, then the coding-agent package typecheck (`tsgo -p tsconfig.build.json --noEmit`), plus the published-shrinkwrap check. `npm run typecheck` runs both typecheck passes alone
 - `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
 - `npm run test --workspace=@bastani/atomic` — the coding-agent vitest suite, under Node
@@ -61,7 +61,7 @@ a *toolchain* goal, not a CI-topology goal.
 
 **Do not run `yarn install` or `pnpm install`,** and do not reintroduce `bun install`: each
 writes a competing lockfile that `npm ci` neither reads nor verifies, and bypasses the
-`.npmrc` release-age gate. `bun.lock` and `packageManager: bun@…` were removed for this
+`.npmrc` `save-exact` pin. `bun.lock` and `packageManager: bun@…` were removed for this
 reason. Bun remains a declared engine and is still the right tool for the rows above that
 name it.
 
@@ -306,9 +306,10 @@ Note: npm provenance publishing uses GitHub OIDC trusted publishing and must not
 
 Install with `npm ci --ignore-scripts`, and add dependencies with `npm install`. Never run
 `yarn install` or `pnpm install`, and do not bring back `bun install`: each writes a competing
-lockfile that `npm ci` neither reads nor verifies, and bypasses the `min-release-age` gate in
-the committed `.npmrc`. `package-lock.json` is the only lockfile, and it is also the input to
-the shrinkwrap published inside `@bastani/atomic`.
+lockfile that `npm ci` neither reads nor verifies, and bypasses the `save-exact` pin in the
+committed `.npmrc`. `package-lock.json` is the only lockfile, and it is also the input to the
+shrinkwrap published inside `@bastani/atomic`. Note that `min-release-age=0`: nothing delays a
+freshly published version from entering that lockfile, and the shrinkwrap ships to users.
 
 Bun is still required, and still correct, for three things: compiling release binaries with
 `bun build --compile`, running `scripts/*.ts`, and running the Bun-hosted test fixtures. See

@@ -20,7 +20,7 @@ Paths copied from Git Bash, MSYS2, Cygwin, or WSL are accepted anywhere Atomic r
 
 ## Filesystem Watchers
 
-On Windows, Atomic canonicalizes paths before starting native filesystem watchers. If a watcher target cannot be canonicalized or still contains an unsafe 8.3 short-name component such as `USERNA~1`, Atomic avoids native `fs.watch` for that target and uses polling where the feature supports it. This protects long-running sessions, async subagent result notifications, footer git status refreshes, and custom theme reloads from Windows/libuv path-prefix assertion crashes.
+On Windows, Atomic canonicalizes paths before starting native filesystem watchers. If a watcher target cannot be canonicalized or still contains an unsafe 8.3 short-name component such as `USERNA~1`, Atomic avoids native `fs.watch` for that target and uses polling where the feature supports it. This protects long-running sessions, footer git status refreshes, and custom theme reloads from Windows/libuv path-prefix assertion crashes.
 
 ## Self-Update Behavior
 

@@ -5,7 +5,11 @@ import "../../packages/coding-agent/src/modes/interactive/interactive-agent-even
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { setThemeInstance } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
+import { useAnsiColorEnvironment } from "../helpers/ansi-color-env.ts";
 import { installLifecycleFakeClock } from "./chat-session-host-working-lifecycle-fixture.ts";
+
+/** The loader phase assertions below match on truecolor escape sequences. */
+useAnsiColorEnvironment();
 
 beforeAll(() => setThemeInstance(loadTheme("catppuccin-mocha", "truecolor")));
 

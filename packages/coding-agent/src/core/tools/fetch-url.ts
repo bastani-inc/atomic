@@ -222,6 +222,89 @@ function createPinnedDispatcher(pinned: SafeFetchAddress): Agent {
 	});
 }
 
+interface ResponseBodyStream extends NodeJS.ReadableStream {
+	on(event: "data", listener: (chunk: Buffer) => void): this;
+	on(event: "end" | "close", listener: () => void): this;
+	on(event: "error", listener: (error: unknown) => void): this;
+	removeListener(event: "data", listener: (chunk: Buffer) => void): this;
+	removeListener(event: "end" | "close", listener: () => void): this;
+	removeListener(event: "error", listener: (error: unknown) => void): this;
+	destroy(error?: Error): this;
+	pause(): this;
+}
+
+function toReadableStreamError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
+}
+
+export function createPinnedResponseBodyStream(body: ResponseBodyStream): ReadableStream<Uint8Array> {
+	let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+	let terminal = false;
+	let ended = false;
+	let cleanedUp = false;
+
+	const detachDataListeners = () => {
+		body.removeListener("data", onData);
+		body.removeListener("end", onEnd);
+	};
+	const cleanup = () => {
+		if (cleanedUp) return;
+		cleanedUp = true;
+		detachDataListeners();
+		body.removeListener("error", onError);
+		body.removeListener("close", onClose);
+	};
+	const closeStream = () => {
+		if (terminal) return;
+		terminal = true;
+		detachDataListeners();
+		controller?.close();
+	};
+	const onData = (chunk: Buffer) => {
+		if (terminal) return;
+		controller?.enqueue(new Uint8Array(chunk));
+	};
+	const onEnd = () => {
+		ended = true;
+		closeStream();
+	};
+	const onError = (error: unknown) => {
+		if (terminal) return;
+		terminal = true;
+		detachDataListeners();
+		controller?.error(toReadableStreamError(error));
+	};
+	const onClose = () => {
+		// `close` without a preceding `end` is a premature termination (reset,
+		// abort, truncation). Reporting it as a clean EOF would hand partial
+		// response content to the consumer as a successful read.
+		if (!terminal && !ended) {
+			terminal = true;
+			detachDataListeners();
+			controller?.error(new Error("response body closed before the stream ended"));
+		} else {
+			closeStream();
+		}
+		cleanup();
+	};
+	return new ReadableStream<Uint8Array>({
+		start(streamController) {
+			controller = streamController;
+			body.on("data", onData);
+			body.on("end", onEnd);
+			body.on("error", onError);
+			body.on("close", onClose);
+		},
+		cancel() {
+			if (terminal) return;
+			terminal = true;
+			detachDataListeners();
+			body.pause?.();
+			body.destroy();
+		},
+	});
+}
+
 async function closePinnedDispatcher(dispatcher: Agent | undefined): Promise<void> {
 	const close = (dispatcher as { close?: () => Promise<void> | void } | undefined)?.close;
 	if (typeof close === "function") await close.call(dispatcher);
@@ -253,16 +336,7 @@ async function pinnedFetch(
 		const values = Array.isArray(value) ? value : [value];
 		for (const entry of values) headers.append(key, entry);
 	}
-	const stream = new ReadableStream({
-		start(controller) {
-			body.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
-			body.on("end", () => controller.close());
-			body.on("error", (error: unknown) => controller.error(error));
-		},
-		cancel() {
-			body.destroy();
-		},
-	});
+	const stream = createPinnedResponseBodyStream(body);
 	return new Response(stream, { status, headers });
 }
 

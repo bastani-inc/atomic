@@ -14,6 +14,10 @@ export interface BranchSummarySettings {
 	skipPrompt?: boolean; // default: false - when true, skips "Summarize branch?" prompt and defaults to no summary
 }
 
+export interface SessionSummarySettings {
+	enabled?: boolean; // default: true - generate a one-line resume-picker summary once the agent goes idle
+}
+
 export interface ProviderRetrySettings {
 	timeoutMs?: number; // SDK/provider request timeout in milliseconds
 	maxRetries?: number; // SDK/provider retry attempts
@@ -71,6 +75,9 @@ export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
 
+/** What the terminal keeps when Atomic's fullscreen session exits. */
+export type FullscreenExitOutput = "transcript" | "resume-hint";
+
 /**
  * Package source for npm/git packages.
  * - String form: load all resources from the package
@@ -110,6 +117,7 @@ export interface Settings {
 	showCacheMissNotices?: boolean; // default: false
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
+	sessionSummary?: SessionSummarySettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
@@ -132,6 +140,7 @@ export interface Settings {
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
+	defaultTools?: string[]; // Initial built-in tool selection; extension and SDK custom tools stay enabled
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
@@ -140,6 +149,7 @@ export interface Settings {
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"
+	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow

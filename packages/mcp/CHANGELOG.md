@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-08-13
+
+Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.2` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Changed
+
+- In-process subagents receive MCP direct-tool selection through typed admission policy: an omitted selection preserves MCP configuration defaults, a list selects exact server/tool entries, and an empty list disables direct tools. The process-era environment bridge is gone ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- MCP server processes and npm/Glimpse resolver probes now receive `AI_AGENT=atomic` for generic child-process attribution; the reserved marker overrides a configured `AI_AGENT` value.
+
+### Fixed
+
+- Restored credential-resolved endpoints for MCP sampling requests, so GitHub Copilot Business and Enterprise accounts keep their own endpoint alongside dynamic API keys and request headers ([#7579](https://github.com/earendil-works/pi/issues/7579)).
+- Fixed image blocks returned by MCP tools bypassing the host's `images.autoResize` processing before they enter session history.
+- Fixed deferred MCP initialization's stale-context check by consuming the host's exported predicate instead of copying its error-message marker.
+
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Changed
 
 - MCP server processes and npm/Glimpse resolver probes now receive `AI_AGENT=atomic` for generic child-process attribution; the reserved marker overrides a configured `AI_AGENT` value.

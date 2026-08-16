@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.ts";
+import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.ts";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import type { QuestionData } from "../../tool/types.ts";
 import type { StatefulView } from "../stateful-view.ts";
@@ -70,7 +71,8 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			const styledLabel = row.active ? this.theme.fg("accent", this.theme.bold(label)) : label;
 			const num = String(i + 1).padStart(numberWidth, " ");
 			const line = `${pointer}${num}${NUMBER_SEPARATOR}${box}${BOX_LABEL_GAP}${styledLabel}`;
-			lines.push(truncateToWidth(line, width, ""));
+			const rendered = truncateToWidth(line, width, "");
+			lines.push(`${rendered}${row.active ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
 			if (opt.description) {
 				const wrapped = wrapTextWithAnsi(opt.description, contentWidth);
 				for (const segment of wrapped) {
@@ -82,7 +84,8 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		const nextLabel = this.props.nextActive
 			? this.theme.fg("accent", this.theme.bold(this.props.nextLabel))
 			: this.props.nextLabel;
-		lines.push(truncateToWidth(`${nextPointer}${nextLabel}`, width, ""));
+		const rendered = truncateToWidth(`${nextPointer}${nextLabel}`, width, "");
+		lines.push(`${rendered}${this.props.nextActive ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
 		return lines;
 	}
 

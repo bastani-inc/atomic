@@ -226,6 +226,10 @@ const STATIC_INHERITED_PROPS = new Set([
   'color', 'fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'fontVariant',
   'lineHeight', 'letterSpacing', 'textTransform', 'textAlign', 'hyphens',
   'webkitHyphens',
+  // visibility inherits in real CSS, and the invisible-at-rest contrast skip
+  // relies on descendants of a hidden container computing as hidden. A child
+  // that declares `visibility: visible` still overrides the inherited value.
+  'visibility',
 ]);
 
 const STATIC_DEFAULT_STYLE = {
@@ -278,6 +282,7 @@ const STATIC_DEFAULT_STYLE = {
   marginLeft: '0px',
   position: 'static',
   visibility: 'visible',
+  opacity: '1',
   top: 'auto',
   right: 'auto',
   bottom: 'auto',
@@ -334,6 +339,7 @@ const STATIC_PROP_MAP = {
   'margin-left': 'marginLeft',
   'position': 'position',
   'visibility': 'visibility',
+  'opacity': 'opacity',
   'top': 'top',
   'right': 'right',
   'bottom': 'bottom',
@@ -952,7 +958,10 @@ function collectStaticCssText(root, fileDir, profile, filePath, modules) {
     const rel = link.attribs?.rel || '';
     const href = link.attribs?.href || '';
     if (!/\bstylesheet\b/i.test(rel) || !href || /^(https?:)?\/\//i.test(href)) continue;
-    const cssPath = path.resolve(fileDir, href);
+    // Cache-busting hrefs (styles.css?v=3) resolve to the file, not to a
+    // literal path with the query in it; a versioned link otherwise made the
+    // whole stylesheet invisible to every element-level check.
+    const cssPath = path.resolve(fileDir, href.split(/[?#]/)[0]);
     try {
       const css = profileStep(profile, {
         engine: 'static-html',

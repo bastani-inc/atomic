@@ -140,7 +140,9 @@ InteractiveModeBase.prototype.handleFatalRuntimeError = async function (
 	const message = error instanceof Error ? error.message : String(error);
 	this.showError(`${prefix}: ${message}`);
 	stopThemeWatcher();
-	this.stop();
+	// A fatal exit keeps the transcript visible: the error the user just saw
+	// must remain on screen after the process dies, whatever the setting says.
+	this.stop("transcript");
 	process.exit(1);
 };
 

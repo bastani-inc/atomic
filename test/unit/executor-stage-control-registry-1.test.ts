@@ -147,6 +147,7 @@ describe("executor — stage-control registry integration", () => {
 		const store = createStore();
 		const releaseWorkflowPrompt = deferred();
 		const sawStage = deferred<{ runId: string; stageId: string }>();
+		const promptStarted = deferred();
 		let sawStageResolved = false;
 		let promptReject: ((err: Error) => void) | undefined;
 		let promptResolve: (() => void) | undefined;
@@ -156,6 +157,7 @@ describe("executor — stage-control registry integration", () => {
 			...mockSession(),
 			async prompt() {
 				streaming = true;
+				promptStarted.resolve();
 				return new Promise<string | undefined>((resolve, reject) => {
 					promptResolve = () => {
 						streaming = false;
@@ -217,7 +219,7 @@ describe("executor — stage-control registry integration", () => {
 			assert.ok(handle, "pending stage should have a live handle");
 			const attachedPrompt = handle!.prompt("attached prompt");
 			void attachedPrompt.catch(() => {});
-			await waitForMicrotasks();
+			await promptStarted.promise;
 			assert.equal(handle!.isStreaming, true);
 
 			await handle!.pause();

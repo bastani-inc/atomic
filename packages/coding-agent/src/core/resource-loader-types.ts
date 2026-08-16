@@ -5,6 +5,7 @@ import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.t
 import type { PathMetadata, ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
+import type { SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
 
 export interface ResourceExtensionPaths {
@@ -37,6 +38,7 @@ export interface ResourceLoaderReloadOptions {
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
+	getSkillCatalog?(): SkillCatalog;
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };

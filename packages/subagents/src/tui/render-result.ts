@@ -69,15 +69,6 @@ export function renderSubagentResult(
 	theme: Theme,
 ): Component {
 	const d = result.details;
-	if (d?.asyncId && d.results.length === 0) {
-		const contextPrefix = d.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
-		const container = new Container();
-		container.addChild(new Text(`${contextPrefix}${theme.fg("success", "launched")} · async run ${d.asyncId}`, 0, 0));
-		container.addChild(
-			new Text(theme.fg("dim", "completion pending; the detached result will be delivered when it finishes"), 0, 0),
-		);
-		return container;
-	}
 	const liveMultiProgress = d?.mode === "parallel" && (d?.progress?.length ?? 0) > 0;
 	if (!d?.results.length && !liveMultiProgress) {
 		const t = result.content[0];
@@ -112,10 +103,15 @@ export function renderSubagentResult(
 
 		const w = getTermWidth() - 4;
 		const fit = (text: string) => (expanded ? text : truncLine(text, w));
+		const modelDisplay = modelThinkingBadge(theme, r.model, r.thinking, r.fastMode);
 		const toolCallLines = getToolCallLines(r, expanded);
 		const c = new Container();
 		c.addChild(
-			new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${contextBadge}${progressInfo}`), 0, 0),
+			new Text(
+				fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${progressInfo}`),
+				0,
+				0,
+			),
 		);
 		c.addChild(new Spacer(1));
 		const taskMaxLen = Math.max(20, w - 8);
@@ -178,7 +174,7 @@ export function renderSubagentResult(
 		if (r.attemptedModels && r.attemptedModels.length > 1) {
 			c.addChild(new Text(fit(theme.fg("dim", `Fallbacks: ${r.attemptedModels.join(" → ")}`)), 0, 0));
 		}
-		c.addChild(new Text(fit(theme.fg("dim", formatUsage(r.usage, r.model))), 0, 0));
+		c.addChild(new Text(fit(theme.fg("dim", formatUsage(r.usage))), 0, 0));
 		if (r.sessionFile) {
 			c.addChild(new Text(fit(theme.fg("dim", `Session: ${shortenPath(r.sessionFile)}`)), 0, 0));
 		}
@@ -279,10 +275,16 @@ export function renderSubagentResult(
 				| undefined;
 			if (runningProg) {
 				const runningStats = ` | ${runningProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(runningProg, options.now))}`;
+				const runningBadge = modelThinkingBadge(
+					theme,
+					runningProg.model,
+					runningProg.thinking,
+					runningProg.fastMode,
+				);
 				c.addChild(
 					new Text(
 						fit(
-							`${theme.fg("warning", "running")} ${rowLabel}: ${theme.bold(theme.fg("warning", agentName))}${runningStats}`,
+							`${theme.fg("warning", "running")} ${rowLabel}: ${theme.bold(theme.fg("warning", agentName))}${runningBadge}${runningStats}`,
 						),
 						0,
 						0,
@@ -324,7 +326,12 @@ export function renderSubagentResult(
 		const stats = rProg
 			? ` | ${rProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(rProg, options.now))}`
 			: "";
-		const modelDisplay = modelThinkingBadge(theme, r.model, undefined, r.fastMode);
+		const modelDisplay = modelThinkingBadge(
+			theme,
+			r.model ?? rProg?.model,
+			r.thinking ?? rProg?.thinking,
+			r.fastMode ?? rProg?.fastMode,
+		);
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
 		const stepHeader = rRunning
 			? `${statusIcon} ${stepLabel}: ${theme.bold(theme.fg("warning", r.agent))}${modelDisplay}${stats}`

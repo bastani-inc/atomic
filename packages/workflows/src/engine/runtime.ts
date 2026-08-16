@@ -180,8 +180,25 @@ export class EngineRuntime {
 		return {
 			apply: () => {
 				if (!this.childRunOptions.mcp || !hasScope) return;
-				if (depth === 0) this.childRunOptions.mcp.setScope(stageId, allow, deny);
-				depth += 1;
+				if (depth > 0) {
+					depth += 1;
+					return;
+				}
+				depth = 1;
+				try {
+					this.childRunOptions.mcp.setScope(stageId, allow, deny);
+				} catch (error) {
+					depth = 0;
+					try {
+						this.childRunOptions.mcp.clearScope(stageId);
+					} catch (cleanupError) {
+						throw new AggregateError(
+							[error, cleanupError],
+							"MCP scope setup failed and compensating cleanup failed",
+						);
+					}
+					throw error;
+				}
 			},
 			clear: () => {
 				if (!this.childRunOptions.mcp || !hasScope) return;

@@ -100,8 +100,8 @@ const ControlOverrides = Type.Object({
 		}),
 	),
 	notifyChannels: Type.Optional(
-		Type.Array(Type.String({ enum: ["event", "async", "intercom"] }), {
-			description: "Notification channels to use when available. Defaults to event, async, and intercom.",
+		Type.Array(Type.String({ enum: ["event", "intercom"] }), {
+			description: "Notification channels to use when available. Defaults to event and intercom.",
 		}),
 	),
 });
@@ -128,11 +128,6 @@ export const SubagentParams = Type.Object(
 			Type.String({
 				description:
 					"Target run ID for action='interrupt' or action='resume'. Defaults to the most recently active controllable run for interrupt. Prefer id for new calls.",
-			}),
-		),
-		dir: Type.Optional(
-			Type.String({
-				description: "Async run directory for action='status' or action='resume'.",
 			}),
 		),
 		index: Type.Optional(
@@ -178,7 +173,6 @@ export const SubagentParams = Type.Object(
 					"'fresh' or 'fork' to branch from parent session. If omitted, any requested agent with defaultContext: 'fork' makes the whole invocation forked; otherwise the default is 'fresh'.",
 			}),
 		),
-		async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
 		agentScope: Type.Optional(
 			Type.String({
 				description:

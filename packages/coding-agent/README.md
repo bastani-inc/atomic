@@ -15,7 +15,7 @@
 
 Atomic is a minimal terminal coding harness. Adapt Atomic to your workflows, not the other way around, without having to fork and modify Atomic internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Atomic Packages](#atomic-packages) and share them with others via npm or git.
 
-Atomic ships with powerful defaults plus first-party bundled extensions for workflows, subagents, MCP, web access, intercom, and ADHD-friendly response style. You can still adapt or replace any workflow by writing extensions, skills, prompt templates, themes, or Atomic packages that match how you work.
+Atomic ships with powerful defaults plus first-party bundled extensions for workflows, subagents, MCP, web access, and intercom. You can still adapt or replace any workflow by writing extensions, skills, prompt templates, themes, or Atomic packages that match how you work.
 
 Atomic runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps. See [openclaw/openclaw](https://github.com/openclaw/openclaw) for a real-world SDK integration.
 
@@ -473,17 +473,17 @@ See [docs/rpc.md](docs/rpc.md) for the protocol.
 
 ## Philosophy
 
-Atomic is aggressively extensible so it does not have to dictate your workflow. The distribution bundles first-party extensions for workflows, subagents, MCP, web access, intercom, and ADHD-friendly response style, while still letting you build or install alternative [extensions](#extensions), [skills](#skills), and [Atomic packages](#atomic-packages). This keeps Atomic adaptable without forcing every workflow into the core CLI.
+Atomic is aggressively extensible so it does not have to dictate your workflow. The distribution bundles first-party extensions for workflows, subagents, MCP, web access, and intercom, while still letting you build or install alternative [extensions](#extensions), [skills](#skills), and [Atomic packages](#atomic-packages). This keeps Atomic adaptable without forcing every workflow into the core CLI.
 
 **Bundled subagents and workflows.** Atomic includes the first-party subagents and workflows packages. Use them as shipped, customize them, or replace them with your own extensions if your workflow needs a different orchestration model.
 
-**Bundled MCP, web access, intercom, and ADHD-friendly output.** Atomic ships first-party integrations for MCP tools, web/repository/document/video extraction, cross-session coordination, and concise action-first responses. These are packaged extensions rather than hard-coded agent behavior, so they remain configurable and replaceable.
+**Bundled MCP, web access, and intercom.** Atomic ships first-party integrations for MCP tools, web/repository/document/video extraction, and cross-session coordination. These are packaged extensions rather than hard-coded agent behavior, so they remain configurable and replaceable.
 
 **Security stays explicit.** Run in a container, use project trust controls, or build confirmation flows with [extensions](#extensions) inline with your environment and security requirements.
 
 **Composable planning and task tracking.** Use the bundled workflow/subagent/todo capabilities, write plans to files, or install a package that matches your team's process.
 
-**No hidden background bash.** Use tmux or explicit extensions for background work. Full observability, direct interaction.
+**Foreground bash only.** Use tmux or explicit extensions for background work. Full observability, direct interaction.
 
 Upstream Pi's minimal-core rationale is documented in the [original blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/); Atomic preserves the extensibility model while also bundling first-party capabilities for common workflows.
 

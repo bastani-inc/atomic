@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const expectedPiVersion = "0.84.1";
+/** The single Pi version this tree is contracted to; `test/unit/pi-0.82.1-artifacts.test.ts` reads it too. */
+export const expectedPiVersion = "0.84.2";
 const requiredPiAiFiles = [
 	"package.json",
 	"dist/models.generated.js",

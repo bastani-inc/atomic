@@ -28,7 +28,12 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-editor-actions.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
-import { createInteractiveTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.ts";
+import { TRANSCRIPT_JUMP_TO_END_URL } from "../../packages/coding-agent/src/modes/interactive/components/transcript-follow-indicator.ts";
+import {
+	createInteractiveTui,
+	handleFocusedOverlayInternalUiAction,
+	type InternalUiActionResult,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-tui.ts";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
@@ -47,7 +52,14 @@ import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/inte
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { sleep } from "../helpers/runtime.js";
 import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
-import { createStore, deriveGraphTheme, makeHandle, StageChatView, setupRun } from "./stage-chat-view-helpers.ts";
+import {
+	createStore,
+	deriveGraphTheme,
+	makeHandle,
+	makeTestTui,
+	StageChatView,
+	setupRun,
+} from "./stage-chat-view-helpers.ts";
 
 type HostComponent = Omit<Component, "handleInput"> & {
 	handleInput?: (data: string) => boolean | undefined | Promise<boolean | undefined>;
@@ -56,6 +68,8 @@ type HostComponent = Omit<Component, "handleInput"> & {
 interface Bridge {
 	readonly child: EngineCustomUiService;
 	readonly childCommands: InteractiveEngineCommand[];
+	/** Text each completed selection handed to the host clipboard, in order. */
+	readonly selectionCopies: string[];
 	readonly tui?: TuiAltScreen;
 	readonly terminal?: RecordingTerminal;
 	hostComponent: HostComponent | undefined;
@@ -66,6 +80,8 @@ interface BridgeOptions {
 	stallInput?: boolean;
 	keybindings?: KeybindingsManager;
 	onOverlayUnhandledInput?: (data: string) => boolean;
+	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
+	onInternalUiAction?: (url: string) => InternalUiActionResult;
 }
 
 const regularTuiRendererLifecycle: TuiRendererLifecycle = {
@@ -78,6 +94,10 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 	const childCommands: InteractiveEngineCommand[] = [];
 	const mainEditor: Component = { render: () => [], invalidate: () => {} };
 	const keybindings = options.keybindings ?? new KeybindingsManager();
+	// Selection copies are recorded rather than observed through the clipboard
+	// module: the renderer routes its default through `copyToClipboard`
+	// (upstream #8110), and an injected `copySelection` is the same door.
+	const selectionCopies: string[] = [];
 	const terminal = options.fullscreen ? new RecordingTerminal() : undefined;
 	if (terminal) {
 		terminal.columns = 40;
@@ -89,6 +109,10 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
+			copySelection: async (text) => {
+				selectionCopies.push(text);
+				return true;
+			},
 			shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay): boolean =>
 				shouldHandleFullscreenViewportInput(
 					tui?.getFocusedComponent() ?? null,
@@ -99,9 +123,11 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 					keybindings,
 				),
 			onOverlayUnhandledInput: options.onOverlayUnhandledInput,
+			onOverlayInternalUiAction: options.onOverlayInternalUiAction,
+			onInternalUiAction: options.onInternalUiAction,
 		}) as TuiAltScreen;
 	}
-	const bridge = { hostComponent: undefined, childCommands, terminal, tui } as unknown as Bridge;
+	const bridge = { hostComponent: undefined, childCommands, terminal, tui, selectionCopies } as unknown as Bridge;
 
 	const child = new EngineCustomUiService((line) => {
 		const message = parseInteractiveEngineMessage(line);
@@ -376,7 +402,7 @@ test("fullscreen forwards workflow node click press and release through the remo
 });
 
 test("fullscreen keeps pi-tui selection active while a workflow overlay owns focus", async () => {
-	const { host, overlay, tui, terminal } = await makeFullscreenGraphFixture();
+	const { host, overlay, tui, terminal, bridge } = await makeFullscreenGraphFixture();
 	try {
 		const lines = host.render(terminal.columns).map((line) => stripTerminalSequences(line));
 		const targetRow = lines.findIndex((line) => line.includes("stage-0"));
@@ -394,17 +420,17 @@ test("fullscreen keeps pi-tui selection active while a workflow overlay owns foc
 		assert.equal(Reflect.get(tui, "selectionPressActive"), false, "overlay drag selection did not complete");
 		assert.equal(Reflect.get(tui, "selectionDragged"), true, "overlay consumed the drag selection");
 		assert.ok(
-			terminal.writes.some((write) => write.includes("\x1b]52;c;")),
+			bridge.selectionCopies.some((text) => text.includes("stage")),
 			"pi-tui did not copy a selection made over the workflow overlay",
 		);
 
-		const writesBeforeMultiClick = terminal.writes.length;
+		const copiesBeforeMultiClick = bridge.selectionCopies.length;
 		for (const final of ["M", "m", "M", "m"] as const) {
 			terminal.input(sgrMouse(0, targetCol, targetRow, final));
 			await flush();
 		}
 		assert.ok(
-			terminal.writes.slice(writesBeforeMultiClick).some((write) => write.includes("\x1b]52;c;")),
+			bridge.selectionCopies.length > copiesBeforeMultiClick,
 			"pi-tui did not copy a multi-click selection over the overlay",
 		);
 	} finally {
@@ -561,10 +587,7 @@ test("fullscreen keeps transcript mouse selection with a focused non-overlay com
 		terminal.input(sgrMouse(0, 5, 2, "m"));
 		assert.equal(Reflect.get(tui, "selectionPressActive"), false, "transcript selection did not complete");
 		assert.equal(Reflect.get(tui, "selectionDragged"), true, "focused inline input stole selection drag events");
-		assert.ok(
-			terminal.writes.some((write) => write.includes("\x1b]52;c;")),
-			"transcript did not copy the dragged selection",
-		);
+		assert.ok(bridge.selectionCopies.length > 0, "transcript did not copy the dragged selection");
 	} finally {
 		tui.stop();
 	}
@@ -611,6 +634,123 @@ test("one Kitty Ctrl+O press/release cycle toggles an isolated stage chat once",
 	host.handleInput?.("\x1b[111;5:3u");
 	await flush();
 	assert.equal(toolsExpanded, false);
+});
+
+test("isolated stage-chat OSC-8 activation returns the remote chat to its live end", async () => {
+	let tui: TuiAltScreen | undefined;
+	let hostFallbacks = 0;
+	const bridge = makeBridge({
+		fullscreen: true,
+		onOverlayInternalUiAction: (url) => (tui ? handleFocusedOverlayInternalUiAction(tui, url) : undefined),
+		onInternalUiAction: () => {
+			hostFallbacks += 1;
+		},
+	});
+	tui = bridge.tui;
+	assert.ok(tui, "fullscreen renderer did not mount");
+
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	const { handle } = makeHandle();
+	let stageView: StageChatView | undefined;
+	void bridge.child.custom(
+		(_tui, _theme, keybindings) => {
+			const view = new StageChatView({
+				store,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "test-wf",
+				handle,
+				onDetach: () => {},
+				onClose: () => {},
+				piTui: makeTestTui(12),
+				piKeybindings: keybindings,
+			});
+			stageView = view;
+			return view;
+		},
+		{ overlay: true, handlesInternalUiAction: true },
+	);
+	await flush(8);
+	const host = bridge.hostComponent;
+	assert.ok(host, "remote stage chat did not mount on the host");
+	assert.ok(stageView, "stage chat did not mount in the isolated child");
+	for (let index = 0; index < 12; index += 1) {
+		for (const character of `remote-msg-${index}`) await host.handleInput?.(character);
+		await host.handleInput?.("\r");
+		await flush(2);
+	}
+	await flush(4);
+	stageView.render(80);
+	await host.handleInput?.("\x1b[5~");
+	assert.ok(
+		stageView._bodyScrollFromBottom > 0,
+		`stage chat did not start away from its live end (entries=${stageView._transcript.length}, max=${stageView._lastBodyMaxScroll})`,
+	);
+
+	tui.setLayoutRoot(new Text("host transcript"));
+	const overlay = tui.showOverlay(host, { anchor: "center", width: "100%", maxHeight: "100%", margin: 0 });
+	tui.start();
+	tui.renderNow();
+	try {
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+		await flush(8);
+
+		assert.equal(stageView._bodyScrollFromBottom, 0, "remote stage chat did not claim the URL activation");
+		assert.equal(hostFallbacks, 0, "claimed remote activation also jumped the host transcript");
+	} finally {
+		overlay.hide();
+		tui.stop();
+	}
+});
+
+test("isolated non-opted-in overlay leaves the jump URL on the host transcript", async () => {
+	let tui: TuiAltScreen | undefined;
+	let hostFallbacks = 0;
+	const remoteInputs: string[] = [];
+	const bridge = makeBridge({
+		fullscreen: true,
+		onOverlayInternalUiAction: (url) => (tui ? handleFocusedOverlayInternalUiAction(tui, url) : undefined),
+		onInternalUiAction: () => {
+			hostFallbacks += 1;
+		},
+	});
+	tui = bridge.tui;
+	assert.ok(tui, "fullscreen renderer did not mount");
+	void bridge.child.custom(
+		() => ({
+			render: () => ["remote"],
+			handleInput: (data: string) => {
+				remoteInputs.push(data);
+				return true;
+			},
+			invalidate: () => {},
+		}),
+		{ overlay: true },
+	);
+	await flush(8);
+	const host = bridge.hostComponent;
+	assert.ok(host, "remote component did not mount on the host");
+
+	tui.setLayoutRoot(new Text("host transcript"));
+	const overlay = tui.showOverlay(host, { anchor: "center", width: "100%", maxHeight: "100%", margin: 0 });
+	tui.start();
+	tui.renderNow();
+	try {
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+		await flush(8);
+
+		assert.deepEqual(remoteInputs, []);
+		assert.equal(hostFallbacks, 1);
+	} finally {
+		overlay.hide();
+		tui.stop();
+	}
 });
 
 test("isolated custom UI forwards Kitty releases to an opted-in child component", async () => {

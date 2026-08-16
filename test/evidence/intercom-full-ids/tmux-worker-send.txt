@@ -1,0 +1,60 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (unknown) unknown
+     ██████▙              ▟██████░░    ~/Documents/projects/atomic-intercom-full-ids
+      ██████▙            ▟██████░░
+       ████████████████████████░░      We question,
+        ██████▛░░░░░░░░▜██████░░       we break away from what is accepted.
+         ██████▛      ▜██████░░        Engineering matters.
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 19 skills · 14 prompts
+
+
+ Warning: No models available. Use /login to log into a provider via OAuth or API key. See:
+   /Users/tonystark/Documents/projects/atomic-intercom-full-ids/packages/coding-agent/docs/providers.md
+   /Users/tonystark/Documents/projects/atomic-intercom-full-ids/packages/coding-agent/docs/models.md
+
+ Session name set: worker
+
+ Message sent to planner
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                          0.0%/0 (auto)
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+unknown • ~/Documents/projects/atomic-intercom-full-ids (detached)
+● ADHD Mode • MCP: 0/1 servers

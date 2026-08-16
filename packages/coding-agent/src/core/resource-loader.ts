@@ -8,3 +8,5 @@ export type {
 	ResourceLoader,
 	ResourceLoaderReloadOptions,
 } from "./resource-loader-types.ts";
+export type { SkillCandidate, SkillCatalog, SkillCatalogCommand, SkillResolution } from "./skill-catalog.ts";
+export { buildSkillCatalog, getSkillCatalog } from "./skill-catalog.ts";

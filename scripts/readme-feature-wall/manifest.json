@@ -1,0 +1,1423 @@
+{
+  "$comment": "Authoritative map for two generated README feature tables in one fixed 6+33 order: six featured rows under Atomic Verifiable Runtime, then the other 33 after the complete Get started section. Together they cover all 27 core crash-course lessons, three distinct workflow-use paths, and the remaining Extras from A.1 through A.10. Each row binds its public Atomic docs link, crash-course link and lesson title, capture source, interactions, and media; display_title may override only the visible README title. validate.mjs checks README.md, capture sources, assets/feature-wall/, and .gitattributes against this file.",
+  "course": {
+    "name": "Atomic crash course",
+    "url": "https://github.com/bastani-inc/atomic-crash-course",
+    "seed_clone": "/tmp/atomic-github-repos/bastani-inc/atomic-crash-course",
+    "seed_policy": "Read-only. Every capture clones the seed into its own throwaway HOME; the seed itself is never written to."
+  },
+  "capture": {
+    "driver": "vhs",
+    "control_path": "VHS drives a real terminal running the installed atomic binary. Keystrokes are real keystrokes; every frame is real product output.",
+    "product": "installed @bastani/atomic",
+    "product_version": "0.9.13-alpha.1",
+    "terminal": "1920x1080, JetBrainsMono Nerd Font 26, catppuccin-mocha",
+    "build_root": "/private/tmp/atomic-feature-wall",
+    "home_policy": "Each lesson records in $FW_BUILD/capture-homes/<id>, a throwaway HOME seeded with only auth.json, models-store.json, and settings.json. No unrelated session, skill, prompt, or personal resource is mounted.",
+    "credential_policy": "auth.json is copied with cp and is never read, parsed, printed, or echoed by any script here."
+  },
+  "render": {
+    "encoder": "gifski",
+    "encoder_note": "gifski encodes every shipped GIF from real capture frames. ffmpeg only trims, masks, adjusts pace, and downscales.",
+    "width": 960,
+    "height": 540,
+    "aspect": "16:9",
+    "downscale": "2:1 from the 1920x1080 capture, lanczos",
+    "fps_range": [
+      10,
+      15
+    ],
+    "duration_range_s": [
+      7,
+      16
+    ],
+    "max_gif_bytes": 15728640,
+    "max_total_gif_bytes": 314572800,
+    "max_poster_bytes": 512000,
+    "min_encoded_fps": 2,
+    "encoded_fps_note": "Three checks cover separate failure modes. min_distinct_frames counts rendered states, while min_encoded_fps rejects clips with too little motion overall. max_frame_hold_s also caps any one decoded state, so a burst of late motion cannot hide a padded still. Contact-sheet review warns at review_hold_warning_s because shorter holds can still hide irrelevant content and need human review.",
+    "grid_fps_tolerance": 0.01,
+    "grid_fps_note": "One centisecond. GIF delays are integers in centiseconds, so 1/12s = 8.333cs is unrepresentable and a true 12 fps GIF alternates 8cs and 9cs delays. The tolerance is the format precision limit, not slack.",
+    "min_distinct_frames": 24,
+    "max_frame_hold_s": 7.5,
+    "review_hold_warning_s": 3
+  },
+  "privacy": {
+    "scope": "Narrowed by the repository owner: their own name, personal file names, unrelated session or workflow-run names, and ordinary local paths are acceptable on screen. A credential and the operator's provider/model label are not.",
+    "mask": "A structural frame pass locates and paints the dynamic statusline band, where the provider and model render. A second OCR pass paints provider/model text elsewhere, matching by reconstructed line and by adjacent line pairs so a terminal wrap cannot hide a label.",
+    "mask_rationale": "Provider/model fields move between terminal layouts and workflow views. Structural masking removes the persistent band without depending on OCR; the text pass covers transient banners and panels. Both paint existing fields with the terminal background and never add or relabel UI.",
+    "shell_prompt": "PS1 is set to a bare '$ ' with HISTFILE=/dev/null, so no personal shell history is ever on screen.",
+    "forbidden_strings": [
+      "operator provider/model labels",
+      "credential and bearer-token patterns"
+    ],
+    "wrap_note": "Rules are matched against the OCR text and against the same text with whitespace removed. A hard terminal wrap once split openai-codex across two lines and passed a green gate."
+  },
+  "lessons": [
+    {
+      "id": "A.8",
+      "order": 1,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.8.tape",
+      "slug": "38-natural-language-workflow-authoring",
+      "part": "Extras",
+      "lesson": "A.8 Natural-language workflow authoring",
+      "anchor": "#a8-natural-language-workflow-authoring",
+      "title": "Natural-language workflow authoring",
+      "blurb": "Describe inputs, parallel stages, synthesis, and outputs in prose; Atomic writes and reloads the runnable TypeScript graph.",
+      "alt": "Atomic turning a prose review-changes graph contract into a project workflow file and reloading it in the installed product",
+      "interactions": [
+        "Create a reusable Atomic workflow called review-changes.",
+        "!!sed -n '1,160p' .atomic/workflows/review-changes.ts"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The generated source is shown only after the real agent writes it.",
+      "media": {
+        "gif": "assets/feature-wall/38-natural-language-workflow-authoring.gif",
+        "jpg": "assets/feature-wall/38-natural-language-workflow-authoring.jpg"
+      },
+      "render": {
+        "start": 22,
+        "end": 173.3,
+        "segments": [
+          {
+            "start": 22,
+            "end": 31
+          },
+          {
+            "start": 171.6,
+            "end": 173.3
+          }
+        ],
+        "speed": 1.2,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 173,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      },
+      "display_title": "Create a workflow in plain English"
+    },
+    {
+      "id": "6.2",
+      "order": 2,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.2.tape",
+      "slug": "23-steer-a-live-run",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.2 Steer and control a live run",
+      "anchor": "#62-steer-and-control-a-live-run",
+      "title": "Steer and control a live run",
+      "blurb": "Attach to a running stage, watch it stream, and steer, pause, or abort it mid-flight.",
+      "alt": "The Atomic workflow graph with a live stage streaming, receiving a steering message from the operator",
+      "interactions": [
+        "launch fan-out-and-synthesize with two live branches",
+        "list the running branch stages",
+        "send an exact <keepContext> steering message to each live stage"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "media": {
+        "gif": "assets/feature-wall/23-steer-a-live-run.gif",
+        "jpg": "assets/feature-wall/23-steer-a-live-run.jpg"
+      },
+      "render": {
+        "start": 38,
+        "end": 64,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 60,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "6.5",
+      "order": 3,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.5.tape",
+      "slug": "26-durability-and-resume",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.5 Durability and resume",
+      "anchor": "#65-durability-and-resume",
+      "title": "Durability and resume",
+      "blurb": "Runs checkpoint as they go, so killing the process leaves them retained and resumable instead of lost.",
+      "alt": "The Atomic resume picker after a killed run, listing retained workflow runs with their checkpoint counts",
+      "interactions": [
+        "/workflow research-codebase",
+        "kill the Atomic process mid-run",
+        "atomic",
+        "/workflow resume"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. Retained run names from this machine are shown by the picker and are allowed by the repository owner's narrowed privacy scope.",
+      "media": {
+        "gif": "assets/feature-wall/26-durability-and-resume.gif",
+        "jpg": "assets/feature-wall/26-durability-and-resume.jpg"
+      },
+      "render": {
+        "start": 6,
+        "end": 42,
+        "speed": 3,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 34,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "6.4",
+      "order": 4,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.4.tape",
+      "slug": "25-human-in-the-loop-gates",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.4 Human-in-the-loop gates",
+      "anchor": "#64-human-in-the-loop-gates",
+      "title": "Human-in-the-loop gates",
+      "blurb": "Put an approval gate anywhere in the graph and the run waits for a person before it proceeds.",
+      "alt": "A workflow run pausing at a human approval gate and waiting for the operator's decision",
+      "interactions": [
+        "start the project-local release-gate-demo workflow",
+        "connect to its live graph and open the awaiting ctx.ui.select node",
+        "leave the real risk-choice gate waiting for the operator"
+      ],
+      "privacy_notes": "Graph- and stage-view-only window with no statusline, so the band pass is skipped like A.9; the OCR pass and finished-media gate still run.",
+      "media": {
+        "gif": "assets/feature-wall/25-human-in-the-loop-gates.gif",
+        "jpg": "assets/feature-wall/25-human-in-the-loop-gates.jpg"
+      },
+      "render": {
+        "start": 1.7,
+        "end": 27,
+        "speed": 2.11,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 14,
+        "mask": false
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "5.3",
+      "order": 5,
+      "capture_source": "scripts/readme-feature-wall/tapes/5.3.tape",
+      "slug": "18-planner-worker-intercom",
+      "part": "Part 5 - Subagents and intercom",
+      "lesson": "5.3 Planner-worker intercom coordination",
+      "anchor": "#53-plannerworker-intercom-coordination",
+      "title": "Planner-worker intercom coordination",
+      "blurb": "Separate sessions message each other over intercom to split a job and agree on the answer.",
+      "alt": "Two Atomic sessions coordinating over intercom, one sending a question and the other replying",
+      "interactions": [
+        "intercom status",
+        "intercom list",
+        "intercom send/ask between two named sessions"
+      ],
+      "privacy_notes": "Statusline model segment masked. Session names are demo names.",
+      "media": {
+        "gif": "assets/feature-wall/18-planner-worker-intercom.gif",
+        "jpg": "assets/feature-wall/18-planner-worker-intercom.jpg"
+      },
+      "render": {
+        "start": 29.25,
+        "end": 55.25,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 48.75,
+        "mask": true
+      },
+      "docs": {
+        "label": "Intercom",
+        "url": "https://docs.bastani.ai/intercom"
+      }
+    },
+    {
+      "id": "6.6",
+      "order": 6,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.6.tape",
+      "slug": "27-security-review-repair-loop",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.6 Security review with a repair loop",
+      "anchor": "#66-security-review-with-a-repair-loop",
+      "title": "Security review with a repair loop",
+      "blurb": "Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes.",
+      "alt": "Atomic security-review workflow graph with the hardcoded API key audit finding, repair-1 running, and the header reaching four-of-four complete",
+      "interactions": [
+        "reload and start the project-local security-review-demo workflow",
+        "attach through tmux to the live graph and approve its human repair gate",
+        "watch audit, repair-1, and verify-2 run as real tracked nodes"
+      ],
+      "privacy_notes": "Graph-only window with no statusline, so the band pass is skipped like A.9; the OCR pass and finished-media gate still run. The planted demo secret is fictional seed data from the crash course; the selected window shows only the graph view, not the finding detail or prompt text.",
+      "media": {
+        "gif": "assets/feature-wall/27-security-review-repair-loop.gif",
+        "jpg": "assets/feature-wall/27-security-review-repair-loop.jpg"
+      },
+      "render": {
+        "start": 7.5,
+        "end": 22.5,
+        "speed": 1.25,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 21.5,
+        "mask": false
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      },
+      "display_title": "Verification built in"
+    },
+    {
+      "id": "W.1",
+      "order": 7,
+      "capture_source": "scripts/readme-feature-wall/tapes/W.1.tape",
+      "slug": "28-launch-workflow-plain-english",
+      "part": "Part 6 - Workflows",
+      "lesson": "W.1 Launch a workflow in plain English",
+      "anchor": "#part-6--workflows",
+      "title": "Launch a workflow in plain English",
+      "blurb": "Ask in normal chat and Atomic routes the request through its workflow tool into a real registered run - no command syntax required.",
+      "alt": "Atomic receiving a normal chat request and launching the registered plain-english-demo workflow through the real workflow tool",
+      "interactions": [
+        "Launch the registered plain-english-demo workflow in the background with topic set to src-client.ts. Use the workflow tool now, then tell me the run status."
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The project workflow is seeded off camera, then discovered and launched by the installed product.",
+      "media": {
+        "gif": "assets/feature-wall/28-launch-workflow-plain-english.gif",
+        "jpg": "assets/feature-wall/28-launch-workflow-plain-english.jpg"
+      },
+      "render": {
+        "start": 14,
+        "end": 40,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 32,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "A.10",
+      "order": 8,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.10.tape",
+      "slug": "40-autonomous-implementation-loops",
+      "part": "Extras",
+      "lesson": "A.10 Autonomous implementation loops",
+      "anchor": "#a10-autonomous-implementation-loops",
+      "title": "Autonomous implementation loops",
+      "blurb": "<code>ralph</code> refines, researches, implements, reviews, and repairs against a bounded loop contract.",
+      "alt": "Atomic inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph",
+      "interactions": [
+        "/workflow inputs ralph",
+        "/workflow ralph prompt='Add input validation to demo-app/server.js and prove it with a test' max_loops=1",
+        "/workflow connect"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. create_pr is not enabled; the run stays inside the clean clone.",
+      "media": {
+        "gif": "assets/feature-wall/40-autonomous-implementation-loops.gif",
+        "jpg": "assets/feature-wall/40-autonomous-implementation-loops.jpg"
+      },
+      "render": {
+        "start": 18,
+        "end": 60,
+        "speed": 3.5,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 56,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "W.3",
+      "order": 9,
+      "capture_source": "scripts/readme-feature-wall/tapes/W.3.tape",
+      "slug": "30-inspect-control-workflows",
+      "part": "Part 6 - Workflows",
+      "lesson": "W.3 Inspect and control workflows",
+      "anchor": "#61-touring-the-builtins",
+      "title": "Inspect and control workflows",
+      "blurb": "List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.",
+      "alt": "Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph",
+      "interactions": [
+        "/workflow list",
+        "/workflow inputs control-demo",
+        "/workflow control-demo subject=src-client.ts",
+        "/workflow status",
+        "/workflow connect"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The connect picker contains only the throwaway lesson runs.",
+      "media": {
+        "gif": "assets/feature-wall/30-inspect-control-workflows.gif",
+        "jpg": "assets/feature-wall/30-inspect-control-workflows.jpg"
+      },
+      "render": {
+        "start": 15,
+        "end": 57,
+        "speed": 3.5,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 50,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "5.2",
+      "order": 10,
+      "capture_source": "scripts/readme-feature-wall/tapes/5.2.tape",
+      "slug": "17-worktree-parallel-work",
+      "part": "Part 5 - Subagents and intercom",
+      "lesson": "5.2 Worktree-isolated parallel work",
+      "anchor": "#52-worktree-isolated-parallel-work",
+      "title": "Worktree-isolated parallel work",
+      "blurb": "Parallel agents each get their own git worktree, so concurrent edits cannot collide.",
+      "alt": "Atomic running parallel subagents in separate git worktrees and reporting a per-worktree diff",
+      "interactions": [
+        "parallel subagent run with worktree isolation",
+        "per-worktree diffs"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/17-worktree-parallel-work.gif",
+        "jpg": "assets/feature-wall/17-worktree-parallel-work.jpg"
+      },
+      "render": {
+        "start": 61.75,
+        "end": 87.75,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 81.25,
+        "mask": true
+      },
+      "docs": {
+        "label": "Subagents",
+        "url": "https://docs.bastani.ai/subagents"
+      }
+    },
+    {
+      "id": "5.4",
+      "order": 11,
+      "capture_source": "scripts/readme-feature-wall/tapes/5.4.tape",
+      "slug": "19-escalate-to-supervisor",
+      "part": "Part 5 - Subagents and intercom",
+      "lesson": "5.4 Escalating to a human supervisor",
+      "anchor": "#54-escalating-to-a-human-supervisor",
+      "title": "Escalating to a human supervisor",
+      "blurb": "A delegate that hits a real product decision stops, asks the human supervising the run, and waits for the answer.",
+      "alt": "One Atomic session escalating a null-email decision to its human supervisor over intercom, then applying the answer it receives",
+      "interactions": [
+        "/name supervisor",
+        "/name worker",
+        "Check intercom status and list the sessions in your group.",
+        "delegate work that must escalate the decision rather than choose alone",
+        "Reply: \"Return false. Do not throw.\""
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "media": {
+        "gif": "assets/feature-wall/19-escalate-to-supervisor.gif",
+        "jpg": "assets/feature-wall/19-escalate-to-supervisor.jpg"
+      },
+      "render": {
+        "start": 18,
+        "end": 54,
+        "speed": 3,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 52,
+        "mask": true
+      },
+      "docs": {
+        "label": "Intercom",
+        "url": "https://docs.bastani.ai/intercom"
+      }
+    },
+    {
+      "id": "A.9",
+      "order": 12,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.9.tape",
+      "slug": "39-nesting-builtin-workflows",
+      "part": "Extras",
+      "lesson": "A.9 Nesting builtin workflows",
+      "anchor": "#a9-nesting-builtin-workflows",
+      "title": "Nesting builtin workflows",
+      "blurb": "Compose imported workflow definitions with <code>ctx.workflow(...)</code>; child stages flatten into one inspectable parent graph.",
+      "alt": "Atomic showing nested fan-out builtin stages flattened into the live research-and-verify parent workflow graph",
+      "interactions": [
+        "!!sed -n '1,160p' .atomic/workflows/research-and-verify.ts",
+        "/workflow reload",
+        "/workflow research-and-verify topic='how the session store works'",
+        "/workflow connect"
+      ],
+      "privacy_notes": "The selected window stays inside the graph viewer, where no chat statusline is present; moving private text would still be found and painted by the OCR pass.",
+      "media": {
+        "gif": "assets/feature-wall/39-nesting-builtin-workflows.gif",
+        "jpg": "assets/feature-wall/39-nesting-builtin-workflows.jpg"
+      },
+      "render": {
+        "start": 55,
+        "end": 85,
+        "speed": 2.5,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 75,
+        "mask": false
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "A.5",
+      "order": 13,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.5.tape",
+      "slug": "35-parallel-review-composition",
+      "part": "Extras",
+      "lesson": "A.5 Parallel review composition",
+      "anchor": "#a5-parallel-review-composition",
+      "title": "Parallel review composition",
+      "blurb": "One command fans a real diff out to fresh-context specialists, with independent roles and live parallel tool progress.",
+      "alt": "Atomic composing three concurrent review specialists against a planted retry function diff with live independent progress",
+      "interactions": [
+        "!!git diff -- src-client.ts",
+        "Review the current diff now with one subagent parallel call using correctness, failure-mode, and existing-pattern roles."
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The single planted diff is lesson seed data.",
+      "media": {
+        "gif": "assets/feature-wall/35-parallel-review-composition.gif",
+        "jpg": "assets/feature-wall/35-parallel-review-composition.jpg"
+      },
+      "render": {
+        "start": 55,
+        "end": 83,
+        "speed": 2.333,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 75,
+        "mask": true
+      },
+      "docs": {
+        "label": "Subagents",
+        "url": "https://docs.bastani.ai/subagents"
+      }
+    },
+    {
+      "id": "5.5",
+      "order": 14,
+      "capture_source": "scripts/readme-feature-wall/tapes/5.5.tape",
+      "slug": "20-intercom-context-handoff",
+      "part": "Part 5 - Subagents and intercom",
+      "lesson": "5.5 Intercom context handoff",
+      "anchor": "#55-intercom-context-handoff",
+      "title": "Intercom context handoff",
+      "blurb": "Hand a task to another session with the context attached, instead of pasting it by hand.",
+      "alt": "One Atomic session handing a task to another over intercom with file and snippet attachments",
+      "interactions": [
+        "register the fresh session with intercom status and list",
+        "send project-briefing context and src-client.ts snippet attachments",
+        "fresh receives and acknowledges both attachments"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. Only synthetic capture-home paths can appear before masking.",
+      "media": {
+        "gif": "assets/feature-wall/20-intercom-context-handoff.gif",
+        "jpg": "assets/feature-wall/20-intercom-context-handoff.jpg"
+      },
+      "render": {
+        "start": 40,
+        "end": 66,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 59.5,
+        "mask": true
+      },
+      "docs": {
+        "label": "Intercom",
+        "url": "https://docs.bastani.ai/intercom"
+      }
+    },
+    {
+      "id": "5.1",
+      "order": 15,
+      "capture_source": "scripts/readme-feature-wall/tapes/5.1.tape",
+      "slug": "16-bundled-specialists",
+      "part": "Part 5 - Subagents and intercom",
+      "lesson": "5.1 Delegating to bundled specialists",
+      "anchor": "#51-delegating-to-bundled-specialists",
+      "title": "Delegating to bundled specialists",
+      "blurb": "Fan work out to scoped subagents that do the reading, so the main context stays small.",
+      "alt": "Atomic delegating to bundled specialist subagents and collecting their findings",
+      "interactions": [
+        "subagent list",
+        "delegate a locate/analyze task"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/16-bundled-specialists.gif",
+        "jpg": "assets/feature-wall/16-bundled-specialists.jpg"
+      },
+      "render": {
+        "start": 32.75,
+        "end": 58.75,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 52.25,
+        "mask": true
+      },
+      "docs": {
+        "label": "Subagents",
+        "url": "https://docs.bastani.ai/subagents"
+      }
+    },
+    {
+      "id": "6.3",
+      "order": 16,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.3.tape",
+      "slug": "24-write-your-own-workflow",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.3 Writing your own workflow",
+      "anchor": "#63-writing-your-own-workflow",
+      "title": "Writing your own workflow",
+      "blurb": "Stages, schemas, and gates are versioned TypeScript you review, not per-run improvisation.",
+      "alt": "A project-local workflow defined in TypeScript with stages and an output schema, then run by Atomic",
+      "interactions": [
+        "seed and display .atomic/workflows/explain-file.ts",
+        "/workflow reload",
+        "/workflow explain-file path=src-client.ts"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "media": {
+        "gif": "assets/feature-wall/24-write-your-own-workflow.gif",
+        "jpg": "assets/feature-wall/24-write-your-own-workflow.jpg"
+      },
+      "render": {
+        "start": 18,
+        "end": 44,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 41,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "6.1",
+      "order": 17,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.1.tape",
+      "slug": "22-touring-the-builtins",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.1 Touring the builtins",
+      "anchor": "#61-touring-the-builtins",
+      "title": "Touring the builtins",
+      "blurb": "Bundled workflows for research, planning, implementation, and review, ready before you write one.",
+      "alt": "The Atomic workflow picker listing the bundled workflows and their stages",
+      "interactions": [
+        "/workflow",
+        "browse the builtin list"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/22-touring-the-builtins.gif",
+        "jpg": "assets/feature-wall/22-touring-the-builtins.jpg"
+      },
+      "render": {
+        "start": 23.75,
+        "end": 49.75,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 43.25,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "W.2",
+      "order": 18,
+      "capture_source": "scripts/readme-feature-wall/tapes/W.2.tape",
+      "slug": "29-workflow-typed-inputs",
+      "part": "Part 6 - Workflows",
+      "lesson": "W.2 Run a workflow with typed inputs",
+      "anchor": "#61-touring-the-builtins",
+      "title": "Run a workflow with typed inputs",
+      "blurb": "Use <code>/workflow &lt;name&gt; key=value</code> to validate static inputs against TypeBox before a run starts.",
+      "alt": "Atomic showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status",
+      "interactions": [
+        "/workflow inputs typed-input-demo",
+        "/workflow typed-input-demo path=src-client.ts depth=2",
+        "/workflow status"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The typed workflow is seeded off camera and run by installed Atomic.",
+      "media": {
+        "gif": "assets/feature-wall/29-workflow-typed-inputs.gif",
+        "jpg": "assets/feature-wall/29-workflow-typed-inputs.jpg"
+      },
+      "render": {
+        "start": 14,
+        "end": 40,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 34,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "2.2",
+      "order": 19,
+      "capture_source": "scripts/readme-feature-wall/tapes/2.2.tape",
+      "slug": "06-verbatim-compaction",
+      "part": "Part 2 - Session mastery",
+      "lesson": "2.2 Verbatim compaction",
+      "anchor": "#22-verbatim-compaction",
+      "title": "Verbatim compaction",
+      "blurb": "Compaction deletes low-value transcript lines without rewriting what survives; <code>&lt;keepContext&gt;</code> pins exact text.",
+      "alt": "Atomic answering after compaction by quoting the pinned keepContext repo rule back byte-exact",
+      "interactions": [
+        "pin a rule inside a keepContext block and have it acknowledged",
+        "/compact",
+        "What is the repo rule? Quote it exactly."
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "media": {
+        "gif": "assets/feature-wall/06-verbatim-compaction.gif",
+        "jpg": "assets/feature-wall/06-verbatim-compaction.jpg"
+      },
+      "render": {
+        "start": 122,
+        "end": 158,
+        "speed": 3,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 154,
+        "mask": true
+      },
+      "docs": {
+        "label": "Compaction",
+        "url": "https://docs.bastani.ai/compaction"
+      }
+    },
+    {
+      "id": "1.2",
+      "order": 20,
+      "capture_source": "scripts/readme-feature-wall/tapes/1.2.tape",
+      "slug": "02-hashline-edits",
+      "part": "Part 1 - Core interactive experience",
+      "lesson": "1.2 Hashline edits",
+      "anchor": "#12-hashline-edits",
+      "title": "Hashline edits",
+      "blurb": "Edits are anchored to a 4-hex snapshot tag, so a file that changed behind the model's back fails loudly instead of being overwritten.",
+      "alt": "Atomic applying a hashline edit anchored to a snapshot tag, showing the replace operation and the fresh tag it returns",
+      "interactions": [
+        "Read greeter.ts, then change only the greeting punctuation from \"!\" to \"?!\" using a single edit.",
+        "CTRL+O to expand tool output"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/02-hashline-edits.gif",
+        "jpg": "assets/feature-wall/02-hashline-edits.jpg"
+      },
+      "render": {
+        "start": 48,
+        "end": 76,
+        "speed": 2.3,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 58,
+        "mask": true
+      },
+      "docs": {
+        "label": "Built-in tools",
+        "url": "https://docs.bastani.ai/tools"
+      }
+    },
+    {
+      "id": "1.3",
+      "order": 21,
+      "capture_source": "scripts/readme-feature-wall/tapes/1.3.tape",
+      "slug": "03-agent-interviews-you",
+      "part": "Part 1 - Core interactive experience",
+      "lesson": "1.3 The agent interviews you",
+      "anchor": "#13-the-agent-interviews-you",
+      "title": "The agent interviews you",
+      "blurb": "<code>ask_user_question</code> replaces the editor with a structured question UI mid-task, and your answers land in the transcript as data.",
+      "alt": "Atomic replacing the editor with a structured multiple-choice question UI that asks which config format to use",
+      "interactions": [
+        "Scaffold a config file ... First use the ask_user_question tool to ask me: (1) which format - JSON, TOML, or YAML; (2) whether it should include explanatory comments.",
+        "arrow keys + Enter to answer"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/03-agent-interviews-you.gif",
+        "jpg": "assets/feature-wall/03-agent-interviews-you.jpg"
+      },
+      "render": {
+        "start": 28,
+        "end": 58,
+        "speed": 2.5,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 36,
+        "mask": true
+      },
+      "docs": {
+        "label": "Built-in tools",
+        "url": "https://docs.bastani.ai/tools"
+      }
+    },
+    {
+      "id": "A.2",
+      "order": 22,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.2.tape",
+      "slug": "32-permission-gate-extension",
+      "part": "Extras",
+      "lesson": "A.2 Permission gate extension",
+      "anchor": "#a2-permission-gate-extension",
+      "title": "Permission gate extension",
+      "blurb": "A <code>tool_call</code> hook catches a risky shell call before execution and asks the operator to allow or block it.",
+      "alt": "Atomic opening the permission-gate extension select dialog for sudo echo hi and blocking the bash tool call when No is chosen",
+      "interactions": [
+        "/reload",
+        "Run this exact command with bash: sudo echo hi"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The shown sudo command is harmless and never executes.",
+      "media": {
+        "gif": "assets/feature-wall/32-permission-gate-extension.gif",
+        "jpg": "assets/feature-wall/32-permission-gate-extension.jpg"
+      },
+      "render": {
+        "start": 20,
+        "end": 50,
+        "speed": 2.5,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 47,
+        "mask": true
+      },
+      "docs": {
+        "label": "Extensions",
+        "url": "https://docs.bastani.ai/extensions"
+      }
+    },
+    {
+      "id": "3.2",
+      "order": 23,
+      "capture_source": "scripts/readme-feature-wall/tapes/3.2.tape",
+      "slug": "09-block-a-dangerous-command",
+      "part": "Part 3 - Customization",
+      "lesson": "3.2 Block a dangerous command",
+      "anchor": "#32-block-a-dangerous-command",
+      "title": "Block a dangerous command",
+      "blurb": "A tool-call hook inspects the arguments and rejects the call before it ever reaches your shell.",
+      "alt": "Atomic refusing a destructive shell command because a project-local hook rejected the tool call",
+      "interactions": [
+        "extension hook on bash tool calls",
+        "ask the agent to run the blocked command"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/09-block-a-dangerous-command.gif",
+        "jpg": "assets/feature-wall/09-block-a-dangerous-command.jpg"
+      },
+      "render": {
+        "start": 60,
+        "end": 84,
+        "speed": 2,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 80,
+        "mask": true
+      },
+      "docs": {
+        "label": "Extensions",
+        "url": "https://docs.bastani.ai/extensions"
+      }
+    },
+    {
+      "id": "3.3",
+      "order": 24,
+      "capture_source": "scripts/readme-feature-wall/tapes/3.3.tape",
+      "slug": "10-full-screen-tui-tool",
+      "part": "Part 3 - Customization",
+      "lesson": "3.3 Full-screen TUI tool",
+      "anchor": "#33-full-screen-tui-tool",
+      "title": "Full-screen TUI tool",
+      "blurb": "An extension can take over the whole screen with its own interactive component, then hand control back.",
+      "alt": "A project-local extension taking over the Atomic screen with its own full-screen interactive component",
+      "interactions": [
+        "extension registering a full-screen component",
+        "invoke it from the session"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/10-full-screen-tui-tool.gif",
+        "jpg": "assets/feature-wall/10-full-screen-tui-tool.jpg"
+      },
+      "render": {
+        "start": 22.25,
+        "end": 48.25,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 41.75,
+        "mask": true
+      },
+      "docs": {
+        "label": "TUI components",
+        "url": "https://docs.bastani.ai/tui"
+      }
+    },
+    {
+      "id": "4.3",
+      "order": 25,
+      "capture_source": "scripts/readme-feature-wall/tapes/4.3.tape",
+      "slug": "15-embed-with-the-sdk",
+      "part": "Part 4 - Platform",
+      "lesson": "4.3 Embed the agent with the SDK",
+      "anchor": "#43-embed-the-agent-with-the-sdk",
+      "title": "Embed the agent with the SDK",
+      "blurb": "Drive the same agent loop from your own TypeScript program, with your own tools and your own UI.",
+      "alt": "A TypeScript program using the Atomic SDK to run the agent loop and print its streamed output",
+      "interactions": [
+        "Create sdk-demo/agent.ts with the SDK: ModelRuntime, SessionManager.inMemory(), and a text_delta subscription",
+        "!!cat sdk-demo/agent.ts"
+      ],
+      "privacy_notes": "Headless program output; no statusline.",
+      "media": {
+        "gif": "assets/feature-wall/15-embed-with-the-sdk.gif",
+        "jpg": "assets/feature-wall/15-embed-with-the-sdk.jpg"
+      },
+      "render": {
+        "start": 23,
+        "end": 49,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 42.5,
+        "mask": false
+      },
+      "docs": {
+        "label": "SDK",
+        "url": "https://docs.bastani.ai/sdk"
+      }
+    },
+    {
+      "id": "3.1",
+      "order": 26,
+      "capture_source": "scripts/readme-feature-wall/tapes/3.1.tape",
+      "slug": "08-build-an-extension",
+      "part": "Part 3 - Customization",
+      "lesson": "3.1 Build an extension",
+      "anchor": "#31-build-an-extension",
+      "title": "Build an extension",
+      "blurb": "Drop a TypeScript file into <code>.atomic/extensions/</code> and the agent gains a new tool in the running session.",
+      "alt": "Atomic writing a project-local extension and then calling the new tool it registered",
+      "interactions": [
+        "Write a project-local extension that registers a tool",
+        "call the new tool"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/08-build-an-extension.gif",
+        "jpg": "assets/feature-wall/08-build-an-extension.jpg"
+      },
+      "render": {
+        "start": 80,
+        "end": 104,
+        "speed": 2,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 99,
+        "mask": true
+      },
+      "docs": {
+        "label": "Extensions",
+        "url": "https://docs.bastani.ai/extensions"
+      }
+    },
+    {
+      "id": "3.4",
+      "order": 27,
+      "capture_source": "scripts/readme-feature-wall/tapes/3.4.tape",
+      "slug": "11-write-a-skill",
+      "part": "Part 3 - Customization",
+      "lesson": "3.4 Write a skill",
+      "anchor": "#34-write-a-skill",
+      "title": "Write a skill",
+      "blurb": "A <code>SKILL.md</code> file teaches the agent a procedure it loads on demand - the same format Claude Code and Codex use.",
+      "alt": "Atomic discovering a project-local SKILL.md and following the procedure it describes",
+      "interactions": [
+        "create .atomic/skills/repo-stats/SKILL.md",
+        "ask for repo stats so the skill triggers"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/11-write-a-skill.gif",
+        "jpg": "assets/feature-wall/11-write-a-skill.jpg"
+      },
+      "render": {
+        "start": 50.5,
+        "end": 76.5,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 70,
+        "mask": true
+      },
+      "docs": {
+        "label": "Skills",
+        "url": "https://docs.bastani.ai/skills"
+      }
+    },
+    {
+      "id": "4.2",
+      "order": 28,
+      "capture_source": "scripts/readme-feature-wall/tapes/4.2.tape",
+      "slug": "14-local-models",
+      "part": "Part 4 - Platform",
+      "lesson": "4.2 Local models via models.json",
+      "anchor": "#42-local-models-via-modelsjson",
+      "title": "Local models via models.json",
+      "blurb": "Point Atomic at Ollama or any OpenAI-compatible endpoint by declaring it in <code>models.json</code>.",
+      "alt": "A models.json entry declaring a local OpenAI-compatible endpoint, and Atomic listing the model it adds",
+      "interactions": [
+        "write .atomic/models.json",
+        "/models"
+      ],
+      "privacy_notes": "Statusline model segment masked. Local endpoint only; no key material on screen.",
+      "media": {
+        "gif": "assets/feature-wall/14-local-models.gif",
+        "jpg": "assets/feature-wall/14-local-models.jpg"
+      },
+      "render": {
+        "start": 23.25,
+        "end": 49.25,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 42.75,
+        "mask": true
+      },
+      "docs": {
+        "label": "Custom models",
+        "url": "https://docs.bastani.ai/models"
+      }
+    },
+    {
+      "id": "4.1",
+      "order": 29,
+      "capture_source": "scripts/readme-feature-wall/tapes/4.1.tape",
+      "slug": "13-headless-print-and-json",
+      "part": "Part 4 - Platform",
+      "lesson": "4.1 Headless print and JSON mode",
+      "anchor": "#41-headless-print-and-json-mode",
+      "title": "Headless print and JSON mode",
+      "blurb": "<code>-p</code> prints one answer and exits; <code>--mode json</code> streams structured events, so Atomic drops into scripts and CI.",
+      "alt": "Atomic running headless with -p printing a single answer, then with --mode json streaming structured events",
+      "interactions": [
+        "cat AGENTS.md | atomic -p 'Summarize this text in one sentence'",
+        "atomic --tools read,search,find -p 'Name the exported functions in greeter.ts'",
+        "atomic --mode json 'List the files here' 2>/dev/null | jq -c .type | head -14"
+      ],
+      "privacy_notes": "Headless mode renders no statusline; mask still applied for consistency.",
+      "media": {
+        "gif": "assets/feature-wall/13-headless-print-and-json.gif",
+        "jpg": "assets/feature-wall/13-headless-print-and-json.jpg"
+      },
+      "render": {
+        "start": 49.5,
+        "end": 75.5,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 69,
+        "mask": false
+      },
+      "docs": {
+        "label": "JSON event stream",
+        "url": "https://docs.bastani.ai/json"
+      }
+    },
+    {
+      "id": "2.1",
+      "order": 30,
+      "capture_source": "scripts/readme-feature-wall/tapes/2.1.tape",
+      "slug": "05-branching-tree-fork-clone",
+      "part": "Part 2 - Session mastery",
+      "lesson": "2.1 Branching with tree, fork, clone",
+      "anchor": "#21-branching-with-tree-fork-clone",
+      "title": "Branching with tree, fork, clone",
+      "blurb": "Fork a session at any point and try a second approach without losing the first; <code>/tree</code> shows the whole shape.",
+      "alt": "Atomic showing the session tree after a fork, with the branch points listed",
+      "interactions": [
+        "Approach A: add input validation to greet() using a thrown Error for empty names.",
+        "/tree",
+        "/fork"
+      ],
+      "privacy_notes": "Statusline model segment masked. Throwaway HOME means only this lesson's sessions exist.",
+      "media": {
+        "gif": "assets/feature-wall/05-branching-tree-fork-clone.gif",
+        "jpg": "assets/feature-wall/05-branching-tree-fork-clone.jpg"
+      },
+      "render": {
+        "start": 27.75,
+        "end": 53.75,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 47.25,
+        "mask": true
+      },
+      "docs": {
+        "label": "Sessions",
+        "url": "https://docs.bastani.ai/sessions"
+      }
+    },
+    {
+      "id": "2.3",
+      "order": 31,
+      "capture_source": "scripts/readme-feature-wall/tapes/2.3.tape",
+      "slug": "07-sessions-are-jsonl",
+      "part": "Part 2 - Session mastery",
+      "lesson": "2.3 Sessions are just JSONL",
+      "anchor": "#23-sessions-are-just-jsonl",
+      "title": "Sessions are just JSONL",
+      "blurb": "Every session is an append-only JSONL file on disk, so you can grep it, diff it, and script against it.",
+      "alt": "Atomic walking its own session JSONL one event per line, showing each event's type, id, and parent id",
+      "interactions": [
+        "/name Atomic crash course",
+        "/session",
+        "!!jq -r \"[.type,.id,.parentId]|@tsv\" $ATOMIC_SESSION_FILE | head -18"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The closing beat prints type, id, and parent id only, so the session header's provider field is never on screen.",
+      "media": {
+        "gif": "assets/feature-wall/07-sessions-are-jsonl.gif",
+        "jpg": "assets/feature-wall/07-sessions-are-jsonl.jpg"
+      },
+      "render": {
+        "start": 16,
+        "end": 60.4,
+        "speed": 3.7,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 58,
+        "mask": true
+      },
+      "docs": {
+        "label": "Session format",
+        "url": "https://docs.bastani.ai/session-format"
+      }
+    },
+    {
+      "id": "1.1",
+      "order": 32,
+      "capture_source": "scripts/readme-feature-wall/tapes/1.1.tape",
+      "slug": "01-first-session",
+      "part": "Part 1 - Core interactive experience",
+      "lesson": "1.1 Your first session",
+      "anchor": "#11-your-first-session",
+      "title": "Your first session",
+      "blurb": "One editor for prompts, <code>@</code> file references, and <code>!</code> shell commands, with steering you can type while the agent works.",
+      "alt": "Atomic session answering a question about greeter.ts through an @ file reference, then running the file with an inline ! shell command",
+      "interactions": [
+        "atomic",
+        "Explain @greeter.ts in two sentences.",
+        "!bun greeter.ts"
+      ],
+      "privacy_notes": "Statusline model segment masked. Path renders as ~/crash-course.",
+      "media": {
+        "gif": "assets/feature-wall/01-first-session.gif",
+        "jpg": "assets/feature-wall/01-first-session.jpg"
+      },
+      "render": {
+        "start": 33,
+        "end": 57,
+        "speed": 2,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 50,
+        "mask": true
+      },
+      "docs": {
+        "label": "Using Atomic",
+        "url": "https://docs.bastani.ai/usage"
+      }
+    },
+    {
+      "id": "1.4",
+      "order": 33,
+      "capture_source": "scripts/readme-feature-wall/tapes/1.4.tape",
+      "slug": "04-file-based-todos",
+      "part": "Part 1 - Core interactive experience",
+      "lesson": "1.4 File-based todos",
+      "anchor": "#14-file-based-todos",
+      "title": "File-based todos",
+      "blurb": "Plans are durable files under <code>.atomic/todos/</code>: plain text you can grep, review, and commit alongside the code.",
+      "alt": "Atomic creating todos with the todo tool and then listing the resulting plain-text files under .atomic/todos",
+      "interactions": [
+        "Plan test coverage for greeter.ts with the todo tool: create one todo per exported function, then list all todos.",
+        "!ls .atomic/todos/",
+        "!!cat .atomic/todos/*"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/04-file-based-todos.gif",
+        "jpg": "assets/feature-wall/04-file-based-todos.jpg"
+      },
+      "render": {
+        "start": 24,
+        "end": 50,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 43.5,
+        "mask": true
+      },
+      "docs": {
+        "label": "Built-in tools",
+        "url": "https://docs.bastani.ai/tools"
+      }
+    },
+    {
+      "id": "5.6",
+      "order": 34,
+      "capture_source": "scripts/readme-feature-wall/tapes/5.6.tape",
+      "slug": "21-your-own-handoff-command",
+      "part": "Part 5 - Subagents and intercom",
+      "lesson": "5.6 A handoff command of your own",
+      "anchor": "#56-a-handoff-command-of-your-own",
+      "title": "A handoff command of your own",
+      "blurb": "Package a repeatable handoff as a project-local slash command your whole team can run.",
+      "alt": "A project-local slash command running a packaged intercom handoff from the Atomic editor",
+      "interactions": [
+        "seed the lesson's exact .atomic/prompts/handoff.md template",
+        "register fresh with intercom and reload project resources",
+        "/handoff fresh take over the null-email fix in src-client.ts and get it type-checking",
+        "fresh receives the attached brief and reports back"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. Only synthetic capture-home paths can appear before masking.",
+      "media": {
+        "gif": "assets/feature-wall/21-your-own-handoff-command.gif",
+        "jpg": "assets/feature-wall/21-your-own-handoff-command.jpg"
+      },
+      "render": {
+        "start": 72,
+        "end": 98,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 91.5,
+        "mask": true
+      },
+      "docs": {
+        "label": "Prompt templates",
+        "url": "https://docs.bastani.ai/prompt-templates"
+      }
+    },
+    {
+      "id": "A.7",
+      "order": 35,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.7.tape",
+      "slug": "37-intercom-group-isolation",
+      "part": "Extras",
+      "lesson": "A.7 Intercom group isolation",
+      "anchor": "#a7-intercom-group-isolation",
+      "title": "Intercom group isolation",
+      "blurb": "Sessions in different groups cannot message each other; only an explicit read-only group peek crosses the boundary.",
+      "alt": "Two Atomic sessions in separate Intercom groups, with the default session peeking at redteam before its cross-group send is rejected",
+      "interactions": [
+        "ATOMIC_INTERCOM_GROUP=redteam atomic",
+        "List intercom sessions in group \"redteam\", then try to send redworker a message saying hi and report the isolation error."
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. Session names are synthetic demo names.",
+      "media": {
+        "gif": "assets/feature-wall/37-intercom-group-isolation.gif",
+        "jpg": "assets/feature-wall/37-intercom-group-isolation.jpg"
+      },
+      "render": {
+        "start": 8,
+        "end": 34,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 30,
+        "mask": true,
+        "extra_mask": "x=960:y=918:w=592:h=54"
+      },
+      "docs": {
+        "label": "Intercom",
+        "url": "https://docs.bastani.ai/intercom"
+      }
+    },
+    {
+      "id": "A.4",
+      "order": 36,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.4.tape",
+      "slug": "34-prompt-templates-arguments",
+      "part": "Extras",
+      "lesson": "A.4 Prompt templates with arguments",
+      "anchor": "#a4-prompt-templates-with-arguments",
+      "title": "Prompt templates with arguments",
+      "blurb": "Project Markdown becomes a slash command with autocomplete hints and positional argument expansion.",
+      "alt": "Atomic finding the project component prompt template and expanding Button, onClick handler, and disabled support into the submitted prompt",
+      "interactions": [
+        "/component Button 'onClick handler' 'disabled support'"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. Templates are seeded in the clean project before launch.",
+      "media": {
+        "gif": "assets/feature-wall/34-prompt-templates-arguments.gif",
+        "jpg": "assets/feature-wall/34-prompt-templates-arguments.jpg"
+      },
+      "render": {
+        "start": 14,
+        "end": 40,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 27,
+        "mask": true
+      },
+      "docs": {
+        "label": "Prompt templates",
+        "url": "https://docs.bastani.ai/prompt-templates"
+      }
+    },
+    {
+      "id": "A.3",
+      "order": 37,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.3.tape",
+      "slug": "33-runtime-system-prompt",
+      "part": "Extras",
+      "lesson": "A.3 Runtime system-prompt mutation",
+      "anchor": "#a3-runtime-system-prompt-mutation",
+      "title": "Runtime system-prompt mutation",
+      "blurb": "A live command toggles extension state, and <code>before_agent_start</code> rewrites the system prompt on the next turn.",
+      "alt": "Atomic enabling the shipped pirate extension at runtime and answering the next TypeScript question with the mutated system prompt",
+      "interactions": [
+        "/reload",
+        "/pirate",
+        "Explain what a TypeScript generic is in two sentences."
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The extension is copied from the installed package off camera.",
+      "media": {
+        "gif": "assets/feature-wall/33-runtime-system-prompt.gif",
+        "jpg": "assets/feature-wall/33-runtime-system-prompt.jpg"
+      },
+      "render": {
+        "start": 18,
+        "end": 44,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 39,
+        "mask": true
+      },
+      "docs": {
+        "label": "Extensions",
+        "url": "https://docs.bastani.ai/extensions"
+      }
+    },
+    {
+      "id": "A.1",
+      "order": 38,
+      "capture_source": "scripts/readme-feature-wall/tapes/A.1.tape",
+      "slug": "31-keybindings-hot-reload",
+      "part": "Extras",
+      "lesson": "A.1 Keybindings and hot reload",
+      "anchor": "#a1-keybindings-and-hot-reload",
+      "title": "Keybindings and hot reload",
+      "blurb": "Every TUI action is remappable in global JSON; <code>/reload</code> applies the map without restarting the session.",
+      "alt": "Atomic listing hotkey action ids, reloading a global keybinding map, and showing Ctrl+J insert a newline in the editor",
+      "interactions": [
+        "/hotkeys",
+        "!!mkdir -p ~/.atomic/agent && cp .capture/keybindings.json ~/.atomic/agent/keybindings.json",
+        "/reload"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The global file lives only in the throwaway capture HOME.",
+      "media": {
+        "gif": "assets/feature-wall/31-keybindings-hot-reload.gif",
+        "jpg": "assets/feature-wall/31-keybindings-hot-reload.jpg"
+      },
+      "render": {
+        "start": 24,
+        "end": 57,
+        "speed": 2.75,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 52,
+        "mask": true
+      },
+      "docs": {
+        "label": "Keybindings",
+        "url": "https://docs.bastani.ai/keybindings"
+      }
+    },
+    {
+      "id": "3.5",
+      "order": 39,
+      "capture_source": "scripts/readme-feature-wall/tapes/3.5.tape",
+      "slug": "12-custom-theme",
+      "part": "Part 3 - Customization",
+      "lesson": "3.5 Custom theme",
+      "anchor": "#35-custom-theme",
+      "title": "Custom theme",
+      "blurb": "Theme the entire TUI from a project-local file and switch to it live with <code>/theme</code>.",
+      "alt": "Atomic displaying project-local theme JSON and offering my-theme in the live theme picker",
+      "interactions": [
+        "create .atomic/themes/<name>.json",
+        "/theme"
+      ],
+      "privacy_notes": "Statusline model segment masked.",
+      "media": {
+        "gif": "assets/feature-wall/12-custom-theme.gif",
+        "jpg": "assets/feature-wall/12-custom-theme.jpg"
+      },
+      "render": {
+        "start": 54,
+        "end": 80,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 73.5,
+        "mask": true
+      },
+      "docs": {
+        "label": "Themes",
+        "url": "https://docs.bastani.ai/themes"
+      }
+    }
+  ]
+}

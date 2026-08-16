@@ -65,6 +65,9 @@ function toolFixture(replyTracker: ReplyTracker, sessions: SessionInfo[] = []) {
 				expectsReply?: boolean;
 			},
 		) {
+			if (sessions.length > 0 && !sessions.some((entry) => entry.id === to)) {
+				return { id: message.messageId ?? "failed-message", delivered: false, reason: "Session not found" };
+			}
 			sent.push({
 				to,
 				...(message.messageId !== undefined ? { messageId: message.messageId } : {}),
@@ -101,38 +104,42 @@ const context = {
 	hasUI: false,
 };
 
-describe("Intercom displayed session ID targeting", () => {
-	test("targeted reply accepts the unique short session ID shown by list", async () => {
-		const first = session("aa56071e-1111-4222-8333-123456789abc", "first");
-		const second = session("bb67082f-1111-4222-8333-123456789abc", "second");
-		const replies = new ReplyTracker();
-		replies.recordIncomingMessage(first, ask("question-first"));
-		replies.recordIncomingMessage(second, ask("question-second"));
-		const current = toolFixture(replies);
+describe("Intercom full session ID targeting", () => {
+	test("list displays the full session ID", async () => {
+		const self = session("self-session-id", "self");
+		const recipient = session("aa56071e-1111-4222-8333-123456789abc", "recipient");
+		const current = toolFixture(new ReplyTracker(), [self, recipient]);
+
+		const listed = await current.tool.execute("list-call", { action: "list" }, undefined, undefined, context);
+		const text = listed.content[0]?.text ?? "";
+		assert.match(text, new RegExp(`recipient \\(${recipient.id}\\)`));
+	});
+
+	test("send accepts an exact full session ID", async () => {
+		const self = session("self-session-id", "self");
+		const recipient = session("cc78193a-1111-4222-8333-123456789abc", "recipient");
+		const current = toolFixture(new ReplyTracker(), [self, recipient]);
 
 		const result = await current.tool.execute(
-			"reply-call",
-			{ action: "reply", to: first.id.slice(0, 8), message: "answer" },
+			"send",
+			{ action: "send", to: recipient.id, message: "hello" },
 			undefined,
 			undefined,
 			context,
 		);
 
 		assert.equal(result.isError, false, result.content[0]?.text);
-		assert.deepEqual(current.sent, [{ to: first.id, replyTo: "question-first" }]);
+		assert.deepEqual(current.sent, [{ to: recipient.id }]);
 	});
 
-	test("blocking ask accepts the ID exactly as displayed by list and correlates the reply", async () => {
+	test("blocking ask accepts an exact full session ID and correlates the reply", async () => {
 		const self = session("self-session-id", "self");
 		const recipient = session("aa56071e-1111-4222-8333-123456789abc", "recipient");
 		const current = toolFixture(new ReplyTracker(), [self, recipient]);
-		const listed = await current.tool.execute("list-call", { action: "list" }, undefined, undefined, context);
-		const displayedId = recipient.id.slice(0, 8);
-		assert.match(listed.content[0]?.text ?? "", new RegExp(`recipient \\(${displayedId}\\)`));
 
 		const execution = current.tool.execute(
 			"ask-call",
-			{ action: "ask", to: displayedId, message: "question" },
+			{ action: "ask", to: recipient.id, message: "question" },
 			undefined,
 			undefined,
 			context,
@@ -156,123 +163,121 @@ describe("Intercom displayed session ID targeting", () => {
 		assert.match(result.content[0]?.text ?? "", /answer/);
 	});
 
-	test("send accepts the unique short session ID shown by list", async () => {
-		const self = session("self-session-id", "self");
-		const recipient = session("cc78193a-1111-4222-8333-123456789abc", "recipient");
-		const current = toolFixture(new ReplyTracker(), [self, recipient]);
-		const listed = await current.tool.execute("list", { action: "list" }, undefined, undefined, context);
-		const displayedId = recipient.id.slice(0, 8);
-		assert.match(listed.content[0]?.text ?? "", new RegExp(`recipient \\(${displayedId}\\)`));
+	test("targeted reply accepts an exact full session ID", async () => {
+		const sender = session("bb67082f-1111-4222-8333-123456789abc", "sender");
+		const replies = new ReplyTracker();
+		replies.recordIncomingMessage(sender, ask("question-sender"));
+		const current = toolFixture(replies);
 
 		const result = await current.tool.execute(
-			"send",
-			{ action: "send", to: displayedId, message: "hello" },
+			"reply-call",
+			{ action: "reply", to: sender.id, message: "answer" },
 			undefined,
 			undefined,
 			context,
 		);
 
 		assert.equal(result.isError, false, result.content[0]?.text);
-		assert.equal(current.sent[0]?.to, recipient.id);
+		assert.deepEqual(current.sent, [{ to: sender.id, replyTo: "question-sender" }]);
 	});
 
-	test("colliding displayed prefixes fail clearly instead of selecting a session", async () => {
+	test("exact case-insensitive session names resolve to the full ID", async () => {
 		const self = session("self-session-id", "self");
-		const first = session("dd892a4b-1111-4222-8333-123456789abc", "first");
-		const second = session("dd892a4b-9999-4222-8333-123456789abc", "second");
-		const current = toolFixture(new ReplyTracker(), [self, first, second]);
+		const recipient = session("dd892a4b-1111-4222-8333-123456789abc", "Recipient");
+		const current = toolFixture(new ReplyTracker(), [self, recipient]);
 
 		const result = await current.tool.execute(
-			"send",
-			{ action: "send", to: "dd892a4b", message: "hello" },
+			"send-name",
+			{ action: "send", to: "recipient", message: "by name" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.deepEqual(current.sent, [{ to: recipient.id }]);
+	});
+
+	test("an 8-character ID prefix is rejected for send", async () => {
+		const self = session("self-session-id", "self");
+		const recipient = session("de903b5c-1111-4222-8333-123456789abc", "recipient");
+		const current = toolFixture(new ReplyTracker(), [self, recipient]);
+
+		const result = await current.tool.execute(
+			"send-prefix",
+			{ action: "send", to: recipient.id.slice(0, 8), message: "hello" },
 			undefined,
 			undefined,
 			context,
 		);
 
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /Ambiguous session ID prefix "dd892a4b"/);
-		assert.match(result.content[0]?.text ?? "", new RegExp(first.id));
-		assert.match(result.content[0]?.text ?? "", new RegExp(second.id));
+		assert.match(result.content[0]?.text ?? "", /Session not found/);
 		assert.deepEqual(current.sent, []);
 	});
 
-	test("blocking ask rejects a colliding displayed prefix before sending", async () => {
+	test("an 8-character ID prefix is rejected for blocking ask", async () => {
 		const self = session("self-session-id", "self");
-		const first = session("de903b5c-1111-4222-8333-123456789abc", "first");
-		const second = session("de903b5c-9999-4222-8333-123456789abc", "second");
-		const current = toolFixture(new ReplyTracker(), [self, first, second]);
+		const recipient = session("df014c6d-1111-4222-8333-123456789abc", "recipient");
+		const current = toolFixture(new ReplyTracker(), [self, recipient]);
 
 		const result = await current.tool.execute(
-			"ask",
-			{ action: "ask", to: "de903b5c", message: "question" },
+			"ask-prefix",
+			{ action: "ask", to: recipient.id.slice(0, 8), message: "question" },
 			undefined,
 			undefined,
 			context,
 		);
 
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /Ambiguous session ID prefix "de903b5c"/);
+		assert.match(result.content[0]?.text ?? "", /Session not found/);
 		assert.deepEqual(current.sent, []);
 	});
 
-	test("targeted reply rejects a colliding displayed prefix before sending", async () => {
-		const first = session("df014c6d-1111-4222-8333-123456789abc", "first");
-		const second = session("df014c6d-9999-4222-8333-123456789abc", "second");
+	test("an 8-character ID prefix is rejected for targeted reply", async () => {
+		const sender = session("ee903b5c-1111-4222-8333-123456789abc", "sender");
 		const replies = new ReplyTracker();
-		replies.recordIncomingMessage(first, ask("question-first"));
-		replies.recordIncomingMessage(second, ask("question-second"));
+		replies.recordIncomingMessage(sender, ask("question-sender"));
 		const current = toolFixture(replies);
 
 		const result = await current.tool.execute(
-			"reply",
-			{ action: "reply", to: "df014c6d", message: "answer" },
+			"reply-prefix",
+			{ action: "reply", to: sender.id.slice(0, 8), message: "answer" },
 			undefined,
 			undefined,
 			context,
 		);
 
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /Ambiguous session ID prefix "df014c6d"/);
+		assert.match(result.content[0]?.text ?? "", /No pending ask/);
 		assert.deepEqual(current.sent, []);
 	});
 
-	test("exact names and exact full IDs take precedence over prefix matching", async () => {
+	test("an unknown target is not found", async () => {
 		const self = session("self-session-id", "self");
-		const byName = session("ee903b5c-1111-4222-8333-123456789abc", "target-alias");
-		const byId = session("target-alias-full-id", "other");
-		const current = toolFixture(new ReplyTracker(), [self, byName, byId]);
+		const recipient = session("ff014c6d-1111-4222-8333-123456789abc", "recipient");
+		const current = toolFixture(new ReplyTracker(), [self, recipient]);
 
-		const nameResult = await current.tool.execute(
-			"send-name",
-			{ action: "send", to: "target-alias", message: "by name" },
-			undefined,
-			undefined,
-			context,
-		);
-		const idResult = await current.tool.execute(
-			"send-id",
-			{ action: "send", to: byId.id, message: "by id" },
+		const result = await current.tool.execute(
+			"send-missing",
+			{ action: "send", to: "missing-session-id", message: "hello" },
 			undefined,
 			undefined,
 			context,
 		);
 
-		assert.equal(nameResult.isError, false, nameResult.content[0]?.text);
-		assert.equal(idResult.isError, false, idResult.content[0]?.text);
-		assert.deepEqual(
-			current.sent.map((entry) => entry.to),
-			[byName.id, byId.id],
-		);
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Session not found/);
+		assert.deepEqual(current.sent, []);
 	});
 
-	test("a short self ID is rejected before delivery", async () => {
+	test("an exact full self ID is rejected before delivery", async () => {
 		const self = session("self-session-id", "self");
-		const selfClient = toolFixture(new ReplyTracker(), [self]);
+		const current = toolFixture(new ReplyTracker(), [self]);
 
-		const result = await selfClient.tool.execute(
+		const result = await current.tool.execute(
 			"send-self",
-			{ action: "send", to: "self-ses", message: "loop" },
+			{ action: "send", to: self.id, message: "loop" },
 			undefined,
 			undefined,
 			context,
@@ -280,6 +285,24 @@ describe("Intercom displayed session ID targeting", () => {
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Cannot message the current session/);
-		assert.deepEqual(selfClient.sent, []);
+		assert.deepEqual(current.sent, []);
+	});
+
+	test("an 8-character self ID prefix is not resolvable", async () => {
+		const self = session("self-session-id", "self");
+		const current = toolFixture(new ReplyTracker(), [self]);
+
+		const result = await current.tool.execute(
+			"send-self-prefix",
+			{ action: "send", to: self.id.slice(0, 8), message: "loop" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Session not found/);
+		assert.doesNotMatch(result.content[0]?.text ?? "", /Cannot message the current session/);
+		assert.deepEqual(current.sent, []);
 	});
 });

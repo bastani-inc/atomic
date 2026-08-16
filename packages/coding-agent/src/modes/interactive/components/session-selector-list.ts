@@ -182,6 +182,11 @@ export class SessionList implements Component, Focusable {
 		);
 		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredSessions.length);
 
+		// The summary column only exists when at least one listed row has a summary. Lists that
+		// reuse this component for rows that never carry summaries (durable workflow runs, fresh
+		// installs) keep the single-column layout instead of a screenful of placeholders.
+		const showSummaryColumn = this.filteredSessions.some((n) => !!n.session.summary?.trim());
+
 		// Render visible sessions (one line each with tree structure)
 		for (let i = startIndex; i < endIndex; i++) {
 			const node = this.filteredSessions[i]!;
@@ -193,10 +198,15 @@ export class SessionList implements Component, Focusable {
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
 
-			// Session display text (name or first message)
+			// Session display text (name or first message). A generated summary renders in its
+			// own column beside it, so a summary never displaces the identity of the row; rows
+			// missing a usable summary show an explicit placeholder there instead.
 			const hasName = !!session.name;
 			const displayText = session.name ?? session.firstMessage;
 			const normalizedMessage = displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim();
+			const rawSummary = session.summary?.replace(/[\x00-\x1f\x7f]/g, " ").trim();
+			const hasSummary = !!rawSummary;
+			const summaryText = rawSummary || "No summary available.";
 
 			// Right side: message count and age
 			const age = formatSessionDate(session.modified);
@@ -212,12 +222,17 @@ export class SessionList implements Component, Focusable {
 			// Cursor
 			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
 
-			// Calculate available width for message
+			// Calculate available width, split between the identity column and the summary column
 			const prefixWidth = visibleWidth(prefix);
 			const rightWidth = visibleWidth(rightPart) + 2; // +2 for spacing
 			const availableForMsg = width - 2 - prefixWidth - rightWidth; // -2 for cursor
+			const summaryGutter = 2;
+			const msgColWidth = showSummaryColumn
+				? Math.max(10, Math.floor(availableForMsg * 0.45))
+				: Math.max(10, availableForMsg);
+			const summaryColWidth = showSummaryColumn ? availableForMsg - msgColWidth - summaryGutter : 0;
 
-			const truncatedMsg = truncateToWidth(normalizedMessage, Math.max(10, availableForMsg), "…");
+			const truncatedMsg = truncateToWidth(normalizedMessage, msgColWidth, "…");
 
 			// Style message
 			let messageColor: "error" | "warning" | "accent" | "success" | null = null;
@@ -235,8 +250,20 @@ export class SessionList implements Component, Focusable {
 				styledMsg = theme.bold(styledMsg);
 			}
 
+			// Summary column: dim for a real summary, muted italic for the placeholder. Skipped
+			// entirely when the terminal is too narrow to show anything useful.
+			let summaryCell = "";
+			if (summaryColWidth >= 10) {
+				const truncatedSummary = truncateToWidth(summaryText, summaryColWidth, "…");
+				const styledSummary = hasSummary
+					? theme.fg("dim", truncatedSummary)
+					: theme.italic(theme.fg("muted", truncatedSummary));
+				const pad = " ".repeat(Math.max(0, msgColWidth - visibleWidth(truncatedMsg)) + summaryGutter);
+				summaryCell = pad + styledSummary;
+			}
+
 			// Build line
-			const leftPart = cursor + theme.fg("dim", prefix) + styledMsg;
+			const leftPart = cursor + theme.fg("dim", prefix) + styledMsg + summaryCell;
 			const leftWidth = visibleWidth(leftPart);
 			const spacing = Math.max(1, width - leftWidth - visibleWidth(rightPart));
 			const styledRight = theme.fg(isConfirmingDelete ? "error" : "dim", rightPart);

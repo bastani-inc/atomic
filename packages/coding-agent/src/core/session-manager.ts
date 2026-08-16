@@ -29,6 +29,7 @@ export type {
 	SessionInfoEntry,
 	SessionListProgress,
 	SessionMessageEntry,
+	SessionNameState,
 	SessionTreeNode,
 	SessionWorkflowMetadata,
 	ThinkingLevelChangeEntry,

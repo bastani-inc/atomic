@@ -51,7 +51,10 @@ export interface LiveStageRuntime {
 	unregisterStageHandle: () => void;
 	dropStageControlHandle: () => void;
 	unregisterWorkflowExitCleanup: () => void;
-	readonly captureStageSessionMeta: (options?: StageSessionCheckpointOptions) => unknown;
+	readonly captureStageSessionMeta: (options?: StageSessionCheckpointOptions) => Promise<void>;
+	readonly startStageSessionHeartbeat: () => void;
+	readonly drainStageSessionHeartbeat: () => Promise<void>;
+	readonly raceStageSessionHeartbeat: <T>(work: Promise<T>) => Promise<T>;
 	readonly applyModelFallbackMeta: (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>) => void;
 	readonly appendStageStartOnce: () => void;
 	readonly finalizeStageSnapshot: () => Promise<boolean>;

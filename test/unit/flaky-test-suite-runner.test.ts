@@ -158,43 +158,68 @@ function logArtifacts(files: string[]): string[] {
 	return files.filter((name) => !name.endsWith(".json")).sort();
 }
 
-test("green suite exits immediately with only the duration table", async () => {
-	const result = await fixture("success");
-	assert.equal(result.code, 0);
-	assert.deepEqual(logArtifacts(result.files), ["fixture-suite-durations.md"]);
-	assert.doesNotMatch(result.output, /Retrying/);
-});
+/**
+ * Structural: every fixture run spawns the real wrapper as a Bun child, which
+ * itself spawns the fake vitest as a second Bun child (twice, for the retrying
+ * modes). Two Bun cold starts plus the wrapper's transform can exceed the suite
+ * default under full vitest file parallelism on a loaded machine, so the budget
+ * is named here per the per-test timeout policy in AGENTS.md.
+ */
+const WRAPPER_FIXTURE_TIMEOUT_MS = 120_000;
 
-test("a passing no-retry file does not suppress an unrelated flake retry", async () => {
-	const result = await fixture("flake");
-	assert.equal(result.code, 0);
-	assert.match(result.output, /fixture attempt 1[\s\S]*fixture attempt 2/);
-	assert.match(result.summary, /Detected flake/);
-	assert.deepEqual(logArtifacts(result.files), [
-		"fixture-suite-attempt-1.log",
-		"fixture-suite-attempt-2.log",
-		"fixture-suite-debug.txt",
-		"fixture-suite-durations.md",
-	]);
-});
+test(
+	"green suite exits immediately with only the duration table",
+	async () => {
+		const result = await fixture("success");
+		assert.equal(result.code, 0);
+		assert.deepEqual(logArtifacts(result.files), ["fixture-suite-durations.md"]);
+		assert.doesNotMatch(result.output, /Retrying/);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
-test("persistent failure returns failure with both attempt logs", async () => {
-	const result = await fixture("persistent");
-	assert.equal(result.code, 7);
-	assert.match(result.summary, /Persistent failure/);
-	assert.match(result.output, /fixture attempt 1[\s\S]*fixture attempt 2/);
-	assert.ok(result.files.includes("fixture-suite-attempt-1.log"));
-	assert.ok(result.files.includes("fixture-suite-attempt-2.log"));
-});
+test(
+	"a passing no-retry file does not suppress an unrelated flake retry",
+	async () => {
+		const result = await fixture("flake");
+		assert.equal(result.code, 0);
+		assert.match(result.output, /fixture attempt 1[\s\S]*fixture attempt 2/);
+		assert.match(result.summary, /Detected flake/);
+		assert.deepEqual(logArtifacts(result.files), [
+			"fixture-suite-attempt-1.log",
+			"fixture-suite-attempt-2.log",
+			"fixture-suite-debug.txt",
+			"fixture-suite-durations.md",
+		]);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
-test("deterministic workflow contract failures are never retried", async () => {
-	const result = await fixture("deterministic");
-	assert.equal(result.code, 8);
-	assert.match(result.output, /No retry: deterministic test file failed/);
-	assert.doesNotMatch(result.output, /fixture attempt 2/);
-	assert.ok(result.files.includes("fixture-suite-attempt-1.log"));
-	assert.ok(!result.files.includes("fixture-suite-attempt-2.log"));
-});
+test(
+	"persistent failure returns failure with both attempt logs",
+	async () => {
+		const result = await fixture("persistent");
+		assert.equal(result.code, 7);
+		assert.match(result.summary, /Persistent failure/);
+		assert.match(result.output, /fixture attempt 1[\s\S]*fixture attempt 2/);
+		assert.ok(result.files.includes("fixture-suite-attempt-1.log"));
+		assert.ok(result.files.includes("fixture-suite-attempt-2.log"));
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
+
+test(
+	"deterministic workflow contract failures are never retried",
+	async () => {
+		const result = await fixture("deterministic");
+		assert.equal(result.code, 8);
+		assert.match(result.output, /No retry: deterministic test file failed/);
+		assert.doesNotMatch(result.output, /fixture attempt 2/);
+		assert.ok(result.files.includes("fixture-suite-attempt-1.log"));
+		assert.ok(!result.files.includes("fixture-suite-attempt-2.log"));
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
 /**
  * The report is the only structured record the wrapper gets, so its absence has
@@ -203,58 +228,78 @@ test("deterministic workflow contract failures are never retried", async () => {
  * must still be made correctly from the step log alone -- otherwise a broken
  * reporter silently converts a no-retry file into a retried one.
  */
-test("a corrupt report still blocks the retry, using the step log to name the file", async () => {
-	const result = await fixture("deterministic-log-only");
-	// The wrapper's own exit code, not the guard's: a deterministic failure is
-	// reported as itself.
-	assert.equal(result.code, 8);
-	assert.match(result.output, /No retry: deterministic test file failed \(ci-workflow-contracts\.test\.ts\)/);
-	assert.doesNotMatch(result.output, /fixture attempt 2/);
-	// And the unreadable report is reported as blindness, never as a clean sheet.
-	assert.match(result.output, /::error title=Duration guard blind[^\n]*the suite wrote no readable JSON report/);
-	assert.match(result.durations, /no duration samples parsed/);
-});
+test(
+	"a corrupt report still blocks the retry, using the step log to name the file",
+	async () => {
+		const result = await fixture("deterministic-log-only");
+		// The wrapper's own exit code, not the guard's: a deterministic failure is
+		// reported as itself.
+		assert.equal(result.code, 8);
+		assert.match(result.output, /No retry: deterministic test file failed \(ci-workflow-contracts\.test\.ts\)/);
+		assert.doesNotMatch(result.output, /fixture attempt 2/);
+		// And the unreadable report is reported as blindness, never as a clean sheet.
+		assert.match(result.output, /::error title=Duration guard blind[^\n]*the suite wrote no readable JSON report/);
+		assert.match(result.durations, /no duration samples parsed/);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
-test("a green suite still fails when one test exhausts its timeout headroom", async () => {
-	const gated = await fixture("headroom");
-	assert.equal(gated.code, 1);
-	assert.match(
-		gated.output,
-		/::error title=Timeout headroom exhausted[\s\S]*drifting test took 25000ms of its 30000ms budget \(83%\)/,
-	);
-	assert.doesNotMatch(gated.output, /::(?:warning|error)[^\n]*healthy test/);
-	assert.match(gated.summary, /Timeout headroom exhausted/);
-	assert.match(gated.durations, /drifting test/);
-});
+test(
+	"a green suite still fails when one test exhausts its timeout headroom",
+	async () => {
+		const gated = await fixture("headroom");
+		assert.equal(gated.code, 1);
+		assert.match(
+			gated.output,
+			/::error title=Timeout headroom exhausted[\s\S]*drifting test took 25000ms of its 30000ms budget \(83%\)/,
+		);
+		assert.doesNotMatch(gated.output, /::(?:warning|error)[^\n]*healthy test/);
+		assert.match(gated.summary, /Timeout headroom exhausted/);
+		assert.match(gated.durations, /drifting test/);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
-test("the headroom gate stays disabled for a suite that declares no timeout budget", async () => {
-	const ungated = await fixture("headroom", { declareBudget: false });
-	assert.equal(ungated.code, 0);
-	assert.doesNotMatch(ungated.output, /Timeout headroom exhausted/);
-	assert.match(ungated.durations, /not declared \(gate disabled\)[\s\S]*drifting test/);
-});
+test(
+	"the headroom gate stays disabled for a suite that declares no timeout budget",
+	async () => {
+		const ungated = await fixture("headroom", { declareBudget: false });
+		assert.equal(ungated.code, 0);
+		assert.doesNotMatch(ungated.output, /Timeout headroom exhausted/);
+		assert.match(ungated.durations, /not declared \(gate disabled\)[\s\S]*drifting test/);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
-test("a passing retry cannot hide the failed attempt's exhausted headroom", async () => {
-	const result = await fixture("retry-headroom");
-	assert.equal(result.code, 1);
-	assert.match(
-		result.output,
-		/::error title=Timeout headroom exhausted[^\n]*attempt 1: test\/unit\/drift\.test\.ts > drifting test took 25000ms/,
-	);
-	assert.match(result.durations, /## attempt 1[\s\S]*25000[\s\S]*## attempt 2[\s\S]*120/);
-	assert.match(result.summary, /Detected flake/);
-});
+test(
+	"a passing retry cannot hide the failed attempt's exhausted headroom",
+	async () => {
+		const result = await fixture("retry-headroom");
+		assert.equal(result.code, 1);
+		assert.match(
+			result.output,
+			/::error title=Timeout headroom exhausted[^\n]*attempt 1: test\/unit\/drift\.test\.ts > drifting test took 25000ms/,
+		);
+		assert.match(result.durations, /## attempt 1[\s\S]*25000[\s\S]*## attempt 2[\s\S]*120/);
+		assert.match(result.summary, /Detected flake/);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
-test("a suite whose tests ran without printing durations fails instead of passing blind", async () => {
-	const result = await fixture("blind");
-	assert.equal(result.code, 1);
-	assert.match(
-		result.output,
-		/::error title=Duration guard blind[^\n]*2 test\(s\) ran but the report carried no durations/,
-	);
-	assert.match(result.summary, /Duration guard blind/);
-	assert.match(result.durations, /Samples: 0 of 2 test\(s\) run/);
-});
+test(
+	"a suite whose tests ran without printing durations fails instead of passing blind",
+	async () => {
+		const result = await fixture("blind");
+		assert.equal(result.code, 1);
+		assert.match(
+			result.output,
+			/::error title=Duration guard blind[^\n]*2 test\(s\) ran but the report carried no durations/,
+		);
+		assert.match(result.summary, /Duration guard blind/);
+		assert.match(result.durations, /Samples: 0 of 2 test\(s\) run/);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
 /**
  * The other half of blindness: not an empty report, but no report at all.
@@ -264,15 +309,19 @@ test("a suite whose tests ran without printing durations fails instead of passin
  * learns the gate stopped measuring. `missing` exists for this, and until now
  * only the empty-but-present report was covered.
  */
-test("a suite that writes no report at all fails instead of passing unmeasured", async () => {
-	const result = await fixture("no-report");
-	assert.equal(result.code, 1);
-	assert.match(result.output, /::error title=Duration guard blind[^\n]*the suite wrote no readable JSON report/);
-	assert.match(result.summary, /Duration guard blind/);
-	assert.match(result.durations, /no duration samples parsed/);
-	// A missing report must not be mistaken for a suite that ran nothing.
-	assert.doesNotMatch(result.output, /Retrying/);
-});
+test(
+	"a suite that writes no report at all fails instead of passing unmeasured",
+	async () => {
+		const result = await fixture("no-report");
+		assert.equal(result.code, 1);
+		assert.match(result.output, /::error title=Duration guard blind[^\n]*the suite wrote no readable JSON report/);
+		assert.match(result.summary, /Duration guard blind/);
+		assert.match(result.durations, /no duration samples parsed/);
+		// A missing report must not be mistaken for a suite that ran nothing.
+		assert.doesNotMatch(result.output, /Retrying/);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
 
 /**
  * Structural: each of the two tests below starts a real vitest process, which
