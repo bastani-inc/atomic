@@ -289,6 +289,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				throw new Error(`No API key found for "${model.provider}"`);
 			}
 			const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
+				requestModel,
 				{
 					...streamOptions,
 					apiKey: auth.apiKey,

@@ -77,7 +77,13 @@ export {
 	isCodexFastModeSupportedProvider,
 	shouldApplyCodexFastMode,
 	shouldApplyCodexFastModeForScope,
+	usesFirstPartyCodexRouting,
+	withCodexFastModeHeaders,
 } from "./core/codex-fast-mode.ts";
+export {
+	CODEX_FAST_MODE_ORIGINATOR,
+	CODEX_FAST_MODE_ROUTING_HEADER,
+} from "./core/codex-fast-mode-transport.ts";
 // Compaction
 export {
 	type BranchPreparation,

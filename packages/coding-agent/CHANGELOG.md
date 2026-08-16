@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex fast mode now sends the real first-party routing contract. Enabling `/fast` for a ChatGPT-backed `openai-codex/*` model adds `originator: codex_cli_rs` and `x-codex-routing-hint: model=<model>;tier=priority` alongside `service_tier: priority`, on both the HTTP/SSE and WebSocket transports. Atomic previously sent only the body tier, so the backend identity gate could keep an enabled request on standard routing. The headers are scoped to the ChatGPT Codex endpoint, so the standard OpenAI API, custom `openai-codex` base URLs, proxies, and other providers are unchanged, and a disabled fast mode still sends `originator: pi`.
+
 ### Removed
 
 - Removed the bundled `@bastani/i-have-adhd` package and its default-on ADHD-friendly response mode. The `/i-have-adhd` command, `--no-adhd` flag, `.i-have-adhd-off` marker, the "ADHD Mode" status badge, and the `stop adhd mode` / `normal mode` control phrases no longer exist; responses now use Atomic's default style.

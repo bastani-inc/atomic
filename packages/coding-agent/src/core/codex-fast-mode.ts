@@ -6,6 +6,7 @@ import {
 	type Model,
 	type OpenAICodexResponsesOptions,
 	type OpenAIResponsesOptions,
+	type ProviderHeaders,
 	type SimpleStreamOptions,
 	type StreamOptions,
 	streamOpenAICodexResponses,
@@ -13,6 +14,13 @@ import {
 	streamSimple,
 	type ThinkingLevel,
 } from "@earendil-works/pi-ai/compat";
+import {
+	CODEX_FAST_MODE_ORIGINATOR,
+	CODEX_FAST_MODE_ROUTING_HEADER,
+	installCodexFastModeWebSocketIdentity,
+	isFirstPartyCodexBaseUrl,
+	wrapCodexFastModeFetch,
+} from "./codex-fast-mode-transport.ts";
 import type { OrchestrationContext } from "./extensions/index.ts";
 
 export const CODEX_FAST_MODE_SERVICE_TIER = "priority" as const;
@@ -103,7 +111,37 @@ export function shouldApplyCodexFastMode(
 	return shouldApplyCodexFastModeForScope(model, settings, getCodexFastModeScope(context));
 }
 
+/**
+ * The Codex backend gates priority routing on the first-party harness identity,
+ * not on `service_tier` alone. Send `originator` and the routing hint only for
+ * ChatGPT-backed `openai-codex` requests, so custom endpoints, proxies, and the
+ * standard OpenAI API keep their own identity.
+ */
+export function usesFirstPartyCodexRouting(model: Pick<Model<Api>, "baseUrl" | "provider">): boolean {
+	return model.provider === "openai-codex" && isFirstPartyCodexBaseUrl(model.baseUrl);
+}
+
+function setHeader(headers: ProviderHeaders, name: string, value: string): void {
+	for (const existingName of Object.keys(headers)) {
+		if (existingName.toLowerCase() === name.toLowerCase()) delete headers[existingName];
+	}
+	headers[name] = value;
+}
+
+export function withCodexFastModeHeaders(
+	model: Pick<Model<Api>, "baseUrl" | "id" | "provider">,
+	headers: ProviderHeaders | undefined,
+	enabled: boolean,
+): ProviderHeaders | undefined {
+	if (!enabled || !usesFirstPartyCodexRouting(model)) return headers;
+	const fastHeaders: ProviderHeaders = { ...(headers ?? {}) };
+	setHeader(fastHeaders, "originator", CODEX_FAST_MODE_ORIGINATOR);
+	setHeader(fastHeaders, CODEX_FAST_MODE_ROUTING_HEADER, `model=${model.id};tier=${CODEX_FAST_MODE_SERVICE_TIER}`);
+	return fastHeaders;
+}
+
 export function withCodexFastModeStreamOptions(
+	model: Pick<Model<Api>, "baseUrl" | "id" | "provider">,
 	options: SimpleStreamOptions | undefined,
 	enabled: boolean,
 ): CodexFastModeStreamOptions | undefined {
@@ -113,6 +151,7 @@ export function withCodexFastModeStreamOptions(
 
 	return {
 		...(options ?? {}),
+		headers: withCodexFastModeHeaders(model, options?.headers, enabled),
 		serviceTier: CODEX_FAST_MODE_SERVICE_TIER,
 	};
 }
@@ -147,6 +186,13 @@ function buildCodexFastModeBaseProviderOptions(
 		maxTokens: options?.maxTokens,
 		signal: options?.signal,
 		apiKey: options?.apiKey,
+		// pi-ai sets `originator: pi` after this call, so repair the first-party
+		// Codex identity on the request it actually dispatches.
+		fetch: usesFirstPartyCodexRouting(model)
+			? wrapCodexFastModeFetch(options?.fetch ?? globalThis.fetch)
+			: options?.fetch,
+		env: options?.env,
+		telemetryContext: options?.telemetryContext,
 		transport: options?.transport,
 		cacheRetention: options?.cacheRetention,
 		sessionId: options?.sessionId,
@@ -204,6 +250,13 @@ export function streamWithCodexFastMode(
 				context,
 				buildOpenAIResponsesCodexFastModeOptions(model, options),
 			);
+		}
+
+		// The WebSocket handshake builds its headers inside pi-ai, and the runtime
+		// constructor can be cached before the first turn, so repair the identity
+		// through the global constructor rather than per-request options.
+		if (options?.transport !== "sse" && usesFirstPartyCodexRouting(model)) {
+			installCodexFastModeWebSocketIdentity();
 		}
 
 		return streamers.streamOpenAICodexResponses(

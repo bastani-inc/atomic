@@ -1,3 +1,4 @@
+import { zstdDecompressSync } from "node:zlib";
 import {
 	type Api,
 	type AssistantMessageEventStream,
@@ -8,7 +9,7 @@ import {
 	type OpenAIResponsesOptions,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	CODEX_FAST_MODE_SERVICE_TIER,
 	type CodexFastModeStreamers,
@@ -20,9 +21,17 @@ import {
 	isCodexFastModeSupportedProvider,
 	shouldApplyCodexFastModeForScope,
 	streamWithCodexFastMode,
+	usesFirstPartyCodexRouting,
+	withCodexFastModeHeaders,
 	withCodexFastModePayload,
 	withCodexFastModeStreamOptions,
 } from "../src/core/codex-fast-mode.ts";
+import {
+	CODEX_FAST_MODE_ORIGINATOR,
+	CODEX_FAST_MODE_ROUTING_HEADER,
+	wrapCodexFastModeFetch,
+	wrapCodexFastModeWebSocket,
+} from "../src/core/codex-fast-mode-transport.ts";
 import type { OrchestrationContext } from "../src/core/extensions/index.ts";
 
 function providerModel(provider: string): Pick<Model<Api>, "provider"> {
@@ -126,11 +135,58 @@ describe("codex fast mode helpers", () => {
 	});
 
 	it("adds serviceTier to stream options only when enabled", () => {
-		expect(withCodexFastModeStreamOptions(undefined, false)).toBeUndefined();
-		expect(withCodexFastModeStreamOptions({ temperature: 0.2 }, false)).toEqual({ temperature: 0.2 });
-		expect(withCodexFastModeStreamOptions({ temperature: 0.2 }, true)).toEqual({
+		const model = fullModel({});
+		expect(withCodexFastModeStreamOptions(model, undefined, false)).toBeUndefined();
+		expect(withCodexFastModeStreamOptions(model, { temperature: 0.2 }, false)).toEqual({ temperature: 0.2 });
+		expect(withCodexFastModeStreamOptions(model, { temperature: 0.2 }, true)).toEqual({
 			temperature: 0.2,
+			headers: undefined,
 			serviceTier: CODEX_FAST_MODE_SERVICE_TIER,
+		});
+	});
+
+	it("sends the first-party Codex identity only for enabled ChatGPT-backed requests", () => {
+		const codexModel = fullModel({
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			id: "gpt-5.6-sol",
+		});
+		const enabled = withCodexFastModeStreamOptions(codexModel, { headers: { "x-test": "yes" } }, true);
+		const enabledHeaders = new Headers(enabled?.headers as HeadersInit);
+
+		expect(enabledHeaders.get("originator")).toBe(CODEX_FAST_MODE_ORIGINATOR);
+		expect(enabledHeaders.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
+		expect(enabledHeaders.get("x-test")).toBe("yes");
+
+		const disabled = withCodexFastModeStreamOptions(codexModel, { headers: { "x-test": "yes" } }, false);
+		expect(new Headers(disabled?.headers as HeadersInit).get("originator")).toBeNull();
+	});
+
+	it("replaces a stale identity header and leaves other endpoints alone", () => {
+		const firstParty = fullModel({
+			provider: "openai-codex",
+			api: "openai-codex-responses",
+			baseUrl: "https://chatgpt.com/backend-api/codex/responses",
+		});
+		const replaced = withCodexFastModeHeaders(
+			firstParty,
+			{ Originator: "pi", "X-Codex-Routing-Hint": "stale" },
+			true,
+		);
+		const replacedHeaders = new Headers(replaced as HeadersInit);
+		expect(replacedHeaders.get("originator")).toBe(CODEX_FAST_MODE_ORIGINATOR);
+		expect(replacedHeaders.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBe("model=gpt-5.1-codex;tier=priority");
+
+		expect(usesFirstPartyCodexRouting(firstParty)).toBe(true);
+		expect(usesFirstPartyCodexRouting(fullModel({ provider: "openai" }))).toBe(false);
+		expect(
+			usesFirstPartyCodexRouting(
+				fullModel({ provider: "openai-codex", baseUrl: "https://proxy.example/backend-api" }),
+			),
+		).toBe(false);
+		expect(withCodexFastModeHeaders(fullModel({ provider: "openai" }), { "x-test": "yes" }, true)).toEqual({
+			"x-test": "yes",
 		});
 	});
 
@@ -152,6 +208,7 @@ describe("codex fast mode helpers", () => {
 		const calls: CapturedStreamCall[] = [];
 		const streamers = makeStreamers(calls);
 		const options = withCodexFastModeStreamOptions(
+			fullModel({}),
 			{ apiKey: "key", reasoning: "medium", sessionId: "session-1", samplingParams: { top_p: 0.5 } },
 			true,
 		);
@@ -180,7 +237,11 @@ describe("codex fast mode helpers", () => {
 	it("uses native OpenAI Codex Responses streaming when fast mode is active", () => {
 		const calls: CapturedStreamCall[] = [];
 		const streamers = makeStreamers(calls);
-		const options = withCodexFastModeStreamOptions({ apiKey: "key", reasoning: "xhigh", transport: "sse" }, true);
+		const options = withCodexFastModeStreamOptions(
+			fullModel({ api: "openai-codex-responses", provider: "openai-codex" }),
+			{ apiKey: "key", reasoning: "xhigh", transport: "sse" },
+			true,
+		);
 
 		streamWithCodexFastMode(
 			fullModel({
@@ -209,7 +270,7 @@ describe("codex fast mode helpers", () => {
 		streamWithCodexFastMode(
 			fullModel({ api: "openai-responses", provider: "openai" }),
 			emptyContext,
-			withCodexFastModeStreamOptions({ apiKey: "key" }, false),
+			withCodexFastModeStreamOptions(fullModel({}), { apiKey: "key" }, false),
 			streamers,
 		);
 		streamWithCodexFastMode(
@@ -220,5 +281,142 @@ describe("codex fast mode helpers", () => {
 		);
 
 		expect(calls.map((call) => call.name)).toEqual(["streamSimple", "streamSimple"]);
+	});
+});
+
+describe("codex fast mode first-party transport", () => {
+	const codexModel = fullModel({
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://chatgpt.com/backend-api",
+		id: "gpt-5.6-sol",
+	});
+	const priorityHeaders = {
+		originator: "pi",
+		[CODEX_FAST_MODE_ROUTING_HEADER]: "model=gpt-5.6-sol;tier=priority",
+	};
+
+	it("repairs the HTTP originator pi-ai sets after its own header merge", async () => {
+		const captured: Array<string | null> = [];
+		const fastFetch = wrapCodexFastModeFetch(
+			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+				captured.push(new Headers(init?.headers).get("originator"));
+				return new Response(null, { status: 200 });
+			}) as typeof globalThis.fetch,
+		);
+
+		await fastFetch("https://chatgpt.com/backend-api/codex/responses", { headers: priorityHeaders });
+		await fastFetch("https://proxy.example/v1/responses", { headers: priorityHeaders });
+		await fastFetch("https://chatgpt.com/backend-api/codex/responses", { headers: { originator: "pi" } });
+
+		expect(captured).toEqual([CODEX_FAST_MODE_ORIGINATOR, "pi", "pi"]);
+	});
+
+	it("repairs the WebSocket handshake originator and wraps each constructor once", () => {
+		const captured: Array<string | null> = [];
+		class MockWebSocket {
+			constructor(_url: string | URL, options?: { headers?: HeadersInit }) {
+				captured.push(new Headers(options?.headers).get("originator"));
+			}
+		}
+		const FastWebSocket = wrapCodexFastModeWebSocket(MockWebSocket as never);
+		expect(wrapCodexFastModeWebSocket(MockWebSocket as never)).toBe(FastWebSocket);
+		expect(wrapCodexFastModeWebSocket(FastWebSocket)).toBe(FastWebSocket);
+
+		new FastWebSocket("wss://chatgpt.com/backend-api/codex/responses", { headers: priorityHeaders } as never);
+		new FastWebSocket("wss://proxy.example/v1/responses", { headers: priorityHeaders } as never);
+
+		expect(captured).toEqual([CODEX_FAST_MODE_ORIGINATOR, "pi"]);
+	});
+
+	it("sends tier, identity, and routing hint through the real Codex SSE transport", async () => {
+		const tokenPayload = Buffer.from(
+			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
+		).toString("base64url");
+		let capturedHeaders: Headers | undefined;
+		let capturedPayload: Record<string, unknown> | undefined;
+		const fetchImplementation = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			capturedHeaders = new Headers(init?.headers);
+			const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+			const body =
+				capturedHeaders.get("content-encoding") === "zstd"
+					? zstdDecompressSync(bytes).toString("utf8")
+					: new TextDecoder().decode(bytes);
+			capturedPayload = JSON.parse(body) as Record<string, unknown>;
+			const completed = {
+				type: "response.completed",
+				response: {
+					id: "resp_fast",
+					status: "completed",
+					service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+					usage: {
+						input_tokens: 0,
+						input_tokens_details: { cached_tokens: 0 },
+						output_tokens: 0,
+						total_tokens: 0,
+					},
+				},
+			};
+			return new Response(`data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`, {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		});
+
+		const stream = streamWithCodexFastMode(
+			codexModel,
+			emptyContext,
+			withCodexFastModeStreamOptions(
+				codexModel,
+				{
+					apiKey: `header.${tokenPayload}.signature`,
+					fetch: fetchImplementation as typeof globalThis.fetch,
+					transport: "sse",
+				},
+				true,
+			),
+		);
+		await stream.result();
+
+		expect(capturedPayload?.service_tier).toBe(CODEX_FAST_MODE_SERVICE_TIER);
+		expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_MODE_ORIGINATOR);
+		expect(capturedHeaders?.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
+	});
+
+	it("keeps pi's identity on the same transport when fast mode is disabled", async () => {
+		const tokenPayload = Buffer.from(
+			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
+		).toString("base64url");
+		let capturedHeaders: Headers | undefined;
+		const fetchImplementation = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			capturedHeaders = new Headers(init?.headers);
+			const completed = {
+				type: "response.completed",
+				response: {
+					id: "resp_normal",
+					status: "completed",
+					usage: {
+						input_tokens: 0,
+						input_tokens_details: { cached_tokens: 0 },
+						output_tokens: 0,
+						total_tokens: 0,
+					},
+				},
+			};
+			return new Response(`data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`, {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		});
+
+		const stream = streamWithCodexFastMode(codexModel, emptyContext, {
+			apiKey: `header.${tokenPayload}.signature`,
+			fetch: fetchImplementation as typeof globalThis.fetch,
+			transport: "sse",
+		});
+		await stream.result();
+
+		expect(capturedHeaders?.get("originator")).toBe("pi");
+		expect(capturedHeaders?.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBeNull();
 	});
 });
