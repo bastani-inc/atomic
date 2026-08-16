@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -816,10 +817,13 @@ describe("coding-agent Harness construction", () => {
 				env,
 			});
 			const atomicExperimentalTools = await created.harness.getTools();
-			expect(atomicExperimentalTools.map((tool) => tool.name)).toEqual(normalTools.map((tool) => tool.name));
+			assert.deepEqual(
+				atomicExperimentalTools.map((tool) => tool.name),
+				normalTools.map((tool) => tool.name),
+			);
 			for (const [index, tool] of atomicExperimentalTools.entries()) {
-				expect(tool.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
-				expect(tool.parameters).toEqual(normalTools[index]?.parameters);
+				assert.deepEqual(tool.constrainedSampling, { type: "json_schema", strict: "prefer" });
+				assert.deepEqual(tool.parameters, normalTools[index]?.parameters);
 			}
 
 			delete process.env.ATOMIC_EXPERIMENTAL;

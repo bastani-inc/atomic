@@ -43,11 +43,22 @@ interface SearchCorpus {
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-interface TerminalLineToken {
+interface TerminalAnsiToken {
 	text: string;
-	width: number;
-	ansi: boolean;
+	width: 0;
+	ansi: true;
 }
+
+interface TerminalTextToken {
+	/** Original bytes, including ANSI sequences embedded inside this grapheme. */
+	text: string;
+	/** The same grapheme with recognized terminal sequences removed. */
+	plainText: string;
+	width: number;
+	ansi: false;
+}
+
+type TerminalLineToken = TerminalAnsiToken | TerminalTextToken;
 
 interface ScannedTerminalLine {
 	tokens: TerminalLineToken[];
@@ -97,30 +108,55 @@ function scanTerminalLine(line: string): ScannedTerminalLine {
 		return 0;
 	};
 
-	const tokens: TerminalLineToken[] = [];
-	let width = 0;
+	const plainChunks: string[] = [];
+	const rawStartByPlainIndex = new Int32Array(length);
+	const rawEndByPlainIndex = new Int32Array(length);
+	let plainLength = 0;
 	let index = 0;
 	while (index < length) {
 		const ansiLength = ansiLengthAt(index);
 		if (ansiLength > 0) {
-			tokens.push({ text: line.slice(index, index + ansiLength), width: 0, ansi: true });
 			index += ansiLength;
 			continue;
 		}
 		let textEnd = index + 1;
 		while (textEnd < length && ansiLengthAt(textEnd) === 0) textEnd += 1;
-		for (const { segment } of graphemeSegmenter.segment(line.slice(index, textEnd))) {
-			let segmentWidth: number;
-			if (segment === "\t") segmentWidth = 3;
-			else {
-				const code = segment.length === 1 ? segment.charCodeAt(0) : 0;
-				segmentWidth = code >= 0x20 && code <= 0x7e ? 1 : visibleWidth(segment);
-			}
-			tokens.push({ text: segment, width: segmentWidth, ansi: false });
-			width += segmentWidth;
+		plainChunks.push(line.slice(index, textEnd));
+		for (let rawIndex = index; rawIndex < textEnd; rawIndex += 1) {
+			rawStartByPlainIndex[plainLength] = rawIndex;
+			rawEndByPlainIndex[plainLength] = rawIndex + 1;
+			plainLength += 1;
 		}
 		index = textEnd;
 	}
+
+	const tokens: TerminalLineToken[] = [];
+	const plainText = plainChunks.join("");
+	let width = 0;
+	let rawCursor = 0;
+	for (const { segment, index: plainStart } of graphemeSegmenter.segment(plainText)) {
+		const plainEnd = plainStart + segment.length;
+		const rawStart = rawStartByPlainIndex[plainStart] ?? 0;
+		const rawEnd = rawEndByPlainIndex[plainEnd - 1] ?? rawStart;
+		if (rawStart > rawCursor) {
+			tokens.push({ text: line.slice(rawCursor, rawStart), width: 0, ansi: true });
+		}
+		let segmentWidth: number;
+		if (segment === "\t") segmentWidth = 3;
+		else {
+			const code = segment.length === 1 ? segment.charCodeAt(0) : 0;
+			segmentWidth = code >= 0x20 && code <= 0x7e ? 1 : visibleWidth(segment);
+		}
+		tokens.push({
+			text: line.slice(rawStart, rawEnd),
+			plainText: segment,
+			width: segmentWidth,
+			ansi: false,
+		});
+		width += segmentWidth;
+		rawCursor = rawEnd;
+	}
+	if (rawCursor < length) tokens.push({ text: line.slice(rawCursor), width: 0, ansi: true });
 	return { tokens, width };
 }
 
@@ -171,7 +207,7 @@ function buildSearchCorpus(lines: readonly string[]): SearchCorpus {
 		let column = 0;
 		for (const token of line.tokens) {
 			if (token.ansi) continue;
-			const text = token.text;
+			const text = token.plainText;
 			if (/^\s+$/u.test(text)) {
 				if (corpus.text.length > 0) pendingSeparator = true;
 				column += token.width;

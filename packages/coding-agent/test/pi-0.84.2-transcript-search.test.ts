@@ -86,6 +86,18 @@ describe("transcript search matcher", () => {
 		assert.deepEqual(matches[0]?.segments, [{ row: 0, startCol: 5, endCol: 11 }]);
 	});
 
+	test("keeps one visible-column span when ANSI splits a ZWJ grapheme", () => {
+		const matches = findSearchMatches(["👩\x1b[31m‍💻\x1b[0m"], "👩‍💻");
+
+		assert.deepEqual(matches[0]?.segments, [{ row: 0, startCol: 0, endCol: 2 }]);
+	});
+
+	test("keeps one visible-column span when ANSI splits a regional-indicator flag", () => {
+		const matches = findSearchMatches(["🇺\x1b[31m🇸\x1b[0m"], "🇺🇸");
+
+		assert.deepEqual(matches[0]?.segments, [{ row: 0, startCol: 0, endCol: 2 }]);
+	});
+
 	test("the match key identifies a match by position, so equal text stays distinguishable", () => {
 		const matches = findSearchMatches(["needle", "needle"], "needle");
 
@@ -118,6 +130,17 @@ describe("transcript search highlighting", () => {
 		);
 
 		assert.equal(highlighted, "\x1b[1m<m>needle</m>\x1b[22m");
+	});
+
+	test("a true visible range highlights complete graphemes split by ANSI", () => {
+		assert.equal(
+			highlightSearchMatchRow("👩\x1b[31m‍💻\x1b[0m", [{ startCol: 0, endCol: 2, current: false }], STYLES),
+			"<m>👩</m>\x1b[31m<m>‍💻</m>\x1b[0m",
+		);
+		assert.equal(
+			highlightSearchMatchRow("🇺\x1b[31m🇸\x1b[0m", [{ startCol: 0, endCol: 2, current: false }], STYLES),
+			"<m>🇺</m>\x1b[31m<m>🇸</m>\x1b[0m",
+		);
 	});
 
 	test("handles repeated malformed ANSI prefixes without regex backtracking", () => {
