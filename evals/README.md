@@ -3,8 +3,8 @@
 Run Atomic against the Deep SWE benchmark through [Pier](https://github.com/datacurve-ai/pier).
 
 Every command runs from this `evals/` directory unless it says otherwise.
-Maintainer material — submodule pinning, the preflight internals, the network
-and artifact contracts, the Harbor path — lives in [DEV_SETUP.md](DEV_SETUP.md).
+Repo-level setup and maintainer notes are in the root
+[DEV_SETUP.md](../DEV_SETUP.md).
 
 ## 1. Set up
 
@@ -24,18 +24,18 @@ If you have cloned before, run `git submodule sync --recursive` first: an
 existing clone keeps the old URL in `.git/config`, and `evals/vendor/pier` moved
 to `bastani-inc/pier`.
 
-## 2. Check your machine
+## 2. Check the pins
 
-Before a long run, confirm the corpus, submodules, Docker, and credentials:
+The benchmark's guarantees live in the pinned Pier fork. Confirm both submodules
+are the code they claim to be before a long run:
 
 ```bash
-uv run python -c 'from prerequisites import run_preflight; r = run_preflight(); print(r.describe()); raise SystemExit(0 if r.ok else 1)'
+uv run python -c 'from prerequisites import verify_submodules; print(verify_submodules())'
 ```
 
-A non-zero exit means the run would not be trustworthy: a mis-shaped corpus, a
-submodule that drifted off its pin or has uncommitted edits, an unreachable
-Docker daemon, or no usable provider credential. Fix what it names before
-running anything below.
+It raises if either submodule drifted off its pin or carries local edits.
+Everything else — Docker, credentials — announces itself within seconds of
+starting a run.
 
 ## 3. Export a credential
 
@@ -87,10 +87,8 @@ find jobs/atomic-smoke -name model.patch -size -1c   # any empty patch is a dead
 ```
 
 Each trial directory under `jobs/atomic-smoke/` holds the agent's JSON stream
-(`agent/atomic.txt`), session transcripts (`agent/atomic-sessions/`), the patch
-the task collected (`artifacts/model.patch`), and `agent/atomic-manifest.json`
-— run ID, seed, model, Atomic version, and both submodule SHAs, recording what
-actually ran so two runs can be compared.
+(`agent/atomic.txt`), session transcripts (`agent/atomic-sessions/`), and the
+patch the task collected (`artifacts/model.patch`).
 
 ## 5. Full benchmark
 
@@ -122,7 +120,7 @@ or `uv run pier job resume -p jobs/atomic-deep-swe`.
 
 | Flag | Why |
 |---|---|
-| `--agent-kwarg version=0.9.13` | Installs that exact npm version in the sandbox. Prefer a pinned, current version over `next` or `latest`: a moving tag cannot be attributed to a build, and the manifest refuses to record one it could not resolve. |
+| `--agent-kwarg version=0.9.13` | Installs that exact npm version in the sandbox. Prefer a pinned, current version over `next` or `latest`, which cannot be attributed to a build afterwards. |
 | `--force-build` | Rebuilds the task image so the `npm install -g @bastani/atomic@…` layer re-runs. Without it Docker reuses a cached install and you silently benchmark a stale build. |
 | `--agent-timeout-multiplier 16` | Tasks set a 1.5 h agent timeout; ×16 makes it a day. Pier cannot disable the timeout, so a large multiplier is how you run effectively untimed. |
 | `--agent-kwarg thinking=xhigh` | Atomic's reasoning level, for models that support it. |
@@ -152,7 +150,7 @@ inherit shell exports. Pass it explicitly: `--agent-env OPENROUTER_API_KEY=...`.
 `uv sync --reinstall-package datacurve-pier`. Do this after any change to a
 submodule pointer or any local edit under `evals/vendor/pier`.
 
-**The preflight fails on a submodule** — `git submodule update --init
---recursive --force` from the repository root returns both to their pins. It
-reports uncommitted edits too, because results produced by modified code cannot
-be attributed to the pinned SHA.
+**`SubmoduleDriftError`** — `git submodule update --init --recursive --force`
+from the repository root returns both submodules to their pins. It reports
+uncommitted edits too, because results produced by modified code cannot be
+attributed to the pinned SHA.

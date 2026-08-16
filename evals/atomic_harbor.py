@@ -19,12 +19,6 @@ from prerequisites import (
     atomic_runtime_environment_command,
     root_install_command,
 )
-from run_manifest import (
-    RunManifest,
-    manifest_for_agent_logs_dir,
-    recorded_atomic_version,
-    write_manifest,
-)
 
 
 class Atomic(BaseInstalledAgent):
@@ -81,11 +75,6 @@ class Atomic(BaseInstalledAgent):
         self._disallowed_subscriptions: frozenset[str] = (
             self._normalize_disallowed_subscriptions(disallowed_subscriptions)
         )
-        # The version the container actually installed, and the candidate the
-        # session launched on — both differ from what was requested when the
-        # request is a moving tag (`version=next`) or a fallback candidate runs.
-        self._resolved_version: str | None = None
-        self._selected_model: str | None = None
         super().__init__(
             logs_dir=logs_dir,
             prompt_template_path=prompt_template_path,
@@ -93,33 +82,6 @@ class Atomic(BaseInstalledAgent):
             extra_env=extra_env,
             **kwargs,
         )
-
-    @override
-    async def setup(self, environment: BaseEnvironment) -> None:
-        """Install as usual, then resolve the version the container really has.
-
-        Harbor had no such override, so an explicit moving request such as
-        ``--version next`` was recorded verbatim and two runs of different
-        builds compared as equal. Pier auto-detects a version only when none was
-        requested, which never covers the explicit case; ``self._version`` stays
-        the requested spec because ``install()`` interpolates it into
-        ``npm install -g @bastani/atomic@<spec>``.
-        """
-        await super().setup(environment)
-        version_command = self.get_version_command()
-        if not version_command:
-            return
-        try:
-            result = await environment.exec(command=version_command)
-        except Exception as exc:  # noqa: BLE001 - version detection is best-effort
-            self.logger.debug("Atomic version detection failed: %s", exc)
-            return
-        stdout = cast(str | None, getattr(result, "stdout", None))
-        if getattr(result, "return_code", 1) == 0 and stdout:
-            try:
-                self._resolved_version = self.parse_version(stdout)
-            except (IndexError, ValueError) as exc:
-                self.logger.debug("Could not parse Atomic version output: %s", exc)
 
     @staticmethod
     def _normalize_disallowed_subscriptions(value: object) -> frozenset[str]:
@@ -396,11 +358,6 @@ class Atomic(BaseInstalledAgent):
         requested_provider, requested_model = self.model_name.split("/", 1)
         chain = self._model_chain(requested_provider, requested_model)
         provider, model = chain[0]
-        # The candidate the session actually launches on, which is not the
-        # request whenever a subscription is absent. The manifest used to fall
-        # straight back to the request, so a cancelled or metadata-light run
-        # recorded a model that never ran.
-        self._selected_model = f"{provider}/{model}"
 
         env: dict[str, str] = {}
         # Forward credentials for every provider in the fallback chain, not just
@@ -531,59 +488,8 @@ class Atomic(BaseInstalledAgent):
             return True
         return session_file.parent != session_root
 
-    def _observed_model(self) -> str | None:
-        """The provider/model that actually answered, read from the agent stream."""
-        output_file = self.logs_dir / self._OUTPUT_FILENAME
-        if not output_file.exists():
-            return None
-        observed: str | None = None
-        try:
-            text = output_file.read_bytes().decode("utf-8", errors="replace")
-        except OSError:
-            return None
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("{"):
-                continue
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            message = event.get("message") if isinstance(event, dict) else None
-            if not isinstance(message, dict) or message.get("role") != "assistant":
-                continue
-            provider = message.get("provider")
-            model = message.get("model")
-            if isinstance(provider, str) and provider and isinstance(model, str) and model:
-                observed = f"{provider}/{model}"
-        return observed
-
-    def _record_run_manifest(self, context: AgentContext) -> RunManifest:
-        """Record which corpus, pier checkout, Atomic build, and model ran.
-
-        Harbor's trial layout matches Pier's (``trial_dir/{agent,artifacts}``)
-        and its job directory carries ``config.json``/``result.json``, so the
-        same reader works. Harbor has no seed concept at all, so ``seed`` is
-        recorded as ``null`` and two Harbor runs refuse to compare on it.
-
-        Model precedence: what answered (from the stream) > the candidate the
-        session launched on > the requested ``--model``. Version precedence:
-        what the container reported after install > the requested spec, and only
-        when that spec is pinned — a moving request that could not be resolved
-        records nothing rather than letting two builds compare as equal.
-        """
-        manifest = manifest_for_agent_logs_dir(
-            self.logs_dir,
-            model=self._observed_model() or self._selected_model or self.model_name,
-            atomic_version=recorded_atomic_version(self._resolved_version, self.version()),
-        )
-        _ = write_manifest(self.logs_dir, manifest)
-        context.metadata = {**(context.metadata or {}), "atomic_manifest": manifest.to_json()}
-        return manifest
-
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
-        self._record_run_manifest(context)
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
             # An agent that wrote no atomic.txt also changed nothing, so the

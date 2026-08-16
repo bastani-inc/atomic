@@ -43,12 +43,6 @@ from prerequisites import (
     is_valid_provider_auth,
     root_install_command,
 )
-from run_manifest import (
-    RunManifest,
-    manifest_for_agent_logs_dir,
-    recorded_atomic_version,
-    write_manifest,
-)
 
 
 type JsonValue = str | int | float | bool | None | list[JsonValue] | JsonObject
@@ -188,11 +182,6 @@ class Atomic(BaseInstalledAgent):
         self._disallowed_subscriptions: frozenset[str] = (
             self._normalize_disallowed_subscriptions(disallowed_subscriptions)
         )
-        # The version the container actually installed, and the model that
-        # actually answered — both differ from what was requested when the
-        # request is a moving tag (`version=next`) or a fallback candidate runs.
-        self._resolved_version: str | None = None
-        self._selected_model: str | None = None
         super().__init__(  # pyright: ignore[reportUnknownMemberType]
             logs_dir=logs_dir,
             prompt_template_path=prompt_template_path,
@@ -200,32 +189,6 @@ class Atomic(BaseInstalledAgent):
             extra_env=extra_env,
             **kwargs,
         )
-
-    @override
-    async def setup(self, environment: BaseEnvironment) -> None:
-        """Install as usual, then resolve the version the container really has.
-
-        Pier auto-detects a version only when none was requested, so a moving
-        tag such as ``version=next`` would be recorded verbatim in the manifest
-        and two runs of different builds would compare as equal. ``self._version``
-        stays the requested spec because ``install_spec()`` interpolates it into
-        ``npm install -g @bastani/atomic@<spec>``.
-        """
-        await super().setup(environment)  # pyright: ignore[reportUnknownMemberType]
-        version_command = self.get_version_command()
-        if not version_command:
-            return
-        try:
-            result = await environment.exec(command=version_command)
-        except Exception as exc:  # noqa: BLE001 - version detection is best-effort
-            self.logger.debug("Atomic version detection failed: %s", exc)
-            return
-        stdout = cast(str | None, getattr(result, "stdout", None))
-        if getattr(result, "return_code", 1) == 0 and stdout:
-            try:
-                self._resolved_version = self.parse_version(stdout)
-            except (IndexError, ValueError) as exc:
-                self.logger.debug("Could not parse Atomic version output: %s", exc)
 
     @staticmethod
     def _normalize_disallowed_subscriptions(value: object) -> frozenset[str]:
@@ -542,7 +505,6 @@ class Atomic(BaseInstalledAgent):
         provider, model = chain[0]
         # The candidate the session actually launches on, which is not
         # `self.model_name` when the requested provider has no credential here.
-        self._selected_model = f"{provider}/{model}"
         fallback_settings_command = self._fallback_settings_command(chain)
         # Forward credentials for every Atomic-supported provider, not just the
         # top-level Pier --model provider: nested workflow/subagent model
@@ -1143,50 +1105,8 @@ class Atomic(BaseInstalledAgent):
         except OSError as exc:
             self.logger.debug("Failed to write Atomic trajectory: %s", exc)
 
-    def _observed_model(self) -> str | None:
-        """The provider/model that actually answered, read from the agent stream.
-
-        Every assistant message in ``atomic.txt`` carries ``provider`` and
-        ``model``. The last one is what produced the trial's final work, which
-        is not the requested model when the session fell back mid-run.
-        """
-        output_file = self.logs_dir / self._OUTPUT_FILENAME
-        if not output_file.exists():
-            return None
-        observed: str | None = None
-        for event in self._read_jsonl(output_file, strict=False, count_malformed=False):
-            message = _json_object(event.get("message"))
-            if message is None or message.get("role") != "assistant":
-                continue
-            provider = message.get("provider")
-            model = message.get("model")
-            if isinstance(provider, str) and provider and isinstance(model, str) and model:
-                observed = f"{provider}/{model}"
-        return observed
-
-    def _record_run_manifest(self, context: AgentContext) -> RunManifest:
-        """Record which corpus, pier, Atomic build, model, and seed produced this run.
-
-        Model precedence: what answered (from the stream) > the candidate the
-        session launched on > the requested ``--model``. Version precedence: what
-        the container reported after install > the requested spec, and only when
-        that spec is pinned. Recording the request would let two runs of
-        different builds, or of different fallback candidates, compare as equal;
-        recording a moving request such as ``next`` after a failed version probe
-        would do exactly that, so it records nothing and the run is incomplete.
-        """
-        manifest = manifest_for_agent_logs_dir(
-            self.logs_dir,
-            model=self._observed_model() or self._selected_model or self.model_name,
-            atomic_version=recorded_atomic_version(self._resolved_version, self.version()),
-        )
-        _ = write_manifest(self.logs_dir, manifest)
-        context.metadata = {**(context.metadata or {}), "atomic_manifest": manifest.to_json()}
-        return manifest
-
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
-        _ = self._record_run_manifest(context)
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
             # An agent that wrote no atomic.txt also changed nothing, so the

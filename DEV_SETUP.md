@@ -85,7 +85,8 @@ cd evals
 uv sync --reinstall-package datacurve-pier
 ```
 
-Example single-task DeepSWE run with Atomic and the local Pier checkout:
+Example single-task DeepSWE run with Atomic and the local Pier checkout. See
+[`evals/README.md`](./evals/README.md) for the full runbook:
 
 ```bash
 cd evals
@@ -95,12 +96,43 @@ uv run pier run \
   --agent-import-path atomic_pier:Atomic \
   --model openrouter/openai/gpt-5.5 \
   --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=next \
+  --agent-kwarg version=0.9.13 \
   --agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}' \
   --n-tasks 1 \
   --sample-seed 0 \
   --n-concurrent 1 \
   --force-build
+```
+
+Pin a concrete `version=`. A moving tag cannot be attributed to a build after
+the fact, and the adapters pass the task after `--`, which Atomic only accepts
+from 0.9.11 — an older build starts with no task at all and collects an empty
+patch.
+
+### The Pier pin is the benchmark's guarantee
+
+`evals/vendor/pier` points at [`bastani-inc/pier`](https://github.com/bastani-inc/pier)
+`main`: upstream plus Atomic commits that (a) set `extra="forbid"` on the
+task-config models, so a `task.toml` key Pier cannot model raises instead of
+being silently dropped, (b) honor verifier-scoped `network_mode`, which the
+corpus declares and upstream ignored, and (c) error a trial whose `model.patch`
+never arrived or arrived empty, instead of recording it as completed.
+
+A checkout that drifted off the pin, or is dirty, does not have those. Confirm
+before a long run:
+
+```bash
+cd evals
+uv run python -c 'from prerequisites import verify_submodules; print(verify_submodules())'
+```
+
+To change the fork: push to `bastani-inc/pier` `main`, then move the gitlink and
+refresh the editable install.
+
+```bash
+git -C evals/vendor/pier push origin HEAD:main
+git add evals/vendor/pier
+cd evals && uv sync --reinstall-package datacurve-pier
 ```
 
 `npm install` runs the root `prepare` script, which installs Git hooks with [`prek`](https://prek.j178.dev/) from [`prek.toml`](./prek.toml). The hook shims installed by default come from `default_install_hook_types`; currently that is `pre-commit`. To reinstall hooks manually, run `npm run hooks:install`. Set `PREK_DISABLE_INSTALL=1` to skip hook installation for a local install; CI skips it automatically.
