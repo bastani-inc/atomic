@@ -19,8 +19,12 @@ interface BoundaryView {
 	 * deliberately separate from the symmetric heuristic `stats.tokensBefore`
 	 * so the "Compacted from N tokens" line shows the best available number
 	 * while the reported stats pair remains internally consistent.
+	 *
+	 * Optional: a caller constructing a `BoundaryView` directly may omit it, in
+	 * which case the display falls back to the heuristic `stats.tokensBefore` —
+	 * the same fallback `extractDisplayTokensBefore` applies to legacy entries.
 	 */
-	displayTokensBefore: number;
+	displayTokensBefore?: number;
 }
 
 /** Renders the durable verbatim compaction boundary without markdown reflow. */
@@ -53,7 +57,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 
 	private updateDisplay(): void {
 		this.clear();
-		const tokenStr = this.view.displayTokensBefore.toLocaleString();
+		const tokenStr = (this.view.displayTokensBefore ?? this.view.stats.tokensBefore).toLocaleString();
 		// The fresh rung destroyed the compactable conversation; say so plainly.
 		const label = theme.fg(
 			"customMessageLabel",
