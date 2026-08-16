@@ -245,12 +245,14 @@ describe("createAgentSession stream options", () => {
 					baseUrl: "https://credential.example/v1",
 					headers: { Authorization: null, "x-credential": "present" },
 				},
+				env: { HTTPS_PROXY: "https://credential-proxy.example" },
 			},
 			captured,
 		);
 
 		expect(captured.model?.baseUrl).toBe("https://credential.example/v1");
 		expect(options?.headers).toMatchObject({ Authorization: null, "x-credential": "present" });
+		expect(options?.env).toEqual({ HTTPS_PROXY: "https://credential-proxy.example" });
 	});
 
 	it("uses a credential-derived baseUrl for native Codex fast-mode dispatch", async () => {

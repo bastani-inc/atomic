@@ -436,6 +436,10 @@ function getAliases(): Record<string, string> {
 	// upstream layout change moves these files, this join needs updating to
 	// match the package's real dist paths.
 	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
+	const piAiCodexResponsesEntry = resolveWorkspaceOrImport(
+		"ai/dist/api/openai-codex-responses.js",
+		"@earendil-works/pi-ai",
+	);
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@earendil-works/pi-ai");
 	const piAiGatewayBindingEntry = resolveWorkspaceOrImport(
@@ -449,6 +453,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui/dist/layout.js": piTuiLayoutEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
+		"@earendil-works/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
 		"@earendil-works/pi-ai/compat": piAiEntry,

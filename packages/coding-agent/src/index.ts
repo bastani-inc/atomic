@@ -86,6 +86,7 @@ export {
 	isCodexFastModeSupportedProvider,
 	shouldApplyCodexFastMode,
 	shouldApplyCodexFastModeForScope,
+	usesChatGptCodexTransport,
 	usesFirstPartyCodexRouting,
 	withCodexFastModeHeaders,
 } from "./core/codex-fast-mode.ts";

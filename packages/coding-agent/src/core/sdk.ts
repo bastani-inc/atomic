@@ -9,6 +9,8 @@ import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import {
 	shouldApplyCodexFastMode,
 	streamWithCodexFastMode,
+	usesChatGptCodexTransport,
+	withChatGptCodexTransportRouting,
 	withCodexFastModePayload,
 	withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
@@ -264,6 +266,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				apiKey: authResult?.auth.apiKey,
 				headers: authResult?.auth.headers ?? compatibility?.headers,
 				baseUrl: authResult?.auth.baseUrl,
+				env: authResult?.env,
 			};
 			const requestModel =
 				auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
@@ -298,6 +301,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				{
 					...streamOptions,
 					apiKey: auth.apiKey,
+					env: auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined,
 					timeoutMs,
 					websocketConnectTimeoutMs,
 					maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
@@ -309,9 +313,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (usesExtensionStream) {
 				return modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
 			}
-			return fastModeEnabled
-				? streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions)
-				: modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
+			if (fastModeEnabled) {
+				return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
+			}
+			const transportOptions =
+				usesChatGptCodexTransport(requestModel) && codexFastModeStreamOptions
+					? withChatGptCodexTransportRouting(requestModel, codexFastModeStreamOptions, false)
+					: codexFastModeStreamOptions;
+			return modelRuntime.streamSimple(requestModel, context, transportOptions);
 		},
 		onPayload: async (payload, model) => {
 			const fastModeEnabled = isCodexFastModeEnabled(model);

@@ -1,5 +1,8 @@
 export const CODEX_FAST_MODE_ORIGINATOR = "codex_cli_rs";
 export const CODEX_FAST_MODE_ROUTING_HEADER = "x-codex-routing-hint";
+const CODEX_FAST_MODE_REQUEST_MARKER_HEADER = "x-atomic-codex-fast-mode";
+const CODEX_FAST_MODE_PRIORITY_MARKER_VALUE = "priority";
+const CODEX_FAST_MODE_NORMAL_MARKER_VALUE = "normal";
 
 const CODEX_BACKEND_HOSTS = new Set(["chatgpt.com", "chat.openai.com"]);
 const wrappedWebSockets = new WeakMap<typeof globalThis.WebSocket, typeof globalThis.WebSocket>();
@@ -38,13 +41,37 @@ function hasCodexPriorityRoutingHint(headers: Headers): boolean {
 	return headers.get(CODEX_FAST_MODE_ROUTING_HEADER)?.endsWith(";tier=priority") === true;
 }
 
+function codexFastModeRequestMarker(headers: Headers): "normal" | "priority" | undefined {
+	const marker = headers.get(CODEX_FAST_MODE_REQUEST_MARKER_HEADER);
+	return marker === CODEX_FAST_MODE_PRIORITY_MARKER_VALUE || marker === CODEX_FAST_MODE_NORMAL_MARKER_VALUE
+		? marker
+		: undefined;
+}
+
+export function markCodexFastModeRequest(headers: Record<string, string | null>, priority: boolean): void {
+	headers[CODEX_FAST_MODE_REQUEST_MARKER_HEADER] = priority
+		? CODEX_FAST_MODE_PRIORITY_MARKER_VALUE
+		: CODEX_FAST_MODE_NORMAL_MARKER_VALUE;
+}
+
+export function clearCodexFastModeRequestMarker(headers: Record<string, string | null>): void {
+	for (const name of Object.keys(headers)) {
+		if (name.toLowerCase() === CODEX_FAST_MODE_REQUEST_MARKER_HEADER) delete headers[name];
+	}
+}
+
 export function forceCodexFastModeOriginator(
-	endpoint: string | URL | Request,
+	_endpoint: string | URL | Request,
 	headersInit: HeadersInit | undefined,
 ): Headers {
 	const headers = new Headers(headersInit);
-	if (isFirstPartyCodexEndpoint(endpoint) && hasCodexPriorityRoutingHint(headers)) {
+	const marker = codexFastModeRequestMarker(headers);
+	headers.delete(CODEX_FAST_MODE_REQUEST_MARKER_HEADER);
+	if (marker === "priority" && hasCodexPriorityRoutingHint(headers)) {
 		headers.set("originator", CODEX_FAST_MODE_ORIGINATOR);
+	} else if (marker !== undefined) {
+		headers.delete(CODEX_FAST_MODE_ROUTING_HEADER);
+		if (headers.get("originator") === CODEX_FAST_MODE_ORIGINATOR) headers.set("originator", "pi");
 	}
 	return headers;
 }
@@ -84,14 +111,15 @@ export function wrapCodexFastModeWebSocket(
 		construct(target, args, newTarget) {
 			const endpoint = args[0];
 			const optionsIndex = findWebSocketOptionsIndex(args);
-			if (
-				(typeof endpoint !== "string" && !(endpoint instanceof URL)) ||
-				optionsIndex === undefined ||
-				!isFirstPartyCodexEndpoint(endpoint)
-			) {
+			if ((typeof endpoint !== "string" && !(endpoint instanceof URL)) || optionsIndex === undefined) {
 				return Reflect.construct(target, args, newTarget);
 			}
-			const options = args[optionsIndex] as { headers?: HeadersInit };
+			const candidateOptions = args[optionsIndex] as { headers?: HeadersInit };
+			const candidateHeaders = new Headers(candidateOptions.headers);
+			if (codexFastModeRequestMarker(candidateHeaders) === undefined) {
+				return Reflect.construct(target, args, newTarget);
+			}
+			const options = candidateOptions;
 			const nextArgs = [...args];
 			nextArgs[optionsIndex] = {
 				...options,

@@ -15,7 +15,7 @@ export type FastModeRow = keyof FastModeSelectorConfig;
 
 const ROWS: readonly FastModeRow[] = ["chat", "workflow"];
 const LABEL_WIDTH = 16;
-const DESCRIPTION = "Priority tier for supported openai/* and openai-codex/* models.";
+const DESCRIPTION = "Priority tier for supported OpenAI and shared ChatGPT Codex transports.";
 const ROW_DETAILS: Record<FastModeRow, { label: string; scope: string }> = {
 	chat: {
 		label: "Chat",

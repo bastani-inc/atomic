@@ -45,6 +45,15 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
 	});
+
+	it("maps the Codex Responses API before the broad pi-ai compat alias", () => {
+		const aliases = extensionLoaderTestHooks.getAliases();
+		const target = aliases["@earendil-works/pi-ai/api/openai-codex-responses"];
+
+		expect(target).toMatch(/[\\/]dist[\\/]api[\\/]openai-codex-responses\.js$/);
+		expect(fs.existsSync(target!)).toBe(true);
+		expect(target).not.toBe(aliases["@earendil-works/pi-ai"]);
+	});
 	it(
 		"maps pi-tui layout helpers through both loader resolution paths",
 		async () => {
