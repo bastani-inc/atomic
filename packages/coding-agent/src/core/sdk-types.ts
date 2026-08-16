@@ -35,6 +35,18 @@ export interface CreateAgentSessionOptions {
 	 * Default: settings.fallbackModels
 	 */
 	fallbackModels?: string[];
+	/**
+	 * Content-progress liveness window in milliseconds for the assistant-response
+	 * stream. When `> 0`, a turn that produces no content-bearing event within the
+	 * window is ended with a retryable provider failure so same-model retry and
+	 * `fallbackModels` advance (or, with no fallback, `prompt()` resolves with an
+	 * error and control returns) instead of blocking indefinitely (#2446).
+	 *
+	 * `0`/`undefined` disables the guard — the default for interactive sessions.
+	 * Intended for unattended in-process subagent sessions, where a non-terminating
+	 * turn would otherwise block the parent with no operator to intervene.
+	 */
+	streamStallMs?: number;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 

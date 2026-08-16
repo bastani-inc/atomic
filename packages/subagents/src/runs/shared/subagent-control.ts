@@ -16,6 +16,7 @@ export const DEFAULT_CONTROL_CONFIG: ResolvedControlConfig = {
 	needsAttentionAfterMs: 60_000,
 	activeNoticeAfterMs: 240_000,
 	failedToolAttemptsBeforeAttention: 3,
+	streamStallMs: 300_000,
 	notifyOn: DEFAULT_NOTIFY_ON,
 	notifyChannels: CONTROL_NOTIFICATION_CHANNELS,
 };
@@ -23,6 +24,18 @@ export const DEFAULT_CONTROL_CONFIG: ResolvedControlConfig = {
 function parsePositiveInt(value: unknown): number | undefined {
 	if (typeof value !== "number") return undefined;
 	if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) return undefined;
+	return value;
+}
+
+/**
+ * Like {@link parsePositiveInt} but admits `0`, which is the streamStallMs
+ * disable sentinel. Using `parsePositiveInt` here would reject `0` and silently
+ * fall through to the 300000 ms default, making the guard impossible to turn
+ * off from config (#2446).
+ */
+function parseStallMs(value: unknown): number | undefined {
+	if (typeof value !== "number") return undefined;
+	if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) return undefined;
 	return value;
 }
 
@@ -52,6 +65,10 @@ export function resolveControlConfig(globalConfig?: ControlConfig, override?: Co
 		parsePositiveInt(override?.failedToolAttemptsBeforeAttention) ??
 		parsePositiveInt(globalConfig?.failedToolAttemptsBeforeAttention) ??
 		DEFAULT_CONTROL_CONFIG.failedToolAttemptsBeforeAttention;
+	const streamStallMs =
+		parseStallMs(override?.streamStallMs) ??
+		parseStallMs(globalConfig?.streamStallMs) ??
+		DEFAULT_CONTROL_CONFIG.streamStallMs;
 	const notifyOn =
 		parseControlList(override?.notifyOn, CONTROL_EVENT_TYPES) ??
 		parseControlList(globalConfig?.notifyOn, CONTROL_EVENT_TYPES) ??
@@ -67,6 +84,7 @@ export function resolveControlConfig(globalConfig?: ControlConfig, override?: Co
 		activeNoticeAfterTurns,
 		activeNoticeAfterTokens,
 		failedToolAttemptsBeforeAttention,
+		streamStallMs,
 		notifyOn: [...notifyOn],
 		notifyChannels: [...notifyChannels],
 	};
