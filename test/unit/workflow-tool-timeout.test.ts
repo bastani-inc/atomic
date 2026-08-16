@@ -301,6 +301,58 @@ describe("ctx.tool timeoutMs", () => {
 		assert.doesNotMatch(result.error ?? "", /timed out after/);
 	});
 
+	test("later cancellation after a timed-out attempt wins during retry backoff", async () => {
+		const backend = new InMemoryDurableBackend();
+		const controller = new AbortController();
+		const firstTimeout = Promise.withResolvers<void>();
+		let attempts = 0;
+		const definition = workflow({
+			name: "tool-timeout-then-cancel",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool(
+					"timeout-then-cancel",
+					{},
+					async ({ signal }) => {
+						attempts += 1;
+						signal.addEventListener("abort", () => firstTimeout.resolve(), { once: true });
+						await new Promise<never>(() => {});
+						return "unreachable";
+					},
+					{
+						failureMode: "return",
+						timeoutMs: 10,
+						retriesAllowed: true,
+						maxAttempts: 3,
+						intervalMs: 10_000,
+					},
+				);
+				return {};
+			},
+		});
+
+		const pending = run(definition, {}, runOptions(backend, controller.signal));
+		await firstTimeout.promise;
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		controller.abort(new Error("operator cancelled after timeout during backoff"));
+		const result = await pending;
+
+		assert.equal(result.status, "killed");
+		assert.equal(attempts, 1);
+		const node = result.toolNodes?.[0];
+		assert.equal(node?.status, "cancelled");
+		assert.doesNotMatch(node?.error ?? "", /timed out after/);
+		const toolRecords = backend
+			.listCheckpoints(result.runId)
+			.filter((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "timeout-then-cancel");
+		assert.equal(toolRecords.length, 1);
+		assert.match(toolRecords[0]?.checkpointId ?? "", /^tool-failure:/);
+		assert.equal(toolRecords[0]?.kind === "tool" ? toolRecords[0].outcomeKind : "unexpected", undefined);
+		assert.equal(node === undefined ? undefined : backend.getToolCheckpoint(result.runId, node.argsHash), undefined);
+	});
+
 	test("preserves timeout evidence when timeout abort handlers then cancel the run", async () => {
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({

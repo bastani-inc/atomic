@@ -440,7 +440,7 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 		input.onNodeSettle?.(node.id);
 		return output;
 	} catch (error) {
-		const timeoutFailure = callbackError instanceof WorkflowToolTimeoutError;
+		const timeoutFailure = error instanceof WorkflowToolTimeoutError;
 		const cancellation = timeoutFailure ? undefined : invocationCancellation(input, toolSignal);
 		if (cancellation !== undefined) {
 			control.noteCancelled();
