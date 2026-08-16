@@ -164,6 +164,7 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 				text: (boundary as { summary?: string }).summary ?? "",
 				stats: details!.stats,
 				rung: details!.rung,
+				displayTokensBefore: details!.tokensBefore ?? details!.stats.tokensBefore,
 			})
 				.render(200)
 				.join("\n"),

@@ -32,12 +32,31 @@ interface VisibleEntry {
 
 const keptTailTokensByPreparation = new WeakMap<VerbatimCompactionPreparation, number>();
 
-/** Return the independently estimated cost of the protected tail. */
+/**
+ * Set the independently estimated cost of the protected tail on a preparation.
+ *
+ * Exposed so that test fixtures can set the tail estimate on a preparation that
+ * was constructed directly (not through `prepareCompactionBoundary`), mirroring
+ * what production code does. Without this, `getKeptTailTokenEstimate` returns 0
+ * for test-only preparations.
+ */
+export function setKeptTailTokenEstimate(preparation: VerbatimCompactionPreparation, estimate: number): void {
+	keptTailTokensByPreparation.set(preparation, estimate);
+}
+
+/**
+ * Return the independently estimated cost of the protected tail.
+ *
+ * The fallback is 0 (not `tokensBefore - region.tokenEstimate`) because
+ * `tokensBefore` is a provider-authoritative count while `region.tokenEstimate`
+ * is a char/4 heuristic. Mixing them in a subtraction produced an incommensurable
+ * tail estimate that could overshoot the real count and make `percentReduction`
+ * negative. When the preparation was not set up through `prepareCompactionBoundary`
+ * (or the WeakMap entry was collected), the tail estimate is unknown and must
+ * default to 0 rather than a mixed-unit guess.
+ */
 export function getKeptTailTokenEstimate(preparation: VerbatimCompactionPreparation): number {
-	return (
-		keptTailTokensByPreparation.get(preparation) ??
-		Math.max(0, preparation.tokensBefore - preparation.region.tokenEstimate)
-	);
+	return keptTailTokensByPreparation.get(preparation) ?? 0;
 }
 
 function messageFromEntry(entry: SessionEntry): AgentMessage | undefined {

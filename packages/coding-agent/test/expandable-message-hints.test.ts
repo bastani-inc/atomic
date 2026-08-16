@@ -56,6 +56,7 @@ describe("unbound expandable message hints", () => {
 				percentReduction: 50,
 			},
 			rung: "planned",
+			displayTokensBefore: 100,
 		});
 
 		for (const target of [skill, branch, compaction]) noExpandAffordance(stripAnsi(target.render(120).join("\n")));
