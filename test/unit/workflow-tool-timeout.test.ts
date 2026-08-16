@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, test, vi } from "vitest";
+import { setCallbackActivityReporter } from "../../packages/coding-agent/src/core/callback-activity.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
@@ -91,6 +92,39 @@ describe("ctx.tool timeoutMs", () => {
 			const persisted = checkpoint.output as WorkflowToolFailure;
 			assert.equal(persisted.ok, false);
 			assert.match(persisted.error.message, new RegExp(`timed out after ${TIMEOUT_MS}ms`));
+		}
+	});
+
+	test.sequential("finishes callback activity when a signal-ignoring timed attempt settles", async () => {
+		const activeCallbackIds = new Set<string>();
+		setCallbackActivityReporter({
+			started: (activity) => {
+				if (activity.kind === "workflow.ctx_tool") activeCallbackIds.add(activity.id);
+			},
+			finished: (activityId) => activeCallbackIds.delete(activityId),
+		});
+		try {
+			const backend = new InMemoryDurableBackend();
+			const tool = createToolPrimitive({
+				workflowId: "timeout-callback-activity",
+				backend,
+				nextCheckpointId: () => "unused",
+				throwIfCancelled: () => {},
+			});
+			const outcome = await tool(
+				"activity-hang",
+				{},
+				async () => {
+					await new Promise<never>(() => {});
+					return "unreachable";
+				},
+				{ failureMode: "return", timeoutMs: 10 },
+			);
+
+			assert.equal(outcome.ok, false);
+			assert.equal(activeCallbackIds.size, 0);
+		} finally {
+			setCallbackActivityReporter(undefined);
 		}
 	});
 
@@ -202,6 +236,35 @@ describe("ctx.tool timeoutMs", () => {
 		assert.equal(result.toolNodes?.[0]?.status, "completed");
 	});
 
+	test("large positive finite deadlines do not overflow the host timer", async () => {
+		const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			const backend = new InMemoryDurableBackend();
+			const tool = createToolPrimitive({
+				workflowId: "timeout-large-finite",
+				backend,
+				nextCheckpointId: () => "unused",
+				throwIfCancelled: () => {},
+			});
+
+			assert.equal(
+				await tool(
+					"quick-with-large-deadline",
+					{},
+					async () => {
+						await new Promise<void>((resolve) => setTimeout(resolve, 25));
+						return "done";
+					},
+					{ timeoutMs: 2_147_483_648 },
+				),
+				"done",
+			);
+			assert.equal(warning.mock.calls.length, 0);
+		} finally {
+			warning.mockRestore();
+		}
+	});
+
 	test("operator cancellation remains cancellation rather than timeout", async () => {
 		const backend = new InMemoryDurableBackend();
 		const controller = new AbortController();
@@ -236,6 +299,58 @@ describe("ctx.tool timeoutMs", () => {
 		assert.equal(result.status, "killed");
 		assert.equal(result.toolNodes?.[0]?.status, "cancelled");
 		assert.doesNotMatch(result.error ?? "", /timed out after/);
+	});
+
+	test("preserves timeout evidence when timeout abort handlers then cancel the run", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: "timeout-wins-cancellation-race",
+			name: "timeout-wins-cancellation-race",
+			inputs: {},
+			createdAt: 0,
+			status: "running",
+		});
+		const controller = new AbortController();
+		let nodeStatus: string | undefined;
+		const tool = createToolPrimitive({
+			workflowId: "timeout-wins-cancellation-race",
+			backend,
+			nextCheckpointId: () => "unused",
+			throwIfCancelled: () => {},
+			signal: controller.signal,
+			onNodeEnd: (_nodeId, update) => {
+				nodeStatus = update.status;
+			},
+		});
+
+		const outcome = await tool(
+			"timeout-winner",
+			{},
+			async ({ signal }) => {
+				signal.addEventListener("abort", () => controller.abort(new Error("run cancelled after timeout fired")), {
+					once: true,
+				});
+				await new Promise<never>(() => {});
+				return "unreachable";
+			},
+			{ failureMode: "return", timeoutMs: 10 },
+		);
+
+		assert.equal(controller.signal.aborted, true);
+		assert.equal(outcome.ok, false);
+		if (outcome.ok) return;
+		assert.deepEqual(outcome.error, {
+			name: "TimeoutError",
+			message: "atomic-workflows: ctx.tool timeout-winner timed out after 10ms",
+		});
+		assert.equal(nodeStatus, "failed");
+		const checkpoint = backend
+			.listCheckpoints("timeout-wins-cancellation-race")
+			.find((entry) => entry.kind === "tool" && entry.name === "timeout-winner");
+		assert.equal(checkpoint?.kind, "tool");
+		if (checkpoint?.kind === "tool") {
+			assert.deepEqual((checkpoint.output as WorkflowToolFailure).error, outcome.error);
+		}
 	});
 
 	test("rejects invalid timeout values before invoking or checkpointing", async () => {

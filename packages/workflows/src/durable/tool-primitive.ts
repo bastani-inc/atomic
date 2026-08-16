@@ -277,6 +277,26 @@ class WorkflowToolTimeoutError extends Error {
 	}
 }
 
+const MAX_HOST_TIMER_MS = 2_147_483_647;
+
+/** Schedule a finite deadline without triggering host timer overflow clamping. */
+function scheduleDeadline(callback: () => void, timeoutMs: number): () => void {
+	let remainingMs = timeoutMs;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const scheduleNextChunk = () => {
+		const chunkMs = Math.min(remainingMs, MAX_HOST_TIMER_MS);
+		timer = setTimeout(() => {
+			remainingMs -= chunkMs;
+			if (remainingMs > 0) scheduleNextChunk();
+			else callback();
+		}, chunkMs);
+	};
+	scheduleNextChunk();
+	return () => {
+		if (timer !== undefined) clearTimeout(timer);
+	};
+}
+
 type ToolCallbackAttemptResult<T> =
 	| { readonly kind: "value"; readonly value: T }
 	| { readonly kind: "error"; readonly error: unknown };
@@ -295,36 +315,40 @@ async function executeTimedToolAttempt<T extends WorkflowSerializableValue>(
 ): Promise<T> {
 	const timeoutController = new AbortController();
 	const attemptSignal = AbortSignal.any([baseSignal, timeoutController.signal]);
-	const callbackResult: Promise<ToolCallbackAttemptResult<T>> = runCallback(
-		{ kind: "workflow.ctx_tool", name: toolName, runId },
-		() => fn({ signal: attemptSignal }),
-	).then(
-		(value) => ({ kind: "value" as const, value }),
-		(error: unknown) => ({ kind: "error" as const, error }),
-	);
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let onAbort: (() => void) | undefined;
-	const timeoutResult = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => {
-			if (baseSignal.aborted) return;
-			const timeoutError = new WorkflowToolTimeoutError(toolName, timeoutMs);
-			timeoutController.abort(timeoutError);
-			reject(timeoutError);
-		}, timeoutMs);
+	return runCallback({ kind: "workflow.ctx_tool", name: toolName, runId }, async () => {
+		const callbackResult: Promise<ToolCallbackAttemptResult<T>> = Promise.resolve()
+			.then(() => fn({ signal: attemptSignal }))
+			.then(
+				(value) => ({ kind: "value" as const, value }),
+				(error: unknown) => ({ kind: "error" as const, error }),
+			);
+		let cancelDeadline: (() => void) | undefined;
+		let onAbort: (() => void) | undefined;
+		let timeoutError: WorkflowToolTimeoutError | undefined;
+		const timeoutResult = new Promise<never>((_, reject) => {
+			cancelDeadline = scheduleDeadline(() => {
+				if (baseSignal.aborted) return;
+				timeoutError = new WorkflowToolTimeoutError(toolName, timeoutMs);
+				timeoutController.abort(timeoutError);
+				reject(timeoutError);
+			}, timeoutMs);
+		});
+		const cancellationResult = new Promise<never>((_, reject) => {
+			onAbort = () => {
+				if (timeoutError === undefined) reject(abortReason(baseSignal));
+			};
+			if (baseSignal.aborted) onAbort();
+			else baseSignal.addEventListener("abort", onAbort, { once: true });
+		});
+		try {
+			const result = await Promise.race([callbackResult, timeoutResult, cancellationResult]);
+			if (result.kind === "value") return result.value;
+			throw result.error;
+		} finally {
+			cancelDeadline?.();
+			if (onAbort !== undefined) baseSignal.removeEventListener("abort", onAbort);
+		}
 	});
-	const cancellationResult = new Promise<never>((_, reject) => {
-		onAbort = () => reject(abortReason(baseSignal));
-		if (baseSignal.aborted) onAbort();
-		else baseSignal.addEventListener("abort", onAbort, { once: true });
-	});
-	try {
-		const result = await Promise.race([callbackResult, timeoutResult, cancellationResult]);
-		if (result.kind === "value") return result.value;
-		throw result.error;
-	} finally {
-		if (timer !== undefined) clearTimeout(timer);
-		if (onAbort !== undefined) baseSignal.removeEventListener("abort", onAbort);
-	}
 }
 
 /**
@@ -416,7 +440,8 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 		input.onNodeSettle?.(node.id);
 		return output;
 	} catch (error) {
-		const cancellation = invocationCancellation(input, toolSignal);
+		const timeoutFailure = callbackError instanceof WorkflowToolTimeoutError;
+		const cancellation = timeoutFailure ? undefined : invocationCancellation(input, toolSignal);
 		if (cancellation !== undefined) {
 			control.noteCancelled();
 			// A cancelled call never writes a replayable `tool:` checkpoint and never
@@ -489,20 +514,21 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 			}
 			input.onNodeEnd?.(node.id, { status: "failed", endedAt: completedAt, error: outcome.error.message });
 			input.onNodeSettle?.(node.id);
-			throwIfInvocationCancelled(input, toolSignal);
+			if (!timeoutFailure) throwIfInvocationCancelled(input, toolSignal);
 			return outcome;
 		}
-		input.onFailureObserved?.(error, node.id);
+		const reportedFailure = timeoutFailure ? callbackError : error;
+		input.onFailureObserved?.(reportedFailure, node.id);
 		const failure = await recordThrowingToolFailure(
 			input,
 			node,
 			{ name, argsHash, ordinal, startedAt },
-			error,
+			reportedFailure,
 			attempts,
 		);
 		input.onNodeEnd?.(node.id, { status: "failed", endedAt: failure.failedAt, error: failure.message });
 		input.onNodeSettle?.(node.id);
-		throw error;
+		throw reportedFailure;
 	} finally {
 		settlement.resolve();
 		unregisterControl?.();
