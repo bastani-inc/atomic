@@ -31,6 +31,7 @@ import {
 	resolveSubagentCodexFastModeScope,
 	resolveSubagentModelFastMode,
 } from "../../shared/fast-mode.ts";
+import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import {
 	type AgentProgress,
@@ -73,6 +74,8 @@ export interface TestSessionOptions {
 	readonly sessionModel?: string;
 	/** Test-only effective thinking level exposed through the AgentSession accessors. */
 	readonly sessionThinkingLevel?: string;
+	/** Test-only session events emitted in order after the initial agent_start event. */
+	readonly events?: readonly AgentSessionEvent[];
 }
 
 export interface ChildSpec {
@@ -403,6 +406,9 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 				]);
 				if (gateResult === "aborted") return "";
 			}
+			for (const event of testOptions.events ?? []) {
+				for (const listener of listeners) listener(event);
+			}
 			if (testOptions.fallbackModel) {
 				for (const listener of listeners) {
 					listener({
@@ -587,8 +593,16 @@ export function progressEmissionFor(eventType: AgentSessionEvent["type"]): Progr
 
 function writeEvent(pathValue: string | undefined, event: AgentSessionEvent): void {
 	if (!pathValue) return;
+	const line = `${JSON.stringify(event)}\n`;
+	let existingBytes = 0;
+	try {
+		existingBytes = statSync(pathValue).size;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	if (existingBytes + Buffer.byteLength(line, "utf8") > DEFAULT_MAX_JSONL_BYTES) return;
 	mkdirSync(dirname(pathValue), { recursive: true });
-	appendFileSync(pathValue, `${JSON.stringify(event)}\n`, "utf8");
+	appendFileSync(pathValue, line, "utf8");
 }
 
 /**

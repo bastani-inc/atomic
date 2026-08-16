@@ -2,7 +2,7 @@
  * Configuration, execution option, display, and event bus types.
  */
 
-import type { SessionWorkflowMetadata } from "@bastani/atomic";
+import type { AgentSessionEvent, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { CandidateModelResolver } from "./model-resolution.ts";
 import type { NestedRouteInfo } from "./types-nested.ts";
@@ -141,6 +141,8 @@ export interface RunSyncOptions {
 				sessionModel?: string;
 				/** Test-only effective thinking level exposed through the AgentSession accessors. */
 				sessionThinkingLevel?: string;
+				/** Test-only session events emitted in order after the initial agent_start event. */
+				events?: readonly AgentSessionEvent[];
 		  };
 }
 

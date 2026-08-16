@@ -10,6 +10,7 @@
 ### Fixed
 
 - A subagent that pins no model of its own now inherits the dispatching session's thinking level alongside its model, matching the parent's tool configuration inheritance. The agent's declared `thinking` and any candidate `:level` suffix still take precedence.
+- In-process JSONL event artifacts now honor `includeJsonl: false` and enforce the existing 50 MiB cap when enabled, preventing unbounded artifact growth ([#2445](https://github.com/bastani-inc/atomic/issues/2445)).
 
 ## [0.9.13] - 2026-08-13
 

@@ -727,7 +727,7 @@ Debug artifacts live under `{sessionDir}/subagent-artifacts/` or a user-scoped t
 
 - `{runId}_{agent}_input.md`
 - `{runId}_{agent}_output.md`
-- `{runId}_{agent}.jsonl`
+- `{runId}_{agent}.jsonl` when `includeJsonl: true` (capped at 50 MiB)
 - `{runId}_{agent}_meta.json`
 
 Metadata records timing, usage, typed status, termination cause, final model, attempted models, and fallback attempt outcomes.
@@ -742,7 +742,7 @@ Foreground runs persist their session and user-facing artifacts beside the paren
 {parent-session-dir}/subagent-artifacts/
   {runId}_{agent}_input.md
   {runId}_{agent}_output.md
-  {runId}_{agent}.jsonl
+  {runId}_{agent}.jsonl          # only when includeJsonl: true; max 50 MiB
   {runId}_{agent}_meta.json
   run-history.jsonl
 ```

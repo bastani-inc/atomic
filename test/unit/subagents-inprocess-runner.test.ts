@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import type { AgentSessionEvent } from "@bastani/atomic";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
@@ -18,7 +28,7 @@ import {
 	inProcessChildBuiltinPackagePaths,
 	SubagentControlRuntime,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
-import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.ts";
+import { DEFAULT_ARTIFACT_CONFIG, MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
 import { sleep } from "../helpers/runtime.ts";
 
@@ -423,6 +433,123 @@ test("parallel siblings share one control plane and persist distinct terminal ar
 		const resumed = await control.resumeChild(thirdPath, "inspect one more fixture", {});
 		assert.equal(resumed.status, "ok", resumed.status === "error" ? resumed.cause : undefined);
 		assert.equal(resumed.path, thirdPath);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("in-process artifacts with includeJsonl false do not create a JSONL artifact", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-jsonl-disabled-"));
+	const artifactsDir = join(root, "artifacts");
+	clearSubagentControls();
+	try {
+		assert.equal(DEFAULT_ARTIFACT_CONFIG.includeJsonl, false);
+		const result = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+			cwd: root,
+			runId: "jsonl-disabled-parent",
+			sessionDir: join(root, "sessions"),
+			artifactsDir,
+			artifactConfig: {
+				...DEFAULT_ARTIFACT_CONFIG,
+				includeJsonl: false,
+			},
+			testSession: { output: "jsonl disabled" },
+		});
+
+		assert.equal(result.status, "ok");
+		assert.ok(result.artifactPaths);
+		assert.equal(existsSync(result.artifactPaths.jsonlPath), false);
+		assert.equal(existsSync(result.artifactPaths.outputPath), true);
+		assert.equal(existsSync(result.artifactPaths.metadataPath), true);
+		assert.deepEqual(
+			readdirSync(artifactsDir).filter((name) => name.endsWith(".jsonl") && name !== "run-history.jsonl"),
+			[],
+		);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("in-process enabled JSONL writing stays within 50 MiB while child events continue", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-jsonl-cap-"));
+	const artifactsDir = join(root, "artifacts");
+	const capBytes = 50 * 1024 * 1024;
+	const payload = "x".repeat(1024 * 1024);
+	const events: AgentSessionEvent[] = [
+		...Array.from(
+			{ length: 51 },
+			(_, index): AgentSessionEvent => ({
+				type: "bash_execution_update",
+				id: `event-${index}`,
+				channel: "stdout",
+				delta: `event-${index}-${payload}`,
+			}),
+		),
+		{
+			type: "model_fallback_start",
+			from: "provider/initial",
+			to: "provider/fallback",
+			reason: "post-cap event",
+			attempt: 1,
+		},
+	];
+	const serializedEvents = [{ type: "agent_start" } as AgentSessionEvent, ...events].map((event) =>
+		JSON.stringify(event),
+	);
+	const expectedLines: string[] = [];
+	let expectedBytes = 0;
+	for (const line of serializedEvents) {
+		const lineBytes = Buffer.byteLength(`${line}\n`, "utf8");
+		if (expectedBytes + lineBytes <= capBytes) {
+			expectedLines.push(line);
+			expectedBytes += lineBytes;
+		}
+	}
+	assert.equal(expectedLines.length, 51, "fixture should retain ordered events near the production cap");
+	assert.ok(expectedBytes > capBytes - 2 * 1024 * 1024, "fixture should fill the production cap");
+	assert.ok(
+		serializedEvents.length > expectedLines.length,
+		"the fixture must drive the writer beyond the production cap",
+	);
+	clearSubagentControls();
+	try {
+		const result = await runSingleInProcess(
+			root,
+			{ ...sampleAgent(), model: "provider/initial" },
+			"inspect fixture",
+			{
+				cwd: root,
+				runId: "jsonl-cap-parent",
+				sessionDir: join(root, "sessions"),
+				artifactsDir,
+				artifactConfig: {
+					...DEFAULT_ARTIFACT_CONFIG,
+					includeJsonl: true,
+				},
+				testSession: { output: "child completed", events },
+			},
+		);
+
+		assert.equal(result.status, "ok");
+		assert.equal(result.finalOutput, "child completed");
+		assert.deepEqual(result.attemptedModels, ["provider/initial", "provider/fallback"]);
+		assert.ok(result.artifactPaths);
+		assert.equal(existsSync(result.artifactPaths.jsonlPath), true);
+		const jsonlBytes = statSync(result.artifactPaths.jsonlPath).size;
+		assert.equal(jsonlBytes, expectedBytes);
+		const actualLines = readFileSync(result.artifactPaths.jsonlPath, "utf8").trimEnd().split("\n");
+		assert.deepEqual(actualLines, expectedLines);
+		assert.equal(
+			actualLines.some((line) => line.includes('"id":"event-49"')),
+			false,
+		);
+		assert.equal(
+			actualLines.some((line) => line.includes('"id":"event-50"')),
+			false,
+		);
+		assert.equal(actualLines.at(-1)?.includes('"type":"model_fallback_start"'), true);
 	} finally {
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });

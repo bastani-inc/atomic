@@ -12,7 +12,7 @@ export interface JsonlWriteStream {
 	end(callback?: () => void): void;
 }
 
-const DEFAULT_MAX_JSONL_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_MAX_JSONL_BYTES = 50 * 1024 * 1024;
 
 interface JsonlWriterDeps {
 	createWriteStream?: (filePath: string) => JsonlWriteStream;
