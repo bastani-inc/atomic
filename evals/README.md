@@ -26,16 +26,13 @@ to `bastani-inc/pier`.
 
 ## 2. Check the pins
 
-The benchmark's guarantees live in the pinned Pier fork. Confirm both submodules
-are the code they claim to be before a long run:
+The benchmark's guarantees live in the pinned Pier fork, so a checkout that
+drifted off its pin does not have them:
 
 ```bash
-uv run python -c 'from prerequisites import verify_submodules; print(verify_submodules())'
+git submodule status        # a leading + means drifted, - means uninitialized
+git status --short evals/   # local edits inside a submodule
 ```
-
-It raises if either submodule drifted off its pin or carries local edits.
-Everything else — Docker, credentials — announces itself within seconds of
-starting a run.
 
 ## 3. Export a credential
 
@@ -150,7 +147,7 @@ inherit shell exports. Pass it explicitly: `--agent-env OPENROUTER_API_KEY=...`.
 `uv sync --reinstall-package datacurve-pier`. Do this after any change to a
 submodule pointer or any local edit under `evals/vendor/pier`.
 
-**`SubmoduleDriftError`** — `git submodule update --init --recursive --force`
-from the repository root returns both submodules to their pins. It reports
-uncommitted edits too, because results produced by modified code cannot be
-attributed to the pinned SHA.
+**`git submodule status` shows `+` or `-`** — the checkout drifted off its pin
+or was never initialized. `git submodule update --init --recursive --force`
+from the repository root returns both to their pins. Results produced by a
+drifted or edited checkout cannot be attributed to the pinned SHA.

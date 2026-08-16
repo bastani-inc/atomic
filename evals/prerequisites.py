@@ -1,23 +1,12 @@
-"""Shared eval-sandbox provisioning and the submodule check.
+"""Shared eval-sandbox provisioning for the Atomic adapters.
 
-Two concerns live here:
-
-1. The shell-string builders that provision an eval sandbox (Atomic, tmux,
-   playwright-cli), and the provider credential map both adapters forward.
-2. :func:`verify_submodules` — proof that the pinned pier fork, which is where
-   the benchmark's guarantees actually live, is the code about to run.
-
-Nothing else is checked before a run. A pinned corpus cannot change shape
-without the pin changing, and Docker and credentials announce themselves within
-seconds of starting.
+The shell-string builders that provision an eval sandbox (Atomic, tmux,
+playwright-cli), and the provider credential map both adapters forward.
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
-from collections.abc import Sequence
-from pathlib import Path
 
 
 def root_install_command(*, harbor: bool = False) -> str:
@@ -133,11 +122,6 @@ def agent_install_command(version_spec: str) -> str:
     )
 
 
-# --- submodules ---------------------------------------------------------------
-
-DEEP_SWE_SUBMODULE_PATH = "evals/deep-swe"
-PIER_SUBMODULE_PATH = "evals/vendor/pier"
-
 PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
     "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
     "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
@@ -178,141 +162,6 @@ Harbor used to keep an unrelated literal that omitted the Kimi, Moonshot and
 ZAI providers, which made the docs' promise that provider setup works the same
 on both paths false for exactly those three.
 """
-
-def _run(command: Sequence[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603 - fixed argv, no shell
-        list(command),
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def repository_root(start: Path | None = None) -> Path:
-    """Return the superproject root that owns ``evals/``."""
-    return (start or Path(__file__).resolve().parent).parent
-
-
-def submodule_pin(path: str, *, repo_root: Path | None = None) -> str | None:
-    """Return the gitlink SHA recorded for ``path`` in the superproject's HEAD.
-
-    Read from the gitlink (``git rev-parse HEAD:<path>``) rather than from
-    ``git -C <path> rev-parse HEAD``, which silently prints the *superproject*
-    SHA when the submodule is uninitialized.
-    """
-    root = repo_root or repository_root()
-    completed = _run(["git", "rev-parse", f"HEAD:{path}"], cwd=root)
-    if completed.returncode != 0:
-        return None
-    return completed.stdout.strip() or None
-
-
-def submodule_worktree_head(path: str, *, repo_root: Path | None = None) -> str | None:
-    """Return the SHA checked out *inside* the submodule, or ``None``.
-
-    A bare ``(root / path / ".git").exists()`` probe is not enough: any file
-    named ``.git`` passes it, and a plain ``git -C <path> rev-parse HEAD`` in an
-    empty directory walks up and answers with the *superproject's* HEAD. So the
-    repository's own toplevel must equal the submodule path before its HEAD is
-    trusted.
-    """
-    root = repo_root or repository_root()
-    target = root / path
-    if not target.is_dir():
-        return None
-    toplevel = _run(["git", "rev-parse", "--show-toplevel"], cwd=target)
-    if toplevel.returncode != 0:
-        return None
-    reported = toplevel.stdout.strip()
-    if not reported:
-        return None
-    try:
-        if Path(reported).resolve() != target.resolve():
-            return None
-    except OSError:
-        return None
-    head = _run(["git", "rev-parse", "HEAD"], cwd=target)
-    if head.returncode != 0:
-        return None
-    return head.stdout.strip() or None
-
-
-def submodule_worktree_status(path: str, *, repo_root: Path | None = None) -> str | None:
-    """Return the porcelain working-tree status inside ``path``, or ``None``.
-
-    ``None`` means the question could not be asked — the submodule is
-    uninitialized, or is not its own repository. An empty string means clean;
-    any other string is the verbatim ``git status --porcelain`` output.
-
-    Untracked files count. ``git status`` already honours ``.gitignore``, so
-    build output and virtualenvs stay invisible, while an untracked task file
-    dropped into the corpus or an untracked module added to pier does change
-    what runs and must not be reported as a clean pin.
-    """
-    root = repo_root or repository_root()
-    target = root / path
-    if not target.is_dir() or submodule_worktree_head(path, repo_root=root) is None:
-        return None
-    try:
-        completed = _run(["git", "status", "--porcelain"], cwd=target)
-    except OSError:
-        return None
-    if completed.returncode != 0:
-        return None
-    return completed.stdout.strip()
-
-
-class SubmoduleDriftError(RuntimeError):
-    """Raised when a submodule is not the code its pin names."""
-
-
-def verify_submodules(*, repo_root: Path | None = None) -> str:
-    """Return an all-clear line, or raise :class:`SubmoduleDriftError`.
-
-    The benchmark's guarantees live in the pinned pier fork — verifier-scoped
-    ``network_mode``, ``extra="forbid"``, and a fatal empty ``model.patch``. A
-    checkout that is not at its pin does not have them, and the numbers it
-    produces cannot be attributed to it. This is the one thing worth proving
-    before a long run.
-
-    Both failures matter and neither hides the other. Drift is a different
-    ``HEAD``; dirt is the pinned ``HEAD`` with local edits, which a ``HEAD``-only
-    check reports as clean. An uninitialized submodule is a fresh clone, which
-    is fine until you run something.
-    """
-    root = repo_root or repository_root()
-    missing: list[str] = []
-    problems: list[str] = []
-    for path in (DEEP_SWE_SUBMODULE_PATH, PIER_SUBMODULE_PATH):
-        pin = submodule_pin(path, repo_root=root)
-        head = submodule_worktree_head(path, repo_root=root)
-        if head is None:
-            missing.append(path)
-            continue
-        if pin is not None and head != pin:
-            problems.append(f"{path}: pinned {pin}, checked out {head}")
-            continue
-        if status := submodule_worktree_status(path, repo_root=root):
-            first = status.splitlines()[0].strip()
-            extra = len(status.splitlines()) - 1
-            problems.append(
-                f"{path}: uncommitted changes ({first}"
-                + (f" +{extra} more" if extra > 0 else "")
-                + ")"
-            )
-    if problems:
-        raise SubmoduleDriftError(
-            "; ".join(problems)
-            + ". Run `git submodule update --init --recursive --force` to return to the pin."
-        )
-    if missing:
-        raise SubmoduleDriftError(
-            f"uninitialized: {', '.join(missing)}. "
-            "Run `git submodule update --init --recursive` from the repository root."
-        )
-    return "evals/deep-swe and evals/vendor/pier are clean at their pinned SHAs"
-
 
 def is_valid_provider_auth(entry: object) -> bool:
     """True when an ``auth.json`` entry actually carries a usable credential.

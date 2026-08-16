@@ -118,12 +118,11 @@ being silently dropped, (b) honor verifier-scoped `network_mode`, which the
 corpus declares and upstream ignored, and (c) error a trial whose `model.patch`
 never arrived or arrived empty, instead of recording it as completed.
 
-A checkout that drifted off the pin, or is dirty, does not have those. Confirm
-before a long run:
+A checkout that drifted off the pin, or is dirty, does not have those:
 
 ```bash
-cd evals
-uv run python -c 'from prerequisites import verify_submodules; print(verify_submodules())'
+git submodule status        # a leading + means drifted, - means uninitialized
+git status --short evals/   # local edits inside a submodule
 ```
 
 To change the fork: push to `bastani-inc/pier` `main`, then move the gitlink and
