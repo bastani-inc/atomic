@@ -1,6 +1,6 @@
 import type { Provider } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
-import type { EventBus } from "../event-bus.ts";
+import { type EventBus, registerCanonicalEventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import {
@@ -38,6 +38,20 @@ export function createExtensionAPI(
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): ExtensionAPI {
 	const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
+	// Successive load generations of one session each build a new facade over
+	// the same shared bus; mapping the facade back to that bus lets
+	// session-scoped state re-bind across module re-evaluation.
+	const events: EventBus = {
+		emit(channel, data) {
+			runtime.assertActive();
+			eventBus.emit(channel, data);
+		},
+		on(channel, handler) {
+			runtime.assertActive();
+			return runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+		},
+	};
+	registerCanonicalEventBus(events, eventBus);
 	const api = {
 		on(event: string, handler: HandlerFn): void {
 			runtime.assertActive();
@@ -241,16 +255,7 @@ export function createExtensionAPI(
 			runtime.unregisterProvider(name, extension.path);
 		},
 
-		events: {
-			emit(channel, data) {
-				runtime.assertActive();
-				eventBus.emit(channel, data);
-			},
-			on(channel, handler) {
-				runtime.assertActive();
-				return runtime.trackEventBusSubscription(eventBus.on(channel, handler));
-			},
-		},
+		events,
 	} as ExtensionAPI;
 
 	return api;
