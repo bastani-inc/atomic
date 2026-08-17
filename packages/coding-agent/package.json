@@ -99,7 +99,7 @@
     "diff": "8.0.4",
     "embedded-postgres": "18.4.0-beta.17",
     "glob": "13.0.6",
-    "grok-mermaid": "0.2.2",
+    "grok-mermaid": "0.2.3",
     "highlight.js": "10.7.3",
     "hosted-git-info": "9.0.3",
     "ignore": "7.0.5",
