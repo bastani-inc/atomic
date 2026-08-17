@@ -293,6 +293,7 @@ describe("tool graph inspection", () => {
 			"  first line",
 			"  second line",
 			"  third line",
+			"",
 			"Took 75ms",
 		]);
 		assert.ok(wideRows.slice(1, 4).every((row) => row.startsWith("  ")));
@@ -313,7 +314,7 @@ describe("tool graph inspection", () => {
 			narrowRows.some((row) => row.includes("THIRD-LINE-MARKER")),
 			"third error line must remain visible",
 		);
-		assert.ok(narrowRows.slice(1).every((row) => row.startsWith("  ") || row.startsWith("Took")));
+		assert.ok(narrowRows.slice(1).every((row) => row === "" || row.startsWith("  ") || row.startsWith("Took")));
 		assert.ok(
 			narrowRows.every((row) => visibleWidth(row) <= 60),
 			"collapsed rows must fit the frame",
@@ -327,9 +328,9 @@ describe("tool graph inspection", () => {
 			}),
 			{ width: 80, expandKey: "ctrl+o" },
 		).split("\n");
-		assert.ok(manyRows.length <= 14, `collapsed preview emitted ${manyRows.length} rows`);
-		assert.ok(manyRows.some((row) => row.includes("line-38")));
-		assert.match(manyRows.find((row) => row.includes("earlier lines")) ?? "", /ctrl\+o Expand/);
+		assert.equal(manyRows.length, 14, `collapsed preview emitted ${manyRows.length} rows`);
+		assert.ok(manyRows.some((row) => row.includes("line-199")));
+		assert.match(manyRows.find((row) => row.includes("earlier lines")) ?? "", /190 earlier lines, ctrl\+o Expand/);
 	});
 
 	test("operator chrome keeps the result tail, sub-second timing, markers, paths, and shading", () => {
@@ -361,10 +362,40 @@ describe("tool graph inspection", () => {
 		const pathText = renderToolDetail(tool({ result: path }), { width: 40, expanded: true });
 		assert.ok(pathText.includes("atomic-issue"));
 		assert.doesNotMatch(pathText, /atomic-issu[^e]/);
+		assert.ok(pathText.split("\n")[1]?.startsWith("  "), "wrapped header continuation must stay indented");
 
 		const themed = renderToolDetail(tool({ result: "ok" }), { width: 40, theme: defaultTheme });
 		assert.match(themed, /\x1b\[48;2;/);
 		assert.doesNotMatch(renderToolDetail(tool({ result: "ok" }), { width: 40 }), /\x1b/);
+		const themedRows = themed.split("\n");
+		const footerIndex = themedRows.findIndex((row) => visibleText([row]).includes("Took 75ms"));
+		assert.ok(footerIndex > 0, "themed output must include the duration footer");
+		assert.equal(visibleText([themedRows[footerIndex - 1]!]).trim(), "", "footer needs a blank separator row");
+		assert.match(themedRows[footerIndex - 1]!, /\x1b\[48;2;/, "blank separator keeps the tool background");
+	});
+
+	test("collapsed previews use the full bounded body and exact visual tail count", () => {
+		const longLines = Array.from({ length: 24 }, (_, index) => `report-line-${index}-abcdefghijklmnopqrstuvwxyz`);
+		const wideRows = renderToolDetail(tool({ args: undefined, result: { ok: true, lines: longLines } }), {
+			width: 80,
+			expandKey: "ctrl+o",
+		}).split("\n");
+		assert.equal(wideRows[1], "  ... (6 earlier lines, ctrl+o Expand)");
+		assert.ok(wideRows.some((row) => row.includes("report-line-23")));
+		assert.ok(!wideRows.some((row) => row.includes("report-line-0")));
+		assert.doesNotMatch(wideRows.join("\n"), /… \[truncated\]/);
+
+		const narrowRows = renderToolDetail(
+			tool({
+				args: undefined,
+				result: { ok: true, lines: Array.from({ length: 24 }, (_, index) => `report-line-${index}`) },
+			}),
+			{ width: 40, expandKey: "ctrl+o" },
+		).split("\n");
+		assert.equal(narrowRows[1], "  ... (3 earlier lines, ctrl+o Expand)");
+		assert.ok(narrowRows.some((row) => row.includes("report-line-23")));
+		assert.ok(!narrowRows.some((row) => row.includes("report-line-0")));
+		assert.doesNotMatch(narrowRows.join("\n"), /… \[truncated\]/);
 	});
 
 	test("oversized errors and results share head truncation marker placement", () => {

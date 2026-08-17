@@ -14,7 +14,7 @@ import { NODE_H, NODE_W } from "./layout.js";
 import { sliceColumns, truncateToWidth, visibleWidth } from "./text-helpers.js";
 import { OVERLAY_HIDDEN_STATUS_KEYS, WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 
-function toolExpandKey(piKeybindings: unknown): string {
+export function toolExpandKey(piKeybindings: unknown): string {
 	const keybindings = isKeybindingsLike(piKeybindings) ? piKeybindings : undefined;
 	const keys = keybindings?.getKeys?.(APP_ACTION.toolsExpand);
 	if (keys === undefined) return "ctrl+o";

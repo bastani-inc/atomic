@@ -17,7 +17,6 @@ import { graphemes, truncateToWidth, visibleWidth } from "./text-helpers.js";
 /** Maximum serialized value retained by the detail display before its marker. */
 export const TOOL_DETAIL_VALUE_LIMIT = TOOL_PAYLOAD_VALUE_LIMIT;
 const COLLAPSED_ARGS_LIMIT = 240;
-const COLLAPSED_RESULT_LIMIT = 320;
 /** Match the host tool renderer's collapsed fallback preview row bound. */
 const COLLAPSED_RESULT_LINES = 10;
 const BODY_INDENT = "  ";
@@ -139,8 +138,9 @@ function isWrapBoundary(grapheme: string): boolean {
  * component in the middle. A component wider than the available row is shown
  * with an ellipsis rather than broken into misleading fragments.
  */
-function wrapPreserving(text: string, width: number): string[] {
-	const budget = Math.max(1, Math.floor(width));
+function wrapPreserving(text: string, width: number, continuationWidth = width): string[] {
+	const firstBudget = Math.max(1, Math.floor(width));
+	const followingBudget = Math.max(1, Math.floor(continuationWidth));
 	const rows: string[] = [];
 	for (const paragraph of text.split("\n")) {
 		let remaining = paragraph;
@@ -149,6 +149,7 @@ function wrapPreserving(text: string, width: number): string[] {
 			continue;
 		}
 		while (remaining.length > 0) {
+			const budget = rows.length === 0 ? firstBudget : followingBudget;
 			if (visibleWidth(remaining) <= budget) {
 				rows.push(remaining);
 				remaining = "";
@@ -202,11 +203,10 @@ function wrapPreserving(text: string, width: number): string[] {
 	return rows.length > 0 ? rows : [""];
 }
 
-/** Keep a generated truncation marker intact when a field wraps at its cap. */
-function wrapFieldValue(text: string, width: number): string[] {
-	if (!text.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER)) return wrapPreserving(text, width);
+function wrapFieldValue(text: string, width: number, continuationWidth = width): string[] {
+	if (!text.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER)) return wrapPreserving(text, width, continuationWidth);
 	const body = text.slice(0, -TOOL_PAYLOAD_TRUNCATION_MARKER.length);
-	return [...wrapPreserving(body, width), TOOL_PAYLOAD_TRUNCATION_MARKER];
+	return [...wrapPreserving(body, width, continuationWidth), TOOL_PAYLOAD_TRUNCATION_MARKER];
 }
 
 function fitLine(text: string, width: number, suffix: string, theme: GraphTheme | undefined): string {
@@ -245,8 +245,11 @@ function messageHeaderRows(
 	const withArgs = `$ ${name}${args ? ` ${args}` : ""}${glyphSuffix}`;
 	const plain = !expanded && visibleWidth(withArgs) > safeWidth ? `$ ${name}${glyphSuffix}` : withArgs;
 	const titleEnd = `$ ${name}`;
-	return wrapFieldValue(plain, safeWidth).map((chunk, index, chunks) => {
-		if (index !== 0 || !chunk.startsWith(titleEnd)) return styledMuted(chunk, theme);
+	const continuationIndent = BODY_INDENT;
+	const continuationWidth = Math.max(1, safeWidth - visibleWidth(continuationIndent));
+	return wrapFieldValue(plain, safeWidth, continuationWidth).map((chunk, index, chunks) => {
+		const prefix = index === 0 ? "" : continuationIndent;
+		if (index !== 0 || !chunk.startsWith(titleEnd)) return `${prefix}${styledMuted(chunk, theme)}`;
 		const remainder = chunk.slice(titleEnd.length);
 		const hasStatus = glyphSuffix.length > 0 && index === chunks.length - 1 && remainder.endsWith(glyphSuffix);
 		const summary = hasStatus ? remainder.slice(0, -glyphSuffix.length) : remainder;
@@ -283,7 +286,7 @@ function renderMessageLines(
 	now: number,
 ): string[] {
 	const safeWidth = Math.max(1, Math.floor(width));
-	const result = resultText(tool, expanded ? TOOL_DETAIL_VALUE_LIMIT : COLLAPSED_RESULT_LIMIT);
+	const result = resultText(tool, TOOL_DETAIL_VALUE_LIMIT);
 	const rows: string[] = messageHeaderRows(tool, safeWidth, theme, expanded);
 	const wrappedBody = bodyRows(result.text, result.error, safeWidth, theme);
 	if (expanded) {
@@ -308,7 +311,10 @@ function renderMessageLines(
 		rows.push(...wrappedBody.slice(-COLLAPSED_RESULT_LINES));
 	}
 	const footer = footerText(tool, durationMs(tool, now));
-	if (footer !== undefined) rows.push(styledMuted(footer, theme));
+	if (footer !== undefined) {
+		rows.push("");
+		rows.push(styledMuted(footer, theme));
+	}
 	return rows.map((row) => paintRow(row, safeWidth, theme, tool.status));
 }
 

@@ -2,9 +2,10 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import { hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
 import { GRAPH_HEADER_ROWS, GraphViewLayout, graphLayoutNaturalHeight } from "./graph-view-layout.js";
+import { toolExpandKey } from "./graph-view-render-helpers.js";
 import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
-import { APP_ACTION, isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
+import { isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
 import { renderPromptCard } from "./prompt-card.js";
 import { renderSwitcher } from "./switcher.js";
@@ -31,12 +32,6 @@ interface ToolDetailFrame {
 	readonly blockWidth: number;
 	readonly leftPad: number;
 	readonly lines: readonly string[];
-}
-
-function toolExpandKey(piKeybindings: KeybindingsLike | undefined): string {
-	const keys = piKeybindings?.getKeys?.(APP_ACTION.toolsExpand);
-	if (keys === undefined) return "ctrl+o";
-	return keys.join("/");
 }
 
 /** Overlay/widget rendering orchestration for GraphView. */
