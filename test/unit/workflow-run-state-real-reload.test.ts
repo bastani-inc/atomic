@@ -195,6 +195,33 @@ test(
 		assert.notEqual(second.store, first.store, "each evaluation holds its own facade");
 		await loadExtensionFromFactory(second.factory, repoRoot, bus, createExtensionRuntime());
 
+		// TEMPORARY WINDOWS DIAGNOSTIC - remove before merge.
+		//
+		// Three fixes have failed identically on this assertion while linux and
+		// macOS stay green, so this prints the facts this machine cannot produce.
+		// `store` is the control: it shares correctly, so whatever differs between
+		// it and the stage registry is the real fault line.
+		{
+			const reg1 = first.stageControlRegistry as unknown as Record<string, (...a: unknown[]) => unknown>;
+			const reg2 = second.stageControlRegistry as unknown as Record<string, (...a: unknown[]) => unknown>;
+			const probe = {
+				gen1_still_sees_own_stage: first.stageControlRegistry.get(ids.runId, ids.stageId)?.stageId ?? null,
+				gen2_sees_stage: second.stageControlRegistry.get(ids.runId, ids.stageId)?.stageId ?? null,
+				gen1_forRun_count: first.stageControlRegistry.forRun(ids.runId).length,
+				gen2_forRun_count: second.stageControlRegistry.forRun(ids.runId).length,
+				gen1_has_run: typeof reg1.has === "function" ? reg1.has(ids.runId) : "no-has",
+				gen2_has_run: typeof reg2.has === "function" ? reg2.has(ids.runId) : "no-has",
+				gen1_store_runs: first.store.runs().length,
+				gen2_store_runs: second.store.runs().length,
+				facades_distinct_store: first.store !== second.store,
+				facades_distinct_stagereg: first.stageControlRegistry !== second.stageControlRegistry,
+				globalthis_slot_present:
+					Reflect.get(globalThis, Symbol.for("atomic-coding-agent/extension-session-state@1")) !== undefined,
+				platform: process.platform,
+			};
+			console.error(`P0-2462-WINDOWS-PROBE ${JSON.stringify(probe)}`);
+		}
+
 		assertGenerationSeesRun(second, ids, "second generation");
 		assert.equal(second.cancellationRegistry.abort(ids.runId), true);
 		assert.equal(ids.controller.signal.aborted, true);
