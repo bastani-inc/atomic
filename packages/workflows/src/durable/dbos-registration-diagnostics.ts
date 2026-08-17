@@ -35,6 +35,23 @@ export function classifyDbosDurabilityFailure(error: unknown): DbosDurabilityFai
 	return "other";
 }
 
+/**
+ * Read an error's display detail without letting a throwing `message` getter
+ * escape the durability wrapper. `String(error)` is the last-resort fallback
+ * and is itself guarded: some `toString` implementations also throw.
+ */
+export function readDbosFailureDetail(error: unknown): string {
+	if (typeof error === "object" && error !== null) {
+		const message = readOwn(error, "message");
+		if (typeof message === "string" && message !== "") return message;
+	}
+	try {
+		return String(error);
+	} catch {
+		return "unknown error";
+	}
+}
+
 function isDuplicateRegistration(value: object): boolean {
 	const code = readOwn(value, "dbosErrorCode");
 	if (typeof code === "number" && code === DBOS_CONFLICTING_REGISTRATION_ERROR_CODE) return true;

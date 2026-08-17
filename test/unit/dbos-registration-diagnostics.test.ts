@@ -126,6 +126,26 @@ describe("DBOS registration diagnostics", () => {
 		});
 	});
 
+	test("a throwing message getter does not escape durability wrapping", async () => {
+		const trap = {
+			get message(): string {
+				throw new Error("message getter trap");
+			},
+		};
+		setDurableBackend(undefined);
+		resetDbosLifecycleForTests(async () => {
+			throw trap;
+		});
+
+		await assert.rejects(getReadyDbosBackend(), (error: unknown) => {
+			assert.ok(error instanceof DbosDurabilityError);
+			assert.doesNotMatch(error.message, /message getter trap/);
+			assert.match(error.message, /DBOS workflow durability configuration failed:/);
+			assert.match(error.message, new RegExp(PROVISIONING_GUIDANCE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+			return true;
+		});
+	});
+
 	test("does not statically import the SDK or use instanceof", async () => {
 		const source = (await readText(CLASSIFIER_SOURCE)).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 		assert.doesNotMatch(source, /from ["']@dbos-inc\/dbos-sdk["']/);
