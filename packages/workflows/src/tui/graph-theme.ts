@@ -40,6 +40,8 @@ const MOCHA = {
 export interface GenericTheme {
 	bg?: string;
 	backgroundPanel?: string;
+	backgroundToolSuccess?: string;
+	backgroundToolError?: string;
 	backgroundElement?: string;
 	surface?: string;
 	selection?: string;
@@ -70,6 +72,8 @@ export interface GraphTheme {
 	/** Strata, deepest first */
 	bg: string;
 	backgroundPanel: string;
+	backgroundToolSuccess: string;
+	backgroundToolError: string;
 	backgroundElement: string;
 	surface: string;
 	selection: string;
@@ -99,6 +103,8 @@ export function deriveGraphTheme(theme: GenericTheme = {}): GraphTheme {
 	return {
 		bg: theme.bg ?? MOCHA.base,
 		backgroundPanel: theme.backgroundPanel ?? MOCHA.surface0,
+		backgroundToolSuccess: theme.backgroundToolSuccess ?? theme.backgroundPanel ?? MOCHA.surface0,
+		backgroundToolError: theme.backgroundToolError ?? theme.backgroundPanel ?? MOCHA.surface0,
 		backgroundElement: theme.backgroundElement ?? MOCHA.surface0,
 		surface: theme.surface ?? MOCHA.crust,
 		selection: theme.selection ?? MOCHA.surface1,
@@ -245,9 +251,10 @@ export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 	const accent = fgHex(t, "accent");
 	const overrides: GenericTheme = {
 		backgroundPanel: bgHex(t, "toolPendingBg") ?? bgHex(t, "customMessageBg"),
+		backgroundToolSuccess: bgHex(t, "toolSuccessBg") ?? bgHex(t, "toolPendingBg") ?? bgHex(t, "customMessageBg"),
+		backgroundToolError: bgHex(t, "toolErrorBg") ?? bgHex(t, "toolPendingBg") ?? bgHex(t, "customMessageBg"),
 		backgroundElement: bgHex(t, "customMessageBg") ?? bgHex(t, "toolPendingBg"),
 		selection: bgHex(t, "selectedBg"),
-
 		border: fgHex(t, "border"),
 		borderDim: fgHex(t, "borderMuted"),
 		borderActive: fgHex(t, "borderAccent"),

@@ -96,6 +96,33 @@ describe("deriveGraphThemeFromPiTheme", () => {
 		assert.equal(theme.mauve, MOCHA_DEFAULTS.mauve);
 	});
 
+	test("maps host tool success and error backgrounds with pending fallback", () => {
+		const piTheme = {
+			getBgAnsi: (color: string): string => {
+				const values: Record<string, string> = {
+					toolPendingBg: truecolorBg(0x45, 0x47, 0x5a),
+					toolSuccessBg: truecolorBg(0x20, 0x40, 0x20),
+					toolErrorBg: truecolorBg(0x40, 0x20, 0x20),
+				};
+				const value = values[color];
+				if (!value) throw new Error(`Unknown theme background: ${color}`);
+				return value;
+			},
+		};
+		const theme = deriveGraphThemeFromPiTheme(piTheme);
+		assert.equal(theme.backgroundPanel, "#45475a");
+		assert.equal(theme.backgroundToolSuccess, "#204020");
+		assert.equal(theme.backgroundToolError, "#402020");
+
+		const fallback = deriveGraphThemeFromPiTheme({
+			getBgAnsi: (color: string): string => {
+				if (color === "toolPendingBg") return truecolorBg(0x45, 0x47, 0x5a);
+				throw new Error(`Unknown theme background: ${color}`);
+			},
+		});
+		assert.equal(fallback.backgroundToolSuccess, fallback.backgroundPanel);
+		assert.equal(fallback.backgroundToolError, fallback.backgroundPanel);
+	});
 	test("decodes xterm-256 indices into the canonical palette", () => {
 		// Index 196 → top-right of the 6×6×6 cube → bright red (#ff0000).
 		const piTheme = {

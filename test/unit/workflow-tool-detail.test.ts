@@ -92,22 +92,6 @@ function storeWithToolResult(result: unknown, runId = RUN_ID): ReturnType<typeof
 	return store;
 }
 
-const DETAIL_LABEL_WIDTH = 10;
-
-/** Rebuild one labeled detail field across the rows it wrapped onto. */
-function detailField(rendered: string, label: string): string {
-	const rows = rendered.split("\n").map((row) => row.replace(ANSI_RE, "").replace(/^│/, "").replace(/│$/, ""));
-	const start = rows.findIndex((row) => row.startsWith(label.padEnd(DETAIL_LABEL_WIDTH, " ")));
-	if (start < 0) return "";
-	const parts = [rows[start]!.slice(DETAIL_LABEL_WIDTH).trimEnd()];
-	for (let index = start + 1; index < rows.length; index++) {
-		const row = rows[index]!;
-		if (!row.startsWith(" ".repeat(DETAIL_LABEL_WIDTH))) break;
-		parts.push(row.slice(DETAIL_LABEL_WIDTH).trimEnd());
-	}
-	return parts.join("");
-}
-
 const RUN_ID = "tool-detail-run";
 
 function tool(overrides: Partial<ToolNodeSnapshot> = {}): ToolNodeSnapshot {
@@ -245,10 +229,10 @@ describe("tool graph inspection", () => {
 		assert.ok(enterView._toolDetail);
 		const collapsed = visibleText(enterView.render(120));
 		for (const expected of [
-			"inspect-api",
+			"$ inspect-api",
 			'{"branch":"feat/inspect","checks":["lint","test"]}',
 			'{"ok":true,"output":["passed","passed"]}',
-			"ctrl+o to expand",
+			"Took 75ms",
 		])
 			assert.ok(collapsed.includes(expected), expected);
 		for (const hidden of ["ARGS", "RESULT", "SOURCE", "TIMING", "MARKERS"])
@@ -258,16 +242,14 @@ describe("tool graph inspection", () => {
 		assert.equal(enterView.handleInput("\x0f"), true);
 		const expanded = visibleText(enterView.render(120));
 		for (const expected of [
-			'ARGS      {"branch":"feat/inspect","checks":["lint","test"]}',
-			'RESULT    {"ok":true,"output":["passed","passed"]}',
-			"SOURCE    —",
-			"startedAt=100",
-			"endedAt=175",
-			"duration=75ms",
-			"MARKERS   —",
-			"ctrl+o to collapse",
+			"$ inspect-api",
+			'{"branch":"feat/inspect","checks":["lint","test"]}',
+			'{"ok":true,"output":["passed","passed"]}',
+			"Took 75ms",
 		])
 			assert.ok(expanded.includes(expected), expected);
+		for (const hidden of ["ARGS", "RESULT", "SOURCE", "TIMING", "MARKERS", "startedAt=", "endedAt=", "duration="])
+			assert.doesNotMatch(expanded, new RegExp(hidden));
 		assert.equal(enterView.handleInput("\x0f"), true);
 		assert.doesNotMatch(visibleText(enterView.render(120)), /\bTIMING\b/);
 		assert.equal(enterView.handleInput("\x1b"), true);
@@ -287,7 +269,7 @@ describe("tool graph inspection", () => {
 		assert.equal(configured._toolDetailExpanded, false);
 		assert.equal(configured.handleInput("x"), true);
 		assert.equal(configured._toolDetailExpanded, true);
-		assert.match(visibleText(configured.render(120)), /ctrl\+x to collapse/);
+		assert.match(visibleText(configured.render(120)), /Took 75ms/);
 		configured.dispose();
 
 		const clickView = viewFor(node);
@@ -303,13 +285,13 @@ describe("tool graph inspection", () => {
 			expandKey: "ctrl+o",
 		}).split("\n");
 		assert.deepEqual(wideRows, [
-			'✗ inspect-api {"branch":"feat/inspect","checks":["lint","test"]}',
-			"  ✗ first line",
+			'$ inspect-api {"branch":"feat/inspect","checks":["lint","test"]} ✗',
+			"  first line",
 			"  second line",
 			"  third line",
-			"  (ctrl+o to expand)",
+			"Took 75ms",
 		]);
-		assert.ok(wideRows.slice(2, 4).every((row) => row.startsWith("  ")));
+		assert.ok(wideRows.slice(1, 4).every((row) => row.startsWith("  ")));
 
 		const narrowRows = renderToolDetail(
 			tool({
@@ -327,7 +309,7 @@ describe("tool graph inspection", () => {
 			narrowRows.some((row) => row.includes("THIRD-LINE-MARKER")),
 			"third error line must remain visible",
 		);
-		assert.ok(narrowRows.slice(2).every((row) => row.startsWith("  ")));
+		assert.ok(narrowRows.slice(1).every((row) => row.startsWith("  ") || row.startsWith("Took")));
 		assert.ok(
 			narrowRows.every((row) => visibleWidth(row) <= 60),
 			"collapsed rows must fit the frame",
@@ -341,11 +323,55 @@ describe("tool graph inspection", () => {
 			}),
 			{ width: 80, expandKey: "ctrl+o" },
 		).split("\n");
-		assert.ok(manyRows.length <= 12, `collapsed preview emitted ${manyRows.length} rows`);
-		assert.match(manyRows.at(-1) ?? "", /more lines/);
-		assert.ok(manyRows.slice(1).every((row) => row.startsWith("  ")));
+		assert.ok(manyRows.length <= 14, `collapsed preview emitted ${manyRows.length} rows`);
+		assert.match(manyRows.at(-3) ?? "", /line-199/);
+		assert.match(manyRows.find((row) => row.includes("earlier lines")) ?? "", /ctrl\+o Expand/);
 	});
 
+	test("operator chrome keeps the result tail, sub-second timing, markers, paths, and shading", () => {
+		const longResult = Array.from({ length: 20 }, (_, index) => `line-${index}`).join("\n");
+		const collapsed = renderToolDetail(
+			tool({ status: "failed", result: undefined, error: longResult, startedAt: 100, endedAt: 111 }),
+			{
+				width: 40,
+				expandKey: "ctrl+o",
+			},
+		);
+		assert.match(collapsed, /earlier lines, ctrl\+o Expand/);
+		assert.ok(collapsed.includes("line-19"));
+		assert.ok(!collapsed.includes("line-0"));
+		assert.match(collapsed, /Took 11ms/);
+		assert.doesNotMatch(collapsed, /\(0s\)|duration=/);
+
+		const cached = renderToolDetail(
+			tool({ status: "cached", replayed: true, result: "cached", startedAt: 100, endedAt: 111 }),
+			{
+				width: 80,
+				expanded: true,
+			},
+		);
+		assert.match(cached, /Took 11ms · cached · replayed/);
+		assert.doesNotMatch(cached, /MARKERS/);
+
+		const path = "/Users/tonystark/Documents/projects/atomic-issue-2462/.ci-diagnostics/p0-2462/probe-1";
+		const pathText = renderToolDetail(tool({ result: path }), { width: 40, expanded: true });
+		assert.ok(pathText.includes("atomic-issue"));
+		assert.doesNotMatch(pathText, /atomic-issu[^e]/);
+
+		const themed = renderToolDetail(tool({ result: "ok" }), { width: 40, theme: defaultTheme });
+		assert.match(themed, /\x1b\[48;2;/);
+		assert.doesNotMatch(renderToolDetail(tool({ result: "ok" }), { width: 40 }), /\x1b/);
+	});
+	test("completed cards omit the empty marker row and keep the bash-like header", () => {
+		const rendered = renderToolDetail(tool({ status: "completed", replayed: false }), {
+			theme: defaultTheme,
+			width: 96,
+			expanded: true,
+		});
+		const text = visibleText(rendered.split("\n"));
+		assert.match(text, /\$ inspect-api/);
+		assert.doesNotMatch(text, /✓ inspect-api|\bMARKERS\b|\bARGS\b/);
+	});
 	test("large and unusual values render with an explicit truncation marker", () => {
 		const huge = "x".repeat(20_000);
 		assert.doesNotThrow(() => {
@@ -363,7 +389,7 @@ describe("tool graph inspection", () => {
 			width: 80,
 			expanded: true,
 		}).replace(/\x1b\[[0-9;]*m/g, "");
-		assert.match(errorText, /ERROR\s+check failed/);
+		assert.match(errorText, /\$ inspect-api[\s\S]*check failed/);
 	});
 
 	test("failed, cached, and replayed tool nodes keep status markers in the message block", () => {
@@ -375,7 +401,7 @@ describe("tool graph inspection", () => {
 			}).split("\n"),
 		);
 		assert.match(failed, /✗/);
-		assert.match(failed, /ERROR\s+check failed/);
+		assert.match(failed, /\$ inspect-api[\s\S]*check failed/);
 
 		const cached = visibleText(
 			renderToolDetail(tool({ status: "cached", replayed: true, resultSummary: "cached result" }), {
@@ -385,12 +411,14 @@ describe("tool graph inspection", () => {
 			}).split("\n"),
 		);
 		assert.match(cached, /↻/);
-		assert.match(cached, /MARKERS\s+cached · replayed/);
+		assert.match(cached, /Took 75ms · cached · replayed/);
 
 		const replayed = visibleText(
 			renderToolDetail(tool({ replayed: true }), { theme: defaultTheme, width: 96, expanded: true }).split("\n"),
 		);
-		assert.match(replayed, /MARKERS\s+replayed/);
+		assert.match(replayed, /Took 75ms · replayed/);
+		assert.doesNotMatch(cached, /MARKERS/);
+		assert.doesNotMatch(replayed, /MARKERS/);
 	});
 
 	test("malformed snapshot display values never make the detail renderer throw", () => {
@@ -477,8 +505,8 @@ describe("tool graph inspection", () => {
 	});
 
 	test("detail view keeps large payloads scrollable without activating graph controls", () => {
-		const huge = "x".repeat(20_000);
-		const view = viewFor(tool({ args: { huge } }));
+		const source = Array.from({ length: 2_000 }, (_, index) => `source-line-${index}`).join("\n");
+		const view = viewFor(tool({ source }));
 		view.render(120);
 		assert.equal(view.handleInput("\r"), true);
 		assert.equal(view.handleInput("\x0f"), true);
@@ -596,9 +624,8 @@ describe("tool graph inspection", () => {
 			expanded: true,
 		});
 		const text = visibleText(rendered.split("\n"));
-		for (const expected of ["startedAt=1786890801337", "endedAt=1786890801341", "duration=4ms"]) {
-			assert.ok(text.includes(expected), `${expected} must survive at width 40`);
-		}
+		assert.ok(text.includes("Took 4ms"));
+		assert.doesNotMatch(text, /startedAt=|endedAt=|duration=|\(0s\)/);
 	});
 
 	test("callback source is captured at registration, persisted, and rendered", async () => {
@@ -636,7 +663,7 @@ describe("tool graph inspection", () => {
 			width: 96,
 			expanded: true,
 		});
-		assert.ok(detailField(rendered, "SOURCE").includes("published: true"));
+		assert.ok(rendered.includes("published: true"));
 
 		const oversized = `${"s".repeat(TOOL_PAYLOAD_VALUE_LIMIT + 1_000)}`;
 		const store = createStore();
@@ -654,10 +681,9 @@ describe("tool graph inspection", () => {
 		assert.equal(retained.length, TOOL_PAYLOAD_VALUE_LIMIT);
 		assert.ok(retained.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
 		assert.ok(
-			detailField(
-				renderToolDetail(tool({ source: oversized }), { theme: defaultTheme, width: 96, expanded: true }),
-				"SOURCE",
-			).endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER),
+			renderToolDetail(tool({ source: oversized }), { theme: defaultTheme, width: 96, expanded: true }).includes(
+				TOOL_PAYLOAD_TRUNCATION_MARKER,
+			),
 		);
 	});
 
@@ -864,7 +890,8 @@ describe("tool graph inspection", () => {
 	});
 
 	test("the detail view scrolls from the keyboard alone", () => {
-		const view = viewFor(tool({ args: { huge: "x".repeat(60_000) } }));
+		const source = Array.from({ length: 600 }, (_, index) => `source-line-${index}`).join("\n");
+		const view = viewFor(tool({ source }));
 		view.render(120);
 		assert.equal(view.handleInput("\r"), true);
 		assert.equal(view.handleInput("\x0f"), true);
@@ -888,8 +915,8 @@ describe("tool graph inspection", () => {
 		assert.equal(view.handleInput(KEY_END), true);
 		const atEnd = visibleText(view.render(120));
 		assert.ok(view._graphScrollOffset > afterPage, "End reaches the bottom");
-		assert.ok(atEnd.includes("TIMING"), "the last field is reachable without a mouse event");
-		assert.ok(atEnd.includes("MARKERS"));
+		assert.ok(atEnd.includes("source-line-599"), "the last source row is reachable without a mouse event");
+		assert.ok(atEnd.includes("Took 75ms"));
 
 		assert.equal(view.handleInput(KEY_HOME), true);
 		view.render(120);
@@ -924,12 +951,11 @@ describe("tool graph inspection", () => {
 	});
 
 	test("the scroll range always equals the rows the body really rendered", () => {
-		// One width passed and it stayed broken at every other width: the height
-		// callback and the body callback are handed different widths whenever the
-		// scrollbar column is reserved, so this sweeps the widths around the
-		// `min(96, …)` ceiling where the two used to diverge.
+		// The height callback and body callback receive the same detail width,
+		// including when a scrollbar column is reserved.
+		const source = Array.from({ length: 800 }, (_, index) => `source-line-${index}`).join("\n");
 		for (const width of [40, 60, 72, 79, 80, 81, 100, 101, 102, 110, 120]) {
-			const view = viewForAtRows(tool({ args: { huge: "x".repeat(TOOL_PAYLOAD_VALUE_LIMIT) } }), 40);
+			const view = viewForAtRows(tool({ source }), 40);
 			const probe = withBodyWidthProbe(view);
 			view.render(width);
 			assert.equal(view.handleInput("\r"), true);
@@ -949,17 +975,12 @@ describe("tool graph inspection", () => {
 	});
 
 	test("the tail of a capped payload is reachable on ordinary terminals", () => {
+		const source = Array.from({ length: 800 }, (_, index) => `source-line-${index}`).join("\n");
 		for (const [width, rows] of [
 			[80, 40],
 			[100, 24],
 		] as const) {
-			const view = viewForAtRows(
-				tool({
-					args: { huge: "x".repeat(TOOL_PAYLOAD_VALUE_LIMIT) },
-					source: "async () => {\n  return { ok: true };\n}",
-				}),
-				rows,
-			);
+			const view = viewForAtRows(tool({ source }), rows);
 			view.render(width);
 			assert.equal(view.handleInput("\r"), true);
 			assert.equal(view.handleInput("\x0f"), true);
@@ -967,33 +988,31 @@ describe("tool graph inspection", () => {
 
 			assert.equal(view.handleInput(KEY_END), true);
 			const atEnd = visibleText(view.render(width));
-			for (const field of ["SOURCE", "TIMING", "MARKERS"]) {
-				assert.ok(atEnd.includes(field), `${width}x${rows}: End must reveal ${field}`);
-			}
-			// The graph header/footer retain their existing chrome; the detail body itself is flat.
+			assert.ok(atEnd.includes("source-line-799"), `${width}x${rows}: End must reveal the last source row`);
+			assert.ok(atEnd.includes("Took 75ms"), `${width}x${rows}: End must reveal the Took line`);
+			for (const field of ["SOURCE", "TIMING", "MARKERS"]) assert.doesNotMatch(atEnd, new RegExp(field));
 
-			// A terminal without mouse reporting has no other way down.
 			assert.equal(view.handleInput(KEY_HOME), true);
 			view.render(width);
 			assert.equal(view._graphScrollOffset, 0);
 			const keyboardOnly = keyboardScrollToBottom(view, width);
-			for (const field of ["SOURCE", "TIMING", "MARKERS"]) {
-				assert.ok(keyboardOnly.includes(field), `${width}x${rows}: PageDown alone must reveal ${field}`);
-			}
+			assert.ok(keyboardOnly.includes("source-line-799"), `${width}x${rows}: PageDown must reveal the source tail`);
+			assert.ok(keyboardOnly.includes("Took 75ms"), `${width}x${rows}: PageDown must reveal the footer`);
 			view.dispose();
 		}
 	});
 
-	test("an ordinary result reaches its last field at 80x40", () => {
-		const view = viewForAtRows(tool({ result: { payload: "r".repeat(5_000) } }), 40);
+	test("an ordinary result reaches the operator footer at 80x40", () => {
+		const source = Array.from({ length: 500 }, (_, index) => `source-line-${index}`).join("\n");
+		const view = viewForAtRows(tool({ result: { payload: "published" }, source }), 40);
 		view.render(80);
 		assert.equal(view.handleInput("\r"), true);
 		assert.equal(view.handleInput("\x0f"), true);
 		view.render(80);
 		assert.equal(view.handleInput(KEY_END), true);
 		const atEnd = visibleText(view.render(80));
-		assert.ok(atEnd.includes("MARKERS"), "a 5,000-character result must still reach MARKERS");
-		assert.ok(atEnd.includes("TIMING"));
+		assert.ok(atEnd.includes("Took 75ms"), "the operator footer must be reachable");
+		assert.ok(atEnd.includes("source-line-499"));
 		view.dispose();
 	});
 
@@ -1172,18 +1191,27 @@ describe("tool graph inspection", () => {
 	});
 
 	test("the collapsed and expanded message block stay width-safe at the narrowest frame", () => {
-		const view = viewForAtRows(tool({ args: { payload: "x".repeat(2_000) } }), 24);
+		const view = viewForAtRows(
+			tool({
+				status: "failed",
+				result: undefined,
+				error: Array.from({ length: 30 }, (_, index) => `error-line-${index}`).join("\n"),
+				source: Array.from({ length: 80 }, (_, index) => `source-line-${index}`).join("\n"),
+			}),
+			24,
+		);
 		view.render(40);
 		assert.equal(view.handleInput("\r"), true);
 		const collapsed = visibleText(view.render(40));
-		assert.match(collapsed, /ctrl\+o to expand/);
+		assert.match(collapsed, /earlier lines, ctrl\+o Expand/);
 		assert.doesNotMatch(collapsed, /╰─{30,}╯/);
 		assert.equal(view.handleInput("\x0f"), true);
 		view.render(40);
 		assert.equal(view.handleInput(KEY_END), true);
 		const frame = view.render(40).map(stripFrameEscapes);
 		const text = frame.join("\n");
-		assert.match(text, /SOURCE|TIMING|MARKERS/);
+		assert.match(text, /Took 75ms/);
+		assert.doesNotMatch(text, /SOURCE|TIMING|MARKERS|startedAt=|endedAt=|duration=/);
 		assert.doesNotMatch(text, /╰─{30,}╯/);
 		for (const row of frame) assert.ok(visibleWidth(row) <= 40, `row overflowed: ${JSON.stringify(row)}`);
 		view.dispose();

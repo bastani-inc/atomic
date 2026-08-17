@@ -1,4 +1,4 @@
-/** Read-only agent-chat-style tool message renderer for a durable `ctx.tool` graph node. */
+/** Read-only host-style operator tool message renderer for a durable `ctx.tool` graph node. */
 import type { ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import type { ToolPayloadValue } from "../shared/tool-payload-bounds.js";
 import {
@@ -9,7 +9,7 @@ import {
 	TOOL_PAYLOAD_TRUNCATION_MARKER,
 	TOOL_PAYLOAD_VALUE_LIMIT,
 } from "../shared/tool-payload-bounds.js";
-import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
 import { graphemes, truncateToWidth, visibleWidth } from "./text-helpers.js";
@@ -20,7 +20,7 @@ const COLLAPSED_ARGS_LIMIT = 240;
 const COLLAPSED_RESULT_LIMIT = 320;
 /** Match the host tool renderer's collapsed fallback preview row bound. */
 const COLLAPSED_RESULT_LINES = 10;
-const DETAIL_LABEL_WIDTH = 10;
+const BODY_INDENT = "  ";
 
 export interface RenderToolDetailOpts {
 	/** Provide for ANSI output; omit for plain text. */
@@ -69,14 +69,18 @@ function statusGlyph(status: ToolNodeStatus): string {
 	}
 }
 
+/** Completed calls already read like `$ name`; other states retain a quiet status marker. */
+function headerGlyph(status: ToolNodeStatus): string | undefined {
+	return status === "completed" ? undefined : statusGlyph(status);
+}
+
 function styledStatus(status: ToolNodeStatus, theme: GraphTheme | undefined): string {
 	const glyph = statusGlyph(status);
 	return theme === undefined ? glyph : `${hexToAnsi(statusColor(status, theme))}${glyph}${RESET}`;
 }
 
-function styledName(name: string, theme: GraphTheme | undefined): string {
-	const safe = sanitizeToolTitleText(name);
-	return theme === undefined ? safe : `${hexToAnsi(theme.text)}${BOLD}${safe}${RESET}`;
+function styledTitle(text: string, theme: GraphTheme | undefined): string {
+	return theme === undefined ? text : `${hexToAnsi(theme.text)}${BOLD}${text}${RESET}`;
 }
 
 function styledMuted(text: string, theme: GraphTheme | undefined): string {
@@ -87,69 +91,22 @@ function styledError(text: string, theme: GraphTheme | undefined): string {
 	return theme === undefined ? text : `${hexToAnsi(theme.error)}${text}${RESET}`;
 }
 
+function toolBackground(status: ToolNodeStatus, theme: GraphTheme): string {
+	switch (status) {
+		case "completed":
+		case "cached":
+			return theme.backgroundToolSuccess;
+		case "failed":
+		case "cancelled":
+			return theme.backgroundToolError;
+		default:
+			return theme.backgroundPanel;
+	}
+}
+
 function boundedSerializedValue(value: ToolPayloadValue | undefined, limit = TOOL_DETAIL_VALUE_LIMIT): string {
 	if (value === undefined) return "—";
 	return boundedToolPayloadText(value, limit);
-}
-
-/** Wrap text to visible columns without changing ordering, spaces, or duplicates. */
-function wrapPreserving(text: string, width: number): string[] {
-	const budget = Math.max(1, Math.floor(width));
-	const rows: string[] = [];
-	let row = "";
-	for (const grapheme of graphemes(text)) {
-		if (grapheme === "\n") {
-			rows.push(row);
-			row = "";
-			continue;
-		}
-		if (row.length > 0 && visibleWidth(row) + visibleWidth(grapheme) > budget) {
-			rows.push(row);
-			row = "";
-		}
-		row += grapheme;
-	}
-	rows.push(row);
-	return rows;
-}
-
-/** Keep a generated truncation marker intact when a field wraps at its cap. */
-function wrapFieldValue(text: string, width: number): string[] {
-	if (!text.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER)) return wrapPreserving(text, width);
-	const body = text.slice(0, -TOOL_PAYLOAD_TRUNCATION_MARKER.length);
-	return [...wrapPreserving(body, width), TOOL_PAYLOAD_TRUNCATION_MARKER];
-}
-
-function fitLine(text: string, width: number, suffix: string, theme: GraphTheme | undefined): string {
-	const safeWidth = Math.max(1, Math.floor(width));
-	if (theme !== undefined) return truncateToWidth(text, safeWidth, suffix, true);
-	if (visibleWidth(text) <= safeWidth) return text;
-	const suffixWidth = visibleWidth(suffix);
-	const budget = Math.max(0, safeWidth - suffixWidth);
-	let output = "";
-	for (const grapheme of graphemes(text)) {
-		if (visibleWidth(output) + visibleWidth(grapheme) > budget) break;
-		output += grapheme;
-	}
-	return `${output}${suffix}`;
-}
-
-function labelPrefix(label: string, theme: GraphTheme | undefined): string {
-	const padded = label.padEnd(DETAIL_LABEL_WIDTH, " ");
-	return theme === undefined ? padded : `${hexToAnsi(theme.textMuted)}${BOLD}${padded}${RESET}`;
-}
-
-function textRows(label: string, text: string, width: number, theme: GraphTheme | undefined): string[] {
-	const safeWidth = Math.max(1, Math.floor(width));
-	const valueWidth = Math.max(1, safeWidth - DETAIL_LABEL_WIDTH);
-	return wrapFieldValue(text, valueWidth).map((chunk, index) => {
-		const prefix = index === 0 ? labelPrefix(label, theme) : " ".repeat(Math.min(DETAIL_LABEL_WIDTH, safeWidth));
-		return fitLine(`${prefix}${chunk}`, safeWidth, "…", theme);
-	});
-}
-
-function scalarRow(label: string, value: string, width: number, theme: GraphTheme | undefined): string {
-	return fitLine(`${labelPrefix(label, theme)}${value}`, Math.max(1, Math.floor(width)), "…", theme);
 }
 
 function durationMs(tool: ToolNodeSnapshot, now: number): number | undefined {
@@ -165,129 +122,203 @@ function resultValue(tool: ToolNodeSnapshot): ToolPayloadValue | undefined {
 	return undefined;
 }
 
-function compactResult(tool: ToolNodeSnapshot): { text: string; error: boolean } {
+function boundedErrorText(value: string, limit: number): string {
+	const safe = sanitizeToolDisplayText(value);
+	if (safe.length <= limit) return safe;
+	const keep = Math.max(0, limit - TOOL_PAYLOAD_TRUNCATION_MARKER.length);
+	return `${safe.slice(-keep)}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
+}
+function resultText(tool: ToolNodeSnapshot, limit: number): { text: string; error: boolean } {
 	if (tool.error !== undefined) {
-		return { text: boundedToolText(sanitizeToolDisplayText(tool.error), COLLAPSED_RESULT_LIMIT), error: true };
+		return { text: boundedErrorText(tool.error, limit), error: true };
 	}
-	return { text: boundedSerializedValue(resultValue(tool), COLLAPSED_RESULT_LIMIT), error: false };
+	return { text: boundedSerializedValue(resultValue(tool), limit), error: false };
 }
 
-function messageHeader(tool: ToolNodeSnapshot, width: number, theme: GraphTheme | undefined): string {
-	const safeWidth = Math.max(1, Math.floor(width));
-	const args = tool.args === undefined ? "" : ` ${boundedSerializedValue(tool.args, COLLAPSED_ARGS_LIMIT)}`;
-	const plain = `${statusGlyph(tool.status)} ${sanitizeToolTitleText(tool.name)}${args}`;
-	if (visibleWidth(plain) <= safeWidth) {
-		return `${styledStatus(tool.status, theme)} ${styledName(tool.name, theme)}${args ? ` ${styledMuted(args.slice(1), theme)}` : ""}`;
-	}
-	return fitLine(
-		`${styledStatus(tool.status, theme)} ${styledName(tool.name, theme)}${args ? ` ${styledMuted(args.slice(1), theme)}` : ""}`,
-		safeWidth,
-		"…",
-		theme,
-	);
+/** A punctuation-aware break point. Paths and JSON punctuation are natural terminal seams. */
+function isWrapBoundary(grapheme: string): boolean {
+	return /[\s/\\.,:;()[\]{}"'`=+|!?<>-]/u.test(grapheme);
 }
-
-function compactResultRows(
-	result: { text: string; error: boolean },
-	status: ToolNodeStatus,
-	width: number,
-	theme: GraphTheme | undefined,
-	expandKey: string,
-): { rows: string[]; remaining: number } {
-	const lines = result.text.split("\n");
-	const displayed = lines.slice(0, COLLAPSED_RESULT_LINES);
-	const remaining = lines.length - displayed.length;
-	const resultGlyph = styledStatus(status, theme);
-	const rows = displayed.map((line, index) => {
-		const prefix = index === 0 ? `  ${resultGlyph} ` : "  ";
-		const text = result.error ? styledError(line, theme) : styledMuted(line, theme);
-		return fitLine(`${prefix}${text}`, width, "…", theme);
-	});
-	if (remaining > 0) {
-		const hint =
-			expandKey.length > 0 ? `... (${remaining} more lines, ${expandKey} Expand)` : `... (${remaining} more lines)`;
-		rows.push(fitLine(`  ${styledMuted(hint, theme)}`, width, "…", theme));
-	}
-	return { rows, remaining };
-}
-
-function compactMessageLines(
-	tool: ToolNodeSnapshot,
-	width: number,
-	theme: GraphTheme | undefined,
-	expandKey: string,
-): string[] {
-	const safeWidth = Math.max(1, Math.floor(width));
-	const result = compactResult(tool);
-	const compact = compactResultRows(result, tool.status, safeWidth, theme, expandKey);
-	const rows = [messageHeader(tool, safeWidth, theme), ...compact.rows];
-	if (compact.remaining === 0 && expandKey.length > 0) {
-		rows.push(fitLine(`  ${styledMuted(`(${expandKey} to expand)`, theme)}`, safeWidth, "…", theme));
-	}
-	return rows;
-}
-
-function packSegments(segments: readonly string[], budget: number): string {
+/**
+ * Wrap text at punctuation, path separators, or whitespace without splitting a
+ * component in the middle. A component wider than the available row is shown
+ * with an ellipsis rather than broken into misleading fragments.
+ */
+function wrapPreserving(text: string, width: number): string[] {
+	const budget = Math.max(1, Math.floor(width));
 	const rows: string[] = [];
-	let row = "";
-	for (const segment of segments) {
-		const candidate = row.length === 0 ? segment : `${row} · ${segment}`;
-		if (row.length > 0 && visibleWidth(candidate) > budget) {
-			rows.push(row);
-			row = segment;
+	for (const paragraph of text.split("\n")) {
+		let remaining = paragraph;
+		if (remaining.length === 0) {
+			rows.push("");
 			continue;
 		}
-		row = candidate;
+		while (remaining.length > 0) {
+			if (visibleWidth(remaining) <= budget) {
+				rows.push(remaining);
+				remaining = "";
+				break;
+			}
+
+			let offset = 0;
+			let lastBoundary = 0;
+			let currentWidth = 0;
+			for (const grapheme of graphemes(remaining)) {
+				const graphemeWidth = visibleWidth(grapheme);
+				if (currentWidth + graphemeWidth > budget) break;
+				offset += grapheme.length;
+				currentWidth += graphemeWidth;
+				if (isWrapBoundary(grapheme)) lastBoundary = offset;
+			}
+
+			if (offset === 0) {
+				rows.push("…");
+				const firstBoundary = [...graphemes(remaining)].findIndex(isWrapBoundary);
+				remaining = firstBoundary < 0 ? "" : remaining.slice(firstBoundary + 1);
+				continue;
+			}
+			if (lastBoundary > 0) {
+				rows.push(remaining.slice(0, lastBoundary));
+				remaining = remaining.slice(lastBoundary);
+				continue;
+			}
+
+			// No punctuation or whitespace fit in this row: truncate the single
+			// overlong component instead of splitting it across terminal rows.
+			const nextBoundary = [...graphemes(remaining)].findIndex(isWrapBoundary);
+			const componentEnd =
+				nextBoundary < 0 ? remaining.length : [...graphemes(remaining)].slice(0, nextBoundary + 1).join("").length;
+			const component = remaining.slice(0, componentEnd);
+			const ellipsisWidth = visibleWidth("…");
+			let prefix = "";
+			for (const grapheme of graphemes(component)) {
+				if (visibleWidth(prefix) + visibleWidth(grapheme) + ellipsisWidth > budget) break;
+				prefix += grapheme;
+			}
+			rows.push(`${prefix}…`);
+			remaining = remaining.slice(componentEnd);
+		}
 	}
-	if (row.length > 0) rows.push(row);
-	return rows.join("\n");
+	return rows.length > 0 ? rows : [""];
 }
 
-function expandedMessageLines(
+/** Keep a generated truncation marker intact when a field wraps at its cap. */
+function wrapFieldValue(text: string, width: number): string[] {
+	if (!text.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER)) return wrapPreserving(text, width);
+	const body = text.slice(0, -TOOL_PAYLOAD_TRUNCATION_MARKER.length);
+	return [...wrapPreserving(body, width), TOOL_PAYLOAD_TRUNCATION_MARKER];
+}
+
+function fitLine(text: string, width: number, suffix: string, theme: GraphTheme | undefined): string {
+	const safeWidth = Math.max(1, Math.floor(width));
+	return theme === undefined
+		? visibleWidth(text) <= safeWidth
+			? text
+			: truncateToWidth(text, safeWidth, suffix, true)
+		: truncateToWidth(text, safeWidth, suffix, true);
+}
+
+/** Paint the complete row, including its trailing fill, with the tool status background. */
+function paintRow(content: string, width: number, theme: GraphTheme | undefined, status: ToolNodeStatus): string {
+	const safeWidth = Math.max(1, Math.floor(width));
+	const fitted = fitLine(content, safeWidth, "…", theme);
+	if (theme === undefined) return fitted;
+	const padding = Math.max(0, safeWidth - visibleWidth(fitted));
+	const background = hexBg(toolBackground(status, theme));
+	return `${background}${fitted}${background}${" ".repeat(padding)}${RESET}`;
+}
+
+function messageHeaderRows(
 	tool: ToolNodeSnapshot,
 	width: number,
 	theme: GraphTheme | undefined,
-	expandKey: string,
-	now: number,
+	expanded: boolean,
 ): string[] {
 	const safeWidth = Math.max(1, Math.floor(width));
-	const rows: string[] = [messageHeader(tool, safeWidth, theme)];
-	rows.push(...textRows("ARGS", boundedSerializedValue(tool.args), safeWidth, theme));
-	if (tool.error !== undefined)
-		rows.push(...textRows("ERROR", boundedToolText(sanitizeToolDisplayText(tool.error)), safeWidth, theme));
-	else rows.push(...textRows("RESULT", boundedSerializedValue(resultValue(tool)), safeWidth, theme));
+	const name = sanitizeToolTitleText(tool.name);
+	const glyph = headerGlyph(tool.status);
+	const glyphSuffix = glyph === undefined ? "" : ` ${glyph}`;
+	const args =
+		tool.args === undefined
+			? ""
+			: boundedSerializedValue(tool.args, expanded ? TOOL_DETAIL_VALUE_LIMIT : COLLAPSED_ARGS_LIMIT);
+	const withArgs = `$ ${name}${args ? ` ${args}` : ""}${glyphSuffix}`;
+	const plain = !expanded && visibleWidth(withArgs) > safeWidth ? `$ ${name}${glyphSuffix}` : withArgs;
+	const titleEnd = `$ ${name}`;
+	return wrapFieldValue(plain, safeWidth).map((chunk, index, chunks) => {
+		if (index !== 0 || !chunk.startsWith(titleEnd)) return styledMuted(chunk, theme);
+		const remainder = chunk.slice(titleEnd.length);
+		const hasStatus = glyphSuffix.length > 0 && index === chunks.length - 1 && remainder.endsWith(glyphSuffix);
+		const summary = hasStatus ? remainder.slice(0, -glyphSuffix.length) : remainder;
+		const suffix = hasStatus ? ` ${styledStatus(tool.status, theme)}` : "";
+		return `${styledTitle(titleEnd, theme)}${summary.trim().length > 0 ? styledMuted(summary, theme) : ""}${suffix}`;
+	});
+}
 
-	const source = tool.source === undefined ? "—" : boundedToolText(sanitizeToolDisplayText(tool.source));
-	rows.push(...textRows("SOURCE", source, safeWidth, theme));
-	const elapsed = durationMs(tool, now);
-	const timing = packSegments(
-		[
-			`startedAt=${tool.startedAt ?? "—"}`,
-			`endedAt=${tool.endedAt ?? "—"}`,
-			`duration=${elapsed === undefined ? "—" : `${elapsed}ms (${fmtDuration(elapsed)})`}`,
-		],
-		Math.max(1, safeWidth - DETAIL_LABEL_WIDTH),
-	);
-	rows.push(...textRows("TIMING", timing, safeWidth, theme));
+function bodyRows(text: string, error: boolean, width: number, theme: GraphTheme | undefined): string[] {
+	const contentWidth = Math.max(1, width - visibleWidth(BODY_INDENT));
+	return wrapFieldValue(text, contentWidth).map((line) => {
+		const styled = error ? styledError(line, theme) : styledMuted(line, theme);
+		return `${BODY_INDENT}${styled}`;
+	});
+}
+
+function footerText(tool: ToolNodeSnapshot, elapsed: number | undefined): string | undefined {
+	if (elapsed === undefined) return undefined;
+	const label = tool.status === "running" ? "Elapsed" : "Took";
+	const duration = elapsed < 1000 ? `${Math.round(elapsed)}ms` : fmtDuration(elapsed);
 	const markers = [
 		tool.status === "cached" ? "cached" : undefined,
 		tool.replayed === true ? "replayed" : undefined,
 	].filter((marker): marker is string => marker !== undefined);
-	rows.push(scalarRow("MARKERS", markers.length > 0 ? markers.join(" · ") : "—", safeWidth, theme));
-	if (expandKey.length > 0)
-		rows.push(fitLine(`  ${styledMuted(`(${expandKey} to collapse)`, theme)}`, safeWidth, "…", theme));
-	return rows;
+	return `${label} ${duration}${markers.length > 0 ? ` · ${markers.join(" · ")}` : ""}`;
 }
 
-/** Render one read-only agent-chat tool message block. */
+function renderMessageLines(
+	tool: ToolNodeSnapshot,
+	width: number,
+	theme: GraphTheme | undefined,
+	expanded: boolean,
+	expandKey: string,
+	now: number,
+): string[] {
+	const safeWidth = Math.max(1, Math.floor(width));
+	const result = resultText(tool, expanded ? TOOL_DETAIL_VALUE_LIMIT : COLLAPSED_RESULT_LIMIT);
+	const rows: string[] = messageHeaderRows(tool, safeWidth, theme, expanded);
+	const wrappedBody = bodyRows(result.text, result.error, safeWidth, theme);
+	if (expanded) {
+		rows.push(...wrappedBody);
+		if (tool.source !== undefined && tool.source.length > 0) {
+			const sourceWidth = Math.max(1, safeWidth - visibleWidth(BODY_INDENT));
+			rows.push(
+				...wrapFieldValue(boundedToolText(sanitizeToolDisplayText(tool.source)), sourceWidth).map(
+					(line) => `${BODY_INDENT}${styledMuted(line, theme)}`,
+				),
+			);
+		}
+	} else {
+		const earlier = Math.max(0, wrappedBody.length - COLLAPSED_RESULT_LINES);
+		if (earlier > 0) {
+			const hint =
+				expandKey.length > 0
+					? `... (${earlier} earlier lines, ${expandKey} Expand)`
+					: `... (${earlier} earlier lines)`;
+			rows.push(`  ${styledMuted(hint, theme)}`);
+		}
+		rows.push(...wrappedBody.slice(-COLLAPSED_RESULT_LINES));
+	}
+	const footer = footerText(tool, durationMs(tool, now));
+	if (footer !== undefined) rows.push(styledMuted(footer, theme));
+	return rows.map((row) => paintRow(row, safeWidth, theme, tool.status));
+}
+
+/** Render one read-only host-style operator tool message block. */
 export function renderToolDetail(tool: ToolNodeSnapshot, opts: RenderToolDetailOpts = {}): string {
 	const width = Math.max(1, Math.floor(opts.width ?? 80));
 	const expandKey = opts.expandKey ?? "ctrl+o";
-	const rows =
-		opts.expanded === true
-			? expandedMessageLines(tool, width, opts.theme, expandKey, opts.now ?? Date.now())
-			: compactMessageLines(tool, width, opts.theme, expandKey);
-	return rows.join("\n");
+	return renderMessageLines(tool, width, opts.theme, opts.expanded === true, expandKey, opts.now ?? Date.now()).join(
+		"\n",
+	);
 }
 
 /** Render message-block lines for graph-body composition. */
