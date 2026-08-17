@@ -15,7 +15,7 @@ export const defaultModelPerProvider: Record<string, string> = {
 	"github-copilot": "gpt-5.4",
 	openrouter: "moonshotai/kimi-k2.6",
 	"vercel-ai-gateway": "zai/glm-5.1",
-	xai: "grok-4.5",
+	xai: "grok-4.6",
 	groq: "openai/gpt-oss-120b",
 	cerebras: "zai-glm-4.7",
 	"ant-ling": "Ring-2.6-1T",

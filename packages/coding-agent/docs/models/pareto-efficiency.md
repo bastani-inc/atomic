@@ -24,6 +24,8 @@ Six models currently sit on the frontier, spanning "cheapest defensible worker" 
 - **grok-4.5 [high]** — 54% for $2.42. A cheap, capable mid-tier worker.
 - **muse-spark-1.1 [xhigh]** — 53% for $2.36. The cheapest model still on the frontier.
 
+Atomic's current xAI and OpenRouter fallback chains use Grok 4.6. It remains unmeasured in this snapshot, so the measured Grok 4.5 point stays on the frontier rather than being relabeled.
+
 ## What changed — the frontier moved
 
 The previous generation's frontier (gpt-5.5 and claude-fable-5) is now **dominated** by the gpt-5.6 family:
@@ -46,6 +48,7 @@ This is the reason to key these docs to the live benchmarks: a single release cy
 
 Efficiency is not the only axis. A dominated model can still earn a slot when it decorrelates errors or fills a niche:
 
+- **grok-4.6** — unmeasured in the current benchmark snapshot; retained as the operational xAI and OpenRouter successor to Grok 4.5.
 - **glm-5.3 [high]** — unmeasured in the current benchmark snapshot; retained as a direct Z.AI provider-diversity fallback. GLM-5.2 results are not relabeled as GLM-5.3.
 - **kimi-k3** — frontier on efficiency *and* an open-weights provider-diversity option; a strong reviewer-C or fallback.
 - **claude-opus-4.8 [max]** — retained for Anthropic provider diversity and its long-context niche.

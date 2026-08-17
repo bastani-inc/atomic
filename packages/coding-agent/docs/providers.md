@@ -89,6 +89,8 @@ Business and enterprise tokens sent to the individual host return `421 Misdirect
 
 Run `/login xai`, then select **Use a subscription**. `XAI_API_KEY` remains available through **Use an API key**.
 
+Atomic defaults xAI sessions to `grok-4.6`. Built-in workflow and subagent fallback chains use `xai/grok-4.6:high` and `openrouter/x-ai/grok-4.6`; GitHub Copilot also exposes Grok 4.6 when the account's model policy enables it. Network-backed catalogs refresh and cache these newer entries independently of the bundled catalog snapshot.
+
 ### Radius
 
 Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; its model catalog refreshes independently and is cached in `models-store.json`. API-key authentication is also available through `/login radius` or `RADIUS_API_KEY`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and the gateway `baseUrl`.

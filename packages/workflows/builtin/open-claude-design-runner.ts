@@ -118,7 +118,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "openai-codex/gpt-5.6-sol:xhigh",
       "github-copilot/gpt-5.6-sol:xhigh",
       "openai/gpt-5.6-sol:xhigh",
-      "xai/grok-4.5:high",
+      "xai/grok-4.6:high",
       "zai/glm-5.3:high",
       "zai-coding-cn/glm-5.3:high",
       "openrouter/anthropic/claude-opus-5:high",
@@ -127,7 +127,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "openrouter/moonshotai/kimi-k3:max",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/sakana/fugu-ultra:high",
-      "openrouter/x-ai/grok-4.5",
+      "openrouter/x-ai/grok-4.6",
     ],
   };
   // Phase 1: combined discovery + init — one stage interviews the user via

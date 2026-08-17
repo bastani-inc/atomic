@@ -42,6 +42,7 @@ The Pareto frontier — models where nothing else is both cheaper and more accur
 | claude-fable-5 [max] | 70% | $21.63 | Drop | terra matches 70% for $4.95; kept only where Anthropic-family behavior is specifically wanted |
 | claude-opus-4.8 [max] | 59% | $13.22 | Fallback only | Dominated on cost/accuracy, but retained for Anthropic provider diversity and its long-context niche |
 | grok-4.5 [high] | 54% | $2.42 | Frontier (budget) | Cheap, capable worker; adds xAI provider diversity |
+| grok-4.6 [unmeasured] | unmeasured | unmeasured | Operational successor | Current xAI and OpenRouter fallback; not relabeled from the Grok 4.5 benchmark result |
 | claude-sonnet-5 [max] | 54% | $26.40 | Drop everywhere | Worst value on the chart; 268 steps of meandering |
 | muse-spark-1.1 [xhigh] | 53% | $2.36 | Frontier (cheapest defensible) | Cheapest model still on the frontier; open weights diversity |
 | gpt-5.4 [xhigh] | 52% | $5.65 | Superseded | grok-4.5 and luna dominate it on cost and accuracy |
@@ -52,7 +53,7 @@ The Pareto frontier — models where nothing else is both cheaper and more accur
 | gemini-3.1-pro [high] | 12% | $9.48 | Drop everywhere | Value destruction; removed from all chains |
 
 <Note>
-Scores above are DeepSWE `pass@1` with ±CI omitted for readability; see the [live leaderboard](https://deepswe.datacurve.ai/) for confidence intervals, output-token, and step counts. A model absent from both DeepSWE and Artificial Analysis should be marked **unmeasured** rather than assigned a guessed score — unmeasured models may still remain operational defaults.
+Scores above are DeepSWE `pass@1` with ±CI omitted for readability; see the [live leaderboard](https://deepswe.datacurve.ai/) for confidence intervals, output-token, and step counts. A model absent from both DeepSWE and Artificial Analysis should be marked **unmeasured** rather than assigned a guessed score — unmeasured models may still remain operational defaults. Grok 4.6 is therefore listed as unmeasured while the measured Grok 4.5 result remains unchanged.
 </Note>
 
 ## Role-based thinking effort
@@ -76,7 +77,7 @@ Pick by the cost of being wrong in each role, not by raw accuracy. Match the rol
 - **Codebase mapping / planner** — start at `high` for repository mapping, lifecycle analysis, compatibility, and plans. `gpt-5.6-terra` is a strong fit; raise to `max` only when the plan itself gates a high-cost loop or the user asks for it.
 - **Debugger / triage / repair** — start at `high`; deep reasoning pays off when root-causing or repairing is costly, but `max` is not the blanket debugger setting. Benchmark to weight: DeepSWE pass@1 and Terminal-Bench.
 - **Research / synthesis** — use `high` for demanding research and evidence reconciliation; use `medium` for routine synthesis when the evidence is already strong. `gpt-5.6-luna` is the workhorse model recommendation. Benchmark to weight: AA-LCR (long context) and AA-Omniscience (factual reliability).
-- **Orchestrator / worker / cheap loops** — use `high` for demanding workers and `medium` or lower for routine or mechanical loops when their evidence remains sufficient. `gpt-5.6-luna`, `grok-4.5`, and `muse-spark-1.1` are role-fit choices; their bracketed chart levels are measurements, not defaults.
+- **Orchestrator / worker / cheap loops** — use `high` for demanding workers and `medium` or lower for routine or mechanical loops when their evidence remains sufficient. `gpt-5.6-luna`, the unmeasured operational successor `grok-4.6`, and `muse-spark-1.1` are role-fit choices; bracketed chart levels are measurements, not defaults.
 - **User-impact review / final reporting** — use `medium` for impact summaries and reports that preserve the evidence needed by the user. Do not spend `max` here unless the user explicitly requests it or the role has become a high-cost-of-error approval.
 - **Design** — a quality-first, unbenchmarked domain; keep a top-tier model (`gpt-5.6-sol` or `claude-fable-5`) when the design decision has high failure cost, and choose effort by the review or approval role rather than by the benchmark row.
 - **Interactive coding sessions** — use `high` for complex, multi-step coding and `medium` for routine edits; reserve `max` for a high-cost-of-error judgment or an explicit user request.
