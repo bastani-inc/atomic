@@ -13,6 +13,7 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
 - **Session persistence** - Store state that survives restarts via `pi.appendEntry()`
+- **Reload-surviving state** - Keep in-memory objects alive across `/reload` via `sessionScopedExtensionState()`
 - **Custom rendering** - Control how tool calls/results and messages appear in TUI
 
 **Example use cases:**
@@ -48,6 +49,7 @@ See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packa
 - [ExtensionCommandContext](#extensioncommandcontext)
 - [ExtensionAPI Methods](#extensionapi-methods)
 - [State Management](#state-management)
+  - [Session-scoped in-memory state](#session-scoped-in-memory-state)
 - [Custom Tools](#custom-tools)
 - [Custom UI](#custom-ui)
 - [Error Handling](#error-handling)
@@ -1851,9 +1853,10 @@ pi.events.emit("my:event", { ... });
 unsubscribe();
 ```
 
-`pi.events` belongs to the extension instance that received it. Register listeners again when that instance reloads, and do not retain the object for later use: calling `on()` or `emit()` through a captured handle after reload or disposal throws.
+`pi.events` belongs to the extension instance that received it. Register listeners again when that instance reloads, and do not retain the object for later use: calling `on()` or `emit()` through a captured handle after reload or disposal throws. To keep in-memory state across `/reload`, pass this facade to [`sessionScopedExtensionState`](#session-scoped-in-memory-state); do not capture the facade itself.
 
 If you implement an `ExtensionRuntime` for an embedded host, provide `trackEventBusSubscription(unsubscribe)` and retain each returned subscription until that extension runtime is reloaded or disposed. `ExtensionUIContext.getChatRenderSettings()` must return `markdownTransformers`; it may also return `renderLatex` to control terminal math rendering. These fields keep event subscriptions and display transforms scoped to the active extension instance.
+
 
 ### Native providers
 
@@ -1968,7 +1971,15 @@ pi.registerCommand("my-setup-teardown", {
 
 ## State Management
 
-Extensions with state should store it in tool result `details` for proper branching support:
+Choose the store that matches the lifetime you need:
+
+- **Tool result `details`** — reconstructs across `/branch` and `/resume` from the transcript.
+- **`pi.appendEntry()`** — durable custom entries that survive process restart. They do not enter model context.
+- **`sessionScopedExtensionState()`** — in-memory objects that survive `/reload` for the current process. They do not survive process restart.
+
+Module-scoped variables do **not** survive `/reload`: reloading file extensions re-evaluates their module graph, so those singletons are new empty objects while the session keeps running.
+
+Extensions with state that must follow conversation branches should store it in tool result `details`:
 
 ```typescript
 export default function (pi: ExtensionAPI) {
@@ -1999,6 +2010,43 @@ export default function (pi: ExtensionAPI) {
   });
 }
 ```
+
+### Session-scoped in-memory state
+
+Import `sessionScopedExtensionState` from `@bastani/atomic` when an extension must keep a live object across `/reload` — registries, abort controllers, connection pools, or any other handle that cannot be rebuilt from the transcript.
+
+```typescript
+import { sessionScopedExtensionState, type ExtensionAPI } from "@bastani/atomic";
+
+interface CounterState {
+  count: number;
+}
+
+export default function (pi: ExtensionAPI) {
+  const state = sessionScopedExtensionState(pi.events, "my-extension:counter:v1", () => ({
+    count: 0,
+  }));
+
+  pi.registerCommand("bump", {
+    description: "Increment a counter that survives /reload",
+    handler: async (_args, ctx) => {
+      state.count += 1;
+      ctx.ui.notify(`count=${state.count}`, "info");
+    },
+  });
+}
+```
+
+**Required scope.** Pass the extension's `pi.events` facade (or the session `EventBus` itself). The host resolves that facade to the canonical session bus, so every load generation of one session re-binds to the same object. Two in-process sessions with distinct buses stay isolated. Do not pass an arbitrary object: an unregistered scope is treated as its own bus and will not re-bind after reload.
+
+**Session-wide key namespace.** Keys are not automatically namespaced by extension. Two extensions that pass the same key on the same session receive the first extension's object; the later factory is not called. Prefix every key with a stable extension identity.
+
+**Key-versioning.** Append a version suffix and bump it when the stored shape changes, for example `"my-extension:counter:v1"` → `"my-extension:counter:v2"`. The new key declines the incompatible predecessor instead of reusing it under a new type.
+
+**Reload behavior.** `/reload` builds a new `pi.events` facade that still forwards to the same bus. Calling `sessionScopedExtensionState` again with the same namespaced key returns the existing object and does not invoke `create`. Entries live exactly as long as that bus. They are not written to the session file; use `pi.appendEntry()` when the data must survive process restart.
+
+**Shutdown.** `session_shutdown` still runs for resources you opened. If the object holds sockets, watchers, or timers, close them there. The next `session_start` or first use can recreate them inside the same session-scoped object.
+
 
 ## Custom Tools
 

@@ -167,6 +167,32 @@ test("state captured through successive load generations of one session survives
 	assert.equal(second.loads, 1);
 });
 
+test("two extensions on one session share a key; callers must namespace keys themselves", async () => {
+	const bus = createEventBus();
+	const states: Array<{ owner: string }> = [];
+
+	await loadExtensionFromFactory(
+		(pi) => {
+			states.push(sessionScopedExtensionState(pi.events, "shared:v1", () => ({ owner: "first" })));
+		},
+		process.cwd(),
+		bus,
+		createExtensionRuntime(),
+	);
+	await loadExtensionFromFactory(
+		(pi) => {
+			states.push(sessionScopedExtensionState(pi.events, "shared:v1", () => ({ owner: "second" })));
+		},
+		process.cwd(),
+		bus,
+		createExtensionRuntime(),
+	);
+
+	assert.equal(states.length, 2);
+	assert.equal(states[1], states[0]);
+	assert.equal(states[0]!.owner, "first");
+});
+
 test("sessionScopedExtensionState is exported from the package index", () => {
 	const bus = createEventBus();
 	const state = sessionScopedExtensionStateFromIndex(bus, "index-export:v1", () => ({ ok: true }));
