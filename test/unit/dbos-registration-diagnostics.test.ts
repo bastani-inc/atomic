@@ -50,7 +50,7 @@ describe("DBOS registration diagnostics", () => {
 		assert.equal(classifyDbosDurabilityFailure(conflictingType), "duplicate_registration");
 	});
 
-	test("classifies a nested cause and a name-only duck type without instanceof", () => {
+	test("classifies a nested cause, a code-only duck type, and a name-only duck type without instanceof", () => {
 		const wrapped = new Error("DBOS workflow durability configuration failed", {
 			cause: realConflict(ALREADY_REGISTERED),
 		});
@@ -60,6 +60,7 @@ describe("DBOS registration diagnostics", () => {
 		cyclic.cause = cyclic;
 
 		assert.equal(classifyDbosDurabilityFailure(wrapped), "duplicate_registration");
+		assert.equal(classifyDbosDurabilityFailure({ dbosErrorCode: 25 }), "duplicate_registration");
 		assert.equal(classifyDbosDurabilityFailure(named), "duplicate_registration");
 		assert.equal(classifyDbosDurabilityFailure(cyclic), "other");
 	});
