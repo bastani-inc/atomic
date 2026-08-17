@@ -174,9 +174,9 @@ function wrapPreserving(text: string, width: number, continuationWidth = width):
 
 			if (scanIndex === segmentIndex) {
 				rows.push("…");
-				let boundaryEnd = segmentIndex;
-				while (boundaryEnd < segments.length && !isWrapBoundary(segments[boundaryEnd]!.segment)) boundaryEnd += 1;
-				segmentIndex = boundaryEnd < segments.length ? boundaryEnd + 1 : segments.length;
+				// Skip only the oversized grapheme. Leave a following wrap
+				// boundary unconsumed so `👍/next` can still render `/next`.
+				segmentIndex += 1;
 				continue;
 			}
 			if (lastBoundary > segmentIndex) {

@@ -415,6 +415,12 @@ describe("tool graph inspection", () => {
 		});
 		assert.match(commaWrap, /,/, "an unrendered comma must stay available on a later row");
 		assert.match(commaWrap, /tail/);
+		const emojiWrap = renderToolDetail(tool({ args: undefined, name: "t", result: "👍/next" }), {
+			width: 12,
+			expanded: true,
+		});
+		assert.match(emojiWrap, /\//, "a one-cell emoji fallback must not swallow the following slash");
+		assert.match(emojiWrap, /next/);
 
 		const themed = renderToolDetail(tool({ result: "ok" }), { width: 40, theme: defaultTheme });
 		assert.match(themed, /\x1b\[48;2;/);
