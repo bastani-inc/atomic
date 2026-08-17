@@ -24,7 +24,7 @@ export function createSessionScopedSingleton<T extends object>(
 	const current = (): T => instance;
 
 	const adopt = (scope: object): T => {
-		instance = sessionScopedExtensionState(scope, key, current);
+		instance = sessionScopedExtensionState(scope, key, createLocal);
 		return instance;
 	};
 
