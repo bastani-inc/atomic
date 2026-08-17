@@ -122,15 +122,9 @@ function resultValue(tool: ToolNodeSnapshot): ToolPayloadValue | undefined {
 	return undefined;
 }
 
-function boundedErrorText(value: string, limit: number): string {
-	const safe = sanitizeToolDisplayText(value);
-	if (safe.length <= limit) return safe;
-	const keep = Math.max(0, limit - TOOL_PAYLOAD_TRUNCATION_MARKER.length);
-	return `${safe.slice(-keep)}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
-}
 function resultText(tool: ToolNodeSnapshot, limit: number): { text: string; error: boolean } {
 	if (tool.error !== undefined) {
-		return { text: boundedErrorText(tool.error, limit), error: true };
+		return { text: boundedToolText(sanitizeToolDisplayText(tool.error), limit), error: true };
 	}
 	return { text: boundedSerializedValue(resultValue(tool), limit), error: false };
 }
@@ -139,6 +133,7 @@ function resultText(tool: ToolNodeSnapshot, limit: number): { text: string; erro
 function isWrapBoundary(grapheme: string): boolean {
 	return /[\s/\\.,:;()[\]{}"'`=+|!?<>-]/u.test(grapheme);
 }
+
 /**
  * Wrap text at punctuation, path separators, or whitespace without splitting a
  * component in the middle. A component wider than the available row is shown
@@ -174,7 +169,12 @@ function wrapPreserving(text: string, width: number): string[] {
 			if (offset === 0) {
 				rows.push("…");
 				const firstBoundary = [...graphemes(remaining)].findIndex(isWrapBoundary);
-				remaining = firstBoundary < 0 ? "" : remaining.slice(firstBoundary + 1);
+				if (firstBoundary < 0) {
+					remaining = "";
+				} else {
+					const boundaryEnd = [...graphemes(remaining)].slice(0, firstBoundary + 1).join("").length;
+					remaining = remaining.slice(boundaryEnd);
+				}
 				continue;
 			}
 			if (lastBoundary > 0) {

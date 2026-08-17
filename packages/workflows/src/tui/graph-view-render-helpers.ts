@@ -9,10 +9,17 @@ import {
 } from "./graph-view-constants.js";
 import { GraphViewState } from "./graph-view-state.js";
 import { renderOutlinePill } from "./header.js";
+import { APP_ACTION, isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H, NODE_W } from "./layout.js";
 import { sliceColumns, truncateToWidth, visibleWidth } from "./text-helpers.js";
 import { OVERLAY_HIDDEN_STATUS_KEYS, WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 
+function toolExpandKey(piKeybindings: unknown): string {
+	const keybindings = isKeybindingsLike(piKeybindings) ? piKeybindings : undefined;
+	const keys = keybindings?.getKeys?.(APP_ACTION.toolsExpand);
+	if (keys === undefined) return "ctrl+o";
+	return keys.join("/");
+}
 /** Low-level overlay geometry, chrome, ANSI canvas, and edge helpers. */
 export abstract class GraphViewRenderHelpers extends GraphViewState {
 	/**
@@ -63,9 +70,24 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			label: string,
 		): Array<{ key: string; label: string }> =>
 			keys.map((hint) => (hint.key === "↵" ? { key: hint.key, label } : hint));
+		const toolDetailExpandKey = toolExpandKey(this.piKeybindings);
+		const toolDetailHintKeys =
+			this.toolDetail === null
+				? []
+				: [
+						...TOOL_DETAIL_HINT_KEYS,
+						{ key: toolDetailExpandKey, label: this.toolDetailExpanded ? "collapse" : "expand" },
+					];
+		const compactToolDetailHintKeys =
+			this.toolDetail === null
+				? []
+				: [
+						...COMPACT_TOOL_DETAIL_HINT_KEYS,
+						{ key: toolDetailExpandKey, label: this.toolDetailExpanded ? "collapse" : "expand" },
+					];
 		const availableHintKeys =
 			this.toolDetail !== null
-				? TOOL_DETAIL_HINT_KEYS
+				? toolDetailHintKeys
 				: focusedToolNode
 					? relabelActivation(HINT_KEYS, "open tool detail")
 					: chatTarget === undefined
@@ -73,14 +95,16 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 						: HINT_KEYS;
 		const availableCompactHintKeys =
 			this.toolDetail !== null
-				? COMPACT_TOOL_DETAIL_HINT_KEYS
+				? compactToolDetailHintKeys
 				: focusedToolNode
 					? relabelActivation(COMPACT_HINT_KEYS, "tool detail")
 					: chatTarget === undefined
 						? COMPACT_HINT_KEYS.filter(({ key }) => key !== "↵")
 						: COMPACT_HINT_KEYS;
 		const fullHintWidth =
-			this.toolDetail !== null ? "ctrl+x return to graph  ·  ↑↓ pgup/pgdn scroll" : fullHierarchyHint;
+			this.toolDetail !== null
+				? toolDetailHintKeys.map(({ key, label }) => `${key} ${label}`).join("  ·  ")
+				: fullHierarchyHint;
 		const hintKeys = hintsBudget >= visibleWidth(fullHintWidth) ? availableHintKeys : availableCompactHintKeys;
 		const statusText = this._externalStatusText();
 		const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];

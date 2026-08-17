@@ -235,12 +235,14 @@ describe("tool graph inspection", () => {
 			"Took 75ms",
 		])
 			assert.ok(collapsed.includes(expected), expected);
+		assert.match(collapsed, /ctrl\+o expand/);
 		for (const hidden of ["ARGS", "RESULT", "SOURCE", "TIMING", "MARKERS"])
 			assert.doesNotMatch(collapsed, new RegExp(`\\b${hidden}\\b`));
 		assert.doesNotMatch(collapsed, /stage chat|attach|interrupt|resume|steer/i);
 
 		assert.equal(enterView.handleInput("\x0f"), true);
 		const expanded = visibleText(enterView.render(120));
+		assert.match(expanded, /ctrl\+o collapse/);
 		for (const expected of [
 			"$ inspect-api",
 			'{"branch":"feat/inspect","checks":["lint","test"]}',
@@ -261,15 +263,17 @@ describe("tool graph inspection", () => {
 				return action === "app.tools.expand" && data === "x";
 			},
 			getKeys(): readonly string[] {
-				return ["ctrl+x"];
+				return ["alt+e"];
 			},
 		});
 		assert.equal(configured.handleInput("\r"), true);
+		assert.match(visibleText(configured.render(120)), /alt\+e expand/);
 		assert.equal(configured.handleInput("\x0f"), false, "the host manager owns expansion when present");
 		assert.equal(configured._toolDetailExpanded, false);
 		assert.equal(configured.handleInput("x"), true);
 		assert.equal(configured._toolDetailExpanded, true);
 		assert.match(visibleText(configured.render(120)), /Took 75ms/);
+		assert.match(visibleText(configured.render(120)), /alt\+e collapse/);
 		configured.dispose();
 
 		const clickView = viewFor(node);
@@ -324,7 +328,7 @@ describe("tool graph inspection", () => {
 			{ width: 80, expandKey: "ctrl+o" },
 		).split("\n");
 		assert.ok(manyRows.length <= 14, `collapsed preview emitted ${manyRows.length} rows`);
-		assert.match(manyRows.at(-3) ?? "", /line-199/);
+		assert.ok(manyRows.some((row) => row.includes("line-38")));
 		assert.match(manyRows.find((row) => row.includes("earlier lines")) ?? "", /ctrl\+o Expand/);
 	});
 
@@ -361,6 +365,30 @@ describe("tool graph inspection", () => {
 		const themed = renderToolDetail(tool({ result: "ok" }), { width: 40, theme: defaultTheme });
 		assert.match(themed, /\x1b\[48;2;/);
 		assert.doesNotMatch(renderToolDetail(tool({ result: "ok" }), { width: 40 }), /\x1b/);
+	});
+
+	test("oversized errors and results share head truncation marker placement", () => {
+		const oversized = `HEAD-MARKER${"e".repeat(TOOL_PAYLOAD_VALUE_LIMIT + 100)}TAIL-MARKER`;
+		const outputs = [
+			renderToolDetail(tool({ status: "failed", result: undefined, error: oversized }), {
+				width: 80,
+				expanded: true,
+			}),
+			renderToolDetail(tool({ result: oversized }), { width: 80, expanded: true }),
+		];
+		for (const output of outputs) {
+			const body = output.slice(0, output.indexOf("Took")).trimEnd();
+			const bodyWithoutNewlines = body.replace(/\n\s*/g, "");
+			assert.ok(bodyWithoutNewlines.includes("HEAD-MARKER"));
+			assert.doesNotMatch(body, /TAIL-MARKER/);
+			assert.ok(body.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
+		}
+	});
+
+	test("width wrapping does not emit lone surrogates when skipping a wide grapheme boundary", () => {
+		const rendered = renderToolDetail(tool({ result: "👍👍/abc" }), { width: 3, expanded: true });
+		const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+		assert.doesNotMatch(rendered, loneSurrogate);
 	});
 	test("completed cards omit the empty marker row and keep the bash-like header", () => {
 		const rendered = renderToolDetail(tool({ status: "completed", replayed: false }), {
