@@ -46,6 +46,24 @@ function subagentFrontmatter(): Array<{ name: string; text: string }> {
 		.filter((name) => name.endsWith(".md"))
 		.map((name) => ({ name, text: readFileSync(join(agentsDir, name), "utf8").split("---", 2)[1] ?? "" }));
 }
+function recursivelyListFiles(directory: string): string[] {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(directory, entry.name);
+		return entry.isDirectory() ? recursivelyListFiles(path) : [path];
+	});
+}
+
+function builtinSourceFiles(): string[] {
+	return ["packages/workflows/builtin", "packages/subagents/agents"].flatMap((relativePath) =>
+		recursivelyListFiles(join(root, relativePath)),
+	);
+}
+
+test("builtin workflow and subagent sources contain no stale GLM-5.2 references", () => {
+	for (const filePath of builtinSourceFiles()) {
+		assert.doesNotMatch(readFileSync(filePath, "utf8"), /glm[- /]?5\.2/i, filePath);
+	}
+});
 
 test("builtin Goal, Ralph, and Open Claude Design chains have no active GLM-5.2 entries", () => {
 	for (const reference of workflowModelReferences()) {

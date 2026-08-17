@@ -11,7 +11,7 @@ import { reviewDecisionSchema } from "./ralph-core.js";
 //   claude-sonnet-4.6, gemini-3.1-pro, and gemini-3.5-flash.
 // - GLM-5.3 exposes reasoning without a thinkingLevelMap or reasoning-effort
 //   control, so chains use the catalog-supported :high tier explicitly rather
-//   than carrying GLM-5.2's :xhigh/:max suffixes forward. OpenRouter has no
+//   than carrying the prior GLM generation's :xhigh/:max suffixes forward. OpenRouter has no
 //   GLM-5.3 catalog entry, so its unavailable fallback is intentionally omitted.
 
 export const promptEngineerModelConfig = {
