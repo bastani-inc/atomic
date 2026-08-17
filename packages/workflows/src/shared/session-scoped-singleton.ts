@@ -4,9 +4,7 @@ import { sessionScopedExtensionState } from "@bastani/atomic";
  * Stable facade over a run-scoped singleton that can re-bind to host
  * session-scoped state after `/reload` re-evaluates the module graph.
  *
- * Importers keep the same Proxy. Without {@link SessionScopedSingleton.adopt}
- * the facade resolves to a module-local instance, matching the previous
- * `export const x = create()` behavior.
+ * Local state seeds at most one unseen scope; later unseen scopes start fresh.
  */
 export interface SessionScopedSingleton<T extends object> {
 	readonly facade: T;
@@ -20,11 +18,17 @@ export function createSessionScopedSingleton<T extends object>(
 ): SessionScopedSingleton<T> {
 	const local = createLocal();
 	let instance = local;
+	let localClaimed = false;
+	const createForScope = (): T => {
+		if (localClaimed) return createLocal();
+		localClaimed = true;
+		return local;
+	};
 
 	const current = (): T => instance;
 
 	const adopt = (scope: object): T => {
-		instance = sessionScopedExtensionState(scope, key, createLocal);
+		instance = sessionScopedExtensionState(scope, key, createForScope);
 		return instance;
 	};
 
