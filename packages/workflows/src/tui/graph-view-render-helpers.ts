@@ -17,8 +17,10 @@ import { OVERLAY_HIDDEN_STATUS_KEYS, WORKFLOW_STATUS_KEY } from "./workflow-stat
 export function toolExpandKey(piKeybindings: unknown): string {
 	const keybindings = isKeybindingsLike(piKeybindings) ? piKeybindings : undefined;
 	const keys = keybindings?.getKeys?.(APP_ACTION.toolsExpand);
+	// Missing manager → default. Empty list → explicitly unbound; do not
+	// invent a keyless `expand` label the way `"".join` used to.
 	if (keys === undefined) return "ctrl+o";
-	return keys.join("/");
+	return keys.filter((key) => key.length > 0).join("/");
 }
 /** Low-level overlay geometry, chrome, ANSI canvas, and edge helpers. */
 export abstract class GraphViewRenderHelpers extends GraphViewState {
@@ -71,20 +73,13 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		): Array<{ key: string; label: string }> =>
 			keys.map((hint) => (hint.key === "↵" ? { key: hint.key, label } : hint));
 		const toolDetailExpandKey = toolExpandKey(this.piKeybindings);
-		const toolDetailHintKeys =
-			this.toolDetail === null
-				? []
-				: [
-						...TOOL_DETAIL_HINT_KEYS,
-						{ key: toolDetailExpandKey, label: this.toolDetailExpanded ? "collapse" : "expand" },
-					];
+		const expandHint =
+			toolDetailExpandKey.length > 0
+				? [{ key: toolDetailExpandKey, label: this.toolDetailExpanded ? "collapse" : "expand" }]
+				: [];
+		const toolDetailHintKeys = this.toolDetail === null ? [] : [...TOOL_DETAIL_HINT_KEYS, ...expandHint];
 		const compactToolDetailHintKeys =
-			this.toolDetail === null
-				? []
-				: [
-						...COMPACT_TOOL_DETAIL_HINT_KEYS,
-						{ key: toolDetailExpandKey, label: this.toolDetailExpanded ? "collapse" : "expand" },
-					];
+			this.toolDetail === null ? [] : [...COMPACT_TOOL_DETAIL_HINT_KEYS, ...expandHint];
 		const availableHintKeys =
 			this.toolDetail !== null
 				? toolDetailHintKeys

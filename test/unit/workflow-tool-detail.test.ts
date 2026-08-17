@@ -1225,6 +1225,27 @@ describe("tool graph inspection", () => {
 		view.dispose();
 	});
 
+	test("an unbound expand action omits the statusline expand hint", () => {
+		const unbound = viewFor(tool(), {
+			matches(): boolean {
+				return false;
+			},
+			getKeys(): readonly string[] {
+				return [];
+			},
+		});
+		assert.equal(unbound.handleInput("\r"), true);
+		const collapsed = visibleText(unbound.render(120));
+		assert.match(collapsed, /ctrl\+x return to graph/);
+		assert.match(collapsed, /↑↓ pgup\/pgdn scroll/);
+		assert.doesNotMatch(collapsed, /ctrl\+o expand|alt\+e expand/);
+		assert.doesNotMatch(collapsed, / · \s+expand/);
+		assert.doesNotMatch(collapsed, /GRAPH[^\n]*\bexpand\b/);
+		assert.equal(unbound.handleInput("\x0f"), false, "an unbound host action must not expand");
+		assert.equal(unbound._toolDetailExpanded, false);
+		unbound.dispose();
+	});
+
 	test("stage-node statusline hints are unchanged", () => {
 		const store = createStore();
 		store.recordRunStart({
