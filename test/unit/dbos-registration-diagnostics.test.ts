@@ -78,6 +78,53 @@ describe("DBOS registration diagnostics", () => {
 		assert.equal(classifyDbosDurabilityFailure(new Error("connect failed with ECONNREFUSED")), "other");
 	});
 
+	test("a throwing getter on cause, name, or message classifies as other without escaping", () => {
+		const causeTrap = new Error("initdb: error: cannot be run as root");
+		Object.defineProperty(causeTrap, "cause", {
+			get() {
+				throw new Error("cause getter trap");
+			},
+		});
+		const nameTrap = {
+			get name(): string {
+				throw new Error("name getter trap");
+			},
+			message: "plain failure",
+		};
+		const messageTrap = {
+			get message(): string {
+				throw new Error("message getter trap");
+			},
+		};
+
+		assert.equal(classifyDbosDurabilityFailure(causeTrap), "other");
+		assert.equal(classifyDbosDurabilityFailure(nameTrap), "other");
+		assert.equal(classifyDbosDurabilityFailure(messageTrap), "other");
+	});
+
+	test("a throwing cause getter does not replace the original durability failure", async () => {
+		const trap = new Error("initdb: error: cannot be run as root");
+		Object.defineProperty(trap, "cause", {
+			get() {
+				throw new Error("cause getter trap");
+			},
+		});
+		setDurableBackend(undefined);
+		resetDbosLifecycleForTests(async () => {
+			throw trap;
+		});
+
+		await assert.rejects(getReadyDbosBackend(), (error: unknown) => {
+			assert.ok(error instanceof DbosDurabilityError);
+			assert.equal(
+				error.message,
+				`DBOS workflow durability configuration failed: initdb: error: cannot be run as root. ${PROVISIONING_GUIDANCE}`,
+			);
+			assert.doesNotMatch(error.message, /cause getter trap/);
+			return true;
+		});
+	});
+
 	test("does not statically import the SDK or use instanceof", async () => {
 		const source = (await readText(CLASSIFIER_SOURCE)).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 		assert.doesNotMatch(source, /from ["']@dbos-inc\/dbos-sdk["']/);

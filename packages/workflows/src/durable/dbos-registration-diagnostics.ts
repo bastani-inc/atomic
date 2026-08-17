@@ -19,24 +19,28 @@ const DBOS_CONFLICTING_REGISTRATION_ERROR_NAME = "DBOSConflictingRegistrationErr
 export type DbosDurabilityFailureKind = "duplicate_registration" | "other";
 
 export function classifyDbosDurabilityFailure(error: unknown): DbosDurabilityFailureKind {
-	const seen = new Set<object>();
-	let current: unknown = error;
-	while (current !== undefined && current !== null) {
-		if (typeof current !== "object") return "other";
-		if (seen.has(current)) return "other";
-		seen.add(current);
-		if (isDuplicateRegistration(current)) return "duplicate_registration";
-		current = readCause(current);
+	try {
+		const seen = new Set<object>();
+		let current: unknown = error;
+		while (current !== undefined && current !== null) {
+			if (typeof current !== "object") return "other";
+			if (seen.has(current)) return "other";
+			seen.add(current);
+			if (isDuplicateRegistration(current)) return "duplicate_registration";
+			current = readOwn(current, "cause");
+		}
+	} catch {
+		return "other";
 	}
 	return "other";
 }
 
 function isDuplicateRegistration(value: object): boolean {
-	const code = Reflect.get(value, "dbosErrorCode");
+	const code = readOwn(value, "dbosErrorCode");
 	if (typeof code === "number" && code === DBOS_CONFLICTING_REGISTRATION_ERROR_CODE) return true;
-	const name = Reflect.get(value, "name");
+	const name = readOwn(value, "name");
 	if (typeof name === "string" && name === DBOS_CONFLICTING_REGISTRATION_ERROR_NAME) return true;
-	const message = Reflect.get(value, "message");
+	const message = readOwn(value, "message");
 	return typeof message === "string" && matchesRegistrationMessageFallback(message);
 }
 
@@ -52,6 +56,10 @@ function matchesRegistrationMessageFallback(message: string): boolean {
 	);
 }
 
-function readCause(value: object): unknown {
-	return Reflect.get(value, "cause");
+function readOwn(value: object, key: string): unknown {
+	try {
+		return Reflect.get(value, key);
+	} catch {
+		return undefined;
+	}
 }
