@@ -54,21 +54,6 @@ Artificial Analysis separates performance by benchmark, which lets a workflow pi
 
 Artificial Analysis also publishes per-domain capability indices — **Agentic, Coding, Finance & Accounting, Strategy & Ops, Legal, Healthcare & Medical, Engineering, Economics**. When a workflow is domain-specific, pick by the matching capability index rather than the general Intelligence Index.
 
-## Current cross-check: Grok 4.6
-
-The [Artificial Analysis Grok 4.6 profile](https://artificialanalysis.ai/models/grok-4-6) and its [benchmark analysis](https://artificialanalysis.ai/articles/grok-4-6-benchmarks-and-analysis) show why a model can remain a useful agentic fallback even when another model dominates it on DeepSWE cost:
-
-| Measure [Grok 4.6 high] | Result | Role signal |
-| --- | --- | --- |
-| Intelligence Index v4.1.1 | 61 | Frontier-level cross-domain intelligence |
-| [GDPval-AA v2](https://artificialanalysis.ai/evaluations/gdpval-aa) | 1746 live Elo | Real-world agentic knowledge work |
-| τ³-Banking | 50.7% | Multi-turn tool use |
-| Terminal-Bench v2.1 | 88.4% | Terminal-based software work |
-| AA-Briefcase | 1577 Elo | Long-horizon analytical and presentation work |
-| Intelligence Index task cost | $0.84 | Intelligence-cost efficiency |
-
-Artificial Analysis pages are live and may revise Elo or rank without changing a model ID. Record the access date and link the live result rather than copying an older vendor launch table.
-
 ## Role → benchmark map
 
 A quick lookup for which benchmark to weight per role:

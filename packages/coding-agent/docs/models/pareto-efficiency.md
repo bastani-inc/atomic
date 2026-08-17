@@ -31,9 +31,6 @@ The August results and reporting fixes changed both ends of the frontier:
 - **Claude Opus 5 [max]** set a new 74% ceiling, one point above Sol, at $11.84 per task.
 - **DeepSeek V4 Flash and Pro [max]** added $0.10 and $0.24 budget-frontier points. Their 153–155 average steps remain a separate latency and loop-length cost.
 - **GPT-5.6 Luna and Terra [max]** now cost $0.61 and $3.96 per task after corrected pricing, strengthening both positions.
-- **Grok 4.6 [xhigh]** reached 67% for $5.50, up 13 points from Grok 4.5, but Luna matches that rounded score for far less on DeepSWE.
-
-[Artificial Analysis](https://artificialanalysis.ai/articles/grok-4-6-benchmarks-and-analysis) gives Grok 4.6 a different cost profile: Intelligence Index 61, 88.4% on Terminal-Bench v2.1, and $0.84 per Intelligence Index task. That places it on AA's intelligence-cost frontier and supports its agentic provider-diversity role, even though it is not on the DeepSWE frontier.
 
 ## Dominated models — and why
 
@@ -49,7 +46,7 @@ The August results and reporting fixes changed both ends of the frontier:
 
 Efficiency is not the only axis. A dominated model can still earn a slot when it decorrelates errors or fills a niche:
 
-- **grok-4.6** — retained as the operational xAI and OpenRouter successor to Grok 4.5; AA's independent agentic results support the role.
+- **grok-4.6** — retained as the operational xAI and OpenRouter provider-diversity fallback.
 - **glm-5.3 [high]** — unmeasured in the current DeepSWE snapshot; retained as a direct Z.AI provider-diversity fallback. GLM-5.2 results are not relabeled as GLM-5.3.
 - **kimi-k3** — retained as a strong open-weights provider-diversity option despite Terra's strict DeepSWE dominance.
 - **claude-opus-4.8 [max]** — retained where Anthropic diversity or its long-context behavior has separate value.
