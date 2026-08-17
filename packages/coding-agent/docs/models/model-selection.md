@@ -14,7 +14,7 @@ This page gives workflow authors and runtime policy code a practical way to answ
 It is a **static reference**. It does not change runtime model routing — routing is configured elsewhere. Treat these recommendations as a starting point and validate against your own workflow evals.
 
 <Note>
-The table below is a snapshot of the [DeepSWE](https://deepswe.datacurve.ai/) leaderboard (v1.1, best effort per model), a long-horizon coding-agent benchmark reporting `pass@1` and average dollars per task. Benchmarks and pricing drift and new models ship constantly, so **treat the live leaderboards as authoritative** and refresh this page from them rather than hand-maintaining scores. See [Benchmark sources & when to reference each](/models/artificial-analysis-index). **Last compiled: 2026-07-17.**
+The table below is a snapshot of the [DeepSWE](https://deepswe.datacurve.ai/) leaderboard (v1.1, highest published thinking level per model), a long-horizon coding-agent benchmark reporting `pass@1` and average dollars per task. Benchmarks and pricing drift and new models ship constantly, so **treat the live leaderboards as authoritative** and refresh this page from them rather than hand-maintaining scores. See [Benchmark sources & when to reference each](/models/artificial-analysis-index). **Last compiled: 2026-08-16.**
 </Note>
 
 ## Benchmark levels are measurement settings
@@ -30,31 +30,54 @@ reports the ambiguity. Use `--provider <provider> --model <id>` or `--model <pro
 
 ## Recommendation chart
 
-The Pareto frontier — models where nothing else is both cheaper and more accurate — is currently **gpt-5.6-sol** (accuracy ceiling), **gpt-5.6-terra**, **kimi-k3**, **gpt-5.6-luna**, **grok-4.5**, and **muse-spark-1.1**. Everything else is dominated and earns a place only through role fit or provider diversity. For the frontier reasoning, see [Pareto Efficiency](/models/pareto-efficiency).
+The current highest-effort-config Pareto frontier is **claude-opus-5** (accuracy ceiling), **gpt-5.6-sol**, **gpt-5.6-terra**, **gpt-5.6-luna**, **deepseek-v4-pro**, and **deepseek-v4-flash**. Everything else is dominated on DeepSWE cost and accuracy and earns a place only through role fit or provider diversity. For the frontier reasoning, see [Pareto Efficiency](/models/pareto-efficiency).
 
 | Model [benchmark measurement level] | pass@1 | $/task | Verdict | Use it for |
 | --- | --- | --- | --- | --- |
-| gpt-5.6-sol [max] | 73% | $8.39 | Accuracy ceiling / frontier | Judgment gates where a wrong verdict wastes a whole loop, and the hardest debugging; current top scorer |
-| gpt-5.6-terra [max] | 70% | $4.95 | Frontier — best top-tier value | High-accuracy default for reviewers and planners; matches fable-5's accuracy at ~4× lower cost |
-| kimi-k3 [max] | 69% | $4.65 | Frontier | Near-top accuracy at the lowest top-tier cost; open weights, so also a provider-diversity pick |
-| gpt-5.6-luna [max] | 67% | $3.03 | Frontier — best value on the board | The workhorse: research, orchestrator, worker + code-simplifier subagents |
-| gpt-5.5 [xhigh] | 67% | $7.23 | Superseded | luna matches 67% for $3.03 — less than half the cost |
-| claude-fable-5 [max] | 70% | $21.63 | Drop | terra matches 70% for $4.95; kept only where Anthropic-family behavior is specifically wanted |
-| claude-opus-4.8 [max] | 59% | $13.22 | Fallback only | Dominated on cost/accuracy, but retained for Anthropic provider diversity and its long-context niche |
-| grok-4.5 [high] | 54% | $2.42 | Frontier (budget) | Cheap, capable worker; adds xAI provider diversity |
-| grok-4.6 [unmeasured] | unmeasured | unmeasured | Operational successor | Current xAI and OpenRouter fallback; not relabeled from the Grok 4.5 benchmark result |
-| claude-sonnet-5 [max] | 54% | $26.40 | Drop everywhere | Worst value on the chart; 268 steps of meandering |
-| muse-spark-1.1 [xhigh] | 53% | $2.36 | Frontier (cheapest defensible) | Cheapest model still on the frontier; open weights diversity |
-| gpt-5.4 [xhigh] | 52% | $5.65 | Superseded | grok-4.5 and luna dominate it on cost and accuracy |
-| glm-5.3 [high] | unmeasured | unmeasured | Diversity fallback | Direct Z.AI fallback; GLM-5.3 has no published benchmark result here, so GLM-5.2 measurements are not relabeled |
-| gemini-3.5-flash [medium] | 37% | $7.34 | Drop from reasoning | Token hose (276k output tokens); kept only at :low in retrieval chains where token price rules |
-| kimi-k2.7-code | 31% | $2.82 | Drop | Dominated by muse-spark-1.1 (both cheaper reach); superseded by kimi-k3 |
+| claude-opus-5 [max] | 74% | $11.84 | Accuracy ceiling / frontier | Final approval and the hardest debugging when one more point can justify the cost |
+| gpt-5.6-sol [max] | 73% | $8.39 | Frontier | High-cost judgment gates; nearly the top score at lower cost than Opus 5 |
+| gpt-5.6-terra [max] | 70% | $3.96 | Frontier — best top-tier value | High-accuracy reviewers and planners |
+| claude-fable-5 [max] | 70% | $21.63 | Drop | Sol and Terra match or beat its score for much less |
+| kimi-k3 [max] | 69% | $4.65 | Diversity fallback | Open-weights diversity, though Terra is cheaper and more accurate on DeepSWE |
+| gpt-5.6-luna [max] | 67% | $0.61 | Frontier — best general value | Research, orchestration, workers, and code simplification |
+| gpt-5.5 [xhigh] | 67% | $7.23 | Superseded | Luna matches its score for less than one tenth of the task cost |
+| grok-4.6 [xhigh] | 67% | $5.50 | Agentic diversity fallback | xAI diversity; Artificial Analysis shows stronger agentic value than DeepSWE cost alone suggests |
+| gemini-3.7-flash [high] | 65% | $2.18 | Provider fallback | Strong Google-family result, but Luna is cheaper and more accurate |
+| deepseek-v4-pro [max] | 63% | $0.24 | Frontier (budget) | Low-cost work where its 155-step average remains acceptable |
+| claude-opus-4.8 [max] | 59% | $13.22 | Fallback only | Anthropic diversity and long-context behavior, not cost efficiency |
+| qwen3.8-max [xhigh] | 57% | $3.73 | Provider fallback | Qwen diversity only; DeepSeek Pro and Luna dominate it |
+| muse-spark-1.2 [xhigh] | 55% | $3.70 | Drop | DeepSeek Pro is cheaper and more accurate |
+| claude-sonnet-5 [max] | 54% | $26.40 | Drop everywhere | Highest task cost and 268 average steps for a mid-table score |
+| grok-4.5 [high] | 54% | $2.42 | Superseded | Grok 4.6 adds 13 points; cheaper frontier models still dominate both generations |
+| deepseek-v4-flash [max] | 53% | $0.10 | Frontier (cheapest) | Very cheap mechanical loops that can tolerate lower accuracy and 153 average steps |
+| muse-spark-1.1 [xhigh] | 53% | $2.36 | Superseded | Replaced by Muse Spark 1.2 and dominated by DeepSeek Pro |
+| gpt-5.4 [xhigh] | 52% | $5.65 | Superseded | Luna is cheaper and 15 points more accurate |
+| gemini-3.6-flash [high] | 47% | $2.21 | Drop from reasoning | Superseded by Gemini 3.7 Flash |
+| glm-5.2 [max] | 44% | $3.92 | Superseded | Measured predecessor only; do not relabel this as GLM-5.3 |
+| gemini-3.5-flash [high] | 36% | $3.45 | Drop from reasoning | Retain only where a low-effort retrieval role has separate evidence |
+| kimi-k2.7-code [low] | 31% | $2.19 | Superseded | Kimi K3 is the current family fallback |
 | claude-sonnet-4.6 [high] | 30% | $5.52 | Drop everywhere | Removed from all chains |
-| gemini-3.1-pro [high] | 12% | $9.48 | Drop everywhere | Value destruction; removed from all chains |
+| gemini-3.1-pro [high] | 12% | $2.14 | Drop everywhere | Removed from all chains |
+| glm-5.3 [high] | unmeasured | unmeasured | Diversity fallback | Current direct Z.AI fallback; GLM-5.2 measurements are not relabeled |
 
 <Note>
-Scores above are DeepSWE `pass@1` with ±CI omitted for readability; see the [live leaderboard](https://deepswe.datacurve.ai/) for confidence intervals, output-token, and step counts. A model absent from both DeepSWE and Artificial Analysis should be marked **unmeasured** rather than assigned a guessed score — unmeasured models may still remain operational defaults. Grok 4.6 is therefore listed as unmeasured while the measured Grok 4.5 result remains unchanged.
+DeepSWE values above use the v1.1 results and reporting corrections published through August 14, 2026; `pass@1` is rounded as on the live leaderboard and confidence intervals are omitted here. The highest published thinking level is a measurement choice, not a production default. See the live page for intervals, output tokens, steps, lower-effort configurations, and later corrections.
 </Note>
+
+### Grok 4.6 cross-check from Artificial Analysis
+
+DeepSWE measures repository issue resolution; [Artificial Analysis](https://artificialanalysis.ai/models/grok-4-6) adds cross-domain and agentic evidence for the production fallback choice:
+
+| Artificial Analysis measure [Grok 4.6 high] | Result | Reading |
+| --- | --- | --- |
+| Intelligence Index v4.1.1 | 61 | Matches GPT-5.6 Sol and trails only the leading Anthropic results in the published comparison |
+| GDPval-AA v2 | 1746 Elo on the live leaderboard | Near the top of real-world agentic knowledge work |
+| τ³-Banking | 50.7% | Top-tier multi-turn tool use |
+| Terminal-Bench v2.1 | 88.4% | In line with the leading terminal-use models |
+| AA-Briefcase | 1577 Elo | Fable 5-tier long-horizon knowledge work |
+| Intelligence Index task cost | $0.84 | On Artificial Analysis's intelligence-cost Pareto frontier |
+
+These AA results justify retaining Grok 4.6 for xAI diversity and agentic roles even though Luna dominates its highest-effort DeepSWE point on cost at the same rounded `pass@1`.
 
 ## Role-based thinking effort
 
@@ -73,11 +96,11 @@ Reserve `max` for a high-cost-of-error role or an explicit user request. An expl
 
 Pick by the cost of being wrong in each role, not by raw accuracy. Match the role to the benchmark that best measures it (see [Benchmark sources](/models/artificial-analysis-index)).
 
-- **Reviewer / judgment gates** — use `max` when the reviewer makes a security, identity, adversarial, or final-approval decision whose wrong verdict discards an entire loop. `gpt-5.6-sol` remains the accuracy-first model recommendation; use a different family for reviewer-B/C when decorrelated errors matter. Benchmark to weight: DeepSWE pass@1 and the AA Agentic Index.
-- **Codebase mapping / planner** — start at `high` for repository mapping, lifecycle analysis, compatibility, and plans. `gpt-5.6-terra` is a strong fit; raise to `max` only when the plan itself gates a high-cost loop or the user asks for it.
-- **Debugger / triage / repair** — start at `high`; deep reasoning pays off when root-causing or repairing is costly, but `max` is not the blanket debugger setting. Benchmark to weight: DeepSWE pass@1 and Terminal-Bench.
-- **Research / synthesis** — use `high` for demanding research and evidence reconciliation; use `medium` for routine synthesis when the evidence is already strong. `gpt-5.6-luna` is the workhorse model recommendation. Benchmark to weight: AA-LCR (long context) and AA-Omniscience (factual reliability).
-- **Orchestrator / worker / cheap loops** — use `high` for demanding workers and `medium` or lower for routine or mechanical loops when their evidence remains sufficient. `gpt-5.6-luna`, the unmeasured operational successor `grok-4.6`, and `muse-spark-1.1` are role-fit choices; bracketed chart levels are measurements, not defaults.
+- **Reviewer / judgment gates** — use `max` when the reviewer makes a security, identity, adversarial, or final-approval decision whose wrong verdict discards an entire loop. `claude-opus-5` is the DeepSWE accuracy ceiling; `gpt-5.6-sol` is the lower-cost near-peer. Use another family when decorrelated errors matter.
+- **Codebase mapping / planner** — start at `high` for repository mapping, lifecycle analysis, compatibility, and plans. `gpt-5.6-terra` is the strongest top-tier value at its measured `max` configuration; raise production effort to `max` only when the plan gates a high-cost loop or the user asks for it.
+- **Debugger / triage / repair** — start at `high`; deep reasoning pays off when root-causing or repairing is costly. Weight DeepSWE and Terminal-Bench together: Sol and Opus lead DeepSWE, while Grok 4.6's 88.4% Terminal-Bench result supports it as a provider-diverse fallback.
+- **Research / synthesis** — use `high` for demanding research and evidence reconciliation; use `medium` for routine synthesis when the evidence is already strong. `gpt-5.6-luna` remains the workhorse. Benchmark to weight: AA-LCR and AA-Omniscience.
+- **Orchestrator / worker / cheap loops** — Luna offers the best broad cost/accuracy balance. DeepSeek V4 Pro and Flash occupy the budget frontier but take 155 and 153 steps on average; use them only when that longer path fits. Grok 4.6 remains the xAI choice when its strong AA agentic results and provider diversity matter.
 - **User-impact review / final reporting** — use `medium` for impact summaries and reports that preserve the evidence needed by the user. Do not spend `max` here unless the user explicitly requests it or the role has become a high-cost-of-error approval.
 - **Design** — a quality-first, unbenchmarked domain; keep a top-tier model (`gpt-5.6-sol` or `claude-fable-5`) when the design decision has high failure cost, and choose effort by the review or approval role rather than by the benchmark row.
 - **Interactive coding sessions** — use `high` for complex, multi-step coding and `medium` for routine edits; reserve `max` for a high-cost-of-error judgment or an explicit user request.

@@ -8,7 +8,7 @@ description: "The external benchmarks that inform Atomic model selection — Art
 Atomic's model-selection docs are keyed to two live external benchmark sources rather than a hand-maintained table of scores. This page lists each benchmark, what it measures, and **when to reference it** for a given workflow role — so the docs stay useful as new models ship without a manual rewrite every time.
 
 <Warning>
-No single benchmark is the source of truth. Use these as inputs and validate against Atomic's own workflow evals — public suites test different task distributions than real engineering loops. When Atomic's numbers disagree with a public index, Atomic's evals win. **Last reviewed: 2026-07-17.**
+No single benchmark is the source of truth. Use these as inputs and validate against Atomic's own workflow evals — public suites test different task distributions than real engineering loops. When Atomic's numbers disagree with a public index, Atomic's evals win. **Last reviewed: 2026-08-16.**
 </Warning>
 
 ## The two sources at a glance
@@ -32,7 +32,7 @@ Artificial Analysis separates performance by benchmark, which lets a workflow pi
 
 ### Composite indices
 
-- **Intelligence Index (v4.1)** — composite of the nine evaluations below. Use as a first-pass filter when a new model appears.
+- **Intelligence Index (v4.1.1)** — composite of the nine evaluations below. Use as a first-pass filter when a new model appears.
 - **Coding Index** — coding-weighted sub-index. Cross-check against DeepSWE.
 - **Agentic Index** — tool use, planning, autonomy, complex problem solving. The best AA signal for orchestrator and reviewer roles.
 
@@ -53,6 +53,21 @@ Artificial Analysis separates performance by benchmark, which lets a workflow pi
 ### Capability indices
 
 Artificial Analysis also publishes per-domain capability indices — **Agentic, Coding, Finance & Accounting, Strategy & Ops, Legal, Healthcare & Medical, Engineering, Economics**. When a workflow is domain-specific, pick by the matching capability index rather than the general Intelligence Index.
+
+## Current cross-check: Grok 4.6
+
+The [Artificial Analysis Grok 4.6 profile](https://artificialanalysis.ai/models/grok-4-6) and its [benchmark analysis](https://artificialanalysis.ai/articles/grok-4-6-benchmarks-and-analysis) show why a model can remain a useful agentic fallback even when another model dominates it on DeepSWE cost:
+
+| Measure [Grok 4.6 high] | Result | Role signal |
+| --- | --- | --- |
+| Intelligence Index v4.1.1 | 61 | Frontier-level cross-domain intelligence |
+| [GDPval-AA v2](https://artificialanalysis.ai/evaluations/gdpval-aa) | 1746 live Elo | Real-world agentic knowledge work |
+| τ³-Banking | 50.7% | Multi-turn tool use |
+| Terminal-Bench v2.1 | 88.4% | Terminal-based software work |
+| AA-Briefcase | 1577 Elo | Long-horizon analytical and presentation work |
+| Intelligence Index task cost | $0.84 | Intelligence-cost efficiency |
+
+Artificial Analysis pages are live and may revise Elo or rank without changing a model ID. Record the access date and link the live result rather than copying an older vendor launch table.
 
 ## Role → benchmark map
 
