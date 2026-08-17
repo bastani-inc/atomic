@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `pi.awaitUserDecision(label, reason)` to the public extension API. Extensions can declare that the agent is waiting on a person for a wait the host cannot otherwise see. It returns a `UserBlock`, the only handle that can end that block; `release()` is idempotent and safe in a `finally`. Reasons are `"dialog"`, `"project_trust"`, `"workflow_prompt"`, and `"supervisor_ask"`; blocks are reference counted, and the oldest open block's label is the current wait. There is deliberately no release-by-id, release-by-label, or release-all operation ([#2210](https://github.com/bastani-inc/atomic/issues/2210)).
+- Added `agent_blocked` and `agent_unblocked` extension events. They fire when a user-decision block opens or closes and carry its id, label, reason, the number of blocks still open, and the oldest still-open label. Events are delivered through the session's extension runner in lifecycle order, waiting for each event's handlers before delivering the next, allowing extensions to observe waits opened with `pi.awaitUserDecision()` ([#2210](https://github.com/bastani-inc/atomic/issues/2210)).
+
 ## [0.9.14] - 2026-08-19
 
 Cumulative release of the `0.9.14-alpha.1` – `0.9.14-alpha.5` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

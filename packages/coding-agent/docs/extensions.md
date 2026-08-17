@@ -629,6 +629,40 @@ pi.on("agent_settled", async (_event, ctx) => {
 });
 ```
 
+#### agent_blocked / agent_unblocked
+
+Fired when the agent starts and stops waiting on a person. An extension can open
+a block for a wait Atomic cannot otherwise see with `pi.awaitUserDecision()`.
+Blocks are reference counted, and the oldest open block's label is the one
+presented as the current wait.
+
+```typescript
+pi.on("agent_blocked", async (event, ctx) => {
+  // event.blockId    - identifier of the block that opened
+  // event.label      - short label for this block
+  // event.reason     - "dialog" | "project_trust" | "workflow_prompt" | "supervisor_ask"
+  // event.openBlocks - number of blocks open, at least 1
+  // event.activeLabel - label of the oldest open block
+});
+
+pi.on("agent_unblocked", async (event, ctx) => {
+  // event.blockId    - identifier of the block that closed
+  // event.label      - short label for this block
+  // event.reason     - reason for the block that closed
+  // event.openBlocks - blocks still open, 0 when the agent is free again
+  // event.activeLabel - oldest still-open label, undefined when none remain
+});
+```
+
+These events are delivered through the session's extension runner. A block
+opened before its extension handler is registered has no handler to receive the
+event; register handlers during the extension factory before opening blocks.
+Within one runner, events are delivered in lifecycle order; each event waits for
+its handlers before the next event is delivered.
+Treat `event.openBlocks` as the authoritative count rather than pairing the two
+events: a runner attached while a block is already open receives no replay and
+can see the release without the corresponding open.
+
 #### turn_start / turn_end
 
 Fired for each turn (one LLM response + tool calls).
@@ -1842,6 +1876,32 @@ Get or set the thinking level. Level is clamped to model capabilities (non-reaso
 const current = pi.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 pi.setThinkingLevel("high");
 ```
+
+### pi.awaitUserDecision(label, reason)
+
+Declare that the agent is waiting on a person for a wait Atomic cannot otherwise
+see. Returns a `UserBlock`, the only handle that can end the block.
+
+```typescript
+const block = pi.awaitUserDecision("Approve deploy?", "dialog");
+try {
+  await myOwnPromptComponent();
+} finally {
+  block.release();
+}
+```
+
+`reason` is one of `"dialog"`, `"project_trust"`, `"workflow_prompt"`, or
+`"supervisor_ask"`. `release()` is idempotent, so calling it in a `finally` is
+correct even when the wait was cancelled or threw.
+
+Blocks are reference counted: opening a second wait holds two blocks, and the
+agent leaves the blocked state only when the last one releases. The oldest open
+block's label is the one reported as the current wait.
+
+There is deliberately no release-by-id, release-by-label, or release-all call.
+A block can only be ended by the code that opened it, so one extension can never
+end another's wait.
 
 ### pi.events
 

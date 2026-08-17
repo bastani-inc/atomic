@@ -43,12 +43,14 @@ export { ExtensionRunner } from "./runner.ts";
 export { isStaleExtensionContextError, STALE_EXTENSION_CONTEXT_MARKER } from "./stale-context.ts";
 export type {
 	AfterProviderResponseEvent,
+	AgentBlockedEvent,
 	AgentEndEvent,
 	AgentSettledEvent,
 	AgentStartEvent,
 	// Re-exports
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	AgentUnblockedEvent,
 	AppendEntryHandler,
 	// App keybindings (for custom editors)
 	AppKeybinding,
@@ -204,6 +206,12 @@ export type {
 	// Events - User Bash
 	UserBashEvent,
 	UserBashEventResult,
+	// User decision blocks
+	UserBlock,
+	UserBlockChange,
+	UserBlockListener,
+	UserBlockReason,
+	UserBlockSnapshot,
 	WidgetPlacement,
 	WorkflowStageOrchestrationContext,
 	WorkingIndicatorOptions,
