@@ -57,7 +57,7 @@ jobs:
     steps:
       - name: Install cargo-xwin
         timeout-minutes: 3
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
+        uses: taiki-e/install-action@b6b84cf49ebfe0176417bdce007c624f0db37f20 # v2.86.2
         with:
           tool: cargo-xwin@0.23.0
       - name: Resolve MSVC CRT cache directory
