@@ -1,11 +1,25 @@
 import { canonicalEventBusFor } from "./event-bus.ts";
 
 /**
- * Session state entries keyed by canonical scope. Weak on the bus: entries
- * live exactly as long as the bus they serve, and every facade over that bus
- * shares one entry map.
+ * Process-global store for session state, shared by duplicate host-module
+ * instances. The `@1` suffix versions the stored WeakMap shape.
  */
-const sessionStateByScope = new WeakMap<object, Map<string, object>>();
+export const EXTENSION_SESSION_STATE_KEY = Symbol.for("atomic-coding-agent/extension-session-state@1");
+
+type SessionStateByScope = WeakMap<object, Map<string, object>>;
+
+function sessionStateBag(): Record<symbol, SessionStateByScope | undefined> {
+	return globalThis as typeof globalThis & Record<symbol, SessionStateByScope | undefined>;
+}
+
+function getSessionStateByScope(): SessionStateByScope {
+	const bag = sessionStateBag();
+	const existing = bag[EXTENSION_SESSION_STATE_KEY];
+	if (existing !== undefined) return existing;
+	const created = new WeakMap<object, Map<string, object>>();
+	bag[EXTENSION_SESSION_STATE_KEY] = created;
+	return created;
+}
 
 /**
  * Return the session-scoped state registered for `(scope, key)`, creating it
@@ -30,10 +44,11 @@ const sessionStateByScope = new WeakMap<object, Map<string, object>>();
  */
 export function sessionScopedExtensionState<T extends object>(scope: object, key: string, create: () => T): T {
 	const canonicalScope = canonicalEventBusFor(scope);
-	let entries = sessionStateByScope.get(canonicalScope);
+	const stateByScope = getSessionStateByScope();
+	let entries = stateByScope.get(canonicalScope);
 	if (!entries) {
 		entries = new Map<string, object>();
-		sessionStateByScope.set(canonicalScope, entries);
+		stateByScope.set(canonicalScope, entries);
 	}
 	const existing = entries.get(key);
 	if (existing !== undefined) return existing as T;

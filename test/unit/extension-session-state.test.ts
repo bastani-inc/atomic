@@ -18,6 +18,8 @@ import {
 	registerCanonicalEventBus,
 } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { sessionScopedExtensionState } from "../../packages/coding-agent/src/core/extension-session-state.ts";
+// @ts-expect-error The query intentionally creates a second host-module instance.
+import { sessionScopedExtensionState as duplicatedSessionScopedExtensionState } from "../../packages/coding-agent/src/core/extension-session-state.ts?duplicate=extension-session-state-test";
 import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
 
@@ -94,6 +96,22 @@ test("sessionScopedExtensionState calls create exactly once per (scope, key) pai
 
 	assert.equal(calls, 1);
 	assert.equal(state.ordinal, 1);
+});
+
+test("duplicate host module instances share state for the identical scope and key", () => {
+	const scope = createEventBus();
+	const first = sessionScopedExtensionState(scope, "duplicate-host:v1", () => ({ owner: "first" }));
+	let duplicateFactoryCalls = 0;
+
+	const rebound = duplicatedSessionScopedExtensionState(scope, "duplicate-host:v1", () => {
+		duplicateFactoryCalls += 1;
+		return { owner: "duplicate" };
+	});
+
+	assert.notEqual(duplicatedSessionScopedExtensionState, sessionScopedExtensionState);
+	assert.equal(rebound, first);
+	assert.equal(rebound.owner, "first");
+	assert.equal(duplicateFactoryCalls, 0);
 });
 
 test("sessionScopedExtensionState keys distinct scopes apart", () => {
