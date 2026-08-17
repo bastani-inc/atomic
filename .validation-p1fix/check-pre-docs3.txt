@@ -1,0 +1,9 @@
+npm notice run check
+npm notice run biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap
+Checked 2562 files in 627ms. No fixes applied.
+npm notice run typecheck
+npm notice run tsc --noEmit && npm --workspace=@bastani/atomic run typecheck
+packages/coding-agent/src/core/extensions/user-blocks.ts(129,28): error TS2345: Argument of type '{ type: "agent_blocked"; blockId: number; label: string; reason: UserBlockReason; openBlocks: number; activeLabel: string | undefined; }' is not assignable to parameter of type 'UserBlockChange'.
+  Types of property 'activeLabel' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.

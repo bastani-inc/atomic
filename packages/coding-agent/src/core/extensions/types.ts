@@ -20,6 +20,7 @@ export type { ScopedModel } from "../model-resolver.ts";
 export type { BuildSystemPromptOptions } from "../system-prompt.ts";
 export type * from "./agent-events.ts";
 export type * from "./api-types.ts";
+export type * from "./block-types.js";
 export type * from "./command-types.ts";
 export type * from "./context-types.ts";
 export type * from "./event-results.ts";

@@ -1,0 +1,10 @@
+$ grep -R "createExtensionAPI" -n packages/coding-agent/src/core/extensions/loader-core.ts
+7:import { createExtensionAPI } from "./loader-api.ts";
+67:		const api = createExtensionAPI(
+100:	const api = createExtensionAPI(
+$ grep -R "beginUserBlockLoad" -n packages/coding-agent/src/core/resource-loader-*.ts
+packages/coding-agent/src/core/resource-loader-extensions.ts:7:import { beginUserBlockLoad } from "./extensions/user-blocks.js";
+packages/coding-agent/src/core/resource-loader-extensions.ts:25:	beginUserBlockLoad(state.eventBus);
+packages/coding-agent/src/core/resource-loader-reload.ts:7:import { beginUserBlockLoad } from "./extensions/user-blocks.js";
+packages/coding-agent/src/core/resource-loader-reload.ts:100:	beginUserBlockLoad(state.eventBus);
+Boundary is at loadProjectTrustExtensions/loadFinalExtensionSet, each once per outer generation; createExtensionAPI is per path/factory.

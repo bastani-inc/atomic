@@ -1,0 +1,11 @@
+npm notice run check
+npm notice run biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap
+Checked 2562 files in 659ms. No fixes applied.
+npm notice run typecheck
+npm notice run tsc --noEmit && npm --workspace=@bastani/atomic run typecheck
+npm notice run @bastani/atomic@0.0.0 typecheck
+npm notice run tsgo -p tsconfig.build.json --noEmit
+npm notice run check:shrinkwrap
+npm notice run node scripts/generate-coding-agent-shrinkwrap.mjs --check
+packages/coding-agent/npm-shrinkwrap.json is up to date.
+[exit=0]

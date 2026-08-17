@@ -1,0 +1,15 @@
+# Wiring regression: beginUserBlockLoad(eventBus) in loader-discovery.ts:115 restored; no production call disabled.
+$ npm run test --workspace=@bastani/atomic -- extensions-user-blocks -t "replays transient factory lifecycles on a reload generation"
+npm notice run @bastani/atomic@0.0.0 test
+npm notice run vitest --run extensions-user-blocks -t replays transient factory lifecycles on a reload generation
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90m/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent[39m
+
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-user-blocks.test.ts [2m([22m[2m17 tests[22m[2m | [22m[33m16 skipped[39m[2m)[22m[32m 64[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m1 passed[39m[22m[2m | [22m[33m16 skipped[39m[90m (17)[39m
+[2m   Start at [22m 02:22:49
+[2m   Duration [22m 1.84s[2m (transform 1.18s, setup 0ms, import 1.71s, tests 64ms, environment 0ms)[22m
+
+[exit=0]

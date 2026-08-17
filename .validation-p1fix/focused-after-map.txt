@@ -1,0 +1,49 @@
+npm notice run @bastani/atomic@0.0.0 test
+npm notice run vitest --run extensions-user-blocks
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90m/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent[39m
+
+ [31m❯[39m [30m[46m agent [49m[39m test/extensions-user-blocks.test.ts [2m([22m[2m14 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 5455[2mms[22m[39m
+     [32m✓[39m refcounts blocks and lets the oldest label win[32m 1[2mms[22m[39m
+     [32m✓[39m promotes the next oldest when the oldest releases first[32m 0[2mms[22m[39m
+     [32m✓[39m has an idempotent release that is safe in a finally[32m 0[2mms[22m[39m
+     [32m✓[39m carries the reason sum type through open and release[32m 0[2mms[22m[39m
+     [32m✓[39m reports open counts and the active label on every change[32m 0[2mms[22m[39m
+     [32m✓[39m exposes no way to end a block without its handle[32m 0[2mms[22m[39m
+     [32m✓[39m contains a throwing subscriber[32m 0[2mms[22m[39m
+     [32m✓[39m isolates concurrent buses while replaying an open block to a same-bus successor[32m 62[2mms[22m[39m
+     [32m✓[39m delivers a factory-opened block exactly once in lifecycle order[32m 18[2mms[22m[39m
+     [32m✓[39m publishes agent_blocked and agent_unblocked to extension handlers[32m 48[2mms[22m[39m
+     [32m✓[39m serializes block events for async handlers[32m 168[2mms[22m[39m
+[31m     [31m×[31m detaches outgoing runners when the runtime is rebuilt[39m[33m 5012[2mms[22m[39m
+     [32m✓[39m stops publishing to a detached runner[32m 74[2mms[22m[39m
+     [32m✓[39m stops publishing after invalidation[32m 69[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m [30m[46m agent [49m[39m test/extensions-user-blocks.test.ts[2m > [22magent_blocked and agent_unblocked events[2m > [22mdetaches outgoing runners when the runtime is rebuilt
+[31m[1mError[22m: timed out waiting for rebuilt block events[39m
+[36m [2m❯[22m waitFor test/extensions-user-blocks.test.ts:[2m173:37[22m[39m
+    [90m171|[39m   [35mconst[39m deadline [33m=[39m [33mDate[39m[33m.[39m[34mnow[39m() [33m+[39m [33mBLOCK_EVENT_WAIT_TIMEOUT_MS[39m[33m;[39m
+    [90m172|[39m   [35mwhile[39m ([33m![39m[34mpredicate[39m()) {
+    [90m173|[39m    if (Date.now() > deadline) throw new Error(`timed out waiting for $…
+    [90m   |[39m                                     [31m^[39m
+    [90m174|[39m    [35mawait[39m [35mnew[39m [33mPromise[39m((resolve) [33m=>[39m [34msetTimeout[39m(resolve[33m,[39m [34m5[39m))[33m;[39m
+    [90m175|[39m   }
+[90m [2m❯[22m test/extensions-user-blocks.test.ts:[2m331:4[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m13 passed[39m[22m[90m (14)[39m
+[2m   Start at [22m 00:02:30
+[2m   Duration [22m 7.32s[2m (transform 1.22s, setup 0ms, import 1.78s, tests 5.45s, environment 0ms)[22m
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent
+npm error workspace @bastani/atomic@0.0.0
+npm error location /Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent
+npm error command failed
+npm error command sh -c vitest --run extensions-user-blocks

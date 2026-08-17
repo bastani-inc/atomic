@@ -1,0 +1,16 @@
+ packages/coding-agent/CHANGELOG.md                 |   5 +
+ packages/coding-agent/docs/extensions.md           |  64 ++++
+ .../src/core/agent-session-tool-registry.ts        |   4 +
+ .../coding-agent/src/core/extensions/api-types.ts  |  26 ++
+ .../src/core/extensions/block-types.ts             |  77 ++++
+ .../src/core/extensions/event-types.ts             |   3 +
+ packages/coding-agent/src/core/extensions/index.ts |   8 +
+ .../coding-agent/src/core/extensions/loader-api.ts |   8 +
+ .../coding-agent/src/core/extensions/runner.ts     |  37 ++
+ .../src/core/extensions/runtime-types.ts           |   5 +
+ packages/coding-agent/src/core/extensions/types.ts |   1 +
+ .../src/core/extensions/user-blocks.ts             | 171 +++++++++
+ packages/coding-agent/src/index-extensions.ts      |   7 +
+ .../test/extensions-user-blocks.test.ts            | 393 +++++++++++++++++++++
+ test/unit/extension-block-door-public-api.test.ts  |  50 +++
+ 15 files changed, 859 insertions(+)

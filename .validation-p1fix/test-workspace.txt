@@ -1,0 +1,682 @@
+npm notice run @bastani/atomic@0.0.0 test
+npm notice run vitest --run
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90m/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent[39m
+
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5303-bash-output-truncation.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 2039[2mms[22m[39m
+     [33m[2m✓[22m[39m captures output emitted after exit while a detached child holds stdout open [33m 1917[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/footer-data-provider.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 2281[2mms[22m[39m
+     [33m[2m✓[22m[39m does not notify listeners when reftable updates keep the same branch [33m 514[2mms[22m[39m
+     [33m[2m✓[22m[39m debounces rapid reftable updates into a single async refresh [33m 1198[2mms[22m[39m
+     [33m[2m✓[22m[39m updates the cached branch when the reftable directory changes [33m 529[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/ai-agent-env.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 2240[2mms[22m[39m
+     [33m[2m✓[22m[39m the CLI entry gives its spawned child the Atomic attribution [33m 1191[2mms[22m[39m
+     [33m[2m✓[22m[39m the RPC entry gives its spawned child the Atomic attribution [33m 798[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tool-result-images.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 2148[2mms[22m[39m
+   [33m[2m✓[22m[39m normalizes oversized tool-result images before history [33m 1909[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257837168-iu5a47qlekc/remote
+   ebb3241..1c2f054  main       -> origin/main
+HEAD is now at 1c2f054 Second commit
+npm error code EALLOWSCRIPTS
+npm error --allow-scripts is not allowed in project-scoped installs. Add the entries to the "allowScripts" field in package.json, or to .npmrc, instead.
+npm error A complete log of this run can be found in: /Users/akgunay/.cache/npm/_logs/2026-08-20T20_30_37_857Z-debug-0.log
+Cloning into '/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/pm-test-1787257838265-fh1wwfzhtlv/agent/git/github.com/nonexistent/repo'...
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/1223-startup-lazy-builtins.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 3768[2mms[22m[39m
+     [33m[2m✓[22m[39m executes cold registration without importing heavy provider modules [33m 1928[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps the MCP proxy fallback until cached direct tools are available [33m 1666[2mms[22m[39m
+remote: Repository not found.
+fatal: repository 'https://github.com/nonexistent/repo/' not found
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-source-settings.suite.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 1268[2mms[22m[39m
+       [33m[2m✓[22m[39m should emit progress events on install attempt [33m 563[2mms[22m[39m
+       [33m[2m✓[22m[39m should recognize github URLs without git: prefix [33m 680[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/1704-lazy-tool-initialization.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 3915[2mms[22m[39m
+     [33m[2m✓[22m[39m replays a failed Intercom lifecycle before a retry executes [33m 498[2mms[22m[39m
+     [33m[2m✓[22m[39m single-flights a later failed Intercom replay before concurrent public tools execute [33m 819[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects cold Intercom calls after shutdown without synthesizing a replacement session [33m 735[2mms[22m[39m
+     [33m[2m✓[22m[39m retries failed lazy Intercom initialization once for concurrent callers [33m 590[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/1704-lazy-tool-lifecycle-round2.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 4191[2mms[22m[39m
+     [33m[2m✓[22m[39m replaces a loaded Intercom candidate after shutdown and restart [33m 507[2mms[22m[39m
+     [33m[2m✓[22m[39m does not let an in-flight Intercom candidate cross shutdown and restart [33m 864[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects a loaded Intercom invocation when its replay lease is retired [33m 841[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps replacement Intercom work behind retired replay and shutdown cleanup [33m 754[2mms[22m[39m
+     [33m[2m✓[22m[39m serializes Intercom replay before matching ends and newer model selection [33m 523[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257838135-egh458l8wb/remote
+   77c6d66..7ee18c8  main       -> origin/main
+HEAD is now at 7ee18c8 Fourth commit
+ [32m✓[39m [30m[46m agent [49m[39m test/startup-session-name.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 2155[2mms[22m[39m
+     [33m[2m✓[22m[39m sets --name on the selected session before runtime model validation [33m 1395[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects empty --name values without appending session metadata [33m 759[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/llama-extension.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 1017[2mms[22m[39m
+     [33m[2m✓[22m[39m loads with SSE progress and waits for the loaded catalog state [33m 358[2mms[22m[39m
+     [33m[2m✓[22m[39m downloads with byte progress and returns the refreshed catalog [33m 600[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/file-operations.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 1057[2mms[22m[39m
+     [33m[2m✓[22m[39m opens session files larger than Node's max string length [33m 967[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-client-timeout-policy.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 899[2mms[22m[39m
+     [33m[2m✓[22m[39m does not time out a long-lived prompt held open far beyond the bounded deadline [33m 613[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-wire-process.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 1253[2mms[22m[39m
+     [33m[2m✓[22m[39m preserves ordered deltas that reconstruct the final assistant message [33m 1251[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/read-sqlite-search-meta-parity.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 1054[2mms[22m[39m
+     [33m[2m✓[22m[39m caps raw q rows and exposes read metadata [33m 743[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-selector-tools.test.ts [2m([22m[2m32 tests[22m[2m)[22m[33m 1217[2mms[22m[39m
+     [33m[2m✓[22m[39m smoke-tests SQLite selector edge cases under Bun runtime [33m 728[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257840581-xyt58z6v45e/remote
+   7f667a9..403799f  main       -> origin/main
+HEAD is now at 403799f Commit to keep
+ [32m✓[39m [30m[46m agent [49m[39m test/stdout-cleanliness.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 6512[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps plain --help on stdout without project startup chatter [33m 1562[2mms[22m[39m
+     [33m[2m✓[22m[39m honors defaultProjectTrust=always before startup project migrations [33m 1412[2mms[22m[39m
+     [33m[2m✓[22m[39m runs trusted project migrations after first-run extension approval [33m 1309[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps stdout empty for --mode json --help while routing startup chatter to stderr [33m 1040[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps stdout empty for -p --help while routing startup chatter to stderr [33m 1094[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-id-readonly.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 6536[2mms[22m[39m
+     [33m[2m✓[22m[39m does not reserve a session for --help [33m 1196[2mms[22m[39m
+     [33m[2m✓[22m[39m does not reserve a session for --list-models [33m 951[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects an existing fork target session id [33m 859[2mms[22m[39m
+     [33m[2m✓[22m[39m warns when an exact session id is missing and a new session is created [33m 1213[2mms[22m[39m
+     [33m[2m✓[22m[39m does not warn when an exact session id exists [33m 1221[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects ids invalid under SessionManager rules without stack traces [33m 1094[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257840581-xyt58z6v45e/remote
+ + 403799f...ae0b3cb main       -> origin/main  (forced update)
+HEAD is now at ae0b3cb Rewritten commit
+ [32m✓[39m [30m[46m agent [49m[39m test/bash-pty-native.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 760[2mms[22m[39m
+     [33m[2m✓[22m[39m runs stdin-transport shells without feeding synthetic exit [33m 508[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/unsupported-provider-headless.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 6417[2mms[22m[39m
+     [33m[2m✓[22m[39m text print fails before prompting and keeps stdout clean [33m 1071[2mms[22m[39m
+     [33m[2m✓[22m[39m json print fails before prompting and keeps stdout clean [33m 977[2mms[22m[39m
+     [33m[2m✓[22m[39m text print classifies a persisted stale model plus unsupported default before prompting [33m 928[2mms[22m[39m
+     [33m[2m✓[22m[39m json print classifies a persisted stale model plus unsupported default before prompting [33m 991[2mms[22m[39m
+     [33m[2m✓[22m[39m RPC keeps persisted stale state recoverable through explicit set_model [33m 759[2mms[22m[39m
+     [33m[2m✓[22m[39m RPC cycle_model clears persisted unsupported lock before the next prompt [33m 924[2mms[22m[39m
+     [33m[2m✓[22m[39m RPC remains live and accepts set_model recovery before prompting [33m 768[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-loader-virtual-modules.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 7061[2mms[22m[39m
+     [33m[2m✓[22m[39m keys root and compat specifiers to the same virtual module object [33m 7054[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-temp-cleanup.test.ts [2m([22m[2m36 tests[22m[2m)[22m[33m 870[2mms[22m[39m
+     [33m[2m✓[22m[39m reaps the same storage once the session's lease is released [33m 640[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-loader-01-01.suite.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 892[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257841977-m536loamyb/remote
+   33c5082..bbfa003  main       -> origin/main
+HEAD is now at bbfa003 Commit B
+ [32m✓[39m [30m[46m agent [49m[39m test/sdk-stream-options.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 820[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257841977-m536loamyb/remote
+ + bbfa003...1324e91 main       -> origin/main  (forced update)
+ [32m✓[39m [30m[46m agent [49m[39m test/2328-skill-candidate-catalog.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 567[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-prompt-response-semantics.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 839[2mms[22m[39m
+HEAD is now at 1324e91 New commit replacing A and B
+ [32m✓[39m [30m[46m agent [49m[39m test/1955-extension-overlap.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 474[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tools-04-01.suite.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 1178[2mms[22m[39m
+       [33m[2m✓[22m[39m should respect timeout [33m 1007[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-scoped-models-refresh.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 723[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/1728-web-access-native-heavy-import.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 646[2mms[22m[39m
+     [33m[2m✓[22m[39m loads the real heavy graph before returning normal lazy-tool validation errors [33m 645[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/sdk-openrouter-attribution.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 1057[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257843147-c2fl08oa8n/remote
+   2c7a05c..47ed8c2  main       -> origin/main
+HEAD is now at 47ed8c2 v3
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-runtime-01.suite.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 898[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/config.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 723[2mms[22m[39m
+     [33m[2m✓[22m[39m detects pnpm from Windows .pnpm install paths [33m 564[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257843147-c2fl08oa8n/remote
+ + 47ed8c2...d50dafe main       -> origin/main  (forced update)
+HEAD is now at d50dafe Rewrite B
+ [32m✓[39m [30m[46m agent [49m[39m test/search-tool-compatibility.test.ts [2m([22m[2m49 tests[22m[2m)[22m[33m 1024[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/sdk-tool-exclusions.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 1063[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-summary.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 2893[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/ask-user-question-transcript-scroll.test.ts [2m([22m[2m76 tests[22m[2m)[22m[33m 1133[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/sdk-session-manager.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 1862[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/file-mutation-queue.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 502[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257844774-2wja451wuvb/remote
+ * branch            708641e94597f3f36ae29336826a041cee8723e1 -> FETCH_HEAD
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-tool-result-images.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 687[2mms[22m[39m
+   [33m[2m✓[22m[39m resizes builtin and extension-injected tool images before history [33m 319[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/fetch-url-pipeline.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 10551[2mms[22m[39m
+   [33m[2m✓[22m[39m pins the DNS-resolved address for hostname fetches (no rebinding at connect) [33m 10535[2mms[22m[39m
+Launching external editor: "/opt/homebrew/Cellar/node/26.7.0/bin/node" "/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent/test/fixtures/fake-external-editor.mjs" "/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-external-editor-test-9F4dbC/capture output.json"
+atomic will resume when the editor exits.
+Launching external editor: "/opt/homebrew/Cellar/node/26.7.0/bin/node" "/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent/test/fixtures/fake-external-editor.mjs" "/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-external-editor-test-G5zEnl/capture output.json" --fail
+atomic will resume when the editor exits.
+Launching external editor: "/opt/homebrew/Cellar/node/26.7.0/bin/node" "/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent/test/fixtures/fake-external-editor.mjs" "/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-external-editor-test-hYqonB/capture output.json" --empty
+atomic will resume when the editor exits.
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257845515-2pqcl3ssxao/remote
+ * tag               v2         -> FETCH_HEAD
+Launching external editor: "/opt/homebrew/Cellar/node/26.7.0/bin/node" "/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent/test/fixtures/fake-external-editor.mjs" "/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic editor capture icrGBG/capture output.json"
+atomic will resume when the editor exits.
+HEAD is now at bd45ba2 Second commit
+Launching external editor: "/opt/homebrew/Cellar/node/26.7.0/bin/node" "/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent/test/fixtures/fake-external-editor.mjs" "/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-host-editor-test-gxQ6C1/capture.json" --fail
+atomic will resume when the editor exits.
+Launching external editor: "/opt/homebrew/Cellar/node/26.7.0/bin/node" "/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent/test/fixtures/fake-external-editor.mjs" "/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-empty-editor-test-3VxvFw/capture.json" --empty
+atomic will resume when the editor exits.
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-resolve.suite.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 650[2mms[22m[39m
+Launching external editor: "/opt/homebrew/Cellar/node/26.7.0/bin/node" "/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent/test/fixtures/fake-external-editor.mjs" "/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-component-editor-test-izFxXn/capture.json"
+atomic will resume when the editor exits.
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257845515-2pqcl3ssxao/remote
+ * tag               v2         -> FETCH_HEAD
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-input-event.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 1105[2mms[22m[39m
+     [33m[2m✓[22m[39m returns continue when no handlers, undefined return, or explicit continue [33m 308[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/external-editor.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 425[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/image-processing.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 454[2mms[22m[39m
+HEAD is now at bd45ba2 Second commit
+ [32m✓[39m [30m[46m agent [49m[39m test/search-pagination-feedback.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 643[2mms[22m[39m
+     [33m[2m✓[22m[39m surfaces the internal collection cap when skip moves beyond it [33m 403[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-user-blocks.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 840[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-command-paths-02.suite.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 439[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-api-key-resolution.suite.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 441[2mms[22m[39m
+From /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-git-update-test-1787257847313-eewpvn92lce/remote
+   f319eda..7b9e389  main       -> origin/main
+ [32m✓[39m [30m[46m agent [49m[39m test/compaction-reentrancy.test.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 659[2mms[22m[39m
+HEAD is now at 7b9e389 Second commit
+ [32m✓[39m [30m[46m agent [49m[39m test/git-update.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 11565[2mms[22m[39m
+       [33m[2m✓[22m[39m should skip reset, clean, and install when already up to date [33m 745[2mms[22m[39m
+       [33m[2m✓[22m[39m should update to latest commit when remote has new commits [33m 967[2mms[22m[39m
+       [33m[2m✓[22m[39m should handle multiple commits ahead [33m 1204[2mms[22m[39m
+       [33m[2m✓[22m[39m should update even when local checkout has no upstream [33m 1241[2mms[22m[39m
+       [33m[2m✓[22m[39m should recover when remote history is rewritten [33m 1396[2mms[22m[39m
+       [33m[2m✓[22m[39m should recover when local commit no longer exists in remote [33m 1170[2mms[22m[39m
+       [33m[2m✓[22m[39m should handle complete history rewrite [33m 1627[2mms[22m[39m
+       [33m[2m✓[22m[39m should not move pinned git sources past their configured ref [33m 741[2mms[22m[39m
+       [33m[2m✓[22m[39m should checkout the configured pinned git ref during full and targeted updates [33m 1111[2mms[22m[39m
+       [33m[2m✓[22m[39m should not reset an annotated tag checkout that already matches the configured ref [33m 663[2mms[22m[39m
+       [33m[2m✓[22m[39m should not install locally when source is only registered globally [33m 674[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-runtime-events.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 642[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/search-tool-parity-edges.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 467[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps verbose-regex comments in native-unavailable ranged search [33m 342[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-patterns.suite.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 797[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2781-skill-collision-precedence.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 446[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-loader-01-02.suite.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 1239[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/bash-session-metadata.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 787[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/bun-cli-oauth-bundle.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 276[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-force-patterns.suite.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 528[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-discovery.suite.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 443[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-graph-manifest-reuse.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 753[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/sdk-codex-fast-mode.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 1291[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-discovery.test.ts [2m([22m[2m30 tests[22m[2m)[22m[33m 759[2mms[22m[39m
+     [33m[2m✓[22m[39m package.json with pi field takes precedence over index.ts [33m 345[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2860-replaced-session-context.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 839[2mms[22m[39m
+     [33m[2m✓[22m[39m rebinds before withSession, targets the replacement session, and invalidates stale pi/ctx [33m 339[2mms[22m[39m
+     [33m[2m✓[22m[39m supports withSession for switchSession [33m 346[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-bash-streaming.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 342[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/auth-storage-02.suite.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 238[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-npm-command-managed.suite.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 441[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-dynamic-providers.suite.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 457[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-loader-05-01.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 462[2mms[22m[39m
+       [33m[2m✓[22m[39m should detect tool conflicts between extensions [33m 326[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-retry.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 343[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-dynamic-tools.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 437[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/hashline-tools.test.ts [2m([22m[2m55 tests[22m[2m)[22m[33m 715[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-command-model-refresh.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 477[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tool-execution-component.test.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 640[2mms[22m[39m
+     [33m[2m✓[22m[39m bash renderer does not duplicate final full output truncation details [33m 572[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-client-process-exit.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 266[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-updates.suite.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 350[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-runtime-02.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 490[2mms[22m[39m
+     [33m[2m✓[22m[39m updates the runtime session cwd on cross-cwd session replacement [33m 324[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/auth-storage-01.suite.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 255[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2791-fswatch-error-crash.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 236[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-offline-resolve.suite.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 373[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-bash-session-replacement.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 435[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/no-builtin-tools-preserves-extension-tools.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 367[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-package-filters.suite.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 300[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/queued-message-escape-ask-user-question.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 319[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-loader-02-01.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 486[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-pattern-arrays.suite.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 364[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-dynamic-provider.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 662[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-retry-events.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 387[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-custom-models.suite.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 340[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-extension-sources.suite.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 149[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-concurrent-05.suite.ts [2m([22m[2m1 test[22m[2m)[22m[32m 263[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/test-harness.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 390[2mms[22m[39m
+bun add v1.3.14 (0d9b296a)
+
+installed @mariozechner/clipboard-linux-x64-musl@0.3.9
+installed @mariozechner/clipboard-linux-arm64-musl@0.3.9
+
+2 packages installed [4.00ms]
+bun add v1.3.14 (0d9b296a)
+
+installed @mariozechner/clipboard-darwin-arm64@0.3.9
+installed @mariozechner/clipboard-darwin-x64@0.3.9
+installed @mariozechner/clipboard-linux-x64-gnu@0.3.9
+installed @mariozechner/clipboard-linux-arm64-gnu@0.3.9
+installed @mariozechner/clipboard-win32-x64-msvc@0.3.9
+installed @mariozechner/clipboard-win32-arm64-msvc@0.3.9
+
+6 packages installed [13.00ms]
+ [32m✓[39m [30m[46m agent [49m[39m test/clipboard-native-packaging.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 174[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-loader-04-01.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 318[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/post-tool-compaction-preflight.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 313[2mms[22m[39m
+Installing ./packages/local-package...
+[90mstdout[2m | test/package-command-paths-01.suite.ts[2m > [22m[2mpackage commands[2m > [22m[2mshould persist global relative local package paths relative to settings.json
+[22m[39mInstalled ./packages/local-package
+
+Installing /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/pi-package-commands-1787257853990-wfdvep1eao/local-package/...
+[90mstdout[2m | test/package-command-paths-01.suite.ts[2m > [22m[2mpackage commands[2m > [22m[2mshould remove local packages using a path with a trailing slash
+[22m[39mInstalled /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/pi-package-commands-1787257853990-wfdvep1eao/local-package/
+
+Removing /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/pi-package-commands-1787257853990-wfdvep1eao/local-package/...
+[90mstdout[2m | test/package-command-paths-01.suite.ts[2m > [22m[2mpackage commands[2m > [22m[2mshould remove local packages using a path with a trailing slash
+[22m[39mRemoved /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/pi-package-commands-1787257853990-wfdvep1eao/local-package/
+
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-auto-compaction-queue-01.suite.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 207[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-command-paths-01.suite.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 204[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tools-01-01.suite.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 133[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-deferred-startup-first-prompt.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 237[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-dedup-multifile.suite.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 255[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/paused-queued-transfer.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 245[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-prompt.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 235[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/block-images.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 151[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.82.1-auth.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 243[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/2328-skill-command-resolution.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 197[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-auto-compaction-queue-03.suite.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 238[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-oauth-login.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 227[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-url-read-parity.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 303[2mms[22m[39m
+     [33m[2m✓[22m[39m applies line selectors and reader extraction to URL reads [33m 302[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-refresh-credential-resolution.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 177[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-runner/project-trust.suite.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 235[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-concurrent-01.suite.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 211[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-hot-reload.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 129[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-temp-dir.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 124[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-model-overrides.suite.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 228[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/persisted-output-cap.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 110[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-npm-command-install.suite.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 200[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2835-tools-allowlist-filters-extension-tools.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 274[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2753-reload-stale-resource-settings.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 163[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-base-url-overrides.suite.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 230[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-queue.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 271[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-graph-manifest.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 259[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/read-document-markit.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 278[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/sdk-skills.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 182[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/settings-manager.test.ts [2m([22m[2m34 tests[22m[2m)[22m[32m 210[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-runner/context-error-renderer-flags.suite.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 151[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5905-extension-factory-cache.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 325[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-loader-defer-resources.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 170[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5868-rpc-unknown-command-id.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 166[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-runner/tool-command-collection.suite.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 222[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager-list-cooperative.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 211[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-model-extension.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 216[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/image-process.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 68[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/server/create-harness.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 187[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-prompt-turn-loader-continuity.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 114[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/internal-session-resume-surfaces.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 181[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/admitted-message-recovery-interrupt-race.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 105[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-runner/lifecycle-tool-result.suite.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 195[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-concurrent-02.suite.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 134[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-concurrent-03.suite.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 191[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-provider-runtime-ownership.suite.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 133[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/paused-queued-messages.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 124[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-auto-compaction-queue-02.suite.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 178[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/edit-batch.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 161[2mms[22m[39m
+Launching external editor: /var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic-editor-test-Zk1N0y/editor.sh
+atomic will resume when the editor exits.
+Launching external editor: "/var/folders/zm/2ntf_m951mdb09v_mfyqxvmr0000gn/T/atomic editor test-YL31ae/editor with spaces.sh"
+atomic will resume when the editor exits.
+ [32m✓[39m [30m[46m agent [49m[39m test/local-resource-parity.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 143[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/chat-input-actions.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 94[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-bash-persistence.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 219[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/provider-context-usage.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 87[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/compaction.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 126[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-selector-refresh-status.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 80[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/transferred-interrupt-ownership.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 147[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-loader-03-01.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 97[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-tool-output-redirect.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 159[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-info-modified-timestamp.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 116[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-cost-tiers.suite.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 84[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/bash-interceptor-parity.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 113[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/mermaid.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 93[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-runner/provider-command-handlers.suite.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 135[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/sdk-interrupted-tool-resume.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 79[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.84.1-sampling-params.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 159[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/6904-dns-transport-retry.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 145[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-auth-compatibility.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 135[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/hashline-recovery-read-selectors.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 89[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-temp-protection-lifecycle.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 56[2mms[22m[39m
+[90mstdout[2m | test/config-value-migration.test.ts[2m > [22m[2mconfig value env var syntax migration[2m > [22m[2mmigrates implicit auth references in the legacy .pi agent directory
+[22m[39mWarning: Migrated API key/header environment references to explicit $ENV_VAR syntax. Plain strings will be treated as literals.
+  - auth.json["anthropic"].key: ANTHROPIC_API_KEY -> $ANTHROPIC_API_KEY
+
+[90mstdout[2m | test/config-value-migration.test.ts[2m > [22m[2mconfig value env var syntax migration[2m > [22m[2mpreserves models.json comments and formatting while migrating environment references
+[22m[39mWarning: Migrated API key/header environment references to explicit $ENV_VAR syntax. Plain strings will be treated as literals.
+  - models.json.providers["CUSTOM_API_KEY"].apiKey: CUSTOM_API_KEY -> $CUSTOM_API_KEY
+  - models.json.providers["CUSTOM_API_KEY"].headers["x-api-key"]: HEADER_API_KEY -> $HEADER_API_KEY
+
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2221-json-stream-linear.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 115[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/config-value-migration.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 63[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-runner/shortcut-conflicts.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 159[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-offline-checks.suite.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 135[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/notebook-tool-parity.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 128[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tools-03-01.suite.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 75[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/atomic-working-status.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 107[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-stats.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 64[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-provider-membership.suite.ts [2m([22m[2m1 test[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/theme-builtins.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 86[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-model-routing-offline.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 62[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-cycle-controls.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 79[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/scrollbar-theme.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 69[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/compaction-extensions.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 109[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.83.0-direct-fixes.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 103[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-runtime-refresh-bounds.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 53[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-runtime-auth-options.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 91[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/3217-scoped-model-order.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 133[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-services-model-paths.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 128[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/internal-sessions.test.ts [2m([22m[2m31 tests[22m[2m)[22m[32m 54[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-compaction.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 123[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/trust-manager.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 76[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/expandable-message-hints.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 71[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-provider-credential-save.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 68[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-write-parity-edges.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 134[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-overflow-eviction.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 136[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/paused-queued-late-admission.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 162[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.84.2-fullscreen-search.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 151[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/lax-message-content.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 108[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/queued-message-recovery-window-submission.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 82[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/http-dispatcher.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 80[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-runtime-modify-models-compat.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 92[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/clipboard-image-bmp-conversion.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 53[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-auto-compaction-overflow-await.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.84.2-overlay-viewport-deferral.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 113[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/3302-find-path-glob.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 51[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tools-manager.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 42[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/end-turn-survives-json-and-rpc.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 74[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/3616-settings-inmemory-reload.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 54[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-safety-refusal.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 73[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/7982-json-stream-usage.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 108[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/oauth-cancellation.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 60[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-selector-hardening.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-resolver-initial.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 69[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-engine-session-replacement.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 85[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-concurrent-04.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 92[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-catalog-refresh-config-change.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 108[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/bash-session-temp-output.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 116[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/custom-message-component.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-catalog-refresh-credential-change.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/skills.test.ts [2m([22m[2m28 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/8022-trigger-turn-false.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 89[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/user-message.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5109-exclude-tools.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/6162-extension-active-tools-next-turn.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 70[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/codex-fast-mode.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-status-resources.suite.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 72[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/artifact-protocol.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/3317-network-connection-lost-retry.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 89[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/paused-queued-clear.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 68[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/directory-read-parity.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 39[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/auth-check.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 36[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/trust-selector.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/anthropic-thinking-guard.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-deferred-startup.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 53[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/3686-session-name-event.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 70[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-engine-shutdown.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 63[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-unbounded-frames.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-status-basic.suite.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 52[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5208-late-bash-output.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 36[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/paused-protected-shutdown.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 87[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/self-update-plan.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 38[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/custom-editor-prompt.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 63[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-message-batch.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 30[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/copilot-summary-endpoints.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 59[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tool-expand-hints.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/3303-find-nested-gitignore.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 47[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/settings-manager-bug.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 55[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/notebook-editable.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-selector-path-delete.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 51[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/remote-catalog-provider.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 57[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/codex-session-id-clamp.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 69[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/version-check.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-auth-load-failure.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/baseten-qwen-provider.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5998-blocked-tool-terminate.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 47[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2023-queued-slash-command-followup.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 59[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/assistant-message.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/oauth-selector.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/sdk-shared-model-registry.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-tui.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-catalog-startup-selector-refresh.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-auth.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 30[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-slash-draft-package-load.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/settings-manager-codex-fast-mode.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/3982-message-end-cost-override.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/bash-timeout-validation.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 65[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/models-store.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 42[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/chat-session-host-markdown-transform.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 66[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tree-selector-06-01.suite.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-startup-input.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-fullscreen-input.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 51[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/clipboard-image.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/cloudflare-gateway-binding.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 74[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/paused-queue-abort-failure.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/truncate-to-width.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tools-06-01.suite.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-selector-progressive.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/syntax-highlight.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/provider-oauth-refresh-signal.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/prompt-templates.test.ts [2m([22m[2m87 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/truncated-range-recovery.test.ts [2m([22m[2m43 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/markdown-latex.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/management-http.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-fullscreen-scrollbar.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 53[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/credential-print.test.ts [2m([22m[2m65 tests[22m[2m)[22m[33m 39707[2mms[22m[39m
+     [33m[2m✓[22m[39m writes the API key alone on stdout with one trailing newline [33m 868[2mms[22m[39m
+     [33m[2m✓[22m[39m reports readiness without exposing a configured credential [33m 2831[2mms[22m[39m
+     [33m[2m✓[22m[39m emits a resolved auth-check credential only when explicitly requested [33m 3840[2mms[22m[39m
+     [33m[2m✓[22m[39m refuses fuzzy model credential export without exposing any configured key [33m 889[2mms[22m[39m
+     [33m[2m✓[22m[39m reports expired OAuth credentials as not ready without emitting or rewriting them [33m 2510[2mms[22m[39m
+     [33m[2m✓[22m[39m does not export an OAuth credential that cannot meet the no-refresh safety window [33m 1820[2mms[22m[39m
+     [33m[2m✓[22m[39m distinguishes unavailable providers from invalid readiness commands [33m 4737[2mms[22m[39m
+     [33m[2m✓[22m[39m a reader that closes the pipe never yields a non-zero exit with a credential on stdout [33m 2790[2mms[22m[39m
+     [33m[2m✓[22m[39m a failed auth-check credential write never falls back to readiness output [33m 3003[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps stdout empty and uses a distinct exit code on every failure [33m 5811[2mms[22m[39m
+     [33m[2m✓[22m[39m leaves the stored credential untouched when an OAuth refresh fails [33m 1433[2mms[22m[39m
+     [33m[2m✓[22m[39m renders help under the atomic name and keeps it off the credential stream [33m 2988[2mms[22m[39m
+     [33m[2m✓[22m[39m both subcommands refuse to run without --model [33m 1850[2mms[22m[39m
+     [33m[2m✓[22m[39m --min-expiry is a usage error for print-api-key in every spelling, including after -- [33m 2924[2mms[22m[39m
+     [33m[2m✓[22m[39m stdout stays empty on the ambiguity and minimum-validity exits [33m 937[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/compaction-diagnostics.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-startup-resource-gate.suite.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 39[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/remote-catalog-etag.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.84.2-fullscreen-exit-output.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager-symlink-discovery.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-startup-banner.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 60[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/git-merge-and-resolve-extension.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/verbatim-compaction-core.test.ts [2m([22m[2m30 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/1842-erasable-syntax-build-contract.test.ts [2m([22m[2m109 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/3688-tree-cancel-compacting.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 26[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-runtime-credential-sync.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 41[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/clipboard.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/custom-session-id.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-resolver.test.ts [2m([22m[2m38 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/session-summary-listing.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tools-05-01.suite.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/client/remote-session.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/client/remote-session-lifecycle.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/client/remote-session-ownership.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-selector-rename.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-runtime-cloudflare-compat.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-selector-summary-column.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/custom-editor-history-keybindings.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extension-source-trust-branding.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.84.2-session-name-state.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/fast-mode-selector.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/constrained-sampling-capabilities.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/use-theme-run.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/verbatim-compaction-planning.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 47[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/settings-ui-accessors.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/provider-oauth-login-signal.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/transcript-follow-indicator.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/7979-fallback-tool-output-collapse.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/tree-traversal.test.ts [2m([22m[2m30 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/image-resize-callers.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tools-02-01.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 59[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tool-system-prompt-contributions.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.84.2-selection-copy.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 41[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tree-selector-04-01.suite.ts [2m([22m[2m1 test[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-managed-tool-status.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/first-run-onboarding.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tree-selector-05-01.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/package-manager-ssh.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-auth-login.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tree-selector-02-01.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-status-autocomplete.suite.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-resolver-scope-upstream.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tree-selector-03-01.suite.ts [2m([22m[2m1 test[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/url-ip-guards.test.ts [2m([22m[2m47 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/custom-editor-macos-paste.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/custom-editor-placeholder.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-startup-resource-ordering.test.ts [2m([22m[2m28 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+[90mstdout[2m | test/migrations-config-values.test.ts[2m > [22m[2mproject-trust gated migrations[2m > [22m[2mruns project-local migrations when project trust is allowed
+[22m[39mMigrated Project commands/ → prompts/
+
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.84.2-generic-sgr-release.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/migrations-config-values.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/main-deferred-startup.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/footer-width.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/workflow-agent-dir-isolation.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/output-accumulator-persistence-failure.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 43[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/frontmatter.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/settings-manager-bash-interceptor.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-temp-dir-windows-security.test.ts [2m([22m[2m19 tests[22m[2m | [22m[33m8 skipped[39m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/path-utils.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+done
+ [32m✓[39m [30m[46m agent [49m[39m test/print-mode.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/provider-attribution-headers.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/labels.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/bash-execution-width.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/keybindings-migration.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/theme-controller.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-fullscreen-layout.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5433-extension-oauth-prompt-input.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-catalog-startup-stalled-refresh.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/paths.test.ts [2m([22m[2m22 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-0.82.1-direct-fixes.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/1647-windows-exit-code-race.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/4167-thinking-toggle-pending-tool-render.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/verbatim-compaction-resume.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/system-prompt.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-cwd.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/args.test.ts [2m([22m[2m84 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/plan-mode-utils.test.ts [2m([22m[2m33 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-model-routing-refresh.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/invalid-session-file.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/main-early-input.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-selectors-tui-mode.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/branch-summarization.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-catalog-refresh.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/settings-bom.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tree-selector-01-01.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/6104-find-root-relativization.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/6817-find-windows-path-glob.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/theme-probe-concurrency.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/theme-export.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/footer-codex-fast-mode.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5080-signal-shutdown-extension-cleanup.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tool-definition-wrapper.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/read-error-rendering.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-selector-search.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-startup-latency.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/client/remote-session-boundary.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/ansi-utils.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/save-entry.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/chat-session-host-escape-restore.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/messages.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/build-context-01.suite.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/experimental-tool-strict-mode.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/1955-registration-batching.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/experimental-cli-command.test.ts [2m([22m[2m29 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/main-runtime-api-key.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-status-overlap-labels.suite.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/chat-session-host-compaction-status.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager-label-reset.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/theme-detection.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/git-ssh-url.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/format-resume-command.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-compact-command-guard.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/fetch-url-parse.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/restore-sandbox-env.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-ordering.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/auth-storage-persistence.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/tools-07-01.suite.ts [2m([22m[2m1 test[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/oauth-provider-metadata.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/print-mode-unsupported-provider.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/edit-tool-preview.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/print-mode-json-error.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/auth-guidance.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/changelog.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/experimental.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/runtime-credentials.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-jsonl.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-windows-title-restore.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/input-transform-streaming-example.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/experimental-cli-resolution.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-compaction.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/7887-system-prompt-cwd-newline.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 26[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/openai-responses-payload-sanitizer.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-selector-lifecycle.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/copilot-env-routing.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/keybinding-hints.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/trigger-compact-extension.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/settings-selector-tui-mode.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/export-html-xss.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-ctrl-c.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/args-end-of-options.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/split-launcher.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-registry-header-suppression.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-message-update-deltas.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-catalog-startup-refresh.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/ask-user-question-tool.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/context-tool-pairing.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-status-custom-ui.suite.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-suspend.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/client/transcript.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/overlay-active-row-marker-strip.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/settings-manager-provider-retry.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/clipboard-native.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/export-html-skill-block.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/export-html-whitespace.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-clone-command.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-entry.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-import-command.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-credential-error.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/typebox-compat.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/build-context-02.suite.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/config-self-update-branding.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/edit-tool-legacy-input.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/initial-message.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/session-manager/migration.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/resource-loader-context-files.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/compaction-serialization.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/model-search.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-model-capabilities.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2221-interactive-delta-rendering.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/2221-interactive-delta-streaming-render.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/compaction-parameters.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-model-routing-auth-failure.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-right-click-paste.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/agent-session-header-suppression.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/native-binding-exports.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-runtime-settings.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-startup-model-refresh.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/prompt-template-all-argument-defaults.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/subagent-example-schema.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/compaction-extensions-example.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/agent-session-compaction.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/models-store-snapshot.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 1[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/suite/regressions/5724-sigterm-signal-exit.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/lifecycle-event-root-exports.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/sdk-full-control-example-model.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-startup-command-draft.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-custom-editor-autocomplete.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-anthropic-warning.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/builtin-extension-model-endpoints.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/rpc-client-clone.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-deferred-startup-input.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [2m[90m↓[39m[22m [30m[46m agent [49m[39m test/rpc.test.ts [2m([22m[2m15 tests[22m[2m | [22m[33m15 skipped[39m[2m)[22m
+ [2m[90m↓[39m[22m [30m[46m agent [49m[39m test/bash-close-hang-windows.test.ts [2m([22m[2m2 tests[22m[2m | [22m[33m2 skipped[39m[2m)[22m
+ [32m✓[39m [30m[46m agent [49m[39m test/interactive-mode-footer-ordering.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/builtin-extension-model-runtime.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/extension-stale-context.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[46m agent [49m[39m test/pi-user-agent.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [2m[90m↓[39m[22m [30m[46m agent [49m[39m test/agent-session-branching.test.ts [2m([22m[2m3 tests[22m[2m | [22m[33m3 skipped[39m[2m)[22m
+ [2m[90m↓[39m[22m [30m[46m agent [49m[39m test/agent-session-tree-navigation.test.ts [2m([22m[2m10 tests[22m[2m | [22m[33m10 skipped[39m[2m)[22m
+
+[2m Test Files [22m [1m[32m476 passed[39m[22m[2m | [22m[33m4 skipped[39m[90m (480)[39m
+[2m      Tests [22m [1m[32m3925 passed[39m[22m[2m | [22m[33m39 skipped[39m[90m (3964)[39m
+[2m   Start at [22m 00:30:34
+[2m   Duration [22m 57.13s[2m (transform 38.05s, setup 0ms, import 586.92s, tests 186.00s, environment 33ms)[22m
+

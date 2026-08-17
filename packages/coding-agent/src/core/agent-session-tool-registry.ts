@@ -174,6 +174,10 @@ export function _buildRuntime(
 		}
 	}
 
+	// A reload replaces the runner without invalidating it, so the outgoing
+	// runner is detached from the block door here. Otherwise every reload would
+	// leave one more stale subscriber publishing agent_blocked to dead extensions.
+	this._extensionRunner?.detachUserBlocks();
 	this._extensionRunner = new ExtensionRunner(
 		extensionsResult.extensions,
 		extensionsResult.runtime,

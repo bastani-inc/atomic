@@ -1,0 +1,25 @@
+npm notice run check
+npm notice run biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap
+packages/coding-agent/test/extensions-user-blocks.test.ts format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  × Formatter would have printed the following content:
+  
+      6   6 │   import { AuthStorage } from "../src/core/auth-storage.js";
+      7   7 │   import { createEventBus, type EventBus } from "../src/core/event-bus.js";
+      8     │ - import·{·createExtensionRuntime,·discoverAndLoadExtensions,·loadExtensionFromFactory·}·from·"../src/core/extensions/loader.js";
+          8 │ + import·{
+          9 │ + → createExtensionRuntime,
+         10 │ + → discoverAndLoadExtensions,
+         11 │ + → loadExtensionFromFactory,
+         12 │ + }·from·"../src/core/extensions/loader.js";
+      9  13 │   import { ExtensionRunner } from "../src/core/extensions/runner.js";
+     10  14 │   import type { ExtensionFactory, UserBlock, UserBlockChange } from "../src/core/extensions/types.js";
+  
+
+Checked 2562 files in 635ms. No fixes applied.
+Found 1 error.
+check ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  × Some errors were emitted while running checks.
+  
+

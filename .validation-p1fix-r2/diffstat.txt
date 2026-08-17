@@ -1,0 +1,20 @@
+$ git diff origin/main --shortstat
+ 17 files changed, 999 insertions(+)
+$ git diff origin/main --numstat
+5	0	packages/coding-agent/CHANGELOG.md
+66	0	packages/coding-agent/docs/extensions.md
+7	0	packages/coding-agent/src/core/agent-session-tool-registry.ts
+26	0	packages/coding-agent/src/core/extensions/api-types.ts
+77	0	packages/coding-agent/src/core/extensions/block-types.ts
+3	0	packages/coding-agent/src/core/extensions/event-types.ts
+8	0	packages/coding-agent/src/core/extensions/index.ts
+8	0	packages/coding-agent/src/core/extensions/loader-api.ts
+37	0	packages/coding-agent/src/core/extensions/runner.ts
+5	0	packages/coding-agent/src/core/extensions/runtime-types.ts
+1	0	packages/coding-agent/src/core/extensions/types.ts
+207	0	packages/coding-agent/src/core/extensions/user-blocks.ts
+2	0	packages/coding-agent/src/core/resource-loader-extensions.ts
+2	0	packages/coding-agent/src/core/resource-loader-reload.ts
+7	0	packages/coding-agent/src/index-extensions.ts
+488	0	packages/coding-agent/test/extensions-user-blocks.test.ts
+50	0	test/unit/extension-block-door-public-api.test.ts

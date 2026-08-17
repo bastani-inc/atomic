@@ -1,0 +1,2 @@
+{"isolation":{"eventsA":["blocked:only-session-a-label","unblocked:only-session-a-label"],"eventsB":[],"busAOpen":[],"busBOpen":[],"busBActive":null},"sameBusSuccessor":["blocked:only-session-a-label"]}
+{"factoryLifecycle":["blocked","unblocked"]}

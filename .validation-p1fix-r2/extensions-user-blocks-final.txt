@@ -1,0 +1,13 @@
+npm notice run @bastani/atomic@0.0.0 test
+npm notice run vitest --run extensions-user-blocks
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90m/Users/akgunay/Documents/AkgunayLabs/lab/atomic-worktrees/herdr-split-1/packages/coding-agent[39m
+
+ [32m✓[39m [30m[46m agent [49m[39m test/extensions-user-blocks.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 584[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m17 passed[39m[22m[90m (17)[39m
+[2m   Start at [22m 03:02:21
+[2m   Duration [22m 2.49s[2m (transform 1.26s, setup 0ms, import 1.83s, tests 584ms, environment 0ms)[22m
+
+[exit=0]
