@@ -53,6 +53,45 @@ function stripFrameEscapes(row: string): string {
 	return row.replace(ANSI_RE, "").replace(/\x1b\]8;;\x07/g, "");
 }
 
+/** Return one marker per visible cell, showing whether the tool background is active. */
+function backgroundPaintMap(row: string): string {
+	let backgroundActive = false;
+	let offset = 0;
+	let map = "";
+	const sgr = /\x1b\[([0-9;]*)m/g;
+	for (const match of row.matchAll(sgr)) {
+		const index = match.index ?? row.length;
+		map += (backgroundActive ? "S" : ".").repeat(visibleWidth(row.slice(offset, index)));
+		const params = match[1] ?? "";
+		const codes = params.length === 0 ? [0] : params.split(";").map((code) => Number(code));
+		for (let codeIndex = 0; codeIndex < codes.length; codeIndex++) {
+			const code = codes[codeIndex];
+			if (code === 0) {
+				backgroundActive = false;
+			} else if (code === 48 && codes[codeIndex + 1] === 2) {
+				backgroundActive = true;
+				codeIndex += 4;
+			} else if (code === 48 && codes[codeIndex + 1] === 5) {
+				backgroundActive = true;
+				codeIndex += 2;
+			} else if (code === 49) {
+				backgroundActive = false;
+			}
+		}
+		offset = index + match[0].length;
+	}
+	map += (backgroundActive ? "S" : ".").repeat(visibleWidth(row.slice(offset)));
+	return map;
+}
+
+function assertFullyPainted(rows: string[], width: number, label: string): void {
+	for (const [index, row] of rows.entries()) {
+		const map = backgroundPaintMap(row);
+		assert.equal(map.length, width, `${label}: row ${index} must fill ${width} cells`);
+		assert.doesNotMatch(map, /\./, `${label}: row ${index} has an unpainted cell`);
+	}
+}
+
 /** Read back the array a bounded tool result retained in the live store. */
 function retainedRows(store: ReturnType<typeof createStore>): unknown[] {
 	const node = store.runs()[0]?.toolNodes?.[0];
@@ -396,6 +435,53 @@ describe("tool graph inspection", () => {
 		assert.ok(narrowRows.some((row) => row.includes("report-line-23")));
 		assert.ok(!narrowRows.some((row) => row.includes("report-line-0")));
 		assert.doesNotMatch(narrowRows.join("\n"), /… \[truncated\]/);
+	});
+
+	test("status-tinted backgrounds cover every rendered tool cell", () => {
+		const cases = [
+			["completed with args", tool({ result: "ok" })],
+			["failed", tool({ status: "failed", result: undefined, error: "check failed", args: { attempt: 1 } })],
+			["cached", tool({ status: "cached", replayed: true, result: "cached" })],
+			["running", tool({ status: "running", endedAt: undefined, result: "working" })],
+		] as const;
+		for (const width of [40, 80]) {
+			for (const [label, node] of cases) {
+				const rows = renderToolDetail(node, { width, theme: defaultTheme, expanded: true, now: 2_000 }).split("\n");
+				assertFullyPainted(rows, width, `${label} at ${width}`);
+			}
+		}
+	});
+
+	test("plain detail output stays ANSI-free when narrow rows are clipped", () => {
+		const result = {
+			lines: Array.from({ length: 24 }, (_, index) => `report-line-${index}-abcdefghijklmnopqrstuvwxyz`),
+		};
+		for (let width = 1; width <= 120; width++) {
+			const rendered = renderToolDetail(tool({ result }), {
+				width,
+				expandKey: "ctrl+shift+alt+o",
+				now: 2_000,
+			});
+			assert.doesNotMatch(rendered, /\x1b/, `plain width ${width} must not emit ANSI`);
+		}
+	});
+
+	test("capped long result rendering stays within the responsive frame budget", () => {
+		const LARGE_RESULT_RENDER_BUDGET_MS = 80;
+		const node = tool({
+			args: undefined,
+			result: {
+				lines: Array.from({ length: 600 }, (_, index) => `report-line-${index}-abcdefghijklmnopqrstuvwxyz`),
+			},
+		});
+		renderToolDetail(node, { width: 40, now: 2_000 });
+		const startedAt = performance.now();
+		renderToolDetail(node, { width: 40, now: 2_000 });
+		const elapsedMs = performance.now() - startedAt;
+		assert.ok(
+			elapsedMs < LARGE_RESULT_RENDER_BUDGET_MS,
+			`capped result took ${elapsedMs.toFixed(1)}ms; budget is ${LARGE_RESULT_RENDER_BUDGET_MS}ms`,
+		);
 	});
 
 	test("oversized errors and results share head truncation marker placement", () => {
@@ -1072,6 +1158,27 @@ describe("tool graph inspection", () => {
 		const atEnd = visibleText(view.render(80));
 		assert.ok(atEnd.includes("Took 75ms"), "the operator footer must be reachable");
 		assert.ok(atEnd.includes("source-line-499"));
+		view.dispose();
+	});
+
+	test("End and PageDown reach the end of a long result", () => {
+		const result = Array.from({ length: 300 }, (_, index) => `result-line-${index}`).join("\n");
+		const view = viewForAtRows(tool({ result }), 24);
+		view.render(80);
+		assert.equal(view.handleInput("\r"), true);
+		assert.equal(view.handleInput("\x0f"), true);
+		view.render(80);
+
+		assert.equal(view.handleInput(KEY_END), true);
+		const atEnd = stripFrameEscapes(view.render(80).join("\n"));
+		assert.match(atEnd, /result-\s*line-299/, "End must reveal the final result line");
+		assert.ok(atEnd.includes("Took 75ms"), "End must reveal the operator footer");
+
+		assert.equal(view.handleInput(KEY_HOME), true);
+		view.render(80);
+		const keyboardOnly = stripFrameEscapes(keyboardScrollToBottom(view, 80));
+		assert.match(keyboardOnly, /result-\s*line-299/, "PageDown must reveal the final result line");
+		assert.ok(keyboardOnly.includes("Took 75ms"), "PageDown must reveal the operator footer");
 		view.dispose();
 	});
 

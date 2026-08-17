@@ -12,7 +12,7 @@ import {
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
-import { graphemes, truncateToWidth, visibleWidth } from "./text-helpers.js";
+import { graphemeSegments, graphemes, truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 /** Maximum serialized value retained by the detail display before its marker. */
 export const TOOL_DETAIL_VALUE_LIMIT = TOOL_PAYLOAD_VALUE_LIMIT;
@@ -143,61 +143,67 @@ function wrapPreserving(text: string, width: number, continuationWidth = width):
 	const followingBudget = Math.max(1, Math.floor(continuationWidth));
 	const rows: string[] = [];
 	for (const paragraph of text.split("\n")) {
-		let remaining = paragraph;
-		if (remaining.length === 0) {
+		const segments = graphemeSegments(paragraph);
+		if (segments.length === 0) {
 			rows.push("");
 			continue;
 		}
-		while (remaining.length > 0) {
+		const segmentWidths = segments.map(({ segment }) => visibleWidth(segment));
+		const suffixWidths = new Array<number>(segments.length + 1).fill(0);
+		for (let index = segments.length - 1; index >= 0; index--) {
+			suffixWidths[index] = suffixWidths[index + 1]! + segmentWidths[index]!;
+		}
+		let segmentIndex = 0;
+		while (segmentIndex < segments.length) {
 			const budget = rows.length === 0 ? firstBudget : followingBudget;
-			if (visibleWidth(remaining) <= budget) {
-				rows.push(remaining);
-				remaining = "";
+			if (suffixWidths[segmentIndex]! <= budget) {
+				rows.push(paragraph.slice(segments[segmentIndex]!.index));
+				segmentIndex = segments.length;
 				break;
 			}
 
-			let offset = 0;
-			let lastBoundary = 0;
+			let scanIndex = segmentIndex;
 			let currentWidth = 0;
-			for (const grapheme of graphemes(remaining)) {
-				const graphemeWidth = visibleWidth(grapheme);
+			let lastBoundary = segmentIndex;
+			while (scanIndex < segments.length) {
+				const graphemeWidth = segmentWidths[scanIndex]!;
 				if (currentWidth + graphemeWidth > budget) break;
-				offset += grapheme.length;
 				currentWidth += graphemeWidth;
-				if (isWrapBoundary(grapheme)) lastBoundary = offset;
+				scanIndex += 1;
+				if (isWrapBoundary(segments[scanIndex - 1]!.segment)) lastBoundary = scanIndex;
 			}
 
-			if (offset === 0) {
+			if (scanIndex === segmentIndex) {
 				rows.push("…");
-				const firstBoundary = [...graphemes(remaining)].findIndex(isWrapBoundary);
-				if (firstBoundary < 0) {
-					remaining = "";
-				} else {
-					const boundaryEnd = [...graphemes(remaining)].slice(0, firstBoundary + 1).join("").length;
-					remaining = remaining.slice(boundaryEnd);
-				}
+				let boundaryEnd = segmentIndex;
+				while (boundaryEnd < segments.length && !isWrapBoundary(segments[boundaryEnd]!.segment)) boundaryEnd += 1;
+				segmentIndex = boundaryEnd < segments.length ? boundaryEnd + 1 : segments.length;
 				continue;
 			}
-			if (lastBoundary > 0) {
-				rows.push(remaining.slice(0, lastBoundary));
-				remaining = remaining.slice(lastBoundary);
+			if (lastBoundary > segmentIndex) {
+				const endOffset = lastBoundary < segments.length ? segments[lastBoundary]!.index : paragraph.length;
+				rows.push(paragraph.slice(segments[segmentIndex]!.index, endOffset));
+				segmentIndex = lastBoundary;
 				continue;
 			}
 
 			// No punctuation or whitespace fit in this row: truncate the single
 			// overlong component instead of splitting it across terminal rows.
-			const nextBoundary = [...graphemes(remaining)].findIndex(isWrapBoundary);
-			const componentEnd =
-				nextBoundary < 0 ? remaining.length : [...graphemes(remaining)].slice(0, nextBoundary + 1).join("").length;
-			const component = remaining.slice(0, componentEnd);
+			let componentEnd = segmentIndex;
+			while (componentEnd < segments.length && !isWrapBoundary(segments[componentEnd]!.segment)) componentEnd += 1;
+			if (componentEnd < segments.length) componentEnd += 1;
 			const ellipsisWidth = visibleWidth("…");
 			let prefix = "";
-			for (const grapheme of graphemes(component)) {
-				if (visibleWidth(prefix) + visibleWidth(grapheme) + ellipsisWidth > budget) break;
+			let prefixWidth = 0;
+			for (let index = segmentIndex; index < componentEnd; index++) {
+				const grapheme = segments[index]!.segment;
+				const graphemeWidth = segmentWidths[index]!;
+				if (prefixWidth + graphemeWidth + ellipsisWidth > budget) break;
 				prefix += grapheme;
+				prefixWidth += graphemeWidth;
 			}
 			rows.push(`${prefix}…`);
-			remaining = remaining.slice(componentEnd);
+			segmentIndex = componentEnd;
 		}
 	}
 	return rows.length > 0 ? rows : [""];
@@ -211,11 +217,19 @@ function wrapFieldValue(text: string, width: number, continuationWidth = width):
 
 function fitLine(text: string, width: number, suffix: string, theme: GraphTheme | undefined): string {
 	const safeWidth = Math.max(1, Math.floor(width));
-	return theme === undefined
-		? visibleWidth(text) <= safeWidth
-			? text
-			: truncateToWidth(text, safeWidth, suffix, true)
-		: truncateToWidth(text, safeWidth, suffix, true);
+	if (theme !== undefined) return truncateToWidth(text, safeWidth, suffix, true);
+	if (visibleWidth(text) <= safeWidth) return text;
+	const suffixWidth = visibleWidth(suffix);
+	const budget = Math.max(0, safeWidth - suffixWidth);
+	let output = "";
+	let outputWidth = 0;
+	for (const grapheme of graphemes(text)) {
+		const graphemeWidth = visibleWidth(grapheme);
+		if (outputWidth + graphemeWidth > budget) break;
+		output += grapheme;
+		outputWidth += graphemeWidth;
+	}
+	return `${output}${suffix}`;
 }
 
 /** Paint the complete row, including its trailing fill, with the tool status background. */
@@ -225,7 +239,8 @@ function paintRow(content: string, width: number, theme: GraphTheme | undefined,
 	if (theme === undefined) return fitted;
 	const padding = Math.max(0, safeWidth - visibleWidth(fitted));
 	const background = hexBg(toolBackground(status, theme));
-	return `${background}${fitted}${background}${" ".repeat(padding)}${RESET}`;
+	const repainted = fitted.replaceAll(RESET, `${RESET}${background}`);
+	return `${background}${repainted}${background}${" ".repeat(padding)}${RESET}`;
 }
 
 function messageHeaderRows(
