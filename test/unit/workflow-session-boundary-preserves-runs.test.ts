@@ -251,6 +251,8 @@ describe("clearDetached disposes only detached handles", () => {
 		registry.register(onlyDetached);
 		assert.equal(registry.detachControl("keep-run", "done", detachedSameRun), true);
 		assert.equal(registry.detachControl("empty-run", "orphan", onlyDetached), true);
+		assert.equal(registry.has("empty-run"), true);
+		assert.equal(registry.has("keep-run"), true);
 		registry.clearDetached();
 		assert.equal(registry.get("keep-run", "live"), live);
 		assert.deepEqual(
@@ -263,6 +265,8 @@ describe("clearDetached disposes only detached handles", () => {
 		assert.equal(registry.get("keep-run", "done"), undefined);
 		assert.equal(registry.get("empty-run", "orphan"), undefined);
 		assert.deepEqual(registry.forRun("empty-run"), []);
+		assert.equal(registry.has("empty-run"), false);
+		assert.equal(registry.has("keep-run"), true);
 		assert.equal(liveDisposes, 0);
 		assert.equal(detachedDisposes, 2);
 	});

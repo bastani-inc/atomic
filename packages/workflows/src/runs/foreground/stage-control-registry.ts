@@ -189,6 +189,8 @@ export interface StageControlRegistry {
 	get(runId: string, stageId: string): StageControlHandle | undefined;
 	/** Resolve all currently-registered chat handles for a run. */
 	forRun(runId: string): readonly StageControlHandle[];
+	/** True when this run currently has a registration map. */
+	has(runId: string): boolean;
 	/** Build a run-level control aggregate. Cheap; not memoised. */
 	run(runId: string): WorkflowRunControlHandle;
 	/**
@@ -422,6 +424,9 @@ export function createStageControlRegistry(): StageControlRegistry {
 			const runMap = _byRun.get(runId);
 			if (!runMap) return [];
 			return [...runMap.values()].map((entry) => entry.handle);
+		},
+		has(runId: string): boolean {
+			return _byRun.has(runId);
 		},
 		run(runId: string): WorkflowRunControlHandle {
 			return makeRunHandle(runId);
