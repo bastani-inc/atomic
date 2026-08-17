@@ -225,3 +225,52 @@ export function ansi256ToHex(index: number): string {
 	const grayHex = gray.toString(16).padStart(2, "0");
 	return `#${grayHex}${grayHex}${grayHex}`;
 }
+
+// ---------------------------------------------------------------------------
+// WCAG contrast (Phase 0 — measurement only, no rendering effect)
+// ---------------------------------------------------------------------------
+
+/** WCAG 2.x contrast thresholds. */
+export const CONTRAST_AA_NORMAL = 4.5;
+export const CONTRAST_AA_LARGE = 3.0;
+
+export type ContrastRating = "AA" | "AA-large" | "FAIL";
+
+/**
+ * Resolve a theme `ColorValue` to a `#rrggbb` hex string for measurement.
+ * Returns `undefined` for the terminal-default token (`""`), whose real
+ * color is controlled by the terminal and therefore unknowable here.
+ */
+export function colorValueToHex(value: ColorValue): string | undefined {
+	if (value === "") return undefined;
+	if (typeof value === "number") return ansi256ToHex(value);
+	if (value.startsWith("#")) return value;
+	throw new Error(`Cannot resolve color value to hex: ${value}`);
+}
+
+/** WCAG 2.x relative luminance of a `#rrggbb` color (0..1). */
+export function relativeLuminance(hex: string): number {
+	const { r, g, b } = hexToRgb(hex);
+	const convert = (c: number): number => {
+		const v = c / 255;
+		return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+	};
+	return 0.2126 * convert(r) + 0.7152 * convert(g) + 0.0722 * convert(b);
+}
+
+/** WCAG 2.x contrast ratio between two `#rrggbb` colors (1..21). */
+export function contrastRatio(a: string, b: string): number {
+	const l1 = relativeLuminance(a);
+	const l2 = relativeLuminance(b);
+	return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+
+/**
+ * Rate a contrast ratio against WCAG 2.x AA:
+ * `AA` (>= 4.5, normal text), `AA-large` (>= 3.0, large text / non-text), else `FAIL`.
+ */
+export function rateContrast(ratio: number): ContrastRating {
+	if (ratio >= CONTRAST_AA_NORMAL) return "AA";
+	if (ratio >= CONTRAST_AA_LARGE) return "AA-large";
+	return "FAIL";
+}
