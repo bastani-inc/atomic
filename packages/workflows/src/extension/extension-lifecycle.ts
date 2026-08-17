@@ -49,10 +49,10 @@ function installDbosProcessShutdown(): void {
 
 /**
  * `/reload`, `/fork`, `/new`, and `/resume` replace the host session inside
- * one process that keeps running the workflows. The successor inherits the
- * in-flight store and live executor handles, so those reasons must not stop
- * or clear them. `startup` and any reason this code does not recognise still
- * clear: neither names a predecessor that handed anything over.
+ * one process that keeps running the workflows. Those reasons must not kill
+ * in-flight runs or drop live executor handles. `startup` and any reason
+ * this code does not recognise still clear: neither names a predecessor
+ * that handed anything over. `/reload` reuses the host bus; the others do not.
  */
 function replacementStopsWorkflows(reason: string | undefined): boolean {
 	return reason !== "reload" && reason !== "fork" && reason !== "new" && reason !== "resume";
@@ -84,7 +84,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		try {
 			const shouldSwitchSession = await confirmSessionSwitch(
 				`${actionLabel} with ${inFlightWorkflowCount} in-flight ${workflowNoun} still running?`,
-				`${messageLabel} keeps ${inFlightWorkflowCount} in-flight ${workflowNoun} running. Inspect with /workflow status.`,
+				`${messageLabel} keeps ${inFlightWorkflowCount} in-flight ${workflowNoun} running in this process. They stay on the session that started them.`,
 			);
 			if (shouldSwitchSession) return undefined;
 		} catch {
