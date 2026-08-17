@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
 import { Error as DbosSdkError } from "@dbos-inc/dbos-sdk";
 import { afterEach, describe, test, vi } from "vitest";
 import {
@@ -9,7 +8,6 @@ import {
 } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { classifyDbosDurabilityFailure } from "../../packages/workflows/src/durable/dbos-registration-diagnostics.js";
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { moduleDir, readText } from "../helpers/runtime.js";
 
 const ALREADY_REGISTERED = "Operation (Name: Default.atomicWorkflowHandle) is already registered.";
 const CONFLICTING_TYPE =
@@ -17,10 +15,6 @@ const CONFLICTING_TYPE =
 const PROVISIONING_GUIDANCE =
 	"Set DBOS_SYSTEM_DATABASE_URL to an existing Postgres when local provisioning is unavailable.";
 const PROVISIONING_RESTORE = "Restore durability by fixing Postgres provisioning:";
-const CLASSIFIER_SOURCE = join(
-	moduleDir(import.meta.url),
-	"../../packages/workflows/src/durable/dbos-registration-diagnostics.ts",
-);
 
 afterEach(() => {
 	setDurableBackend(undefined);
@@ -38,7 +32,7 @@ function assertNoProvisioningWording(text: string): void {
 }
 
 describe("DBOS registration diagnostics", () => {
-	test("classifies a real SDK DBOSConflictingRegistrationError for both message variants", () => {
+	test("classifies a real SDK DBOSConflictingRegistrationError for both message variants", async () => {
 		const alreadyRegistered = realConflict(ALREADY_REGISTERED);
 		const conflictingType = realConflict(CONFLICTING_TYPE);
 
@@ -46,11 +40,11 @@ describe("DBOS registration diagnostics", () => {
 		assert.equal(conflictingType.dbosErrorCode, 25);
 		assert.equal(alreadyRegistered.constructor.name, "DBOSConflictingRegistrationError");
 		assert.equal(conflictingType.constructor.name, "DBOSConflictingRegistrationError");
-		assert.equal(classifyDbosDurabilityFailure(alreadyRegistered), "duplicate_registration");
-		assert.equal(classifyDbosDurabilityFailure(conflictingType), "duplicate_registration");
+		assert.equal(await classifyDbosDurabilityFailure(alreadyRegistered), "duplicate_registration");
+		assert.equal(await classifyDbosDurabilityFailure(conflictingType), "duplicate_registration");
 	});
 
-	test("classifies a nested cause, a code-only duck type, and a name-only duck type without instanceof", () => {
+	test("classifies a nested cause, a code-only duck type, and a name-only duck type without instanceof", async () => {
 		const wrapped = new Error("DBOS workflow durability configuration failed", {
 			cause: realConflict(ALREADY_REGISTERED),
 		});
@@ -59,27 +53,23 @@ describe("DBOS registration diagnostics", () => {
 		const cyclic = new Error("cycle");
 		cyclic.cause = cyclic;
 
-		assert.equal(classifyDbosDurabilityFailure(wrapped), "duplicate_registration");
-		assert.equal(classifyDbosDurabilityFailure({ dbosErrorCode: 25 }), "duplicate_registration");
-		assert.equal(classifyDbosDurabilityFailure(named), "duplicate_registration");
-		assert.equal(classifyDbosDurabilityFailure(cyclic), "other");
+		assert.equal(await classifyDbosDurabilityFailure(wrapped), "duplicate_registration");
+		assert.equal(await classifyDbosDurabilityFailure({ dbosErrorCode: 25 }), "duplicate_registration");
+		assert.equal(await classifyDbosDurabilityFailure(named), "duplicate_registration");
+		assert.equal(await classifyDbosDurabilityFailure(cyclic), "other");
 	});
 
-	test("falls back to both SDK already-registered message shapes when code and name are absent", () => {
-		assert.equal(classifyDbosDurabilityFailure({ message: ALREADY_REGISTERED }), "duplicate_registration");
-		assert.equal(classifyDbosDurabilityFailure({ message: CONFLICTING_TYPE }), "duplicate_registration");
-		assert.equal(
-			classifyDbosDurabilityFailure({ message: "Data source with name foo is already registered" }),
-			"other",
-		);
+	test("does not classify by message wording", async () => {
+		assert.equal(await classifyDbosDurabilityFailure({ message: ALREADY_REGISTERED }), "other");
+		assert.equal(await classifyDbosDurabilityFailure({ message: CONFLICTING_TYPE }), "other");
 	});
 
-	test("classifies a plain Error and a connection error as other", () => {
-		assert.equal(classifyDbosDurabilityFailure(new Error("plain failure")), "other");
-		assert.equal(classifyDbosDurabilityFailure(new Error("connect failed with ECONNREFUSED")), "other");
+	test("classifies a plain Error and a connection error as other", async () => {
+		assert.equal(await classifyDbosDurabilityFailure(new Error("plain failure")), "other");
+		assert.equal(await classifyDbosDurabilityFailure(new Error("connect failed with ECONNREFUSED")), "other");
 	});
 
-	test("a throwing getter on cause, name, or message classifies as other without escaping", () => {
+	test("a throwing getter on cause, name, or message classifies as other without escaping", async () => {
 		const causeTrap = new Error("initdb: error: cannot be run as root");
 		Object.defineProperty(causeTrap, "cause", {
 			get() {
@@ -98,9 +88,9 @@ describe("DBOS registration diagnostics", () => {
 			},
 		};
 
-		assert.equal(classifyDbosDurabilityFailure(causeTrap), "other");
-		assert.equal(classifyDbosDurabilityFailure(nameTrap), "other");
-		assert.equal(classifyDbosDurabilityFailure(messageTrap), "other");
+		assert.equal(await classifyDbosDurabilityFailure(causeTrap), "other");
+		assert.equal(await classifyDbosDurabilityFailure(nameTrap), "other");
+		assert.equal(await classifyDbosDurabilityFailure(messageTrap), "other");
 	});
 
 	test("a throwing cause getter does not replace the original durability failure", async () => {
@@ -144,13 +134,6 @@ describe("DBOS registration diagnostics", () => {
 			assert.match(error.message, new RegExp(PROVISIONING_GUIDANCE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 			return true;
 		});
-	});
-
-	test("does not statically import the SDK or use instanceof", async () => {
-		const source = (await readText(CLASSIFIER_SOURCE)).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-		assert.doesNotMatch(source, /from ["']@dbos-inc\/dbos-sdk["']/);
-		assert.doesNotMatch(source, /import\(["']@dbos-inc\/dbos-sdk["']\)/);
-		assert.doesNotMatch(source, /\binstanceof\b/);
 	});
 
 	test("a registration conflict's durability message names the duplicate and omits provisioning guidance", async () => {

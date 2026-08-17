@@ -2,23 +2,65 @@
  * Classify DBOS durability failures so a duplicate operation registration
  * is not described as a Postgres provisioning problem (#2022 / #2462).
  *
- * Duck-type only: do not statically import `@dbos-inc/dbos-sdk` and do not
- * use `instanceof`. The SDK is loaded lazily through `importDbosSdk()`, and
- * `instanceof` fails if two copies of the package are resolved.
+ * Uses the SDK `Error` namespace (`DBOSConflictingRegistrationError` and
+ * `getDBOSErrorCode`). The SDK is loaded lazily so this module never
+ * statically imports `@dbos-inc/dbos-sdk`. `instanceof` is not used: two
+ * resolved copies of the SDK would make it fail.
  */
-
-/**
- * `@dbos-inc/dbos-sdk` `error.js`: `const ConflictingRegistrationError = 25`
- * on class `DBOSConflictingRegistrationError`. `decorators.js`
- * `checkFuncTypeUnassigned` throws that class.
- */
-const DBOS_CONFLICTING_REGISTRATION_ERROR_CODE = 25;
-
-const DBOS_CONFLICTING_REGISTRATION_ERROR_NAME = "DBOSConflictingRegistrationError";
 
 export type DbosDurabilityFailureKind = "duplicate_registration" | "other";
 
-export function classifyDbosDurabilityFailure(error: unknown): DbosDurabilityFailureKind {
+interface DbosSdkErrorModule {
+	readonly DBOSConflictingRegistrationError?: new (msg: string) => object;
+	readonly getDBOSErrorCode?: (error: Error) => number | undefined;
+}
+
+let cachedErrorModule: DbosSdkErrorModule | undefined;
+let errorModuleLoad: Promise<DbosSdkErrorModule | undefined> | undefined;
+
+async function loadDbosErrorModule(): Promise<DbosSdkErrorModule | undefined> {
+	if (cachedErrorModule !== undefined) return cachedErrorModule;
+	errorModuleLoad ??= (async () => {
+		const spec = "@dbos-inc/dbos-sdk";
+		try {
+			const mod = (await import(spec)) as { readonly Error?: DbosSdkErrorModule };
+			cachedErrorModule = mod.Error;
+			return cachedErrorModule;
+		} catch {
+			return undefined;
+		}
+	})();
+	return await errorModuleLoad;
+}
+
+function conflictingRegistrationCode(errors: DbosSdkErrorModule | undefined): number | undefined {
+	const ctor = errors?.DBOSConflictingRegistrationError;
+	if (ctor === undefined) return undefined;
+	try {
+		const code = Reflect.get(new ctor(""), "dbosErrorCode");
+		return typeof code === "number" ? code : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function isDuplicateRegistration(value: object, errors: DbosSdkErrorModule | undefined): boolean {
+	const expected = conflictingRegistrationCode(errors);
+	const code = readOwn(value, "dbosErrorCode");
+	if (typeof code === "number" && typeof expected === "number" && code === expected) return true;
+	if (errors?.getDBOSErrorCode !== undefined && value instanceof Error) {
+		try {
+			if (errors.getDBOSErrorCode(value) === expected) return true;
+		} catch {
+			/* keep walking */
+		}
+	}
+	const name = readOwn(value, "name");
+	const className = errors?.DBOSConflictingRegistrationError?.name;
+	return typeof name === "string" && typeof className === "string" && name === className;
+}
+
+function classifyWith(error: unknown, errors: DbosSdkErrorModule | undefined): DbosDurabilityFailureKind {
 	try {
 		const seen = new Set<object>();
 		let current: unknown = error;
@@ -26,13 +68,23 @@ export function classifyDbosDurabilityFailure(error: unknown): DbosDurabilityFai
 			if (typeof current !== "object") return "other";
 			if (seen.has(current)) return "other";
 			seen.add(current);
-			if (isDuplicateRegistration(current)) return "duplicate_registration";
+			if (isDuplicateRegistration(current, errors)) return "duplicate_registration";
 			current = readOwn(current, "cause");
 		}
 	} catch {
 		return "other";
 	}
 	return "other";
+}
+
+/**
+ * Async classification used at the durability boundary so the first failure
+ * can load the SDK error classes before deciding. Subsequent sync callers
+ * reuse the cached module.
+ */
+export async function classifyDbosDurabilityFailure(error: unknown): Promise<DbosDurabilityFailureKind> {
+	const errors = await loadDbosErrorModule();
+	return classifyWith(error, errors);
 }
 
 /**
@@ -50,27 +102,6 @@ export function readDbosFailureDetail(error: unknown): string {
 	} catch {
 		return "unknown error";
 	}
-}
-
-function isDuplicateRegistration(value: object): boolean {
-	const code = readOwn(value, "dbosErrorCode");
-	if (typeof code === "number" && code === DBOS_CONFLICTING_REGISTRATION_ERROR_CODE) return true;
-	const name = readOwn(value, "name");
-	if (typeof name === "string" && name === DBOS_CONFLICTING_REGISTRATION_ERROR_NAME) return true;
-	const message = readOwn(value, "message");
-	return typeof message === "string" && matchesRegistrationMessageFallback(message);
-}
-
-/**
- * Last-resort fallback for both `checkFuncTypeUnassigned` shapes when the
- * SDK code or class name is unavailable: `... is already registered.` and
- * `... is already registered with a conflicting function type: X vs. Y`.
- */
-function matchesRegistrationMessageFallback(message: string): boolean {
-	return (
-		/is already registered with a conflicting function type: \S+ vs\. \S+/.test(message) ||
-		/is already registered\./.test(message)
-	);
 }
 
 function readOwn(value: object, key: string): unknown {

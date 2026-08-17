@@ -8,7 +8,7 @@ import {
 	getReadyDbosBackend,
 	getReadyDbosBackendSync,
 } from "./dbos-lifecycle.js";
-import { classifyDbosDurabilityFailure } from "./dbos-registration-diagnostics.js";
+import { classifyDbosDurabilityFailure, readDbosFailureDetail } from "./dbos-registration-diagnostics.js";
 
 let injectedBackend: DurableWorkflowBackend | undefined;
 let initializedBackend: DurableWorkflowBackend | undefined;
@@ -66,12 +66,9 @@ export async function initializeDurableBackend(): Promise<DurableWorkflowBackend
 		initializing = undefined;
 	}
 	initializing ??= getReadyDbosBackend()
-		.catch((error: unknown) => {
-			// Post-shutdown initialization is a process-exit race, not a
-			// provisioning failure: fail loudly instead of silently degrading to a
-			// non-durable backend.
+		.catch(async (error: unknown) => {
 			if (error instanceof DbosShutdownError) throw error;
-			return degradeToNonDurableBackend(error);
+			return await degradeToNonDurableBackend(error);
 		})
 		.then((backend) => {
 			initializedBackend = backend;
@@ -80,10 +77,11 @@ export async function initializeDurableBackend(): Promise<DurableWorkflowBackend
 	return await initializing;
 }
 
-function degradeToNonDurableBackend(error: unknown): DurableWorkflowBackend {
-	const detail = error instanceof Error ? error.message : String(error);
+async function degradeToNonDurableBackend(error: unknown): Promise<DurableWorkflowBackend> {
+	const detail = readDbosFailureDetail(error);
+	const kind = await classifyDbosDurabilityFailure(error);
 	const restore =
-		classifyDbosDurabilityFailure(error) === "duplicate_registration"
+		kind === "duplicate_registration"
 			? `Restore durability by resolving the duplicate DBOS operation registration: ${detail}`
 			: `Restore durability by fixing Postgres provisioning: ${detail}`;
 	console.error(
