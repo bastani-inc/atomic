@@ -4,6 +4,7 @@ import {
 	resolveDbosSystemDatabaseUrl,
 	shouldProvisionLocalDbos,
 } from "./dbos-local-postgres.js";
+import { getDbosProcessOwner, resetDbosProcessOwner } from "./dbos-process-owner.js";
 
 export type DbosLifecycleState =
 	| "uninitialized"
@@ -52,12 +53,9 @@ const defaultConfigurator: DbosConfigurator = async () => {
 let configureDurability: DbosConfigurator = defaultConfigurator;
 let provisionLocalDbos: LocalDbosProvisioner = provisionResolvedLocalDbos;
 
-let state: DbosLifecycleState = "uninitialized";
-let configured: Promise<ConfiguredDbosDurability> | undefined;
-let active: ConfiguredDbosDurability | undefined;
-let launchPromise: Promise<void> | undefined;
-let shutdownPromise: Promise<void> | undefined;
-let failure: DbosDurabilityError | undefined;
+function owner(): ReturnType<typeof getDbosProcessOwner> {
+	return getDbosProcessOwner();
+}
 
 function durabilityFailure(action: string, error: unknown): DbosDurabilityError {
 	const detail = error instanceof Error ? error.message : String(error);
@@ -68,33 +66,35 @@ function durabilityFailure(action: string, error: unknown): DbosDurabilityError 
 }
 
 export async function configureDbosOnce(): Promise<ConfiguredDbosDurability> {
-	if (failure !== undefined) throw failure;
-	configured ??= configureDurability()
+	const slot = owner();
+	if (slot.failure !== undefined) throw slot.failure;
+	slot.configured ??= configureDurability()
 		.then((value) => {
-			active = value;
-			state = "configured";
+			slot.active = value;
+			slot.state = "configured";
 			return value;
 		})
 		.catch((error: unknown) => {
-			failure = durabilityFailure("configuration", error);
-			state = "failed";
-			throw failure;
+			slot.failure = durabilityFailure("configuration", error);
+			slot.state = "failed";
+			throw slot.failure;
 		});
-	return await configured;
+	return await slot.configured;
 }
 
 export async function launchDbosOnce(): Promise<void> {
-	if (failure !== undefined) throw failure;
+	const slot = owner();
+	if (slot.failure !== undefined) throw slot.failure;
 	// The executor is process-scoped and stops exactly once, at process exit.
 	// Post-shutdown launches must fail loudly instead of returning a backend
 	// whose SDK launched marker has been cleared.
-	if (state === "shutting_down" || state === "shut_down") throw new DbosShutdownError();
+	if (slot.state === "shutting_down" || slot.state === "shut_down") throw new DbosShutdownError();
 	const durability = await configureDbosOnce();
-	launchPromise ??= (async () => {
-		state = "launching";
+	slot.launchPromise ??= (async () => {
+		slot.state = "launching";
 		try {
 			await durability.launch();
-			state = "ready";
+			slot.state = "ready";
 		} catch (error) {
 			if (shouldProvisionLocalDbos(error)) {
 				try {
@@ -103,54 +103,57 @@ export async function launchDbosOnce(): Promise<void> {
 					await durability.shutdown();
 					await provisionLocalDbos();
 					await durability.launch();
-					state = "ready";
+					slot.state = "ready";
 					return;
 				} catch (provisionError) {
-					failure = durabilityFailure("local Postgres startup", provisionError);
+					slot.failure = durabilityFailure("local Postgres startup", provisionError);
 				}
 			} else {
-				failure = durabilityFailure("launch", error);
+				slot.failure = durabilityFailure("launch", error);
 			}
-			state = "failed";
-			throw failure;
+			slot.state = "failed";
+			throw slot.failure;
 		}
 	})();
-	await launchPromise;
+	await slot.launchPromise;
 }
 
 export async function getReadyDbosBackend(): Promise<DbosDurableBackend> {
 	await launchDbosOnce();
-	if (state !== "ready" || active === undefined) throw failure ?? new DbosNotReadyError();
-	return active.backend;
+	const slot = owner();
+	if (slot.state !== "ready" || slot.active === undefined) throw slot.failure ?? new DbosNotReadyError();
+	return slot.active.backend;
 }
 
 export function getReadyDbosBackendSync(): DbosDurableBackend | undefined {
-	return state === "ready" ? active?.backend : undefined;
+	const slot = owner();
+	return slot.state === "ready" ? slot.active?.backend : undefined;
 }
 
 export async function shutdownDbos(): Promise<void> {
-	if (shutdownPromise !== undefined) return await shutdownPromise;
-	const configuredPromise = configured;
+	const slot = owner();
+	if (slot.shutdownPromise !== undefined) return await slot.shutdownPromise;
+	const configuredPromise = slot.configured;
 	if (configuredPromise === undefined) return;
-	shutdownPromise = (async () => {
+	slot.shutdownPromise = (async () => {
 		// A backend that never reached "ready" has nothing to flush or stop.
 		// `configured`/`launchPromise` memoize rejections, so re-awaiting them
 		// unguarded would rethrow the original provisioning failure out of every
 		// session dispose — crashing otherwise-successful runs at process exit.
 		const durability = await configuredPromise.catch(() => undefined);
 		if (durability === undefined) return;
-		if (launchPromise !== undefined) await launchPromise.catch(() => undefined);
-		if (state !== "ready") return;
-		state = "shutting_down";
+		if (slot.launchPromise !== undefined) await slot.launchPromise.catch(() => undefined);
+		if (slot.state !== "ready") return;
+		slot.state = "shutting_down";
 		await durability.backend.flush();
 		await durability.shutdown();
-		state = "shut_down";
+		slot.state = "shut_down";
 	})().catch((error: unknown) => {
-		failure = durabilityFailure("shutdown", error);
-		state = "failed";
-		throw failure;
+		slot.failure = durabilityFailure("shutdown", error);
+		slot.state = "failed";
+		throw slot.failure;
 	});
-	await shutdownPromise;
+	await slot.shutdownPromise;
 }
 
 /**
@@ -159,12 +162,13 @@ export async function shutdownDbos(): Promise<void> {
  * `/fork`, `/reload`) where the DBOS executor must stay launched.
  */
 export async function flushDbos(): Promise<void> {
-	if (state !== "ready" || active === undefined) return;
-	await active.backend.flush();
+	const slot = owner();
+	if (slot.state !== "ready" || slot.active === undefined) return;
+	await slot.active.backend.flush();
 }
 
 export function dbosLifecycleState(): DbosLifecycleState {
-	return state;
+	return owner().state;
 }
 
 /** Reset the process singleton with an explicit configurator for unit tests. */
@@ -172,12 +176,7 @@ export function resetDbosLifecycleForTests(
 	configurator: DbosConfigurator = defaultConfigurator,
 	provisioner: LocalDbosProvisioner = provisionResolvedLocalDbos,
 ): void {
-	state = "uninitialized";
-	configured = undefined;
-	active = undefined;
-	launchPromise = undefined;
-	shutdownPromise = undefined;
-	failure = undefined;
+	resetDbosProcessOwner();
 	configureDurability = configurator;
 	provisionLocalDbos = provisioner;
 }
