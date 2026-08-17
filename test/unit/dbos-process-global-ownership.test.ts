@@ -1,14 +1,7 @@
 /**
- * Regression tests for #2022 / #2462 — DBOS lifecycle and registered-wrapper
- * ownership must live outside the reloadable extension bundle.
- *
- * `/reload` re-evaluates the durability module graph through jiti
- * (`tryNative: false`, `atomicExtensionCache` bust, `moduleCache: false`)
- * while `@dbos-inc/dbos-sdk` stays process-global. That is the isolated
- * probe in #2022: a second evaluation must not register
- * `atomicWorkflowHandle` / `atomicWorkflowCheckpoint` again, must not fall
- * back to `InMemoryDurableBackend`, and must reuse the original wrappers
- * and lifecycle state.
+ * #2022 / #2462: DBOS lifecycle and wrappers live outside the reloadable bundle.
+ * Re-evaluate the durability graph over one process-global SDK; each fixed
+ * operation registers once, with no in-memory fallback.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -29,94 +22,62 @@ import type { WorkflowSerializableValue } from "../../packages/workflows/src/sha
 
 const DBOS_PROCESS_OWNER_KEY = Symbol.for("atomic-workflows/dbos-process-owner@1");
 const DURABILITY_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
-
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const durableGraph = join(repoRoot, "test/unit/dbos-process-global-ownership-graph.ts");
 
 type DurableGraph = typeof import("./dbos-process-global-ownership-graph.ts");
 type RegisteredWrapper = (...args: readonly WorkflowSerializableValue[]) => Promise<WorkflowSerializableValue>;
-
-interface SharedFakeDbos {
+type SharedFakeDbos = DbosStatic & {
 	readonly registeredNames: () => readonly string[];
 	readonly wrapperFor: (name: string) => RegisteredWrapper | undefined;
 	readonly shutdownCount: () => number;
-	readonly setConfig: DbosStatic["setConfig"];
-	readonly launch: DbosStatic["launch"];
-	readonly shutdown: DbosStatic["shutdown"];
-	readonly registerWorkflow: (
-		fn: (...args: readonly WorkflowSerializableValue[]) => Promise<WorkflowSerializableValue>,
-		config?: { readonly name?: string },
-	) => RegisteredWrapper;
-	readonly startWorkflow: DbosStatic["startWorkflow"];
-	readonly retrieveWorkflow: DbosStatic["retrieveWorkflow"];
-	readonly resumeWorkflow: DbosStatic["resumeWorkflow"];
-	readonly cancelWorkflow: DbosStatic["cancelWorkflow"];
-	readonly listWorkflows: DbosStatic["listWorkflows"];
-	readonly deleteWorkflows: DbosStatic["deleteWorkflows"];
-}
+	readonly setConfigCount: () => number;
+};
 
 interface ProcessOwnerView {
 	readonly version: 1;
 	readonly state: string;
-	readonly wrappers?: {
-		readonly mainWorkflow: RegisteredWrapper;
-		readonly checkpointWorkflow: RegisteredWrapper;
-	};
+	readonly wrappers?: { readonly mainWorkflow: RegisteredWrapper; readonly checkpointWorkflow: RegisteredWrapper };
 }
 
 let graphGeneration = 0;
 let originalDatabaseUrl: string | undefined;
-
-function hostAliases(): Record<string, string> {
-	const aliases = { ...extensionLoaderTestHooks.getAliases() };
-	delete aliases["@bastani/atomic"];
-	return aliases;
-}
-
-function cacheBustedHref(file: string, cacheKey: string): string {
-	const url = pathToFileURL(file);
-	url.searchParams.set("atomicExtensionCache", cacheKey);
-	return url.href;
-}
-
-function emptyHandle() {
-	return {
-		getStatus: async () => null,
-		getResult: async () => null,
-	};
-}
+const emptyHandle = { getStatus: async () => null, getResult: async () => null };
 
 function createSharedFakeDbos(): SharedFakeDbos {
 	const wrappers = new Map<string, RegisteredWrapper>();
 	const registeredNames: string[] = [];
 	let shutdowns = 0;
+	let launched = false;
+	let setConfigs = 0;
 	const sdk: SharedFakeDbos = {
 		registeredNames: () => registeredNames,
 		wrapperFor: (name) => wrappers.get(name),
 		shutdownCount: () => shutdowns,
-		setConfig() {},
-		async launch() {},
+		setConfigCount: () => setConfigs,
+		setConfig() {
+			if (launched) throw new Error("Cannot call DBOS.setConfig after DBOS.launch");
+			setConfigs += 1;
+		},
+		async launch() {
+			launched = true;
+		},
 		async shutdown() {
 			shutdowns += 1;
 		},
-		registerWorkflow(
-			fn: (...args: readonly WorkflowSerializableValue[]) => Promise<WorkflowSerializableValue>,
-			config?: { readonly name?: string },
-		) {
+		registerWorkflow(fn, config) {
 			const name = config?.name ?? fn.name;
 			registeredNames.push(name);
-			if (wrappers.has(name)) {
-				throw new Error(`Operation (Name: .${name}) is already registered.`);
-			}
-			const wrapper: RegisteredWrapper = async (...args) => await fn(...args);
+			if (wrappers.has(name)) throw new Error(`Operation (Name: .${name}) is already registered.`);
+			const wrapper: RegisteredWrapper = async (...args) => await (fn as RegisteredWrapper)(...args);
 			wrappers.set(name, wrapper);
 			return wrapper;
 		},
 		startWorkflow() {
-			return async () => emptyHandle();
+			return async () => emptyHandle;
 		},
 		retrieveWorkflow() {
-			return emptyHandle();
+			return emptyHandle;
 		},
 		async resumeWorkflow(workflowId) {
 			return sdk.retrieveWorkflow(workflowId);
@@ -134,27 +95,24 @@ function processOwner(): ProcessOwnerView | undefined {
 	const value = (globalThis as typeof globalThis & Record<symbol, ProcessOwnerView | undefined>)[
 		DBOS_PROCESS_OWNER_KEY
 	];
-	if (typeof value !== "object" || value === null) return undefined;
-	if (!("version" in value) || value.version !== 1) return undefined;
-	if (!("state" in value) || typeof value.state !== "string") return undefined;
-	return value;
+	return value?.version === 1 && typeof value.state === "string" ? value : undefined;
 }
 
 async function evaluateDurabilityGraph(sdk: SharedFakeDbos): Promise<DurableGraph> {
 	const atomic = await import("@bastani/atomic");
 	graphGeneration += 1;
-	const cacheKey = `${graphGeneration}:${Date.now()}:${Math.random()}`;
+	const aliases = { ...extensionLoaderTestHooks.getAliases() };
+	delete aliases["@bastani/atomic"];
+	const url = pathToFileURL(durableGraph);
+	url.searchParams.set("atomicExtensionCache", `${graphGeneration}:${Date.now()}:${Math.random()}`);
 	const jiti = createJiti(import.meta.url, {
 		moduleCache: false,
 		tryNative: false,
 		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
-		alias: hostAliases(),
-		virtualModules: {
-			"@bastani/atomic": atomic,
-			"@dbos-inc/dbos-sdk": { DBOS: sdk },
-		},
+		alias: aliases,
+		virtualModules: { "@bastani/atomic": atomic, "@dbos-inc/dbos-sdk": { DBOS: sdk } },
 	});
-	return (await jiti.import(cacheBustedHref(durableGraph, cacheKey))) as DurableGraph;
+	return (await jiti.import(url.href)) as DurableGraph;
 }
 
 beforeEach(() => {
@@ -195,15 +153,12 @@ describe("process-global DBOS ownership", () => {
 				assert.ok(checkpointWrapper);
 
 				const second = await evaluateDurabilityGraph(sdk);
-				assert.equal(
-					second.dbosLifecycleState(),
-					"ready",
-					"re-evaluation must observe the original lifecycle, not uninitialized",
-				);
+				assert.equal(second.dbosLifecycleState(), "ready", "re-evaluation must observe the original lifecycle");
 
 				const secondConfigured = await second.configureDbosDurableBackend();
 				const secondBackend = await second.initializeDurableBackend();
 
+				assert.equal(sdk.setConfigCount(), 1);
 				assert.deepEqual(sdk.registeredNames(), ["atomicWorkflowHandle", "atomicWorkflowCheckpoint"]);
 				assert.equal(secondBackend.persistent, true);
 				assert.equal(secondBackend instanceof InMemoryDurableBackend, false);

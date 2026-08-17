@@ -119,18 +119,21 @@ export async function configureDbosDurableBackend(config?: {
 	readonly systemDatabaseUrl?: string;
 }): Promise<ConfiguredDbosDurability> {
 	const sdk = await importDbosSdk();
-	const url = effectiveSystemDatabaseUrl(config?.systemDatabaseUrl);
-	sdk.setConfig({
-		name: "atomic-workflows",
-		...(url === undefined ? {} : { systemDatabaseUrl: url }),
-		runAdminServer: false,
-		// Unique per process: concurrent Atomic sessions share one database, and
-		// DBOS-level pending-workflow recovery must stay scoped to the owner.
-		executorID: getAtomicExecutorId(),
-		logger: SILENT_DBOS_LOGGER,
-	});
 	const owner = getDbosProcessOwner();
 	const existing = owner.wrappers;
+	// The SDK forbids setConfig after launch. Recover original wrappers first.
+	if (existing === undefined) {
+		const url = effectiveSystemDatabaseUrl(config?.systemDatabaseUrl);
+		sdk.setConfig({
+			name: "atomic-workflows",
+			...(url === undefined ? {} : { systemDatabaseUrl: url }),
+			runAdminServer: false,
+			// Unique per process: concurrent Atomic sessions share one database, and
+			// DBOS-level pending-workflow recovery must stay scoped to the owner.
+			executorID: getAtomicExecutorId(),
+			logger: SILENT_DBOS_LOGGER,
+		});
+	}
 	const mainWorkflow =
 		existing?.mainWorkflow ??
 		sdk.registerWorkflow(async (_name: string, inputs: DurableInputs) => inputs, {
