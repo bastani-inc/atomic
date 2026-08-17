@@ -8,6 +8,7 @@ import {
 	getReadyDbosBackend,
 	getReadyDbosBackendSync,
 } from "./dbos-lifecycle.js";
+import { classifyDbosDurabilityFailure } from "./dbos-registration-diagnostics.js";
 
 let injectedBackend: DurableWorkflowBackend | undefined;
 let initializedBackend: DurableWorkflowBackend | undefined;
@@ -81,10 +82,14 @@ export async function initializeDurableBackend(): Promise<DurableWorkflowBackend
 
 function degradeToNonDurableBackend(error: unknown): DurableWorkflowBackend {
 	const detail = error instanceof Error ? error.message : String(error);
+	const restore =
+		classifyDbosDurabilityFailure(error) === "duplicate_registration"
+			? `Restore durability by resolving the duplicate DBOS operation registration: ${detail}`
+			: `Restore durability by fixing Postgres provisioning: ${detail}`;
 	console.error(
 		"atomic-workflows: durable backend unavailable — continuing NON-DURABLY with an in-memory backend. " +
 			"Workflow runs will execute, but their state will not survive this process and `/workflow resume` " +
-			`after exit will not work. Restore durability by fixing Postgres provisioning: ${detail}`,
+			`after exit will not work. ${restore}`,
 	);
 	return new InMemoryDurableBackend();
 }

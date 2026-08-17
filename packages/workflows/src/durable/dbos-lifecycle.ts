@@ -5,6 +5,7 @@ import {
 	shouldProvisionLocalDbos,
 } from "./dbos-local-postgres.js";
 import { getDbosProcessOwner, resetDbosProcessOwner } from "./dbos-process-owner.js";
+import { classifyDbosDurabilityFailure } from "./dbos-registration-diagnostics.js";
 
 export type DbosLifecycleState =
 	| "uninitialized"
@@ -59,8 +60,12 @@ function owner(): ReturnType<typeof getDbosProcessOwner> {
 
 function durabilityFailure(action: string, error: unknown): DbosDurabilityError {
 	const detail = error instanceof Error ? error.message : String(error);
+	const guidance =
+		classifyDbosDurabilityFailure(error) === "duplicate_registration"
+			? "A duplicate DBOS operation registration caused this failure; changing the database URL will not resolve it."
+			: "Set DBOS_SYSTEM_DATABASE_URL to an existing Postgres when local provisioning is unavailable.";
 	return new DbosDurabilityError(
-		`DBOS workflow durability ${action} failed: ${detail}. Set DBOS_SYSTEM_DATABASE_URL to an existing Postgres when local provisioning is unavailable.`,
+		`DBOS workflow durability ${action} failed: ${detail}. ${guidance}`,
 		error instanceof Error ? { cause: error } : undefined,
 	);
 }
