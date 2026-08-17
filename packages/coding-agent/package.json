@@ -84,7 +84,7 @@
   },
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",
-    "@dbos-inc/dbos-sdk": "4.24.16",
+    "@dbos-inc/dbos-sdk": "4.25.14",
     "@earendil-works/pi-agent-core": "^0.84.2",
     "@earendil-works/pi-ai": "^0.84.2",
     "@earendil-works/pi-client": "^0.84.2",
