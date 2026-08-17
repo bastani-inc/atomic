@@ -111,7 +111,7 @@ jobs:
       # plane in crates/atomic-natives, so the bundled subagent extension fails
       # to load at import without a binding. That takes the root unit and
       # integration suites down with it, not just the in-process runner tests.
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         timeout-minutes: 4
         with:
           # Required once pinned by SHA: the version otherwise comes from the ref.
@@ -195,7 +195,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         timeout-minutes: 4
         with:
           # Required once pinned by SHA: the version otherwise comes from the ref.
@@ -263,7 +263,7 @@ jobs:
       # exist and otherwise builds them, so this job needs the Rust toolchain and
       # pays the native build again rather than waiting on agent-suite. That is a
       # runner-second cost, not a wall-clock one.
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         timeout-minutes: 4
         with:
           toolchain: stable
