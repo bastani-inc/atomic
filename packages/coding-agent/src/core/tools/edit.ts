@@ -26,6 +26,7 @@ import {
 	type PreparedSection,
 	type WriteResult,
 } from "./hashline-engine/index.ts";
+import { NonMintingSnapshotStore } from "./non-minting-snapshot-store.ts";
 import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";
 import { resolveReadPath } from "./path-utils.ts";
 import { renderToolPath } from "./render-utils.ts";
@@ -214,7 +215,14 @@ export function createEditToolDefinition(
 	const ops = options?.operations ?? defaultEditOperations;
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	const fs = new EditFilesystem(cwd, ops);
-	const patcher = new Patcher({ fs, snapshots: hashlineStore.snapshots, blockResolver: nativeBlockResolver });
+	// Reads delegate to the session store; records are computed and dropped, so a rejection
+	// cannot mint the tag that would validate an identical retry. `recordHashlineSnapshot`
+	// below stays the single writer of provenance.
+	const patcher = new Patcher({
+		fs,
+		snapshots: new NonMintingSnapshotStore(hashlineStore.snapshots),
+		blockResolver: nativeBlockResolver,
+	});
 	const noopCounts = new Map<string, number>();
 	const batcher = new EditBatchCoordinator<EditToolResultLike>();
 	async function applySiblingEdits(
