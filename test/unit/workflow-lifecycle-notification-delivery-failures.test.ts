@@ -334,7 +334,8 @@ describe("workflow lifecycle admission failure recovery", () => {
 			await flushMicrotasks();
 
 			assert.equal(replacementWakeCount, 0, "retained old-chat delivery must clear before replacement activation");
-			assert.equal(extensionStore.snapshot().runs.length, 0);
+			assert.equal(extensionStore.snapshot().runs.length, 1);
+			assert.equal(extensionStore.snapshot().runs[0]?.id, "run-old-session");
 			startRun(extensionStore, "run-unrelated", "unrelated new chat workflow");
 			await flushMicrotasks();
 			assert.equal(replacementWakeCount, 0, "a non-terminal unrelated run must not wake the replacement chat");

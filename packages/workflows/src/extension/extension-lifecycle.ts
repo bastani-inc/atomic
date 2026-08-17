@@ -47,6 +47,17 @@ function installDbosProcessShutdown(): void {
 	process.once("beforeExit", () => void shutdownDbosQuietly());
 }
 
+/**
+ * `/reload`, `/fork`, `/new`, and `/resume` replace the host session inside
+ * one process that keeps running the workflows. The successor inherits the
+ * in-flight store and live executor handles, so those reasons must not stop
+ * or clear them. `startup` and any reason this code does not recognise still
+ * clear: neither names a predecessor that handed anything over.
+ */
+function replacementStopsWorkflows(reason: string | undefined): boolean {
+	return reason !== "reload" && reason !== "fork" && reason !== "new" && reason !== "resume";
+}
+
 export interface WorkflowLifecycleRegistrationDeps {
 	runtimeState: WorkflowExtensionRuntimeState;
 	storeWidgetRef: { current: (() => void) | null };
@@ -72,28 +83,35 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		const messageLabel = reason === "new" ? "Starting a new session" : "Resuming another session";
 		try {
 			const shouldSwitchSession = await confirmSessionSwitch(
-				`${actionLabel} and stop ${inFlightWorkflowCount} in-flight ${workflowNoun}?`,
-				`${messageLabel} will stop/kill ${inFlightWorkflowCount} in-flight ${workflowNoun} and clear workflow history tied to the current session.`,
+				`${actionLabel} with ${inFlightWorkflowCount} in-flight ${workflowNoun} still running?`,
+				`${messageLabel} keeps ${inFlightWorkflowCount} in-flight ${workflowNoun} running. Inspect with /workflow status.`,
 			);
 			if (shouldSwitchSession) return undefined;
 		} catch {
 			return undefined;
 		}
 		const cancelledLabel = reason === "new" ? "New session" : "Resume";
-		ctx?.ui?.notify?.(`${cancelledLabel} cancelled; in-flight workflows were left unchanged.`, "info");
+		ctx?.ui?.notify?.(`${cancelledLabel} cancelled; in-flight workflows keep running.`, "info");
 		return { cancel: true };
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		const reason =
+			typeof event === "object" && event !== null && "reason" in event
+				? (event as { readonly reason?: string }).reason
+				: undefined;
 		runtimeState.resetWorkflowDiscoveryForSession();
 		deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
 		await runtimeState.ensureWorkflowConfigLoaded();
-		killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
-		store.clear();
+		if (replacementStopsWorkflows(reason)) {
+			killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
+			store.clear();
+		}
 		clearForms();
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
 		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
-		stageControlRegistry.clear();
+		if (replacementStopsWorkflows(reason)) stageControlRegistry.clear();
+		else stageControlRegistry.clearDetached();
 		// Named workflows publish lifecycle notices through the normal notification path.
 		runtimeState.setNotificationsActive(true);
 		runtimeState.startWorkflowDiscoveryWarmup(() => {
@@ -141,10 +159,10 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			} finally {
 				stageControlRegistry.clear();
 			}
-		} else {
-			// Every non-quit host-session boundary invalidates detached lazy handles
-			// synchronously, before they can attach to the replacement session.
+		} else if (replacementStopsWorkflows(reason)) {
 			stageControlRegistry.clear();
+		} else {
+			stageControlRegistry.clearDetached();
 		}
 		deps.storeWidgetRef.current?.();
 		deps.storeWidgetRef.current = null;
