@@ -403,6 +403,19 @@ describe("tool graph inspection", () => {
 		assert.doesNotMatch(pathText, /atomic-issu[^e]/);
 		assert.ok(pathText.split("\n")[1]?.startsWith("  "), "wrapped header continuation must stay indented");
 
+		const slashWrap = renderToolDetail(tool({ args: undefined, name: "t", result: "abcdef/next" }), {
+			width: 7,
+			expanded: true,
+		});
+		assert.match(slashWrap, /\//, "an unrendered slash must stay available on a later row");
+		assert.match(slashWrap, /next/);
+		const commaWrap = renderToolDetail(tool({ args: undefined, name: "t", result: "abcdef,tail" }), {
+			width: 7,
+			expanded: true,
+		});
+		assert.match(commaWrap, /,/, "an unrendered comma must stay available on a later row");
+		assert.match(commaWrap, /tail/);
+
 		const themed = renderToolDetail(tool({ result: "ok" }), { width: 40, theme: defaultTheme });
 		assert.match(themed, /\x1b\[48;2;/);
 		assert.doesNotMatch(renderToolDetail(tool({ result: "ok" }), { width: 40 }), /\x1b/);

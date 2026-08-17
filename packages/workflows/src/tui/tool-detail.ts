@@ -158,7 +158,6 @@ function wrapPreserving(text: string, width: number, continuationWidth = width):
 			const budget = rows.length === 0 ? firstBudget : followingBudget;
 			if (suffixWidths[segmentIndex]! <= budget) {
 				rows.push(paragraph.slice(segments[segmentIndex]!.index));
-				segmentIndex = segments.length;
 				break;
 			}
 
@@ -189,9 +188,10 @@ function wrapPreserving(text: string, width: number, continuationWidth = width):
 
 			// No punctuation or whitespace fit in this row: truncate the single
 			// overlong component instead of splitting it across terminal rows.
+			// Leave a following wrap boundary unconsumed so `abcdef/next` keeps
+			// the `/` for the next row instead of dropping it with the ellipsis.
 			let componentEnd = segmentIndex;
 			while (componentEnd < segments.length && !isWrapBoundary(segments[componentEnd]!.segment)) componentEnd += 1;
-			if (componentEnd < segments.length) componentEnd += 1;
 			const ellipsisWidth = visibleWidth("…");
 			let prefix = "";
 			let prefixWidth = 0;
