@@ -7,6 +7,7 @@ import type {
 	PiKeybindings,
 	PiTheme,
 } from "../extension/wiring.js";
+import { createSessionScopedSingleton } from "./session-scoped-singleton.js";
 import type { StageInputAnswer, StagePromptAdapter } from "./stage-prompt.js";
 import type { StagePromptAnswerSource, Store } from "./store.js";
 import { store as defaultStore } from "./store.js";
@@ -329,4 +330,11 @@ export async function mountStageCustomUi(
 	return { request, component };
 }
 
-export const stageUiBroker = new StageUiBroker();
+const SESSION_KEY = "workflows:stage-ui:v1";
+const singleton = createSessionScopedSingleton(SESSION_KEY, () => new StageUiBroker());
+
+export const stageUiBroker = singleton.facade;
+
+export function adoptStageUiBroker(scope: object): StageUiBroker {
+	return singleton.adopt(scope);
+}

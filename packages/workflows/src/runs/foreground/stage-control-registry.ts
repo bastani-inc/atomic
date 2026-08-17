@@ -26,6 +26,7 @@
  */
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
@@ -433,4 +434,11 @@ export function createStageControlRegistry(): StageControlRegistry {
  * explicit instance via `RunOpts.stageControlRegistry`; the singleton
  * is the default consumer surface used by the extension factory.
  */
-export const stageControlRegistry: StageControlRegistry = createStageControlRegistry();
+const SESSION_KEY = "workflows:stage-control:v1";
+const singleton = createSessionScopedSingleton(SESSION_KEY, createStageControlRegistry);
+
+export const stageControlRegistry: StageControlRegistry = singleton.facade;
+
+export function adoptStageControlRegistry(scope: object): StageControlRegistry {
+	return singleton.adopt(scope);
+}

@@ -13,6 +13,8 @@
  * cross-ref: spec §8.1 Phase D (kill-runtime-wiring downstream)
  */
 
+import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -123,4 +125,11 @@ export function createCancellationRegistry(): CancellationRegistry {
  * Singleton registry for the default runtime. Consumers needing isolation
  * should call createCancellationRegistry() instead.
  */
-export const cancellationRegistry: CancellationRegistry = createCancellationRegistry();
+const SESSION_KEY = "workflows:cancellation:v1";
+const singleton = createSessionScopedSingleton(SESSION_KEY, createCancellationRegistry);
+
+export const cancellationRegistry: CancellationRegistry = singleton.facade;
+
+export function adoptCancellationRegistry(scope: object): CancellationRegistry {
+	return singleton.adopt(scope);
+}

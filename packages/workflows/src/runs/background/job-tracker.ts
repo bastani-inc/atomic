@@ -9,6 +9,8 @@
  * cross-ref: spec detached-runner §job-tracker
  */
 
+import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -113,4 +115,11 @@ export function createJobTracker(): JobTracker {
 /**
  * Singleton tracker for the default runtime.
  */
-export const jobTracker: JobTracker = createJobTracker();
+const SESSION_KEY = "workflows:job-tracker:v1";
+const singleton = createSessionScopedSingleton(SESSION_KEY, createJobTracker);
+
+export const jobTracker: JobTracker = singleton.facade;
+
+export function adoptJobTracker(scope: object): JobTracker {
+	return singleton.adopt(scope);
+}

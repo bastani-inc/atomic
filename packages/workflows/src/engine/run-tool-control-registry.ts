@@ -13,6 +13,7 @@
  * cross-ref: issue #2078; src/runs/foreground/stage-control-registry.ts
  */
 
+import { createSessionScopedSingleton } from "../shared/session-scoped-singleton.js";
 import type { WorkflowToolNodeIdentity } from "../shared/types.js";
 import type { ToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
 import { WorkflowToolAbortError, type WorkflowToolAbortScope } from "./workflow-tool-abort.js";
@@ -130,7 +131,14 @@ export function createToolControlRegistry(): ToolControlRegistry {
  * through `RunOpts.toolControlRegistry`; the singleton is the default consumer
  * surface used by the extension factory.
  */
-export const toolControlRegistry: ToolControlRegistry = createToolControlRegistry();
+const SESSION_KEY = "workflows:tool-control:v1";
+const singleton = createSessionScopedSingleton(SESSION_KEY, createToolControlRegistry);
+
+export const toolControlRegistry: ToolControlRegistry = singleton.facade;
+
+export function adoptToolControlRegistry(scope: object): ToolControlRegistry {
+	return singleton.adopt(scope);
+}
 
 /**
  * Await settlement of aborted tool handles up to `timeoutMs` and report the

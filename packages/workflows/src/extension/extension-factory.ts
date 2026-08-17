@@ -8,6 +8,7 @@ import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
 import { installStoreWidget, installToolExecutionHooks } from "../tui/store-widget-installer.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
+import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
 import { registerWorkflowLifecycleHandlers } from "./extension-lifecycle.js";
 import { createWorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
@@ -68,6 +69,8 @@ function registerIntercomControl(pi: ExtensionAPI, intercomControlRef: { current
 }
 
 function factory(pi: ExtensionAPI): void {
+	adoptWorkflowSessionRunState(pi.events);
+
 	const adapters = buildRuntimeAdapters(pi);
 	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);
 	const postMortemResolverDeps = {

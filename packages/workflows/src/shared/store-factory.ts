@@ -1,3 +1,4 @@
+import { createSessionScopedSingleton } from "./session-scoped-singleton.js";
 import { createStoreContext } from "./store-internal.js";
 import { createPromptStoreMethods } from "./store-prompt-methods.js";
 import type { Store } from "./store-public-types.js";
@@ -15,4 +16,11 @@ export function createStore(): Store {
 	};
 }
 
-export const store: Store = createStore();
+const SESSION_KEY = "workflows:store:v1";
+const singleton = createSessionScopedSingleton(SESSION_KEY, createStore);
+
+export const store: Store = singleton.facade;
+
+export function adoptStore(scope: object): Store {
+	return singleton.adopt(scope);
+}
