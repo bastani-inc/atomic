@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
-import { test } from "vitest";
+import { beforeEach, test } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
@@ -23,10 +23,15 @@ import type {
 	StageControlHandle,
 	StageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.ts";
+import { resetSessionScopedSingletonPreAdoptionForTests } from "../../packages/workflows/src/shared/session-scoped-singleton.ts";
 import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.ts";
 import type { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.ts";
 import type { Store } from "../../packages/workflows/src/shared/store.ts";
 import { readText } from "../helpers/runtime.ts";
+
+beforeEach(() => {
+	resetSessionScopedSingletonPreAdoptionForTests();
+});
 
 /** Full transformed re-evaluation of the workflows graph, twice, through the host loader. */
 const WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;

@@ -5,9 +5,12 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { beforeEach, test } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
-import { createSessionScopedSingleton } from "../../packages/workflows/src/shared/session-scoped-singleton.ts";
+import {
+	createSessionScopedSingleton,
+	resetSessionScopedSingletonPreAdoptionForTests,
+} from "../../packages/workflows/src/shared/session-scoped-singleton.ts";
 
 interface Cancellable {
 	cancelled: boolean;
@@ -22,6 +25,10 @@ function createCancellable(): Cancellable {
 		},
 	};
 }
+
+beforeEach(() => {
+	resetSessionScopedSingletonPreAdoptionForTests();
+});
 
 test("adopt isolates two scopes and does not alias cancellation across them", () => {
 	const singleton = createSessionScopedSingleton("workflows:isolation-probe:v1", createCancellable);
@@ -69,4 +76,8 @@ test("duplicate module copies adopt the populated pre-adoption state for one key
 	assert.notEqual(adoptedByB, localB);
 	assert.equal(adoptedByA, adoptedByB);
 	assert.equal(adoptedByA.cancelled, true);
+	assert.equal(singletonA.current(), adoptedByA);
+	assert.equal(singletonB.current(), adoptedByA);
+	assert.equal(singletonA.facade.cancelled, true);
+	assert.equal(singletonB.facade.cancelled, true);
 });
