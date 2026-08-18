@@ -23,6 +23,7 @@ export interface StageDraft {
 	readonly endedAt?: number;
 	readonly durationMs?: number;
 	readonly model?: string;
+	readonly thinkingLevel?: string;
 	readonly fastMode?: boolean;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: DurableStageCheckpoint["modelAttempts"];
@@ -338,6 +339,7 @@ export function mergeStageDraft(
 		...valueOrExisting("endedAt", checkpoint, existing),
 		...valueOrExisting("durationMs", checkpoint, existing),
 		...valueOrExisting("model", checkpoint, existing),
+		...valueOrExisting("thinkingLevel", checkpoint, existing),
 		...valueOrExisting("fastMode", checkpoint, existing),
 		...valueOrExisting("attemptedModels", checkpoint, existing),
 		...valueOrExisting("modelAttempts", checkpoint, existing),

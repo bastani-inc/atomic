@@ -48,6 +48,7 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
 		resumedAt: opts.resumedAt,
 		blockedByStageId: opts.blockedByStageId,
 		model: opts.model,
+		thinkingLevel: opts.thinkingLevel,
 		workflowChild: opts.workflowChild,
 		workflowChildRun: opts.workflowChildRun,
 		fastMode: opts.fastMode,
@@ -418,14 +419,14 @@ describe("renderNodeCard — status border colours", () => {
 });
 
 describe("renderNodeCard — metadata line", () => {
-	test("stages hide model metadata and keep fallback geometry", () => {
+	test("stages show a compact model row and keep geometry", () => {
 		const lines = renderNodeCard(makeStage({ status: "completed", durationMs: 1200, model: "gpt-5-mini" }), {
 			theme,
 		});
-		const rendered = stripAnsi(lines.join("\n"));
 
-		assert.doesNotMatch(rendered, /gpt-5-mini/);
-		assert.match(stripAnsi(lines[3]!), /root/);
+		// Model sits on its own row; dependency metadata moves one row down.
+		assert.match(stripAnsi(lines[3]!), /gpt-5-mini/);
+		assert.match(stripAnsi(lines[4]!), /root/);
 		assert.equal(lines.length, NODE_H);
 		for (const line of lines) {
 			assert.equal(stripAnsi(line).length, NODE_W);
@@ -436,11 +437,11 @@ describe("renderNodeCard — metadata line", () => {
 		const lines = renderNodeCard(makeStage({ status: "completed", topologyState: "unavailable", fastMode: true }), {
 			theme,
 		});
-		const metadata = stripAnsi(lines[3]!).slice(1, -1).trim();
+		const metadata = stripAnsi(lines[4]!).slice(1, -1).trim();
 		assert.equal(metadata, "topology unavailable");
 	});
 
-	test("running stages use dependency metadata instead of model metadata", () => {
+	test("running stages show both a model row and dependency metadata", () => {
 		const lines = renderNodeCard(
 			makeStage({
 				status: "running",
@@ -451,9 +452,8 @@ describe("renderNodeCard — metadata line", () => {
 			{ theme },
 		);
 
-		const rendered = stripAnsi(lines.join("\n"));
-		assert.doesNotMatch(rendered, /gpt-5-mini/);
-		assert.match(stripAnsi(lines[3]!), /1 dep/);
+		assert.match(stripAnsi(lines[3]!), /gpt-5-mini/);
+		assert.match(stripAnsi(lines[4]!), /1 dep/);
 	});
 
 	test("child workflow boundaries show child workflow and run summary", () => {
@@ -547,14 +547,68 @@ describe("renderNodeCard — metadata line", () => {
 		}
 	});
 
-	test("stages omit the fast mode marker from dependency metadata", () => {
+	test("shows the fast tier on the model row, not the deps row", () => {
 		const lines = renderNodeCard(makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }), {
 			theme,
 		});
-		const rendered = stripAnsi(lines.join("\n"));
 
-		assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex fast/);
-		assert.equal(stripAnsi(lines[3]!).slice(1, -1).trim(), "root");
+		// Model row: provider stripped, fast marker appended (footer parity).
+		assert.match(stripAnsi(lines[3]!), /gpt-5\.1-codex fast/);
+		assert.doesNotMatch(stripAnsi(lines[3]!), /openai\//);
+		// Deps row is now just the dependency text — the fast marker moved up.
+		assert.match(stripAnsi(lines[4]!), /root/);
+		assert.doesNotMatch(stripAnsi(lines[4]!), /fast/);
+	});
+
+	test("keeps the full fast marker and truncates a long model name instead of the marker", () => {
+		// A long configured Codex model + fast overflows the ~22-cell card. The
+		// marker is load-bearing, so the model name is truncated, never ` fast`.
+		const lines = renderNodeCard(
+			makeStage({
+				status: "running",
+				startedAt: Date.now() - 500,
+				model: "openai-codex/gpt-5.3-codex-spark",
+				fastMode: true,
+			}),
+			{ theme },
+		);
+		const modelRow = stripAnsi(lines[3]!);
+		assert.ok(modelRow.replaceAll("│", "").trimEnd().endsWith("fast"), modelRow);
+		assert.doesNotMatch(modelRow, /f…|fa…|fas…/);
+		assert.match(modelRow, /…/);
+	});
+
+	test("reserves the thinking level and truncates a long model name (non-fast)", () => {
+		// #1859 follow-up: the thinking level is load-bearing too, not only the
+		// fast marker. A long model id must lose characters before the level does.
+		for (const [model, level, expected] of [
+			["anthropic/claude-haiku-4-5", "high", "· high"],
+			["anthropic/claude-sonnet-4-5-20250929", "medium", "· medium"],
+		] as const) {
+			const lines = renderNodeCard(
+				makeStage({ status: "running", startedAt: Date.now() - 500, model, thinkingLevel: level }),
+				{ theme },
+			);
+			const modelRow = stripAnsi(lines[3]!).replaceAll("│", "").trim();
+			assert.ok(modelRow.endsWith(expected), `${model} :${level} → ${modelRow}`);
+			assert.match(modelRow, /…/);
+		}
+	});
+
+	test("keeps both the thinking level and the fast marker on overflow, truncating the model", () => {
+		const lines = renderNodeCard(
+			makeStage({
+				status: "running",
+				startedAt: Date.now() - 500,
+				model: "openai/gpt-5.1-codex",
+				thinkingLevel: "high",
+				fastMode: true,
+			}),
+			{ theme },
+		);
+		const modelRow = stripAnsi(lines[3]!).replaceAll("│", "").trim();
+		assert.ok(modelRow.endsWith("· high fast"), modelRow);
+		assert.match(modelRow, /…/);
 	});
 });
 

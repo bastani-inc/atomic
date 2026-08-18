@@ -27,6 +27,7 @@
 
 import type { StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
+import { codexFastModeLabel } from "./codex-fast-label.js";
 import { BOLD, hexBg, hexToAnsi, lerpColor, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -130,6 +131,29 @@ function metaText(stage: StageSnapshot): string {
 	const deps = stage.parentIds.length;
 	const dependencyText = deps === 0 ? "root" : deps === 1 ? "1 dep" : `${deps} deps`;
 	return dependencyText;
+}
+
+/**
+ * Compact model label for the card's dedicated model row (~22 cells): the
+ * provider prefix is dropped, the thinking level is appended when set (omitted
+ * when off), and the Codex fast tier is appended via the shared footer helper.
+ * The thinking level and the ` fast` marker are load-bearing, so on overflow
+ * the model name is truncated first and both suffixes are always kept whole.
+ * `—` when no model is resolved yet.
+ */
+function modelText(stage: StageSnapshot, innerWidth: number): string {
+	const model = stage.model;
+	if (model === undefined || model === "") return "—";
+	const slash = model.lastIndexOf("/");
+	const short = slash >= 0 ? model.slice(slash + 1) : model;
+	const level = stage.thinkingLevel;
+	const showLevel = level !== undefined && level !== "" && level !== "off";
+	const suffix = codexFastModeLabel(showLevel ? ` · ${level}` : "", stage.fastMode === true);
+	const full = `${short}${suffix}`;
+	if (visibleWidth(full) <= innerWidth) return full;
+	// Truncate the model name first so the thinking level and fast marker survive.
+	const room = Math.max(1, innerWidth - visibleWidth(suffix));
+	return `${truncateToWidth(short, room, "…")}${suffix}`;
 }
 
 function workflowChildRunRows(stage: StageSnapshot, width: number): string[] {
@@ -299,6 +323,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 
 	const contentRows = Math.max(0, height - 2);
 	const metaLine = `${bg}${bc}│${RESET}${centreColored(metaText(stage), innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`;
+	const modelLine = `${bg}${bc}│${RESET}${centreColored(modelText(stage, innerWidth), innerWidth, theme.textMuted, bg)}${bg}${bc}│${RESET}`;
 	const childRunLines = workflowChildRunRows(stage, innerWidth).map(
 		(row) => `${bg}${bc}│${RESET}${centreColored(row, innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`,
 	);
@@ -327,9 +352,10 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 					`${bg}${bc}│${RESET}` +
 						centreColored("↵ enter to respond", innerWidth, theme.dim, bg) +
 						`${bg}${bc}│${RESET}`,
+					modelLine,
 				]
 			: childSummaryLine === undefined
-				? [durLine, statusLine, metaLine]
+				? [durLine, statusLine, modelLine, metaLine]
 				: [...childRunLines, childSummaryLine];
 
 	// A queued steer/follow-up is invisible once the user leaves the stage chat,

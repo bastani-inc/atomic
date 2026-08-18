@@ -511,8 +511,10 @@ export class StageSessionController {
 		const attemptedModels = this.modelAttempts.map((attempt) => attempt.model);
 		const model = this.selectedModel ?? workflowModelId(this.session?.model);
 		const fastMode = this.isWorkflowFastModeEnabled();
+		const thinkingLevel = this.session?.thinkingLevel ?? this.pendingThinkingLevel;
 		return {
 			...(model !== undefined ? { model } : {}),
+			...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
 			...(fastMode !== undefined ? { fastMode } : {}),
 			...(attemptedModels.length > 0 ? { attemptedModels } : {}),
 			...(this.modelAttempts.length > 0 ? { modelAttempts: [...this.modelAttempts] } : {}),
