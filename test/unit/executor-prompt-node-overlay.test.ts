@@ -31,7 +31,7 @@ describe("executor.run prompt nodes", () => {
 			description: "",
 			inputs: {},
 			outputs: {
-				choice: Type.Optional(Type.Any()),
+				choice: Type.Optional(Type.String()),
 			},
 			run: async (ctx) => {
 				const choice = await ctx.ui.custom<string>(

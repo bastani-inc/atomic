@@ -18,16 +18,17 @@ import type { PiCustomComponent } from "../../packages/workflows/src/extension/u
 import {
 	type AgentSession,
 	assert,
+	assistantTextMessage,
 	createStore,
 	deriveGraphTheme,
 	flush,
 	makeFakeKeybindings,
 	makeHandle,
+	makeTestTui,
 	StageChatView,
 	StageUiBroker,
 	setupRun,
 	stripAnsi,
-	type TUI,
 } from "./stage-chat-view-helpers.js";
 
 const REJECTION_MESSAGE = "overlay mode is unavailable";
@@ -53,10 +54,7 @@ function makeOverlayStageChatView(
 		handle,
 		onDetach: () => {},
 		onClose: () => {},
-		piTui: {
-			requestRender: () => {},
-			terminal: { rows: 32, columns: 80 },
-		} as unknown as TUI,
+		piTui: makeTestTui(32),
 		piTheme: {},
 		piKeybindings: makeFakeKeybindings(),
 		stageUiBroker: broker,
@@ -98,9 +96,7 @@ describe("StageChatView overlay custom UI", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const broker = new StageUiBroker(store);
-		const view = makeOverlayStageChatView(broker, store, [
-			{ role: "assistant", content: [{ type: "text", text: "EARLIER-HISTORY-MARKER" }] },
-		] as unknown as AgentSession["messages"]);
+		const view = makeOverlayStageChatView(broker, store, [assistantTextMessage("EARLIER-HISTORY-MARKER")]);
 
 		const received: string[] = [];
 		const pending = broker.requestCustomUi(

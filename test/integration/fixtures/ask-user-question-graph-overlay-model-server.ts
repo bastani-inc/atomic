@@ -70,7 +70,61 @@ const QUESTION_ARGUMENTS = JSON.stringify({
 	],
 });
 
-function sse(response: ServerResponse, event: unknown): void {
+type FunctionCallOutput = {
+	readonly id: string;
+	readonly call_id: string;
+	readonly name: string;
+	readonly arguments: string;
+	readonly type: "function_call";
+	readonly status: "in_progress" | "completed";
+};
+
+type AssistantMessageOutput = {
+	readonly id: string;
+	readonly type: "message";
+	readonly role: "assistant";
+	readonly status: "in_progress" | "completed";
+	readonly content: readonly {
+		readonly type: "output_text";
+		readonly text: string;
+		readonly annotations: readonly never[];
+	}[];
+};
+
+type ResponseOutputItem = FunctionCallOutput | AssistantMessageOutput;
+
+type ResponseSseEvent =
+	| { readonly type: "response.output_item.added"; readonly output_index: number; readonly item: ResponseOutputItem }
+	| { readonly type: "response.output_item.done"; readonly output_index: number; readonly item: ResponseOutputItem }
+	| {
+			readonly type: "response.function_call_arguments.delta";
+			readonly output_index: number;
+			readonly item_id: string;
+			readonly delta: string;
+	  }
+	| {
+			readonly type: "response.function_call_arguments.done";
+			readonly output_index: number;
+			readonly item_id: string;
+			readonly arguments: string;
+	  }
+	| {
+			readonly type: "response.output_text.delta";
+			readonly output_index: number;
+			readonly content_index: number;
+			readonly item_id: string;
+			readonly delta: string;
+	  }
+	| {
+			readonly type: "response.completed";
+			readonly response: {
+				readonly id: string;
+				readonly status: "completed";
+				readonly output: readonly ResponseOutputItem[];
+			};
+	  };
+
+function sse(response: ServerResponse, event: ResponseSseEvent): void {
 	response.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
@@ -82,7 +136,7 @@ function openStream(response: ServerResponse): void {
 	});
 }
 
-function completeResponse(response: ServerResponse, responseId: string, output: readonly unknown[]): void {
+function completeResponse(response: ServerResponse, responseId: string, output: readonly ResponseOutputItem[]): void {
 	for (const [outputIndex, item] of output.entries()) {
 		sse(response, { type: "response.output_item.done", output_index: outputIndex, item });
 	}
