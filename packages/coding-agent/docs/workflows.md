@@ -4664,7 +4664,7 @@ Best practices:
 - Generate more candidates than you need, then filter hard by an explicit rubric.
 - Dedupe before judging so near-identical candidates do not dominate the shortlist.
 - Use this for exploration, naming, design options, hypotheses, and lightweight eval ideas.
-- When the filter ranks candidates rather than applying a threshold, use graded per-criterion integer scores instead of binary keep/drop decisions, and repeat pairwise rankings with candidates swapped between the A and B slots to reduce positional bias. See [Verification scaling](#verification-scaling) for the shared judge guidance.
+- When the filter ranks candidates rather than applying a threshold, use the same judge guidance as Tournament: graded per-criterion integer scores rather than binary keep/drop, a Bradley–Terry preference from the score gap so near-ties stay near-ties, and K repeats with candidates swapped between the A and B slots. See [Verification scaling](#verification-scaling).
 
 ##### 5. Tournament
 
