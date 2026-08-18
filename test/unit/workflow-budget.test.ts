@@ -8,6 +8,7 @@ import { loadConfigFile } from "../../packages/workflows/src/extension/config-fi
 import { withWorkflowDefaults } from "../../packages/workflows/src/extension/config-loader.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import {
+	type EffectiveBudget,
 	resolve_budget,
 	validateWorkflowBudget,
 	type WorkflowBudget,
@@ -28,6 +29,18 @@ const BUDGET_FIELDS = [
 function budgetField(field: keyof WorkflowBudget, value: number): WorkflowBudget {
 	return { [field]: value };
 }
+
+type IsAssignable<TSource, TTarget> = [TSource] extends [TTarget] ? true : false;
+type UnresolvedBudget = {
+	readonly maxDurationMs: number;
+	readonly maxTokens: number;
+	readonly maxCost: number;
+	readonly warnAtPercent: number;
+};
+
+const effectiveBudgetRejectsUnresolvedDeclarations: IsAssignable<UnresolvedBudget, EffectiveBudget> extends false
+	? true
+	: never = true;
 
 describe("workflow budget resolution", () => {
 	test("budget later layers win per field for every layer-presence combination", () => {
@@ -57,6 +70,21 @@ describe("workflow budget resolution", () => {
 				}
 			}
 		}
+	});
+
+	test("budget later partial layers retain earlier fields", () => {
+		const config = { maxDurationMs: 10, maxTokens: 11, maxCost: 12.5, warnAtPercent: 13.5 };
+		const runResolved = resolve_budget({ config, run: { maxTokens: 31 } });
+		assert.equal(runResolved.maxDurationMs, 10);
+		assert.equal(runResolved.maxTokens, 31);
+		assert.equal(runResolved.maxCost, 12.5);
+		assert.equal(runResolved.warnAtPercent, 13.5);
+
+		const definitionResolved = resolve_budget({ config, definition: { maxCost: 5 } });
+		assert.equal(definitionResolved.maxDurationMs, 10);
+		assert.equal(definitionResolved.maxTokens, 11);
+		assert.equal(definitionResolved.maxCost, 5);
+		assert.equal(definitionResolved.warnAtPercent, 13.5);
 	});
 
 	test("budget later zero disables a field", () => {
@@ -164,4 +192,6 @@ describe("workflow budget plumbing", () => {
 test("budget_exceeded is a resumable returned blocked status", () => {
 	assert.equal(isReturnedBlockedWorkflowStatus("budget_exceeded"), true);
 	assert.equal(isReturnedResumableBlockedWorkflowStatus("budget_exceeded"), true);
+
+	assert.equal(effectiveBudgetRejectsUnresolvedDeclarations, true);
 });
