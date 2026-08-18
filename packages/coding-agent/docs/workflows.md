@@ -3512,6 +3512,27 @@ The `/workflow` argument-completion popup reads that same live registry. Project
 
 A successful rescan may still contain per-resource diagnostics. Both reload surfaces show `CONFIG_INVALID`, `IMPORT_FAILED`, `INVALID_DEFINITION`, `PATH_NOT_FOUND`, and duplicate-name diagnostics instead of reporting bare success while silently skipping a resource. Valid sibling workflows remain available. Fix the reported source/path and reload again; no process restart is required.
 
+## Run budgets
+
+Set an optional `budget` on workflow extension config, an authored `workflow({...})` definition, or a `workflow({ action: "run" })` tool call. Each field resolves independently: run override, then definition, then config default. An omitted field falls through; a present `0` disables that dimension.
+
+```ts
+export default workflow({
+  name: "bounded-review",
+  description: "Review a change within an operator-selected budget.",
+  budget: { maxDurationMs: 900_000, maxTokens: 50_000, maxCost: 5, warnAtPercent: 80 },
+  outputs: {},
+  run: async (ctx) => {
+    // ...
+    return {};
+  },
+});
+```
+
+`maxDurationMs` and `maxTokens` must be non-negative finite integers. `maxCost` and `warnAtPercent` must be non-negative finite numbers. Invalid config produces `CONFIG_INVALID`; invalid authored or direct-run declarations throw a `TypeError` before the workflow body runs. Nested `ctx.workflow(child)` calls use the child's own declared budget and retain the root config default.
+
+This initial budget slice only resolves and validates declarations. It does not meter, warn, pause, or stop a workflow, so configuring a budget does not change a run's behavior yet.
+
 ## Workflow Configuration
 
 Configured workflow paths live in workflow extension config. Project config paths are relative to the project root. Global config paths are relative to `~/.atomic/agent`.
@@ -3538,6 +3559,7 @@ Example config:
   },
   "defaultConcurrency": 4,
   "maxDepth": 4,
+  "budget": { "maxDurationMs": 0, "maxTokens": 0, "maxCost": 0, "warnAtPercent": 0 },
   "persistRuns": true,
   "statusFile": false,
   "resumeInFlight": "ask",
@@ -3557,6 +3579,7 @@ Runtime config defaults:
 |-----|---------|---------|
 | `defaultConcurrency` | `4` | Default concurrency for authored `ctx.parallel(...)` execution |
 | `maxDepth` | `4` | Maximum workflow nesting depth |
+| `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 0 }` | Default per-run budget declaration; `0` disables a dimension |
 | `persistRuns` | `true` | Persist run metadata for status/resume/history |
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
 | `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
