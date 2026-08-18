@@ -33,6 +33,7 @@ import type {
 	WorkflowTaskResult,
 	WorkflowTaskStep,
 } from "./authoring-contract-stage.js";
+import type { EffectiveBudget, WorkflowBudget } from "./budget.js";
 
 export type WorkflowCustomUiComponent = Component & { dispose?(): void };
 export type WorkflowCustomUiTui = TUI;
@@ -216,6 +217,8 @@ export interface WorkflowRuntimeConfig {
 	readonly statusFile: boolean;
 	readonly statusFilePath?: string;
 	readonly resumeInFlight: "ask" | "auto" | "never";
+	/** Resolved default budget for workflow runs. */
+	readonly budget?: EffectiveBudget;
 	readonly worktree?: {
 		readonly symlinkDirectories: readonly string[];
 	};
@@ -243,6 +246,8 @@ export interface WorkflowDefinition<
 	readonly description: string;
 	readonly autoAttach?: true;
 	readonly heartbeatIntervalMinutes: number;
+	/** Optional budget declaration resolved when this workflow runs. */
+	readonly budget?: WorkflowBudget;
 	readonly inputs: WorkflowInputSchemaMap;
 	readonly outputs?: WorkflowOutputSchemaMap;
 	readonly inputBindings?: WorkflowInputBindings;
@@ -299,6 +304,8 @@ export interface RunOpts {
 	readonly signal?: AbortSignal;
 	readonly deferWorkflowStart?: boolean;
 	readonly config?: WorkflowRuntimeConfig;
+	/** Per-run budget override. Each field resolves over definition and config values. */
+	readonly budget?: WorkflowBudget;
 	readonly models?: WorkflowModelCatalogPort;
 	readonly registry?: object;
 	readonly depth?: number;

@@ -1,3 +1,4 @@
+import { validateWorkflowBudget } from "../shared/budget.js";
 import type { ConfigDiagnostic, WorkflowExtensionConfig } from "./config-loader.js";
 import { WORKFLOW_LIFECYCLE_NOTICE_KINDS, type WorkflowLifecycleNoticeKind } from "./lifecycle-notifications.js";
 
@@ -61,6 +62,11 @@ function validateConfig(value: unknown): string | null {
 		if (v !== "ask" && v !== "auto" && v !== "never") {
 			return `"resumeInFlight" must be "ask", "auto", or "never", got ${JSON.stringify(v)}`;
 		}
+	}
+
+	if ("budget" in c) {
+		const reason = validateWorkflowBudget(c.budget, "budget");
+		if (reason !== null) return reason;
 	}
 
 	if ("workflowNotifications" in c) {

@@ -3,7 +3,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
-import type { WorkflowInputValues } from "../shared/types.js";
+import type { WorkflowBudget, WorkflowInputValues } from "../shared/types.js";
 import type { WidgetFactory } from "../tui/store-widget-installer.js";
 import type { RenderResultOpts, WorkflowToolResult } from "./render-result.js";
 import type { PiUISurface } from "./wiring.js";
@@ -197,6 +197,8 @@ export interface ExtensionAPI {
 export interface WorkflowToolArgs {
 	workflow?: string;
 	inputs?: WorkflowInputValues;
+	/** Per-run budget override for action "run". */
+	budget?: WorkflowBudget;
 	action?:
 		| "models"
 		| "run"

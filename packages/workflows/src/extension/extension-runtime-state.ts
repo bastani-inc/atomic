@@ -127,6 +127,7 @@ export function createWorkflowExtensionRuntimeState(
 			persistRuns: WORKFLOW_CONFIG_DEFAULTS.persistRuns,
 			statusFile: WORKFLOW_CONFIG_DEFAULTS.statusFile,
 			resumeInFlight: WORKFLOW_CONFIG_DEFAULTS.resumeInFlight,
+			budget: withWorkflowDefaults({}).budget,
 			worktree: WORKFLOW_CONFIG_DEFAULTS.worktree,
 		},
 	};
@@ -355,6 +356,7 @@ export function createWorkflowExtensionRuntimeState(
 			persistRuns: effectiveConfig.persistRuns,
 			statusFile: effectiveConfig.statusFile,
 			resumeInFlight: effectiveConfig.resumeInFlight,
+			budget: effectiveConfig.budget,
 			worktree: effectiveConfig.worktree,
 		};
 		lifecycleNotificationConfigRef.current = effectiveConfig.workflowNotifications;

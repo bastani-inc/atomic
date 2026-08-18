@@ -18,6 +18,7 @@ import type { TSchema } from "typebox";
 import type * as AuthoringContract from "./authoring-contract.js";
 import type { ToolNodeSnapshot } from "./store-types.js";
 
+export type { EffectiveBudget, ResolveBudgetLayers, WorkflowBudget } from "./budget.js";
 export type { AgentSessionEvent, ModelCycleResult, PromptOptions, TSchema, VerbatimCompactionResult };
 
 export type StageUserMessageContent = Parameters<AgentSession["sendUserMessage"]>[0];

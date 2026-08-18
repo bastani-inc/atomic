@@ -47,6 +47,7 @@ import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
+import { resolve_budget } from "../shared/budget.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { store as defaultStore } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -129,6 +130,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	}
 
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
+	resolve_budget({ config: opts.config?.budget, definition: def.budget, run: opts.budget });
 	const runId = opts.runId ?? crypto.randomUUID();
 	const exitScope = Symbol(`workflow-exit:${runId}`);
 	const ownController = new AbortController();

@@ -19,6 +19,7 @@ import ralph from "../../builtin/ralph.js";
 import tournament from "../../builtin/tournament.js";
 import { isBrandedWorkflowDefinition } from "../authoring/workflow.js";
 import * as workflowsSdkSurface from "../sdk-surface.js";
+import { validateWorkflowBudget } from "../shared/budget.js";
 
 const WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
 const WORKFLOWS_BUILTIN_MODULE_SPECIFIER = `${WORKFLOWS_MODULE_SPECIFIER}/builtin`;
@@ -129,6 +130,10 @@ export function validateWorkflowDefinitionShape(value: unknown): string | null {
 	}
 	if (typeof d.run !== "function") {
 		return "run must be a function";
+	}
+	if (d.budget !== undefined) {
+		const reason = validateWorkflowBudget(d.budget, "budget");
+		if (reason !== null) return reason;
 	}
 	return null;
 }

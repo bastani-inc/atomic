@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertWorkflowBudget, type WorkflowBudget } from "../shared/budget.js";
 import type {
 	WorkflowDefinition,
 	WorkflowInputBindings,
@@ -133,6 +134,10 @@ function freezeInputBindings(binding: WorkflowWorktreeInputBinding | undefined):
 	});
 }
 
+function freezeBudget(budget: WorkflowBudget | undefined): WorkflowBudget | undefined {
+	return budget === undefined ? undefined : Object.freeze({ ...budget });
+}
+
 export function workflow<
 	const TInputs extends WorkflowInputSchemaMap = Record<never, never>,
 	const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
@@ -166,6 +171,7 @@ export function workflow<
 	if (!Number.isFinite(heartbeatIntervalMinutes) || heartbeatIntervalMinutes < 0) {
 		throw new TypeError("workflow: heartbeatIntervalMinutes must be a non-negative finite number");
 	}
+	assertWorkflowBudget(spec.budget, "workflow: budget");
 
 	const name = resolveWorkflowName(spec.name);
 	const normalizedName = normalizeWorkflowName(name);
@@ -173,6 +179,7 @@ export function workflow<
 	const frozenInputs = freezeSchemaMap(spec.inputs ?? ({} as TInputs));
 	const frozenOutputs = freezeSchemaMap(spec.outputs);
 	const inputBindings = freezeInputBindings(spec.worktreeFromInputs);
+	const budget = freezeBudget(spec.budget);
 	const run: WorkflowRunFn<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>> = async (ctx) =>
 		specRun(ctx);
 
@@ -186,6 +193,7 @@ export function workflow<
 		inputs: frozenInputs,
 		outputs: frozenOutputs,
 		...(inputBindings !== undefined ? { inputBindings } : {}),
+		...(budget !== undefined ? { budget } : {}),
 		run,
 	};
 

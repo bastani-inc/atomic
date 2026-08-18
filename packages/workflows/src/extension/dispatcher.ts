@@ -13,6 +13,7 @@ import { jobTracker as defaultJobTracker, type JobTracker } from "../runs/backgr
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { resolve_budget } from "../shared/budget.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
 import { store as defaultStore, type Store } from "../shared/store.js";
@@ -163,13 +164,12 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			}
 
 			const policy = opts.policy ?? INTERACTIVE_WORKFLOW_POLICY;
-
-			// Pre-validate inputs against the workflow's declared schema. The
-			// executor would otherwise throw the same TypeError deep inside the
-			// background promise — silently from the caller's perspective. Catch
-			// it here so the dispatch result names what's missing.
+			// Pre-validate inputs and budget declarations. The executor would otherwise
+			// reject them deep in the background promise, silently from the caller's
+			// perspective. Catch errors here so the dispatch result names the problem.
 			try {
 				resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
+				resolve_budget({ config: opts.config?.budget, definition: def.budget, run: args.budget });
 			} catch (err) {
 				return failedRunResult(def.name, "", err instanceof Error ? err.message : String(err));
 			}
@@ -186,6 +186,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					persistence: opts.persistence,
 					mcp: opts.mcp,
 					config: opts.config,
+					budget: args.budget,
 					models: opts.models,
 					executionMode: policy.mode,
 					cwd: opts.cwd,

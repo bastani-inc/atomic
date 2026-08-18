@@ -18,6 +18,7 @@
 
 import { isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getAgentDir, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
+import { type EffectiveBudget, resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import { loadConfigFile } from "./config-file-loader.js";
 import type { WorkflowLifecycleNoticeKind } from "./lifecycle-notifications.js";
 
@@ -49,6 +50,8 @@ export interface WorkflowWorktreeConfig {
 export interface WorkflowExtensionConfig {
 	/** Explicit named workflows to register by module path. */
 	readonly workflows?: Readonly<Record<string, WorkflowConfigEntry>>;
+	/** Default budget for every workflow run. Each `0` disables its dimension. */
+	readonly budget?: WorkflowBudget;
 	/** Maximum workflow recursion depth. Default: 4. */
 	readonly maxDepth?: number;
 	/** Default stage concurrency. Default: 4. */
@@ -135,6 +138,7 @@ export interface LoadWorkflowConfigOpts {
 function mergeConfigs(base: WorkflowExtensionConfig, override: WorkflowExtensionConfig): WorkflowExtensionConfig {
 	const workflows =
 		base.workflows || override.workflows ? { ...(base.workflows ?? {}), ...(override.workflows ?? {}) } : undefined;
+	const budget = base.budget || override.budget ? { ...(base.budget ?? {}), ...(override.budget ?? {}) } : undefined;
 
 	return {
 		...(base.maxDepth !== undefined || override.maxDepth !== undefined
@@ -163,6 +167,7 @@ function mergeConfigs(base: WorkflowExtensionConfig, override: WorkflowExtension
 		...(base.worktree !== undefined || override.worktree !== undefined
 			? { worktree: { ...(base.worktree ?? {}), ...(override.worktree ?? {}) } }
 			: {}),
+		...(budget !== undefined ? { budget } : {}),
 		...(workflows !== undefined ? { workflows } : {}),
 	};
 }
@@ -184,6 +189,12 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
 	persistRuns: true,
 	statusFile: false,
 	resumeInFlight: "ask" as const,
+	budget: {
+		maxDurationMs: 0,
+		maxTokens: 0,
+		maxCost: 0,
+		warnAtPercent: 0,
+	},
 	workflowNotifications: {
 		enabled: true,
 		notifyOn: ["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"] as const,
@@ -203,6 +214,7 @@ export interface WorkflowEffectiveConfig {
 	readonly persistRuns: boolean;
 	readonly statusFile: boolean;
 	readonly resumeInFlight: "ask" | "auto" | "never";
+	readonly budget: EffectiveBudget;
 	readonly workflowNotifications: {
 		readonly enabled: boolean;
 		readonly notifyOn: readonly WorkflowLifecycleNoticeKind[];
@@ -226,6 +238,7 @@ export function withWorkflowDefaults(config: WorkflowExtensionConfig): WorkflowE
 		persistRuns: config.persistRuns ?? WORKFLOW_CONFIG_DEFAULTS.persistRuns,
 		statusFile: config.statusFile ?? WORKFLOW_CONFIG_DEFAULTS.statusFile,
 		resumeInFlight: config.resumeInFlight ?? WORKFLOW_CONFIG_DEFAULTS.resumeInFlight,
+		budget: resolve_budget({ config: config.budget ?? WORKFLOW_CONFIG_DEFAULTS.budget }),
 		workflowNotifications: {
 			enabled: config.workflowNotifications?.enabled ?? WORKFLOW_CONFIG_DEFAULTS.workflowNotifications.enabled,
 			notifyOn: config.workflowNotifications?.notifyOn ?? WORKFLOW_CONFIG_DEFAULTS.workflowNotifications.notifyOn,

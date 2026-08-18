@@ -8,6 +8,7 @@ import type {
 	WorkflowSerializableValue,
 	WorkflowWorktreeInputBinding,
 } from "./authoring-contract.js";
+import type { WorkflowBudget } from "./budget.js";
 
 type SchemaKeys<TSchemas> = keyof TSchemas & string;
 type Simplify<T> = { [K in keyof T]: T[K] } & {};
@@ -98,6 +99,8 @@ export interface AuthoredWorkflowSpec<
 	readonly name?: string;
 	readonly autoAttach?: boolean;
 	readonly heartbeatIntervalMinutes?: number;
+	/** Optional run budget for this workflow definition. */
+	readonly budget?: WorkflowBudget;
 	readonly description: string;
 	readonly inputs?: TInputs;
 	readonly outputs: TOutputs;
