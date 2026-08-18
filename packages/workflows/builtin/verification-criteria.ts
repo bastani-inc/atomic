@@ -267,3 +267,54 @@ export const VERIFICATION_SCALE: {
   anchors: "1 = certainly fails … 10 = borderline … 20 = verified correct",
   schema: Type.Integer({ minimum: 1, maximum: 20 }),
 };
+
+export type Accept = { readonly kind: "accept"; readonly mean: number };
+export type Repair = { readonly kind: "repair"; readonly mean: number; readonly findings: readonly Finding[] };
+export type Indeterminate = { readonly kind: "indeterminate"; readonly missing: number };
+export type VerificationDecision = Accept | Repair | Indeterminate;
+
+export type VerificationRound = {
+  readonly scores: readonly CriterionScore[];
+  readonly invalidCount: number;
+  readonly expectedCount: number;
+};
+
+export type VerificationPolicy = {
+  readonly acceptMean: number;
+  readonly quorumFraction: number;
+};
+
+function mean_score(scores: readonly CriterionScore[]): number {
+  if (scores.length === 0) return 0;
+  let total = 0;
+  for (const item of scores) total += item.score;
+  return total / scores.length;
+}
+
+/**
+ * Map one round of schema-valid scores to accept / repair / indeterminate.
+ *
+ * Accept iff quorum holds AND mean ≥ acceptMean AND no `severity: "veto"`
+ * finding exists. Any veto forces Repair regardless of mean. Below quorum
+ * (`valid < ceil(expected × quorumFraction)`) is Indeterminate.
+ *
+ * `invalidCount` is metadata only: there is no constructor that turns an
+ * unparseable report into a CriterionScore, so a parse failure cannot shift
+ * the mean.
+ */
+export function decide_verification(round: VerificationRound, policy: VerificationPolicy): VerificationDecision {
+  // `invalidCount` is intentionally unread. It cannot enter the mean.
+  const { scores, expectedCount } = round;
+  const valid = scores.length;
+  const quorumNeeded = Math.ceil(expectedCount * policy.quorumFraction);
+  if (valid < quorumNeeded) {
+    return { kind: "indeterminate", missing: Math.max(0, expectedCount - valid) };
+  }
+
+  const mean = mean_score(scores);
+  const findings = scores.flatMap((item) => item.findings);
+  if (findings.some((item) => item.severity === "veto") || mean < policy.acceptMean) {
+    return { kind: "repair", mean, findings };
+  }
+  return { kind: "accept", mean };
+}
