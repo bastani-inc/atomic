@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- PDF extraction now uses `unpdf` 1.8.1, which restores the `Math.sumPrecise` polyfill 1.8.0 dropped, so `fetch_content` no longer throws `TypeError: Math.sumPrecise is not a function` on Node runtimes without that builtin.
+- `fetch_content` PDF extraction no longer throws `TypeError: Math.sumPrecise is not a function` on Node runtimes without that builtin.
 
 ## [0.9.13] - 2026-08-13
 

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- MCP OAuth now opens the authorization URL with `open` 11.0.1, so browser launch succeeds from WSL when the Linux working directory is not reachable from Windows.
+- MCP OAuth now opens the authorization URL from WSL when the Linux working directory is not reachable from Windows.
 
 ## [0.9.13] - 2026-08-13
 
