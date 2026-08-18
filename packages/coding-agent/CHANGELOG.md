@@ -5,6 +5,12 @@
 ### Changed
 
 - Documented built-in workflow and subagent Grok 4.6 fallbacks as `xai/grok-4.6:xhigh` and `github-copilot/grok-4.6:xhigh`.
+- Optional DBOS durable execution now loads `@dbos-inc/dbos-sdk` 4.25.14, so `/workflow resume` recovery is idempotent, a successful step checkpoint re-stamps `executor_id`, and the SDK's internal admin server stays off by default.
+- MCP OAuth browser launch now uses `open` 11.0.1, which succeeds from WSL when the Linux working directory is not reachable from Windows.
+
+### Fixed
+
+- PDF extraction now uses `unpdf` 1.8.1, which restores the `Math.sumPrecise` polyfill 1.8.0 dropped, so extraction no longer throws `TypeError: Math.sumPrecise is not a function` on Node runtimes without that builtin.
 
 ## [0.9.14-alpha.2] - 2026-08-17
 

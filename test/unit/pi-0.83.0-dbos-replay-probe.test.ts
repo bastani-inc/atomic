@@ -1,5 +1,5 @@
 /**
- * P4 gate for the `@dbos-inc/dbos-sdk` 4.23.6 -> 4.24.16 bump (design D2).
+ * P4 gate for the `@dbos-inc/dbos-sdk` 4.23.6 -> 4.25.14 bump (design D2).
  *
  * Thirteen minors across the SDK that backs workflow durability. The API surface
  * is not the risk; replay and hydration are. The three required parts:
@@ -19,7 +19,7 @@
  * a failure, not a flake — every callback counter is exact.
  *
  * The kill boundary is also a serialization boundary, and this probe crosses the
- * real one. DBOS 4.24.16 persists step output with `DBOSJSON`: a `superjson`
+ * real one. DBOS 4.25.14 persists step output with `DBOSJSON`: a `superjson`
  * serialization wrapped in a JSON envelope branded with an explicit
  * `__dbos_serializer` marker. `dbosPersistedCopy` below is that encoding,
  * transcribed from `node_modules/@dbos-inc/dbos-sdk/dist/src/serialization.js`,
@@ -76,7 +76,7 @@ import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 type MockSdk = ReturnType<typeof createMockSdk>;
 
 /** The SDK version this file's `DBOSJSON` transcription was taken against. */
-const MEASURED_DBOS_SDK_VERSION = "4.24.16";
+const MEASURED_DBOS_SDK_VERSION = "4.25.14";
 
 const dbosSdkDir = join(moduleDir(import.meta.url), "../../node_modules/@dbos-inc/dbos-sdk");
 
