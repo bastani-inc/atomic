@@ -262,6 +262,8 @@ export function askUserQuestionToolEvent(event: unknown): AskUserQuestionToolEve
 
 export const READINESS_GATE_ADVANCE_LABEL = "I'm ready to move on to the next workflow stage.";
 
+export const READINESS_GATE_CHAT_MESSAGE = "The user would like to chat more about this";
+
 const READINESS_GATE_ADVANCE_NORMALIZED = READINESS_GATE_ADVANCE_LABEL.trim().toLowerCase();
 
 export const READINESS_GATE_QUESTION_PARAMS = {
@@ -313,6 +315,32 @@ export function toolResultHasChatAnswer(result: unknown): boolean {
 	return answers.some((a) => a !== null && typeof a === "object" && (a as Record<string, unknown>).kind === "chat");
 }
 
+export type ReadinessDecision = { readonly action: "advance" } | { readonly action: "stay"; readonly message?: string };
+
+function firstReadinessAnswer(result: unknown): Record<string, unknown> | undefined {
+	if (result === null || typeof result !== "object") return undefined;
+	const details = (result as Record<string, unknown>).details;
+	if (details === null || typeof details !== "object") return undefined;
+	const answers = (details as Record<string, unknown>).answers;
+	if (!Array.isArray(answers)) return undefined;
+	const first = answers[0];
+	return first !== null && typeof first === "object" ? (first as Record<string, unknown>) : undefined;
+}
+
+export function readinessStayMessage(result: unknown): string | undefined {
+	const first = firstReadinessAnswer(result);
+	if (first === undefined) return undefined;
+	if (first.kind === "chat") return READINESS_GATE_CHAT_MESSAGE;
+	if (first.kind !== "custom" || typeof first.answer !== "string") return undefined;
+	return first.answer.trim().length > 0 ? first.answer : undefined;
+}
+
+export function interpretReadinessResult(result: unknown): ReadinessDecision {
+	if (readinessResultMeansAdvance(result)) return { action: "advance" };
+	const message = readinessStayMessage(result);
+	return message !== undefined ? { action: "stay", message } : { action: "stay" };
+}
+
 export { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 
 export function shouldInjectResumeContinuation(state: {
@@ -327,7 +355,7 @@ export function shouldInjectResumeContinuation(state: {
 let cachedReadinessGateTool: ReturnType<typeof createAskUserQuestionToolDefinition> | undefined;
 function readinessGateTool(): ReturnType<typeof createAskUserQuestionToolDefinition> {
 	if (cachedReadinessGateTool === undefined) {
-		cachedReadinessGateTool = createAskUserQuestionToolDefinition();
+		cachedReadinessGateTool = createAskUserQuestionToolDefinition({ chatAsOption: true });
 	}
 	return cachedReadinessGateTool;
 }
@@ -336,9 +364,9 @@ export async function askReadinessViaStageBroker(
 	runId: string,
 	stageId: string,
 	signal: AbortSignal,
-): Promise<"advance" | "stay"> {
+): Promise<ReadinessDecision> {
 	const execute = readinessGateTool().execute;
-	if (execute === undefined) return "advance";
+	if (execute === undefined) return { action: "advance" };
 	const gateContext = {
 		hasUI: true,
 		ui: {
@@ -368,7 +396,7 @@ export async function askReadinessViaStageBroker(
 			undefined,
 			gateContext as unknown as Parameters<typeof execute>[4],
 		);
-		return readinessResultMeansAdvance(result) ? "advance" : "stay";
+		return interpretReadinessResult(result);
 	} finally {
 		stageUiBroker.clearStagePrompt(runId, stageId);
 	}

@@ -9,8 +9,10 @@ import type { QuestionParams } from "../../packages/coding-agent/src/core/tools/
 import {
 	askReadinessViaStageBroker,
 	READINESS_GATE_ADVANCE_LABEL,
+	READINESS_GATE_CHAT_MESSAGE,
 	READINESS_GATE_QUESTION_PARAMS,
 	readinessResultMeansAdvance,
+	readinessStayMessage,
 	toolResultHasChatAnswer,
 } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { buildStagePromptAdapter, coerceStageInputAnswer } from "../../packages/workflows/src/shared/stage-prompt.js";
@@ -77,6 +79,46 @@ describe("readinessResultMeansAdvance", () => {
 		assert.equal(readinessResultMeansAdvance({}), false);
 		assert.equal(readinessResultMeansAdvance({ details: { cancelled: false } }), false);
 		assert.equal(readinessResultMeansAdvance(undefined), false);
+	});
+});
+
+describe("readinessStayMessage", () => {
+	test("custom non-empty text is the stay message", () => {
+		assert.equal(
+			readinessStayMessage({
+				details: { answers: [{ kind: "custom", answer: "feature x" }], cancelled: false },
+			}),
+			"feature x",
+		);
+	});
+
+	test("empty or missing custom text is not a stay message", () => {
+		assert.equal(
+			readinessStayMessage({ details: { answers: [{ kind: "custom", answer: "   " }], cancelled: false } }),
+			undefined,
+		);
+		assert.equal(
+			readinessStayMessage({ details: { answers: [{ kind: "custom", answer: null }], cancelled: false } }),
+			undefined,
+		);
+	});
+
+	test("chat answers use the canned stay message", () => {
+		assert.equal(
+			readinessStayMessage({
+				details: { answers: [{ kind: "chat", answer: "Chat about this" }], cancelled: false },
+			}),
+			READINESS_GATE_CHAT_MESSAGE,
+		);
+	});
+
+	test("explore option is stay without a message", () => {
+		assert.equal(
+			readinessStayMessage({
+				details: { answers: [{ kind: "option", answer: EXPLORE_LABEL }], cancelled: false },
+			}),
+			undefined,
+		);
 	});
 });
 
@@ -181,7 +223,7 @@ describe("askReadinessViaStageBroker (real broker + tool resolution)", () => {
 	// Answer the gate the moment it is shown to the host, mirroring `/workflow
 	// send`: the brokered ctx.ui.custom() promise is resolved with the
 	// adapter-built result derived from the orchestrator's answer payload.
-	async function decideViaBroker(payload: unknown): Promise<"advance" | "stay"> {
+	async function decideViaBroker(payload: unknown): Promise<Awaited<ReturnType<typeof askReadinessViaStageBroker>>> {
 		const runId = `run-${randomUUID()}`;
 		const stageId = `stage-${randomUUID()}`;
 		const controller = new AbortController();
@@ -218,15 +260,35 @@ describe("askReadinessViaStageBroker (real broker + tool resolution)", () => {
 			},
 		];
 		for (const payload of advancePayloads) {
-			assert.equal(await decideViaBroker(payload), "advance", `payload should advance: ${JSON.stringify(payload)}`);
+			assert.deepEqual(
+				await decideViaBroker(payload),
+				{ action: "advance" },
+				`payload should advance: ${JSON.stringify(payload)}`,
+			);
 		}
 	});
 
-	test("explore / index-2 / empty payloads stay in the stage", async () => {
-		assert.equal(await decideViaBroker(EXPLORE_LABEL), "stay");
-		assert.equal(await decideViaBroker("2"), "stay");
-		assert.equal(await decideViaBroker({ answer: EXPLORE_LABEL }), "stay");
-		assert.equal(await decideViaBroker({}), "stay");
+	test("explore / index-2 / empty payloads stay in the stage without a message", async () => {
+		assert.deepEqual(await decideViaBroker(EXPLORE_LABEL), { action: "stay" });
+		assert.deepEqual(await decideViaBroker("2"), { action: "stay" });
+		assert.deepEqual(await decideViaBroker({ answer: EXPLORE_LABEL }), { action: "stay" });
+		assert.deepEqual(await decideViaBroker({}), { action: "stay" });
+	});
+
+	test("typed Type something stays and carries the custom text", async () => {
+		assert.deepEqual(await decideViaBroker("feature x"), { action: "stay", message: "feature x" });
+		assert.deepEqual(await decideViaBroker({ text: "  ship it  " }), { action: "stay", message: "  ship it  " });
+	});
+
+	test("Chat about this stays with the canned chat message", async () => {
+		assert.deepEqual(await decideViaBroker("Chat about this"), {
+			action: "stay",
+			message: READINESS_GATE_CHAT_MESSAGE,
+		});
+		assert.deepEqual(await decideViaBroker({ text: "  chat ABOUT this  " }), {
+			action: "stay",
+			message: READINESS_GATE_CHAT_MESSAGE,
+		});
 	});
 });
 

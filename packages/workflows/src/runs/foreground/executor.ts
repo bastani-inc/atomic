@@ -7,12 +7,16 @@
  */
 
 export { raceAbort } from "./executor-abort.js";
+export type { ReadinessDecision } from "./executor-hil.js";
 export {
 	askReadinessViaStageBroker,
+	interpretReadinessResult,
 	READINESS_GATE_ADVANCE_LABEL,
+	READINESS_GATE_CHAT_MESSAGE,
 	READINESS_GATE_QUESTION_PARAMS,
 	RESUME_CONTINUATION_PROMPT,
 	readinessResultMeansAdvance,
+	readinessStayMessage,
 	shouldInjectResumeContinuation,
 	toolResultHasChatAnswer,
 } from "./executor-hil.js";

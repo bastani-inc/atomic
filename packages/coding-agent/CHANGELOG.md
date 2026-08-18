@@ -7,6 +7,7 @@
 - Documented built-in workflow and subagent Grok 4.6 fallbacks as `xai/grok-4.6:xhigh` and `github-copilot/grok-4.6:xhigh`.
 - Optional DBOS durable execution now makes `/workflow resume` recovery idempotent, re-stamps `executor_id` on a successful step checkpoint, and keeps the SDK's internal admin server off by default.
 - MCP OAuth browser launch now succeeds from WSL when the Linux working directory is not reachable from Windows.
+- `ask_user_question` no longer submits an empty or whitespace-only **Type something.** answer. The readiness-gate tool can treat **Chat about this** as a plain option via `createAskUserQuestionToolDefinition({ chatAsOption: true })`.
 
 ### Fixed
 

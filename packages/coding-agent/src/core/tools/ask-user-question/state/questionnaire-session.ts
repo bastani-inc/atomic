@@ -61,6 +61,8 @@ export interface QuestionnaireSessionConfig {
 	params: QuestionParams;
 	itemsByTab: WrappingSelectItem[][];
 	done: (result: QuestionnaireResult) => void;
+	/** When true, Chat about this is a plain option and does not open an inline editor. */
+	chatAsOption?: boolean;
 }
 
 export interface QuestionnaireSessionComponent {
@@ -102,6 +104,7 @@ export class QuestionnaireSession {
 	private readonly questions: readonly QuestionData[];
 	private readonly isMulti: boolean;
 	private readonly itemsByTab: WrappingSelectItem[][];
+	private readonly chatAsOption: boolean;
 
 	private readonly notesInput: Input;
 	private readonly inlineInput: Input;
@@ -118,6 +121,7 @@ export class QuestionnaireSession {
 		this.questions = config.params.questions;
 		this.isMulti = this.questions.length > 1;
 		this.itemsByTab = config.itemsByTab;
+		this.chatAsOption = config.chatAsOption === true;
 		// Seed from the focused option at start; the reducer keeps it in sync via withFocusedOptionHasPreview.
 		this.state = { ...this.state, focusedOptionHasPreview: computeFocusedOptionHasPreview(this.questions, 0, 0) };
 
@@ -129,6 +133,7 @@ export class QuestionnaireSession {
 			isMulti: this.isMulti,
 			initialState: this.state,
 			getCurrentTab: () => this.state.currentTab,
+			...(this.chatAsOption ? { chatAsOption: true } : {}),
 		});
 
 		this.notesInput = built.notesInput;
@@ -236,6 +241,7 @@ export class QuestionnaireSession {
 		return {
 			questions: this.questions,
 			itemsByTab: this.itemsByTab,
+			...(this.chatAsOption ? { chatAsOption: true } : {}),
 		};
 	}
 

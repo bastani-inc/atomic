@@ -71,6 +71,7 @@ function makeMultiParams(): QuestionParams {
 function makeSession(
 	params: QuestionParams,
 	done: (result: QuestionnaireResult) => void = () => {},
+	options?: { readonly chatAsOption?: boolean },
 ): QuestionnaireSession {
 	return new QuestionnaireSession({
 		tui: { terminal: { columns: 100 }, requestRender() {} },
@@ -78,6 +79,7 @@ function makeSession(
 		params,
 		itemsByTab: params.questions.map((q) => buildItemsForQuestion(q)),
 		done,
+		...(options?.chatAsOption === true ? { chatAsOption: true } : {}),
 	});
 }
 
@@ -288,4 +290,63 @@ test("ask_user_question chat row renders inline input through WrappingSelect met
 
 	const rendered = select.render(40).join("\n");
 	assert.match(rendered, /chat\x1b\[7m \x1b\[0m/);
+});
+
+test("ask_user_question Type something does not submit empty or whitespace text", () => {
+	initTheme("dark");
+	for (const typed of ["", "   "]) {
+		let result: QuestionnaireResult | undefined;
+		const session = makeSession(makeParams(), (r) => {
+			result = r;
+		});
+
+		session.component.handleInput(DOWN);
+		session.component.handleInput(DOWN);
+		for (const ch of typed) session.component.handleInput(ch);
+		session.component.handleInput(ENTER);
+
+		assert.equal(result, undefined);
+	}
+});
+
+test("ask_user_question Type something submits non-empty custom text", () => {
+	initTheme("dark");
+	let result: QuestionnaireResult | undefined;
+	const session = makeSession(makeParams(), (r) => {
+		result = r;
+	});
+
+	session.component.handleInput(DOWN);
+	session.component.handleInput(DOWN);
+	for (const ch of "feature x") session.component.handleInput(ch);
+	session.component.handleInput(ENTER);
+
+	assert.ok(result);
+	assert.equal(result.cancelled, false);
+	assert.equal(result.answers[0]?.kind, "custom");
+	assert.equal(result.answers[0]?.answer, "feature x");
+});
+
+test("ask_user_question chatAsOption submits Chat about this like a plain option", () => {
+	initTheme("dark");
+	let result: QuestionnaireResult | undefined;
+	const session = makeSession(
+		makeParams(),
+		(r) => {
+			result = r;
+		},
+		{ chatAsOption: true },
+	);
+
+	session.component.handleInput(UP);
+	const focused = stripAnsi(session.component.render(100).join("\n"));
+	assert.match(focused, /Chat about this/);
+
+	for (const ch of "this should not become an inline draft") session.component.handleInput(ch);
+	session.component.handleInput(ENTER);
+
+	assert.ok(result);
+	assert.equal(result.cancelled, false);
+	assert.equal(result.answers[0]?.kind, "chat");
+	assert.equal(result.answers[0]?.answer, SENTINEL_LABELS.chat);
 });

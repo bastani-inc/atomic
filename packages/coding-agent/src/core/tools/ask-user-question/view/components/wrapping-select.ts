@@ -44,6 +44,8 @@ export interface WrappingSelectOptions {
 	numberStartOffset?: number;
 	/** Override the total used to pad the number column (useful when items span multiple lists). */
 	totalItemsForNumbering?: number;
+	/** When false, rows that normally open an inline editor stay ordinary labeled rows. */
+	inlineInputEnabled?: boolean;
 }
 
 export class WrappingSelect implements Component {
@@ -58,6 +60,7 @@ export class WrappingSelect implements Component {
 	private readonly items: readonly WrappingSelectItem[];
 	private readonly maxVisible: number;
 	private readonly theme: WrappingSelectTheme;
+	private readonly inlineInputEnabled: boolean;
 	private numberStartOffset: number;
 	private totalItemsForNumbering: number;
 
@@ -88,6 +91,7 @@ export class WrappingSelect implements Component {
 		this.items = items;
 		this.maxVisible = Math.max(1, maxVisible);
 		this.theme = theme;
+		this.inlineInputEnabled = options.inlineInputEnabled !== false;
 		this.numberStartOffset = options.numberStartOffset ?? 0;
 		this.totalItemsForNumbering = options.totalItemsForNumbering ?? items.length;
 	}
@@ -218,7 +222,7 @@ export class WrappingSelect implements Component {
 	}
 
 	private shouldRenderAsInlineInput(item: WrappingSelectItem, isActive: boolean): boolean {
-		return isActive && ROW_INTENT_META[item.kind].activatesInputMode;
+		return this.inlineInputEnabled && isActive && ROW_INTENT_META[item.kind].activatesInputMode;
 	}
 
 	/**

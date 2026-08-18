@@ -91,11 +91,12 @@ function buildSingleSelectAnswer(state: QuestionnaireState, runtime: Questionnai
 
 	if (state.inputMode && state.inlineInputOwner === "other") {
 		const label = runtime.inputBuffer;
+		if (label.trim().length === 0) return null;
 		return {
 			questionIndex: state.currentTab,
 			question: q.question,
 			kind: "custom",
-			answer: label.length > 0 ? label : null,
+			answer: label,
 		};
 	}
 	if (!item) return null;

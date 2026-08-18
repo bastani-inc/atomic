@@ -43,6 +43,7 @@ export interface QuestionnaireBuildConfig {
 	isMulti: boolean;
 	initialState: QuestionnaireState;
 	getCurrentTab: () => number;
+	chatAsOption?: boolean;
 }
 
 export interface QuestionnaireBuilt {
@@ -120,6 +121,7 @@ class QuestionnaireBuilder {
 		this.chatRow = new ChatRowView({
 			item: { kind: "chat", label: ROW_INTENT_META.chat.label },
 			theme: this.selectTheme,
+			inlineInputEnabled: config.chatAsOption !== true,
 		});
 	}
 

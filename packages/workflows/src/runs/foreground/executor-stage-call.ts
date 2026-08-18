@@ -6,6 +6,7 @@ import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
 import {
 	askReadinessViaStageBroker,
 	RESUME_CONTINUATION_PROMPT,
+	type ReadinessDecision,
 	shouldInjectResumeContinuation,
 } from "./executor-hil.js";
 import { applyFailureToStage } from "./executor-lifecycle.js";
@@ -45,7 +46,7 @@ export function createTrackedStageCaller(input: {
 	const { runtime } = input;
 	const readinessGateEnabled =
 		runtime.opts.confirmStageReadiness !== undefined || runtime.opts.usePromptNodesForUi === true;
-	const confirmReadiness = async (): Promise<"advance" | "stay"> => {
+	const confirmReadiness = async (): Promise<ReadinessDecision> => {
 		try {
 			if (runtime.opts.confirmStageReadiness !== undefined) {
 				const ready = await runtime.opts.confirmStageReadiness({
@@ -54,11 +55,11 @@ export function createTrackedStageCaller(input: {
 					stageName: runtime.name,
 					signal: runtime.signal,
 				});
-				return ready ? "advance" : "stay";
+				return ready ? { action: "advance" } : { action: "stay" };
 			}
 			return await askReadinessViaStageBroker(runtime.runId, runtime.stageId, runtime.signal);
 		} catch {
-			return "advance";
+			return { action: "advance" };
 		}
 	};
 
@@ -230,27 +231,33 @@ export function createTrackedStageCaller(input: {
 					try {
 						while (runtime.state.askUserQuestionObservedThisTurn || repeatReadinessAfterChatTurn) {
 							const decision = await confirmReadiness();
-							if (decision === "advance") break;
+							if (decision.action === "advance") break;
 							if (runtime.signal.aborted) break;
 							runtime.state.askUserQuestionObservedThisTurn = false;
 							runtime.state.chatAnswerObservedThisTurn = false;
-							runtime.state.waitingForStageChatTurn = true;
-							try {
-								await runtime.raceStageSessionHeartbeat(
-									raceAbort(
-										new Promise<void>((resolve) => {
-											resolveNextTurnEnd = resolve;
-											runtime.state.wakeWaitingForStageChatTurn = resolve;
-										}),
-										runtime.signal,
-									),
-								);
-							} finally {
-								runtime.state.wakeWaitingForStageChatTurn = undefined;
-								runtime.state.waitingForStageChatTurn = false;
+							if (decision.message !== undefined) {
+								result = (await runtime.raceStageSessionHeartbeat(
+									raceAbort(runtime.innerCtx.prompt(decision.message), runtime.signal),
+								)) as T;
+							} else {
+								runtime.state.waitingForStageChatTurn = true;
+								try {
+									await runtime.raceStageSessionHeartbeat(
+										raceAbort(
+											new Promise<void>((resolve) => {
+												resolveNextTurnEnd = resolve;
+												runtime.state.wakeWaitingForStageChatTurn = resolve;
+											}),
+											runtime.signal,
+										),
+									);
+								} finally {
+									runtime.state.wakeWaitingForStageChatTurn = undefined;
+									runtime.state.waitingForStageChatTurn = false;
+								}
+								if (runtime.signal.aborted) break;
+								result = (runtime.innerCtx.__getLastAssistantText() ?? result) as T;
 							}
-							if (runtime.signal.aborted) break;
-							result = (runtime.innerCtx.__getLastAssistantText() ?? result) as T;
 							const continuationDrain = await drainResumeContinuations(result);
 							result = continuationDrain.result;
 							repeatReadinessAfterChatTurn ||= continuationDrain.chatAnswerObserved;

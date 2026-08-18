@@ -187,6 +187,77 @@ describe("executor — chat answer readiness integration", () => {
 		assert.equal(stages[0]?.inputRequest, undefined);
 	});
 
+	test("Type something and Chat about this stay by sending a stage message", async () => {
+		store.clear();
+		const events: string[] = [];
+		const registry = createStageControlRegistry();
+		let sessionCount = 0;
+		const definition = workflow({
+			name: "stay-message-injection",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.stage("interactive").prompt("ask the user");
+				await ctx.stage("dependent").prompt("dependent work");
+				return {};
+			},
+		});
+
+		const runPromise = run(
+			definition,
+			{},
+			{
+				store,
+				stageControlRegistry: registry,
+				usePromptNodesForUi: true,
+				adapters: {
+					agentSession: {
+						async create() {
+							sessionCount += 1;
+							if (sessionCount === 1) return chatSession(events);
+							return {
+								...mockSession(),
+								async prompt() {
+									events.push("dependent:completed");
+								},
+							};
+						},
+					},
+				},
+			},
+		);
+
+		const firstGate = await waitForReadiness();
+		assert.equal(stageUiBroker.answerStagePrompt(firstGate.runId, firstGate.stage.id, { text: "feature x" }), true);
+
+		const secondGate = await waitForReadiness(firstGate.request.id);
+		assert.deepEqual(events, [
+			"assistant:Absolutely — here is the conversational response.",
+			"user-turn:feature x",
+			"assistant:Additional stage-chat response.",
+		]);
+
+		assert.equal(
+			stageUiBroker.answerStagePrompt(secondGate.runId, secondGate.stage.id, { text: "Chat about this" }),
+			true,
+		);
+
+		const thirdGate = await waitForReadiness(secondGate.request.id);
+		assert.ok(events.includes("user-turn:The user would like to chat more about this"));
+
+		assert.equal(
+			stageUiBroker.answerStagePrompt(thirdGate.runId, thirdGate.stage.id, {
+				optionLabels: [READINESS_GATE_ADVANCE_LABEL],
+			}),
+			true,
+		);
+
+		const result = await runPromise;
+		assert.equal(result.status, "completed");
+		assert.equal(sessionCount, 2);
+	});
+
 	test("a follow-up-turn chat answer keeps re-brokering after Not ready", async () => {
 		const localStore = createStore();
 		const registry = createStageControlRegistry();

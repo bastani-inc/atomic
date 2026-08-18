@@ -20,6 +20,8 @@ export interface ChatRowViewConfig {
 	/** The single chat sentinel row — `{kind: "chat", label: SENTINEL_LABELS.chat}`. */
 	item: WrappingSelectItem;
 	theme: WrappingSelectTheme;
+	/** When false, Chat about this renders as a plain option instead of an inline editor. */
+	inlineInputEnabled?: boolean;
 }
 
 /**
@@ -39,6 +41,7 @@ export class ChatRowView implements StatefulView<ChatRowViewProps>, Component {
 		this.select = new WrappingSelect([config.item], 1, config.theme, {
 			numberStartOffset: 0,
 			totalItemsForNumbering: 1,
+			inlineInputEnabled: config.inlineInputEnabled,
 		});
 	}
 

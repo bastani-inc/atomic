@@ -66,7 +66,9 @@ export const askUserQuestionToolSystemPromptContribution = Object.freeze({
 	] as const),
 } as const);
 
-export function createAskUserQuestionToolDefinition(): ToolDefinition<typeof QuestionParamsSchema, unknown> {
+export function createAskUserQuestionToolDefinition(options?: {
+	readonly chatAsOption?: boolean;
+}): ToolDefinition<typeof QuestionParamsSchema, unknown> {
 	const guidance = validateGuidanceFields(loadConfig().guidance);
 	return {
 		name: "ask_user_question",
@@ -131,6 +133,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 							params: typed,
 							itemsByTab,
 							done,
+							...(options?.chatAsOption === true ? { chatAsOption: true } : {}),
 						});
 						return session.component;
 					},

@@ -10,6 +10,7 @@ import type { InlineInputOwner, QuestionnaireState } from "./state.ts";
 export interface ApplyContext {
 	questions: readonly QuestionData[];
 	itemsByTab: ReadonlyArray<readonly WrappingSelectItem[]>;
+	chatAsOption?: boolean;
 }
 
 /**
@@ -281,8 +282,10 @@ const submitNavHandler: Handler<"submit_nav"> = (s, a, _c) => ({
 	state: { ...s, submitChoiceIndex: a.nextIndex },
 	effects: [],
 });
-const focusChatHandler: Handler<"focus_chat"> = (s, _a, _c) =>
-	hydrateInlineInputResult({ ...s, chatFocused: true, inputMode: true, inlineInputOwner: "chat" }, "chat");
+const focusChatHandler: Handler<"focus_chat"> = (s, _a, ctx) =>
+	ctx.chatAsOption === true
+		? { state: { ...s, chatFocused: true, inputMode: false, inlineInputOwner: null }, effects: [] }
+		: hydrateInlineInputResult({ ...s, chatFocused: true, inputMode: true, inlineInputOwner: "chat" }, "chat");
 const notesForwardHandler: Handler<"notes_forward"> = (s, a, _c) => ({
 	state: s,
 	effects: [{ kind: "forward_notes_keystroke", data: a.data }],
