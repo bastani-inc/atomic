@@ -4899,6 +4899,16 @@ The `prepareSliceWorktree` tools run before their child boundaries and use `git 
 
 Use `ralph` or a task-specific child in the same positions when its input contract fits better. For a longer stack, keep the same explicit downstream shape: create each next named branch from the previous verified branch, pass that previous branch as the next child's `base_branch`, and use a distinct worktree. Do not replace the chain with a loop that points back to an ancestor. A final handoff can report `slice → branch → worktree → verified/failed` from the explicit inputs and preparation records without reopening completed child work.
 
+#### Verification scaling
+
+This is authoring guidance for custom workflows, not a description of shipped builtin inputs:
+
+- Use an anchored 1–20 integer scale as the default score granularity.
+- Providers expose no token logprobs, so a K-sample average is the substitute; K=16 parity costs roughly 16× the call cost, making K a budget decision.
+- Treat pool diversity as a bet on the selector's oracle ceiling. In the reference scan's pivot tournament, best-of-3 selection reached 86.5% ±1.1 against 79.4% pass@1 with a 92.1% oracle ceiling, while best-of-5 reached 88.0% ±0.6 against 78.7% pass@1 with a 96.6% oracle ceiling. A chance-level selector can make a more diverse pool worse, so widen the pool only once the judge beats chance.
+- Self-verification—having the same model judge its own rollouts—still gained +7.1 over pass@1 in the best-of-3 comparison (86.5% versus 79.4%) and +9.3 in the best-of-5 comparison (88.0% versus 78.7%).
+- For a cheap operating point, an author can use one pivot and K=2 repeats for a best-of-3-shaped comparison budget; this is an authoring recipe, not a shipped default.
+
 #### Choosing a common workflow pattern
 
 - Pick **classify-and-act** when routing correctness matters more than breadth.
