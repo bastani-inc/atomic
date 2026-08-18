@@ -4690,6 +4690,9 @@ Best practices:
 - Use pairwise comparison when absolute scores are noisy or subjective.
 - Randomize or balance presentation order where possible to reduce order bias.
 - Keep the judge rubric short and require rationale tied to observable criteria.
+- Have judges emit graded per-criterion integer scores rather than a binary winner, then derive a Bradley–Terry preference from the score gap so near-ties stay near-ties.
+- Repeat each pair K times with the candidates swapped between the A and B slots; the swap cancels positional bias within the pair and variance falls as O(1/K). In the reference scan's discrete-judge study, 26.7% of pairs tied at K=1; with slot swaps, the reported K=1→16 result moved from 74.7% to 77.5%.
+- See [Verification scaling](#verification-scaling) for score granularity and call-budget trade-offs.
 
 ##### 6. Loop until done
 
