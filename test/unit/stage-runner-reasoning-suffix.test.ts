@@ -21,6 +21,9 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
 				const { session } = makeMockSession({
 					setThinkingLevel(level) {
 						thinkingLevels.push(`${model}:${String(level)}`);
+						// Mirror the real session: the runner reports the live
+						// `thinkingLevel` this call writes, not a fixture constant.
+						(session as { thinkingLevel?: string }).thinkingLevel = String(level);
 					},
 					async prompt() {
 						if (model === "anthropic/primary") {
@@ -67,7 +70,7 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
 				{ model: "openai/fallback", reasoningLevel: "low", success: true },
 			],
 		);
-		assert.equal(result.meta.thinkingLevel, "medium");
+		assert.equal(result.meta.thinkingLevel, "low");
 		assert.equal(result.meta.model, "openai/fallback");
 	});
 

@@ -2829,6 +2829,7 @@ interface WorkflowTaskResult extends WorkflowTaskContext {
   readonly sessionFile?: string;
   readonly artifacts?: readonly WorkflowArtifact[];
   readonly model?: string;
+  readonly thinkingLevel?: string;
   readonly fastMode?: boolean;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
