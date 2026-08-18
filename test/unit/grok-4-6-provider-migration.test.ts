@@ -30,14 +30,38 @@ test("builtin workflow and subagent sources contain no stale Grok 4.5 references
 });
 
 test("builtin xAI and OpenRouter Grok fallbacks use Grok 4.6", () => {
-	const references = shippedSourceFiles().flatMap(
-		(filePath) => readFileSync(filePath, "utf8").match(/(?:xai|openrouter\/x-ai)\/grok-[^"'\s,]+/gu) ?? [],
-	);
-	const directReferences = references.filter((reference) => reference.startsWith("xai/"));
-	const openRouterReferences = references.filter((reference) => reference.startsWith("openrouter/"));
+	for (const filePath of shippedSourceFiles()) {
+		const source = readFileSync(filePath, "utf8");
+		const references = source.match(/(?:xai|openrouter\/x-ai|github-copilot)\/grok-[^"'\s,]+/gu) ?? [];
+		const directReferences = references.filter((reference) => reference.startsWith("xai/"));
+		const openRouterReferences = references.filter((reference) => reference.startsWith("openrouter/"));
+		const copilotReferences = references.filter((reference) => reference.startsWith("github-copilot/"));
 
-	assert.ok(directReferences.length > 0, "expected direct xAI Grok fallbacks");
-	assert.ok(openRouterReferences.length > 0, "expected OpenRouter Grok fallbacks");
-	for (const reference of directReferences) assert.equal(reference, "xai/grok-4.6:high");
-	for (const reference of openRouterReferences) assert.equal(reference, "openrouter/x-ai/grok-4.6");
+		for (const reference of directReferences) assert.equal(reference, "xai/grok-4.6:xhigh", filePath);
+		for (const reference of openRouterReferences) assert.equal(reference, "openrouter/x-ai/grok-4.6", filePath);
+		for (const reference of copilotReferences) assert.equal(reference, "github-copilot/grok-4.6:xhigh", filePath);
+
+		const xaiMatches = [...source.matchAll(/xai\/grok-[^"'\s,]+/gu)];
+		for (const match of xaiMatches) {
+			const after = source.slice((match.index ?? 0) + match[0].length);
+			assert.match(after, /^["']?,\s*(?:\n\s*)?["']?github-copilot\/grok-4\.6:xhigh/, filePath);
+		}
+	}
+
+	const allReferences = shippedSourceFiles().flatMap(
+		(filePath) =>
+			readFileSync(filePath, "utf8").match(/(?:xai|openrouter\/x-ai|github-copilot)\/grok-[^"'\s,]+/gu) ?? [],
+	);
+	assert.ok(
+		allReferences.some((reference) => reference.startsWith("xai/")),
+		"expected direct xAI Grok fallbacks",
+	);
+	assert.ok(
+		allReferences.some((reference) => reference.startsWith("openrouter/")),
+		"expected OpenRouter Grok fallbacks",
+	);
+	assert.ok(
+		allReferences.some((reference) => reference.startsWith("github-copilot/")),
+		"expected Copilot Grok fallbacks",
+	);
 });

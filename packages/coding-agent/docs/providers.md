@@ -89,7 +89,7 @@ Business and enterprise tokens sent to the individual host return `421 Misdirect
 
 Run `/login xai`, then select **Use a subscription**. `XAI_API_KEY` remains available through **Use an API key**.
 
-Atomic defaults xAI sessions to `grok-4.6`. Built-in workflow and subagent fallback chains use `xai/grok-4.6:high` and `openrouter/x-ai/grok-4.6`; GitHub Copilot also exposes Grok 4.6 when the account's model policy enables it. Network-backed catalogs refresh and cache these newer entries independently of the bundled catalog snapshot.
+Atomic defaults xAI sessions to `grok-4.6`. Built-in workflow and subagent fallback chains use `xai/grok-4.6:xhigh`, `github-copilot/grok-4.6:xhigh`, and `openrouter/x-ai/grok-4.6`; GitHub Copilot also exposes Grok 4.6 when the account's model policy enables it. Network-backed catalogs refresh and cache these newer entries independently of the bundled catalog snapshot.
 
 ### Radius
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Raised every built-in subagent Grok 4.6 fallback from `xai/grok-4.6:high` to `xai/grok-4.6:xhigh` and added the matching `github-copilot/grok-4.6:xhigh` twin immediately after each xAI id.
+
 ## [0.9.14-alpha.2] - 2026-08-17
 
 ### Added
