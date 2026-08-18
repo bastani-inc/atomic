@@ -8,6 +8,7 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { nativeBlockResolver } from "./block-resolver.ts";
+import { EditBatchCoordinator, parallelEditBatchWarning } from "./edit-batch.ts";
 import { generateDiffString, generateUnifiedPatch, normalizeToLF, stripBom } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import {
@@ -18,6 +19,7 @@ import {
 } from "./hashline.ts";
 import {
 	Filesystem,
+	missingSnapshotTagMessage,
 	Patch,
 	Patcher,
 	type PatchSectionResult,
@@ -45,7 +47,7 @@ export const editToolSystemPromptContribution = Object.freeze({
 		"hashline edit format: a header ending in ':' is followed by '+'TEXT body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
 		"Ops: 'replace N..M:' replaces original lines N..M (INCLUSIVE — line M is consumed); 'replace block N:' replaces the whole syntactic block that BEGINS on line N (Atomic resolves the closing line with a brace/indent heuristic; point N at the opener); 'delete N..M' / 'delete block N' delete (no body); 'insert before N:' / 'insert after N:' insert relative to a line; 'insert after block N:' inserts after the END of the block beginning on N; 'insert head:' / 'insert tail:' insert at file start/end. Single line: 'replace N..N:' / 'delete N'. The range is the ORIGINAL lines you touch; body length is irrelevant.",
 		"Body rows appear only under a ':' header. Every row is '+TEXT' (adds a literal line, leading whitespace kept; '+' alone adds a blank line). There is NO other body row kind — never write '-old' or a bare/context line. To keep a line, leave it out of every range. For a literal line starting with '-' or '+', prefix it: '+-x', '++x'.",
-		"Numbers refer to the ORIGINAL file and do not shift as hunks apply; they die with the call — every applied edit mints a fresh #TAG and renumbers, so anchor the next edit on the edit response or a fresh read. Ranges are TIGHT: cover ONLY lines whose content changes; a stale wide range shreds everything it spans. Pure additions use 'insert', never a widened 'replace'. Whole construct → 'replace block N'; lines inside it → 'replace N..M'.",
+		"Numbers refer to the ORIGINAL file and do not shift as hunks apply; they die with the call — every applied edit mints a fresh #TAG and renumbers, so anchor the next edit on the edit response or a fresh read. Parallel edit calls that share a [path#TAG] are applied as one snapshot batch. Ranges are TIGHT: cover ONLY lines whose content changes; a stale wide range shreds everything it spans. Pure additions use 'insert', never a widened 'replace'. Whole construct → 'replace block N'; lines inside it → 'replace N..M'.",
 		"On a stale-tag rejection or any surprising result: STOP and re-read before further edits. Never start or end a range mid-expression/mid-block, and never span a hunk across an elided ('…') region — read it first. Never use edit to reformat/restyle code; run the project formatter instead.",
 	] as const),
 } as const);
@@ -76,8 +78,8 @@ export interface EditToolOptions {
 }
 
 type EditToolResultLike = {
-	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-	details?: EditToolDetails;
+	content: Array<{ type: "text"; text: string }>;
+	details: EditToolDetails | undefined;
 };
 
 class EditFilesystem extends Filesystem {
@@ -214,6 +216,77 @@ export function createEditToolDefinition(
 	const fs = new EditFilesystem(cwd, ops);
 	const patcher = new Patcher({ fs, snapshots: hashlineStore.snapshots, blockResolver: nativeBlockResolver });
 	const noopCounts = new Map<string, number>();
+	const batcher = new EditBatchCoordinator<EditToolResultLike>();
+	async function applySiblingEdits(
+		siblings: readonly { input: string }[],
+		applySignal?: AbortSignal,
+	): Promise<EditToolResultLike> {
+		const merged =
+			siblings.length === 1
+				? Patch.parse(siblings[0]!.input, { cwd })
+				: Patch.parse(siblings.map((sibling) => sibling.input).join("\n"), { cwd });
+		const prepared: PreparedSection[] = [];
+		for (const section of merged.sections) {
+			throwIfAborted(applySignal);
+			prepared.push(await patcher.prepare(section));
+		}
+		assertUniquePreparedPaths(prepared);
+		const noops = prepared.filter((item) => item.isNoop);
+		if (noops.length > 0) {
+			if (noops.length !== prepared.length)
+				throw new Error(`Hashline edit for ${noops[0]!.section.path} did not change the file.`);
+			const key = prepared.map((item) => `${item.canonicalPath}\0${item.applyResult.text}`).join("\0\0");
+			const count = (noopCounts.get(key) ?? 0) + 1;
+			noopCounts.set(key, count);
+			if (count >= 3) throw new Error(`STOP. ${formatNoopMessage(prepared[0]!.section.path, count)}`);
+			return {
+				content: [{ type: "text", text: formatNoopMessage(prepared[0]!.section.path, count) }],
+				details: { diff: "", patch: "" },
+			};
+		}
+		for (const item of prepared) {
+			throwIfAborted(applySignal);
+			if (normalizeToLF(stripBom(await fs.readText(item.section.path)).text) !== item.normalized)
+				throw new Error(
+					`Stale hashline tag for ${item.section.path}: file content changed before write. Re-read before editing.`,
+				);
+		}
+		const outputs: string[] = [];
+		let combinedDiff = "",
+			combinedPatch = "";
+		let firstChangedLine: number | undefined;
+		const batchNote = siblings.length > 1 ? [parallelEditBatchWarning(siblings.length)] : [];
+		for (let index = 0; index < prepared.length; index++) {
+			const item = prepared[index]!;
+			throwIfAborted(applySignal);
+			let result: PatchSectionResult;
+			try {
+				result = await patcher.commit(item);
+			} catch (error) {
+				const written = prepared.slice(0, index).map((entry) => entry.section.path);
+				const notWritten = prepared.slice(index + 1).map((entry) => entry.section.path);
+				const message = error instanceof Error ? error.message : String(error);
+				throw new Error(
+					`Failed to write ${item.section.path}: ${message}` +
+						(written.length > 0 ? ` Sections already written: ${written.join(", ")}.` : "") +
+						(notWritten.length > 0 ? ` Sections not written: ${notWritten.join(", ")}.` : ""),
+					{ cause: error },
+				);
+			}
+			throwIfAborted(applySignal);
+			invalidateNativeSearchCache(result.canonicalPath);
+			const snapshot = recordHashlineSnapshot(result.canonicalPath, cwd, result.after, hashlineStore);
+			const diffResult = generateDiffString(result.before, result.after);
+			combinedDiff += `${combinedDiff ? "\n" : ""}${diffResult.diff}`;
+			combinedPatch += `${combinedPatch ? "\n" : ""}${generateUnifiedPatch(result.path, result.before, result.after)}`;
+			firstChangedLine ??= diffResult.firstChangedLine;
+			outputs.push(formatCompactHashlineEditResult(snapshot, diffResult, [...batchNote, ...blockMessages(result)]));
+		}
+		return {
+			content: [{ type: "text", text: outputs.join("\n\n") }],
+			details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine },
+		};
+	}
 	return {
 		name: "edit",
 		label: "edit",
@@ -227,54 +300,36 @@ export function createEditToolDefinition(
 			if (typeof input.input !== "string" || input.input.trim() === "")
 				throw new Error("edit input must be a non-empty hashline script with [PATH#TAG] sections.");
 			const patch = Patch.parse(input.input, { cwd });
-			const prepared: PreparedSection[] = [];
+			const paths = new Map<string, string>();
 			for (const section of patch.sections) {
-				throwIfAborted(signal);
-				prepared.push(await patcher.prepare(section));
+				if (section.fileHash === undefined) throw new Error(missingSnapshotTagMessage(section.path));
+				paths.set(section.path, section.fileHash);
 			}
-			assertUniquePreparedPaths(prepared);
-			const noops = prepared.filter((item) => item.isNoop);
-			if (noops.length > 0) {
-				if (noops.length !== prepared.length)
-					throw new Error(`Hashline edit for ${noops[0]!.section.path} did not change the file.`);
-				const key = prepared.map((item) => `${item.canonicalPath}\0${item.applyResult.text}`).join("\0\0");
-				const count = (noopCounts.get(key) ?? 0) + 1;
-				noopCounts.set(key, count);
-				if (count >= 3) throw new Error(`STOP. ${formatNoopMessage(prepared[0]!.section.path, count)}`);
-				return {
-					content: [{ type: "text", text: formatNoopMessage(prepared[0]!.section.path, count) }],
-					details: { diff: "", patch: "" },
-				};
-			}
-			return withFileMutationQueues(
-				prepared.map((item) => item.canonicalPath),
-				async () => {
-					for (const item of prepared)
-						if (normalizeToLF(stripBom(await fs.readText(item.section.path)).text) !== item.normalized)
-							throw new Error(
-								`Stale hashline tag for ${item.section.path}: file content changed before write. Re-read before editing.`,
-							);
-					const applyResult = await patcher.apply(patch);
-					const outputs: string[] = [];
-					let combinedDiff = "",
-						combinedPatch = "";
-					let firstChangedLine: number | undefined;
-					for (const result of applyResult.sections) {
+			const entry = batcher.announce(input.input, paths, signal);
+			try {
+				return await withFileMutationQueues(
+					[...paths.keys()].map((sectionPath) => fs.canonicalPath(sectionPath)),
+					async () => {
+						if (entry.settled) return await entry.promise;
 						throwIfAborted(signal);
-						invalidateNativeSearchCache(result.canonicalPath);
-						const snapshot = recordHashlineSnapshot(result.canonicalPath, cwd, result.after, hashlineStore);
-						const diffResult = generateDiffString(result.before, result.after);
-						combinedDiff += `${combinedDiff ? "\n" : ""}${diffResult.diff}`;
-						combinedPatch += `${combinedPatch ? "\n" : ""}${generateUnifiedPatch(result.path, result.before, result.after)}`;
-						firstChangedLine ??= diffResult.firstChangedLine;
-						outputs.push(formatCompactHashlineEditResult(snapshot, diffResult, blockMessages(result)));
-					}
-					return {
-						content: [{ type: "text", text: outputs.join("\n\n") }],
-						details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine },
-					};
-				},
-			);
+						const siblings = batcher.takeCompatible(entry);
+						try {
+							const result = await applySiblingEdits(siblings, signal);
+							for (const sibling of siblings) sibling.resolve(result);
+							return result;
+						} catch (error) {
+							for (const sibling of siblings) sibling.reject(error);
+							throw error;
+						}
+					},
+				);
+			} catch (error) {
+				if (entry.settled) return await entry.promise;
+				entry.reject(error);
+				throw error;
+			} finally {
+				batcher.drop(entry);
+			}
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

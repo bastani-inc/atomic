@@ -100,13 +100,14 @@ describe("withFileMutationQueue", () => {
 });
 
 describe("built-in edit and write tools", () => {
-	it("rejects stale parallel hashline edits without corrupting the file", async () => {
+	it("applies parallel same-tag hashline edits as one snapshot batch", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "parallel-edit.txt");
 		const original = "alpha\nbeta\ngamma\n";
 		await writeFile(filePath, original, "utf8");
 		const store = createHashlineSnapshotStore();
 		const tag = store.record(filePath, dir, original).tag;
+		let writes = 0;
 
 		const editTool = createEditTool(dir, {
 			hashlineStore: store,
@@ -118,6 +119,7 @@ describe("built-in edit and write tools", () => {
 					return buffer;
 				},
 				writeFile: async (path, content) => {
+					writes += 1;
 					await delay(30);
 					await writeFile(path, content, "utf8");
 				},
@@ -129,10 +131,15 @@ describe("built-in edit and write tools", () => {
 			editTool.execute("call-2", { input: `[parallel-edit.txt#${tag}]\nreplace 2..2:\n+BETA` }),
 		]);
 
-		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-		expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-		const content = await readFile(filePath, "utf8");
-		expect(["ALPHA\nbeta\ngamma\n", "alpha\nBETA\ngamma\n"]).toContain(content);
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(2);
+		expect(results.filter((result) => result.status === "rejected")).toHaveLength(0);
+		expect(writes).toBe(1);
+		expect(await readFile(filePath, "utf8")).toBe("ALPHA\nBETA\ngamma\n");
+		for (const result of results) {
+			if (result.status !== "fulfilled") continue;
+			const text = result.value.content.map((item) => ("text" in item ? item.text : "")).join("\n");
+			expect(text).toContain("Applied 2 parallel edit calls as one snapshot-anchored batch.");
+		}
 	});
 
 	it("shares the queue between hashline edit and write", async () => {

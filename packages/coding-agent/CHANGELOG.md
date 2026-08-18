@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Parallel `edit` calls that share a `[path#TAG]` are now applied as one snapshot-anchored batch, so later siblings no longer fail with `file content changed before write` after the first write mints a new tag.
 - PDF extraction no longer throws `TypeError: Math.sumPrecise is not a function` on Node runtimes without that builtin.
 
 ## [0.9.14-alpha.2] - 2026-08-17
