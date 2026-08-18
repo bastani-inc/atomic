@@ -173,6 +173,89 @@ export function parse_rubric(markdown: string): Criteria {
   return { groundTruthNote, criteria };
 }
 
+function isRecord(value: object): value is Record<string, string> {
+  return Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isOptionalString(value: object, key: "id" | "name" | "description"): boolean {
+  if (!(key in value)) return true;
+  return typeof (value as CriterionInput)[key] === "string";
+}
+
+function isCriterionInput(value: object): value is CriterionInput {
+  return isOptionalString(value, "id") && isOptionalString(value, "name") && isOptionalString(value, "description");
+}
+
+function normalize_one(raw: string | CriterionInput, index: number, seen: Set<string>): Criterion {
+  const cidRaw = typeof raw === "string" ? "" : String(raw.id ?? "");
+  const nameRaw = typeof raw === "string" ? raw : String(raw.name ?? "");
+  const desc = typeof raw === "string" ? raw : String(raw.description ?? "");
+  if (desc.length === 0) {
+    throw new EmptyCriterion([cidRaw || nameRaw || String(index)]);
+  }
+  const name = nameRaw || cidRaw || slug_id(desc);
+  const id = dedup_id(cidRaw || slug_id(name), seen);
+  return criterion(id, name, desc);
+}
+
+/**
+ * Canonicalize any accepted criteria shape into `{id,name,description}[]`.
+ *
+ * Same slug/dedup rules as `parse_rubric`. Empty descriptions throw
+ * `EmptyCriterion`; an empty collection throws `NoCriteria`.
+ */
+export function normalize_criteria(
+  input: Record<string, string> | readonly string[] | readonly CriterionInput[],
+): readonly Criterion[] {
+  if (input === null || typeof input !== "object") {
+    throw new TypeError(`criteria must be a record, string[], or CriterionInput[], got ${typeof input}`);
+  }
+
+  const rawItems: Array<string | CriterionInput> = [];
+  if (Array.isArray(input)) {
+    for (const [index, raw] of input.entries()) {
+      if (typeof raw === "string") {
+        rawItems.push(raw);
+        continue;
+      }
+      if (isCriterionInput(raw)) {
+        rawItems.push(raw);
+        continue;
+      }
+      throw new TypeError(`criteria[${index}] must be a string or CriterionInput`);
+    }
+  } else if (isRecord(input)) {
+    for (const [name, description] of Object.entries(input)) {
+      rawItems.push({ name, description });
+    }
+  } else {
+    throw new TypeError("criteria record values must be strings");
+  }
+
+  const seen = new Set<string>();
+  const out = rawItems.map((raw, index) => normalize_one(raw, index, seen));
+  if (out.length === 0) {
+    throw new NoCriteria("criteria is empty");
+  }
+  return out;
+}
+
+/**
+ * Return the subset of `criteria` in `ids` order.
+ *
+ * Omitted `ids` returns every criterion in the original order. An unknown id
+ * throws — nothing is silently dropped.
+ */
+export function select_criteria(criteria: readonly Criterion[], ids?: readonly string[]): readonly Criterion[] {
+  if (ids === undefined) return criteria;
+  const byId = new Map(criteria.map((item) => [item.id, item]));
+  const missing = ids.filter((id) => !byId.has(id));
+  if (missing.length > 0) {
+    throw new Error(`criteria not found: ${missing.join(", ")}`);
+  }
+  return ids.map((id) => byId.get(id)!);
+}
+
 export const VERIFICATION_SCALE: {
   readonly min: 1;
   readonly max: 20;
