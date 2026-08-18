@@ -13,7 +13,7 @@ export interface WorkflowBudget {
 
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */
 class ResolvedWorkflowBudget {
-	private declare readonly brand: void;
+	private declare readonly brand: undefined;
 
 	private constructor(
 		readonly maxDurationMs: number,
