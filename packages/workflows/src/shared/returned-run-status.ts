@@ -2,7 +2,14 @@ import type { RunEndMetadata } from "./store-public-types.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, WorkflowFailureKind } from "./store-types.js";
 import type { WorkflowOutputValues } from "./types.js";
 
-const RETURNED_BLOCKED_STATUSES = new Set(["blocked", "needs_human", "incomplete", "auth_blocked", "active"]);
+const RETURNED_BLOCKED_STATUSES = new Set([
+	"blocked",
+	"needs_human",
+	"incomplete",
+	"auth_blocked",
+	"budget_exceeded",
+	"active",
+]);
 
 export interface StructuredRecoverableWorkflowFailure {
 	readonly error: string;
