@@ -14,13 +14,17 @@ export interface WorkflowBudget {
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */
 class ResolvedWorkflowBudget {
 	private declare readonly brand: undefined;
+	readonly maxDurationMs: number;
+	readonly maxTokens: number;
+	readonly maxCost: number;
+	readonly warnAtPercent: number;
 
-	private constructor(
-		readonly maxDurationMs: number,
-		readonly maxTokens: number,
-		readonly maxCost: number,
-		readonly warnAtPercent: number,
-	) {}
+	private constructor(maxDurationMs: number, maxTokens: number, maxCost: number, warnAtPercent: number) {
+		this.maxDurationMs = maxDurationMs;
+		this.maxTokens = maxTokens;
+		this.maxCost = maxCost;
+		this.warnAtPercent = warnAtPercent;
+	}
 
 	static resolve(layers: ResolveBudgetLayers): ResolvedWorkflowBudget {
 		assertWorkflowBudget(layers.config, "config budget");
