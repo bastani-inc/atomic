@@ -1,0 +1,29 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"productName": "Atomic Desktop PoC",
+	"version": "0.0.0",
+	"identifier": "ai.bastani.atomic.desktop-poc",
+	"build": {
+		"frontendDist": "../src"
+	},
+	"app": {
+		"withGlobalTauri": true,
+		"windows": [
+			{
+				"label": "main",
+				"title": "Atomic",
+				"width": 980,
+				"height": 760,
+				"minWidth": 640,
+				"minHeight": 480
+			}
+		],
+		"security": {
+			"csp": null
+		}
+	},
+	"bundle": {
+		"active": false,
+		"icon": ["icons/32x32.png", "icons/128x128.png", "icons/256x256.png", "icons/icon.png"]
+	}
+}

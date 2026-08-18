@@ -1,0 +1,6 @@
+{
+	"identifier": "default",
+	"description": "Main window capabilities for the Atomic desktop proof of concept",
+	"windows": ["main"],
+	"permissions": ["core:default", "core:event:default", "allow-rpc"]
+}

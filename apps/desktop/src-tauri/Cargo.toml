@@ -1,0 +1,28 @@
+[package]
+name = "atomic-desktop-poc"
+version = "0.0.0"
+description = "Optional Tauri host proof of concept for Atomic"
+authors = ["Bastani"]
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Keep this crate out of the natives workspace at the repository root.
+[workspace]
+
+[lib]
+name = "atomic_desktop_poc_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+
+[profile.release]
+lto = true
+strip = "symbols"

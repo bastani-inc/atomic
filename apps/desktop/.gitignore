@@ -1,0 +1,6 @@
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+*.exe
+*.dmg
+*.app

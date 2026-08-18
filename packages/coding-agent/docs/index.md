@@ -82,6 +82,7 @@ For the full first-run flow, see [Quickstart](/quickstart).
 
 - [SDK](/sdk) - embed Atomic in Node.js applications.
 - [RPC mode](/rpc) - integrate over stdin/stdout JSONL.
+- [Desktop host](/desktop) - experimental optional Tauri host on RPC.
 - [JSON event stream mode](/json) - print mode with structured events.
 - [TUI components](/tui) - build custom terminal UI for extensions.
 

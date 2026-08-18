@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Atomic</title>
+		<link rel="stylesheet" href="./styles.css" />
+	</head>
+	<body>
+		<div class="app">
+			<header class="chrome">
+				<div class="identity">
+					<span class="mark" aria-hidden="true">∀</span>
+					<div>
+						<p class="product">Atomic</p>
+						<p class="subtitle" id="session-label">Desktop proof of concept</p>
+					</div>
+				</div>
+				<div class="status-cluster">
+					<span class="pill" id="mode-pill">RPC</span>
+					<span class="pill pill-muted" id="model-pill">no model</span>
+					<span class="pill" id="run-pill" data-state="idle">idle</span>
+				</div>
+			</header>
+
+			<section class="engine-bar" id="engine-bar">
+				<label class="field">
+					<span>Engine</span>
+					<input id="engine-program" spellcheck="false" autocomplete="off" />
+				</label>
+				<label class="field field-grow">
+					<span>Args</span>
+					<input id="engine-args" spellcheck="false" autocomplete="off" />
+				</label>
+				<label class="field">
+					<span>Cwd</span>
+					<input id="engine-cwd" spellcheck="false" autocomplete="off" />
+				</label>
+				<button type="button" class="btn" id="engine-toggle">Start engine</button>
+			</section>
+
+			<main class="transcript" id="transcript" aria-live="polite"></main>
+
+			<form class="composer" id="composer">
+				<textarea
+					id="prompt"
+					rows="3"
+					placeholder="Message Atomic. Enter sends, Shift+Enter inserts a newline."
+					disabled
+				></textarea>
+				<div class="composer-actions">
+					<p class="hint" id="hint">Start the engine to open a session.</p>
+					<div class="btn-row">
+						<button type="button" class="btn btn-quiet" id="abort" disabled>Abort</button>
+						<button type="submit" class="btn btn-accent" id="send" disabled>Send</button>
+					</div>
+				</div>
+			</form>
+		</div>
+
+		<dialog id="ui-dialog">
+			<form method="dialog" id="ui-form">
+				<h2 id="ui-title">Extension prompt</h2>
+				<p id="ui-message"></p>
+				<div id="ui-body"></div>
+				<div class="btn-row">
+					<button type="submit" class="btn btn-quiet" value="cancel">Cancel</button>
+					<button type="submit" class="btn btn-accent" id="ui-confirm" value="ok">OK</button>
+				</div>
+			</form>
+		</dialog>
+
+		<script src="./session.js"></script>
+		<script src="./app.js"></script>
+	</body>
+</html>

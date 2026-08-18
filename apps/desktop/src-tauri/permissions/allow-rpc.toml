@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "allow-rpc"
+description = "Spawn the Atomic RPC engine and exchange JSONL frames with it"
+commands.allow = [
+	"default_engine",
+	"engine_status",
+	"start_engine",
+	"stop_engine",
+	"send_line",
+]

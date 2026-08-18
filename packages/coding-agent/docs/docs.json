@@ -63,6 +63,7 @@
         "pages": [
           "sdk",
           "rpc",
+          "desktop",
           "json",
           "tui"
         ]

@@ -2,6 +2,8 @@
 
 RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
 
+An experimental optional [desktop host](/desktop) in `apps/desktop` uses this protocol from a Tauri webview. It is not required to install or run the TUI.
+
 **Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `@bastani/atomic` instead of spawning a subprocess. See [`src/core/agent-session.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts).
 
 ## Starting RPC Mode
