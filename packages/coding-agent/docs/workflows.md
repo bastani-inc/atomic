@@ -4636,6 +4636,8 @@ Best practices:
 - Separate adversarial probe design from authoritative execution. Require a structured verifier plan with each exact probe, inputs, command/assertion, expected success condition, and covered requirement/risk; then run selected compile, test, schema generation/validation, runtime, or artifact checks through durable workflow-owned `ctx.tool(...)` calls. Actual tool results—not model self-report—feed judgment and consolidated repair.
 - Known contracts may use direct task-specific `ctx.tool(...)` gates designed before launch; uncertain risks may use model-selected probes executed by those deterministic tools. Rerun the tools after repair until the declared pass condition or iteration limit.
 - Ask verifiers to find blockers and not rewrite the candidate unless you explicitly assign them to repair it. Keep pure transformations as ordinary TypeScript rather than wrapping every model-stage action in `ctx.tool`.
+- Decompose the rubric into named criteria and score each in its own call. Compound rubrics can latch onto one salient factor; the reference scan reports 76.4% for the best single criterion versus 78.3% for a three-criterion ensemble (§4.3).
+- Aggregate by mean plus an explicit veto for genuinely disqualifying findings, never a unanimity AND across verifiers: unanimity makes false-reject grow as 1−(1−p)^K while the false-accept it buys only decays as (1−p)^K. See [Verification scaling](#verification-scaling).
 
 ##### 4. Generate-and-filter
 
