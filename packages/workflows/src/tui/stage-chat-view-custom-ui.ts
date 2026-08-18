@@ -21,14 +21,13 @@ export async function showCustomUi(ctx: StageChatViewContext, request: StageCust
 		);
 		return;
 	}
-	if (request.options?.overlay === true) {
-		ctx.mountingRequestId = null;
-		ctx.stageUiBroker.reject(
-			request,
-			new Error("atomic-workflows: ctx.ui.custom overlay mode is unavailable in the workflow graph viewer"),
-		);
-		return;
-	}
+	// `overlay: true` (and its `overlayOptions` / `reserveTranscriptRows`
+	// companions) is a placement hint for the main-chat host, not a capability
+	// request. The stage-chat custom-UI slot already gives the widget what an
+	// overlay buys it there — focus, and a transcript that stays visible and
+	// scrollable behind it — so an overlay request mounts on this same path
+	// rather than failing the prompt. `ask_user_question` always asks for an
+	// overlay, so rejecting it made every in-stage questionnaire fail.
 	try {
 		const mounted = await mountStageCustomUi(
 			request,

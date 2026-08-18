@@ -49,7 +49,12 @@ export type WorkflowCustomUiFactory<T> = (
 ) => WorkflowCustomUiComponent | Promise<WorkflowCustomUiComponent>;
 
 export interface WorkflowCustomUiOptions {
-	/** Render as a nested overlay. Workflow graph hosts may reject this when unsupported. */
+	/**
+	 * Ask the host to render as an overlay. Workflow graph hosts accept this: the
+	 * attached stage chat mounts the widget on its ordinary custom-UI slot, which
+	 * already keeps the stage transcript visible behind it, instead of opening a
+	 * nested overlay above the graph chrome.
+	 */
 	readonly overlay?: boolean;
 	/** AbortSignal to programmatically dismiss the custom UI. */
 	readonly signal?: AbortSignal;

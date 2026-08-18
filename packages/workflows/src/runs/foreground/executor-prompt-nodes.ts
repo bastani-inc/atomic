@@ -243,15 +243,9 @@ export function buildPromptNodeUiAdapter(input: {
 		}
 
 		if (isCustom) {
-			if (descriptor.options?.overlay === true) {
-				const error = new Error(
-					"atomic-workflows: ctx.ui.custom overlay mode is unavailable in the workflow graph viewer",
-				);
-				applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(error));
-				await finalizePromptStage("failed");
-				throw error;
-			}
-
+			// `overlay: true` is a placement hint the attached stage-chat host
+			// honours by mounting on its ordinary custom-UI slot, so a workflow
+			// asking for an overlay is served rather than failed here.
 			const mergedSignal = mergeHilSignals(input.signal, descriptor.options?.signal);
 			try {
 				if (mergedSignal.signal.aborted) throw hilAbortError(mergedSignal.signal);

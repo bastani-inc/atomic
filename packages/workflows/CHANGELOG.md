@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Raised built-in Goal, Ralph, and open-claude-design Grok 4.6 fallbacks from `xai/grok-4.6:high` to `xai/grok-4.6:xhigh` and added the matching `github-copilot/grok-4.6:xhigh` twin immediately after each xAI id.
 
+### Fixed
+
+- Fixed `ask_user_question` failing every workflow stage that called it while the graph viewer was attached. The tool always mounts with `overlay: true`, and both graph hosts — the attached stage chat and the `ctx.ui.custom` prompt node — rejected that with "ctx.ui.custom overlay mode is unavailable in the workflow graph viewer", so the questionnaire never painted and the stage failed. Overlay is a placement hint rather than a capability request: an overlay request now mounts on the stage chat's existing custom-UI slot, which already keeps the stage transcript visible and scrollable behind the question, takes focus, and resolves through `done(value)`. Workflow-level `ctx.ui.custom(factory, { overlay: true })` completes on the same path. No nested overlay is opened above the graph chrome, so `overlayOptions` and `onHandle` stay unconsumed there, and non-overlay custom UI, readiness gates, detach-does-not-cancel, and mid-mount settle guards are unchanged.
+
 ## [0.9.14-alpha.2] - 2026-08-17
 
 ### Breaking Changes
