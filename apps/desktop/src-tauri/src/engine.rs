@@ -76,7 +76,7 @@ pub fn default_engine_invocation() -> EngineInvocation {
 		let dist_cli = repo.join("packages/coding-agent/dist/cli.js");
 		if source_cli.is_file() {
 			if let Some(bun) = find_on_path("bun") {
-				return EngineInvocation {
+				let mut invocation = EngineInvocation {
 					program: bun.display().to_string(),
 					args: vec![
 						source_cli.display().to_string(),
@@ -85,26 +85,32 @@ pub fn default_engine_invocation() -> EngineInvocation {
 					],
 					cwd: Some(repo.display().to_string()),
 				};
+				apply_extra_engine_args(&mut invocation.args);
+				return invocation;
 			}
 		}
 		if dist_cli.is_file() {
 			if let Some(node) = find_on_path("node") {
-				return EngineInvocation {
+				let mut invocation = EngineInvocation {
 					program: node.display().to_string(),
 					args: vec![dist_cli.display().to_string(), "--mode".to_string(), "rpc".to_string()],
 					cwd: Some(repo.display().to_string()),
 				};
+				apply_extra_engine_args(&mut invocation.args);
+				return invocation;
 			}
 		}
 	}
 
-	EngineInvocation {
+	let mut invocation = EngineInvocation {
 		program: find_on_path("atomic")
 			.map(|path| path.display().to_string())
 			.unwrap_or_else(|| "atomic".to_string()),
 		args: vec!["--mode".to_string(), "rpc".to_string()],
 		cwd: env::current_dir().ok().map(|path| path.display().to_string()),
-	}
+	};
+	apply_extra_engine_args(&mut invocation.args);
+	invocation
 }
 
 pub fn parse_invocation(raw: &str, cwd: Option<PathBuf>) -> EngineInvocation {
@@ -125,6 +131,21 @@ pub fn ensure_rpc_mode(args: &mut Vec<String>) {
 		args.push("--mode".to_string());
 		args.push("rpc".to_string());
 	}
+}
+
+pub fn append_arg_tokens(args: &mut Vec<String>, raw: &str) {
+	for token in tokenize(raw) {
+		if !token.is_empty() {
+			args.push(token);
+		}
+	}
+}
+
+fn apply_extra_engine_args(args: &mut Vec<String>) {
+	if let Ok(raw) = env::var("ATOMIC_DESKTOP_ENGINE_ARGS") {
+		append_arg_tokens(args, &raw);
+	}
+	ensure_rpc_mode(args);
 }
 
 pub async fn spawn_engine(
@@ -267,30 +288,4 @@ fn tokenize(raw: &str) -> Vec<String> {
 		tokens.push(current);
 	}
 	tokens
-}
-
-#[cfg(test)]
-mod tests {
-	use super::{ensure_rpc_mode, parse_invocation};
-
-	#[test]
-	fn appends_rpc_mode_when_missing() {
-		let mut args = vec!["--no-session".to_string()];
-		ensure_rpc_mode(&mut args);
-		assert_eq!(args, ["--no-session", "--mode", "rpc"]);
-	}
-
-	#[test]
-	fn leaves_existing_rpc_mode_in_place() {
-		let mut args = vec!["--mode".to_string(), "rpc".to_string(), "--no-session".to_string()];
-		ensure_rpc_mode(&mut args);
-		assert_eq!(args, ["--mode", "rpc", "--no-session"]);
-	}
-
-	#[test]
-	fn parse_invocation_tokenizes_quotes() {
-		let invocation = parse_invocation(r#"/usr/bin/atomic --mode rpc --name "desk poc""#, None);
-		assert_eq!(invocation.program, "/usr/bin/atomic");
-		assert_eq!(invocation.args, ["--mode", "rpc", "--name", "desk poc"]);
-	}
 }

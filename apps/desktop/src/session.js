@@ -23,6 +23,17 @@
 			.join("\n");
 	}
 
+	function parseArgLines(text) {
+		return String(text || "")
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0);
+	}
+
+	function formatArgLines(args) {
+		return Array.isArray(args) ? args.join("\n") : "";
+	}
+
 	function createSession() {
 		return {
 			items: [],
@@ -31,6 +42,7 @@
 			nextId: 1,
 			pendingUser: null,
 			tools: new Map(),
+			queue: { steering: [], followUp: [] },
 		};
 	}
 
@@ -81,6 +93,12 @@
 			.join("\n");
 	}
 
+	function applyStopReason(item, message) {
+		if (!item || !message || typeof message !== "object") return;
+		if (typeof message.stopReason === "string") item.stopReason = message.stopReason;
+		if (typeof message.errorMessage === "string") item.errorMessage = message.errorMessage;
+	}
+
 	function ingestMessage(session, message, streaming) {
 		if (!message || typeof message !== "object") return;
 		if (message.role === "user") {
@@ -89,6 +107,8 @@
 				session.pendingUser = null;
 				return;
 			}
+			const lastUser = session.items.findLast((entry) => entry.kind === "user");
+			if (lastUser && lastUser.text === text) return;
 			push(session, { kind: "user", text });
 			return;
 		}
@@ -100,6 +120,7 @@
 				parts: Array.isArray(message.content) ? message.content.map((block) => ({ ...block })) : [],
 				streaming: Boolean(streaming),
 			};
+			applyStopReason(item, message);
 			if (streaming) {
 				session.streamingId = push(session, item).id;
 			} else {
@@ -109,6 +130,7 @@
 					existing.thinking = item.thinking;
 					existing.parts = item.parts;
 					existing.streaming = false;
+					applyStopReason(existing, message);
 					session.streamingId = null;
 				} else {
 					push(session, item);
@@ -126,7 +148,8 @@
 			case "agent_end":
 			case "agent_settled":
 				session.streaming = false;
-				return { kind: "status", streaming: false };
+				session.queue = { steering: [], followUp: [] };
+				return { kind: "status", streaming: false, queue: session.queue };
 			case "message_start":
 				ingestMessage(session, event.message, event.message && event.message.role === "assistant");
 				return { kind: "transcript" };
@@ -155,7 +178,8 @@
 				const id = session.tools.get(event.toolCallId);
 				const tool = session.items.find((entry) => entry.id === id);
 				if (tool) {
-					tool.args = event.args || tool.args;
+					tool.phase = "running";
+					if (event.args) tool.args = event.args;
 					tool.output = extractText(event.partialResult && event.partialResult.content);
 				}
 				return { kind: "transcript" };
@@ -165,16 +189,29 @@
 				const tool = session.items.find((entry) => entry.id === id);
 				if (tool) {
 					tool.phase = event.isError ? "error" : "done";
+					if (event.args) tool.args = event.args;
 					tool.output = extractText(event.result && event.result.content) || tool.output;
 				}
 				return { kind: "transcript" };
 			}
+			case "queue_update":
+				session.queue = {
+					steering: Array.isArray(event.steering) ? event.steering.slice() : [],
+					followUp: Array.isArray(event.followUp) ? event.followUp.slice() : [],
+				};
+				return { kind: "queue", queue: session.queue };
 			case "model_changed":
 				return { kind: "model", model: event.model };
 			case "session_info_changed":
 				return { kind: "session-name", name: event.name };
 			case "extension_ui_request":
 				return { kind: "ui", request: event };
+			case "extension_error":
+				push(session, {
+					kind: "error",
+					text: event.error || event.message || "Extension error",
+				});
+				return { kind: "transcript" };
 			default:
 				if (typeof event.type === "string" && event.type.startsWith("engine_")) {
 					return { kind: "ignored" };
@@ -188,6 +225,7 @@
 		session.tools = new Map();
 		session.streamingId = null;
 		session.pendingUser = null;
+		session.queue = { steering: [], followUp: [] };
 		for (const message of messages || []) ingestMessage(session, message, false);
 	}
 
@@ -197,11 +235,18 @@
 		return item;
 	}
 
+	function appendHost(session, kind, text) {
+		return push(session, { kind: kind || "status", text: String(text || "") });
+	}
+
 	root.AtomicSession = {
 		createSession,
 		handleEvent,
 		loadMessages,
 		noteLocalUser,
+		appendHost,
 		extractText,
+		parseArgLines,
+		formatArgLines,
 	};
 })(globalThis);

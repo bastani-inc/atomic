@@ -24,20 +24,38 @@
 			</header>
 
 			<section class="engine-bar" id="engine-bar">
-				<label class="field">
+				<label class="field field-wide">
 					<span>Engine</span>
-					<input id="engine-program" spellcheck="false" autocomplete="off" />
+					<textarea
+						id="engine-program"
+						rows="2"
+						spellcheck="false"
+						autocomplete="off"
+					></textarea>
 				</label>
-				<label class="field field-grow">
-					<span>Args</span>
-					<input id="engine-args" spellcheck="false" autocomplete="off" />
-				</label>
-				<label class="field">
+				<label class="field field-wide">
 					<span>Cwd</span>
-					<input id="engine-cwd" spellcheck="false" autocomplete="off" />
+					<textarea id="engine-cwd" rows="2" spellcheck="false" autocomplete="off"></textarea>
+				</label>
+				<label class="field field-args">
+					<span>Args (one per line)</span>
+					<textarea
+						id="engine-args"
+						rows="4"
+						spellcheck="false"
+						placeholder="--mode&#10;rpc"
+					></textarea>
 				</label>
 				<button type="button" class="btn" id="engine-toggle">Start engine</button>
 			</section>
+
+			<details class="diagnostics" id="diagnostics">
+				<summary>Diagnostics</summary>
+				<pre id="diagnostics-log" class="diagnostics-log"></pre>
+				<div class="btn-row">
+					<button type="button" class="btn btn-quiet" id="copy-diagnostics">Copy diagnostics</button>
+				</div>
+			</details>
 
 			<main class="transcript" id="transcript" aria-live="polite"></main>
 
@@ -50,6 +68,13 @@
 				></textarea>
 				<div class="composer-actions">
 					<p class="hint" id="hint">Start the engine to open a session.</p>
+					<label class="streaming-mode">
+						<span>While running</span>
+						<select id="streaming-behavior">
+							<option value="followUp">Queue as follow-up</option>
+							<option value="steer">Steer current turn</option>
+						</select>
+					</label>
 					<div class="btn-row">
 						<button type="button" class="btn btn-quiet" id="abort" disabled>Abort</button>
 						<button type="submit" class="btn btn-accent" id="send" disabled>Send</button>

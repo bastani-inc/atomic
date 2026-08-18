@@ -16,16 +16,17 @@ Placement is `apps/desktop`, outside `packages/*` and outside the Rust natives w
 
 The webview does not read `~/.atomic` credential or settings files. It spawns the engine and talks JSONL. Session files, auth, tools, and extensions stay in the engine.
 
-## What the PoC renders
+## What it renders
 
-- Engine start/stop, with a default command that prefers this checkout's CLI (`bun packages/coding-agent/src/cli.ts --mode rpc`) when present
+- Engine start/stop. Default command prefers this checkout's CLI (`bun packages/coding-agent/src/cli.ts --mode rpc`). Args are one token per line, so paths with spaces stay intact. Engine and cwd wrap instead of clipping.
 - Session transcript from `get_messages`, then live `message_start` / `message_update` / `message_end`
-- Prompt input (`prompt`, with `streamingBehavior: "followUp"` while a turn is running)
-- Abort
-- Tool cards from `tool_execution_start` / `update` / `end`
-- Blocking extension dialogs (`confirm`, `select`, `input`, `editor`) so a permission prompt does not stall the pipe
+- Prompt input. While a turn is running, send is either `streamingBehavior: "followUp"` or `"steer"` (composer control). `queue_update` shows up in the hint.
+- Abort, with `stopReason` `aborted` / `error` on the assistant bubble
+- Tool cards from `tool_execution_start` / `update` / `end` (phase, args, output)
+- Blocking extension dialogs (`confirm`, `select`, `input`, `editor`)
+- Engine stderr, spawn errors, and exit codes in the transcript plus a copyable diagnostics panel
 
-Out of scope on purpose: session picker, model picker chrome, themes as CSS tokens, custom extension UI, packaging/CI, host capability handshake.
+Out of scope on purpose: session picker, model picker chrome, themes as CSS tokens, custom extension UI, packaging/CI, host capability handshake. Those are written down in [PROTOCOL_GAPS.md](./PROTOCOL_GAPS.md) from what this host could not do cleanly.
 
 ## Run
 
@@ -46,42 +47,42 @@ cargo tauri dev
 
 Linux needs the usual Tauri WebKit/GTK dev packages. macOS and Windows use the platform webview.
 
-Override the engine with `ATOMIC_DESKTOP_ENGINE`, for example:
+Override the engine with `ATOMIC_DESKTOP_ENGINE`. Extra default tokens (still quoted the same way) can be appended with `ATOMIC_DESKTOP_ENGINE_ARGS`:
 
 ```bash
 ATOMIC_DESKTOP_ENGINE="atomic --mode rpc --no-session" cargo run
+ATOMIC_DESKTOP_ENGINE_ARGS='--no-session --no-extensions --provider openai --model gpt-4o-mini' cargo run
 ```
 
 The host always ensures `--mode rpc` is present. It writes JSONL with LF only, including on Windows.
 
-JSONL framing tests (no GUI):
+Builtin extensions need the native binding. If that binding is missing, the RPC child exits on startup unless you pass `--no-extensions`. `--no-session` keeps this PoC from writing a session file.
 
-```bash
-cd apps/desktop/src-tauri
-cargo test
-```
+## Check it
+
+Launch the window, start the engine, and send a prompt. That is the check. There is no desktop test suite and no mock engine.
+
+If you change the JSONL decoder in `src-tauri/src/jsonl.rs`, `cargo test` in that crate still covers LF-only framing.
 
 ## Protocol additions this host made obvious
 
-These are the gaps to discuss next. None of them are implemented here.
+See [PROTOCOL_GAPS.md](./PROTOCOL_GAPS.md). Short version:
 
-**Host identity.** RPC sessions bind extensions with `ctx.mode === "rpc"` and `ctx.hasUI === true`. This desktop host and a CI embedder look the same. A GUI-aware extension still cannot write `ctx.ui.hostInfo.kind === "gui"` because that field does not exist. The right follow-up is an additive handshake on the existing RPC, not a new GUI mode that forks the engine.
+**Host identity.** RPC sessions bind extensions with `ctx.mode === "rpc"` and `ctx.hasUI === true`. This desktop host and a CI embedder look the same.
 
-**Session listing.** `switch_session` takes a path. There is no `list_sessions` command. A desktop "open recents" UI would otherwise have to read `~/.atomic/agent/sessions` itself, which this host must not do.
+**Session listing.** `list_sessions` is not a command. A recents UI would otherwise read `~/.atomic/agent/sessions`, which this host must not do.
 
-**Project folder.** Cwd is fixed at spawn. "Open folder" today means kill and respawn. A `set_cwd` or equivalent would keep the window and drop the session in one step, or make the restart explicit.
+**Project folder.** Cwd is fixed at spawn. "Open folder" today means kill and respawn.
 
-**Typed permission prompts.** Tool approval arrives as a generic `extension_ui_request` (`select` / `confirm`) with a title string. That is enough to unblock the pipe. It is not enough to render Allow/Deny as a first-class desktop control without parsing copy.
+**Typed permission prompts.** Default RPC auto-runs bash. Tool approval as a generic confirm/select is not Allow/Deny.
 
-**Custom UI.** `ctx.ui.custom()` is TUI-only over RPC (`undefined`). Structured `tool_execution_*` events are enough for a basic tool card. Rich tool views need a web-oriented custom-UI protocol, not ANSI frames from the interactive-engine painter.
+**Custom UI.** `ctx.ui.custom()` is TUI-only over RPC. Structured `tool_execution_*` events are enough for a basic tool card.
 
-**Themes.** RPC has no palette or CSS token export. This UI hardcodes Catppuccin Mocha from `DESIGN.md`.
+**Themes.** RPC has no palette export. This UI hardcodes Catppuccin Mocha from `DESIGN.md`.
 
-**Auth.** `login_provider` exists, but this PoC has no login chrome. OAuth device codes and "open this URL" still need a host-visible event if the desktop app is the thing that should open a browser.
+**Auth.** `login_provider` exists. This host has no login chrome. Keys are inherited by the engine child; the webview does not read them.
 
-**Notifications / window title.** Fire-and-forget `setTitle` / `notify` work if the host implements them. There is no native notification primitive.
-
-What already worked without protocol changes: spawn, `get_state`, `get_messages`, `prompt`, streaming `text_delta`, tool lifecycle, abort, and the extension UI request/response dance.
+What already worked without protocol changes: spawn, `get_state`, `prompt`, a completed assistant turn, bash tool lifecycle, abort, steer / `queue_update`.
 
 ## Suggested follow-up PRs
 

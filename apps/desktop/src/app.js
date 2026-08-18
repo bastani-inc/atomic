@@ -18,12 +18,26 @@
 	const uiMessageEl = document.getElementById("ui-message");
 	const uiBodyEl = document.getElementById("ui-body");
 	const uiConfirmEl = document.getElementById("ui-confirm");
+	const streamingBehaviorEl = document.getElementById("streaming-behavior");
+	const diagnosticsLogEl = document.getElementById("diagnostics-log");
+	const copyDiagnosticsEl = document.getElementById("copy-diagnostics");
 
 	const session = AtomicSession.createSession();
 	let requestSeq = 0;
 	let connected = false;
 	let streaming = false;
 	const pending = new Map();
+	const diagnostics = {
+		program: "",
+		args: [],
+		cwd: "",
+		pid: null,
+		stderr: "",
+		lastExit: null,
+		lastError: null,
+		notes: [],
+	};
+	let stderrCarry = "";
 
 	function tauri() {
 		return window.__TAURI__;
@@ -48,6 +62,36 @@
 		hintEl.textContent = text;
 	}
 
+	function renderDiagnostics() {
+		const lines = [
+			`program: ${diagnostics.program || "(empty)"}`,
+			`args:`,
+			...(diagnostics.args.length ? diagnostics.args.map((arg) => `  ${arg}`) : ["  (none)"]),
+			`cwd: ${diagnostics.cwd || "(empty)"}`,
+			`pid: ${diagnostics.pid ?? "(not running)"}`,
+			`lastExit: ${diagnostics.lastExit ?? "(none)"}`,
+			`lastError: ${diagnostics.lastError ?? "(none)"}`,
+			"",
+			"stderr:",
+			diagnostics.stderr.trim() ? diagnostics.stderr : "(empty)",
+		];
+		if (diagnostics.notes.length) {
+			lines.push("", "notes:", ...diagnostics.notes.map((note) => `- ${note}`));
+		}
+		diagnosticsLogEl.textContent = lines.join("\n");
+	}
+
+	function noteDiagnostic(text) {
+		diagnostics.notes.push(text);
+		if (diagnostics.notes.length > 40) diagnostics.notes.shift();
+		renderDiagnostics();
+	}
+
+	function syncPathTitles() {
+		programEl.title = programEl.value;
+		cwdEl.title = cwdEl.value;
+	}
+
 	function setConnected(value) {
 		connected = value;
 		promptEl.disabled = !value;
@@ -63,35 +107,86 @@
 		setRunState(value ? "running" : connected ? "idle" : "idle", value ? "running" : "idle");
 	}
 
+	function formatQueueHint(queue) {
+		const steering = (queue && queue.steering) || [];
+		const followUp = (queue && queue.followUp) || [];
+		if (!steering.length && !followUp.length) return "";
+		const parts = [];
+		if (steering.length) parts.push(`steer: ${steering.join(" | ")}`);
+		if (followUp.length) parts.push(`follow-up: ${followUp.join(" | ")}`);
+		return `Queued ${parts.join("; ")}`;
+	}
+
+	function assistantRole(item) {
+		if (item.streaming) return "Atomic · streaming";
+		if (item.stopReason === "aborted") return "Atomic · aborted";
+		if (item.stopReason === "error") return "Atomic · error";
+		if (item.stopReason && item.stopReason !== "stop" && item.stopReason !== "toolUse") {
+			return `Atomic · ${item.stopReason}`;
+		}
+		return "Atomic";
+	}
+
 	function renderItem(item) {
 		const card = document.createElement("article");
 		card.className = `card ${item.kind}`;
 		card.dataset.id = item.id;
 		const role = document.createElement("p");
 		role.className = "role";
-		const body = document.createElement("p");
-		body.className = "body";
 		if (item.kind === "user") {
 			role.textContent = "You";
+			const body = document.createElement("p");
+			body.className = "body";
 			body.textContent = item.text || "";
-		} else if (item.kind === "assistant") {
-			role.textContent = item.streaming ? "Atomic · streaming" : "Atomic";
+			card.append(role, body);
+			return card;
+		}
+		if (item.kind === "assistant") {
+			if (item.stopReason === "aborted" || item.stopReason === "error") card.classList.add("stopped");
+			role.textContent = assistantRole(item);
+			card.append(role);
 			if (item.thinking) {
 				const thinking = document.createElement("p");
 				thinking.className = "thinking";
 				thinking.textContent = item.thinking;
-				card.append(role, thinking, body);
-				body.textContent = item.text || "";
-				return card;
+				card.append(thinking);
 			}
-			body.textContent = item.text || "";
-		} else if (item.kind === "tool") {
-			role.textContent = `${item.toolName} · ${item.phase}`;
-			body.textContent = item.output || JSON.stringify(item.args ?? {}, null, 2);
-		} else {
-			role.textContent = item.kind;
-			body.textContent = item.text || "";
+			const body = document.createElement("p");
+			body.className = "body";
+			body.textContent = item.text || item.errorMessage || "";
+			card.append(body);
+			return card;
 		}
+		if (item.kind === "tool") {
+			const phase = item.phase || "running";
+			card.classList.add(`phase-${phase}`);
+			role.textContent = item.toolName || "tool";
+			const badge = document.createElement("span");
+			badge.className = `phase phase-${phase}`;
+			badge.textContent = phase;
+			role.append(badge);
+			card.append(role);
+			const args = document.createElement("pre");
+			args.className = "tool-args";
+			args.textContent =
+				item.args == null || item.args === ""
+					? ""
+					: typeof item.args === "string"
+						? item.args
+						: JSON.stringify(item.args, null, 2);
+			if (args.textContent) card.append(args);
+			if (item.output) {
+				const output = document.createElement("pre");
+				output.className = "tool-output body";
+				output.textContent = item.output;
+				card.append(output);
+			}
+			return card;
+		}
+		role.textContent = item.kind;
+		const body = document.createElement("p");
+		body.className = "body";
+		body.textContent = item.text || "";
 		card.append(role, body);
 		return card;
 	}
@@ -103,11 +198,7 @@
 	}
 
 	function addStatus(text, kind) {
-		session.items.push({
-			id: `status-${session.nextId++}`,
-			kind: kind || "status",
-			text,
-		});
+		AtomicSession.appendHost(session, kind || "status", text);
 		renderTranscript();
 	}
 
@@ -209,6 +300,10 @@
 		const result = AtomicSession.handleEvent(session, frame);
 		if (result.kind === "transcript") renderTranscript();
 		if (result.kind === "status") setStreaming(Boolean(result.streaming));
+		if (result.kind === "queue") {
+			const hint = formatQueueHint(result.queue);
+			if (hint) setHint(hint);
+		}
 		if (result.kind === "model" && result.model) {
 			modelPillEl.textContent = result.model.id || result.model.name || "model";
 		}
@@ -216,27 +311,81 @@
 		if (result.kind === "ui") handleUiRequest(result.request).catch((error) => addStatus(error.message, "error"));
 	}
 
+	function ingestStderr(chunk) {
+		const text = String(chunk ?? "");
+		if (!text) return;
+		diagnostics.stderr += text;
+		if (diagnostics.stderr.length > 64 * 1024) {
+			diagnostics.stderr = diagnostics.stderr.slice(-32 * 1024);
+		}
+		renderDiagnostics();
+		stderrCarry += text;
+		let newline = stderrCarry.indexOf("\n");
+		while (newline !== -1) {
+			const line = stderrCarry.slice(0, newline).replace(/\r$/, "").trim();
+			stderrCarry = stderrCarry.slice(newline + 1);
+			if (line) addStatus(line, "stderr");
+			newline = stderrCarry.indexOf("\n");
+		}
+	}
+
+	async function copyDiagnostics() {
+		const text = diagnosticsLogEl.textContent || "";
+		try {
+			if (navigator.clipboard && navigator.clipboard.writeText) {
+				await navigator.clipboard.writeText(text);
+			} else {
+				const field = document.createElement("textarea");
+				field.value = text;
+				document.body.append(field);
+				field.select();
+				document.execCommand("copy");
+				field.remove();
+			}
+			noteDiagnostic("Copied diagnostics to clipboard.");
+			setHint("Diagnostics copied.");
+		} catch (error) {
+			setHint(error.message || String(error));
+		}
+	}
+
 	async function startEngine() {
 		const invocation = {
 			program: programEl.value.trim(),
-			args: argsEl.value.trim() ? argsEl.value.trim().split(/\s+/).filter(Boolean) : [],
+			args: AtomicSession.parseArgLines(argsEl.value),
 			cwd: cwdEl.value.trim() || null,
 		};
+		diagnostics.program = invocation.program;
+		diagnostics.args = invocation.args;
+		diagnostics.cwd = invocation.cwd || "";
+		diagnostics.pid = null;
+		diagnostics.stderr = "";
+		diagnostics.lastExit = null;
+		diagnostics.lastError = null;
+		stderrCarry = "";
+		renderDiagnostics();
 		setHint("Starting engine…");
 		try {
 			const status = await invoke("start_engine", { invocation });
+			diagnostics.pid = status.pid ?? null;
+			renderDiagnostics();
 			setConnected(true);
 			setHint(status.pid ? `Engine pid ${status.pid}` : "Engine started");
 			try {
 				await sendCommand({ type: "get_state" });
 				await sendCommand({ type: "get_messages" });
 			} catch (error) {
+				diagnostics.lastError = error.message || String(error);
+				renderDiagnostics();
 				addStatus(error.message, "error");
 			}
 		} catch (error) {
+			const message = error.message || String(error);
+			diagnostics.lastError = message;
+			renderDiagnostics();
 			setRunState("error", "error");
-			setHint(error.message || String(error));
-			addStatus(error.message || String(error), "error");
+			setHint(message);
+			addStatus(message, "error");
 		}
 	}
 
@@ -244,6 +393,8 @@
 		try {
 			await invoke("stop_engine");
 		} catch (error) {
+			diagnostics.lastError = error.message || String(error);
+			renderDiagnostics();
 			addStatus(error.message, "error");
 		}
 	}
@@ -257,7 +408,7 @@
 		renderTranscript();
 		try {
 			const command = { type: "prompt", message: text };
-			if (streaming) command.streamingBehavior = "followUp";
+			if (streaming) command.streamingBehavior = streamingBehaviorEl.value || "followUp";
 			await sendCommand(command);
 		} catch (error) {
 			addStatus(error.message, "error");
@@ -281,8 +432,10 @@
 		}
 		const invocation = await invoke("default_engine");
 		programEl.value = invocation.program || "";
-		argsEl.value = (invocation.args || []).join(" ");
+		argsEl.value = AtomicSession.formatArgLines(invocation.args || []);
 		cwdEl.value = invocation.cwd || "";
+		syncPathTitles();
+		renderDiagnostics();
 
 		await tauri().event.listen("engine-line", (event) => {
 			const line = String(event.payload ?? "").trim();
@@ -294,16 +447,21 @@
 			}
 		});
 		await tauri().event.listen("engine-stderr", (event) => {
-			if (event.payload && String(event.payload).trim()) {
-				console.debug(event.payload);
-			}
+			if (event.payload) ingestStderr(event.payload);
 		});
 		await tauri().event.listen("engine-exit", (event) => {
 			for (const waiter of pending.values()) waiter.reject(new Error("engine exited"));
 			pending.clear();
 			setConnected(false);
 			setStreaming(false);
-			setHint(`Engine exited${event.payload == null ? "" : ` (${event.payload})`}.`);
+			diagnostics.pid = null;
+			diagnostics.lastExit = event.payload == null ? "null" : String(event.payload);
+			if (stderrCarry.trim()) addStatus(stderrCarry.trim(), "stderr");
+			stderrCarry = "";
+			renderDiagnostics();
+			const code = event.payload == null ? "" : ` (${event.payload})`;
+			setHint(`Engine exited${code}.`);
+			addStatus(`Engine exited${code}.`, event.payload && event.payload !== 0 ? "error" : "status");
 		});
 
 		toggleEl.addEventListener("click", () => {
@@ -312,6 +470,11 @@
 		});
 		document.getElementById("composer").addEventListener("submit", onSubmit);
 		abortEl.addEventListener("click", onAbort);
+		copyDiagnosticsEl.addEventListener("click", () => {
+			copyDiagnostics().catch((error) => setHint(error.message || String(error)));
+		});
+		programEl.addEventListener("input", syncPathTitles);
+		cwdEl.addEventListener("input", syncPathTitles);
 		promptEl.addEventListener("keydown", (event) => {
 			if (event.key === "Enter" && !event.shiftKey) {
 				event.preventDefault();

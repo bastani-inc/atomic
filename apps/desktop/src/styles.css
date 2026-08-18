@@ -37,12 +37,13 @@ body {
 .app {
 	height: 100%;
 	display: grid;
-	grid-template-rows: auto auto 1fr auto;
+	grid-template-rows: auto auto auto 1fr auto;
 }
 
 .chrome,
 .engine-bar,
-.composer {
+.composer,
+.diagnostics {
 	background: var(--mantle);
 	border-bottom: 1px solid var(--surface0);
 	padding: 0.75rem 1rem;
@@ -121,8 +122,8 @@ body {
 }
 
 .engine-bar {
-	display: grid;
-	grid-template-columns: minmax(8rem, 1.2fr) minmax(12rem, 2fr) minmax(8rem, 1.4fr) auto;
+	display: flex;
+	flex-wrap: wrap;
 	gap: 0.75rem;
 	align-items: end;
 }
@@ -131,10 +132,21 @@ body {
 	display: flex;
 	flex-direction: column;
 	gap: 0.3rem;
+	flex: 1 1 12rem;
 	min-width: 0;
 }
 
-.field span {
+.field-wide {
+	flex: 1 1 100%;
+}
+
+.field-args {
+	flex: 2 1 18rem;
+	min-width: 14rem;
+}
+
+.field span,
+.streaming-mode span {
 	color: var(--subtext0);
 	font-size: 0.75rem;
 	font-weight: 700;
@@ -144,12 +156,14 @@ body {
 
 input,
 textarea,
-button {
+button,
+select {
 	font: inherit;
 }
 
 input,
-textarea {
+textarea,
+select {
 	width: 100%;
 	border: 1px solid var(--surface1);
 	background: var(--crust);
@@ -158,8 +172,19 @@ textarea {
 	padding: 0.5rem 0.7rem;
 }
 
+#engine-program,
+#engine-cwd,
+#engine-args {
+	resize: vertical;
+	min-height: 2.6rem;
+	overflow-wrap: anywhere;
+	word-break: break-all;
+	white-space: pre-wrap;
+}
+
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
 	outline: 2px solid var(--blue);
 	outline-offset: 1px;
 }
@@ -172,6 +197,7 @@ textarea:focus {
 	color: var(--text);
 	font-weight: 700;
 	cursor: pointer;
+	white-space: nowrap;
 }
 
 .btn:disabled {
@@ -187,6 +213,34 @@ textarea:focus {
 .btn-quiet {
 	background: var(--surface0);
 	color: var(--subtext0);
+}
+
+.diagnostics {
+	padding-top: 0.45rem;
+	padding-bottom: 0.45rem;
+}
+
+.diagnostics summary {
+	cursor: pointer;
+	color: var(--subtext0);
+	font-size: 0.8rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.diagnostics-log {
+	margin: 0.6rem 0;
+	max-height: 10rem;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	background: var(--crust);
+	border: 1px solid var(--surface0);
+	border-radius: 0.5rem;
+	padding: 0.6rem 0.75rem;
+	color: var(--subtext0);
+	font-size: 0.8rem;
 }
 
 .transcript {
@@ -214,12 +268,21 @@ textarea:focus {
 	align-self: stretch;
 }
 
+.card.assistant.stopped {
+	border-color: var(--yellow);
+}
+
 .card.tool {
 	border-color: var(--surface1);
 }
 
+.card.tool.phase-error {
+	border-color: var(--red);
+}
+
 .card.status,
-.card.error {
+.card.error,
+.card.stderr {
 	align-self: stretch;
 	color: var(--subtext0);
 	background: transparent;
@@ -229,6 +292,10 @@ textarea:focus {
 .card.error {
 	color: var(--red);
 	border-color: var(--red);
+}
+
+.card.stderr {
+	font-size: 0.85rem;
 }
 
 .role {
@@ -265,10 +332,42 @@ textarea:focus {
 	font-size: 0.9rem;
 }
 
-.tool-meta {
+.tool-args,
+.tool-output {
 	margin: 0.35rem 0 0;
-	color: var(--overlay1);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 	font-size: 0.85rem;
+}
+
+.tool-args {
+	color: var(--overlay1);
+}
+
+.phase {
+	display: inline-block;
+	margin-left: 0.35rem;
+	padding: 0.05rem 0.4rem;
+	border-radius: 999px;
+	background: var(--surface0);
+	color: var(--subtext0);
+	font-size: 0.7rem;
+	letter-spacing: 0.02em;
+}
+
+.phase-running {
+	background: var(--yellow);
+	color: var(--crust);
+}
+
+.phase-error {
+	background: var(--red);
+	color: var(--crust);
+}
+
+.phase-done {
+	background: var(--green);
+	color: var(--crust);
 }
 
 .composer {
@@ -289,6 +388,13 @@ textarea:focus {
 	margin: 0 0 0.45rem;
 	color: var(--subtext0);
 	font-size: 0.85rem;
+}
+
+.streaming-mode {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	margin-bottom: 0.45rem;
 }
 
 dialog {
@@ -323,6 +429,13 @@ dialog::backdrop {
 @media (max-width: 900px) {
 	.engine-bar,
 	.composer {
-		grid-template-columns: 1fr;
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.field,
+	.field-args {
+		min-width: 0;
 	}
 }
