@@ -127,10 +127,10 @@ export function soft_win(scoreA: number, scoreB: number): number {
 /** Add each preference to both candidates' win mass and comparison count. */
 export function accumulate(prefs: readonly Preference[], w: number[], c: number[]): void {
 	for (const { a, b, p } of prefs) {
-		w[a] += p;
-		c[a] += 1;
-		w[b] += 1 - p;
-		c[b] += 1;
+		w[a]! += p;
+		c[a]! += 1;
+		w[b]! += 1 - p;
+		c[b]! += 1;
 	}
 }
 

@@ -133,6 +133,17 @@ const VARIANTS: readonly Variant[] = [
 		},
 	},
 	{
+		name: "auto-include-no-unchecked-indexed-access",
+		description: "Regression lock for issue #2543: auto-included workflow types remain type-safe with noUncheckedIndexedAccess.",
+		expect: "pass",
+		files: {
+			"package.json": consumerPackageJson("ext-and-workflow-no-unchecked-indexed-access", { extensions: ["./src/index.ts"], workflows: ["./workflows"] }),
+			"tsconfig.json": tsconfig({ noUncheckedIndexedAccess: true, allowImportingTsExtensions: true }),
+			"src/index.ts": `import { VERSION } from "@bastani/atomic";\nexport const myExtensionVersion: string = VERSION;\n`,
+			"workflows/hello.ts": WORKFLOW_FILE,
+		},
+	},
+	{
 		name: "negative-no-optin",
 		description: "Negative control: pure workflow-only package with NO opt-in must fail with TS2307 (the bug this fix closes).",
 		expect: "fail",
