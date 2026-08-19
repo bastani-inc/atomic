@@ -1,7 +1,7 @@
 ---
 name: show-me
 description: Help the user understand the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts.
-license: MIT
+license: MIT. LICENSE.txt has complete terms
 metadata:
     author: HumanLayer
     github-repo: https://github.com/humanlayer/skills
@@ -141,4 +141,3 @@ Place each visual next to the short text it supports. Keep only the calls, files
 
 You may use one of these, you may use several, it is unlikely you will use all of them. Use your judgement and don't overwhelm the user.
 
-Credit: This skill is from [HumanLayer](https://github.com/humanlayer/skills) and is distributed under the MIT License.

@@ -1,6 +1,10 @@
 ---
 name: create-spec
 description: "Create a detailed execution plan/spec/PRD for implementing features or refactors in a codebase, designed around the program's entrypoints, the doors that carry domain intent, by leveraging existing research in the codebase."
+license: MIT
+metadata:
+    author: Atomic
+    method-source: https://github.com/dmmulroy/skills/blob/main/tech-spec/SKILL.md
 ---
 
 You are tasked with creating a spec for implementing a new feature or system change in the codebase by leveraging existing research in the **$ARGUMENTS** path. If no research path is specified, use the entire `research/` directory. IMPORTANT: Research documents are located in the `research/` directory — do NOT look in the `specs/` directory for research. Follow the template below to produce a comprehensive specification as output in the `specs/` folder using the findings from RELEVANT research documents found in `research/`. The spec file MUST be named using the format `YYYY-MM-DD-topic.md` (e.g., `specs/2026-03-26-my-feature.md`), where the date is the current date and the topic is a kebab-case summary. Tip: It's good practice to use the `codebase-research-locator` and `codebase-research-analyzer` agents to help you find and analyze the research documents in the `research/` directory. It is also HIGHLY recommended to cite relevant research throughout the spec for additional context.
@@ -121,8 +125,6 @@ else
   printf 'Open this file: %s\n' path/to/show-me-{description}.html
 fi
 ```
-
-This shape-first working method is drawn from Dillon Mulroy's [tech-spec skill](https://github.com/dmmulroy/skills/blob/main/tech-spec/SKILL.md); it is guidance for this skill, not a new bundled skill.
 
 # [Project Name] Technical Design Document / RFC
 
