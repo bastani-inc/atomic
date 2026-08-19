@@ -19,6 +19,28 @@ You are tasked with creating a spec for implementing a new feature or system cha
 - When allowing breaking changes, document existing legacy behavior, compatibility shims, optional flags, and public APIs as current state, not as constraints future specs must preserve unless the user explicitly asks for preservation.
 - When not allowing breaking changes, document public APIs, compatibility-sensitive surfaces, downstream callers, migration constraints, and behavior that future work must preserve.
 
+### Choose a working path before drafting
+
+First inspect the context already available: the conversation, the requested research path, the `research/` documents, local docs, and the codebase. Choose the path that matches what is actually known:
+
+- **Path A — Convert context to spec:** use this when the available conversation, research, docs, or code contain enough background to describe the problem, constraints, affected code, and acceptance criteria.
+- **Path B — Grill first:** use this when the user wants a spec but the problem, constraints, design direction, affected code, or acceptance criteria are not yet clear. Do not invent architectural decisions.
+
+If the codebase can answer a question, inspect it instead of asking the user. For Path B, do not write a full spec yet: state what context is missing, then use the existing `ask_user_question` and contrastive-clarification rules below (one question at a time or a logical group, with a recommended answer and concrete trade-offs). Once the answers and repository evidence provide enough context, run Path A.
+
+### Path A working method
+
+When Path A is selected, work in this order and map the results into the numbered document headings below:
+
+1. **Load standards and local context.** Inspect local vocabulary, module layout, domain concepts, errors, adapters, observability, runtime patterns, and test style. Check precedent before introducing a pattern, library, adapter, schema style, or test strategy; ground the findings in §2.1 and the door names.
+2. **Extract the design problem.** Record current state, users and callers, pain point, goals, non-goals, constraints, invariants, affected systems, likely doors, operational concerns, risks, and open questions in §2, §3, and §9. Unknowns stay open questions.
+3. **Explore materially different alternatives before locking the recommendation.** Compare interface shape, seam placement, ownership, call stack, runtime topology, and module boundaries—not just names. Record the comparison in §6 even though §6 appears after the recommended design in the document.
+4. **Specify typed contracts.** Define the recommended doors, types, APIs, named failures, and refusals in §5.1–§5.3 while preserving the door rubric.
+5. **Specify call stacks and data flow.** Put current and proposed paths, failure behavior, retry, cancellation, and idempotency where reachable into §5.4 using the visual formats below.
+6. **Map files and modules.** List add/change/delete/test/config files and the responsibility each owns under §4 or §5.
+7. **Plan vertical RGR TDD slices.** In §8, take each important public door or seam through a red behavior test, the smallest green implementation, and a refactor that preserves the behavior; do not write a horizontal all-tests-first plan.
+8. **Produce the design-only spec.** Write `specs/YYYY-MM-DD-topic.md`; do not implement the change in this skill.
+
 ## Design philosophy: a spec is a theory of its doors
 
 The entrypoints of a program, read together, are the program's **theory of its own purpose**. Everything inside the boundary is mechanism — the *how*. Only at the boundary does the code speak in terms of meaning — the *what* and the *why*. So the single most important thing this spec defines is not the mechanism inside the system, but the **set of doors** the system keeps: the functions, routes, and RPC methods through which untrusted input arrives and irreversible effects happen.
@@ -76,6 +98,32 @@ For each non-trivial entrypoint the spec introduces or changes, walk these in or
 
 </EXTREMELY_IMPORTANT>
 
+### Shape-first visual language
+
+Specs stay in Markdown, but their visuals should use the smallest view that makes the key point clear. Skip a preamble, keep prose brief, and place each visual next to the short text it supports. Use one or several of these as needed; do not use all of them every time:
+
+- Show logic or algorithms as indented `text` pseudocode, not prose alone.
+- Show runtime control flow as an indented call tree.
+- Show UI structure as a `tsx` component tree, including the state and module boundaries that matter.
+- Show file responsibility or a broad refactor as a shallow `text` file tree.
+- Show component interaction, control flow, or data flow with Mermaid.
+- Use `diff` when the surrounding shape already exists and the point is what changes. Match the diff to the topic: component tree, file tree, call tree, or state/control flow.
+- Show the whole block when most of it is new, omitted context would hide ownership or order, or the reader needs a copyable target shape.
+
+For a visual UI, layout, state comparison, or concept too dense for Mermaid, allow one focused `show-me-{description}.html` artifact (diagram, infographic, or short slide deck). Match the product's colors, type, spacing, components, labels, and data; support desktop and mobile. Specs remain Markdown in `specs/`; HTML is an optional extra only when the page is the point. Open it with Atomic's `bash` tool and a portable opener:
+
+```bash
+if [ "$(uname -s)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+  open path/to/show-me-{description}.html
+elif [ "$(uname -s)" = "Linux" ] && command -v xdg-open >/dev/null 2>&1; then
+  xdg-open path/to/show-me-{description}.html
+else
+  printf 'Open this file: %s\n' path/to/show-me-{description}.html
+fi
+```
+
+This shape-first working method is drawn from Dillon Mulroy's [tech-spec skill](https://github.com/dmmulroy/skills/blob/main/tech-spec/SKILL.md); it is guidance for this skill, not a new bundled skill.
+
 # [Project Name] Technical Design Document / RFC
 
 | Document Metadata      | Details                                                                        |
@@ -97,7 +145,7 @@ _Instruction: Why are we doing this? Why now? Link to the Product Requirement Do
 
 ### 2.1 Current State
 
-_Instruction: Describe the existing architecture. Use a "Context Diagram" if possible. Be honest about the flaws — including which existing doors **leak** (named for tools, dishonest compression, scattered danger)._
+_Instruction: Describe the existing architecture and be honest about the flaws — including which existing doors **leak** (named for tools, dishonest compression, scattered danger). Pick the smallest view that makes the current state clear: a shallow file tree for ownership, a call tree for runtime flow, a component tree for UI structure, or Mermaid for interaction/data flow. Place the visual next to the short explanation and do not force a diagram when prose is clearer._
 
 - **Architecture:** Currently, Service A communicates with Service B via a shared SQL database.
 - **Limitations:** This creates a tight coupling; when Service A locks the table, Service B times out.
@@ -130,37 +178,19 @@ _Instruction: Explicitly state what you are NOT doing. Remember: **intent lives 
 
 ## 4. Proposed Solution (High-Level Design)
 
-_Instruction: The "Big Picture." Diagrams are mandatory here._
+_Instruction: The "Big Picture." Choose the smallest fitting view from the shape-first visual language above; use one or several only when each answers a different question. Types, trees, diffs, or Mermaid should define the shape, while brief prose explains why. Do not use a heavy styled diagram when a simpler view communicates the boundary._
 
 ### 4.1 System Architecture Diagram
 
-_Instruction: Insert a C4 System Context or Container diagram. Show the "Black Boxes" and mark where the **airlock** sits (the single edge where untrusted network becomes a trusted request)._
+_Instruction: Show the system boundary and mark the **airlock** (the single edge where untrusted input becomes a trusted request). Use Mermaid for component interaction or data flow, a shallow file tree for module responsibility, a call tree for runtime control flow, or a component tree for UI structure. Show the whole block when most of it is new or omitted context would hide ownership or order._
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#f8f9fa','primaryTextColor':'#2c3e50','primaryBorderColor':'#4a5568','lineColor':'#4a90e2','secondaryColor':'#ffffff','tertiaryColor':'#e9ecef','clusterBkg':'#ffffff','clusterBorder':'#cbd5e0'}}}%%
 flowchart TB
-    classDef person fill:#5a67d8,stroke:#4c51bf,stroke-width:3px,color:#fff,font-weight:600
-    classDef core fill:#4a90e2,stroke:#357abd,stroke-width:2.5px,color:#fff,font-weight:600
-    classDef support fill:#667eea,stroke:#5a67d8,stroke-width:2.5px,color:#fff,font-weight:600
-    classDef db fill:#48bb78,stroke:#38a169,stroke-width:2.5px,color:#fff,font-weight:600
-    classDef external fill:#718096,stroke:#4a5568,stroke-width:2.5px,color:#fff,font-weight:600,stroke-dasharray:6 3
-
-    User(("◉<br><b>User</b>")):::person
-    subgraph Boundary["◆ System Boundary — Airlock at the edge"]
-        direction TB
-        Gateway{{"<b>API Gateway</b><br><i>auth · validate · authorize</i><br>the one trust transition"}}:::core
-        API["<b>Core Service</b><br><i>trusts its own invariants</i>"]:::core
-        Worker(["<b>Worker</b><br><i>async</i>"]):::support
-        DB[("●<br><b>Primary DB</b>")]:::db
-    end
-    Ext{{"<b>Payment Provider</b>"}}:::external
-
-    User -->|"1. HTTPS (untrusted)"| Gateway
-    Gateway -->|"2. trusted request"| API
-    API -->|"3. persist (txn)"| DB
-    API -.->|"4. enqueue"| Worker
-    Worker -.->|"5. settle (irreversible)"| Ext
-    style Boundary fill:#fff,stroke:#cbd5e0,stroke-width:2px,stroke-dasharray:8 4
+    User((User)) -->|untrusted request| Gateway["Gateway<br/>auth · validate · authorize<br/>airlock"]
+    Gateway -->|trusted request| API["Core service<br/>trusts its invariants"]
+    API --> DB[(Primary DB)]
+    API -.-> Worker[Worker]
+    Worker -.-> Ext["External provider<br/>irreversible effect"]
 ```
 
 ### 4.2 Architectural Pattern
@@ -177,6 +207,13 @@ _Instruction: Name the pattern (e.g., "Event Sourcing", "BFF — Backend for Fro
 | Event Bus         | Decouples services          | Kafka             | Durable log, replay capability.              |
 | Projections DB    | Read-optimized views        | MongoDB           | Flexible schema for diverse receipt formats. |
 
+_Instruction: Map the files and modules that implement the design. List every add, change, delete, test, and configuration file, and state the responsibility each owns. Use a shallow file tree when layout is the key point; otherwise use this compact map._
+
+| Path | Action | Owns |
+| ---- | ------ | ---- |
+| `src/feature/door.ts` | change | Public door and boundary contract |
+| `test/feature/door.test.ts` | add | Vertical behavior slice through the door |
+
 ### 4.4 The Door Set at a Glance (Stranger-Across-Time View)
 
 _Instruction: List the entrypoint **names alone** — no signatures, no bodies. A competent stranger should reconstruct the system's purpose from this list. If they cannot, intent has leaked into the mechanism; return to §5 and rename until they can. Mark every door that guards an irreversible effect with ⚠._
@@ -189,7 +226,7 @@ _Instruction: The "Meat" of the document. Sufficient detail for an engineer to s
 
 ### 5.1 The Doors (Entrypoint Contracts)
 
-_Instruction: For each non-trivial entrypoint, give a typed signature (typed pseudocode is fine — read the types, not the syntax), the one-sentence guarantee (no "and"), the named failure set, and the refusals it enforces in the type system. Then record the rubric result. Make illegal states **unrepresentable**, not merely checked. Cite the `research/` doc that establishes each joint._
+_Instruction: For each non-trivial entrypoint, give a typed signature (typed pseudocode is fine — read the types, not the syntax), the one-sentence guarantee (no "and"), the named failure set, and the refusals it enforces in the type system. Then record the rubric result. Make illegal states **unrepresentable**, not merely checked. Cite the `research/` doc that establishes each joint. Use a whole block when the door is mostly new or the reader needs a copyable target shape; use a topic-matched `diff` when an existing door is changing. Show the runtime path to and from the door as a call tree, and include UI/module boundaries as a component tree when they matter._
 
 ```
 // — Money. Two doors, and there is no third way to move a cent. —
@@ -260,14 +297,35 @@ _Instruction: Provide ERDs or JSON schemas. Discuss normalization vs. denormaliz
 
 ### 5.4 Algorithms and State Management
 
-_Instruction: Describe complex logic, state machines, or consistency models. Tie each state transition to the door that performs it._
+_Instruction: Describe complex logic, state machines, or consistency models. Tie each state transition to the door that performs it and choose the smallest view that makes the behavior clear. Use indented `text` pseudocode for algorithms, a call tree for runtime control flow, Mermaid for interaction or data flow, and a topic-matched `diff` for changes to an existing state or control-flow shape. Include failure, retry, cancellation, idempotency, and concurrency behavior whenever reachable; keep unknowns for §9 rather than inventing them._
+
+```text
+on(settle_payment)
+  if request is a replay
+    return the recorded settlement
+  validate the authorized charge
+  if provider call fails
+    return named retryable error
+  persist settlement
+  return settlement
+```
+
+```text
+publishDraft
+  authenticate
+  loadDraft
+  checkVersion
+  persistPublication
+  notifySubscribers
+```
 
 - **State Machine:** An invoice moves `DRAFT` → `LOCKED` → `PROCESSING` → `PAID`; the `PROCESSING → PAID` transition happens only through `settle_payment`.
 - **Concurrency:** Optimistic locking on the `version` column; on the wire this surfaces as `If-Match`/`412`.
+- **Data flow:** Show boundary input, parsing, canonical domain input, service door, adapter call, typed result/error, projection, and serialized output in a Mermaid diagram or concise arrow chain when those stages are reachable.
 
 ## 6. Alternatives Considered
 
-_Instruction: Prove you thought about trade-offs — including alternative **door sets** (e.g., one god endpoint vs. distinct joints). Why is your boundary better than the others?_
+_Instruction: Prove you thought about trade-offs — including alternative **door sets** (e.g., one god endpoint vs. distinct joints). Explore materially different alternatives before locking the recommendation, then record why the selected boundary is better. Compare interface shape, seam placement, ownership, call stack, runtime topology, and module boundaries — not just names._
 
 | Option                                      | Pros                                        | Cons                                                   | Reason for Rejection                                                           |
 | ------------------------------------------- | ------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------ |
@@ -289,7 +347,7 @@ _Instruction: This is where "keep the dangerous doors few and honest" and "the a
 
 ## 8. Test Plan
 
-_Instruction: Test the doors at their promises and their refusals — not just the happy path. Every exit in rubric #5 deserves a test. The interactive verification is what lets a human or another agent confirm the feature is correct without reading the bodies — the stranger-across-time test, made executable._
+_Instruction: Test the doors at their promises and their refusals — not just the happy path. Every exit in rubric #5 deserves a test. Plan vertical red-green-refactor (RGR) slices through public doors and seams: each slice starts with one failing behavior test, adds the smallest implementation that turns it green, then refactors without changing the behavior. Do not write all tests first as a horizontal batch. The interactive verification is what lets a human or another agent confirm the feature is correct without reading the bodies — the stranger-across-time test, made executable._
 
 - **Unit Tests:** each door's named failure variants; the *refusals* (e.g., a type/construction test proving `settle_payment` cannot accept anything but an `AuthorizedCharge`).
 - **End-to-End Tests:** full domain flows named by joint (register → authenticate → authorize → settle), driven through the real wire doors of §5.2.
