@@ -118,11 +118,11 @@ For a visual UI, layout, state comparison, or concept too dense for Mermaid, all
 
 ```bash
 if [ "$(uname -s)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
-  open path/to/show-me-{description}.html
+  open "path/to/show-me-{description}.html"
 elif [ "$(uname -s)" = "Linux" ] && command -v xdg-open >/dev/null 2>&1; then
-  xdg-open path/to/show-me-{description}.html
+  xdg-open "path/to/show-me-{description}.html"
 else
-  printf 'Open this file: %s\n' path/to/show-me-{description}.html
+  printf 'Open this file: %s\n' "path/to/show-me-{description}.html"
 fi
 ```
 
