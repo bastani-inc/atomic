@@ -57,6 +57,7 @@ Use \`/workflow list\` to see what is available and \`/workflow inputs <name>\` 
 | \`prompt-engineer\` | tighten a vague prompt before a long run | \`/skill:prompt-engineer Draft a sharper implementation prompt for ...\` |
 | \`subagent\` | learn delegation patterns and exact \`/run\` and \`/parallel\` usage | \`/skill:subagent\` |
 | \`impeccable\` | critique or refine frontend and product UI | \`/skill:impeccable\` |
+| \`show-me\` | explain a topic visually with concise diagrams, code-shape sketches, or focused HTML artifacts (HumanLayer, MIT) | \`/skill:show-me\` |
 
 ## Subagents
 

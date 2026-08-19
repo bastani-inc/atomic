@@ -279,6 +279,7 @@ describe("coding-agent builtin resources", () => {
 				"playwright-cli",
 				"prompt-engineer",
 				"research-codebase",
+				"show-me",
 				"skill-creator",
 				"subagent",
 				"tdd",

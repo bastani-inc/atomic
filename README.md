@@ -971,6 +971,7 @@ Skills are reusable expert instructions and process modules. Atomic can select o
 | `playwright-cli`    | Automate browser interactions and end-to-end UI checks.                                      |
 | `liteparse`         | Extract text, tables, and values from documents and images.                                  |
 | `impeccable`        | Design, audit, and refine frontend interfaces.                                               |
+| `show-me`           | Explain topics visually with concise diagrams, code-shape sketches, and focused HTML artifacts (HumanLayer, MIT). |
 
 ### 3. Specialized subagents
 

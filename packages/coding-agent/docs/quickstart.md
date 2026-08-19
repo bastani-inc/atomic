@@ -171,6 +171,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `impeccable` | Critique or refine web/native frontend and product UI; includes detector hooks, framework-aware live review, and mount-failure recovery. | `/skill:impeccable` |
 | `playwright-cli` | Drive a real browser for end-to-end UI checks, screenshots, and reviewable proof videos. | `/skill:playwright-cli` |
 | `liteparse` | Pull text, tables, or values out of PDF, DOCX, PPTX, XLSX, and image files locally. | `/skill:liteparse` |
+| `show-me` | Explain a topic visually with concise diagrams, code-shape sketches, or focused HTML artifacts. HumanLayer, MIT licensed. | `/skill:show-me` |
 
 Impeccable 4.1.1 resolves Live sessions to the selected app root, supports SvelteKit, Nuxt, TanStack Start, Astro, Next.js, Vite, and static HTML injection, and rejects absolute, traversing, or symlinked configured write targets. Its concept roll may contact `impeccable.style`; set `IMPECCABLE_NO_TELEMETRY=1` or `DO_NOT_TRACK=1` to disable the anonymous choice ping. The image fallback runs only with `OPENAI_API_KEY`, sends prompts and optional reference images to OpenAI, and spends that account's API credit. Generated image prompts are embedded in the image or a sidecar, so do not include secrets.
 

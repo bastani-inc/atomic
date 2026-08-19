@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added HumanLayer's bundled `show-me` skill for visual explanations, diagrams, code-shape sketches, and focused HTML artifacts. Sourced from https://github.com/humanlayer/skills and distributed under the MIT License.
+
 ### Fixed
 
 - Interactive startup now exits quietly when Ctrl+C stops the engine during first-paint binding, without leaking expected in-flight RPC transport failures.

@@ -74,6 +74,8 @@ This is progressive disclosure: only descriptions are always in context, full in
 
 The bundled `/skill:prompt-engineer` creates, optimizes, evaluates, and troubleshoots prompts for GPT-5.6, Claude Opus 5, and Claude Fable 5. It teaches a delete-first workflow: preserve outcomes, safety, permissions, evidence, output, and stopping contracts while removing repetition, generic self-checks, and obsolete process scaffolding. For autonomous prompts it recommends a compact `Role · Goal · Success criteria · Constraints · Tools · Output · Stop rules` shape, context-dependent tool routing, explicit effort and response-length controls, restrained delegation, grounded progress claims, and documents-first/query-last ordering for long inputs.
 
+The bundled `/skill:show-me` from [HumanLayer](https://github.com/humanlayer/skills) helps explain the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts. It is distributed under the MIT License.
+
 The skill no longer recommends response prefilling, which returns an error on Claude 4.6 and later, or visible chain-of-thought as a primary technique. Use explicit output instructions, schemas, tools, or post-processing instead of prefilling. Request conclusions, citations, commands, and observed results rather than reconstructed private reasoning; such requests can trigger Claude Fable 5's `reasoning_extraction` safeguard and force a model fallback.
 
 ## Skill Commands
