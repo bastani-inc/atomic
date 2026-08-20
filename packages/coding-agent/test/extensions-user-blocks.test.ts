@@ -20,7 +20,9 @@ import {
 	openUserBlock,
 	subscribeUserBlocks,
 } from "../src/core/extensions/user-blocks.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 import { createModelRegistry } from "./model-runtime-test-utils.js";
 import { createHarness } from "./suite/harness.js";
 
@@ -153,8 +155,14 @@ describe("user block door", () => {
 			unsubscribe();
 		}
 	});
+	it("bounds pre-attach lifecycle buffering", () => {
+		const changes: UserBlockChange[] = [];
+		beginUserBlockLoad(directBlockScope);
+		for (let i = 0; i < 600; i++) openUserBlock(directBlockScope, `block-${i}`, "dialog").release();
+		subscribeUserBlocks(directBlockScope, (change) => changes.push(change))();
+		assert.equal(changes.length, 1024);
+	});
 });
-
 describe("agent_blocked and agent_unblocked events", () => {
 	let tempDir: string;
 	let extensionsDir: string;
@@ -285,65 +293,52 @@ describe("agent_blocked and agent_unblocked events", () => {
 		}
 	});
 
-	it("replays transient factory lifecycles on a reload generation", async () => {
-		const bus = createEventBus();
-		const first = await createRunner("export default () => {};", bus);
-		first.invalidate();
-		const second = await createRunner(
-			`
-				export default (pi) => {
-					globalThis.__blockEvents = [];
-					pi.on("agent_blocked", (event) => {
-						globalThis.__blockEvents.push(["blocked", event.openBlocks, event.activeLabel]);
-					});
-					pi.on("agent_unblocked", (event) => {
-						globalThis.__blockEvents.push(["unblocked", event.openBlocks, event.activeLabel]);
-					});
-					const block = pi.awaitUserDecision("reload transient", "dialog");
+	async function createResourceLoaderRunner(resolveProjectTrust = false) {
+		const events: Array<[string, number, string | undefined]> = [];
+		const agentDir = fs.mkdtempSync(path.join(tempDir, "agent-"));
+		const loader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			eventBus: createEventBus(),
+			settingsManager: SettingsManager.create(tempDir, agentDir, { projectTrusted: false }),
+			noExtensions: true,
+			noSkills: true,
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_blocked", (event) => events.push(["blocked", event.openBlocks, event.activeLabel]));
+					pi.on("agent_unblocked", (event) => events.push(["unblocked", event.openBlocks, event.activeLabel]));
+					const block = pi.awaitUserDecision("loader transient", "project_trust");
 					block.release();
-				};
-			`,
-			bus,
-		);
-		try {
-			await waitFor(
-				() => readBlockEvents().length === 2,
-				"reload factory lifecycle",
-				FACTORY_BLOCK_EVENT_WAIT_TIMEOUT_MS,
-			);
-			assert.deepEqual(readBlockEvents(), [
-				["blocked", 1, "reload transient"],
-				["unblocked", 0, undefined],
-			]);
-		} finally {
-			second.detachUserBlocks();
-			delete globalThisRecord().__blockEvents;
-		}
-	});
-
-	it("does not replay a discarded factory load generation", async () => {
-		const bus = createEventBus();
-		beginUserBlockLoad(bus);
-		await loadExtensionFromFactory(
-			(pi) => {
-				const block = pi.awaitUserDecision("discarded transient", "dialog");
-				block.release();
-			},
-			tempDir,
-			bus,
-			createExtensionRuntime(),
-		);
-		beginUserBlockLoad(bus);
-		const events: string[] = [];
-		const runner = await createInlineRunner(bus, (pi) => {
-			pi.on("agent_blocked", () => events.push("blocked"));
-			pi.on("agent_unblocked", () => events.push("unblocked"));
+				},
+			],
 		});
-		try {
-			await new Promise((resolve) => setTimeout(resolve, 25));
-			assert.deepEqual(events, []);
-		} finally {
-			runner.detachUserBlocks();
+		await loader.reload(resolveProjectTrust ? { resolveProjectTrust: () => true } : undefined);
+		await loader.reload(resolveProjectTrust ? { resolveProjectTrust: () => true } : undefined);
+		const result = loader.getExtensions();
+		const modelRegistry = await createModelRegistry(AuthStorage.create(path.join(agentDir, "auth.json")));
+		return {
+			events,
+			runner: new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir,
+				SessionManager.inMemory(),
+				modelRegistry,
+			),
+		};
+	}
+	it("replays plain and retained pre-trust factory lifecycles from the real loader", async () => {
+		for (const resolveProjectTrust of [false, true]) {
+			const { runner, events } = await createResourceLoaderRunner(resolveProjectTrust);
+			try {
+				await waitFor(() => events.length === 2, "loader factory lifecycle", FACTORY_BLOCK_EVENT_WAIT_TIMEOUT_MS);
+				assert.deepEqual(events, [
+					["blocked", 1, "loader transient"],
+					["unblocked", 0, undefined],
+				]);
+			} finally {
+				runner.detachUserBlocks();
+			}
 		}
 	});
 
