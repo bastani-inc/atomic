@@ -41,6 +41,8 @@ type UserBlockStateByScope = WeakMap<object, UserBlockState>;
  */
 const USER_BLOCK_STATE_KEY = Symbol.for("atomic-coding-agent/user-blocks@1");
 const USER_BLOCK_ID_KEY = Symbol.for("atomic-coding-agent/user-block-id@1");
+// Keep the earliest factory transitions; once full, later changes are dropped.
+const MAX_BUFFERED_USER_BLOCK_CHANGES = 1024;
 
 interface UserBlockIdState {
 	nextBlockId: number;
@@ -101,6 +103,16 @@ function notify(state: UserBlockState, change: UserBlockChange): void {
 	for (const listener of [...state.listeners]) notifyListener(listener, change);
 }
 
+function bufferChange(state: UserBlockState, change: UserBlockChange): void {
+	if (!state.buffering) return;
+	if (state.bufferedChanges.length >= MAX_BUFFERED_USER_BLOCK_CHANGES) {
+		state.buffering = false;
+		return;
+	}
+	state.bufferedChanges.push(change);
+	if (state.bufferedChanges.length === MAX_BUFFERED_USER_BLOCK_CHANGES) state.buffering = false;
+}
+
 /** Start a load-generation buffer before its factories run on this scope. */
 export function beginUserBlockLoad(scope: object): void {
 	const state = getState(scope);
@@ -126,7 +138,7 @@ export function openUserBlock(scope: object, label: string, reason: UserBlockRea
 		openBlocks: state.openBlocks.length,
 		activeLabel: activeLabel(state) ?? record.label,
 	};
-	if (state.buffering) state.bufferedChanges.push(change);
+	bufferChange(state, change);
 	notify(state, change);
 
 	return {
@@ -149,7 +161,7 @@ export function openUserBlock(scope: object, label: string, reason: UserBlockRea
 				openBlocks: state.openBlocks.length,
 				activeLabel: activeLabel(state),
 			};
-			if (state.buffering) state.bufferedChanges.push(change);
+			bufferChange(state, change);
 			notify(state, change);
 		},
 	};

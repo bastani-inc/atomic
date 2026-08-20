@@ -22,8 +22,8 @@ export async function loadFinalExtensionSet(
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 ): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
-	beginUserBlockLoad(state.eventBus);
 	if (!preTrustExtensions) {
+		beginUserBlockLoad(state.eventBus);
 		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
 		const extensionsResult = await loadExtensionsCached(
 			extensionPaths,

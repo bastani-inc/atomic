@@ -658,9 +658,9 @@ These events are delivered through the owning session's canonical event bus and
 extension runner. Concurrent sessions with distinct buses have independent block
 counts and labels; a `/reload` successor on the same bus retains its predecessor's
 open-block set. A runner attached while a block is already open receives a replayed
-`agent_blocked` event for that block, while a block released before attachment is
-not replayed. Within one runner, events are delivered in lifecycle order; each
-event waits for its handlers before the next event is delivered. Treat
+`agent_blocked` event for that block. An opening-and-release pair that finishes before
+attachment is replayed once in order, including on a retained pre-trust generation.
+Within one runner, events are delivered in lifecycle order; each event waits for its handlers before the next event is delivered. Treat
 `event.openBlocks` as the authoritative count rather than pairing the two events.
 
 #### turn_start / turn_end
