@@ -91,6 +91,7 @@ import type {
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
+import { subscribeUserBlocks } from "./user-blocks.js";
 
 export type {
 	ExtensionErrorListener,
@@ -151,6 +152,8 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private userBlockEventQueue: Promise<void> = Promise.resolve();
+	private unsubscribeUserBlocks: (() => void) | undefined;
 
 	constructor(
 		extensions: Extension[],
@@ -169,6 +172,29 @@ export class ExtensionRunner {
 		this.modelRegistry = modelRegistry;
 		this.orchestrationContext = orchestrationContext;
 		this.subagentPolicy = subagentPolicy;
+		// Block open/close is published as an ordinary lifecycle event so an
+		// extension observes it through `pi.on()` like any other. Delivery is
+		// serialized per runner so an async handler cannot reorder block changes,
+		// and a rejected emission cannot break the queue for later changes.
+		const userBlockScope = runtime.eventBus ?? {};
+		let userBlockEventsAttached = true;
+		const unsubscribeUserBlocks = subscribeUserBlocks(userBlockScope, (change) => {
+			if (!userBlockEventsAttached || this.staleMessage) return;
+			this.userBlockEventQueue = this.userBlockEventQueue
+				.catch(() => {})
+				.then(async () => {
+					if (!userBlockEventsAttached || this.staleMessage) return;
+					await this.emit(change);
+				})
+				.catch(() => {
+					// A detached emission must never become an unhandled rejection or
+					// prevent the next block change from being delivered.
+				});
+		});
+		this.unsubscribeUserBlocks = () => {
+			userBlockEventsAttached = false;
+			unsubscribeUserBlocks();
+		};
 	}
 
 	bindCore(
@@ -335,6 +361,17 @@ export class ExtensionRunner {
 			this.staleMessage = message;
 			this.runtime.invalidate(message);
 		}
+		this.detachUserBlocks();
+	}
+
+	/**
+	 * Stop publishing `agent_blocked`/`agent_unblocked` to this runner's
+	 * extensions. Idempotent. Called on invalidation, and by the session when a
+	 * reload replaces this runner without invalidating it.
+	 */
+	detachUserBlocks(): void {
+		this.unsubscribeUserBlocks?.();
+		this.unsubscribeUserBlocks = undefined;
 	}
 
 	private assertActive(): void {

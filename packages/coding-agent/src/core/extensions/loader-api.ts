@@ -3,6 +3,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { type EventBus, registerCanonicalEventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import type { UserBlock, UserBlockReason } from "./block-types.js";
 import {
 	emptyWorkflowResourceProvider,
 	normalizeWorkflowResourceProvider,
@@ -21,6 +22,7 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types.ts";
+import { openUserBlock } from "./user-blocks.js";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
@@ -38,6 +40,7 @@ export function createExtensionAPI(
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): ExtensionAPI {
 	const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
+	runtime.eventBus = eventBus;
 	// Successive load generations of one session each build a new facade over
 	// the same shared bus; mapping the facade back to that bus lets
 	// session-scoped state re-bind across module re-evaluation.
@@ -223,6 +226,11 @@ export function createExtensionAPI(
 		getCommands() {
 			runtime.assertActive();
 			return runtime.getCommandsAfterRegistration?.(extension) ?? runtime.getCommands();
+		},
+
+		awaitUserDecision(label: string, reason: UserBlockReason): UserBlock {
+			runtime.assertActive();
+			return openUserBlock(eventBus, label, reason);
 		},
 
 		setModel(model) {
