@@ -14,6 +14,7 @@ import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import type { ExtensionFactory, UserBlock, UserBlockChange } from "../src/core/extensions/types.js";
 import * as userBlocksModule from "../src/core/extensions/user-blocks.js";
 import {
+	beginUserBlockLoad,
 	getActiveUserBlockLabel,
 	getOpenUserBlocks,
 	openUserBlock,
@@ -25,6 +26,8 @@ import { createHarness } from "./suite/harness.js";
 
 const ASYNC_BLOCK_HANDLER_DELAY_MS = 150;
 const BLOCK_EVENT_WAIT_TIMEOUT_MS = 5_000;
+// Factory loading builds a real model registry while vitest runs files in parallel.
+const FACTORY_BLOCK_EVENT_WAIT_TIMEOUT_MS = 15_000;
 let directBlockScope: EventBus;
 
 describe("user block door", () => {
@@ -124,6 +127,7 @@ describe("user block door", () => {
 		// entry point would let one caller end another caller's wait.
 		const exported = Object.keys(userBlocksModule).sort();
 		assert.deepEqual(exported, [
+			"beginUserBlockLoad",
 			"getActiveUserBlockLabel",
 			"getOpenUserBlocks",
 			"openUserBlock",
@@ -173,8 +177,12 @@ describe("agent_blocked and agent_unblocked events", () => {
 		return new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
 	}
 
-	async function waitFor(predicate: () => boolean, label: string): Promise<void> {
-		const deadline = Date.now() + BLOCK_EVENT_WAIT_TIMEOUT_MS;
+	async function waitFor(
+		predicate: () => boolean,
+		label: string,
+		timeoutMs = BLOCK_EVENT_WAIT_TIMEOUT_MS,
+	): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
 		while (!predicate()) {
 			if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
 			await new Promise((resolve) => setTimeout(resolve, 5));
@@ -241,7 +249,7 @@ describe("agent_blocked and agent_unblocked events", () => {
 		});
 		try {
 			block?.release();
-			await waitFor(() => events.length === 2, "factory block lifecycle");
+			await waitFor(() => events.length === 2, "factory block lifecycle", FACTORY_BLOCK_EVENT_WAIT_TIMEOUT_MS);
 			assert.deepEqual(events, ["blocked", "unblocked"]);
 			assert.equal(events.filter((event) => event === "blocked").length, 1);
 		} finally {
@@ -261,7 +269,7 @@ describe("agent_blocked and agent_unblocked events", () => {
 		});
 		let replacement: ExtensionRunner | undefined;
 		try {
-			await waitFor(() => events.length === 2, "transient factory lifecycle");
+			await waitFor(() => events.length === 2, "transient factory lifecycle", FACTORY_BLOCK_EVENT_WAIT_TIMEOUT_MS);
 			assert.deepEqual(events, [
 				["blocked", 1, "factory transient"],
 				["unblocked", 0, undefined],
@@ -273,6 +281,55 @@ describe("agent_blocked and agent_unblocked events", () => {
 			assert.deepEqual(replacementEvents, []);
 		} finally {
 			replacement?.detachUserBlocks();
+			runner.detachUserBlocks();
+		}
+	});
+
+	it("replays transient factory lifecycles on a reload generation", async () => {
+		const bus = createEventBus();
+		const first = await createInlineRunner(bus, () => {});
+		first.invalidate();
+		beginUserBlockLoad(bus);
+		const events: Array<[string, number, string | undefined]> = [];
+		const second = await createInlineRunner(bus, (pi) => {
+			pi.on("agent_blocked", (event) => events.push(["blocked", event.openBlocks, event.activeLabel]));
+			pi.on("agent_unblocked", (event) => events.push(["unblocked", event.openBlocks, event.activeLabel]));
+			const block = pi.awaitUserDecision("reload transient", "dialog");
+			block.release();
+		});
+		try {
+			await waitFor(() => events.length === 2, "reload factory lifecycle", FACTORY_BLOCK_EVENT_WAIT_TIMEOUT_MS);
+			assert.deepEqual(events, [
+				["blocked", 1, "reload transient"],
+				["unblocked", 0, undefined],
+			]);
+		} finally {
+			second.detachUserBlocks();
+		}
+	});
+
+	it("does not replay a discarded factory load generation", async () => {
+		const bus = createEventBus();
+		beginUserBlockLoad(bus);
+		await loadExtensionFromFactory(
+			(pi) => {
+				const block = pi.awaitUserDecision("discarded transient", "dialog");
+				block.release();
+			},
+			tempDir,
+			bus,
+			createExtensionRuntime(),
+		);
+		beginUserBlockLoad(bus);
+		const events: string[] = [];
+		const runner = await createInlineRunner(bus, (pi) => {
+			pi.on("agent_blocked", () => events.push("blocked"));
+			pi.on("agent_unblocked", () => events.push("unblocked"));
+		});
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			assert.deepEqual(events, []);
+		} finally {
 			runner.detachUserBlocks();
 		}
 	});

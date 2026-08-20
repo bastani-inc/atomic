@@ -1935,9 +1935,11 @@ Blocks are reference counted: opening a second wait holds two blocks, and the
 agent leaves the blocked state only when the last one releases. The oldest open
 block's label is the one reported as the current wait. Block state is scoped to
 the session's canonical event bus, so concurrent sessions stay isolated while a
-`/reload` successor on that same bus continues to observe the open blocks. A
-runner that attaches after a block opened receives its opening event once as a
-replay before subsequent lifecycle events.
+`/reload` successor on that same bus continues to observe the open blocks. Each
+load generation buffers its factory lifecycle until the new runner attaches, so
+an opening-and-release pair that finishes before attachment is replayed once in
+order; prior-generation blocks that are still open are replayed oldest first,
+while discarded generations do not leak into the real runner.
 
 There is deliberately no release-by-id, release-by-label, or release-all call.
 A block can only be ended by the code that opened it, so one extension can never

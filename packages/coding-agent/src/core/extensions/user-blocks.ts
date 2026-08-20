@@ -30,7 +30,7 @@ interface UserBlockState {
 	readonly openBlocks: OpenBlock[];
 	readonly listeners: Set<UserBlockListener>;
 	readonly bufferedChanges: UserBlockChange[];
-	runnerAttached: boolean;
+	buffering: boolean;
 }
 
 type UserBlockStateByScope = WeakMap<object, UserBlockState>;
@@ -76,7 +76,7 @@ function getState(scope: object): UserBlockState {
 		openBlocks: [],
 		listeners: new Set<UserBlockListener>(),
 		bufferedChanges: [],
-		runnerAttached: false,
+		buffering: true,
 	};
 	states.set(scope, created);
 	return created;
@@ -101,6 +101,13 @@ function notify(state: UserBlockState, change: UserBlockChange): void {
 	for (const listener of [...state.listeners]) notifyListener(listener, change);
 }
 
+/** Start a load-generation buffer before its factories run on this scope. */
+export function beginUserBlockLoad(scope: object): void {
+	const state = getState(scope);
+	state.bufferedChanges.length = 0;
+	state.buffering = true;
+}
+
 /**
  * Open a user-decision block.
  *
@@ -119,7 +126,7 @@ export function openUserBlock(scope: object, label: string, reason: UserBlockRea
 		openBlocks: state.openBlocks.length,
 		activeLabel: activeLabel(state) ?? record.label,
 	};
-	if (!state.runnerAttached) state.bufferedChanges.push(change);
+	if (state.buffering) state.bufferedChanges.push(change);
 	notify(state, change);
 
 	return {
@@ -142,7 +149,7 @@ export function openUserBlock(scope: object, label: string, reason: UserBlockRea
 				openBlocks: state.openBlocks.length,
 				activeLabel: activeLabel(state),
 			};
-			if (!state.runnerAttached) state.bufferedChanges.push(change);
+			if (state.buffering) state.bufferedChanges.push(change);
 			notify(state, change);
 		},
 	};
@@ -152,23 +159,26 @@ export function openUserBlock(scope: object, label: string, reason: UserBlockRea
 export function subscribeUserBlocks(scope: object, listener: UserBlockListener): () => void {
 	const state = getState(scope);
 	state.listeners.add(listener);
-	state.runnerAttached = true;
 	const bufferedChanges = state.bufferedChanges.splice(0);
-	if (bufferedChanges.length > 0) {
-		for (const change of bufferedChanges) notifyListener(listener, change);
-	} else {
-		const currentActiveLabel = activeLabel(state);
-		for (const block of [...state.openBlocks]) {
-			notifyListener(listener, {
-				type: "agent_blocked",
-				blockId: block.id,
-				label: block.label,
-				reason: block.reason,
-				openBlocks: state.openBlocks.length,
-				activeLabel: currentActiveLabel ?? block.label,
-			});
-		}
+	state.buffering = false;
+	const bufferedBlockIds = new Set(
+		bufferedChanges.filter((change) => change.type === "agent_blocked").map((change) => change.blockId),
+	);
+	const currentActiveLabel = activeLabel(state);
+	for (const block of [...state.openBlocks]) {
+		if (bufferedBlockIds.has(block.id)) continue;
+		notifyListener(listener, {
+			type: "agent_blocked",
+			blockId: block.id,
+			label: block.label,
+			reason: block.reason,
+			openBlocks: state.openBlocks.length,
+			activeLabel: currentActiveLabel ?? block.label,
+		});
 	}
+	// Preserve a bare close when an older-generation block ends during this
+	// window; filtering it would invent state the new runner never observed.
+	for (const change of bufferedChanges) notifyListener(listener, change);
 	return () => {
 		state.listeners.delete(listener);
 	};
