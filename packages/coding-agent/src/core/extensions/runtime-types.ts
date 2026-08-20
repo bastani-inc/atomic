@@ -88,6 +88,11 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  * Contains flag values (defaults set during registration, CLI values set after).
  */
 export interface ExtensionRuntimeState {
+	/** Canonical session bus that owns this runtime's extension state. */
+	eventBus?: {
+		emit(channel: string, data: unknown): void;
+		on(channel: string, handler: (data: unknown) => void): () => void;
+	};
 	flagValues: Map<string, boolean | string>;
 	explicitFlagNames?: Set<string>;
 	/** Extension path that owns each active flag registration. */

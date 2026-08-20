@@ -40,6 +40,7 @@ export function createExtensionAPI(
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): ExtensionAPI {
 	const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
+	runtime.eventBus = eventBus;
 	// Successive load generations of one session each build a new facade over
 	// the same shared bus; mapping the facade back to that bus lets
 	// session-scoped state re-bind across module re-evaluation.
@@ -229,7 +230,7 @@ export function createExtensionAPI(
 
 		awaitUserDecision(label: string, reason: UserBlockReason): UserBlock {
 			runtime.assertActive();
-			return openUserBlock(label, reason);
+			return openUserBlock(eventBus, label, reason);
 		},
 
 		setModel(model) {

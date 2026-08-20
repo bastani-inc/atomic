@@ -176,8 +176,9 @@ export class ExtensionRunner {
 		// extension observes it through `pi.on()` like any other. Delivery is
 		// serialized per runner so an async handler cannot reorder block changes,
 		// and a rejected emission cannot break the queue for later changes.
+		const userBlockScope = runtime.eventBus ?? {};
 		let userBlockEventsAttached = true;
-		const unsubscribeUserBlocks = subscribeUserBlocks((change) => {
+		const unsubscribeUserBlocks = subscribeUserBlocks(userBlockScope, (change) => {
 			if (!userBlockEventsAttached || this.staleMessage) return;
 			this.userBlockEventQueue = this.userBlockEventQueue
 				.catch(() => {})
