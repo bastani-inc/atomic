@@ -6,6 +6,7 @@ import type { EventBus } from "../event-bus.ts";
 import { readPiManifestFile } from "../package-manager-manifest.ts";
 import { loadExtensions } from "./loader-core.ts";
 import type { LoadExtensionsResult } from "./types.ts";
+import { beginUserBlockLoad } from "./user-blocks.js";
 
 function isExtensionFile(name: string): boolean {
 	return name.endsWith(".ts") || name.endsWith(".js");
@@ -111,6 +112,7 @@ export async function discoverAndLoadExtensions(
 	agentDir: string = getAgentDir(),
 	eventBus?: EventBus,
 ): Promise<LoadExtensionsResult> {
+	if (eventBus !== undefined) beginUserBlockLoad(eventBus);
 	const resolvedCwd = resolvePath(cwd);
 	const resolvedAgentDir = resolvePath(agentDir);
 	const allPaths: string[] = [];

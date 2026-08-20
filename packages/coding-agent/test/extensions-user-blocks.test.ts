@@ -168,9 +168,9 @@ describe("agent_blocked and agent_unblocked events", () => {
 
 	afterEach(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-	async function createRunner(source: string): Promise<ExtensionRunner> {
+	async function createRunner(source: string, sharedEventBus?: EventBus): Promise<ExtensionRunner> {
 		fs.writeFileSync(path.join(extensionsDir, "e0.ts"), source);
-		eventBus = createEventBus();
+		eventBus = sharedEventBus ?? createEventBus();
 		const result = await discoverAndLoadExtensions([], tempDir, tempDir, eventBus);
 		const sessionManager = SessionManager.inMemory();
 		const modelRegistry = await createModelRegistry(AuthStorage.create(path.join(tempDir, "auth.json")));
@@ -287,24 +287,37 @@ describe("agent_blocked and agent_unblocked events", () => {
 
 	it("replays transient factory lifecycles on a reload generation", async () => {
 		const bus = createEventBus();
-		const first = await createInlineRunner(bus, () => {});
+		const first = await createRunner("export default () => {};", bus);
 		first.invalidate();
-		beginUserBlockLoad(bus);
-		const events: Array<[string, number, string | undefined]> = [];
-		const second = await createInlineRunner(bus, (pi) => {
-			pi.on("agent_blocked", (event) => events.push(["blocked", event.openBlocks, event.activeLabel]));
-			pi.on("agent_unblocked", (event) => events.push(["unblocked", event.openBlocks, event.activeLabel]));
-			const block = pi.awaitUserDecision("reload transient", "dialog");
-			block.release();
-		});
+		const second = await createRunner(
+			`
+				export default (pi) => {
+					globalThis.__blockEvents = [];
+					pi.on("agent_blocked", (event) => {
+						globalThis.__blockEvents.push(["blocked", event.openBlocks, event.activeLabel]);
+					});
+					pi.on("agent_unblocked", (event) => {
+						globalThis.__blockEvents.push(["unblocked", event.openBlocks, event.activeLabel]);
+					});
+					const block = pi.awaitUserDecision("reload transient", "dialog");
+					block.release();
+				};
+			`,
+			bus,
+		);
 		try {
-			await waitFor(() => events.length === 2, "reload factory lifecycle", FACTORY_BLOCK_EVENT_WAIT_TIMEOUT_MS);
-			assert.deepEqual(events, [
+			await waitFor(
+				() => readBlockEvents().length === 2,
+				"reload factory lifecycle",
+				FACTORY_BLOCK_EVENT_WAIT_TIMEOUT_MS,
+			);
+			assert.deepEqual(readBlockEvents(), [
 				["blocked", 1, "reload transient"],
 				["unblocked", 0, undefined],
 			]);
 		} finally {
 			second.detachUserBlocks();
+			delete globalThisRecord().__blockEvents;
 		}
 	});
 
