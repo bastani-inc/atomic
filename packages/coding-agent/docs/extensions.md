@@ -681,14 +681,14 @@ pi.on("agent_unblocked", async (event, ctx) => {
 });
 ```
 
-These events are delivered through the session's extension runner. A block
-opened before its extension handler is registered has no handler to receive the
-event; register handlers during the extension factory before opening blocks.
-Within one runner, events are delivered in lifecycle order; each event waits for
-its handlers before the next event is delivered.
-Treat `event.openBlocks` as the authoritative count rather than pairing the two
-events: a runner attached while a block is already open receives no replay and
-can see the release without the corresponding open.
+These events are delivered through the owning session's canonical event bus and
+extension runner. Concurrent sessions with distinct buses have independent block
+counts and labels; a `/reload` successor on the same bus retains its predecessor's
+open-block set. A runner attached while a block is already open receives a replayed
+`agent_blocked` event for that block, while a block released before attachment is
+not replayed. Within one runner, events are delivered in lifecycle order; each
+event waits for its handlers before the next event is delivered. Treat
+`event.openBlocks` as the authoritative count rather than pairing the two events.
 
 #### turn_start / turn_end
 
@@ -1933,7 +1933,11 @@ correct even when the wait was cancelled or threw.
 
 Blocks are reference counted: opening a second wait holds two blocks, and the
 agent leaves the blocked state only when the last one releases. The oldest open
-block's label is the one reported as the current wait.
+block's label is the one reported as the current wait. Block state is scoped to
+the session's canonical event bus, so concurrent sessions stay isolated while a
+`/reload` successor on that same bus continues to observe the open blocks. A
+runner that attaches after a block opened receives its opening event once as a
+replay before subsequent lifecycle events.
 
 There is deliberately no release-by-id, release-by-label, or release-all call.
 A block can only be ended by the code that opened it, so one extension can never

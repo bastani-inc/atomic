@@ -4,9 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import { discoverAndLoadExtensions } from "../src/core/extensions/loader.js";
+import { createEventBus, type EventBus } from "../src/core/event-bus.js";
+import {
+	createExtensionRuntime,
+	discoverAndLoadExtensions,
+	loadExtensionFromFactory,
+} from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
-import type { UserBlockChange } from "../src/core/extensions/types.js";
+import type { ExtensionFactory, UserBlock, UserBlockChange } from "../src/core/extensions/types.js";
 import * as userBlocksModule from "../src/core/extensions/user-blocks.js";
 import {
 	getActiveUserBlockLabel,
@@ -20,43 +25,44 @@ import { createHarness } from "./suite/harness.js";
 
 const ASYNC_BLOCK_HANDLER_DELAY_MS = 150;
 const BLOCK_EVENT_WAIT_TIMEOUT_MS = 5_000;
+const directBlockScope = createEventBus();
 
 describe("user block door", () => {
 	afterEach(() => {
 		// Nothing should leak between tests; a leaked block would change the next
 		// test's reported state.
-		assert.deepEqual(getOpenUserBlocks(), []);
+		assert.deepEqual(getOpenUserBlocks(directBlockScope), []);
 	});
 
 	it("refcounts blocks and lets the oldest label win", () => {
-		const first = openUserBlock("Trust project folder?", "project_trust");
-		const second = openUserBlock("Approve edit?", "dialog");
+		const first = openUserBlock(directBlockScope, "Trust project folder?", "project_trust");
+		const second = openUserBlock(directBlockScope, "Approve edit?", "dialog");
 
-		assert.equal(getOpenUserBlocks().length, 2);
-		assert.equal(getActiveUserBlockLabel(), "Trust project folder?");
+		assert.equal(getOpenUserBlocks(directBlockScope).length, 2);
+		assert.equal(getActiveUserBlockLabel(directBlockScope), "Trust project folder?");
 
 		second.release();
-		assert.equal(getOpenUserBlocks().length, 1);
-		assert.equal(getActiveUserBlockLabel(), "Trust project folder?");
+		assert.equal(getOpenUserBlocks(directBlockScope).length, 1);
+		assert.equal(getActiveUserBlockLabel(directBlockScope), "Trust project folder?");
 
 		first.release();
-		assert.equal(getOpenUserBlocks().length, 0);
-		assert.equal(getActiveUserBlockLabel(), undefined);
+		assert.equal(getOpenUserBlocks(directBlockScope).length, 0);
+		assert.equal(getActiveUserBlockLabel(directBlockScope), undefined);
 	});
 
 	it("promotes the next oldest when the oldest releases first", () => {
-		const first = openUserBlock("A", "dialog");
-		const second = openUserBlock("B", "dialog");
+		const first = openUserBlock(directBlockScope, "A", "dialog");
+		const second = openUserBlock(directBlockScope, "B", "dialog");
 		first.release();
-		assert.equal(getActiveUserBlockLabel(), "B");
+		assert.equal(getActiveUserBlockLabel(directBlockScope), "B");
 		second.release();
 	});
 
 	it("has an idempotent release that is safe in a finally", () => {
 		const changes: UserBlockChange[] = [];
-		const unsubscribe = subscribeUserBlocks((change) => changes.push(change));
+		const unsubscribe = subscribeUserBlocks(directBlockScope, (change) => changes.push(change));
 		try {
-			const block = openUserBlock("Approve?", "dialog");
+			const block = openUserBlock(directBlockScope, "Approve?", "dialog");
 			assert.equal(block.released, false);
 			block.release();
 			block.release();
@@ -74,10 +80,10 @@ describe("user block door", () => {
 
 	it("carries the reason sum type through open and release", () => {
 		const changes: UserBlockChange[] = [];
-		const unsubscribe = subscribeUserBlocks((change) => changes.push(change));
+		const unsubscribe = subscribeUserBlocks(directBlockScope, (change) => changes.push(change));
 		try {
 			for (const reason of ["dialog", "project_trust", "workflow_prompt", "supervisor_ask"] as const) {
-				const block = openUserBlock(`label-${reason}`, reason);
+				const block = openUserBlock(directBlockScope, `label-${reason}`, reason);
 				assert.equal(block.reason, reason);
 				block.release();
 			}
@@ -92,9 +98,9 @@ describe("user block door", () => {
 
 	it("reports open counts and the active label on every change", () => {
 		const changes: UserBlockChange[] = [];
-		const unsubscribe = subscribeUserBlocks((change) => changes.push(change));
-		const first = openUserBlock("First", "dialog");
-		const second = openUserBlock("Second", "dialog");
+		const unsubscribe = subscribeUserBlocks(directBlockScope, (change) => changes.push(change));
+		const first = openUserBlock(directBlockScope, "First", "dialog");
+		const second = openUserBlock(directBlockScope, "Second", "dialog");
 		second.release();
 		first.release();
 		unsubscribe();
@@ -120,8 +126,8 @@ describe("user block door", () => {
 			"openUserBlock",
 			"subscribeUserBlocks",
 		]);
-		const block = openUserBlock("Only handle", "dialog");
-		const snapshot = getOpenUserBlocks()[0];
+		const block = openUserBlock(directBlockScope, "Only handle", "dialog");
+		const snapshot = getOpenUserBlocks(directBlockScope)[0];
 		assert.equal(snapshot?.id, block.id);
 		// A snapshot is data, not a handle.
 		assert.equal(Object.hasOwn(snapshot ?? {}, "release"), false);
@@ -129,13 +135,13 @@ describe("user block door", () => {
 	});
 
 	it("contains a throwing subscriber", () => {
-		const unsubscribe = subscribeUserBlocks(() => {
+		const unsubscribe = subscribeUserBlocks(directBlockScope, () => {
 			throw new Error("subscriber exploded");
 		});
 		try {
-			const block = openUserBlock("Approve?", "dialog");
+			const block = openUserBlock(directBlockScope, "Approve?", "dialog");
 			block.release();
-			assert.deepEqual(getOpenUserBlocks(), []);
+			assert.deepEqual(getOpenUserBlocks(directBlockScope), []);
 		} finally {
 			unsubscribe();
 		}
@@ -145,6 +151,7 @@ describe("user block door", () => {
 describe("agent_blocked and agent_unblocked events", () => {
 	let tempDir: string;
 	let extensionsDir: string;
+	let eventBus: EventBus;
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-blocks-test-"));
@@ -156,7 +163,8 @@ describe("agent_blocked and agent_unblocked events", () => {
 
 	async function createRunner(source: string): Promise<ExtensionRunner> {
 		fs.writeFileSync(path.join(extensionsDir, "e0.ts"), source);
-		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+		eventBus = createEventBus();
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir, eventBus);
 		const sessionManager = SessionManager.inMemory();
 		const modelRegistry = await createModelRegistry(AuthStorage.create(path.join(tempDir, "auth.json")));
 		return new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
@@ -169,6 +177,75 @@ describe("agent_blocked and agent_unblocked events", () => {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 	}
+
+	async function createInlineRunner(eventBus: EventBus, factory: ExtensionFactory): Promise<ExtensionRunner> {
+		const runtime = createExtensionRuntime();
+		const extension = await loadExtensionFromFactory(factory, tempDir, eventBus, runtime);
+		const sessionManager = SessionManager.inMemory();
+		const modelRegistry = await createModelRegistry(AuthStorage.create(path.join(tempDir, "auth.json")));
+		return new ExtensionRunner([extension], runtime, tempDir, sessionManager, modelRegistry);
+	}
+
+	it("isolates concurrent buses while replaying an open block to a same-bus successor", async () => {
+		const busA = createEventBus();
+		const busB = createEventBus();
+		const eventsA: string[] = [];
+		const eventsB: string[] = [];
+		const runnerA = await createInlineRunner(busA, (pi) => {
+			pi.on("agent_blocked", (event) => eventsA.push(`blocked:${event.label}`));
+			pi.on("agent_unblocked", (event) => eventsA.push(`unblocked:${event.label}`));
+		});
+		const runnerB = await createInlineRunner(busB, (pi) => {
+			pi.on("agent_blocked", (event) => eventsB.push(`blocked:${event.label}`));
+			pi.on("agent_unblocked", (event) => eventsB.push(`unblocked:${event.label}`));
+		});
+		let successor: ExtensionRunner | undefined;
+		try {
+			const block = openUserBlock(busA, "only-session-a-label", "dialog");
+			await waitFor(() => eventsA.length === 1, "session A block");
+			assert.deepEqual(eventsB, []);
+			assert.deepEqual(getOpenUserBlocks(busB), []);
+			assert.equal(getActiveUserBlockLabel(busB), undefined);
+			assert.equal(getOpenUserBlocks(busA).length, 1);
+			assert.equal(getActiveUserBlockLabel(busA), "only-session-a-label");
+
+			successor = await createInlineRunner(busA, (pi) => {
+				pi.on("agent_blocked", (event) => eventsA.push(`successor-blocked:${event.label}`));
+			});
+			await waitFor(() => eventsA.length === 2, "same-bus successor replay");
+			assert.deepEqual(eventsA, ["blocked:only-session-a-label", "successor-blocked:only-session-a-label"]);
+			assert.deepEqual(eventsB, []);
+			block.release();
+			await waitFor(() => eventsA.length === 3, "session A release");
+			assert.deepEqual(eventsB, []);
+			assert.deepEqual(getOpenUserBlocks(busA), []);
+			assert.equal(getActiveUserBlockLabel(busA), undefined);
+		} finally {
+			successor?.detachUserBlocks();
+			runnerA.detachUserBlocks();
+			runnerB.detachUserBlocks();
+		}
+	});
+
+	it("delivers a factory-opened block exactly once in lifecycle order", async () => {
+		const events: string[] = [];
+		let block: UserBlock | undefined;
+		const factoryBus = createEventBus();
+		const runner = await createInlineRunner(factoryBus, (pi) => {
+			pi.on("agent_blocked", () => events.push("blocked"));
+			pi.on("agent_unblocked", () => events.push("unblocked"));
+			block = pi.awaitUserDecision("factory opening", "dialog");
+		});
+		try {
+			block?.release();
+			await waitFor(() => events.length === 2, "factory block lifecycle");
+			assert.deepEqual(events, ["blocked", "unblocked"]);
+			assert.equal(events.filter((event) => event === "blocked").length, 1);
+		} finally {
+			block?.release();
+			runner.detachUserBlocks();
+		}
+	});
 
 	it("publishes agent_blocked and agent_unblocked to extension handlers", async () => {
 		const runner = await createRunner(`
@@ -183,7 +260,7 @@ describe("agent_blocked and agent_unblocked events", () => {
 			};
 		`);
 		try {
-			const block = openUserBlock("Approve edit?", "dialog");
+			const block = openUserBlock(eventBus, "Approve edit?", "dialog");
 			await waitFor(() => readBlockEvents().length === 1, "agent_blocked");
 			block.release();
 			await waitFor(() => readBlockEvents().length === 2, "agent_unblocked");
@@ -212,7 +289,7 @@ describe("agent_blocked and agent_unblocked events", () => {
 			};
 		`);
 		try {
-			const block = openUserBlock("Approve edit?", "dialog");
+			const block = openUserBlock(eventBus, "Approve edit?", "dialog");
 			block.release();
 			await waitFor(() => readBlockEvents().length === 2, "serialized block events");
 
@@ -249,8 +326,14 @@ describe("agent_blocked and agent_unblocked events", () => {
 
 			rebuild();
 			rebuild();
+			const harnessScope = (
+				harness.session as unknown as {
+					_resourceLoader: { getExtensions(): { runtime: { eventBus?: object } } };
+				}
+			)._resourceLoader.getExtensions().runtime.eventBus;
+			assert.ok(harnessScope);
 
-			const block = openUserBlock("Approve edit?", "dialog");
+			const block = openUserBlock(harnessScope, "Approve edit?", "dialog");
 			block.release();
 			await waitFor(() => events.length >= 2, "rebuilt block events");
 
@@ -269,7 +352,7 @@ describe("agent_blocked and agent_unblocked events", () => {
 		`);
 		try {
 			runner.detachUserBlocks();
-			const block = openUserBlock("Approve edit?", "dialog");
+			const block = openUserBlock(eventBus, "Approve edit?", "dialog");
 			block.release();
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			assert.deepEqual(readBlockEvents(), []);
@@ -287,7 +370,7 @@ describe("agent_blocked and agent_unblocked events", () => {
 		`);
 		try {
 			runner.invalidate();
-			const block = openUserBlock("Approve edit?", "dialog");
+			const block = openUserBlock(eventBus, "Approve edit?", "dialog");
 			block.release();
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			assert.deepEqual(readBlockEvents(), []);
