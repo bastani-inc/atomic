@@ -166,6 +166,9 @@ export function _buildRuntime(
 	);
 
 	const extensionsResult = this._resourceLoader.getExtensions();
+	// Extension factories have already run by this point; the runner constructed
+	// immediately below closes the synchronous pre-attach window and consumes
+	// any ordered block transitions buffered for its canonical bus.
 	if (options.flagValues) {
 		for (const [name, value] of options.flagValues) {
 			extensionsResult.runtime.flagValues.set(name, value);

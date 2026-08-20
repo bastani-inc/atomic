@@ -29,6 +29,8 @@ interface OpenBlock {
 interface UserBlockState {
 	readonly openBlocks: OpenBlock[];
 	readonly listeners: Set<UserBlockListener>;
+	readonly bufferedChanges: UserBlockChange[];
+	runnerAttached: boolean;
 }
 
 type UserBlockStateByScope = WeakMap<object, UserBlockState>;
@@ -73,6 +75,8 @@ function getState(scope: object): UserBlockState {
 	const created: UserBlockState = {
 		openBlocks: [],
 		listeners: new Set<UserBlockListener>(),
+		bufferedChanges: [],
+		runnerAttached: false,
 	};
 	states.set(scope, created);
 	return created;
@@ -107,14 +111,16 @@ export function openUserBlock(scope: object, label: string, reason: UserBlockRea
 	const state = getState(scope);
 	const record: OpenBlock = { id: idState().nextBlockId++, label, reason, released: false };
 	state.openBlocks.push(record);
-	notify(state, {
+	const change: UserBlockChange = {
 		type: "agent_blocked",
 		blockId: record.id,
 		label: record.label,
 		reason: record.reason,
 		openBlocks: state.openBlocks.length,
 		activeLabel: activeLabel(state) ?? record.label,
-	});
+	};
+	if (!state.runnerAttached) state.bufferedChanges.push(change);
+	notify(state, change);
 
 	return {
 		id: record.id,
@@ -128,14 +134,16 @@ export function openUserBlock(scope: object, label: string, reason: UserBlockRea
 			record.released = true;
 			const index = state.openBlocks.indexOf(record);
 			if (index >= 0) state.openBlocks.splice(index, 1);
-			notify(state, {
+			const change: UserBlockChange = {
 				type: "agent_unblocked",
 				blockId: record.id,
 				label: record.label,
 				reason: record.reason,
 				openBlocks: state.openBlocks.length,
 				activeLabel: activeLabel(state),
-			});
+			};
+			if (!state.runnerAttached) state.bufferedChanges.push(change);
+			notify(state, change);
 		},
 	};
 }
@@ -144,16 +152,22 @@ export function openUserBlock(scope: object, label: string, reason: UserBlockRea
 export function subscribeUserBlocks(scope: object, listener: UserBlockListener): () => void {
 	const state = getState(scope);
 	state.listeners.add(listener);
-	const currentActiveLabel = activeLabel(state);
-	for (const block of [...state.openBlocks]) {
-		notifyListener(listener, {
-			type: "agent_blocked",
-			blockId: block.id,
-			label: block.label,
-			reason: block.reason,
-			openBlocks: state.openBlocks.length,
-			activeLabel: currentActiveLabel ?? block.label,
-		});
+	state.runnerAttached = true;
+	const bufferedChanges = state.bufferedChanges.splice(0);
+	if (bufferedChanges.length > 0) {
+		for (const change of bufferedChanges) notifyListener(listener, change);
+	} else {
+		const currentActiveLabel = activeLabel(state);
+		for (const block of [...state.openBlocks]) {
+			notifyListener(listener, {
+				type: "agent_blocked",
+				blockId: block.id,
+				label: block.label,
+				reason: block.reason,
+				openBlocks: state.openBlocks.length,
+				activeLabel: currentActiveLabel ?? block.label,
+			});
+		}
 	}
 	return () => {
 		state.listeners.delete(listener);

@@ -25,9 +25,12 @@ import { createHarness } from "./suite/harness.js";
 
 const ASYNC_BLOCK_HANDLER_DELAY_MS = 150;
 const BLOCK_EVENT_WAIT_TIMEOUT_MS = 5_000;
-const directBlockScope = createEventBus();
+let directBlockScope: EventBus;
 
 describe("user block door", () => {
+	beforeEach(() => {
+		directBlockScope = createEventBus();
+	});
 	afterEach(() => {
 		// Nothing should leak between tests; a leaked block would change the next
 		// test's reported state.
@@ -243,6 +246,33 @@ describe("agent_blocked and agent_unblocked events", () => {
 			assert.equal(events.filter((event) => event === "blocked").length, 1);
 		} finally {
 			block?.release();
+			runner.detachUserBlocks();
+		}
+	});
+	it("replays a transient factory block lifecycle once and not to a replacement", async () => {
+		const events: Array<[string, number, string | undefined]> = [];
+		const replacementEvents: string[] = [];
+		const factoryBus = createEventBus();
+		const runner = await createInlineRunner(factoryBus, (pi) => {
+			pi.on("agent_blocked", (event) => events.push(["blocked", event.openBlocks, event.activeLabel]));
+			pi.on("agent_unblocked", (event) => events.push(["unblocked", event.openBlocks, event.activeLabel]));
+			const block = pi.awaitUserDecision("factory transient", "dialog");
+			block.release();
+		});
+		let replacement: ExtensionRunner | undefined;
+		try {
+			await waitFor(() => events.length === 2, "transient factory lifecycle");
+			assert.deepEqual(events, [
+				["blocked", 1, "factory transient"],
+				["unblocked", 0, undefined],
+			]);
+			replacement = await createInlineRunner(factoryBus, (pi) => {
+				pi.on("agent_blocked", () => replacementEvents.push("blocked"));
+			});
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			assert.deepEqual(replacementEvents, []);
+		} finally {
+			replacement?.detachUserBlocks();
 			runner.detachUserBlocks();
 		}
 	});
