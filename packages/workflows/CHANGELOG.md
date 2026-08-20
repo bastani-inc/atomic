@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added model, thinking-level, and Codex `fast` identity to workflow graph node cards and durable stage results. Cards update when a stage falls back to another model, preserve identity through resume and replay, and truncate the model name before the thinking and `fast` suffixes; `WorkflowTaskResult` now exposes the optional `thinkingLevel` field ([#1859](https://github.com/bastani-inc/atomic/pull/1859) by [@sina85](https://github.com/sina85)).
+
 ## [0.9.14-alpha.5] - 2026-08-19
 
 ### Added
