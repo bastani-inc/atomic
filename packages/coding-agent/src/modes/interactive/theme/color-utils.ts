@@ -248,6 +248,22 @@ export function colorValueToHex(value: ColorValue): string | undefined {
 	throw new Error(`Cannot resolve color value to hex: ${value}`);
 }
 
+/**
+ * Resolve a theme `ColorValue` to the `#rrggbb` hex that is actually painted in
+ * a given color mode. In `truecolor` the source hex is emitted verbatim; in
+ * `256color` a hex is quantized through the same 6x6x6 cube / grayscale ramp
+ * that `fgAnsi()`/`bgAnsi()` use, so measurement matches the pixels a
+ * 256-color terminal shows. A 256-index value maps to its palette hex in both
+ * modes; the terminal-default token (`""`) stays `undefined`.
+ */
+export function quantizeColorValueToHex(value: ColorValue, mode: ColorMode): string | undefined {
+	if (value === "") return undefined;
+	if (typeof value === "number") return ansi256ToHex(value);
+	if (!value.startsWith("#")) throw new Error(`Cannot resolve color value to hex: ${value}`);
+	if (mode === "truecolor") return value;
+	return ansi256ToHex(hexTo256(value));
+}
+
 /** WCAG 2.x relative luminance of a `#rrggbb` color (0..1). */
 export function relativeLuminance(hex: string): number {
 	const { r, g, b } = hexToRgb(hex);

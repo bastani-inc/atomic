@@ -4,6 +4,7 @@ import {
 	CONTRAST_AA_NORMAL,
 	colorValueToHex,
 	contrastRatio,
+	quantizeColorValueToHex,
 	rateContrast,
 	relativeLuminance,
 } from "../src/modes/interactive/theme/color-utils.ts";
@@ -39,5 +40,18 @@ describe("WCAG contrast helpers", () => {
 		expect(colorValueToHex("#a1b2c3")).toBe("#a1b2c3");
 		expect(colorValueToHex("")).toBeUndefined();
 		expect(colorValueToHex(15)).toBe("#ffffff"); // ansi 15 -> white approximation
+	});
+
+	it("quantizes hex to the 256-color palette only in 256color mode", () => {
+		// truecolor is a pass-through; 256color snaps to the 6x6x6 cube / gray ramp.
+		expect(quantizeColorValueToHex("#cc6666", "truecolor")).toBe("#cc6666");
+		const q = quantizeColorValueToHex("#cc6666", "256color");
+		expect(q).toMatch(/^#[0-9a-f]{6}$/);
+		expect(q).not.toBe("#cc6666");
+		// A cube-exact color is unchanged by quantization.
+		expect(quantizeColorValueToHex("#ffffff", "256color")).toBe("#ffffff");
+		// A 256-index resolves to its palette hex in both modes; "" stays undefined.
+		expect(quantizeColorValueToHex(15, "256color")).toBe("#ffffff");
+		expect(quantizeColorValueToHex("", "truecolor")).toBeUndefined();
 	});
 });

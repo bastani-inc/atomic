@@ -1,163 +1,89 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { getThemesDir } from "../src/config.ts";
 import {
-	colorValueToHex,
-	contrastRatio,
-	rateContrast,
-	resolveThemeColors,
-} from "../src/modes/interactive/theme/color-utils.ts";
-import { isLightTheme } from "../src/modes/interactive/theme/theme.ts";
-import type { ColorValue } from "../src/modes/interactive/theme/theme-schema.ts";
-
-const BUNDLED_THEME_NAMES = [
-	"dark",
-	"light",
-	"catppuccin-frappe",
-	"catppuccin-latte",
-	"catppuccin-macchiato",
-	"catppuccin-mocha",
-] as const;
+	BASELINE_MARKDOWN_PATH,
+	BUNDLED_THEME_NAMES,
+	COLOR_MODES,
+	generateBaselineMarkdown,
+	measureTheme,
+} from "./theme-contrast-baseline.helper.ts";
 
 // Phase 0 methodology.
 //
-// Content text is composed with its *context-specific* background, not the
-// terminal canvas — user/custom messages, tool boxes, search matches and
-// selection all paint a background and draw their text on it (see
-// user-message.ts, custom-message.ts, tool-execution.ts, interactive-tui.ts).
-// We measure those visible pairs directly. Only foregrounds that genuinely
-// render on the terminal-default canvas are measured against an ASSUMED canvas
-// (`#1e1e1e` / `#ffffff`); a foreground token of "" (terminal default) falls
-// back to the assumed terminal text, and a background of "" to the assumed
-// canvas — mirroring what the user actually sees. Optional tokens resolve
-// through the same fallbacks as theme-class.ts.
-const ASSUMED = {
-	dark: { canvasBg: "#1e1e1e", text: "#cdd6f4" },
-	light: { canvasBg: "#ffffff", text: "#1e1e2e" },
-} as const;
-
-const BG_TOKENS = new Set([
-	"selectedBg",
-	"userMessageBg",
-	"customMessageBg",
-	"toolPendingBg",
-	"toolSuccessBg",
-	"toolErrorBg",
-	"searchMatchBg",
-	"scrollbarThumb",
-]);
-
-// Foreground tokens that are only ever drawn on a context-specific background,
-// never on the canvas. Kept out of the canvas sweep and measured via pairs.
-const PAIRED_FG = new Set([
-	"userMessageText",
-	"customMessageText",
-	"customMessageLabel",
-	"toolTitle",
-	"toolOutput",
-	"searchMatchText",
-]);
-
-// Rendered foreground → background pairs the user actually sees.
-const RENDERED_PAIRS: ReadonlyArray<readonly [string, string]> = [
-	["userMessageText", "userMessageBg"],
-	["customMessageText", "customMessageBg"],
-	["customMessageLabel", "customMessageBg"],
-	["toolTitle", "toolPendingBg"],
-	["toolTitle", "toolSuccessBg"],
-	["toolTitle", "toolErrorBg"],
-	["toolOutput", "toolPendingBg"],
-	["toolOutput", "toolSuccessBg"],
-	["toolOutput", "toolErrorBg"],
-	["searchMatchText", "searchMatchBg"],
-	// Selection highlights compose these foregrounds on `selectedBg`.
-	["text", "selectedBg"],
-	["muted", "selectedBg"],
-	["accent", "selectedBg"],
-];
-
-/** Resolve a token, applying the same optional-token fallbacks as theme-class.ts. */
-function resolveWithFallback(resolved: Record<string, string | number>, name: string): string | number | undefined {
-	if (name in resolved) return resolved[name];
-	if (name === "searchMatchText") return resolved.text;
-	if (name === "searchMatchBg" || name === "scrollbarThumb") return resolved.selectedBg;
-	return undefined;
-}
-
-interface Row {
-	pair: string;
-	ratio: number;
-	rating: string;
-}
-
-function measureTheme(name: string): Row[] {
-	const content = JSON.parse(readFileSync(join(getThemesDir(), `${name}.json`), "utf8")) as {
-		colors: Record<string, ColorValue>;
-		vars?: Record<string, ColorValue>;
-	};
-	const resolved = resolveThemeColors(content.colors, content.vars ?? {});
-	const assumed = isLightTheme(name) ? ASSUMED.light : ASSUMED.dark;
-	const hexOf = (name_: string): string | undefined => {
-		const value = resolveWithFallback(resolved, name_);
-		return value === undefined ? undefined : colorValueToHex(value);
-	};
-	const rows: Row[] = [];
-
-	// Visible composed foreground/background pairs.
-	for (const [fgToken, bgToken] of RENDERED_PAIRS) {
-		const fg = hexOf(fgToken) ?? assumed.text; // "" foreground → terminal default text
-		const bg = hexOf(bgToken) ?? assumed.canvasBg; // "" background → canvas
-		const ratio = contrastRatio(fg, bg);
-		rows.push({ pair: `${fgToken} on ${bgToken}`, ratio, rating: rateContrast(ratio) });
-	}
-
-	// Scrollbar thumb is a non-text UI element measured against the canvas.
-	const thumb = hexOf("scrollbarThumb");
-	if (thumb) {
-		const ratio = contrastRatio(thumb, assumed.canvasBg);
-		rows.push({ pair: "scrollbarThumb on canvas", ratio, rating: rateContrast(ratio) });
-	}
-
-	// Remaining foregrounds render directly on the terminal-default canvas.
-	for (const [token, value] of Object.entries(resolved)) {
-		if (BG_TOKENS.has(token) || PAIRED_FG.has(token)) continue;
-		const hex = colorValueToHex(value);
-		if (!hex) continue; // "" terminal-default foreground: unknowable
-		const ratio = contrastRatio(hex, assumed.canvasBg);
-		rows.push({ pair: `${token} on canvas`, ratio, rating: rateContrast(ratio) });
-	}
-
-	return rows.sort((x, y) => x.ratio - y.ratio);
-}
+// Every color is measured on the background where it actually renders — user /
+// custom messages paint Markdown inside their message background, tool boxes
+// paint titles/output/diffs inside pending/success/error backgrounds, selection
+// composes foregrounds on `selectedBg`, and only genuine canvas foregrounds are
+// swept against the assumed terminal canvas. Both truecolor and 256-color
+// (quantized through `fgAnsi()`/`bgAnsi()`) results are emitted. See
+// `theme-contrast-baseline.helper.ts` for the full surface → foreground mapping.
+//
+// This is report only: it asserts the WCAG math is well-formed and that the
+// checked-in Markdown baseline stays in sync with the generator. It does NOT
+// gate the build on any theme passing.
 
 describe("theme contrast baseline (Phase 0 — report only)", () => {
-	it("emits a per-theme contrast table for the six built-in themes", () => {
-		const lines: string[] = [];
-		for (const name of BUNDLED_THEME_NAMES) {
-			const rows = measureTheme(name);
-			expect(rows.length, `${name}: no measurable tokens`).toBeGreaterThan(0);
-			lines.push(`\n### ${name} (${isLightTheme(name) ? "light" : "dark"})`);
-			lines.push("| rating | ratio | pair |");
-			lines.push("|---|---:|---|");
-			for (const r of rows) {
-				lines.push(`| ${r.rating} | ${r.ratio.toFixed(2)} | ${r.pair} |`);
-				// report-only: assert the math is well-formed, NOT that themes pass
-				expect(Number.isFinite(r.ratio) && r.ratio >= 1 && r.ratio <= 21.01, r.pair).toBe(true);
+	it("produces a well-formed contrast measurement for every theme and color mode", () => {
+		for (const mode of COLOR_MODES) {
+			for (const name of BUNDLED_THEME_NAMES) {
+				const rows = measureTheme(name, mode);
+				expect(rows.length, `${name} (${mode}): no measurable tokens`).toBeGreaterThan(0);
+				for (const r of rows) {
+					expect(Number.isFinite(r.ratio) && r.ratio >= 1 && r.ratio <= 21.01, `${name} ${mode}: ${r.pair}`).toBe(
+						true,
+					);
+					expect(["AA", "AA-large", "FAIL"]).toContain(r.rating);
+				}
 			}
 		}
-		// Surfaces the baseline in test output; no build gate in Phase 0.
-		console.log(lines.join("\n"));
 	});
 
-	it("measures paired content text on its real background, not the canvas", () => {
-		// Regression guard for the review finding: userMessageText must be paired
-		// with userMessageBg, never scored against the assumed canvas.
-		const rows = measureTheme("catppuccin-mocha");
-		const pairs = rows.map((r) => r.pair);
+	it("measures context-specific content text on its real background, not the canvas", () => {
+		// Regression guard for the review finding: content tokens must be paired
+		// with the background they render on, never scored against the canvas.
+		const pairs = measureTheme("catppuccin-mocha", "truecolor").map((r) => r.pair);
 		expect(pairs).toContain("userMessageText on userMessageBg");
 		expect(pairs).toContain("customMessageText on customMessageBg");
-		expect(pairs).toContain("searchMatchText on searchMatchBg");
+		expect(pairs).toContain("customMessageLabel on customMessageBg");
+		expect(pairs).toContain("toolTitle on toolPendingBg");
+		expect(pairs).toContain("toolOutput on toolErrorBg");
+		expect(pairs).toContain("mdHeading on userMessageBg");
+		expect(pairs).toContain("syntaxKeyword on customMessageBg");
+		expect(pairs).toContain("accent on selectedBg");
+		expect(pairs).toContain("workingIndicator.peak on canvas");
+		// Never scored against the canvas, and the removed search pair never appears.
 		expect(pairs).not.toContain("userMessageText on canvas");
+		expect(pairs.some((p) => p.startsWith("searchMatch"))).toBe(false);
+	});
+
+	it("quantizes to a 256-color palette that can change a rating", () => {
+		// The whole point of emitting a 256-color column: quantization is not a
+		// no-op. Somewhere across the six themes at least one ratio must differ
+		// between truecolor and 256-color.
+		let anyDifference = false;
+		for (const name of BUNDLED_THEME_NAMES) {
+			const truecolor = new Map(measureTheme(name, "truecolor").map((r) => [r.pair, r.ratio]));
+			for (const r of measureTheme(name, "256color")) {
+				if (Math.abs((truecolor.get(r.pair) ?? r.ratio) - r.ratio) > 1e-6) {
+					anyDifference = true;
+					break;
+				}
+			}
+			if (anyDifference) break;
+		}
+		expect(anyDifference).toBe(true);
+	});
+
+	it("keeps the checked-in Markdown baseline in sync with the generator", () => {
+		const generated = generateBaselineMarkdown();
+		if (process.env.UPDATE_CONTRAST_BASELINE) {
+			writeFileSync(BASELINE_MARKDOWN_PATH, generated);
+			return;
+		}
+		const committed = readFileSync(BASELINE_MARKDOWN_PATH, "utf8");
+		expect(
+			committed,
+			`Checked-in contrast baseline is stale. Regenerate with:\n  UPDATE_CONTRAST_BASELINE=1 npm run test --workspace=@bastani/atomic -- theme-contrast-baseline`,
+		).toBe(generated);
 	});
 });
