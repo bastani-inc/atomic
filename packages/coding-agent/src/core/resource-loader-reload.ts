@@ -4,6 +4,7 @@ import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath } from "../utils/paths.ts";
 import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
+import { beginUserBlockLoad } from "./extensions/user-blocks.js";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
 import {
 	updatePromptsFromPathsAsync,
@@ -96,6 +97,7 @@ function addCliMetadata(cliExtensionPaths: ResolvedPaths, metadataByPath: Map<st
 
 export async function loadProjectTrustExtensions(loader: DefaultResourceLoader): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
+	beginUserBlockLoad(state.eventBus);
 	state.settingsManager.setProjectTrusted(false);
 	await state.settingsManager.reload();
 	const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await resolvePackageResourcePaths(loader, {

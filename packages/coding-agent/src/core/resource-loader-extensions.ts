@@ -4,6 +4,7 @@ import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
 import { loadExtensionFromFactory, loadExtensionsCached, type WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
+import { beginUserBlockLoad } from "./extensions/user-blocks.js";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "./resource-loader-types.ts";
@@ -21,6 +22,7 @@ export async function loadFinalExtensionSet(
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 ): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
+	beginUserBlockLoad(state.eventBus);
 	if (!preTrustExtensions) {
 		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
 		const extensionsResult = await loadExtensionsCached(
