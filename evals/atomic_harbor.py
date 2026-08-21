@@ -57,7 +57,7 @@ class Atomic(BaseInstalledAgent):
             "thinking",
             cli="--thinking",
             type="enum",
-            choices=["off", "minimal", "low", "medium", "high", "xhigh"],
+            choices=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
         ),
     ]
 
