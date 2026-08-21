@@ -10,7 +10,7 @@ A model is **Pareto-efficient** (on the frontier) if no other model is both chea
 The axes here are `pass@1` (accuracy) and `average dollars per task` (cost), taken from the [DeepSWE](https://deepswe.datacurve.ai/) coding-agent leaderboard. For the full table and role guidance, see [Model Selection](/models/model-selection).
 
 <Note>
-Figures are a snapshot of DeepSWE v1.1 using the highest published thinking level per model and reporting corrections through August 14, 2026. The frontier moves whenever a model, run, or price changes — DeepSWE publishes a live cost-vs-score scatter, so **read the frontier off the live chart** rather than trusting a static list. **Last compiled: 2026-08-16.**
+Figures are a snapshot of DeepSWE v1.1 using the highest published thinking level per model and reporting corrections through August 20, 2026. The frontier moves whenever a model, run, or price changes — DeepSWE publishes a live cost-vs-score scatter, so **read the frontier off the live chart** rather than trusting a static list. **Last compiled: 2026-08-21.**
 </Note>
 
 ## The frontier
@@ -20,22 +20,22 @@ Six highest-effort model configurations currently sit on the frontier, from the 
 - **deepseek-v4-flash [max]** — 53% for $0.10. The cheapest point, with lower accuracy and 153 average steps.
 - **deepseek-v4-pro [max]** — 63% for $0.24. A large accuracy gain for another $0.14 per task, with 155 average steps.
 - **gpt-5.6-luna [max]** — 67% for $0.61. The best broad value on the board.
-- **gpt-5.6-terra [max]** — 70% for $3.96. The best top-tier value after the July price correction.
+- **glm-5.3 [max]** — 69% for $3.99. The open-weights mid-tier point; matches Kimi K3's rounded score for less.
 - **gpt-5.6-sol [max]** — 73% for $8.39. The lower-cost near-peer to the accuracy leader.
 - **claude-opus-5 [max]** — 74% for $11.84. The current accuracy ceiling.
 
 ## What changed — the frontier moved
 
-The August results and reporting fixes changed both ends of the frontier:
+The August 20 refresh reshuffled the middle of the frontier:
 
-- **Claude Opus 5 [max]** set a new 74% ceiling, one point above Sol, at $11.84 per task.
-- **DeepSeek V4 Flash and Pro [max]** added $0.10 and $0.24 budget-frontier points. Their 153–155 average steps remain a separate latency and loop-length cost.
-- **GPT-5.6 Luna and Terra [max]** now cost $0.61 and $3.96 per task after corrected pricing, strengthening both positions.
+- **GLM-5.3 [max]** is now measured — 69% for $3.99 with 124 average steps — and takes the mid-tier frontier slot.
+- **GPT-5.6 Terra [max]** no longer appears on the live board; its July measurement (70% for $3.96) is retained in [Model Selection](/models/model-selection) as history, not a current frontier point.
+- **Kimi K3 [max]** is now strictly dominated: GLM-5.3 matches its rounded score for $0.66 less per task.
 
 ## Dominated models — and why
 
-- **claude-fable-5 [max]** — Sol is more accurate and much cheaper; Terra matches its rounded score for less than one fifth of the task cost.
-- **kimi-k3 [max]** — Terra is one point more accurate and $0.69 cheaper; Kimi remains useful for open-weights diversity.
+- **claude-fable-5 [max]** — Sol is more accurate and much cheaper; GLM-5.3 comes within a point for less than one fifth of the task cost.
+- **kimi-k3 [max]** — GLM-5.3 matches its rounded score and is $0.66 cheaper; Kimi remains useful for Moonshot-family diversity.
 - **gpt-5.5 [xhigh]** and **grok-4.6 [xhigh]** — Luna matches their rounded 67% for $0.61.
 - **gemini-3.7-flash [high]** — Luna is two points more accurate and less than one third of its task cost.
 - **grok-4.5 [high]**, **muse-spark-1.1 [xhigh]**, **muse-spark-1.2 [xhigh]**, and **gpt-5.4 [xhigh]** — the new DeepSeek and GPT-5.6 points dominate these former budget choices.
@@ -47,8 +47,8 @@ The August results and reporting fixes changed both ends of the frontier:
 Efficiency is not the only axis. A dominated model can still earn a slot when it decorrelates errors or fills a niche:
 
 - **grok-4.6** — retained as the operational xAI and OpenRouter provider-diversity fallback.
-- **glm-5.3 [high]** — unmeasured in the current DeepSWE snapshot; retained as a direct Z.AI provider-diversity fallback. GLM-5.2 results are not relabeled as GLM-5.3.
-- **kimi-k3** — retained as a strong open-weights provider-diversity option despite Terra's strict DeepSWE dominance.
+- **glm-5.2 [max]** — kept only as a measured predecessor; its results are never relabeled as GLM-5.3, which is now measured directly on the frontier.
+- **kimi-k3** — retained as a Moonshot-family provider-diversity option despite GLM-5.3's strict DeepSWE dominance.
 - **claude-opus-4.8 [max]** — retained where Anthropic diversity or its long-context behavior has separate value.
 - **claude-fable-5** — kept where Anthropic-family behavior is specifically wanted, such as the quality-first, unbenchmarked design chain.
 - **Unmeasured models** — a family without current DeepSWE or Artificial Analysis coverage may remain an operational default, but should not inherit a predecessor's score.
