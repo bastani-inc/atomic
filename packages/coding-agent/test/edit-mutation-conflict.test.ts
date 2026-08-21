@@ -175,6 +175,33 @@ describe("edit raises a typed conflict when the file moves under a prepared patc
 		expect(conflict.message).not.toContain("does not exist");
 	});
 
+	it("reports foreign_snapshot for a tag this session never issued", async () => {
+		const dir = await createTempDir();
+		const file = join(dir, "target.txt");
+		await writeFile(file, ORIGINAL, "utf-8");
+
+		// Two stores stands in for two sessions: the reader mints a tag the editor has never
+		// recorded, which is what a cross-session handoff looks like from the editor's side.
+		const readerStore = createHashlineSnapshotStore();
+		const editorStore = createHashlineSnapshotStore();
+		const read = createReadTool(dir, { hashlineStore: readerStore });
+		const tag = advertisedTag(resultText(await read.execute("read-1", { path: "target.txt" })));
+		const edit = createEditTool(dir, { hashlineStore: editorStore });
+
+		const error = await edit.execute("edit-1", { input: `[target.txt#${tag}]\nreplace 2..2:\n+BRAVO-MINE\n` }).then(
+			() => undefined,
+			(caught: unknown) => caught,
+		);
+
+		expect(error).toBeInstanceOf(FileMutationConflict);
+		const conflict = error as FileMutationConflict;
+		expect(conflict.reason).toBe("foreign_snapshot");
+		expect(conflict.presentedTag).toBe(tag);
+		// No diff: the tag names content this session has never seen, so there is no prior side.
+		expect(conflict.evidence).toBeUndefined();
+		expect(conflict.liveState?.lines).toBe(3);
+	});
+
 	it("keeps the message bounded when the target is rewritten as binary content", async () => {
 		const dir = await createTempDir();
 		const file = join(dir, "target.txt");

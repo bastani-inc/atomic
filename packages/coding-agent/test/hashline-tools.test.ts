@@ -859,7 +859,10 @@ describe("hashline file tool parity", () => {
 				undefined,
 				{} as ExtensionContext,
 			),
-		).rejects.toThrow(/not from this session/);
+			// A tag minted in another store is the foreign-snapshot case by definition, so the
+			// engine's "not from this session" prose is now the typed conflict Goal can count.
+			// The rejection itself, and the file staying untouched, are unchanged.
+		).rejects.toThrow(/FILE_MUTATION_CONFLICT:foreign_snapshot/);
 		expect(await readFile(file, "utf8")).toBe("one\ntwo");
 	});
 	it("rejects unsafe integer hashline anchors", () => {

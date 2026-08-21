@@ -28,6 +28,7 @@ import {
 } from "./hashline.ts";
 import {
 	Filesystem,
+	MismatchError,
 	missingSnapshotTagMessage,
 	Patch,
 	Patcher,
@@ -254,7 +255,24 @@ export function createEditToolDefinition(
 		const prepared: PreparedSection[] = [];
 		for (const section of merged.sections) {
 			throwIfAborted(applySignal);
-			prepared.push(await patcher.prepare(section));
+			try {
+				prepared.push(await patcher.prepare(section));
+			} catch (error) {
+				// `hashRecognized` is the engine's own answer to "have I ever recorded this tag
+				// for this path", so the foreign case is read off a typed field rather than
+				// matched out of a message in vendored code. Everything else the engine raises
+				// is left alone: recovery successes and the head/tail drift warning never reach
+				// here, and a stale-but-known tag keeps the engine's own wording.
+				if (!(error instanceof MismatchError) || error.hashRecognized) throw error;
+				throw new FileMutationConflict({
+					reason: "foreign_snapshot",
+					path: section.path,
+					canonicalKey: await canonicalMutationKey(fs.canonicalPath(section.path)),
+					presentedTag: error.expectedFileHash,
+					liveState: computeLiveState(error.fileLines.join("\n")),
+					...(requester ? { requester } : {}),
+				});
+			}
 		}
 		assertUniquePreparedPaths(prepared);
 		const noops = prepared.filter((item) => item.isNoop);
