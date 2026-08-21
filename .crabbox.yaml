@@ -2,7 +2,7 @@ profile: atomic-check
 provider: exe-dev
 exeDev:
   image: ""
-  cpus: 4
+  cpus: 2
   memory: 8GB
   disk: 40GB
   workRoot: /tmp/crabbox
