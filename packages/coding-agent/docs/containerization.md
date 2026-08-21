@@ -60,6 +60,23 @@ WORKDIR /workspace
 ENTRYPOINT ["atomic"]
 ```
 
+For an image without Node.js or npm, use the release-archive installer instead:
+
+```dockerfile
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends bash ca-certificates curl git ripgrep tar \
+  && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
+
+ENV PATH="/root/.local/bin:${PATH}"
+WORKDIR /workspace
+ENTRYPOINT ["atomic"]
+```
+
+The archive path installs the full prebuilt payload and needs no JavaScript runtime or package manager. The other packages in this example support Atomic's shell and common coding tasks.
+
 Build and run:
 
 ```bash

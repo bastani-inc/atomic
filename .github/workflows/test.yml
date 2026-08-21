@@ -443,6 +443,8 @@ jobs:
       # own runner rather than through the workspace suites.
       - name: Script tests
         run: npm run test:scripts
+      - name: POSIX installer smoke tests in Alpine and Debian slim
+        run: ./scripts/test-installers-containers.sh
       - name: Deterministic CI and release contracts
         run: npm run test:ci-contracts
 

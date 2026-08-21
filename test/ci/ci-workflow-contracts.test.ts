@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { parse as parseYaml } from "yaml";
@@ -10,7 +10,16 @@ import {
 	parseReleaseBaseTrailers,
 	validateCanonicalReleaseBaseRef,
 } from "../../scripts/release-base.js";
-import { readJson } from "../helpers/runtime.js";
+import {
+	chmodSync,
+	makeDirectorySync,
+	makeTempDirectory,
+	readJson,
+	readTextSync,
+	removeTempDirectory,
+	spawnSyncCollect,
+	writeTextSync,
+} from "../helpers/runtime.js";
 import { jobBlock, jobBlocks, jobSteps, namedStep, readText } from "./workflow-text.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -342,15 +351,148 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 	);
 });
 
-test("Alpine smoke consumes the x64 musl artifact and installs its runtime libraries", async () => {
-	const workflow = await readText(publishPath);
+interface MuslSmokeProbe {
+	archive: string;
+	argsPath: string;
+	bodyPath: string;
+	root: string;
+}
+
+function createMuslSmokeProbe(): MuslSmokeProbe {
+	const probeRoot = makeTempDirectory("atomic-musl-contract-");
+	const payloadRoot = join(probeRoot, "payload");
+	const atomicRoot = join(payloadRoot, "atomic");
+	for (const directory of [
+		join(atomicRoot, "builtin", "workflows"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives"),
+		join(atomicRoot, "lib"),
+	]) {
+		makeDirectorySync(directory, { recursive: true });
+	}
+	for (const file of [
+		join(atomicRoot, "atomic"),
+		join(atomicRoot, "app.js"),
+		join(atomicRoot, "package.json"),
+		join(atomicRoot, "builtin", "workflows", "package.json"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "package.json"),
+		join(atomicRoot, "lib", "libgcc_s.so.1"),
+		join(atomicRoot, "lib", "libstdc++.so.6"),
+	]) {
+		writeTextSync(file, "fixture");
+	}
+
+	const archive = join(probeRoot, "archive.tar.gz");
+	const archiveResult = spawnSyncCollect(["tar", "-czf", archive, "-C", payloadRoot, "atomic"]);
+	assert.equal(archiveResult.exitCode, 0, archiveResult.stderr.toString());
+
+	const stubDirectory = join(probeRoot, "stub");
+	makeDirectorySync(stubDirectory, { recursive: true });
+	const argsPath = join(probeRoot, "docker-args.txt");
+	const bodyPath = join(probeRoot, "smoke-body.sh");
+	const stubPath = join(stubDirectory, "docker");
+	writeTextSync(
+		stubPath,
+		`#!/bin/sh
+: "\${ATOMIC_MUSL_DOCKER_ARGS:?}"
+: "\${ATOMIC_MUSL_DOCKER_BODY:?}"
+printf '%s\\n' "$@" > "$ATOMIC_MUSL_DOCKER_ARGS"
+mount=
+for arg do
+    case "$arg" in
+        *:/smoke:ro) mount=\${arg%:/smoke:ro} ;;
+    esac
+done
+[ -n "$mount" ]
+cat "$mount/smoke.sh" > "$ATOMIC_MUSL_DOCKER_BODY"
+`,
+	);
+	chmodSync(stubPath, 0o755);
+	return { archive, argsPath, bodyPath, root: probeRoot };
+}
+
+function removeMuslSmokeProbe(probe: MuslSmokeProbe): void {
+	removeTempDirectory(probe.root);
+}
+
+function matrixUsesOnlyBlacksmithLinuxRunners(runsOn: string, block: string): boolean {
+	if (runsOn !== "$" + "{{ matrix.runner }}") return false;
+	const inlineRunners = [...block.matchAll(/\brunner:\s*([^\s,}\n]+)/gu)]
+		.map(([, runner]) => runner as string)
+		.filter((runner) => runner !== "-");
+	const listBody = /\brunner:\s*\n(?<entries>(?:[ \t]*-[ \t]*[^\n#]+(?:\n|$))+)/u.exec(block)?.groups?.entries;
+	const listRunners =
+		listBody === undefined
+			? []
+			: [...listBody.matchAll(/^[ \t]*-[ \t]*([^\s#]+)/gmu)].map(([, runner]) => runner as string);
+	const runners = [...inlineRunners, ...listRunners];
+	return runners.length > 0 && runners.every((runner) => /^blacksmith-\dvcpu-ubuntu(?:-|$)/u.test(runner));
+}
+
+test("musl smoke forwards a complete staged shell script through stub docker", () => {
+	const probe = createMuslSmokeProbe();
+	try {
+		const result = spawnSyncCollect(
+			["bash", join(root, "scripts/test-musl-release-archive.sh"), probe.archive, "linux-x64-musl"],
+			{
+				cwd: root,
+				env: {
+					...process.env,
+					PATH: `${join(probe.root, "stub")}${delimiter}${process.env.PATH ?? ""}`,
+					ATOMIC_MUSL_DOCKER_ARGS: probe.argsPath,
+					ATOMIC_MUSL_DOCKER_BODY: probe.bodyPath,
+				},
+			},
+		);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		const args = readTextSync(probe.argsPath).toString("utf8").trimEnd().split("\n");
+		assert.deepEqual(args.slice(0, 4), ["run", "--rm", "--platform", "linux/amd64"]);
+		assert.equal(args.at(-2), "/bin/sh");
+		assert.equal(args.at(-1), "/smoke/smoke.sh");
+		const smoke = readTextSync(probe.bodyPath).toString("utf8");
+		assert.match(smoke, /output=\$\(printf '' \| "\$atomic" --no-session 2>&1\)/u);
+		assert.match(smoke, /if echo "\$output" \| grep -q 'Failed to load extension'; then exit 1; fi/u);
+		assert.match(smoke, /No models available\|No model selected\|No API key found/u);
+	} finally {
+		removeMuslSmokeProbe(probe);
+	}
+});
+
+test("Alpine smoke covers both musl archives on stock Alpine without runtime package installation", async () => {
+	const [workflow, smoke] = await Promise.all([
+		readText(publishPath),
+		readText(join(root, "scripts/test-musl-release-archive.sh")),
+	]);
 	const alpine = jobBlock(workflow, "alpine-binary-smoke", "build");
 	assert.match(alpine, /needs: \[integrity, native-artifacts\]/u);
-	assert.match(alpine, /name: atomic-natives-linux-x64-musl/u);
-	assert.match(alpine, /atomic-linux-x64-musl\.tar\.gz/u);
-	assert.match(alpine, /apk add --no-cache libgcc libstdc\+\+/u);
-	assert.match(alpine, /node:22-alpine/u);
-	assert.match(alpine, /require\("\/smoke\/atomic\/node_modules\/@bastani\/atomic-natives"\)/u);
+	assert.match(alpine, /atomic-natives-\$\{\{ matrix\.slug \}\}/u);
+	assert.match(alpine, /linux-x64-musl[\s\S]*linux-arm64-musl/u);
+	assert.match(alpine, /blacksmith-4vcpu-ubuntu-2404[\s\S]*blacksmith-4vcpu-ubuntu-2404-arm/u);
+	assert.match(alpine, /test-musl-release-archive\.sh/u);
+	assert.doesNotMatch(alpine, /apk add/u);
+	assert.match(smoke, /alpine:3\.22/u);
+	assert.match(smoke, /docker run --rm --platform/u);
+	assert.match(smoke, /atomic --version|"\$atomic" --version/u);
+	assert.match(smoke, /<<'SMOKE'/u);
+	assert.match(smoke, /\/bin\/sh \/smoke\/smoke\.sh/u);
+	assert.match(smoke, /app\.js[\s\S]*builtin[\s\S]*node_modules/u);
+	assert.doesNotMatch(smoke, /apk add/u);
+	const nativeLoad = namedStep(jobSteps(alpine), "Load the musl native binding under musl libc");
+	assert.match(nativeLoad, /^name: Load the musl native binding under musl libc$/mu);
+	assert.match(nativeLoad, /node:22-alpine/u);
+	assert.match(nativeLoad, /require\("\/smoke\/atomic\/node_modules\/@bastani\/atomic-natives"\)/u);
+	assert.match(nativeLoad, /\["glob", "grep"\]/u);
+	assert.match(nativeLoad, /typeof binding\[name\] !== "function"/u);
+});
+
+test("musl archive build bundles pinned C++ runtimes and patches payload-local search paths", async () => {
+	const buildScript = await readText(join(root, "scripts/build-binaries.sh"));
+	assert.match(buildScript, /ALPINE_MUSL_RUNTIME_VERSION="14\.2\.0-r6"/u);
+	assert.match(buildScript, /libgcc_s\.so\.1/u);
+	assert.match(buildScript, /libstdc\+\+\.so\.6/u);
+	assert.match(buildScript, /sha256sum -c/u);
+	assert.match(buildScript, /patchelf --print-needed/u);
+	assert.match(buildScript, /patchelf --set-rpath/u);
+	assert.match(buildScript, /\$ORIGIN/u);
 });
 
 test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asset contracts", async () => {
@@ -363,8 +505,8 @@ test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asse
 	assert.match(workflow, /Failed to load extension/);
 	assert.match(workflow, /native optionalDependencies must be the eight exact-version platform packages/u);
 	assert.match(workflow, /test .* = 11/u);
-	assert.match(workflow, /Build Linux x64 musl archive[\s\S]*--platform linux-x64-musl/u);
-	assert.match(workflow, /apk add --no-cache libgcc libstdc\+\+/u);
+	assert.match(workflow, /Build Linux musl archive[\s\S]*--platform "\$\{\{ matrix\.platform \}\}"/u);
+	assert.match(workflow, /Install musl archive tooling[\s\S]*patchelf/u);
 	assert.doesNotMatch(
 		workflow,
 		/Release-base-ref|Release-base-sha|RELEASE_BASE_REFS|deterministic release tree|create-event binding/iu,
@@ -467,17 +609,42 @@ test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
 	for (const path of [publishPath, testPath, warmPath]) {
 		const workflow = await readText(path);
 		for (const [name, block] of jobBlocks(workflow)) {
-			const runsOn = /^\s+runs-on: (\S+)$/mu.exec(block)?.[1] ?? "";
+			const runsOn = /^\s+runs-on: (.+)$/mu.exec(block)?.[1].trim() ?? "";
 			for (const step of jobSteps(block)) {
 				if (!step.includes("useblacksmith/")) continue;
 				const guarded = /if: runner\.os == 'Linux'/u.test(step);
+				const matrixLinuxRunner = matrixUsesOnlyBlacksmithLinuxRunners(runsOn, block);
 				assert.ok(
-					guarded || /^blacksmith-\dvcpu-ubuntu/u.test(runsOn),
+					guarded || /^blacksmith-\dvcpu-ubuntu/u.test(runsOn) || matrixLinuxRunner,
 					`${path}: job ${name} requests a sticky disk on ${runsOn || "a matrix runner"}`,
 				);
 			}
 		}
 	}
+	assert.equal(
+		matrixUsesOnlyBlacksmithLinuxRunners(
+			"$" + "{{ matrix.runner }}",
+			"strategy:\n  matrix:\n    include:\n      - { runner: blacksmith-4vcpu-ubuntu-2404 }\n      - { runner: blacksmith-4vcpu-ubuntu-2404-arm }",
+		),
+		true,
+		"an all-Blacksmith inline matrix must satisfy the sticky-disk Linux runner contract",
+	);
+	assert.equal(
+		matrixUsesOnlyBlacksmithLinuxRunners(
+			"$" + "{{ matrix.runner }}",
+			"strategy:\n  matrix:\n    runner:\n      - blacksmith-4vcpu-ubuntu-2404\n      - blacksmith-4vcpu-ubuntu-2404-arm",
+		),
+		true,
+		"an all-Blacksmith list matrix must satisfy the sticky-disk Linux runner contract",
+	);
+	assert.equal(
+		matrixUsesOnlyBlacksmithLinuxRunners(
+			"$" + "{{ matrix.runner }}",
+			"strategy:\n  matrix:\n    include:\n      - { runner: blacksmith-4vcpu-ubuntu-2404 }\n      - { runner: windows-latest }",
+		),
+		false,
+		"a mixed matrix must not satisfy the sticky-disk Linux runner contract",
+	);
 	const publish = await readText(publishPath);
 	const testWorkflow = await readText(testPath);
 	assert.doesNotMatch(jobBlock(publish, "windows-binary-smoke", "alpine-binary-smoke"), /useblacksmith/u);

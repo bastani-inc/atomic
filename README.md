@@ -251,13 +251,31 @@ The model-family badges are representative open families, not a closed allowlist
 
 ### Prerequisites
 
-- **Node.js 22.19 or newer** — check with `node --version`.
-- **A package manager** — use npm, pnpm, Yarn, or Bun. Use Bun 1.4.0+ for Bun installs or workflow-authoring examples.
+- **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`. Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
+- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.0+ for Bun installs or workflow-authoring examples.
 - **Model-provider access** — use a supported subscription login or API key.
 
 ### Install
 
-With npm:
+Install the self-contained release archive on macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
+```
+
+On Windows, run this in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+```
+
+The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links its launcher from `~/.local/bin/atomic` on macOS/Linux or `%LOCALAPPDATA%\atomic\bin\atomic.cmd` on Windows. It prints PATH guidance when needed. Set `ATOMIC_VERSION` to pin a release, `ATOMIC_INSTALL_DIR` or `ATOMIC_BIN_DIR` to change those locations, and `GITHUB_TOKEN` or `GH_TOKEN` if shared GitHub API limits are a concern.
+
+On macOS/Linux, relative install and bin directories resolve against the physical directory where the installer starts. The install root cannot equal or sit inside the `ATOMIC_BIN_DIR/atomic` launcher path, and `ATOMIC_BIN_DIR` cannot sit inside the install root's `current` or `versions` directories. On Windows, a same-stem launcher that `PATHEXT` resolves before `atomic.cmd`, such as a stale `atomic.exe`, is reported before any download. Exact pins use Atomic release tags in `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` form.
+
+The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step. Android and Termux use bionic rather than musl and remain unsupported by the release archives.
+
+Package installs still require Node.js and a package manager. With npm:
 
 ```bash
 npm install -g @bastani/atomic
@@ -275,7 +293,7 @@ With Bun:
 bun add -g @bastani/atomic
 ```
 
-Atomic does not require package install scripts. Add `--ignore-scripts` to the install command if you want to disable dependency lifecycle scripts during installation.
+Atomic does not require package install scripts. Add `--ignore-scripts` to a package install command if you want to disable dependency lifecycle scripts.
 
 ### Authenticate and run
 
@@ -309,7 +327,7 @@ After authenticating, run `/atomic` for workflow guides, examples, and next step
 <details>
 <summary><b>Devcontainer, terminal, and SDK references</b></summary>
 
-Atomic runs in a standard devcontainer or VM with Node.js 22.19+ installed. Install it inside the container with a package manager and pass provider credentials through environment variables.
+Atomic runs in a standard devcontainer or VM. Use the release-archive installer for an image without Node.js or npm, or install Node.js 22.19+ and use a package manager. Pass provider credentials through environment variables.
 
 See [Terminal setup](./packages/coding-agent/docs/terminal-setup.md), [Security](./packages/coding-agent/docs/security.md), and [Programmatic Usage](./packages/coding-agent/README.md#programmatic-usage) for the SDK and RPC entry points.
 
