@@ -123,6 +123,13 @@ export interface VerbatimCompactionDetails {
 	parameters: VerbatimCompactionParameters;
 	stats: VerbatimCompactionStats;
 	rung: CompactionRung;
+	/**
+	 * Authoritative whole-context token count from the provider, used for
+	 * budgeting and the "Compacted from N tokens" display. Deliberately
+	 * separate from the symmetric heuristic `stats.tokensBefore` so each
+	 * retains its best available source. See issue #2052.
+	 */
+	tokensBefore?: number;
 	/** Present only when a borrowed fallback model ranked the lines. */
 	plannerModel?: CompactionPlannerModel;
 	backupPath?: string;
