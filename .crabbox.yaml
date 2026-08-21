@@ -1,0 +1,53 @@
+profile: atomic-check
+provider: exe-dev
+exeDev:
+  image: ""
+  cpus: 4
+  memory: 8GB
+  disk: 40GB
+  workRoot: /tmp/crabbox
+  noEmail: true
+sync:
+  delete: true
+  checksum: false
+  gitSeed: true
+  fingerprint: true
+  timeout: 15m
+  warnFiles: 50000
+  warnBytes: 5368709120
+  failFiles: 150000
+  failBytes: 21474836480
+  exclude:
+    - .cache
+    - .turbo
+    - dist
+    - node_modules
+    - .npm
+    - .yarn/cache
+    - target
+run:
+  preflightTools:
+    - node
+    - bun
+    - npm
+    - cargo
+env:
+  allow:
+    - CI
+    - NODE_OPTIONS
+cache:
+  # Optional provider-backed cache volumes. Keep paths outside the synced source tree.
+  volumes: []
+jobs:
+  detected:
+    shell: true
+    command: >
+      (cd 'evals/vendor/pier/apps/viewer' && bun install --frozen-lockfile && bun run 'build') &&
+      npm ci && npm test &&
+      (cd 'packages/coding-agent/examples/extensions/custom-provider-anthropic' && npm ci && npm run 'check') &&
+      (cd 'packages/coding-agent/examples/extensions/gondolin' && npm ci && npm run 'check') &&
+      (cd 'packages/coding-agent/examples/extensions/sandbox' && npm ci && npm run 'check') &&
+      (cd 'packages/coding-agent/examples/extensions/with-deps' && npm ci && npm run 'check') &&
+      cargo test &&
+      (cd 'crates/atomic-natives' && cargo test)
+    stop: auto
