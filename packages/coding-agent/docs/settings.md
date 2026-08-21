@@ -267,6 +267,7 @@ The `/settings` picker offers these presets:
 | `transport` | string | `"auto"` | Preferred transport for providers that support multiple transports: `"sse"`, `"websocket"`, `"websocket-cached"`, or `"auto"` |
 | `httpIdleTimeoutMs` | number or string | `600000` | HTTP idle timeout in milliseconds, a duration string, or `"disabled"`; also used by providers with explicit stream idle timeouts. |
 | `websocketConnectTimeoutMs` | number or string | `15000` | WebSocket connect/open handshake timeout; accepts milliseconds, a duration string, or `"disabled"`/`0` to disable. |
+| `streamDeadlineMs` | number or string | `300000` | Maximum idle gap between two provider stream events, enforced below the HTTP layer; accepts milliseconds, a duration string, or `"disabled"`/`0` to disable. A stream that stalls without an error — for example a response body that fails to decompress — is cut at this deadline and retried or failed over instead of hanging the request. |
 
 Older settings with a boolean `websockets` value are migrated to `transport`: `true` becomes `"websocket"` and `false` becomes `"sse"` when `transport` is not already set.
 

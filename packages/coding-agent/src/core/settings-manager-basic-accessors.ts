@@ -60,6 +60,7 @@ interface SettingsManagerBasicAccessors {
 	getHttpIdleTimeoutMs(): number;
 	setHttpIdleTimeoutMs(timeoutMs: number): void;
 	getWebSocketConnectTimeoutMs(): number | undefined;
+	getStreamDeadlineMs(): number | undefined;
 	getProviderRetrySettings(): { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs: number };
 }
 
@@ -370,6 +371,18 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		}
 		if (value !== undefined) {
 			throw new Error(`Invalid websocketConnectTimeoutMs setting: ${String(value)}`);
+		}
+		return undefined;
+	},
+
+	getStreamDeadlineMs() {
+		const value = settingsInternals(this).settings.streamDeadlineMs;
+		const deadlineMs = parseHttpIdleTimeoutMs(value);
+		if (deadlineMs !== undefined) {
+			return deadlineMs;
+		}
+		if (value !== undefined) {
+			throw new Error(`Invalid streamDeadlineMs setting: ${String(value)}`);
 		}
 		return undefined;
 	},

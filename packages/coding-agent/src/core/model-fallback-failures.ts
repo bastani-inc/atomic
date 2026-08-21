@@ -367,7 +367,24 @@ const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/\bprovider\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b[^\n]*\b(?:prompt|request|content|policy|safety)\b/i,
 ];
 
-const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [/^connection\s+error\.?$/i, /^fetch\s+failed\.?$/i];
+const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
+	/^connection\s+error\.?$/i,
+	/^fetch\s+failed\.?$/i,
+	// Response-body decompression failures reported by Node/Bun zlib, optionally
+	// behind the fetch/WebSocket layer's "Library error:" wrapper. GitHub Copilot
+	// on the default `transport: "auto"` surfaces this as
+	// "Library error: zlib error: incorrect header check" (#2553). These are
+	// unanchored because the wrapper text varies by runtime and transport. `zlib`
+	// has no trailing word boundary on purpose: Bun 1.4.0, which the shipped
+	// binary runs on, throws `ZlibError fetching "..."` as one word.
+	/\bzlib/i,
+	/\bincorrect\s+header\s+check\b/i,
+	/\bdecompress(?:ion|ing|ed)?\b/i,
+	/^library\s+error\b/i,
+	// Idle-stream deadline enforced below the HTTP layer by pi-ai's
+	// `withStreamDeadline`, so a stalled stream fails over instead of hanging.
+	/\bstream\s+deadline\s+exceeded\b/i,
+];
 
 function transportOutageKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
 	return TRANSPORT_OUTAGE_FAILURE_PATTERNS.some((pattern) => pattern.test(message.trim()))

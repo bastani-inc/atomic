@@ -305,6 +305,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
 			const websocketConnectTimeoutMs =
 				streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
+			const streamDeadlineMs = streamOptions?.streamDeadlineMs ?? settingsManager.getStreamDeadlineMs();
 			const requestHeaders = mergeProviderAttributionHeaders(
 				model,
 				settingsManager,
@@ -335,6 +336,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					env: auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined,
 					timeoutMs,
 					websocketConnectTimeoutMs,
+					streamDeadlineMs,
 					maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
 					maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
 					headers: transportHeaders,
