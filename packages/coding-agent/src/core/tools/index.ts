@@ -20,6 +20,16 @@ export {
 	type EditToolOptions,
 	editToolSystemPromptContribution,
 } from "./edit.ts";
+export {
+	FILE_MUTATION_CONFLICT_CODE,
+	FileMutationConflict,
+	type FileMutationConflictDetails,
+	type FileMutationConflictEvidence,
+	type FileMutationConflictReason,
+	type FileMutationLiveState,
+	type MutationRequester,
+	type MutationRequesterResolver,
+} from "./file-mutation-coordinator.ts";
 export { withFileMutationQueue } from "./file-mutation-queue.ts";
 export {
 	createFindTool,
@@ -93,6 +103,7 @@ import type { ToolDefinition } from "../extensions/types.ts";
 import { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
+import type { MutationRequesterResolver } from "./file-mutation-coordinator.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createHashlineSnapshotStore, type HashlineSnapshotStore } from "./hashline.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
@@ -137,21 +148,36 @@ export interface ToolsOptions {
 	search?: SearchToolOptions;
 	ls?: LsToolOptions;
 	hashlineStore?: HashlineSnapshotStore;
+	/**
+	 * Session-scoped identity for whichever mutation gets rejected, forwarded to the two tools
+	 * that can raise a conflict. Deliberately not defaulted the way `hashlineStore` is: absence
+	 * means no identity is available, which the conflict path already handles.
+	 */
+	resolveMutationRequester?: MutationRequesterResolver;
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	// Default a shared store so the singular factories don't hand read/edit/
 	// write/search isolated stores (which silently degrades drift recovery).
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	const resolveMutationRequester = options?.resolveMutationRequester;
 	switch (toolName) {
 		case "read":
 			return createReadToolDefinition(cwd, { ...options?.read, hashlineStore });
 		case "bash":
 			return createBashToolDefinition(cwd, options?.bash);
 		case "edit":
-			return createEditToolDefinition(cwd, { ...options?.edit, hashlineStore });
+			return createEditToolDefinition(cwd, {
+				...options?.edit,
+				hashlineStore,
+				...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+			});
 		case "write":
-			return createWriteToolDefinition(cwd, { ...options?.write, hashlineStore });
+			return createWriteToolDefinition(cwd, {
+				...options?.write,
+				hashlineStore,
+				...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+			});
 		case "find":
 			return createFindToolDefinition(cwd, options?.find);
 		case "search":
@@ -169,15 +195,24 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 
 export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	const resolveMutationRequester = options?.resolveMutationRequester;
 	switch (toolName) {
 		case "read":
 			return createReadTool(cwd, { ...options?.read, hashlineStore });
 		case "bash":
 			return createBashTool(cwd, options?.bash);
 		case "edit":
-			return createEditTool(cwd, { ...options?.edit, hashlineStore });
+			return createEditTool(cwd, {
+				...options?.edit,
+				hashlineStore,
+				...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+			});
 		case "write":
-			return createWriteTool(cwd, { ...options?.write, hashlineStore });
+			return createWriteTool(cwd, {
+				...options?.write,
+				hashlineStore,
+				...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+			});
 		case "find":
 			return createFindTool(cwd, options?.find);
 		case "search":
@@ -195,11 +230,20 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 
 export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	const resolveMutationRequester = options?.resolveMutationRequester;
 	return [
 		createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
 		createBashToolDefinition(cwd, options?.bash),
-		createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
-		createWriteToolDefinition(cwd, { ...options?.write, hashlineStore }),
+		createEditToolDefinition(cwd, {
+			...options?.edit,
+			hashlineStore,
+			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+		}),
+		createWriteToolDefinition(cwd, {
+			...options?.write,
+			hashlineStore,
+			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+		}),
 		createFindToolDefinition(cwd, options?.find),
 		createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
 	];
@@ -217,11 +261,20 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	const resolveMutationRequester = options?.resolveMutationRequester;
 	return {
 		read: createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
 		bash: createBashToolDefinition(cwd, options?.bash),
-		edit: createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
-		write: createWriteToolDefinition(cwd, { ...options?.write, hashlineStore }),
+		edit: createEditToolDefinition(cwd, {
+			...options?.edit,
+			hashlineStore,
+			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+		}),
+		write: createWriteToolDefinition(cwd, {
+			...options?.write,
+			hashlineStore,
+			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+		}),
 		find: createFindToolDefinition(cwd, options?.find),
 		search: createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
 		ls: createLsToolDefinition(cwd, options?.ls),
@@ -232,11 +285,20 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 
 export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	const resolveMutationRequester = options?.resolveMutationRequester;
 	return [
 		createReadTool(cwd, { ...options?.read, hashlineStore }),
 		createBashTool(cwd, options?.bash),
-		createEditTool(cwd, { ...options?.edit, hashlineStore }),
-		createWriteTool(cwd, { ...options?.write, hashlineStore }),
+		createEditTool(cwd, {
+			...options?.edit,
+			hashlineStore,
+			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+		}),
+		createWriteTool(cwd, {
+			...options?.write,
+			hashlineStore,
+			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+		}),
 		createFindTool(cwd, options?.find),
 		createSearchTool(cwd, { ...options?.search, hashlineStore }),
 	];
@@ -254,11 +316,20 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	const resolveMutationRequester = options?.resolveMutationRequester;
 	return {
 		read: createReadTool(cwd, { ...options?.read, hashlineStore }),
 		bash: createBashTool(cwd, options?.bash),
-		edit: createEditTool(cwd, { ...options?.edit, hashlineStore }),
-		write: createWriteTool(cwd, { ...options?.write, hashlineStore }),
+		edit: createEditTool(cwd, {
+			...options?.edit,
+			hashlineStore,
+			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+		}),
+		write: createWriteTool(cwd, {
+			...options?.write,
+			hashlineStore,
+			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
+		}),
 		find: createFindTool(cwd, options?.find),
 		search: createSearchTool(cwd, { ...options?.search, hashlineStore }),
 		ls: createLsTool(cwd, options?.ls),

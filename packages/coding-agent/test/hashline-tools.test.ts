@@ -619,7 +619,10 @@ describe("hashline file tool parity", () => {
 				undefined,
 				{} as ExtensionContext,
 			),
-		).rejects.toThrow(/file changed between read and edit|Stale hashline tag/);
+			// The preflight loop now raises the typed conflict rather than a bare Error, so this
+			// asserts the code Goal matches on. `writes` staying empty is still the real subject:
+			// no section may be written once any section is known stale.
+		).rejects.toThrow(/FILE_MUTATION_CONFLICT:changed_before_write/);
 		expect(writes).toEqual([]);
 	});
 

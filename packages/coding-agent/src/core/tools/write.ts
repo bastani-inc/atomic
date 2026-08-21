@@ -15,6 +15,7 @@ import { getLanguageFromPath, highlightCode } from "../../modes/interactive/them
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { type ConflictBlock, getRegisteredConflictBlocks, parseConflictBlocks } from "./conflict-registry.ts";
+import type { MutationRequesterResolver } from "./file-mutation-coordinator.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import {
 	createHashlineSnapshotStore,
@@ -168,6 +169,8 @@ export interface WriteToolOptions {
 	/** Custom operations for file writing. Default: local filesystem */
 	operations?: WriteOperations;
 	hashlineStore?: HashlineSnapshotStore;
+	/** Resolves who is being rejected when a mutation conflicts. Diagnostic only. */
+	resolveMutationRequester?: MutationRequesterResolver;
 }
 
 type WriteHighlightCache = {

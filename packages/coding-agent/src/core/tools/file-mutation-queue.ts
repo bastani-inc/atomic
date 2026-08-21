@@ -13,7 +13,15 @@ function isMissingPathError(error: unknown): boolean {
 	);
 }
 
-async function getMutationQueueKey(filePath: string): Promise<string> {
+/**
+ * Canonical key for a mutation target: absolute, and symlink-resolved when the path
+ * exists so an alias and its target share one queue. A not-yet-created file falls back to
+ * the resolved path, which is what lets `write` create files.
+ *
+ * Exported so callers that need to name the same target (diagnostics, coordination) cannot
+ * drift into a second normalizer.
+ */
+export async function canonicalMutationKey(filePath: string): Promise<string> {
 	const resolvedPath = resolve(filePath);
 	try {
 		return await realpath(resolvedPath);
@@ -31,7 +39,7 @@ async function getMutationQueueKey(filePath: string): Promise<string> {
  */
 export async function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
 	const registration = registrationQueue.then(async () => {
-		const key = await getMutationQueueKey(filePath);
+		const key = await canonicalMutationKey(filePath);
 		const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();
 
 		let releaseNext!: () => void;
