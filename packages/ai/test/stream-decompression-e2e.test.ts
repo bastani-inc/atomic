@@ -15,7 +15,9 @@ import { isRetryableAssistantError } from "../src/utils/retry.ts";
  * second server sends valid headers and then goes silent forever, which is the
  * shape that left the attempt pending with no error at all.
  *
- * Both must settle as retryable transport errors within bounded time.
+ * Both must settle as retryable transport errors within bounded time, and the
+ * stalled one must also tear the abandoned request down server-side: settling
+ * the attempt alone would leak one provider connection per stall.
  */
 
 const compat = {
@@ -67,13 +69,24 @@ const context: Context = { messages: [{ role: "user", content: "hello", timestam
 
 const servers: http.Server[] = [];
 
-async function startServer(handler: http.RequestListener): Promise<string> {
+interface TrackedServer {
+	url: string;
+	/** Server-side sockets, removed once the peer closes them. */
+	connections: Set<import("node:net").Socket>;
+}
+
+async function startServer(handler: http.RequestListener): Promise<TrackedServer> {
 	const server = http.createServer(handler);
 	servers.push(server);
+	const connections = new Set<import("node:net").Socket>();
+	server.on("connection", (socket) => {
+		connections.add(socket);
+		socket.on("close", () => connections.delete(socket));
+	});
 	server.listen(0, "127.0.0.1");
 	await once(server, "listening");
 	const { port } = server.address() as AddressInfo;
-	return `http://127.0.0.1:${port}/v1`;
+	return { url: `http://127.0.0.1:${port}/v1`, connections };
 }
 
 /** Drain the adapter's event stream, returning the terminal event. */
@@ -81,6 +94,15 @@ async function settle(events: AsyncIterable<AssistantMessageEvent>): Promise<Ass
 	let last: AssistantMessageEvent | undefined;
 	for await (const event of events) last = event;
 	return last;
+}
+
+/** Poll until `predicate` holds, failing with `message` once the budget is spent. */
+async function waitFor(predicate: () => boolean, timeoutMs: number, message: string): Promise<void> {
+	const started = Date.now();
+	while (!predicate()) {
+		if (Date.now() - started > timeoutMs) throw new Error(`${message} (waited ${timeoutMs}ms)`);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
 }
 
 describe("provider stream decompression and stall recovery (#2553)", () => {
@@ -97,7 +119,7 @@ describe("provider stream decompression and stall recovery (#2553)", () => {
 	});
 
 	it("settles a body whose Content-Encoding lies as a retryable transport error", async () => {
-		const baseUrl = await startServer((_request, response) => {
+		const { url } = await startServer((_request, response) => {
 			response.writeHead(200, {
 				"content-type": "text/event-stream",
 				// The body below is plain text, not gzip. zlib rejects it with
@@ -109,7 +131,7 @@ describe("provider stream decompression and stall recovery (#2553)", () => {
 		});
 
 		const terminal = await settle(
-			streamOpenAICompletions(buildModel(baseUrl), context, { apiKey: "test-key", maxRetries: 0 }),
+			streamOpenAICompletions(buildModel(url), context, { apiKey: "test-key", maxRetries: 0 }),
 		);
 
 		expect(terminal?.type).toBe("error");
@@ -120,7 +142,7 @@ describe("provider stream decompression and stall recovery (#2553)", () => {
 	});
 
 	it("settles a stream that goes silent forever once the stream deadline elapses", async () => {
-		const baseUrl = await startServer((_request, response) => {
+		const { url, connections } = await startServer((_request, response) => {
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			// A valid first event, then nothing — never ended, never errored.
 			response.write(
@@ -136,7 +158,7 @@ describe("provider stream decompression and stall recovery (#2553)", () => {
 
 		const started = Date.now();
 		const terminal = await settle(
-			streamOpenAICompletions(buildModel(baseUrl), context, {
+			streamOpenAICompletions(buildModel(url), context, {
 				apiKey: "test-key",
 				maxRetries: 0,
 				streamDeadlineMs: 1_500,
@@ -151,5 +173,12 @@ describe("provider stream decompression and stall recovery (#2553)", () => {
 		expect(isRetryableAssistantError(terminal.error)).toBe(true);
 		// Bounded by the deadline, not by the HTTP idle timeout.
 		expect(elapsedMs).toBeLessThan(20_000);
+
+		// The deadline must abort the stalled request, not merely settle the
+		// attempt: an abandoned body keeps its socket alive, so a repeated stall
+		// would accumulate open provider connections. The abort destroys the
+		// socket instead of returning it to the pool, so the server must observe
+		// every connection close.
+		await waitFor(() => connections.size === 0, 10_000, "the stalled request's socket stayed open server-side");
 	});
 });
