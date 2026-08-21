@@ -1,0 +1,132 @@
+name: atomic-pr-2187-windows-e2e
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  windows-e2e:
+    runs-on: windows-latest
+    env:
+      CANDIDATE_SHA: 927aceaa4fdeab9a7a51495837e23ac6baf58cd6
+      RELEASE_TAG: 0.9.14
+    steps:
+      - name: Checkout the temporary candidate child commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+
+      - name: Assert tested source parent is candidate SHA
+        shell: pwsh
+        run: |
+          $tested = (git rev-parse HEAD).Trim()
+          $parent = (git rev-parse 'HEAD^').Trim()
+          if ($parent -cne $env:CANDIDATE_SHA) {
+            throw "Tested source parent $parent does not equal candidate $env:CANDIDATE_SHA"
+          }
+          "tested=$tested parent=$parent candidate=$env:CANDIDATE_SHA" | Out-File -FilePath (Join-Path $env:RUNNER_TEMP 'atomic-pr2187-parent.txt') -Encoding utf8
+
+      - name: Verify the stable release assets
+        shell: pwsh
+        run: |
+          $headers = @{ Accept = 'application/vnd.github+json' }
+          $uri = "https://api.github.com/repos/bastani-inc/atomic/releases/tags/$($env:RELEASE_TAG)"
+          $release = Invoke-RestMethod -Uri $uri -Headers $headers
+          if ([string]$release.tag_name -cne $env:RELEASE_TAG -or $release.draft -or $release.prerelease) {
+            throw "Release $($env:RELEASE_TAG) is not a stable published release"
+          }
+          $requiredAssets = @('atomic-windows-x64.zip', 'atomic-windows-arm64.zip', 'SHA256SUMS')
+          $assetNames = @($release.assets | ForEach-Object { [string]$_.name })
+          foreach ($requiredAsset in $requiredAssets) {
+            if ($assetNames -notcontains $requiredAsset) {
+              throw "Stable release is missing required asset $requiredAsset"
+            }
+          }
+
+      - name: Install the local candidate PowerShell installer
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'atomic-pr2187'
+          $install = Join-Path $root 'install'
+          $bin = Join-Path $root 'bin'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $env:ATOMIC_INSTALL_DIR = $install
+          $env:ATOMIC_BIN_DIR = $bin
+          $installLog = Join-Path $root 'install.log'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:GITHUB_WORKSPACE 'install.ps1') -Ref $env:RELEASE_TAG *> $installLog
+          $installerExit = $LASTEXITCODE
+          if ($installerExit -ne 0) { throw "Candidate installer failed with exit code $installerExit" }
+          $shim = Join-Path $bin 'atomic.cmd'
+          $binary = Join-Path (Join-Path $install 'current') 'atomic.exe'
+          if (-not (Test-Path -LiteralPath $shim -PathType Leaf)) { throw "Installed atomic.cmd is missing: $shim" }
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Installed atomic.exe is missing: $binary" }
+          @($shim, $binary) | Set-Content -LiteralPath (Join-Path $root 'paths.txt') -Encoding utf8
+
+      - name: Verify installed version and prepare proven oauth bearer auth
+        shell: pwsh
+        env:
+          CODEX_BEARER_SEED: ${{ secrets.ATOMIC_PR2187_E2E_CODEX_BEARER }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'atomic-pr2187'
+          Write-Output "::add-mask::$env:CODEX_BEARER_SEED"
+          if ([string]::IsNullOrWhiteSpace($env:CODEX_BEARER_SEED)) { throw 'Codex bearer secret is empty' }
+          $paths = @(Get-Content -LiteralPath (Join-Path $root 'paths.txt'))
+          $shim = [string]$paths[0]
+          $versionOutput = (& $shim --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $versionOutput -cne $env:RELEASE_TAG) {
+            throw "Installed atomic --version returned unexpected output: $versionOutput"
+          }
+          $versionOutput | Set-Content -LiteralPath (Join-Path $root 'version.txt') -Encoding utf8
+          $agent = Join-Path $root 'agent'
+          New-Item -ItemType Directory -Force -Path $agent | Out-Null
+          $auth = [ordered]@{
+            'openai-codex' = [ordered]@{
+              type = 'oauth'
+              access = $env:CODEX_BEARER_SEED
+              refresh = '__atomic_pr2187_refresh_not_used__'
+              expires = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 3600000
+            }
+          }
+          $authJson = $auth | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText((Join-Path $agent 'auth.json'), $authJson, [Text.UTF8Encoding]::new($false))
+      - name: Run installed binary through ConPTY and require exact response
+        shell: pwsh
+        env:
+          CODEX_BEARER_SEED: ${{ secrets.ATOMIC_PR2187_E2E_CODEX_BEARER }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'atomic-pr2187'
+          Set-Location -LiteralPath $root
+          Write-Output "::add-mask::$env:CODEX_BEARER_SEED"
+          if ([string]::IsNullOrWhiteSpace($env:CODEX_BEARER_SEED)) { throw 'Codex bearer secret is empty' }
+          $paths = @(Get-Content -LiteralPath (Join-Path $root 'paths.txt'))
+          $shim = [string]$paths[0]
+          $agent = Join-Path $root 'agent'
+          $env:ATOMIC_CODING_AGENT_DIR = $agent
+          $env:ATOMIC_WINDOWS_SHIM = $shim
+          $env:ATOMIC_WINDOWS_VERSION = (Get-Content -LiteralPath (Join-Path $root 'version.txt') -Raw).Trim()
+          $env:CANDIDATE_SHA = $env:CANDIDATE_SHA
+          $env:ATOMIC_WINDOWS_TRANSCRIPT = Join-Path $root 'transcript.txt'
+          $env:ATOMIC_WINDOWS_EVIDENCE = Join-Path $root 'windows-evidence.json'
+          python -m pip install --disable-pip-version-check --quiet pywinpty
+          $driverBase64 = 'aW1wb3J0IGpzb24KaW1wb3J0IG9zCmltcG9ydCBwYXRobGliCmltcG9ydCBxdWV1ZQppbXBvcnQgcmUKaW1wb3J0IHRocmVhZGluZwppbXBvcnQgdGltZQoKZnJvbSB3aW5wdHkgaW1wb3J0IFB0eVByb2Nlc3MKClBST01QVCA9ICJSZXBseSB3aXRoIGV4YWN0bHkgQVRPTUlDX0lOU1RBTExfT0sgYW5kIG5vdGhpbmcgZWxzZS4iCkVYUEVDVEVEX1JFU1BPTlNFID0gIkFUT01JQ19JTlNUQUxMX09LIgpBTlNJX1JFID0gcmUuY29tcGlsZShyIlx4MWIoPzpcW1swLT9dKlsgLS9dKltALX5dfFxdW15ceDA3XSooPzpceDA3fFx4MWJcXCkpIikKQkFDS1NQQUNFX1JFID0gcmUuY29tcGlsZShyIlteXG5dXHgwOCIpCkNIUk9NRV9QQVRURVJOUyA9ICgKICAgIHJlLmNvbXBpbGUociJeXCRcZCtcLlxkezN9IFwoc3ViXCkg4oCiIFxkKyg/OlwuXGQrKT8lL1xkKyg/OlwuXGQrKT9ba0ttTWdHXT8gXChhdXRvXCkkIiksCiAgICByZS5jb21waWxlKHIiXmdwdC01XC41IG1lZGl1bSDigKIgKD86fnwvW15cclxuXSp8W0EtWmEtel06XFxbXlxyXG5dKikkIiksCiAgICByZS5jb21waWxlKAogICAgICAgIHIiXldhcm5pbmc6IHRtdXggZXh0ZW5kZWQta2V5cy1mb3JtYXQgaXMgeHRlcm1cLiBhdG9taWMgd29ya3MgYmVzdCB3aXRoIGNzaS11XC4gIgogICAgICAgIHIiQWRkIGBzZXQgLWcgZXh0ZW5kZWQta2V5cy1mb3JtYXQgY3NpLXVgIHRvIH4vLnRtdXhcLmNvbmYgYW5kIHJlc3RhcnQgdG11eFwuJCIKICAgICksCiAgICByZS5jb21waWxlKHIiXig/OmZkfHJpcGdyZXApIG5vdCBmb3VuZFwuIERvd25sb2FkaW5nXC5cLlwuJCIpLAogICAgcmUuY29tcGlsZShyIl4oPzplc2MgdG8gaW50ZXJydXB0ICk/4oiAIFteXHJcbl0rXC5cLlwuKD86XHMrKD86ZmR8cmlwZ3JlcCkgaW5zdGFsbGVkIHRvICg/Oi9bXlxzXSt8W0EtWmEtel06XFxbXlxyXG5dKyl8XHMrXCRcZCtcLlxkezN9IFwoc3ViXCkg4oCiIFxkKyg/OlwuXGQrKT8lL1xkKyg/OlwuXGQrKT9ba0ttTWdHXT8gXChhdXRvXCkpPyQiKSwKICAgIHJlLmNvbXBpbGUociJeKD86ZmR8cmlwZ3JlcCkgaW5zdGFsbGVkIHRvICg/Oi9bXlxzXSt8W0EtWmEtel06XFxbXlxyXG5dKykkIiksCikKQ0hST01FX0dMWVBIUyA9IHNldCgi4paA4paE4paI4paM4paQ4qCL4qCZ4qC54qC44qC84qC04qCm4qCn4qCH4qCP4qO+4qO94qO74qK/4qG/4qOf4qOv4qO34pSA4pSB4pWQ4pSC4pSD4pWO4p2vIikKUkVTUE9OU0VfQ09NUE9TSVRFID0gcmUuY29tcGlsZShyIl5lc2MgdG8gaW50ZXJydXB0ICg/OkFUT01JQyg/Ol9JTlNUQUxMKD86X08pPyk/XHMrKSpBVE9NSUNfSU5TVEFMTF9PSyg/OlxzK+KIgCBbXlxyXG5dK1wuXC5cLikqKD86XHMrXCRcZCtcLlxkezN9IFwoc3ViXCkg4oCiIFxkKyg/OlwuXGQrKT8lL1xkKyg/OlwuXGQrKT9ba0ttTWdHXT8gXChhdXRvXCkpPyQiKQpFWFBFQ1RFRF9QUkVGSVhFUyA9IHtFWFBFQ1RFRF9SRVNQT05TRVs6aW5kZXhdIGZvciBpbmRleCBpbiByYW5nZSgxLCBsZW4oRVhQRUNURURfUkVTUE9OU0UpKX0KTU9ERUxfQVJHUyA9ICgKICAgICItLXByb3ZpZGVyIiwKICAgICJvcGVuYWktY29kZXgiLAogICAgIi0tbW9kZWwiLAogICAgImdwdC01LjUiLAogICAgIi0tYXBwcm92ZSIsCiAgICAiLS1uby10b29scyIsCiAgICAiLS1uby1leHRlbnNpb25zIiwKICAgICItLW5vLXNraWxscyIsCiAgICAiLS1uby10aGVtZXMiLAogICAgIi0tbm8tY29udGV4dC1maWxlcyIsCiAgICAiLS1uby1zZXNzaW9uIiwKKQpUVUlfUkVBRFlfTUFSS0VSUyA9ICgKICAgICJSRVNPVVJDRVMgY29udGV4dCByZWFkeSIsCiAgICAiVHlwZSBhIG1lc3NhZ2Ugb3Igc2xhc2ggY29tbWFuZCBiZWxvdyB0byBjb250aW51ZSBub3JtYWxseS4iLAopCgoKZGVmIGNsZWFuX3Rlcm1pbmFsX3RleHQodmFsdWU6IHN0cikgLT4gc3RyOgogICAgdmFsdWUgPSBBTlNJX1JFLnN1YigiIiwgdmFsdWUpCiAgICB3aGlsZSBUcnVlOgogICAgICAgIGNsZWFuZWQgPSBCQUNLU1BBQ0VfUkUuc3ViKCIiLCB2YWx1ZSkKICAgICAgICBpZiBjbGVhbmVkID09IHZhbHVlOgogICAgICAgICAgICBicmVhawogICAgICAgIHZhbHVlID0gY2xlYW5lZAogICAgcmV0dXJuIHZhbHVlLnJlcGxhY2UoIlxyIiwgIiIpCgoKZGVmIHJlbW92ZV9ib3JkZXIobGluZTogc3RyKSAtPiBzdHI6CiAgICBsaW5lID0gbGluZS5zdHJpcCgpCiAgICBpZiBsaW5lWzoxXSBpbiAi4pSC4pSD4pWO4paM4paQIjoKICAgICAgICBsaW5lID0gbGluZVsxOl0ubHN0cmlwKCkKICAgIGlmIGxpbmVbLTE6XSBpbiAi4pSC4pSD4pWO4paM4paQIjoKICAgICAgICBsaW5lID0gbGluZVs6LTFdLnJzdHJpcCgpCiAgICByZXR1cm4gbGluZQoKCmRlZiBpc19jaHJvbWUobGluZTogc3RyKSAtPiBib29sOgogICAgdmFsdWUgPSByZW1vdmVfYm9yZGVyKGxpbmUpCiAgICBpZiBub3QgdmFsdWU6CiAgICAgICAgcmV0dXJuIFRydWUKICAgIGlmIGFueShwYXR0ZXJuLmZ1bGxtYXRjaCh2YWx1ZSkgZm9yIHBhdHRlcm4gaW4gQ0hST01FX1BBVFRFUk5TKToKICAgICAgICByZXR1cm4gVHJ1ZQogICAgcmV0dXJuIGJvb2woc2V0KHZhbHVlKSA8PSBDSFJPTUVfR0xZUEhTKQoKCmRlZiBub3JtYWxpemVkX3Jlc3BvbnNlKGxpbmU6IHN0cikgLT4gc3RyIHwgTm9uZToKICAgIHZhbHVlID0gcmVtb3ZlX2JvcmRlcihsaW5lKQogICAgaWYgdmFsdWUgPT0gRVhQRUNURURfUkVTUE9OU0Ugb3IgUkVTUE9OU0VfQ09NUE9TSVRFLmZ1bGxtYXRjaCh2YWx1ZSk6CiAgICAgICAgcmV0dXJuIEVYUEVDVEVEX1JFU1BPTlNFCiAgICByZXR1cm4gTm9uZQoKCmRlZiByZXNwb25zZV9yZWNlaXZlZCh2YWx1ZTogc3RyKSAtPiBib29sOgogICAgIiIiUmVxdWlyZSB0aGUgcmVzcG9uc2UgdG9rZW4gdG8gYmUgdGhlIHNvbGUgbWVhbmluZ2Z1bCBsaW5lIGFmdGVyIHRoZSBwcm9tcHQuIiIiCiAgICBwcm9tcHRfZW5kID0gdmFsdWUucmZpbmQoUFJPTVBUKQogICAgaWYgcHJvbXB0X2VuZCA8IDA6CiAgICAgICAgcmV0dXJuIEZhbHNlCiAgICBzdWZmaXggPSB2YWx1ZVtwcm9tcHRfZW5kICsgbGVuKFBST01QVCkgOl0KICAgIG1lYW5pbmdmdWw6IGxpc3Rbc3RyXSA9IFtdCiAgICBmb3IgbGluZSBpbiBzdWZmaXguc3BsaXRsaW5lcygpOgogICAgICAgIGlmIGlzX2Nocm9tZShsaW5lKToKICAgICAgICAgICAgY29udGludWUKICAgICAgICByZXNwb25zZSA9IG5vcm1hbGl6ZWRfcmVzcG9uc2UobGluZSkKICAgICAgICBpZiByZXNwb25zZSBpcyBub3QgTm9uZToKICAgICAgICAgICAgbWVhbmluZ2Z1bC5hcHBlbmQocmVzcG9uc2UpCiAgICAgICAgZWxpZiByZW1vdmVfYm9yZGVyKGxpbmUpIG5vdCBpbiBFWFBFQ1RFRF9QUkVGSVhFUzoKICAgICAgICAgICAgbWVhbmluZ2Z1bC5hcHBlbmQocmVtb3ZlX2JvcmRlcihsaW5lKSkKICAgIHJldHVybiBtZWFuaW5nZnVsID09IFtFWFBFQ1RFRF9SRVNQT05TRV0KCgpkZWYgY29tbWFuZF9hcmd2KHNoaW06IHN0cikgLT4gbGlzdFtzdHJdOgogICAgIyBLZWVwIGNtZC5leGUncyAvYyBjb21tYW5kIGFuZCBhcmd1bWVudHMgYXMgc2VwYXJhdGUgYXJndiBlbGVtZW50cy4gVGhpcwogICAgIyBhdm9pZHMgcHl3aW5wdHkncyBNU1ZDUlQgcXVvdGluZyBvZiBhIGNvbWJpbmVkIHBheWxvYWQgc3RyaW5nLgogICAgcmV0dXJuIFsiY21kLmV4ZSIsICIvZCIsICIvcyIsICIvYyIsIHNoaW0sICpNT0RFTF9BUkdTXQoKCmRlZiBtYWluKCkgLT4gaW50OgogICAgc2hpbSA9IG9zLmVudmlyb25bIkFUT01JQ19XSU5ET1dTX1NISU0iXQogICAgdHJhbnNjcmlwdF9wYXRoID0gcGF0aGxpYi5QYXRoKG9zLmVudmlyb25bIkFUT01JQ19XSU5ET1dTX1RSQU5TQ1JJUFQiXSkKICAgIGV2aWRlbmNlX3BhdGggPSBwYXRobGliLlBhdGgob3MuZW52aXJvblsiQVRPTUlDX1dJTkRPV1NfRVZJREVOQ0UiXSkKICAgIGNhbmRpZGF0ZV9zaGEgPSBvcy5lbnZpcm9uWyJDQU5ESURBVEVfU0hBIl0KICAgIHNlY3JldCA9IG9zLmVudmlyb24uZ2V0KCJDT0RFWF9CRUFSRVJfU0VFRCIsICIiKQogICAgY2h1bmtzOiBsaXN0W3N0cl0gPSBbXQogICAgb3V0cHV0X3F1ZXVlOiBxdWV1ZS5RdWV1ZVtzdHJdID0gcXVldWUuUXVldWUoKQogICAgcHJvYzogUHR5UHJvY2VzcyB8IE5vbmUgPSBOb25lCiAgICByZWFkZXI6IHRocmVhZGluZy5UaHJlYWQgfCBOb25lID0gTm9uZQogICAgcHJvbXB0X3NlbnQgPSBGYWxzZQogICAgdHVpX3N0YXJ0ZWQgPSBGYWxzZQogICAgZXJyb3JfbWVzc2FnZSA9ICIiCgogICAgZGVmIHJlYWRfb3V0cHV0KCkgLT4gTm9uZToKICAgICAgICBpZiBwcm9jIGlzIE5vbmU6CiAgICAgICAgICAgIHJldHVybgogICAgICAgIHdoaWxlIFRydWU6CiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIGNodW5rID0gcHJvYy5yZWFkKCkKICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICAgICAgICAgIHJldHVybgogICAgICAgICAgICBpZiBub3QgY2h1bms6CiAgICAgICAgICAgICAgICBpZiBub3QgcHJvYy5pc2FsaXZlKCk6CiAgICAgICAgICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICBvdXRwdXRfcXVldWUucHV0KGNodW5rKQoKICAgIGRlZiBkcmFpbl91bnRpbChkZWFkbGluZTogZmxvYXQsIHByZWRpY2F0ZSkgLT4gTm9uZToKICAgICAgICB3aGlsZSB0aW1lLm1vbm90b25pYygpIDwgZGVhZGxpbmU6CiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIGNodW5rcy5hcHBlbmQob3V0cHV0X3F1ZXVlLmdldCh0aW1lb3V0PTAuMikpCiAgICAgICAgICAgIGV4Y2VwdCBxdWV1ZS5FbXB0eToKICAgICAgICAgICAgICAgIGlmIHByb2MgaXMgbm90IE5vbmUgYW5kIG5vdCBwcm9jLmlzYWxpdmUoKToKICAgICAgICAgICAgICAgICAgICByZXR1cm4KICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIGlmIHByZWRpY2F0ZShjbGVhbl90ZXJtaW5hbF90ZXh0KCIiLmpvaW4oY2h1bmtzKSkpOgogICAgICAgICAgICAgICAgcmV0dXJuCgogICAgdHJ5OgogICAgICAgIHByb2MgPSBQdHlQcm9jZXNzLnNwYXduKGNvbW1hbmRfYXJndihzaGltKSwgZGltZW5zaW9ucz0oODAsIDI0MCksIGVudj1vcy5lbnZpcm9uLmNvcHkoKSkKICAgICAgICByZWFkZXIgPSB0aHJlYWRpbmcuVGhyZWFkKHRhcmdldD1yZWFkX291dHB1dCwgbmFtZT0iYXRvbWljLXByMjE4Ny1wdHktcmVhZGVyIiwgZGFlbW9uPVRydWUpCiAgICAgICAgcmVhZGVyLnN0YXJ0KCkKCiAgICAgICAgdHVpX2RlYWRsaW5lID0gdGltZS5tb25vdG9uaWMoKSArIDYwCiAgICAgICAgZHJhaW5fdW50aWwodHVpX2RlYWRsaW5lLCBsYW1iZGEgdGV4dDogYWxsKG1hcmtlciBpbiB0ZXh0IGZvciBtYXJrZXIgaW4gVFVJX1JFQURZX01BUktFUlMpKQogICAgICAgIHR1aV90ZXh0ID0gY2xlYW5fdGVybWluYWxfdGV4dCgiIi5qb2luKGNodW5rcykpCiAgICAgICAgdHVpX3N0YXJ0ZWQgPSBhbGwobWFya2VyIGluIHR1aV90ZXh0IGZvciBtYXJrZXIgaW4gVFVJX1JFQURZX01BUktFUlMpCgogICAgICAgIGlmIHR1aV9zdGFydGVkIGFuZCBwcm9jLmlzYWxpdmUoKToKICAgICAgICAgICAgcHJvYy53cml0ZShQUk9NUFQgKyAiXHgxYlsxM3UiKQogICAgICAgICAgICBwcm9tcHRfc2VudCA9IFRydWUKICAgICAgICAgICAgcmVzcG9uc2VfZGVhZGxpbmUgPSB0aW1lLm1vbm90b25pYygpICsgMTgwCiAgICAgICAgICAgIGRyYWluX3VudGlsKHJlc3BvbnNlX2RlYWRsaW5lLCByZXNwb25zZV9yZWNlaXZlZCkKICAgICAgICBlbHNlOgogICAgICAgICAgICBlcnJvcl9tZXNzYWdlID0gImluc3RhbGxlZCBhdG9taWMgZGlkIG5vdCBzdGFydCBpdHMgVFVJIgogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBleGM6CiAgICAgICAgZXJyb3JfbWVzc2FnZSA9IGYiQ29uUFRZIGV4ZWN1dGlvbiBmYWlsZWQ6IHt0eXBlKGV4YykuX19uYW1lX199OiB7ZXhjfSIKICAgIGZpbmFsbHk6CiAgICAgICAgaWYgcHJvYyBpcyBub3QgTm9uZToKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgcHJvYy5jbG9zZShmb3JjZT1UcnVlKQogICAgICAgICAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgICAgICAgICAgcGFzcwogICAgICAgIGlmIHJlYWRlciBpcyBub3QgTm9uZToKICAgICAgICAgICAgcmVhZGVyLmpvaW4odGltZW91dD0xKQogICAgICAgIHdoaWxlIFRydWU6CiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIGNodW5rcy5hcHBlbmQob3V0cHV0X3F1ZXVlLmdldF9ub3dhaXQoKSkKICAgICAgICAgICAgZXhjZXB0IHF1ZXVlLkVtcHR5OgogICAgICAgICAgICAgICAgYnJlYWsKCiAgICB0cmFuc2NyaXB0ID0gY2xlYW5fdGVybWluYWxfdGV4dCgiIi5qb2luKGNodW5rcykpCiAgICBzZWNyZXRfbGVha2VkID0gYm9vbChzZWNyZXQgYW5kIHNlY3JldCBpbiB0cmFuc2NyaXB0KQogICAgaWYgc2VjcmV0X2xlYWtlZDoKICAgICAgICB0cmFuc2NyaXB0ID0gdHJhbnNjcmlwdC5yZXBsYWNlKHNlY3JldCwgIjxSRURBQ1RFRD4iKQogICAgICAgIGVycm9yX21lc3NhZ2UgPSAiYmVhcmVyIHNlZWQgbGVha2VkIGludG8gdGhlIFBUWSBvdXRwdXQiCgogICAgdHJhbnNjcmlwdF9wYXRoLnBhcmVudC5ta2RpcihwYXJlbnRzPVRydWUsIGV4aXN0X29rPVRydWUpCiAgICB0cmFuc2NyaXB0X3BhdGgud3JpdGVfdGV4dCh0cmFuc2NyaXB0LCBlbmNvZGluZz0idXRmLTgiKQogICAgZXhhY3RfcmVzcG9uc2UgPSB0dWlfc3RhcnRlZCBhbmQgcHJvbXB0X3NlbnQgYW5kIHJlc3BvbnNlX3JlY2VpdmVkKHRyYW5zY3JpcHQpIGFuZCBub3Qgc2VjcmV0X2xlYWtlZAogICAgcGF5bG9hZCA9IHsKICAgICAgICAic3RhdHVzIjogInBhc3NlZCIgaWYgZXhhY3RfcmVzcG9uc2UgZWxzZSAiZmFpbGVkIiwKICAgICAgICAiY2FuZGlkYXRlU2hhIjogY2FuZGlkYXRlX3NoYSwKICAgICAgICAiaW5zdGFsbE1vZGUiOiAicmVsZWFzZS1hcmNoaXZlIiwKICAgICAgICAicGxhdGZvcm1zIjogWwogICAgICAgICAgICB7CiAgICAgICAgICAgICAgICAicGxhdGZvcm0iOiAid2luZG93cyIsCiAgICAgICAgICAgICAgICAiaW5zdGFsbGVkVmVyc2lvbiI6IG9zLmVudmlyb24uZ2V0KCJBVE9NSUNfV0lORE9XU19WRVJTSU9OIiwgIiIpLAogICAgICAgICAgICAgICAgInR1aVN0YXJ0ZWQiOiB0dWlfc3RhcnRlZCwKICAgICAgICAgICAgICAgICJwcm9tcHRTZW50IjogcHJvbXB0X3NlbnQsCiAgICAgICAgICAgICAgICAiZXhhY3RSZXNwb25zZVJlY2VpdmVkIjogZXhhY3RfcmVzcG9uc2UsCiAgICAgICAgICAgICAgICAidHJhbnNjcmlwdFBhdGgiOiBzdHIodHJhbnNjcmlwdF9wYXRoKSwKICAgICAgICAgICAgICAgICJydW5VcmwiOiAiIiwKICAgICAgICAgICAgfQogICAgICAgIF0sCiAgICB9CiAgICBldmlkZW5jZV9wYXRoLnBhcmVudC5ta2RpcihwYXJlbnRzPVRydWUsIGV4aXN0X29rPVRydWUpCiAgICBldmlkZW5jZV9wYXRoLndyaXRlX3RleHQoanNvbi5kdW1wcyhwYXlsb2FkLCBzZXBhcmF0b3JzPSgiLCIsICI6IikpICsgIlxuIiwgZW5jb2Rpbmc9InV0Zi04IikKICAgIGlmIG5vdCBleGFjdF9yZXNwb25zZToKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KGVycm9yX21lc3NhZ2Ugb3IgImluc3RhbGxlZCBhdG9taWMgZGlkIG5vdCByZXR1cm4gdGhlIGV4YWN0IHJlc3BvbnNlIikKICAgIHJldHVybiAwCgoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIHJhaXNlIFN5c3RlbUV4aXQobWFpbigpKQo='
+          [IO.File]::WriteAllBytes((Join-Path $root 'windows-pty-driver.py'), [Convert]::FromBase64String($driverBase64))
+          & python (Join-Path $root 'windows-pty-driver.py')
+          if ($LASTEXITCODE -ne 0) { throw "ConPTY response check failed with exit code $LASTEXITCODE" }
+
+      - name: Upload sanitized evidence and transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atomic-pr2187-windows-evidence
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}\atomic-pr2187\windows-evidence.json
+            ${{ runner.temp }}\atomic-pr2187\transcript.txt
+
+      - name: Remove temporary install and credential state
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'atomic-pr2187') -Recurse -Force -ErrorAction SilentlyContinue
