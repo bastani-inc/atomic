@@ -3,6 +3,7 @@ import { fauxAssistantMessage } from "../src/providers/faux.ts";
 import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall } from "../src/utils/retry.ts";
 import {
 	DEFAULT_STREAM_DEADLINE_MS,
+	createStreamDeadline,
 	resolveStreamDeadlineMs,
 	StreamDeadlineError,
 	withStreamDeadline,
@@ -94,6 +95,51 @@ describe("stream deadline (#2553)", () => {
 
 		expect(unwrappedSettled).toBe(false);
 		expect(wrappedSettled).toBe(true);
+	});
+
+	it("aborts the pending provider read before the deadline error reaches fallback", async () => {
+		vi.useFakeTimers();
+		const deadline = createStreamDeadline(20);
+		let abortObserved = false;
+		let cleanupObserved = false;
+		async function* providerRead(): AsyncGenerator<string, void, undefined> {
+			try {
+				await new Promise<void>((_resolve, reject) => {
+					deadline.signal?.addEventListener("abort", () => {
+						abortObserved = true;
+						reject(deadline.signal?.reason);
+					}, { once: true });
+				});
+			} finally {
+				cleanupObserved = true;
+			}
+		}
+
+		const captured = collect(withStreamDeadline(providerRead(), deadline.deadlineMs, deadline.abort)).catch(
+			(error: unknown) => error,
+		);
+		await vi.advanceTimersByTimeAsync(20);
+
+		await expect(captured).resolves.toBeInstanceOf(StreamDeadlineError);
+		expect(abortObserved).toBe(true);
+		expect(cleanupObserved).toBe(true);
+		deadline.cleanup();
+	});
+
+	it("does not overflow platform timers for a deadline above the 32-bit timer limit", async () => {
+		vi.useFakeTimers();
+		const deadlineMs = 2_147_483_648;
+		const captured = collect(withStreamDeadline(neverSettlingStream(), deadlineMs)).catch((error: unknown) => error);
+
+		await vi.advanceTimersByTimeAsync(2_147_483_647);
+		let settled = false;
+		void captured.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		await expect(captured).resolves.toBeInstanceOf(StreamDeadlineError);
 	});
 
 	it("surfaces the deadline as a retryable transport error", async () => {

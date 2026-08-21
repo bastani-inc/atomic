@@ -21,6 +21,7 @@ import type {
 	Usage,
 } from "../types.ts";
 import { combineAbortSignals } from "../utils/abort-signals.ts";
+import { createStreamDeadline, withStreamDeadline, type StreamDeadlineHandle } from "../utils/stream-deadline.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import {
 	appendAssistantMessageDiagnostic,
@@ -253,6 +254,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			timestamp: Date.now(),
 		};
 
+		let streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+
 		try {
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
@@ -317,6 +320,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							accountId,
 							grammarToolInputProperties,
 							options,
+							streamDeadline,
 						);
 
 						if (options?.signal?.aborted) {
@@ -344,6 +348,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						}
 						if (aborted || (isCodexNonTransportError(error) && !connectionLimitBeforeStart)) {
 							throw error;
+						}
+						// A deadline before the first WebSocket event should still allow
+						// the existing WebSocket-to-SSE fallback to make a fresh request.
+						if (streamDeadline.abortedByDeadline && !websocketStarted) {
+							streamDeadline.cleanup();
+							streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 						}
 						appendAssistantMessageDiagnostic(
 							output,
@@ -387,7 +397,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				try {
 					const headerTimeoutSignal =
 						httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
-					const combinedSignal = combineAbortSignals([options?.signal, headerTimeoutSignal]);
+					const combinedSignal = combineAbortSignals([streamDeadline.signal, headerTimeoutSignal]);
 					try {
 						response = await (options?.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
 							method: "POST",
@@ -464,7 +474,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				startEmitted = true;
 				stream.push({ type: "start", partial: output });
 			}
-			await processStream(response, output, stream, model, grammarToolInputProperties, options);
+			await processStream(response, output, stream, model, grammarToolInputProperties, options, streamDeadline);
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -483,6 +493,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 
@@ -652,14 +664,22 @@ async function processStream(
 	stream: AssistantMessageEventStream,
 	model: Model<"openai-codex-responses">,
 	grammarToolInputProperties: ReadonlyMap<string, string>,
-	options?: OpenAICodexResponsesOptions,
+	options: OpenAICodexResponsesOptions | undefined,
+	streamDeadline: StreamDeadlineHandle,
 ): Promise<void> {
-	await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal), output), output, stream, model, {
+	const events = mapCodexEvents(parseSSE(response, streamDeadline.signal), output);
+	await processResponsesStream(
+		withStreamDeadline(events, streamDeadline.deadlineMs, streamDeadline.abort),
+		output,
+		stream,
+		model,
+		{
 		serviceTier: options?.serviceTier,
 		grammarToolInputProperties,
 		resolveServiceTier: resolveCodexServiceTier,
-		applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
-	});
+			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+		},
+	);
 }
 
 class CodexApiError extends Error {
@@ -1463,14 +1483,15 @@ async function processWebSocketStream(
 	cacheSessionId: string | undefined,
 	accountId: string,
 	grammarToolInputProperties: ReadonlyMap<string, string>,
-	options?: OpenAICodexResponsesOptions,
+	options: OpenAICodexResponsesOptions | undefined,
+	streamDeadline: StreamDeadlineHandle,
 ): Promise<void> {
 	const { socket, entry, reused, release } = await acquireWebSocket(
 		url,
 		headers,
 		cacheSessionId,
 		accountId,
-		options?.signal,
+		streamDeadline.signal,
 		websocketConnectTimeoutMs,
 		options?.env,
 	);
@@ -1501,9 +1522,13 @@ async function processWebSocketStream(
 	try {
 		socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
 		await processResponsesStream(
-			startWebSocketOutputOnFirstEvent(
-				mapCodexEvents(parseWebSocket(socket, options?.signal, idleTimeoutMs), output),
-				onStart,
+			withStreamDeadline(
+				startWebSocketOutputOnFirstEvent(
+					mapCodexEvents(parseWebSocket(socket, streamDeadline.signal, idleTimeoutMs), output),
+					onStart,
+				),
+				streamDeadline.deadlineMs,
+				streamDeadline.abort,
 			),
 			output,
 			stream,

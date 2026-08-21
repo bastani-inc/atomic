@@ -37,7 +37,7 @@ import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolveStreamDeadlineMs, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import {
@@ -530,6 +530,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			timestamp: Date.now(),
 		};
 
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+
 		try {
 			let client: Anthropic;
 			let isOAuth: boolean;
@@ -576,7 +578,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				params = nextParams as MessageCreateParamsStreaming;
 			}
 			const requestOptions = {
-				...(options?.signal ? { signal: options.signal } : {}),
+				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
@@ -585,7 +587,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
+					signal: streamDeadline.signal,
 				},
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -595,8 +597,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			const blocks = output.content as Block[];
 
 			for await (const event of withStreamDeadline(
-				iterateAnthropicEvents(response, options?.signal),
-				resolveStreamDeadlineMs(options?.streamDeadlineMs),
+				iterateAnthropicEvents(response, streamDeadline.signal),
+				streamDeadline.deadlineMs,
+				streamDeadline.abort,
 			)) {
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
@@ -794,6 +797,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 

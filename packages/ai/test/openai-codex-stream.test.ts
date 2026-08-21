@@ -1862,6 +1862,113 @@ describe("openai-codex streaming", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it("bounds a silent Codex SSE body with streamDeadlineMs and cancels the reader", async () => {
+		vi.useFakeTimers();
+		const token = mockToken();
+		let cancelled = false;
+		const encoder = new TextEncoder();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"partial"}\n\n'));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const fetchMock = vi.fn(async (input: string | URL) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url === "https://chatgpt.com/backend-api/codex/responses") {
+				return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+			}
+			return new Response("not found", { status: 404 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const resultPromise = streamOpenAICodexResponses(model, { messages: [] }, {
+			apiKey: token,
+			transport: "sse",
+			timeoutMs: 300_000,
+			streamDeadlineMs: 50,
+		}).result();
+
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(50);
+
+		const result = await resultPromise;
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("stream deadline exceeded");
+		expect(cancelled).toBe(true);
+	});
+
+	it("bounds a silent Codex WebSocket body with streamDeadlineMs and closes the socket", async () => {
+		vi.useFakeTimers();
+		const token = mockToken();
+		let closed = false;
+		class MockWebSocket extends EventTarget {
+			static OPEN = 1;
+			readyState = MockWebSocket.OPEN;
+
+			constructor() {
+				super();
+				queueMicrotask(() => this.dispatchEvent(new Event("open")));
+			}
+
+			send(): void {
+				queueMicrotask(() => {
+					this.dispatchEvent(
+						Object.assign(new Event("message"), {
+							data: JSON.stringify({ type: "response.output_text.delta", delta: "partial" }),
+						}),
+					);
+				});
+			}
+
+			close(): void {
+				closed = true;
+				this.readyState = 3;
+			}
+		}
+		vi.stubGlobal("WebSocket", MockWebSocket);
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("unexpected fetch", { status: 500 })));
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const resultPromise = streamOpenAICodexResponses(model, { messages: [] }, {
+			apiKey: token,
+			transport: "websocket",
+			timeoutMs: 300_000,
+			streamDeadlineMs: 50,
+		}).result();
+
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(50);
+
+		const result = await resultPromise;
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("stream deadline exceeded");
+		expect(closed).toBe(true);
+	});
+
 	it("opens a fresh cached websocket before the backend connection age limit", async () => {
 		vi.useFakeTimers();
 		const startedAt = new Date("2026-07-03T00:00:00Z");

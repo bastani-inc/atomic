@@ -1,7 +1,8 @@
 import { once } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import type { AssistantMessage, AssistantMessageEvent, Context, Model } from "@bastani/pi-ai";
+import { gzipSync } from "node:zlib";
+import type { AssistantMessage, AssistantMessageEvent, Context, FetchFunction, Model } from "@bastani/pi-ai";
 import { stream as streamOpenAICompletions } from "@bastani/pi-ai/api/openai-completions";
 import { describe, it } from "vitest";
 import type { AgentSession, AgentSessionAdapter, InternalStageContext } from "./stage-runner-helpers.js";
@@ -56,10 +57,29 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<
 	}
 }
 
-async function startStreamServer(allowFallback: boolean): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+async function startStreamServer(
+	allowFallback: boolean,
+	firstResponseMode: "stall" | "decompression" = "stall",
+): Promise<{ baseUrl: string; close: () => Promise<void> }> {
 	let requestCount = 0;
 	const server = http.createServer((_request, response) => {
 		requestCount += 1;
+		if (requestCount === 1 && firstResponseMode === "decompression") {
+			const event = `data: ${JSON.stringify({
+				id: "chatcmpl-corrupt",
+				object: "chat.completion.chunk",
+				created: 1,
+				model: "repro-model",
+				choices: [{ index: 0, delta: { role: "assistant", content: "partial" }, finish_reason: null }],
+			})}\n\n`;
+			const compressed = gzipSync(event);
+			response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+			// The custom fetch below feeds these bytes through the runtime's real
+			// DecompressionStream. Removing the gzip trailer yields one valid event
+			// followed by a mid-stream decompression failure.
+			response.end(compressed.subarray(0, compressed.length - 1));
+			return;
+		}
 		response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
 		if (requestCount === 1 || !allowFallback) {
 			// Emit one real provider event, then leave the body open. The adapter's
@@ -109,12 +129,13 @@ async function startStreamServer(allowFallback: boolean): Promise<{ baseUrl: str
 	};
 }
 
-function makeStreamAdapter(baseUrl: string, configuredDeadline: number): AgentSessionAdapter {
+function makeStreamAdapter(baseUrl: string, configuredDeadline: number, corruptPrimary = false): AgentSessionAdapter {
 	return {
 		async create(options) {
 			const candidate = modelCandidate(options.model as AgentSession["model"] | string | undefined);
 			const model = modelFor(baseUrl, candidate);
 			const messages: AgentSession["messages"] = [];
+			const corruptThisCandidate = corruptPrimary && candidate === "repro/primary";
 			const { session } = makeMockSession({
 				model,
 				messages,
@@ -123,6 +144,34 @@ function makeStreamAdapter(baseUrl: string, configuredDeadline: number): AgentSe
 						apiKey: "test-key",
 						maxRetries: 0,
 						streamDeadlineMs: configuredDeadline,
+						fetch: corruptThisCandidate
+							? ((async (input, init) => {
+									const response = await globalThis.fetch(input, init);
+									if (!response.body) return response;
+									const reader = response.body.pipeThrough(new DecompressionStream("gzip")).getReader();
+									const decompressedBody = new ReadableStream<Uint8Array>({
+										async pull(controller) {
+											try {
+												const result = await reader.read();
+												if (result.done) controller.close();
+												else controller.enqueue(result.value);
+											} catch (cause) {
+												controller.error(
+													new Error("Library error: zlib error: incorrect header check", { cause }),
+												);
+											}
+										},
+										cancel(reason) {
+											void reader.cancel(reason);
+										},
+									});
+									return new Response(decompressedBody, {
+										status: response.status,
+										statusText: response.statusText,
+										headers: response.headers,
+									});
+								}) as FetchFunction)
+							: undefined,
 					});
 					let terminal: AssistantMessageEvent | undefined;
 					for await (const event of events) {
@@ -165,6 +214,26 @@ describe("provider stream to workflow stage terminal state (#2553)", () => {
 				ctx.__modelFallbackMeta().modelAttempts?.map((attempt) => attempt.success),
 				[false, true],
 			);
+			await ctx.__dispose();
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("settles a real mid-stream decompression failure through fallback", async () => {
+		const server = await startStreamServer(true, "decompression");
+		try {
+			const ctx = createStageContext(
+				makeOpts({
+					adapters: { agentSession: makeStreamAdapter(server.baseUrl, 250, true) },
+					stageOptions: { model: "repro/primary", fallbackModels: ["repro/fallback"] },
+				}),
+			) as InternalStageContext;
+
+			const result = await settleWithin(ctx.prompt("complete"), STAGE_STREAM_TERMINAL_TIMEOUT_MS);
+
+			assert.equal(result, "fallback answer");
+			assert.deepEqual(ctx.__modelFallbackMeta().attemptedModels, ["repro/primary", "repro/fallback"]);
 			await ctx.__dispose();
 		} finally {
 			await server.close();

@@ -42,7 +42,7 @@ import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolveStreamDeadlineMs, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	createGrammarToolInputProperties,
@@ -229,6 +229,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			timestamp: Date.now(),
 		};
 
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+
 		try {
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
 			const compat = getCompat(model);
@@ -254,7 +256,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				params = nextParams as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
 			}
 			const requestOptions = {
-				...(options?.signal ? { signal: options.signal } : {}),
+				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
@@ -263,7 +265,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
+					signal: streamDeadline.signal,
 				},
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -452,10 +454,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				return block;
 			};
 
-			for await (const chunk of withStreamDeadline(
-				openaiStream,
-				resolveStreamDeadlineMs(options?.streamDeadlineMs),
-			)) {
+			for await (const chunk of withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort)) {
 				if (!chunk || typeof chunk !== "object") continue;
 
 				// OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
@@ -625,6 +624,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 

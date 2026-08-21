@@ -14,6 +14,8 @@
  * that {@link isRetryableAssistantError} classifies as retryable.
  */
 
+import { combineAbortSignals, type CombinedAbortSignal } from "./abort-signals.ts";
+
 /**
  * Default idle gap allowed between two provider stream events, in milliseconds.
  *
@@ -22,6 +24,9 @@
  * generous enough for slow reasoning models that go quiet between events.
  */
 export const DEFAULT_STREAM_DEADLINE_MS = 300_000;
+
+/** The largest delay accepted by a platform timer without overflow. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** Message text used when a stream exceeds its idle deadline. */
 export function streamDeadlineErrorMessage(deadlineMs: number): string {
@@ -45,6 +50,19 @@ export class StreamDeadlineError extends Error {
 }
 
 /**
+ * Deadline-owned signal used to cancel the provider request when the stream
+ * deadline fires. The caller signal remains separate, so an internal deadline
+ * abort is reported as a retryable error rather than `stopReason: "aborted"`.
+ */
+export interface StreamDeadlineHandle {
+	readonly deadlineMs: number | undefined;
+	readonly signal: AbortSignal | undefined;
+	readonly abortedByDeadline: boolean;
+	abort(): void;
+	cleanup(): void;
+}
+
+/**
  * Resolve the effective idle deadline for a stream.
  *
  * `undefined` selects {@link DEFAULT_STREAM_DEADLINE_MS}. A non-positive or
@@ -58,19 +76,86 @@ export function resolveStreamDeadlineMs(value: number | undefined): number | und
 }
 
 /**
+ * Create a request signal that combines caller cancellation with a private
+ * deadline controller. Calling {@link StreamDeadlineHandle.abort} aborts the
+ * provider transport without marking the caller's signal as aborted.
+ */
+export function createStreamDeadline(value: number | undefined, callerSignal?: AbortSignal): StreamDeadlineHandle {
+	const deadlineMs = resolveStreamDeadlineMs(value);
+	if (deadlineMs === undefined) {
+		return {
+			deadlineMs,
+			signal: callerSignal,
+			abortedByDeadline: false,
+			abort: () => {},
+			cleanup: () => {},
+		};
+	}
+
+	const controller = new AbortController();
+	const combined: CombinedAbortSignal = combineAbortSignals([callerSignal, controller.signal]);
+	let abortedByDeadline = false;
+	return {
+		deadlineMs,
+		signal: combined.signal,
+		get abortedByDeadline() {
+			return abortedByDeadline;
+		},
+		abort: () => {
+			if (!controller.signal.aborted) {
+				abortedByDeadline = true;
+				controller.abort(new StreamDeadlineError(deadlineMs));
+			}
+		},
+		cleanup: combined.cleanup,
+	};
+}
+
+/**
+ * Schedule a timer without allowing the platform's 32-bit delay clamp to turn
+ * a valid long deadline into a one-millisecond timeout.
+ */
+function scheduleDeadline(callback: () => void, delayMs: number): () => void {
+	let remaining = delayMs;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let cancelled = false;
+
+	const arm = () => {
+		if (cancelled) return;
+		const delay = Math.min(remaining, MAX_TIMER_DELAY_MS);
+		timer = setTimeout(() => {
+			if (cancelled) return;
+			remaining -= delay;
+			if (remaining <= 0) {
+				callback();
+				return;
+			}
+			arm();
+		}, delay);
+	};
+
+	arm();
+	return () => {
+		cancelled = true;
+		if (timer !== undefined) clearTimeout(timer);
+	};
+}
+
+/**
  * Wrap an async iterable so each pending `next()` is bounded by an idle deadline.
  *
  * The timer is restarted per event, so it caps the gap between events rather than
  * total stream duration: a long but progressing stream is never cut. When the
- * deadline expires the wrapper throws {@link StreamDeadlineError} and closes the
- * source iterator, which aborts the underlying request for SDK and fetch streams
- * alike, so the adapter's `catch` settles the attempt instead of hanging.
+ * deadline expires, `onDeadline` is invoked before the wrapper rejects. Adapters
+ * use that callback to abort the request signal, which interrupts the pending
+ * provider read and runs the source's cleanup before fallback starts.
  *
  * A deadline of `undefined` delegates straight to the source and adds no timer.
  */
 export async function* withStreamDeadline<T>(
 	source: AsyncIterable<T>,
 	deadlineMs: number | undefined,
+	onDeadline?: () => void,
 ): AsyncGenerator<T, void, undefined> {
 	if (deadlineMs === undefined) {
 		yield* source;
@@ -79,8 +164,6 @@ export async function* withStreamDeadline<T>(
 
 	const iterator = source[Symbol.asyncIterator]();
 	let closed = false;
-	// Close the source without awaiting: a stream that stalled in `next()` can
-	// stall in `return()` too, and the deadline must stay bounded either way.
 	const closeSource = (): void => {
 		if (closed) return;
 		closed = true;
@@ -93,23 +176,33 @@ export async function* withStreamDeadline<T>(
 
 	try {
 		for (;;) {
-			let timer: ReturnType<typeof setTimeout> | undefined;
-			const pending = iterator.next();
+			let cancelTimer: (() => void) | undefined;
+			let deadlineFired = false;
+			const pending = Promise.resolve(iterator.next());
 			const deadline = new Promise<never>((_resolve, reject) => {
-				timer = setTimeout(() => reject(new StreamDeadlineError(deadlineMs)), deadlineMs);
+				cancelTimer = scheduleDeadline(() => {
+					deadlineFired = true;
+					try {
+						onDeadline?.();
+					} finally {
+						reject(new StreamDeadlineError(deadlineMs));
+					}
+				}, deadlineMs);
 			});
 
 			let result: IteratorResult<T>;
 			try {
 				result = await Promise.race([pending, deadline]);
 			} catch (error) {
-				// The abandoned `next()` may settle later; swallow it so a losing
-				// rejection never surfaces as an unhandled rejection.
+				// The transport abort normally rejects the losing read. Swallow its
+				// eventual rejection, but preserve the deadline error as the public
+				// failure even if abort delivery wins the race by a microtask.
 				void pending.catch(() => {});
 				closeSource();
+				if (deadlineFired) throw new StreamDeadlineError(deadlineMs);
 				throw error;
 			} finally {
-				if (timer !== undefined) clearTimeout(timer);
+				cancelTimer?.();
 			}
 
 			if (result.done) {
