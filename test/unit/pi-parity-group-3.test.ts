@@ -26,11 +26,18 @@ async function tempDir(): Promise<string> {
 }
 
 describe("HTTP settings parity", () => {
-	test("accepts numeric strings and case-insensitive disabled values", () => {
+	test("accepts numeric and documented duration strings, plus disabled", () => {
 		assert.equal(parseHttpIdleTimeoutMs(" 1250 "), 1250);
+		assert.equal(parseHttpIdleTimeoutMs("30ms"), 30);
+		assert.equal(parseHttpIdleTimeoutMs("30s"), 30_000);
+		assert.equal(parseHttpIdleTimeoutMs("5m"), 300_000);
+		assert.equal(parseHttpIdleTimeoutMs("1h"), 3_600_000);
 		assert.equal(parseHttpIdleTimeoutMs("DISABLED"), 0);
 		assert.equal(parseHttpIdleTimeoutMs(1.9), 1);
-		for (const invalid of ["", "nope", -1, Number.NaN, null])
+	});
+
+	test("rejects malformed or unsupported duration strings", () => {
+		for (const invalid of ["", "nope", "30d", "1.5s", "-1s", -1, Number.NaN, null])
 			assert.equal(parseHttpIdleTimeoutMs(invalid), undefined);
 	});
 

@@ -291,6 +291,7 @@ function buildCodexFastModeBaseProviderOptions(
 		headers: options?.headers,
 		timeoutMs: options?.timeoutMs,
 		websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs,
+		streamDeadlineMs: options?.streamDeadlineMs,
 		maxRetries: options?.maxRetries,
 		maxRetryDelayMs: options?.maxRetryDelayMs,
 		metadata: options?.metadata,
