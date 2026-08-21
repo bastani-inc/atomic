@@ -24,7 +24,11 @@ hooks = [
   { id = "format", name = "biome check --write", entry = "npx --no-install biome check --write --no-errors-on-unmatched", language = "system", files = "\\.(ts|mjs)$" },
   # Renamed off the `bun-` prefix with the toolchain: these run under npm now.
   { id = "check", name = "npm run check", entry = "npm run check", language = "system", pass_filenames = false },
-  { id = "test-unit", name = "npm run test:unit", entry = "npm run test:unit", language = "system", pass_filenames = false },
+  # Push-only. At ~85 s this is the most expensive hook in the file, and with no
+  # stage filter it used to run on every commit and then again on the next push.
+  # `npm run check` (~4 s) stays on pre-commit for fast type feedback; CI runs
+  # the suite regardless, and the contract test only requires that it gate a push.
+  { id = "test-unit", name = "npm run test:unit", entry = "npm run test:unit", language = "system", pass_filenames = false, stages = ["pre-push"] },
   # Push-only. CI runs all three suites, so a hook that stops at test:unit lets an
   # integration or contract failure reach CI by default — which is exactly how a
   # Windows-only line-ending bug and a broken integration fixture both got pushed.
