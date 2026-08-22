@@ -186,7 +186,7 @@ Large command output should stay in stage transcripts/artifacts, while the final
 ## 7. Cross-Cutting Concerns
 
 - **Security:** The workflow relies on local git and `gh` credentials; it must not fabricate success when auth is missing.
-- **Irreversibility:** Merging and tag pushing are separate honest doors; after the merge stage, the workflow body performs a deterministic GitHub verification so a formatting error in an agent response cannot block after a successful merge.
+- **Irreversibility:** Merging and tag pushing are separate honest doors; the `merge-exact-head-and-sync-base` task must read back and verify the exact merged head and base synchronization, return the structured `base_sha`, and the workflow validates that structured result before admitting detached tag creation.
 - **Failure behavior:** CI/publish failures produce `blocked`/`failed` summaries with evidence rather than continuing.
 - **Concurrency:** The workflow should refuse dirty or conflicting git state unless the stage can safely commit existing release changes as intended.
 - **Bun compliance:** All local validation/version/dependency commands use Bun.
