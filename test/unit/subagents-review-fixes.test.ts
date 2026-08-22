@@ -424,7 +424,7 @@ describe("subagent async-removal regressions", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
-	test("resuming retained children refreshes non-detached records without weakening late detach protection", async () => {
+	test("retained resume refreshes active records, rejects completed children, and protects settled results", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-retained-record-regression-"));
 		try {
 			const plain = agent("plain", "Work independently.");
@@ -472,17 +472,25 @@ describe("subagent async-removal regressions", () => {
 			const executor = createSubagentExecutor(deps);
 			const ctx = context(cwd);
 
-			for (const [index, fixture] of fixtures.entries()) {
-				await executor.execute(
+			for (const fixture of fixtures) {
+				const resume = await executor.execute(
 					`resume-${fixture.runId}`,
 					{ action: "resume", id: fixture.runId, message: "Continue with fresh output." },
 					ctx.signal!,
 					undefined,
 					ctx,
 				);
+				const child = state.foregroundRuns?.get(fixture.runId)?.children[0];
+
+				if (fixture.status === "completed") {
+					assert.equal(resume.isError, true);
+					assert.match(resume.content[0]?.type === "text" ? resume.content[0].text : "", /not resumable/);
+					assert.equal(child?.status, "completed");
+					assert.equal(child?.result?.finalOutput, "initial output");
+					continue;
+				}
 
 				const expectedStatus = fixture.status === "detached" ? "detached" : "completed";
-				const child = state.foregroundRuns?.get(fixture.runId)?.children[0];
 				assert.equal(child?.status, expectedStatus);
 				assert.equal(child?.result?.finalOutput, `fresh output for ${fixture.runId}`);
 
@@ -498,9 +506,10 @@ describe("subagent async-removal regressions", () => {
 				assert.match(statusText, new RegExp(`fresh output for ${fixture.runId}`));
 				assert.doesNotMatch(statusText, /initial output/);
 
-				if (fixture.status !== "detached") {
-					assert.equal(typeof options[index]?.onDetachedExit, "function");
-					options[index]?.onDetachedExit?.({
+				if (fixture.status === "paused") {
+					const runOptions = options.find((entry) => entry.runId === fixture.runId);
+					assert.equal(typeof runOptions?.onDetachedExit, "function");
+					runOptions?.onDetachedExit?.({
 						agent: "plain",
 						task: "late detached exit",
 						status: "continued",
@@ -508,11 +517,14 @@ describe("subagent async-removal regressions", () => {
 						finalOutput: "late detached overwrite",
 						detached: true,
 					});
-					const settledChild = state.foregroundRuns?.get(fixture.runId)?.children[0];
-					assert.equal(settledChild?.status, "completed");
-					assert.equal(settledChild?.result?.finalOutput, `fresh output for ${fixture.runId}`);
+					assert.equal(child?.status, "completed");
+					assert.equal(child?.result?.finalOutput, `fresh output for ${fixture.runId}`);
 				}
 			}
+			assert.deepEqual(
+				options.map((entry) => entry.runId),
+				["run-paused", "run-detached"],
+			);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

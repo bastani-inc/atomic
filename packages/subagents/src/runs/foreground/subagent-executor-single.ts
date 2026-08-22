@@ -13,6 +13,7 @@ import {
 	type AgentProgress,
 	type ArtifactPaths,
 	isWorkflowStageOrchestrationContext,
+	type ParentAskPauseRequest,
 	type SingleResult,
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
@@ -29,6 +30,7 @@ import {
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
+import { formatParentAskPauseOutput } from "./parent-ask-output.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
@@ -165,6 +167,7 @@ export async function runSinglePath(
 		effectiveSkills = skillOverride;
 	}
 	const interruptController = new AbortController();
+	let parentAsk: ParentAskPauseRequest | undefined;
 	const foregroundControl = deps.state.foregroundControls.get(runId);
 	if (foregroundControl) {
 		foregroundControl.currentAgent = params.agent;
@@ -208,6 +211,11 @@ export async function runSinglePath(
 			intercomSessionName: childIntercomTarget,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
+			onParentAskClaim: (request) => {
+				if (parentAsk) return;
+				parentAsk = request;
+				interruptController.abort();
+			},
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				if (result) {
@@ -263,6 +271,7 @@ export async function runSinglePath(
 		mode: "single",
 		runId,
 		results: [r],
+		parentAskPaused: parentAsk !== undefined && r.interrupted,
 		progress: params.includeProgress ? allProgress : undefined,
 		artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		truncation: r.truncation,
@@ -272,6 +281,16 @@ export async function runSinglePath(
 		mode: "single",
 		cwd: effectiveCwd,
 		results: details.results,
+		...(parentAsk && r.interrupted
+			? {
+					parentAsk: {
+						askingChildIndex: 0,
+						releasedChildIndices: [0],
+						unlaunchedChildIndices: [],
+						request: parentAsk,
+					},
+				}
+			: {}),
 	});
 
 	if (!r.detached && !r.interrupted) {
@@ -297,6 +316,23 @@ export async function runSinglePath(
 				{
 					type: "text",
 					text: `Detached for intercom coordination: ${params.agent}. Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`,
+				},
+			],
+			details,
+		};
+	}
+
+	if (parentAsk && r.interrupted) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: formatParentAskPauseOutput({
+						askingChildIndex: 0,
+						releasedChildIndices: [0],
+						unlaunchedChildIndices: [],
+						request: parentAsk,
+					}),
 				},
 			],
 			details,

@@ -44,13 +44,15 @@ const runSyncMock = vi.fn(
 		options: MinimalRunSyncOptions,
 	) => {
 		runSyncCalls.push({ agentName, options });
+		const interrupted = task === "initial task";
 		return {
 			agent: agentName,
 			task,
-			status: "ok" as const,
+			status: interrupted ? ("interrupted" as const) : ("ok" as const),
 			messages: [],
 			usage: emptyUsage,
 			finalOutput: `${agentName} output`,
+			...(interrupted ? { interrupted: true } : {}),
 		};
 	},
 );

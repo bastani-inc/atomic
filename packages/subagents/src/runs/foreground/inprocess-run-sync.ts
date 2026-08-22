@@ -23,6 +23,7 @@ import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runn
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.js";
 import { buildModelCandidates } from "../shared/model-fallback.js";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js";
+import { registerExecutionParentAskPause } from "./execution-parent-ask-pause.js";
 
 function emptyUsage(): Usage {
 	return {
@@ -369,10 +370,15 @@ export async function runSingleInProcess(
 			resolveContinuation();
 		},
 	});
+	const parentAskCleanup = registerExecutionParentAskPause(options, {
+		agent: agent.name,
+		isUnavailable: () => running.status !== "running" || detached,
+	});
 	const terminal = running.promise.then((value) => ({ kind: "terminal" as const, value }));
 	const winner = await Promise.race([terminal, continuation.then(() => ({ kind: "continued" as const }))]);
 	if (winner.kind === "continued") {
 		detachCleanup();
+		parentAskCleanup();
 		void running.promise.then(async (continuedOutcome) => {
 			const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths, {
 				cwd,
@@ -441,6 +447,7 @@ export async function runSingleInProcess(
 		return continuedResult;
 	}
 	detachCleanup();
+	parentAskCleanup();
 	const outcome = winner.value;
 	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, {
 		cwd,

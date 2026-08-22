@@ -29,12 +29,22 @@ function parallelChild(
 	} as Details["results"][number];
 }
 
-function renderParallel(results: Details["results"]): string {
+function renderParallel(
+	results: Details["results"],
+	options: { parentAskPaused?: boolean; expanded?: boolean; content?: string } = {},
+): string {
 	const result: AgentToolResult<Details> = {
-		content: [{ type: "text", text: "done" }],
-		details: { mode: "parallel", results, totalSteps: results.length },
+		content: [{ type: "text", text: options.content ?? "done" }],
+		details: {
+			mode: "parallel",
+			results,
+			totalSteps: results.length,
+			parentAskPaused: options.parentAskPaused,
+		},
 	};
-	return renderSubagentResult(result, { expanded: true }, theme).render(120).join("\n");
+	return renderSubagentResult(result, { expanded: options.expanded ?? true }, theme)
+		.render(120)
+		.join("\n");
 }
 
 describe("top-level parallel status reduction", () => {
@@ -60,6 +70,28 @@ describe("top-level parallel status reduction", () => {
 		]);
 		assert.match(rendered, /failed parallel · 1\/2 done/);
 		assert.doesNotMatch(rendered, /paused parallel/);
+	});
+
+	test("a parent-ask interruption reads paused and shows the resume prompt", () => {
+		const content = [
+			"Subagent paused for parent input (beta, child 2).",
+			"Run: exact-run",
+			"Question:",
+			"Keep  this question verbatim?",
+			'Resume with: subagent({ action: "resume", id: "exact-run", message: "<answer>" })',
+		].join("\n");
+		const children = [
+			parallelChild("alpha", "interrupted", { interrupted: true }),
+			parallelChild("beta", "interrupted", { interrupted: true }),
+			parallelChild("queued", "skipped"),
+		];
+		for (const expanded of [false, true]) {
+			const rendered = renderParallel(children, { parentAskPaused: true, expanded, content });
+			assert.match(rendered, expanded ? /paused parallel/ : /■ parallel/);
+			assert.match(rendered, /Keep {2}this question verbatim\?/);
+			assert.match(rendered, /Resume with: subagent/);
+			assert.doesNotMatch(rendered, /failed parallel/);
+		}
 	});
 
 	test("every child ok still reads ok", () => {

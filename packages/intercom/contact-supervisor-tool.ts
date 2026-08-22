@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
+import { requestParentAskPause } from "./parent-ask-pause.js";
 import { renderContactSupervisorResult } from "./result-renderers.js";
 import {
   type ChildOrchestratorMetadata,
@@ -98,35 +99,56 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
         }
         const supervisorInterview = interviewValidation?.ok === true ? interviewValidation.interview : undefined;
 
-        let connectedClient: IntercomClient;
-        try {
-          connectedClient = await ensureConnected("tool");
-        } catch (error) {
-          return {
-            content: [{ type: "text", text: `Intercom not connected: ${getErrorMessage(error)}` }],
-            isError: true,
-            details: { error: true },
-          };
-        }
+		const metadata = getMetadata();
+		if (!metadata) {
+			return {
+				content: [{ type: "text", text: "Supervisor contact is unavailable for this session" }],
+				isError: true,
+				details: { error: true },
+			};
+		}
+		if (signal?.aborted) {
+			return {
+				content: [{ type: "text", text: "Cancelled" }],
+				isError: true,
+				details: { error: true },
+			};
+		}
+		if (
+			reason !== "progress_update" &&
+			requestParentAskPause(pi.events, metadata, {
+				kind: reason === "interview_request" ? "interview" : "decision",
+				question: typeof params.message === "string" ? params.message : "",
+				...(supervisorInterview ? { interview: supervisorInterview } : {}),
+			})
+		) {
+			return {
+				content: [{ type: "text", text: "Parent ask claimed; pausing for subagent resume." }],
+				isError: false,
+				details: { paused: true },
+			};
+		}
 
-        syncPresenceIdentity(ctx.sessionManager.getSessionId());
+		let connectedClient: IntercomClient;
+		try {
+			connectedClient = await ensureConnected("tool");
+		} catch (error) {
+			return {
+				content: [{ type: "text", text: `Intercom not connected: ${getErrorMessage(error)}` }],
+				isError: true,
+				details: { error: true },
+			};
+		}
 
-        if (signal?.aborted) {
-          return {
-            content: [{ type: "text", text: "Cancelled" }],
-            isError: true,
-            details: { error: true },
-          };
-        }
+		syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
-        const metadata = getMetadata();
-        if (!metadata) {
-          return {
-            content: [{ type: "text", text: "Supervisor contact is unavailable for this session" }],
-            isError: true,
-            details: { error: true },
-          };
-        }
+		if (signal?.aborted) {
+			return {
+				content: [{ type: "text", text: "Cancelled" }],
+				isError: true,
+				details: { error: true },
+			};
+		}
         let sendTo: string;
         if (connectedClient.supervisorSessionId || metadata.supervisor) {
           sendTo = connectedClient.supervisorSessionId ?? metadata.supervisor!.supervisorSessionId;

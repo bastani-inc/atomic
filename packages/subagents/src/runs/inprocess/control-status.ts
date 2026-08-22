@@ -93,6 +93,13 @@ export async function resumeInProcessChild(
 			details: { mode: "management", results: [] },
 		};
 	}
+	if (target.status === "ok") {
+		return {
+			content: [{ type: "text", text: `Completed child '${target.path}' is not resumable.` }],
+			isError: true,
+			details: { mode: "management", results: [] },
+		};
+	}
 	const outcome = await control.resumeChild(target.path, message, candidate);
 	const selection =
 		id === control.parent.path && control.listChildren().length > 1

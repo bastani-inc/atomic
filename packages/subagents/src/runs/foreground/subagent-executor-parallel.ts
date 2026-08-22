@@ -12,6 +12,7 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
+	type ForegroundParentAskPause,
 	isWorkflowStageOrchestrationContext,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
@@ -27,6 +28,7 @@ import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
 import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.js";
 import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.js";
+import { formatParentAskPauseOutput } from "./parent-ask-output.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
 import {
 	createForegroundControlNotifier,
@@ -143,6 +145,7 @@ export async function runParallelPath(
 		cleanupWorktrees(worktreeSetup);
 	});
 	if (errorResult) return errorResult;
+	let parentAsk: ForegroundParentAskPause | undefined;
 
 	try {
 		const duplicateOutputError = findDuplicateParallelOutputPath({
@@ -188,6 +191,9 @@ export async function runParallelPath(
 				} finally {
 					detachedCleanup.recover(index);
 				}
+			},
+			onParentAskPause: (pause) => {
+				if (!parentAsk) parentAsk = pause;
 			},
 			tasks,
 			taskTexts,
@@ -242,6 +248,7 @@ export async function runParallelPath(
 			mode: "parallel",
 			runId,
 			results,
+			parentAskPaused: parentAsk !== undefined,
 			progress: params.includeProgress ? allProgress : undefined,
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
@@ -249,8 +256,17 @@ export async function runParallelPath(
 			runId,
 			mode: "parallel",
 			cwd: effectiveCwd,
-			results: details.results,
+			results: parentAsk
+				? details.results.filter((_, index) => !parentAsk?.unlaunchedChildIndices.includes(index))
+				: details.results,
+			...(parentAsk ? { parentAsk } : {}),
 		});
+		if (parentAsk) {
+			return {
+				content: [{ type: "text", text: formatParentAskPauseOutput(parentAsk) }],
+				details,
+			};
+		}
 		if (interrupted) {
 			return {
 				content: [

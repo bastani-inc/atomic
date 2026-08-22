@@ -220,6 +220,8 @@ export interface Details {
 	controlEvents?: ControlEvent[];
 	progress?: AgentProgress[];
 	totalSteps?: number;
+	/** Aggregate pause override for a parent ask whose queued tasks remain explicitly skipped. */
+	parentAskPaused?: boolean;
 	progressSummary?: ProgressSummary;
 	artifacts?: {
 		dir: string;

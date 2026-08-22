@@ -10,6 +10,7 @@ import {
 import {
 	type ControlEvent,
 	type Details,
+	type ForegroundParentAskPause,
 	type SingleResult,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
@@ -120,6 +121,7 @@ export function rememberForegroundRun(
 		mode: "single" | "parallel";
 		cwd: string;
 		results: SingleResult[];
+		parentAsk?: ForegroundParentAskPause;
 	},
 ): void {
 	state.foregroundRuns ??= new Map();
@@ -128,6 +130,7 @@ export function rememberForegroundRun(
 		mode: input.mode,
 		cwd: input.cwd,
 		updatedAt: Date.now(),
+		...(input.parentAsk ? { parentAsk: input.parentAsk } : {}),
 		children: input.results.map((originalResult, index) => {
 			const result = takeEarlyDetachedResult(state, input.runId, index) ?? originalResult;
 			return {

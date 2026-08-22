@@ -8,6 +8,7 @@ import type {
 	AgentProgress,
 	ArtifactConfig,
 	ControlEvent,
+	ForegroundParentAskPause,
 	IntercomEventBus,
 	MaxOutputConfig,
 	SingleResult,
@@ -57,6 +58,7 @@ interface ForegroundParallelRunInput {
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: SubagentToolResult) => void;
+	onParentAskPause?: (pause: ForegroundParentAskPause) => void;
 	onDetachedExit?: (index: number, result: SingleResult) => void;
 	worktreeSetup?: WorktreeSetup;
 	runtime: Pick<SubagentExecutorRuntimeDeps, "runSync">;
@@ -64,7 +66,20 @@ interface ForegroundParallelRunInput {
 
 export async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Promise<SingleResult[]> {
 	const intercomDetachController = new AbortController();
+	const parentAskController = new AbortController();
+	const startedIndices = new Set<number>();
+	const activeIndices = new Set<number>();
 	return mapConcurrent(input.tasks, input.concurrencyLimit, async (task, index) => {
+		if (parentAskController.signal.aborted) {
+			return {
+				agent: task.agent,
+				task: input.taskTexts[index] ?? task.task,
+				status: "skipped",
+				messages: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+				error: "Skipped after parent ask pause",
+			};
+		}
 		if (intercomDetachController.signal.aborted) {
 			return {
 				agent: task.agent,
@@ -94,6 +109,11 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			outputPath,
 		);
 		const interruptController = new AbortController();
+		const interruptForParentAsk = () => interruptController.abort();
+		parentAskController.signal.addEventListener("abort", interruptForParentAsk, { once: true });
+		if (parentAskController.signal.aborted) interruptController.abort();
+		startedIndices.add(index);
+		activeIndices.add(index);
 		if (input.foregroundControl) {
 			input.foregroundControl.currentAgent = task.agent;
 			input.foregroundControl.currentIndex = index;
@@ -140,6 +160,20 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				onDetachedExit: (result) => input.onDetachedExit?.(index, result),
 				intercomDetachSignal: intercomDetachController.signal,
 				onIntercomDetachCommit: () => intercomDetachController.abort(),
+				onParentAskClaim: input.onParentAskPause
+					? (request) => {
+							if (parentAskController.signal.aborted) return;
+							input.onParentAskPause?.({
+								askingChildIndex: request.index,
+								releasedChildIndices: [...activeIndices].sort((left, right) => left - right),
+								unlaunchedChildIndices: input.tasks
+									.map((_, taskIndex) => taskIndex)
+									.filter((taskIndex) => !startedIndices.has(taskIndex)),
+								request,
+							});
+							parentAskController.abort();
+						}
+					: undefined,
 				modelOverride: input.modelOverrides[index],
 				availableModels: input.availableModels,
 				knownModelProviders: input.knownModelProviders,
@@ -188,6 +222,8 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 					: undefined,
 			})
 			.finally(() => {
+				activeIndices.delete(index);
+				parentAskController.signal.removeEventListener("abort", interruptForParentAsk);
 				if (input.foregroundControl?.currentIndex === index) {
 					input.foregroundControl.interrupt = undefined;
 					input.foregroundControl.updatedAt = Date.now();

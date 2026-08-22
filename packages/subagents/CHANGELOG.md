@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Parent-targeted blocking asks now interrupt foreground children into retained pause state and surface the question plus resume hint to the launching parent. Parallel pauses release the active set, withhold queued tasks, and resume the asker and released siblings together; completed children remain terminal ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
+
 ## [0.9.15] - 2026-08-21
 
 Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

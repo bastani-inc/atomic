@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- `contact_supervisor` decisions and interviews, plus `intercom.ask` calls resolved to a foreground child's launching parent, now yield to retained `subagent` pause/resume before broker send or reply-waiter admission. Progress updates, sends, and asks to other peers keep their existing delivery behavior ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
+
 ## [0.9.13] - 2026-08-13
 
 Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.3` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

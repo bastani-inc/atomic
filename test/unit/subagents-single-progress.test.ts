@@ -396,12 +396,18 @@ test("resume inherits single-agent defaultProgress", async () => {
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
 		let resumedTask = "";
+		let runSyncAttempt = 0;
 		const executor = makeExecutor(
 			cwd,
 			{
 				runSync: async (_cwd, _agents, _agent, task) => {
 					resumedTask = task;
-					return { ...makeResult(task), sessionFile };
+					const interrupted = runSyncAttempt++ === 0;
+					return {
+						...makeResult(task),
+						sessionFile,
+						...(interrupted ? { status: "interrupted" as const, interrupted: true } : {}),
+					};
 				},
 			},
 			true,
@@ -438,12 +444,18 @@ test("resume requests and forwards a fresh supervisor authorization", async () =
 		writeFileSync(sessionFile, "");
 		const authorizedChildren: string[] = [];
 		let capturedAuthorization: { capability: string; supervisorSessionId: string; childName: string } | undefined;
+		let runSyncAttempt = 0;
 		const executor = makeExecutor(
 			cwd,
 			{
 				runSync: async (_cwd, _agents, _agent, task, options) => {
 					capturedAuthorization = options.supervisorAuthorization;
-					return { ...makeResult(task), sessionFile };
+					const interrupted = runSyncAttempt++ === 0;
+					return {
+						...makeResult(task),
+						sessionFile,
+						...(interrupted ? { status: "interrupted" as const, interrupted: true } : {}),
+					};
 				},
 			},
 			true,
@@ -486,12 +498,18 @@ test("resume suppresses inherited defaultProgress for a read-only follow-up", as
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
 		let resumedTask = "";
+		let runSyncAttempt = 0;
 		const executor = makeExecutor(
 			cwd,
 			{
 				runSync: async (_cwd, _agents, _agent, task) => {
 					resumedTask = task;
-					return { ...makeResult(task), sessionFile };
+					const interrupted = runSyncAttempt++ === 0;
+					return {
+						...makeResult(task),
+						sessionFile,
+						...(interrupted ? { status: "interrupted" as const, interrupted: true } : {}),
+					};
 				},
 			},
 			true,
@@ -526,12 +544,18 @@ test("resume explicit progress overrides read-only suppression", async () => {
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
 		let resumedTask = "";
+		let runSyncAttempt = 0;
 		const executor = makeExecutor(
 			cwd,
 			{
 				runSync: async (_cwd, _agents, _agent, task) => {
 					resumedTask = task;
-					return { ...makeResult(task), sessionFile };
+					const interrupted = runSyncAttempt++ === 0;
+					return {
+						...makeResult(task),
+						sessionFile,
+						...(interrupted ? { status: "interrupted" as const, interrupted: true } : {}),
+					};
 				},
 			},
 			true,

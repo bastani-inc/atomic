@@ -24,6 +24,19 @@ import {
 	snapshotNowForProgress,
 } from "./render-status-progress.js";
 
+function parentAskOutput(result: AgentToolResult<Details>): string | undefined {
+	if (!result.details?.parentAskPaused) return undefined;
+	return result.content.find((part) => part.type === "text")?.text;
+}
+
+function appendParentAskOutput(component: Component, output: string | undefined, theme: Theme): Component {
+	if (!output) return component;
+	const container = new Container();
+	container.addChild(component);
+	container.addChild(new Text(theme.fg("accent", output), 0, 0));
+	return container;
+}
+
 export function renderLiveSubagentResult(
 	result: AgentToolResult<Details>,
 	options: { expanded: boolean; isPartial: boolean },
@@ -79,18 +92,26 @@ export function renderSubagentResult(
 
 	const expanded = options.expanded;
 	const mdTheme = getMarkdownTheme();
+	const pausedOutput = parentAskOutput(result);
 
 	if (d.mode === "single" && d.results.length === 1) {
 		const r = d.results[0];
-		if (!expanded) return renderSingleCompact(d, r, theme, options.now, options.pulseFrame);
+		if (!expanded)
+			return appendParentAskOutput(
+				renderSingleCompact(d, r, theme, options.now, options.pulseFrame),
+				pausedOutput,
+				theme,
+			);
 		const isRunning = r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
-			: r.detached || r.status === "continued"
-				? theme.fg("warning", "detached")
-				: r.status === "ok"
-					? theme.fg("success", "ok")
-					: theme.fg("error", "failed");
+			: d.parentAskPaused
+				? theme.fg("warning", "paused")
+				: r.detached || r.status === "continued"
+					? theme.fg("warning", "detached")
+					: r.status === "ok"
+						? theme.fg("success", "ok")
+						: theme.fg("error", "failed");
 		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 		const output = r.truncation?.text || getSingleResultOutput(r);
 
@@ -183,10 +204,11 @@ export function renderSubagentResult(
 			c.addChild(new Spacer(1));
 			c.addChild(new Text(fit(theme.fg("dim", `Artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0));
 		}
-		return c;
+		return appendParentAskOutput(c, pausedOutput, theme);
 	}
 
-	if (!expanded) return renderMultiCompact(d, theme, options.now, options.pulseFrame);
+	if (!expanded)
+		return appendParentAskOutput(renderMultiCompact(d, theme, options.now, options.pulseFrame), pausedOutput, theme);
 
 	const hasRunning =
 		d.progress?.some((p) => p.status === "running") || d.results.some((r) => r.progress?.status === "running");
@@ -201,11 +223,13 @@ export function renderSubagentResult(
 	);
 	const icon = hasRunning
 		? theme.fg("warning", "running")
-		: hasEmptyWithoutTarget
-			? theme.fg("warning", "warning")
-			: ok === d.results.length
-				? theme.fg("success", "ok")
-				: theme.fg("error", "failed");
+		: d.parentAskPaused
+			? theme.fg("warning", "paused")
+			: hasEmptyWithoutTarget
+				? theme.fg("warning", "warning")
+				: ok === d.results.length
+					? theme.fg("success", "ok")
+					: theme.fg("error", "failed");
 
 	const totalSummary =
 		d.progressSummary ||
@@ -410,5 +434,5 @@ export function renderSubagentResult(
 		c.addChild(new Spacer(1));
 		c.addChild(new Text(fit(theme.fg("dim", `Artifacts dir: ${shortenPath(d.artifacts.dir)}`)), 0, 0));
 	}
-	return c;
+	return appendParentAskOutput(c, pausedOutput, theme);
 }

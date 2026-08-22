@@ -3,9 +3,11 @@ import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
+import { requestParentAskPause } from "./parent-ask-pause.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
 import {
+  type ChildOrchestratorMetadata,
   formatAttachments,
   formatSessionListRow,
   getErrorMessage,
@@ -17,6 +19,7 @@ import { resolveSessionTargetId } from "./session-target.js";
 import { normalizeGroup, validateRuntimeGroup } from "./group.js";
 
 interface IntercomToolDeps {
+  childOrchestratorMetadata?: ChildOrchestratorMetadata | null | (() => ChildOrchestratorMetadata | null);
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
@@ -36,8 +39,11 @@ interface IntercomToolDeps {
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const { ensureConnected, syncPresenceIdentity, beginReplyWait, hasReplyWaiter } = deps;
+  const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait, hasReplyWaiter } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
+  const getMetadata = typeof childOrchestratorMetadata === "function"
+    ? childOrchestratorMetadata
+    : () => childOrchestratorMetadata ?? null;
   const activeReplyTracker = (): ReplyTracker =>
     typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   pi.registerTool({
@@ -314,13 +320,6 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             };
           }
 
-          if (hasReplyWaiter()) {
-            return {
-              content: [{ type: "text", text: "Already waiting for a reply" }],
-              isError: true,
-              details: { error: true },
-            };
-          }
 
           if (_signal?.aborted) {
             return {
@@ -343,6 +342,32 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             if (sendTo === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
+                isError: true,
+                details: { error: true },
+              };
+            }
+            const metadata = getMetadata();
+            if (metadata) {
+              const resolvedParent = await resolveTarget(connectedClient, metadata.orchestratorTarget);
+              if (
+                resolvedParent !== null &&
+                resolvedParent === sendTo &&
+                requestParentAskPause(pi.events, metadata, {
+                  kind: "intercom",
+                  question: message,
+                  resolvedTargetId: sendTo,
+                })
+              ) {
+                return {
+                  content: [{ type: "text", text: "Parent ask claimed; pausing for subagent resume." }],
+                  isError: false,
+                  details: { paused: true },
+                };
+              }
+            }
+            if (hasReplyWaiter()) {
+              return {
+                content: [{ type: "text", text: "Already waiting for a reply" }],
                 isError: true,
                 details: { error: true },
               };

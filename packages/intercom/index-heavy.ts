@@ -518,6 +518,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     hasReplyWaiter: () => replyWaiters.has(),
   });
   registerIntercomTool(pi, {
+    childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),

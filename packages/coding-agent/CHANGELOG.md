@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Foreground child decisions, structured interviews, and `intercom.ask` calls resolved to their launching parent now pause the retained child and return the question through the parent `subagent` call instead of deadlocking behind Intercom reply delivery. Bare run-ID resume supplies the answer and continues released parallel siblings without launching queued work; successfully completed children are no longer resumable ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
+
 ## [0.9.15] - 2026-08-21
 
 Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

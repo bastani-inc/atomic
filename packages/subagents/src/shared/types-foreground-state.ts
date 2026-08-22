@@ -7,6 +7,7 @@
  */
 
 import type { ExtensionContext } from "@bastani/atomic";
+import type { ParentAskPauseRequest } from "./types-config.js";
 import type { ActivityState, SingleResult, SubagentResultStatus, SubagentRunMode } from "./types-results.js";
 
 export interface ForegroundResumeChild {
@@ -17,12 +18,20 @@ export interface ForegroundResumeChild {
 	result?: SingleResult;
 }
 
+export interface ForegroundParentAskPause {
+	askingChildIndex: number;
+	releasedChildIndices: number[];
+	unlaunchedChildIndices: number[];
+	request: ParentAskPauseRequest;
+}
+
 export interface ForegroundResumeRun {
 	runId: string;
 	mode: SubagentRunMode;
 	cwd: string;
 	updatedAt: number;
 	children: ForegroundResumeChild[];
+	parentAsk?: ForegroundParentAskPause;
 }
 
 export interface SubagentState {

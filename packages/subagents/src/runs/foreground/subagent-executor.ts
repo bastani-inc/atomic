@@ -22,8 +22,10 @@ import {
 } from "../../shared/settings.js";
 import {
 	DEFAULT_ARTIFACT_CONFIG,
+	type ForegroundResumeRun,
 	getCurrentSubagentDepth,
 	isWorkflowStageOrchestrationContext,
+	type ParentAskPauseRequest,
 	type SingleResult,
 	SUBAGENT_ACTIONS,
 	type SubagentToolResult,
@@ -37,6 +39,7 @@ import {
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { resolveControlConfig } from "../shared/subagent-control.js";
+import { formatParentAskPauseOutput, RELEASED_SIBLING_RESUME_MESSAGE } from "./parent-ask-output.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
 import { runParallelPath } from "./subagent-executor-parallel.js";
@@ -57,6 +60,168 @@ import {
 	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
 
+function completedResumeResult(id: string): SubagentToolResult {
+	return {
+		content: [{ type: "text", text: `Completed child '${id}' is not resumable.` }],
+		isError: true,
+		details: { mode: "management", results: [] },
+	};
+}
+
+function isCompletedRetainedTarget(deps: ResolvedExecutorDeps, id: string, index: number | undefined): boolean {
+	const direct = deps.state.foregroundRuns?.get(id);
+	if (direct) return direct.children[index ?? 0]?.status === "completed";
+	for (const run of deps.state.foregroundRuns?.values() ?? []) {
+		if (run.children.some((child) => child.result?.path === id && child.status === "completed")) return true;
+	}
+	return false;
+}
+
+async function resumeRetainedParentAskRun(
+	params: SubagentParamsLike,
+	message: string,
+	ctx: ExtensionContext,
+	deps: ResolvedExecutorDeps,
+	onUpdate: ((result: SubagentToolResult) => void) | undefined,
+): Promise<SubagentToolResult | undefined> {
+	const requested = params.id ?? params.runId;
+	if (!requested || params.index !== undefined) return undefined;
+	const run: ForegroundResumeRun | undefined = deps.state.foregroundRuns?.get(requested);
+	const pause = run?.parentAsk;
+	if (!run || !pause || requested !== run.runId) return undefined;
+	const children = pause.releasedChildIndices
+		.map((index) => run.children.find((child) => child.index === index))
+		.filter((child): child is NonNullable<typeof child> => child !== undefined);
+	if (children.some((child) => child.status === "completed")) return completedResumeResult(requested);
+	const agents = deps.discoverAgents(run.cwd, resolveExecutionAgentScope(params.agentScope)).agents;
+	const agentConfigs = new Map(agents.map((agent) => [agent.name, agent]));
+	for (const child of children) {
+		if (!agentConfigs.has(child.agent)) {
+			return {
+				content: [{ type: "text", text: `Unknown agent for resume: ${child.agent}` }],
+				isError: true,
+				details: { mode: "management", results: [] },
+			};
+		}
+	}
+	const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
+	const sessionName = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
+	const intercomBridge = resolveIntercomBridge({
+		config: deps.config.intercomBridge,
+		context: params.context,
+		orchestratorTarget: sessionName,
+		cwd: run.cwd,
+	});
+	const artifactConfig = { ...DEFAULT_ARTIFACT_CONFIG, enabled: params.artifacts !== false };
+	const artifactsDir = getArtifactsDir(parentSessionFile);
+	const groupController = new AbortController();
+	const activeIndices = new Set<number>();
+	let nextParentAsk: ParentAskPauseRequest | undefined;
+	let nextReleasedIndices: number[] = [];
+	const resumed = await Promise.all(
+		children.map(async (child) => {
+			const agentConfig = agentConfigs.get(child.agent)!;
+			const childController = new AbortController();
+			const abortForGroupPause = () => childController.abort();
+			groupController.signal.addEventListener("abort", abortForGroupPause, { once: true });
+			if (groupController.signal.aborted) childController.abort();
+			activeIndices.add(child.index);
+			const supervisedTarget = intercomBridge.active
+				? resolveSubagentIntercomTarget(run.runId, child.agent, child.index)
+				: undefined;
+			const supervisorAuthorization = await requestSupervisorAuthorization(deps.pi.events, supervisedTarget);
+			const childMessage = child.index === pause.askingChildIndex ? message : RELEASED_SIBLING_RESUME_MESSAGE;
+			try {
+				const result = await deps.runtime.runSync(run.cwd, agents, child.agent, childMessage, {
+					cwd: run.cwd,
+					signal: ctx.signal,
+					interruptSignal: childController.signal,
+					allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
+					intercomEvents: deps.pi.events,
+					runId: run.runId,
+					index: child.index,
+					sessionDir: child.sessionFile ? path.dirname(child.sessionFile) : undefined,
+					sessionFile: child.sessionFile,
+					share: params.share === true,
+					artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
+					artifactConfig,
+					maxOutput: params.maxOutput,
+					parentDepth: getCurrentSubagentDepth(ctx),
+					workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
+					workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
+					controlConfig: resolveControlConfig(deps.config.control, params.control),
+					intercomSessionName: supervisedTarget,
+					orchestratorIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
+					intercomGroup: inheritedIntercomGroup(ctx),
+					supervisorAuthorization,
+					modelOverride: params.model,
+					availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
+					knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),
+					resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
+					preferredModelProvider: ctx.model?.provider,
+					currentModel: currentModelFullId(ctx.model),
+					currentThinkingLevel: ctx.thinkingLevel,
+					onUpdate: createForwardSingleUpdate(
+						onUpdate,
+						getForegroundControl(deps.state, run.runId),
+						child.agent,
+						child.index,
+					),
+					onParentAskClaim: (request) => {
+						if (nextParentAsk) return;
+						nextParentAsk = request;
+						nextReleasedIndices = [...activeIndices].sort((left, right) => left - right);
+						groupController.abort();
+					},
+					onDetachedExit: (detachedResult) => {
+						replaceForegroundRunChild(deps.state, run.runId, child.index, detachedResult);
+						notifyDetachedForegroundChildExit({
+							pi: deps.pi,
+							runId: run.runId,
+							mode: run.mode,
+							index: child.index,
+							...(run.mode === "parallel" ? { totalTasks: run.children.length } : {}),
+							result: detachedResult,
+						});
+					},
+				});
+				replaceForegroundRunChild(deps.state, run.runId, child.index, result, { onlyWhenDetached: false });
+				return { index: child.index, result };
+			} finally {
+				activeIndices.delete(child.index);
+				groupController.signal.removeEventListener("abort", abortForGroupPause);
+			}
+		}),
+	);
+	if (nextParentAsk) {
+		run.parentAsk = {
+			askingChildIndex: nextParentAsk.index,
+			releasedChildIndices: nextReleasedIndices,
+			unlaunchedChildIndices: pause.unlaunchedChildIndices,
+			request: nextParentAsk,
+		};
+	} else {
+		delete run.parentAsk;
+	}
+	run.updatedAt = Date.now();
+	const results = resumed.toSorted((left, right) => left.index - right.index).map((entry) => entry.result);
+	return {
+		content: [
+			{
+				type: "text",
+				text: run.parentAsk
+					? formatParentAskPauseOutput(run.parentAsk)
+					: results
+							.map((result) => result.finalOutput ?? result.envelope ?? result.error ?? "")
+							.filter(Boolean)
+							.join("\n\n"),
+			},
+		],
+		details: { mode: run.mode, runId: run.runId, results },
+		...(results.some((result) => result.status === "error") ? { isError: true } : {}),
+	};
+}
+
 async function resumeRetainedForegroundChild(
 	params: SubagentParamsLike,
 	message: string,
@@ -68,8 +233,10 @@ async function resumeRetainedForegroundChild(
 	if (!requested) return undefined;
 	const run = deps.state.foregroundRuns?.get(requested);
 	if (!run) return undefined;
+	if (run.parentAsk) return undefined;
 	const child = run.children[params.index ?? 0];
 	if (!child) return undefined;
+	if (child.status === "completed") return completedResumeResult(requested);
 	const agents = deps.discoverAgents(run.cwd, resolveExecutionAgentScope(params.agentScope)).agents;
 	const agentConfig = agents.find((agent) => agent.name === child.agent);
 	if (!agentConfig) {
@@ -297,6 +464,11 @@ async function handleManagementRequest(input: {
 				isError: true,
 				details: { mode: "management", results: [] },
 			};
+		}
+		const parentAskResume = await resumeRetainedParentAskRun(paramsWithResolvedCwd, message, ctx, deps, onUpdate);
+		if (parentAskResume) return parentAskResume;
+		if (isCompletedRetainedTarget(deps, targetRunId, paramsWithResolvedCwd.index)) {
+			return completedResumeResult(targetRunId);
 		}
 		const inProcess = await resumeInProcessChild(targetRunId, message, { model: ctx.model });
 		if (inProcess) return inProcess;
