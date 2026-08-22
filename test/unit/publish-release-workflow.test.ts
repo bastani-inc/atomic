@@ -169,7 +169,7 @@ test("configured checks preserve branch-protection and ruleset order, app identi
 	);
 });
 
-test("exact changelog-only branch, commit, and PR reuse is accepted verbatim", () => {
+test("release-0.9.15 retry regression reuses the exact changelog-only branch, commit, and PR", () => {
 	const result = evaluatePreparationReuse(release, "main", validReuseState());
 	assert.deepEqual(result, {
 		mode: "reuse",
@@ -215,7 +215,7 @@ test("conflicting reuse base, files, commit, branch, and PR identity are rejecte
 	);
 });
 
-test("configured checks that have not materialized remain pending", () => {
+test("release-0.9.15 CI regression keeps configured checks pending until they materialize", () => {
 	const result = evaluateRequiredChecks(ciSnapshot(), expectedCi);
 	assert.equal(result.status, "pending");
 	assert.match(result.summary, /not yet created/u);
@@ -259,7 +259,7 @@ test("an exact admin merge satisfies a non-empty CI gate", () => {
 	assert.match(result.summary, /admin-merged/u);
 });
 
-test("required-check polling materializes delayed checks and times out finitely", async () => {
+test("release-0.9.15 CI regression polls through delayed materialization and times out finitely", async () => {
 	const controller = new AbortController();
 	const clock = fakeClock();
 	let calls = 0;
@@ -406,7 +406,7 @@ test("safe fake-boundary E2E reuses exact prep and reaches delayed CI and publis
 	assert.doesNotMatch(JSON.stringify(ctx), /https?:\/\/(?!safe\/fake)/u);
 });
 
-test("valid reuse skips preparation mutations while conflicting reuse blocks before tasks", async () => {
+test("release-0.9.15 retry regression skips prep mutations and blocks conflicting reuse", async () => {
 	const source = workflowSource();
 	assert.match(source, /preparationInspection\.mode === "reuse"/u);
 	assert.doesNotMatch(source, /git reset|reset --hard|push --force/u);
