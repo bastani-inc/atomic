@@ -34,6 +34,7 @@ import { resolveRequestedCwd } from "./subagent-executor-resume.js";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
 import { createForwardSingleUpdate, runSinglePath } from "./subagent-executor-single.js";
 import {
+	createRetainedForegroundControlNotifier,
 	foregroundStatusResult,
 	getForegroundControl,
 	notifyDetachedForegroundChildExit,
@@ -87,10 +88,16 @@ async function resumeRetainedParentAskRun(
 	const run: ForegroundResumeRun | undefined = deps.state.foregroundRuns?.get(requested);
 	const pause = run?.parentAsk;
 	if (!run || !pause || requested !== run.runId) return undefined;
-	const children = pause.releasedChildIndices
+	const releasedChildren = pause.releasedChildIndices
 		.map((index) => run.children.find((child) => child.index === index))
 		.filter((child): child is NonNullable<typeof child> => child !== undefined);
-	if (children.some((child) => child.status === "completed")) return completedResumeResult(requested);
+	const completed = releasedChildren.flatMap((child) =>
+		child.status === "completed" && child.result
+			? [{ index: child.index, result: normalizeResultIndex(child.result, child.index) }]
+			: [],
+	);
+	const children = releasedChildren.filter((child) => child.status !== "completed");
+	if (children.length === 0) return completedResumeResult(requested);
 	const childAgents = new Map<number, ReturnType<ResolvedExecutorDeps["discoverAgents"]>["agents"]>();
 	for (const child of children) {
 		const agents = deps.discoverAgents(
@@ -107,6 +114,7 @@ async function resumeRetainedParentAskRun(
 		childAgents.set(child.index, agents);
 	}
 	const groupController = new AbortController();
+	const intercomDetachController = run.mode === "parallel" ? new AbortController() : undefined;
 	const activeIndices = new Set<number>();
 	let nextParentAsk: ParentAskPauseRequest | undefined;
 	let nextReleasedIndices: number[] = [];
@@ -120,6 +128,7 @@ async function resumeRetainedParentAskRun(
 			activeIndices.add(child.index);
 			const supervisedTarget = child.execution.options.intercomSessionName;
 			const supervisorAuthorization = await requestSupervisorAuthorization(deps.pi.events, supervisedTarget);
+			const onControlEvent = createRetainedForegroundControlNotifier(child.execution.options, deps);
 			const childMessage = child.index === pause.askingChildIndex ? message : RELEASED_SIBLING_RESUME_MESSAGE;
 			const forwardUpdate = createForwardSingleUpdate(
 				onUpdate,
@@ -135,6 +144,13 @@ async function resumeRetainedParentAskRun(
 						interruptSignal: childController.signal,
 						intercomEvents: deps.pi.events,
 						supervisorAuthorization,
+						onControlEvent,
+						...(intercomDetachController
+							? {
+									intercomDetachSignal: intercomDetachController.signal,
+									onIntercomDetachCommit: () => intercomDetachController.abort(),
+								}
+							: {}),
 						sessionFile: child.sessionFile ?? child.execution.options.sessionFile,
 						sessionDir: child.sessionFile ? path.dirname(child.sessionFile) : child.execution.options.sessionDir,
 						onUpdate: forwardUpdate
@@ -196,10 +212,11 @@ async function resumeRetainedParentAskRun(
 		delete run.parentAsk;
 	}
 	run.updatedAt = Date.now();
-	const results = resumed.toSorted((left, right) => left.index - right.index).map((entry) => entry.result);
+	const resultEntries = [...resumed, ...completed].toSorted((left, right) => left.index - right.index);
+	const results = resultEntries.map((entry) => entry.result);
 	let terminalSuffix = "";
 	if (!run.parentAsk && run.cleanup) {
-		const detachedIndices = resumed.flatMap((entry) => (entry.result.detached ? [entry.index] : []));
+		const detachedIndices = resultEntries.flatMap((entry) => (entry.result.detached ? [entry.index] : []));
 		if (!run.cleanup.defer(detachedIndices)) {
 			terminalSuffix = run.cleanup.finalize();
 			delete run.cleanup;
@@ -222,7 +239,7 @@ async function resumeRetainedParentAskRun(
 			mode: run.mode,
 			runId: run.runId,
 			results,
-			totalSteps: results.length,
+			totalSteps: releasedChildren.length,
 			...(run.parentAsk ? { parentAskPaused: true } : {}),
 		},
 		...(results.some((result) => result.status === "error") ? { isError: true } : {}),
@@ -283,6 +300,7 @@ async function resumeRetainedForegroundChild(
 		child.agent,
 		child.index,
 	);
+	const onControlEvent = createRetainedForegroundControlNotifier(child.execution.options, deps);
 	let result: SingleResult;
 	try {
 		result = normalizeResultIndex(
@@ -293,6 +311,7 @@ async function resumeRetainedForegroundChild(
 				allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 				intercomEvents: deps.pi.events,
 				supervisorAuthorization,
+				onControlEvent,
 				sessionFile: child.sessionFile ?? child.execution.options.sessionFile,
 				sessionDir: child.sessionFile ? path.dirname(child.sessionFile) : child.execution.options.sessionDir,
 				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,

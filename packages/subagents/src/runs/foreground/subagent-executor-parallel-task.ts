@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.js";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
 import type { ModelInfo } from "../../shared/model-info.js";
 import type { CandidateModelResolver } from "../../shared/model-resolution.js";
 import { buildTaskInstructions, type ResolvedStepBehavior } from "../../shared/settings.js";
@@ -66,6 +67,17 @@ interface ForegroundParallelRunInput {
 	runtime: Pick<SubagentExecutorRuntimeDeps, "runSync">;
 }
 
+function skippedParallelResult(task: TaskParam, taskText: string, error: string): SingleResult {
+	return {
+		agent: task.agent,
+		task: taskText,
+		status: "skipped",
+		messages: [],
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+		error,
+	};
+}
+
 export async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Promise<SingleResult[]> {
 	const intercomDetachController = new AbortController();
 	const parentAskController = new AbortController();
@@ -73,24 +85,14 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const activeIndices = new Set<number>();
 	return mapConcurrent(input.tasks, input.concurrencyLimit, async (task, index) => {
 		if (parentAskController.signal.aborted) {
-			return {
-				agent: task.agent,
-				task: input.taskTexts[index] ?? task.task,
-				status: "skipped",
-				messages: [],
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-				error: "Skipped after parent ask pause",
-			};
+			return skippedParallelResult(task, input.taskTexts[index] ?? task.task, "Skipped after parent ask pause");
 		}
 		if (intercomDetachController.signal.aborted) {
-			return {
-				agent: task.agent,
-				task: input.taskTexts[index] ?? task.task,
-				status: "skipped",
-				messages: [],
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-				error: "Skipped after foreground group detached for intercom coordination",
-			};
+			return skippedParallelResult(
+				task,
+				input.taskTexts[index] ?? task.task,
+				"Skipped after foreground group detached for intercom coordination",
+			);
 		}
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
@@ -110,6 +112,18 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			`${readInstructions.prefix}${input.taskTexts[index]!}${progressInstructions.suffix}`,
 			outputPath,
 		);
+		const childIntercomTarget = input.childIntercomTarget?.(task.agent, index);
+		const supervisorAuthorization = await requestSupervisorAuthorization(input.intercomEvents, childIntercomTarget);
+		if (parentAskController.signal.aborted) {
+			return skippedParallelResult(task, input.taskTexts[index] ?? task.task, "Skipped after parent ask pause");
+		}
+		if (intercomDetachController.signal.aborted) {
+			return skippedParallelResult(
+				task,
+				input.taskTexts[index] ?? task.task,
+				"Skipped after foreground group detached for intercom coordination",
+			);
+		}
 		const interruptController = new AbortController();
 		const interruptForParentAsk = () => interruptController.abort();
 		parentAskController.signal.addEventListener("abort", interruptForParentAsk, { once: true });
@@ -151,7 +165,8 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 			controlConfig: input.controlConfig,
 			onControlEvent: input.onControlEvent,
-			intercomSessionName: input.childIntercomTarget?.(task.agent, index),
+			intercomSessionName: childIntercomTarget,
+			supervisorAuthorization,
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
 			intercomGroup: resolveChildIntercomGroup(
 				task.group ?? input.setIntercomGroup,

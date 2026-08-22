@@ -238,7 +238,7 @@ export function replaceForegroundRunChild(
 export function emitControlNotification(input: {
 	pi: ExtensionAPI;
 	controlConfig: ExecutionContextData["controlConfig"];
-	intercomBridge: IntercomBridgeState;
+	intercomBridge: Pick<IntercomBridgeState, "active" | "orchestratorTarget">;
 	event: ControlEvent;
 }): void {
 	if (!shouldNotifyControlEvent(input.controlConfig, input.event)) return;
@@ -287,6 +287,25 @@ export function createForegroundControlNotifier(
 			pi: deps.pi,
 			controlConfig: data.controlConfig,
 			intercomBridge: data.intercomBridge,
+			event,
+		});
+}
+
+export function createRetainedForegroundControlNotifier(
+	options: Pick<RunSyncOptions, "controlConfig" | "orchestratorIntercomTarget">,
+	deps: Pick<ExecutorDeps, "pi">,
+): ((event: ControlEvent) => void) | undefined {
+	const controlConfig = options.controlConfig;
+	if (!controlConfig) return undefined;
+	const orchestratorTarget = options.orchestratorIntercomTarget;
+	return (event) =>
+		emitControlNotification({
+			pi: deps.pi,
+			controlConfig,
+			intercomBridge: {
+				active: orchestratorTarget !== undefined,
+				...(orchestratorTarget !== undefined ? { orchestratorTarget } : {}),
+			},
 			event,
 		});
 }

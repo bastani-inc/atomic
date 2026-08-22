@@ -67,6 +67,7 @@ function makeExecutor(
 	runtime: Partial<SubagentExecutorRuntimeDeps>,
 	defaultProgress?: boolean,
 	authorizeSupervisor?: (childName: string) => { capability: string; supervisorSessionId: string; childName: string },
+	intercomBridgeMode?: "off",
 ): ReturnType<typeof createSubagentExecutor> {
 	const state: ExecutorDeps["state"] = {
 		baseCwd: "",
@@ -91,7 +92,10 @@ function makeExecutor(
 			getSessionName: () => "parent",
 		} as unknown as ExecutorDeps["pi"],
 		state,
-		config: { parallel: { concurrency: 4, maxTasks: 50 } },
+		config: {
+			parallel: { concurrency: 4, maxTasks: 50 },
+			...(intercomBridgeMode ? { intercomBridge: { mode: intercomBridgeMode } } : {}),
+		},
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
@@ -443,13 +447,15 @@ test("resume requests and forwards a fresh supervisor authorization", async () =
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
 		const authorizedChildren: string[] = [];
-		let capturedAuthorization: { capability: string; supervisorSessionId: string; childName: string } | undefined;
+		const capturedAuthorizations: Array<
+			{ capability: string; supervisorSessionId: string; childName: string } | undefined
+		> = [];
 		let runSyncAttempt = 0;
 		const executor = makeExecutor(
 			cwd,
 			{
 				runSync: async (_cwd, _agents, _agent, task, options) => {
-					capturedAuthorization = options.supervisorAuthorization;
+					capturedAuthorizations.push(options.supervisorAuthorization);
 					const interrupted = runSyncAttempt++ === 0;
 					return {
 						...makeResult(task),
@@ -461,7 +467,11 @@ test("resume requests and forwards a fresh supervisor authorization", async () =
 			true,
 			(childName) => {
 				authorizedChildren.push(childName);
-				return { capability: `cap-${childName}`, supervisorSessionId: "supervisor-id", childName };
+				return {
+					capability: `cap-${authorizedChildren.length}`,
+					supervisorSessionId: "supervisor-id",
+					childName,
+				};
 			},
 		);
 		const context = makeContext(cwd);
@@ -483,10 +493,52 @@ test("resume requests and forwards a fresh supervisor authorization", async () =
 		);
 
 		assert.equal(resumed.isError, undefined);
-		assert.equal(authorizedChildren.length, 1);
-		assert.equal(capturedAuthorization?.childName, authorizedChildren[0]);
-		assert.equal(capturedAuthorization?.capability, `cap-${authorizedChildren[0]}`);
-		assert.equal(capturedAuthorization?.supervisorSessionId, "supervisor-id");
+		assert.equal(authorizedChildren.length, 2);
+		assert.equal(authorizedChildren[0], authorizedChildren[1]);
+		assert.deepEqual(
+			capturedAuthorizations.map((authorization) => authorization?.capability),
+			["cap-1", "cap-2"],
+		);
+		for (const authorization of capturedAuthorizations) {
+			assert.equal(authorization?.childName, authorizedChildren[0]);
+			assert.equal(authorization?.supervisorSessionId, "supervisor-id");
+		}
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("inactive bridge requests no initial supervisor authorization", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-no-supervisor-"));
+	try {
+		const authorizedChildren: string[] = [];
+		let capturedAuthorization: Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]["supervisorAuthorization"];
+		const executor = makeExecutor(
+			cwd,
+			{
+				runSync: async (_cwd, _agents, _agent, task, options) => {
+					capturedAuthorization = options.supervisorAuthorization;
+					return makeResult(task);
+				},
+			},
+			false,
+			(childName) => {
+				authorizedChildren.push(childName);
+				return { capability: "unexpected", supervisorSessionId: "supervisor-id", childName };
+			},
+			"off",
+		);
+
+		await executor.execute(
+			"initial",
+			{ agent: "worker", task: "implement" },
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd),
+		);
+
+		assert.deepEqual(authorizedChildren, []);
+		assert.equal(capturedAuthorization, undefined);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

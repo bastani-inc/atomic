@@ -6,7 +6,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Fixed
 
-- Real typed foreground children now expose active `contact_supervisor`. Its decisions and interviews, plus `intercom.ask` calls resolved to the launching parent, yield to retained `subagent` pause/resume before broker send or reply-waiter admission; parent-targeted ask attachments retain their order and content in the surfaced question. Progress updates, sends, and asks to other peers keep their existing delivery behavior ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
+- Real typed foreground children now expose active, broker-authorized `contact_supervisor`. Initial and resumed children receive exact capabilities, so progress updates deliver without pausing; decisions and interviews, plus `intercom.ask` calls resolved to the launching parent, yield to retained `subagent` pause/resume before broker send or reply-waiter admission. Parent-targeted ask attachments retain their order and content, while sends and asks to other peers keep their existing delivery behavior ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
 
 ## [0.9.13] - 2026-08-13
 

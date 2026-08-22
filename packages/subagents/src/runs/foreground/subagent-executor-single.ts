@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
 import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
@@ -191,6 +192,7 @@ export async function runSinglePath(
 	let r: SingleResult;
 	let execution: ForegroundChildExecution;
 	try {
+		const supervisorAuthorization = await requestSupervisorAuthorization(deps.pi.events, childIntercomTarget);
 		const runOptions: RunSyncOptions = {
 			cwd: effectiveCwd,
 			signal,
@@ -213,6 +215,7 @@ export async function runSinglePath(
 			controlConfig,
 			onControlEvent,
 			intercomSessionName: childIntercomTarget,
+			supervisorAuthorization,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
 			onParentAskClaim: (request) => {

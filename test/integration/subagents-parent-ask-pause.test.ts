@@ -14,8 +14,11 @@ import type {
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import {
+	type ControlEvent,
 	PARENT_ASK_PAUSE_REQUEST_EVENT,
 	type ParentAskPauseRequest,
+	type SingleResult,
+	SUBAGENT_CONTROL_EVENT,
 } from "../../packages/subagents/src/shared/types.js";
 import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -23,6 +26,7 @@ class TestEvents {
 	private readonly handlers = new Map<string, Set<(payload: unknown) => void>>();
 	readonly parentAskListenerReady = Promise.withResolvers<void>();
 	parentAskRegistrations = 0;
+	readonly emitted: Array<{ channel: string; payload: unknown }> = [];
 
 	on(channel: string, handler: (payload: unknown) => void): () => void {
 		let listeners = this.handlers.get(channel);
@@ -39,6 +43,7 @@ class TestEvents {
 	}
 
 	emit(channel: string, payload: unknown): void {
+		this.emitted.push({ channel, payload });
 		for (const handler of this.handlers.get(channel) ?? []) handler(payload);
 	}
 }
@@ -110,12 +115,14 @@ test("SINGLE parent ask pauses, resumes with the answer, and cannot resume after
 	const initialGate = Promise.withResolvers<void>();
 	const secondGate = Promise.withResolvers<void>();
 	let options: Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4] | undefined;
+	const optionsAttempts: Array<Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]> = [];
 	let runCalls = 0;
 	const tasks: string[] = [];
 	const runtime: SubagentExecutorRuntimeDeps = {
 		runSync: async (cwd, agents, agentName, task, runOptions) => {
 			runCalls += 1;
 			tasks.push(task);
+			optionsAttempts.push(runOptions);
 			options = runOptions;
 			return runSync(cwd, agents, agentName, task, {
 				...runOptions,
@@ -139,7 +146,10 @@ test("SINGLE parent ask pauses, resumes with the answer, and cannot resume after
 	const executor = createSubagentExecutor({
 		pi: { events, getSessionName: () => "parent-session" } as never,
 		state: childState,
-		config: { parallel: { concurrency: 2, maxTasks: 10 } },
+		config: {
+			parallel: { concurrency: 2, maxTasks: 10 },
+			control: { enabled: true, notifyOn: ["needs_attention"], notifyChannels: ["event"] },
+		},
 		tempArtifactsDir: join(root, "artifacts"),
 		getSubagentSessionRoot: () => join(root, "sessions"),
 		expandTilde: (value) => value,
@@ -218,6 +228,29 @@ test("SINGLE parent ask pauses, resumes with the answer, and cannot resume after
 		assert.equal(secondRequest.claimed, true);
 		assert.match(text(pausedAgain), /One more choice\?/);
 		assert.deepEqual(tasks, ["Ask the parent", "answer 42"]);
+		const firstControl = optionsAttempts[0]?.onControlEvent;
+		const secondControl = optionsAttempts[1]?.onControlEvent;
+		assert.ok(firstControl && secondControl);
+		assert.notEqual(secondControl, firstControl);
+		const controlEvent: ControlEvent = {
+			type: "needs_attention",
+			to: "needs_attention",
+			ts: Date.now(),
+			agent: "worker",
+			index: 0,
+			runId: request.runId,
+			message: "needs parent attention",
+			reason: "idle",
+		};
+		secondControl(controlEvent);
+		assert.equal(
+			events.emitted.some(
+				(entry) =>
+					entry.channel === SUBAGENT_CONTROL_EVENT &&
+					(entry.payload as { event?: ControlEvent }).event === controlEvent,
+			),
+			true,
+		);
 		assert.equal(retained?.children[0]?.status, "paused");
 		assert.equal(retained?.parentAsk?.request.question, "One more choice?");
 
@@ -233,6 +266,9 @@ test("SINGLE parent ask pauses, resumes with the answer, and cannot resume after
 		assert.deepEqual(tasks, ["Ask the parent", "answer 42", "final answer"]);
 		assert.equal(runCalls, 3);
 		assert.equal(retained?.children[0]?.status, "completed");
+		const thirdControl = optionsAttempts[2]?.onControlEvent;
+		assert.ok(thirdControl);
+		assert.notEqual(thirdControl, secondControl);
 		assert.equal(retained?.parentAsk, undefined);
 
 		const completedResume = await executor.execute(
@@ -285,7 +321,10 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 	const executor = createSubagentExecutor({
 		pi: { events, getSessionName: () => "parent-session" } as never,
 		state: childState,
-		config: { parallel: { concurrency: 2, maxTasks: 10 } },
+		config: {
+			parallel: { concurrency: 2, maxTasks: 10 },
+			control: { enabled: true, notifyOn: ["needs_attention"], notifyChannels: ["event"] },
+		},
 		tempArtifactsDir: join(root, "artifacts"),
 		getSubagentSessionRoot: () => join(root, "sessions"),
 		expandTilde: (value) => value,
@@ -419,6 +458,36 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 			resumed.details.results.map((result) => result.progress?.index),
 			[0, 1],
 		);
+		const [initialZero, resumedZero] = allOptions.get(0) ?? [];
+		const [initialOne, resumedOne] = allOptions.get(1) ?? [];
+		assert.ok(initialZero && initialOne && resumedZero && resumedOne);
+		assert.equal(initialZero.intercomDetachSignal, initialOne.intercomDetachSignal);
+		assert.equal(resumedZero.intercomDetachSignal, resumedOne.intercomDetachSignal);
+		assert.notEqual(resumedZero.intercomDetachSignal, initialZero.intercomDetachSignal);
+		assert.equal(resumedOne.intercomDetachSignal?.aborted, false);
+		assert.ok(initialZero.onControlEvent && resumedZero.onControlEvent);
+		assert.notEqual(resumedZero.onControlEvent, initialZero.onControlEvent);
+		const resumedControlEvent: ControlEvent = {
+			type: "needs_attention",
+			to: "needs_attention",
+			ts: Date.now(),
+			agent: "worker",
+			index: 0,
+			runId: request.runId,
+			message: "parallel needs attention",
+			reason: "idle",
+		};
+		resumedZero.onControlEvent(resumedControlEvent);
+		assert.equal(
+			events.emitted.some(
+				(entry) =>
+					entry.channel === SUBAGENT_CONTROL_EVENT &&
+					(entry.payload as { event?: ControlEvent }).event === resumedControlEvent,
+			),
+			true,
+		);
+		resumedZero.onIntercomDetachCommit?.();
+		assert.equal(resumedOne.intercomDetachSignal?.aborted, true);
 		assert.equal(resumed.details.totalSteps, 2);
 		assert.equal(
 			calls.some((call) => call.index === 2),
@@ -429,6 +498,158 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 	} finally {
 		initialGate.resolve();
 		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("mixed paused and completed released siblings resume only the paused child and finalize once", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-mixed-parent-ask-"));
+	const events = new TestEvents();
+	const childState = state();
+	const calls: Array<{ index: number; task: string }> = [];
+	let deferCalls = 0;
+	let finalizeCalls = 0;
+	const completedResult: SingleResult = {
+		agent: "worker",
+		task: "completed at boundary",
+		status: "ok",
+		finalOutput: "sibling already complete",
+		messages: [],
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+		progress: {
+			index: 1,
+			agent: "worker",
+			status: "completed",
+			task: "completed at boundary",
+			durationMs: 1,
+			toolCount: 0,
+			tokens: 0,
+			recentTools: [],
+			recentOutput: [],
+		},
+	};
+	const retainedOptions = (index: number) => ({
+		cwd: root,
+		runId: "mixed-run",
+		index,
+		controlConfig: {
+			enabled: false,
+			needsAttentionAfterMs: 1,
+			activeNoticeAfterMs: 1,
+			failedToolAttemptsBeforeAttention: 1,
+			notifyOn: [],
+			notifyChannels: [],
+		},
+		intercomSessionName: `child-${index}`,
+		orchestratorIntercomTarget: "parent-session",
+	});
+	childState.foregroundRuns?.set("mixed-run", {
+		runId: "mixed-run",
+		mode: "parallel",
+		cwd: root,
+		updatedAt: Date.now(),
+		parentAsk: {
+			askingChildIndex: 0,
+			releasedChildIndices: [0, 1],
+			unlaunchedChildIndices: [2],
+			request: {
+				runId: "mixed-run",
+				index: 0,
+				agent: "worker",
+				childIntercomTarget: "child-0",
+				orchestratorTarget: "parent-session",
+				kind: "decision",
+				question: "continue?",
+				claimed: true,
+			},
+		},
+		cleanup: {
+			defer() {
+				deferCalls += 1;
+				return false;
+			},
+			finalize() {
+				finalizeCalls += 1;
+				return "cleanup complete";
+			},
+			recover() {},
+		},
+		children: [
+			{
+				agent: "worker",
+				index: 0,
+				status: "paused",
+				execution: { runtimeCwd: root, options: retainedOptions(0) },
+			},
+			{
+				agent: "worker",
+				index: 1,
+				status: "completed",
+				result: completedResult,
+				execution: { runtimeCwd: root, options: retainedOptions(1) },
+			},
+		],
+	});
+	const executor = createSubagentExecutor({
+		pi: { events, getSessionName: () => "parent-session" } as never,
+		state: childState,
+		config: { parallel: { concurrency: 2, maxTasks: 10 } },
+		tempArtifactsDir: join(root, "artifacts"),
+		getSubagentSessionRoot: () => join(root, "sessions"),
+		expandTilde: (value) => value,
+		discoverAgents: () => ({ agents: [worker()] }),
+		runtime: {
+			async runSync(_cwd, _agents, _agentName, task, options) {
+				const index = options.index ?? -1;
+				calls.push({ index, task });
+				return {
+					agent: "worker",
+					task,
+					status: "ok",
+					finalOutput: "asker complete",
+					messages: [],
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+					progress: {
+						index: 99,
+						agent: "worker",
+						status: "completed",
+						task,
+						durationMs: 1,
+						toolCount: 0,
+						tokens: 0,
+						recentTools: [],
+						recentOutput: [],
+					},
+				};
+			},
+		},
+	});
+	try {
+		const resumed = await executor.execute(
+			"mixed-resume",
+			{ action: "resume", id: "mixed-run", message: "parent answer" },
+			new AbortController().signal,
+			undefined,
+			context(root),
+		);
+
+		assert.equal(resumed.isError, undefined, text(resumed));
+		assert.deepEqual(calls, [{ index: 0, task: "parent answer" }]);
+		assert.deepEqual(
+			resumed.details.results.map((result) => result.progress?.index),
+			[0, 1],
+		);
+		assert.equal(resumed.details.totalSteps, 2);
+		assert.match(text(resumed), /asker complete/);
+		assert.match(text(resumed), /sibling already complete/);
+		assert.equal(deferCalls, 1);
+		assert.equal(finalizeCalls, 1);
+		const retained = childState.foregroundRuns?.get("mixed-run");
+		assert.equal(retained?.children[0]?.status, "completed");
+		assert.equal(retained?.children[1]?.status, "completed");
+		assert.equal(retained?.parentAsk, undefined);
+		assert.equal(retained?.cleanup, undefined);
+	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
@@ -529,6 +750,10 @@ test("PARALLEL worktrees and dirty child work survive repeated parent-ask pauses
 			assert.equal(git(worktreePath, ["diff", "--cached", "--name-only"]), "");
 			assert.match(git(worktreePath, ["status", "--porcelain"]), new RegExp(`dirty-${index}\\.txt`));
 		}
+		const initialDetachSignal = optionsByIndex.get(0)?.[0]?.intercomDetachSignal;
+		assert.equal(initialDetachSignal, optionsByIndex.get(1)?.[0]?.intercomDetachSignal);
+		optionsByIndex.get(0)?.[0]?.onIntercomDetachCommit?.();
+		assert.equal(initialDetachSignal?.aborted, true);
 
 		initialGate.resolve();
 		const repeatedExecution = executor.execute(
@@ -556,7 +781,13 @@ test("PARALLEL worktrees and dirty child work survive repeated parent-ask pauses
 			assert.ok(worktreePath && existsSync(join(worktreePath, `dirty-${index}.txt`)));
 			assert.equal(optionsByIndex.get(index)?.[1]?.cwd, worktreePath);
 		}
+		const secondDetachSignal = optionsByIndex.get(0)?.[1]?.intercomDetachSignal;
+		assert.equal(secondDetachSignal, optionsByIndex.get(1)?.[1]?.intercomDetachSignal);
+		assert.notEqual(secondDetachSignal, initialDetachSignal);
+		assert.equal(secondDetachSignal?.aborted, false);
 
+		optionsByIndex.get(0)?.[1]?.onIntercomDetachCommit?.();
+		assert.equal(secondDetachSignal?.aborted, true);
 		repeatedGate.resolve();
 		const completed = await executor.execute(
 			"worktree-parent-resume-final",
@@ -565,6 +796,10 @@ test("PARALLEL worktrees and dirty child work survive repeated parent-ask pauses
 			undefined,
 			context(root),
 		);
+		const thirdDetachSignal = optionsByIndex.get(0)?.[2]?.intercomDetachSignal;
+		assert.equal(thirdDetachSignal, optionsByIndex.get(1)?.[2]?.intercomDetachSignal);
+		assert.notEqual(thirdDetachSignal, secondDetachSignal);
+		assert.equal(thirdDetachSignal?.aborted, false);
 		assert.match(text(completed), /=== Worktree Changes ===/);
 		assert.equal(optionsByIndex.has(2), false);
 		for (const worktreePath of worktreePaths) assert.ok(worktreePath && !existsSync(worktreePath));
