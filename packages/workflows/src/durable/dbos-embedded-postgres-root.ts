@@ -22,7 +22,7 @@
 import { cpSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type LocalCommandResult, runLocalCommand } from "./local-command.js";
+import { type LocalCommandOptions, type LocalCommandResult, runLocalCommand } from "./local-command.js";
 
 export interface EmbeddedPostgresOwner {
 	readonly uid: number;
@@ -47,7 +47,7 @@ export interface EmbeddedPostgresBinaryPaths {
 export type LocalCommandRunner = (
 	command: string,
 	args: readonly string[],
-	options?: { readonly uid?: number; readonly gid?: number },
+	options?: LocalCommandOptions,
 ) => Promise<LocalCommandResult>;
 
 /** Root-safe cluster location: system path, traversable by system accounts. */
@@ -96,11 +96,16 @@ export async function resolvePrivilegeDrop(
 	owner: EmbeddedPostgresOwner,
 ): Promise<LocalCommandRunner | undefined> {
 	const strategies: readonly LocalCommandRunner[] = [
-		(command, args) => runner(command, args, { uid: owner.uid, gid: owner.gid }),
-		(command, args) =>
-			runner("setpriv", [`--reuid=${owner.uid}`, `--regid=${owner.gid}`, "--clear-groups", "--", command, ...args]),
-		(command, args) => runner("runuser", ["-u", owner.name, "--", command, ...args]),
-		(command, args) => runner("su", ["-s", "/bin/sh", "-c", shellCommand(command, args), owner.name]),
+		(command, args, options) => runner(command, args, { ...options, uid: owner.uid, gid: owner.gid }),
+		(command, args, options) =>
+			runner(
+				"setpriv",
+				[`--reuid=${owner.uid}`, `--regid=${owner.gid}`, "--clear-groups", "--", command, ...args],
+				options,
+			),
+		(command, args, options) => runner("runuser", ["-u", owner.name, "--", command, ...args], options),
+		(command, args, options) =>
+			runner("su", ["-s", "/bin/sh", "-c", shellCommand(command, args), owner.name], options),
 	];
 	for (const strategy of strategies) {
 		const probe = await strategy("id", ["-u"]).catch(() => undefined);

@@ -11,7 +11,11 @@
  *      binaries are unavailable for this platform and Docker exists.
  */
 
-import { EMBEDDED_DBOS_SYSTEM_DATABASE_URL, ensureEmbeddedDbosPostgres } from "./dbos-embedded-postgres.js";
+import {
+	EMBEDDED_DBOS_SYSTEM_DATABASE_URL,
+	ensureEmbeddedDbosPostgres,
+	shutdownEmbeddedDbosPostgres,
+} from "./dbos-embedded-postgres.js";
 import { commandFailureDetail, delay, runLocalCommand, tcpReachable } from "./local-command.js";
 
 const DOCKER_CONTAINER = "dbos-db";
@@ -20,11 +24,13 @@ const DOCKER_READY_ATTEMPTS = 60;
 const DOCKER_READY_DELAY_MS = 500;
 
 type LocalDbosProvider = () => Promise<void>;
+type LocalDbosShutdowner = () => Promise<void>;
 
 let resolution: Promise<string | undefined> | undefined;
 let resolvedProvider: LocalDbosProvider | undefined;
 let embeddedProvider: LocalDbosProvider = ensureEmbeddedDbosPostgres;
 let dockerProvider: LocalDbosProvider = ensureDockerDbosPostgres;
+let shutdownEmbeddedProvider: LocalDbosShutdowner = shutdownEmbeddedDbosPostgres;
 
 /**
  * Resolve the system database URL for this process and make its database
@@ -42,6 +48,13 @@ export function resolveDbosSystemDatabaseUrl(): Promise<string | undefined> {
 /** Re-ensure the previously resolved local database (launch-retry safety net). */
 export async function provisionResolvedLocalDbos(): Promise<void> {
 	await (resolvedProvider ?? embeddedProvider)();
+}
+
+/** Stop the local database only when the resolved provider was embedded. */
+export async function shutdownResolvedLocalDbos(): Promise<void> {
+	if (resolvedProvider !== embeddedProvider) return;
+	resolvedProvider = undefined;
+	await shutdownEmbeddedProvider();
 }
 
 export function shouldProvisionLocalDbos(error: unknown): boolean {
@@ -125,9 +138,11 @@ async function requireDockerSuccess(action: string, args: string[]): Promise<voi
 export function resetLocalDbosProvisioningForTests(
 	embedded: LocalDbosProvider = ensureEmbeddedDbosPostgres,
 	docker: LocalDbosProvider = ensureDockerDbosPostgres,
+	shutdownEmbedded: LocalDbosShutdowner = shutdownEmbeddedDbosPostgres,
 ): void {
 	resolution = undefined;
 	resolvedProvider = undefined;
 	embeddedProvider = embedded;
 	dockerProvider = docker;
+	shutdownEmbeddedProvider = shutdownEmbedded;
 }

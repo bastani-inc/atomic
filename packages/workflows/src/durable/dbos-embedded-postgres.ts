@@ -7,9 +7,10 @@
  * of `embedded-postgres`). No Docker daemon or system Postgres is required.
  *
  * The cluster lives under `~/.atomic/postgres/v<major>` on a dedicated port and
- * is started with `pg_ctl`, which daemonizes the server into its own session:
- * it survives Atomic exiting and is shared by every concurrent Atomic session.
- * Atomic never stops it.
+ * is started with `pg_ctl`, which daemonizes the server into its own session.
+ * It survives an abrupt Atomic exit and can be shared by concurrent sessions.
+ * During orderly durable shutdown, Atomic stops only the cluster whose captured
+ * postmaster PID still matches; an attached or replacement cluster is untouched.
  *
  * PostgreSQL refuses to run as UID 0, so a root Atomic process (containers,
  * CI sandboxes, eval harnesses) resolves an unprivileged system account, keeps
@@ -37,7 +38,7 @@ import {
 	prepareBinariesForOwner,
 	resolveEmbeddedRunContext,
 } from "./dbos-embedded-postgres-root.js";
-import { commandFailureDetail, delay, tcpReachable } from "./local-command.js";
+import { commandFailureDetail, delay, runLocalCommand, tcpReachable } from "./local-command.js";
 
 const EMBEDDED_HOST = "127.0.0.1";
 const EMBEDDED_PORT = 5439;
@@ -54,6 +55,20 @@ interface EmbeddedPostgresBinaries {
 	readonly pg_ctl: string;
 	readonly initdb: string;
 }
+interface ActiveEmbeddedPostgres {
+	readonly pgCtl: string;
+	readonly dataDir: string;
+	readonly context: EmbeddedPostgresRunContext;
+	/** PID read after this process successfully started the cluster. */
+	readonly postgresPid: number;
+	/** OS process-instance token captured with postgresPid. */
+	readonly postgresIdentity: string;
+}
+
+type ProcessIdentityReader = (pid: number) => Promise<string | undefined>;
+
+let activeCluster: ActiveEmbeddedPostgres | undefined;
+let processIdentityReader: ProcessIdentityReader = readProcessIdentity;
 
 let ensured: Promise<void> | undefined;
 
@@ -77,15 +92,30 @@ async function ensure(): Promise<void> {
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	if (context.owner !== undefined) chownSync(root, context.owner.uid, context.owner.gid);
 	const binaries = await prepareBinariesForOwner(loaded, context);
+	let startedHere = false;
 
 	await withSetupLock(join(root, `v${EMBEDDED_PG_MAJOR}.setup-lock`), async () => {
 		if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
 		if (!existsSync(join(dataDir, "PG_VERSION"))) await initializeCluster(binaries.initdb, dataDir, context);
-		await startCluster(binaries.pg_ctl, dataDir, logFile, context);
+		startedHere = await startCluster(binaries.pg_ctl, dataDir, logFile, context);
 	});
 
 	for (let attempt = 0; attempt < READY_ATTEMPTS; attempt += 1) {
-		if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
+		if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) {
+			if (startedHere) {
+				const postgresPid = readPostgresPid(dataDir);
+				if (postgresPid === undefined)
+					throw new Error(`Embedded Postgres became reachable without a postmaster.pid at ${dataDir}.`);
+				const postgresIdentity = await processIdentityReader(postgresPid);
+				// A numeric PID is not durable ownership: the OS can reuse it after
+				// the postmaster exits. If its process instance cannot be identified,
+				// leave the shared cluster running rather than risk stopping a stranger.
+				if (postgresIdentity !== undefined) {
+					activeCluster = { pgCtl: binaries.pg_ctl, dataDir, context, postgresPid, postgresIdentity };
+				}
+			}
+			return;
+		}
 		await delay(READY_DELAY_MS);
 	}
 	throw new Error(
@@ -93,6 +123,90 @@ async function ensure(): Promise<void> {
 	);
 }
 
+/** Stop the cluster started by this process while its process identity remains owned. */
+export async function shutdownEmbeddedDbosPostgres(): Promise<void> {
+	const cluster = activeCluster;
+	activeCluster = undefined;
+	if (cluster === undefined) return;
+	// PID, pidfile, and OS process-instance identity must all still match
+	// immediately before pg_ctl can signal the postmaster.
+	if (!(await clusterStillRunning(cluster.dataDir, cluster.postgresPid, cluster.postgresIdentity))) return;
+
+	const result = await cluster.context.runAsOwner(cluster.pgCtl, [
+		"-D",
+		cluster.dataDir,
+		"-m",
+		"fast",
+		"-w",
+		"-t",
+		"60",
+		"stop",
+	]);
+	if (
+		result.exitCode !== 0 &&
+		(await clusterStillRunning(cluster.dataDir, cluster.postgresPid, cluster.postgresIdentity))
+	) {
+		throw new Error(
+			`Could not stop the embedded Postgres cluster: ${commandFailureDetail(result)}${logTail(join(cluster.context.baseDir, `v${EMBEDDED_PG_MAJOR}.log`))}`,
+		);
+	}
+	while (await clusterStillRunning(cluster.dataDir, cluster.postgresPid, cluster.postgresIdentity)) {
+		await delay(READY_DELAY_MS);
+	}
+}
+
+async function clusterStillRunning(dataDir: string, expectedPid: number, expectedIdentity: string): Promise<boolean> {
+	const pid = readPostgresPid(dataDir);
+	if (pid !== expectedPid) return false;
+	return (await processIdentityReader(expectedPid)) === expectedIdentity;
+}
+
+async function readProcessIdentity(pid: number): Promise<string | undefined> {
+	if (process.platform === "linux") return readLinuxProcessIdentity(pid);
+	if (process.platform === "win32") {
+		const result = await runLocalCommand("powershell.exe", [
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+		]).catch(() => undefined);
+		const startTime = result?.exitCode === 0 ? result.stdout.trim() : "";
+		return startTime === "" ? undefined : `win32:${startTime}`;
+	}
+	if (["aix", "darwin", "freebsd", "netbsd", "openbsd", "sunos"].includes(process.platform)) {
+		const result = await runLocalCommand("ps", ["-o", "lstart=", "-o", "command=", "-p", String(pid)]).catch(
+			() => undefined,
+		);
+		const startTime = result?.exitCode === 0 ? result.stdout.trim().replace(/\s+/g, " ") : "";
+		return startTime === "" ? undefined : `${process.platform}:${startTime}`;
+	}
+	return undefined;
+}
+
+function readLinuxProcessIdentity(pid: number): string | undefined {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		const commandEnd = stat.lastIndexOf(")");
+		if (commandEnd < 0) return undefined;
+		// Fields after the command begin with field 3 (state); starttime is field 22.
+		const startTime = stat
+			.slice(commandEnd + 1)
+			.trim()
+			.split(/\s+/)[19];
+		return startTime === undefined || !/^\d+$/.test(startTime) ? undefined : `linux:${startTime}`;
+	} catch {
+		return undefined;
+	}
+}
+
+function readPostgresPid(dataDir: string): number | undefined {
+	try {
+		const pid = Number.parseInt(readFileSync(join(dataDir, "postmaster.pid"), "utf8").split("\n", 1)[0] ?? "", 10);
+		return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+	} catch {
+		return undefined;
+	}
+}
 async function initializeCluster(initdb: string, dataDir: string, context: EmbeddedPostgresRunContext): Promise<void> {
 	const passwordFile = join(tmpdir(), `atomic-pg-pw-${process.pid}-${crypto.randomUUID().slice(0, 8)}`);
 	writeFileSync(passwordFile, `${EMBEDDED_PASSWORD}\n`, { mode: 0o600 });
@@ -123,23 +237,28 @@ async function startCluster(
 	dataDir: string,
 	logFile: string,
 	context: EmbeddedPostgresRunContext,
-): Promise<void> {
-	const result = await context.runAsOwner(pgCtl, [
-		"-D",
-		dataDir,
-		"-l",
-		logFile,
-		"-o",
-		`-p ${EMBEDDED_PORT} -c listen_addresses=${EMBEDDED_HOST}`,
-		"-w",
-		"-t",
-		"60",
-		"start",
-	]);
-	if (result.exitCode === 0) return;
-	// A concurrent session may have won the start race; readiness polling in the
-	// caller decides. Only fail here when nothing is coming up on the port.
-	if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT, 3_000)) return;
+	isReachable: typeof tcpReachable = tcpReachable,
+): Promise<boolean> {
+	const result = await context.runAsOwner(
+		pgCtl,
+		[
+			"-D",
+			dataDir,
+			"-l",
+			logFile,
+			"-o",
+			`-p ${EMBEDDED_PORT} -c listen_addresses=${EMBEDDED_HOST}`,
+			"-w",
+			"-t",
+			"60",
+			"start",
+		],
+		{ completion: "successful-exit" },
+	);
+	if (result.exitCode === 0) return true;
+	// Another instance can become reachable while pg_ctl runs. Attach to it,
+	// but do not claim ownership of a postmaster this command did not start.
+	if (await isReachable(EMBEDDED_HOST, EMBEDDED_PORT, 3_000)) return false;
 	throw new Error(`Could not start the embedded Postgres cluster: ${commandFailureDetail(result)}${logTail(logFile)}`);
 }
 
@@ -247,7 +366,40 @@ function logTail(logFile: string): string {
 		return "";
 	}
 }
+function setActiveClusterForTests(
+	pgCtl: string | undefined,
+	dataDir?: string,
+	context?: EmbeddedPostgresRunContext,
+	postgresPid?: number,
+	postgresIdentity?: string,
+): void {
+	if (pgCtl === undefined) {
+		activeCluster = undefined;
+		return;
+	}
+	if (dataDir === undefined || context === undefined || postgresPid === undefined || postgresIdentity === undefined) {
+		throw new Error(
+			"An active embedded Postgres test cluster requires its data directory, context, PID, and identity.",
+		);
+	}
+	activeCluster = { pgCtl, dataDir, context, postgresPid, postgresIdentity };
+}
+
+function setProcessIdentityReaderForTests(reader: ProcessIdentityReader | undefined): void {
+	processIdentityReader = reader ?? readProcessIdentity;
+}
+
+/** Narrow seams for command-boundary and process-ownership tests. */
+export const embeddedPostgresTestHooks = {
+	clusterStillRunning,
+	readProcessIdentity,
+	setActiveCluster: setActiveClusterForTests,
+	setProcessIdentityReader: setProcessIdentityReaderForTests,
+	startCluster,
+};
 
 export function resetEmbeddedDbosPostgresForTests(): void {
 	ensured = undefined;
+	activeCluster = undefined;
+	processIdentityReader = readProcessIdentity;
 }

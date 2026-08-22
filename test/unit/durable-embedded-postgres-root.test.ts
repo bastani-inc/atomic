@@ -17,6 +17,7 @@ interface FakeCall {
 	readonly command: string;
 	readonly args: readonly string[];
 	readonly uid?: number;
+	readonly completion?: "successful-exit";
 }
 
 function fakeRunner(
@@ -24,7 +25,12 @@ function fakeRunner(
 	calls: FakeCall[] = [],
 ): LocalCommandRunner {
 	return async (command, args, options) => {
-		calls.push({ command, args, uid: options?.uid });
+		calls.push({
+			command,
+			args,
+			uid: options?.uid,
+			...(options?.completion !== undefined ? { completion: options.completion } : {}),
+		});
 		const result = respond(command, args, options?.uid);
 		return { exitCode: result.exitCode, stdout: result.stdout ?? "", stderr: "" };
 	};
@@ -106,11 +112,12 @@ describe("privilege drop strategy probing", () => {
 		const calls: FakeCall[] = [];
 		const drop = await resolvePrivilegeDrop(nodeLikeRunner({}, calls), owner);
 		assert.ok(drop);
-		const result = await drop("echo", ["hi"]);
+		const result = await drop("echo", ["hi"], { completion: "successful-exit" });
 		assert.equal(result.exitCode, 1); // fake runner: non-id commands fail, but…
 		const last = calls.at(-1)!;
 		assert.equal(last.command, "echo"); // …the command ran directly with uid set
 		assert.equal(last.uid, owner.uid);
+		assert.equal(last.completion, "successful-exit");
 	});
 
 	test("falls back to setpriv when spawn uid/gid is silently ignored (Bun)", async () => {
@@ -126,10 +133,11 @@ describe("privilege drop strategy probing", () => {
 
 		const drop = await resolvePrivilegeDrop(runner, owner);
 		assert.ok(drop);
-		await drop("initdb", ["-D", "/data"]);
+		await drop("initdb", ["-D", "/data"], { completion: "successful-exit" });
 		const last = calls.at(-1)!;
 		assert.equal(last.command, "setpriv");
 		assert.deepEqual(last.args.slice(-3), ["initdb", "-D", "/data"]);
+		assert.equal(last.completion, "successful-exit");
 	});
 
 	test("falls back to runuser and then su, and reports failure when nothing drops", async () => {

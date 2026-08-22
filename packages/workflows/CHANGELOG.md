@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Windows embedded Postgres startup waiting forever when the daemon inherited `pg_ctl` pipes, and made orderly shutdown stop only the still-matching process-owned cluster while leaving attached or replacement clusters untouched ([#2547](https://github.com/bastani-inc/atomic/issues/2547), [#2544](https://github.com/bastani-inc/atomic/pull/2544) by [@darionco](https://github.com/darionco)).
+
 ## [0.9.15] - 2026-08-21
 
 Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

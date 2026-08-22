@@ -12,6 +12,7 @@ import {
 	resetLocalDbosProvisioningForTests,
 	resolveDbosSystemDatabaseUrl,
 	shouldProvisionLocalDbos,
+	shutdownResolvedLocalDbos,
 } from "../../packages/workflows/src/durable/dbos-local-postgres.js";
 
 const originalUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
@@ -109,6 +110,44 @@ describe("resolveDbosSystemDatabaseUrl", () => {
 		await provisionResolvedLocalDbos();
 
 		assert.deepEqual(calls, ["embedded", "docker", "docker"]);
+	});
+
+	test.sequential("shuts down exactly the embedded provider that was resolved", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let shutdownCalls = 0;
+		resetLocalDbosProvisioningForTests(
+			async () => {},
+			async () => {
+				throw new Error("docker must not run");
+			},
+			async () => {
+				shutdownCalls += 1;
+			},
+		);
+
+		await resolveDbosSystemDatabaseUrl();
+		await Promise.all([shutdownResolvedLocalDbos(), shutdownResolvedLocalDbos()]);
+
+		assert.equal(shutdownCalls, 1);
+	});
+
+	test.sequential("does not route Docker provider shutdown through embedded teardown", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let shutdownCalls = 0;
+		resetLocalDbosProvisioningForTests(
+			async () => {
+				throw new Error("embedded unavailable");
+			},
+			async () => {},
+			async () => {
+				shutdownCalls += 1;
+			},
+		);
+
+		await resolveDbosSystemDatabaseUrl();
+		await shutdownResolvedLocalDbos();
+
+		assert.equal(shutdownCalls, 0);
 	});
 });
 

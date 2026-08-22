@@ -37,13 +37,14 @@ function configured(
 	launch: () => Promise<void> = async () => {
 		events.push("launch");
 	},
+	shutdown: () => Promise<void> = async () => {
+		events.push("shutdown");
+	},
 ): ConfiguredDbosDurability {
 	return {
 		backend: new DbosDurableBackend(sdk(events)),
 		launch,
-		shutdown: async () => {
-			events.push("shutdown");
-		},
+		shutdown,
 	};
 }
 
@@ -129,31 +130,138 @@ describe("mandatory DBOS lifecycle", () => {
 		assert.equal(events.filter((event) => event === "shutdown").length, 1);
 	});
 
-	test.sequential("shutdown after a configuration failure resolves without rethrowing", async () => {
-		resetDbosLifecycleForTests(async () => {
-			throw new Error("initdb: error: cannot be run as root");
-		});
+	test.sequential("invokes resolved local teardown after DBOS shutdown", async () => {
+		const events: string[] = [];
+		resetDbosLifecycleForTests(
+			async () => configured(events),
+			async () => {},
+			async () => {
+				events.push("local-shutdown");
+			},
+		);
+		await getReadyDbosBackend();
+
+		await shutdownDbos();
+
+		assert.deepEqual(events.slice(-2), ["shutdown", "local-shutdown"]);
+		assert.equal(dbosLifecycleState(), "shut_down");
+	});
+
+	test.sequential("shutdown after a configuration failure cleans the local provider without rethrowing", async () => {
+		let localShutdowns = 0;
+		resetDbosLifecycleForTests(
+			async () => {
+				throw new Error("initdb: error: cannot be run as root");
+			},
+			async () => {},
+			async () => {
+				localShutdowns += 1;
+			},
+		);
 
 		await assert.rejects(getReadyDbosBackend(), DbosDurabilityError);
-		// Session dispose calls shutdownDbos unconditionally; a backend that never
-		// reached "ready" must make this a no-op instead of rethrowing the
-		// memoized provisioning failure out of process exit.
+		// Session dispose keeps the original configuration failure state but still
+		// releases any embedded cluster started before configuration rejected.
 		await shutdownDbos();
 		await shutdownDbos();
+		assert.equal(localShutdowns, 1);
 		assert.equal(dbosLifecycleState(), "failed");
 	});
 
-	test.sequential("shutdown after a launch failure resolves without rethrowing", async () => {
+	test.sequential("shutdown after a launch failure cleans the local provider without SDK shutdown", async () => {
 		const events: string[] = [];
-		resetDbosLifecycleForTests(async () =>
-			configured(events, async () => {
-				throw new Error("postgres unavailable");
-			}),
+		let localShutdowns = 0;
+		resetDbosLifecycleForTests(
+			async () =>
+				configured(events, async () => {
+					throw new Error("postgres unavailable");
+				}),
+			async () => {},
+			async () => {
+				localShutdowns += 1;
+			},
 		);
 
 		await assert.rejects(getReadyDbosBackend(), DbosDurabilityError);
 		await shutdownDbos();
 		assert.equal(events.filter((event) => event === "shutdown").length, 0);
+		assert.equal(localShutdowns, 1);
+		assert.equal(dbosLifecycleState(), "failed");
+	});
+
+	test.sequential("shutdown after a failed local-provisioning retry cleans the selected provider", async () => {
+		const events: string[] = [];
+		let launchCalls = 0;
+		let localShutdowns = 0;
+		const originalUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		resetDbosLifecycleForTests(
+			async () =>
+				configured(events, async () => {
+					launchCalls += 1;
+					throw new Error(launchCalls === 1 ? "connect ECONNREFUSED 127.0.0.1:5439" : "retry failed");
+				}),
+			async () => {
+				events.push("provision");
+			},
+			async () => {
+				localShutdowns += 1;
+			},
+		);
+		try {
+			await assert.rejects(getReadyDbosBackend(), /retry failed/);
+			await shutdownDbos();
+			assert.equal(launchCalls, 2);
+			assert.ok(events.includes("provision"));
+			assert.equal(localShutdowns, 1);
+			assert.equal(dbosLifecycleState(), "failed");
+		} finally {
+			if (originalUrl === undefined) delete process.env.DBOS_SYSTEM_DATABASE_URL;
+			else process.env.DBOS_SYSTEM_DATABASE_URL = originalUrl;
+		}
+	});
+
+	test.sequential("flush failure still attempts SDK and local shutdown", async () => {
+		const events: string[] = [];
+		const durability = configured(events);
+		durability.backend.flush = async () => {
+			events.push("flush-failed");
+			throw new Error("flush exploded");
+		};
+		resetDbosLifecycleForTests(
+			async () => durability,
+			async () => {},
+			async () => {
+				events.push("local-shutdown");
+			},
+		);
+		await getReadyDbosBackend();
+
+		await assert.rejects(shutdownDbos(), /flush exploded/);
+
+		assert.deepEqual(events.slice(-3), ["flush-failed", "shutdown", "local-shutdown"]);
+		assert.equal(dbosLifecycleState(), "failed");
+	});
+
+	test.sequential("SDK and local shutdown failures are both surfaced after cleanup", async () => {
+		const events: string[] = [];
+		resetDbosLifecycleForTests(
+			async () =>
+				configured(events, undefined, async () => {
+					events.push("shutdown-failed");
+					throw new Error("sdk exploded");
+				}),
+			async () => {},
+			async () => {
+				events.push("local-failed");
+				throw new Error("local exploded");
+			},
+		);
+		await getReadyDbosBackend();
+
+		await assert.rejects(shutdownDbos(), /sdk exploded.*local exploded/s);
+
+		assert.deepEqual(events.slice(-2), ["shutdown-failed", "local-failed"]);
 		assert.equal(dbosLifecycleState(), "failed");
 	});
 });

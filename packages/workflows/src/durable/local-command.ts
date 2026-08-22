@@ -14,6 +14,12 @@ const OUTPUT_LIMIT_BYTES = 16_384;
 
 export interface LocalCommandOptions {
 	readonly env?: Readonly<Record<string, string>>;
+	/**
+	 * For daemon launchers whose successful descendants inherit stdio, settle
+	 * from a successful direct-child exit. Nonzero exits still drain through
+	 * `close`, preserving bounded failure diagnostics.
+	 */
+	readonly completion?: "successful-exit";
 	/** POSIX drop-privilege identity for the spawned process (root only). */
 	readonly uid?: number;
 	readonly gid?: number;
@@ -34,16 +40,50 @@ export function runLocalCommand(
 		});
 		let stdout = "";
 		let stderr = "";
+		let settled = false;
+		let exitFallback: NodeJS.Immediate | undefined;
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (chunk: string) => {
+		const onStdout = (chunk: string): void => {
 			stdout = boundedAppend(stdout, chunk);
-		});
-		child.stderr.on("data", (chunk: string) => {
+		};
+		const onStderr = (chunk: string): void => {
 			stderr = boundedAppend(stderr, chunk);
-		});
-		child.once("error", reject);
-		child.once("close", (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+		};
+		const cleanup = (): void => {
+			if (exitFallback !== undefined) clearImmediate(exitFallback);
+			child.off("error", onError);
+			child.off("exit", onExit);
+			child.off("close", onClose);
+			child.stdout.off("data", onStdout);
+			child.stderr.off("data", onStderr);
+			child.stdout.destroy();
+			child.stderr.destroy();
+		};
+		const finish = (code: number | null): void => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			resolve({ exitCode: code ?? 1, stdout, stderr });
+		};
+		const onError = (error: Error): void => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			reject(error);
+		};
+		const onExit = (code: number | null): void => {
+			if (code !== 0) return;
+			// pg_ctl redirects server output with `-l`; only its successful child
+			// exit needs early settlement because Postgres can retain inherited EOF.
+			exitFallback = setImmediate(() => finish(code));
+		};
+		const onClose = (code: number | null): void => finish(code);
+		child.stdout.on("data", onStdout);
+		child.stderr.on("data", onStderr);
+		child.once("error", onError);
+		if (options?.completion === "successful-exit") child.once("exit", onExit);
+		child.once("close", onClose);
 	});
 }
 
