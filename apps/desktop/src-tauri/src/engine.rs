@@ -125,12 +125,19 @@ pub fn parse_invocation(raw: &str, cwd: Option<PathBuf>) -> EngineInvocation {
 }
 
 pub fn ensure_rpc_mode(args: &mut Vec<String>) {
-	let has_rpc = args.windows(2).any(|window| window[0] == "--mode" && window[1] == "rpc")
-		|| args.iter().any(|arg| arg == "--mode=rpc");
-	if !has_rpc {
-		args.push("--mode".to_string());
-		args.push("rpc".to_string());
+	// Atomic parseArgs is last-option-wins, and `--mode=rpc` is not a mode flag
+	// there. Always finish with a two-token `--mode rpc`.
+	args.retain(|arg| arg != "--mode=rpc");
+	let mut index = 0;
+	while index < args.len() {
+		if args[index] == "--mode" && args.get(index + 1).map(String::as_str) == Some("rpc") {
+			args.drain(index..=index + 1);
+			continue;
+		}
+		index += 1;
 	}
+	args.push("--mode".to_string());
+	args.push("rpc".to_string());
 }
 
 pub fn append_arg_tokens(args: &mut Vec<String>, raw: &str) {
@@ -249,15 +256,17 @@ fn discover_repo_root() -> Option<PathBuf> {
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
-	let file_name = if cfg!(windows) && !name.ends_with(".exe") {
-		format!("{name}.exe")
+	let file_names = if cfg!(windows) && !name.contains('.') {
+		vec![format!("{name}.exe"), format!("{name}.cmd"), name.to_string()]
 	} else {
-		name.to_string()
+		vec![name.to_string()]
 	};
 	env::var_os("PATH").and_then(|paths| {
 		env::split_paths(&paths).find_map(|dir| {
-			let path = dir.join(&file_name);
-			path.is_file().then_some(path)
+			file_names.iter().find_map(|file_name| {
+				let path = dir.join(file_name);
+				path.is_file().then_some(path)
+			})
 		})
 	})
 }
@@ -288,4 +297,38 @@ fn tokenize(raw: &str) -> Vec<String> {
 		tokens.push(current);
 	}
 	tokens
+}
+
+#[cfg(test)]
+mod tests {
+	use super::ensure_rpc_mode;
+
+	#[test]
+	fn appends_mode_rpc_when_missing() {
+		let mut args = vec!["--no-session".to_string()];
+		ensure_rpc_mode(&mut args);
+		assert_eq!(args, vec!["--no-session", "--mode", "rpc"]);
+	}
+
+	#[test]
+	fn moves_mode_rpc_to_the_end() {
+		let mut args = vec!["--mode".to_string(), "rpc".to_string(), "--no-extensions".to_string()];
+		ensure_rpc_mode(&mut args);
+		assert_eq!(args, vec!["--no-extensions", "--mode", "rpc"]);
+	}
+
+	#[test]
+	fn last_option_wins_over_a_later_text_mode() {
+		let mut args =
+			vec!["--mode".to_string(), "rpc".to_string(), "--mode".to_string(), "text".to_string()];
+		ensure_rpc_mode(&mut args);
+		assert_eq!(args, vec!["--mode", "text", "--mode", "rpc"]);
+	}
+
+	#[test]
+	fn rewrites_equals_form_to_two_tokens() {
+		let mut args = vec!["--mode=rpc".to_string()];
+		ensure_rpc_mode(&mut args);
+		assert_eq!(args, vec!["--mode", "rpc"]);
+	}
 }

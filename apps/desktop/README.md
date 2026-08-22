@@ -23,7 +23,7 @@ The webview does not read `~/.atomic` credential or settings files. It spawns th
 - Prompt input. While a turn is running, send is either `streamingBehavior: "followUp"` or `"steer"` (composer control). `queue_update` shows up in the hint.
 - Abort, with `stopReason` `aborted` / `error` on the assistant bubble
 - Tool cards from `tool_execution_start` / `update` / `end` (phase, args, output)
-- Blocking extension dialogs (`confirm`, `select`, `input`, `editor`)
+- Blocking extension dialogs (`confirm`, `select`, `input`, `editor`) and the existing `oauth_*` UI methods
 - Engine stderr, spawn errors, and exit codes in the transcript plus a copyable diagnostics panel
 
 Out of scope on purpose: session picker, model picker chrome, themes as CSS tokens, custom extension UI, packaging/CI, host capability handshake. Those are written down in [PROTOCOL_GAPS.md](./PROTOCOL_GAPS.md) from what this host could not do cleanly.
@@ -54,7 +54,7 @@ ATOMIC_DESKTOP_ENGINE="atomic --mode rpc --no-session" cargo run
 ATOMIC_DESKTOP_ENGINE_ARGS='--no-session --no-extensions --provider openai --model gpt-4o-mini' cargo run
 ```
 
-The host always ensures `--mode rpc` is present. It writes JSONL with LF only, including on Windows.
+The host always appends `--mode rpc` last so Atomic's last-option-wins parser cannot fall through to `--mode text`. It writes JSONL with LF only, including on Windows.
 
 Builtin extensions need the native binding. If that binding is missing, the RPC child exits on startup unless you pass `--no-extensions`. `--no-session` keeps this PoC from writing a session file.
 
@@ -80,7 +80,7 @@ See [PROTOCOL_GAPS.md](./PROTOCOL_GAPS.md). Short version:
 
 **Themes.** RPC has no palette export. This UI hardcodes Catppuccin Mocha from `DESIGN.md`.
 
-**Auth.** `login_provider` exists. This host has no login chrome. Keys are inherited by the engine child; the webview does not read them.
+**Auth.** `login_provider` and typed `oauth_*` extension UI events already exist. This host has no login chrome and does not send `login_provider`. Keys are inherited by the engine child. Fire-and-forget OAuth events become transcript/hint text; blocking ones reuse the dialog.
 
 What already worked without protocol changes: spawn, `get_state`, `prompt`, a completed assistant turn, bash tool lifecycle, abort, steer / `queue_update`.
 

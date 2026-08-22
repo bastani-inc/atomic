@@ -205,10 +205,16 @@
 	async function sendCommand(command) {
 		const id = command.id || nextId("req");
 		const value = { ...command, id };
-		await invoke("send_line", { value });
-		return new Promise((resolve, reject) => {
+		const response = new Promise((resolve, reject) => {
 			pending.set(id, { resolve, reject, command: value.type });
 		});
+		try {
+			await invoke("send_line", { value });
+		} catch (error) {
+			pending.delete(id);
+			throw error;
+		}
+		return response;
 	}
 
 	function handleResponse(frame) {
@@ -219,14 +225,59 @@
 		else waiter.reject(new Error(frame.error || `${waiter.command} failed`));
 	}
 
+	function handleFireAndForgetUi(request) {
+		const method = request.method;
+		if (method === "notify") {
+			setHint(request.message || "");
+			return true;
+		}
+		if (method === "setStatus") {
+			setHint(request.statusText || (request.statusKey ? `[${request.statusKey}]` : ""));
+			return true;
+		}
+		if (method === "setTitle") {
+			if (request.title) sessionLabelEl.textContent = request.title;
+			return true;
+		}
+		if (method === "setWidget") return true;
+		if (method === "set_editor_text") {
+			if (typeof request.text === "string") promptEl.value = request.text;
+			return true;
+		}
+		if (method === "oauth_auth") {
+			const url = request.info && request.info.url;
+			const instructions = (request.info && request.info.instructions) || "Open this URL to sign in.";
+			if (url) addStatus(`${instructions} ${url}`, "status");
+			if (url) setHint(url);
+			return true;
+		}
+		if (method === "oauth_device_code") {
+			const info = request.info || {};
+			const uri = info.verificationUri || "";
+			const code = info.userCode || "";
+			addStatus(code && uri ? `Device code ${code} at ${uri}` : "OAuth device code", "status");
+			if (code) setHint(`Device code: ${code}`);
+			return true;
+		}
+		if (method === "oauth_progress" || method === "oauth_info") {
+			setHint(request.message || "");
+			if (method === "oauth_info" && Array.isArray(request.links)) {
+				for (const link of request.links) {
+					if (link && link.url) addStatus(link.label ? `${link.label}: ${link.url}` : link.url, "status");
+				}
+			}
+			return true;
+		}
+		if (method === "oauth_manual_code_cancel") {
+			setHint("OAuth code entry cancelled.");
+			return true;
+		}
+		return false;
+	}
+
 	async function handleUiRequest(request) {
 		const method = request.method;
-		if (method === "notify" || method === "setStatus" || method === "setTitle") {
-			if (method === "setTitle" && request.title) sessionLabelEl.textContent = request.title;
-			else setHint(request.message || request.text || request.title || method);
-			return;
-		}
-		if (method === "setWidget" || method === "set_editor_text") return;
+		if (handleFireAndForgetUi(request)) return;
 
 		uiTitleEl.textContent = request.title || "Extension prompt";
 		uiMessageEl.textContent = request.message || "";
@@ -239,21 +290,43 @@
 			uiConfirmEl.textContent = "Confirm";
 			collect = (submitter) =>
 				submitter && submitter.value === "ok" ? { confirmed: true } : { cancelled: true };
-		} else if (method === "select") {
+		} else if (method === "select" || method === "oauth_select") {
 			const select = document.createElement("select");
-			for (const option of request.options || []) {
+			const prompt = request.prompt || {};
+			const options = method === "oauth_select" ? prompt.options || [] : request.options || [];
+			if (method === "oauth_select") {
+				uiTitleEl.textContent = prompt.message || "Select a login option";
+				uiMessageEl.textContent = "";
+			}
+			for (const option of options) {
 				const node = document.createElement("option");
-				node.value = option;
-				node.textContent = option;
+				if (option && typeof option === "object") {
+					node.value = option.id || "";
+					node.textContent = option.label || option.id || "";
+				} else {
+					node.value = option;
+					node.textContent = option;
+				}
 				select.append(node);
 			}
 			uiBodyEl.append(select);
 			collect = (submitter) =>
 				submitter && submitter.value === "ok" ? { value: select.value } : { cancelled: true };
-		} else if (method === "input" || method === "editor") {
+		} else if (method === "input" || method === "editor" || method === "oauth_prompt" || method === "oauth_manual_code") {
 			const field = document.createElement(method === "editor" ? "textarea" : "input");
+			const prompt = request.prompt || {};
 			if (method === "editor") field.rows = 8;
-			field.value = request.value || request.text || "";
+			if (method === "oauth_prompt") {
+				uiTitleEl.textContent = prompt.message || "OAuth";
+				uiMessageEl.textContent = "";
+				if (prompt.placeholder) field.placeholder = prompt.placeholder;
+			} else if (method === "oauth_manual_code") {
+				uiTitleEl.textContent = "Enter authorization code";
+				uiMessageEl.textContent = "";
+			} else if (request.placeholder) {
+				field.placeholder = request.placeholder;
+			}
+			field.value = request.prefill || prompt.prefill || "";
 			uiBodyEl.append(field);
 			collect = (submitter) =>
 				submitter && submitter.value === "ok" ? { value: field.value } : { cancelled: true };
@@ -299,11 +372,11 @@
 		}
 		const result = AtomicSession.handleEvent(session, frame);
 		if (result.kind === "transcript") renderTranscript();
-		if (result.kind === "status") setStreaming(Boolean(result.streaming));
-		if (result.kind === "queue") {
-			const hint = formatQueueHint(result.queue);
-			if (hint) setHint(hint);
+		if (result.kind === "status") {
+			setStreaming(Boolean(result.streaming));
+			if (result.queue) setHint(formatQueueHint(result.queue));
 		}
+		if (result.kind === "queue") setHint(formatQueueHint(result.queue));
 		if (result.kind === "model" && result.model) {
 			modelPillEl.textContent = result.model.id || result.model.name || "model";
 		}

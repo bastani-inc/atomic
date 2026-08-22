@@ -30,13 +30,13 @@ cd apps/desktop/src-tauri
 cargo run
 ```
 
-`ATOMIC_DESKTOP_ENGINE` overrides the child command. `ATOMIC_DESKTOP_ENGINE_ARGS` appends extra tokens to the default command. `--mode rpc` is added if missing.
+`ATOMIC_DESKTOP_ENGINE` overrides the child command. `ATOMIC_DESKTOP_ENGINE_ARGS` appends extra tokens to the default command. `--mode rpc` is always appended last.
 
 If builtin native bindings are not built, pass `--no-extensions` or the RPC child exits on startup. `--no-session` keeps the PoC from writing a session file.
 
 There is no desktop test suite. Launch the window and send a prompt.
 
-Details, Linux WebKit packages, and the protocol gaps the host ran into are in `apps/desktop/README.md` and `apps/desktop/PROTOCOL_GAPS.md` at the repository root.
+Details, Linux WebKit packages, and the protocol gaps the host ran into are in `apps/desktop/README.md` and `apps/desktop/PROTOCOL_GAPS.md`.
 
 ## What this does not change
 

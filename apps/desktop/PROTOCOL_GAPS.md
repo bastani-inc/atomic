@@ -1,6 +1,6 @@
 # Protocol gaps the desktop host actually hit
 
-This is the issue 2352 follow-up: run a real host on today's RPC, then write down what a GUI still cannot do cleanly. Nothing here is implemented. Each gap is a candidate for a small additive RPC change, not a new `--mode gui`.
+This is the issue 2352 follow-up: run a real host on today's RPC, then write down what a GUI still cannot do cleanly. The items below that still need a protocol change are unimplemented. Auth user-action frames and fire-and-forget `notify` / `setTitle` / `setStatus` already exist on the engine; the remaining work there is host mapping. Each remaining gap is a candidate for a small additive RPC change, not a new `--mode gui`.
 
 Evidence comes from launching `apps/desktop` against this checkout's CLI (`bun packages/coding-agent/src/cli.ts --mode rpc`) with a real provider key inherited by the child. The webview never reads `~/.atomic`. There is no mock engine and no desktop test suite.
 
@@ -77,21 +77,21 @@ Skip anything that already works. A live window on this checkout against OpenAI 
 
 ## Auth / login chrome
 
-**Tried.** If `OPENAI_API_KEY` is in the environment the child inherits, `get_state` reports `gpt-4o-mini` and `prompt` works. There is no login UI in this host. `login_provider` exists on the protocol.
+**Tried.** If `OPENAI_API_KEY` is in the environment the child inherits, `get_state` reports a model and `prompt` works. There is no login chrome and this host never sends `login_provider`. Keys stay in the engine child.
 
-**Unclean.** OAuth device codes and "open this URL" are not a first-class host event. A desktop app that should open a browser has to scrape `extension_ui_request` copy or dump stderr. The webview still must not read API keys out of `~/.atomic`.
+**Unclean.** The protocol already has typed `oauth_auth`, `oauth_device_code`, `oauth_progress`, `oauth_info`, `oauth_prompt`, `oauth_select`, and `oauth_manual_code` on `extension_ui_request`. An earlier revision of this host cancelled unknown methods, which would abort in-engine OAuth. The host now shows fire-and-forget OAuth events as transcript/hint text and answers the blocking ones with the existing dialog. It still does not open a system browser or send `login_provider`.
 
-**Smallest change.** `login_provider` already returns data. Add a `login_user_action` event (`open_url`, `show_device_code`) so the host can open a browser without parsing strings. Keep credentials in the engine.
+**Smallest change.** Host mapping, not a new event. Do not add `login_user_action`. Optional later: send `login_provider` with `authType: "oauth"` from login chrome, and open `oauth_auth.info.url` / `oauth_device_code.info.verificationUri` in the OS browser. Keep credentials in the engine. `rpc.md` still does not document `login_provider` or the `oauth_*` methods.
 
-**Proving test.** `login_provider` with `authType: "oauth"` emits `open_url`. Assert the event contains a URL and does not contain a token.
+**Proving test.** `login_provider` with `authType: "oauth"` emits `oauth_auth` with a URL and no token. A host that replies `{ cancelled: true }` to `oauth_prompt` fails the login. This host answers that prompt with `{ value }`.
 
 ## Notifications / window title
 
 **Tried.** `setTitle` / `notify` / `setStatus` via `extension_ui_request`. The host updates the subtitle or hint. No native notification.
 
-**Unclean.** Fine for a PoC. A real app would want a `notify` that is allowed to be fire-and-forget without looking like a blocking dialog.
+**Unclean.** Protocol documentation already calls these fire-and-forget (`rpc.md`). An earlier host bug read `setStatus.message` instead of `statusText` / `statusKey`, so the hint showed the literal method name. That mapping is fixed. `setTitle` still changes the in-page session label, not the native window title.
 
-**Smallest change.** Document that `notify` / `setTitle` are non-blocking, and that unknown methods must be cancelled rather than stalling the pipe. This host already does that.
+**Smallest change.** None on the protocol. A later product pass can map `notify` to a native notification and `setTitle` to the OS window title. Unknown blocking methods must still be cancelled rather than stalling the pipe.
 
 **Proving test.** Send `notify` while a turn is streaming. `prompt` still completes. No dialog is shown. Already true here.
 
