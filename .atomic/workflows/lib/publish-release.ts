@@ -652,12 +652,18 @@ async function configuredChecks(
 		cwd,
 		signal,
 	);
-	const rules = await ghJson<readonly Rule[]>(
-		transport,
-		`repos/${RELEASE_REPOSITORY}/rules/branches/${encoded(baseRef)}`,
-		cwd,
-		signal,
-	);
+	const rules: Rule[] = [];
+	for (let page = 1; ; page += 1) {
+		const rulePage = await ghJson<unknown>(
+			transport,
+			`repos/${RELEASE_REPOSITORY}/rules/branches/${encoded(baseRef)}?per_page=100&page=${page}`,
+			cwd,
+			signal,
+		);
+		if (!Array.isArray(rulePage)) throw new TypeError(`GitHub branch-rules page ${page} response must be an array`);
+		rules.push(...(rulePage as readonly Rule[]));
+		if (rulePage.length < 100) break;
+	}
 	return collectConfiguredRequiredChecks(protection, rules);
 }
 

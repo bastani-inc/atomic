@@ -347,7 +347,153 @@ test("rules lookup failures cannot be hidden by a partial classic protection set
 			requiredCheckIntervalMs: 1,
 			requiredCheckTimeoutMs: 2,
 		}).waitForRequiredChecks({ release, baseRef: "main", pullRequest, signal: new AbortController().signal }),
-		/rules\/branches\/main failed.*404/u,
+		/rules\/branches\/main\?per_page=100&page=1 failed.*404/u,
+	);
+});
+
+test("branch rules paginate before a page-two app-bound check can pass", async () => {
+	const firstPage = [
+		{
+			type: "required_status_checks",
+			parameters: { required_status_checks: [{ context: "page-one", integration_id: 15368 }] },
+		},
+		...Array.from({ length: 99 }, () => ({ type: "creation" })),
+	];
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+		if (command.includes("/protection/required_status_checks")) return commandResult(JSON.stringify({}));
+		if (command.endsWith("/rules/branches/main")) return commandResult(JSON.stringify(firstPage));
+		if (command.endsWith("/rules/branches/main?per_page=100&page=1")) {
+			return commandResult(JSON.stringify(firstPage));
+		}
+		if (command.endsWith("/rules/branches/main?per_page=100&page=2")) {
+			return commandResult(
+				JSON.stringify([
+					{
+						type: "required_status_checks",
+						parameters: { required_status_checks: [{ context: "page-two", integration_id: 15368 }] },
+					},
+				]),
+			);
+		}
+		if (command.includes("/check-runs")) {
+			return commandResult(
+				JSON.stringify({
+					check_runs: [
+						{ id: 1, name: "page-one", status: "completed", conclusion: "success", app: { id: 15368 } },
+					],
+				}),
+			);
+		}
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	const result = await createReleaseBoundary("/safe/fake/repository", {
+		transport,
+		clock: fakeClock(),
+		requiredCheckIntervalMs: 1,
+		requiredCheckTimeoutMs: 2,
+	}).waitForRequiredChecks({ release, baseRef: "main", pullRequest, signal: new AbortController().signal });
+	assert.equal(result.status, "failed");
+	assert.match(result.summary, /not yet created.*page-two \(app 15368\)/u);
+	const ruleCalls = transport.calls
+		.map((argv) => argv.join(" "))
+		.filter((command) => command.includes("/rules/branches/"));
+	assert.ok(ruleCalls.some((command) => command.endsWith("/rules/branches/main?per_page=100&page=1")));
+	assert.ok(ruleCalls.some((command) => command.endsWith("/rules/branches/main?per_page=100&page=2")));
+	assert.equal(
+		ruleCalls.some((command) => command.endsWith("&page=3")),
+		false,
+	);
+});
+
+test("a later branch-rules page API failure rejects without evaluating partial rules", async () => {
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+		if (command.includes("/protection/required_status_checks")) return commandResult(JSON.stringify({}));
+		if (command.endsWith("/rules/branches/main?per_page=100&page=1")) {
+			return commandResult(JSON.stringify(Array.from({ length: 100 }, () => ({ type: "creation" }))));
+		}
+		if (command.endsWith("/rules/branches/main?per_page=100&page=2")) {
+			return commandResult("", 1, "authentication denied");
+		}
+		if (command.includes("/check-runs")) return commandResult(JSON.stringify({ check_runs: [] }));
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	await assert.rejects(
+		createReleaseBoundary("/safe/fake/repository", { transport }).waitForRequiredChecks({
+			release,
+			baseRef: "main",
+			pullRequest,
+			signal: new AbortController().signal,
+		}),
+		/rules\/branches\/main\?per_page=100&page=2 failed.*authentication denied/u,
+	);
+});
+
+test("malformed JSON on a later branch-rules page rejects without evaluating partial rules", async () => {
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+		if (command.includes("/protection/required_status_checks")) return commandResult(JSON.stringify({}));
+		if (command.endsWith("/rules/branches/main?per_page=100&page=1")) {
+			return commandResult(JSON.stringify(Array.from({ length: 100 }, () => ({ type: "creation" }))));
+		}
+		if (command.endsWith("/rules/branches/main?per_page=100&page=2")) return commandResult("{");
+		if (command.includes("/check-runs")) return commandResult(JSON.stringify({ check_runs: [] }));
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	await assert.rejects(
+		createReleaseBoundary("/safe/fake/repository", { transport }).waitForRequiredChecks({
+			release,
+			baseRef: "main",
+			pullRequest,
+			signal: new AbortController().signal,
+		}),
+		SyntaxError,
+	);
+});
+
+test("valid non-array JSON on a later branch-rules page fails closed", async () => {
+	const firstPage = [
+		{
+			type: "required_status_checks",
+			parameters: { required_status_checks: [{ context: "page-one", integration_id: 15368 }] },
+		},
+		...Array.from({ length: 99 }, () => ({ type: "creation" })),
+	];
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+		if (command.includes("/protection/required_status_checks")) return commandResult(JSON.stringify({}));
+		if (command.endsWith("/rules/branches/main?per_page=100&page=1")) {
+			return commandResult(JSON.stringify(firstPage));
+		}
+		if (command.endsWith("/rules/branches/main?per_page=100&page=2")) return commandResult(JSON.stringify("x"));
+		if (command.includes("/check-runs")) {
+			return commandResult(
+				JSON.stringify({
+					check_runs: [
+						{ id: 1, name: "page-one", status: "completed", conclusion: "success", app: { id: 15368 } },
+					],
+				}),
+			);
+		}
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	await assert.rejects(
+		createReleaseBoundary("/safe/fake/repository", { transport }).waitForRequiredChecks({
+			release,
+			baseRef: "main",
+			pullRequest,
+			signal: new AbortController().signal,
+		}),
+		/GitHub branch-rules page 2 response must be an array/u,
 	);
 });
 
