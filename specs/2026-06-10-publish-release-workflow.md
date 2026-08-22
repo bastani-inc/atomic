@@ -5,25 +5,25 @@
 | Author(s)              | Norin Lavaee |
 | Status                 | Approved for implementation |
 | Team / Owner           | Atomic maintainers |
-| Created / Last Updated | 2026-06-10 |
+| Created / Last Updated | 2026-06-10 / 2026-08-21 |
 
 ## 1. Executive Summary
 
-This RFC proposes a project-local Atomic workflow named `publish-release` under `.atomic/workflows/publish-release.ts` to automate the repo's documented release/prerelease process. It accepts a required `target_version`, a required `release_kind` (`release` or `prerelease`), starts from the maintainer's current source branch/commit, creates `release/<version>` or `prerelease/<version>` from that exact current HEAD, and uses tracked stages to prepare changelogs/version bumps, open and merge a GitHub PR to `main`, tag the merged commit, push the tag, monitor publishing, and summarize the release. The workflow keeps model stages for flexible work such as changelog wording, PR body creation, CI-log interpretation, and command adaptation, but the release gates themselves are deterministic workflow-code checks. The two dangerous doors are `merge_verified_release_pr` and `publish_release_tag`; they funnel irreversible remote effects through named workflow stages guarded by deterministic preconditions and postcondition verification.
+This RFC defines the project-local `publish-release` workflow under `.atomic/workflows/publish-release.ts`. The implemented workflow accepts `target_version`, `release_kind`, and a versionless `base_ref`; prepares or exactly reuses a changelog-only release branch and open PR; gates the exact PR head on configured required checks; merges and synchronizes the selected base; cuts a detached version-stamped tag with `scripts/cut-release.ts`; and verifies the automatically triggered publish run. Flexible changelog, merge, and tag work remains in tracked model stages, while preparation identity and both external wait gates are deterministic durable `ctx.tool` operations.
 
 ## 2. Context and Motivation
 
 ### 2.1 Current State
 
-The release process is documented in `AGENTS.md` and currently depends on an agent or maintainer manually executing the sequence. The repo already supports project-local workflows from `.atomic/workflows/*.{ts,js,mjs,cjs}` and local workflow files import `defineWorkflow` and `Type` from `@bastani/workflows`.
+The release process is documented in `AGENTS.md` and automated by a project-local workflow discovered from `.atomic/workflows/publish-release.ts`. Workflow support code lives below `.atomic/workflows/lib/` so discovery sees only the workflow definition at the top level.
 
 Relevant current constraints:
 
-- Release flow is tag-driven: branch/PR merge does not publish; pushing a version tag does.
-- Version bumping must use `bun run scripts/bump-version.ts <version>` followed by `bun install`.
-- Changelog updates must be under each package `CHANGELOG.md` `## [Unreleased]` section.
-- Development commands must use Bun except npm publish itself inside CI.
-- Workflow definitions must export `defineWorkflow(...).compile()` and declare all outputs explicitly.
+- Release flow is tag-driven: merging the changelog-only PR does not publish; pushing the detached version tag does.
+- Supported bases remain versionless at `0.0.0`; only `scripts/cut-release.ts` stamps the detached release commit.
+- Release branches contain changelog files only.
+- Required-check configuration comes from GitHub branch protection and active rulesets; configured checks may materialize after the PR is opened.
+- Workflow definitions use `workflow({...})`, declare outputs explicitly, and use durable `ctx.tool` nodes for workflow-owned external polling.
 
 ### 2.2 The Problem
 
@@ -38,13 +38,12 @@ Manual release execution is long, stateful, and contains remote side effects. Th
 - Validate release versions:
   - `release`: `MAJOR.MINOR.PATCH`
   - `prerelease`: `MAJOR.MINOR.PATCH-alpha.REVISION`
-- Create branch `release/<version>` or `prerelease/<version>` from the exact current HEAD/source commit, not by resetting to `main` first.
-- Update changelogs and versions according to `AGENTS.md`.
-- Run `bun run typecheck` and `bun run test:unit` before PR creation.
-- Create a PR from the release/prerelease branch to `main`, wait for CI, enable auto-merge / merge when checks pass.
-- Keep the release/prerelease branch after merge.
-- After merge, switch to `main`, pull `origin/main`, tag `<version>`, push tag, and monitor publish action.
-- Return a compact result with status, version, kind, PR reference, tag, and summary.
+- Prepare a changelog-only `release/<version>` or `prerelease/<version>` branch from the exact current remote base, or reuse an exact existing one-commit branch and matching open PR.
+- Never reset or force-push reuse state; reject conflicting base, files, commit, branch, local/remote SHA, or PR identity.
+- Discover and poll all configured required check context/app identities for the captured PR head; treat missing configured checks as pending and fail on empty configuration, drift, terminal failure, command/auth error, abort, or timeout.
+- Merge only the exact verified PR head and synchronize the selected versionless base.
+- Run `scripts/cut-release.ts` for the detached versioned tag, then poll the exact automatically triggered publish run through success.
+- Keep the release/prerelease branch after merge and return a compact result with status, version, kind, PR reference, tag, and summary.
 
 ### 3.2 Non-Goals
 
@@ -162,26 +161,17 @@ The workflow should fail early when:
 
 ### 5.4 Stage Plan
 
-1. `validate-release-request` — deterministic TypeScript validation in the workflow body.
-2. `prepare-release-branch-and-metadata` — toolful stage that:
-   - inspects git state and records source branch/source SHA,
-   - creates `release/<version>` or `prerelease/<version>` from the exact current HEAD/source commit,
-   - updates relevant changelogs under `## [Unreleased]`,
-   - runs `bun run scripts/bump-version.ts <version>` and `bun install`,
-   - commits changes.
-3. Deterministic release-preparation verification in the workflow body — checks current branch, clean worktree, changed-file allowlist, package manifest versions/private flags, and release commit identity.
-4. Deterministic local checks in the workflow body — runs `bun run typecheck` and `bun run test:unit` directly and blocks on non-zero exits or a dirty worktree.
-5. `open-release-pr` — toolful stage that pushes branch and creates/reuses a PR targeting `main` with useful PR title/body content.
-6. Deterministic PR reference verification in the workflow body — runs `gh pr view` and `git ls-remote` to require `OPEN` state, `main` base, release branch head, and exact release commit SHA.
-7. `wait-for-release-ci` — toolful stage that may wait for/check CI and summarize failures, but does not merge.
-8. Deterministic CI verification in the workflow body — runs `gh pr checks --required --json ...` and requires a non-empty required-check list where every check passes for the captured PR head SHA.
-9. `merge-verified-release-pr` — toolful stage that performs the repository-supported merge after the deterministic CI gate and keeps the release/prerelease branch.
-10. Deterministic merge verification in the workflow body — runs `gh pr view <pr-url> --json state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,url` and `git ls-remote --heads origin <release-branch>`; GitHub state, captured head SHA, and branch retention are the source of truth before tagging.
-11. `sync-main-after-merge` — toolful stage that switches to `main`, pulls `origin/main`, and does not tag.
-12. Deterministic tag-readiness verification in the workflow body — requires clean local `main`, `HEAD === origin/main`, merge commit ancestry, and no existing local/remote release tag.
-13. `push-release-tag` — toolful stage that creates and pushes the version tag, without force-pushing.
-14. Deterministic tag/publish verification in the workflow body — requires the local and remote tag to point to the verified main commit, then verifies the publish workflow run has matching `headSha`, `status === completed`, and `conclusion === success`.
-15. Workflow returns summary outputs.
+1. `validate-release-request` — deterministic version/kind and canonical base validation.
+2. `inspect-release-preparation` — durable Git/GitHub preflight that reads the exact remote base and release branch, optional local release branch, commit file/parent identity, and matching open PR.
+3. If no branch or PR exists, `prepare-changelog-branch` creates a changelog-only diff and `validate-commit-push-open-pr` validates, commits, pushes without force, and opens the PR. `verify-release-preparation` then reruns the deterministic inspection and requires the model-reported and observed PR identities to match.
+4. If the exact changelog-only commit and matching open PR already exist, reuse their unchanged branch, files, head SHA, and PR identity and skip both preparation stages. Any partial or conflicting state stops before mutation.
+5. `wait-required-ci` — one durable `ctx.tool` node polls for up to 45 minutes. Each observation rereads the exact PR plus required status-check configuration from branch protection and active branch rules, then reads check runs and commit statuses for the captured head SHA. Missing configured checks remain pending. Empty configuration, identity drift, terminal failure, command/auth error, abort, or timeout stops the run; exact admin merge also satisfies the gate.
+6. `merge-exact-head-and-sync-base` — merges only with the captured PR selector and head SHA, or verifies that exact head was already merged, then fast-forwards and verifies the selected versionless base.
+7. `cut-and-push-release-tag` — runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes` and verifies the detached release commit/tag identity without moving the base.
+8. `wait-publish-action` — one durable `ctx.tool` node polls for up to 60 minutes for the exact `bastani-inc/atomic` push run at `.github/workflows/publish.yml`, matching workflow identity, tag, and release SHA. A not-yet-created run remains pending; drift, command/auth error, abort, timeout, or a completed non-success result stops the run.
+9. Return the unchanged declared output shape with compact exact identities and evidence.
+
+The two polling callbacks forward the tool's `AbortSignal` to every `gh` process and bounded sleep. Each tool also has a finite deadline longer than its internal polling window. Large command output remains in the durable tool record while the final `summary` stays compact.
 
 Large command output should stay in stage transcripts/artifacts, while the final returned `summary` stays compact.
 
@@ -204,12 +194,10 @@ Large command output should stay in stage transcripts/artifacts, while the final
 
 ## 8. Test Plan
 
-- Typecheck the new workflow with `bun run typecheck`.
-- Reload workflow discovery with the workflow tool.
-- Inspect workflow inputs with `workflow({ action: "inputs", workflow: "publish-release" })`.
-- Review prompt contents to confirm they capture source HEAD before branch creation, create the release/prerelease branch from that exact HEAD, target PRs to `main`, retain the release/prerelease branch after merge, and request compact `git`/`gh` evidence.
-- Perform safe negative validation by running with a mismatched version/kind and confirming early failure, e.g. prerelease kind with `1.2.3`.
-- Do not run a real happy-path release as validation unless explicitly authorized because it can push branches/tags and trigger publishing.
+- Unit-test request validation, exact preparation reuse, every conflicting reuse identity, configured-but-missing checks, empty configuration, failed required checks, PR identity drift, exact admin merge, timeout, abort, command/auth error propagation, publish identity drift, and terminal publish failure.
+- Run a safe executable workflow scenario with fake Git/GitHub boundaries. It must reuse or prepare the exact release state, observe required checks absent before they pass, fake exact-head merge/base synchronization and detached-tag verification, observe the publish run absent before it succeeds, and assert that no real network or release command ran.
+- Run `npm run test:unit`, repository-relevant integration/CI-contract suites, and `npm run check`.
+- Inspect workflow discovery/import contracts and the final diff. Do not run a real happy-path release, merge, tag, push, or publish as validation.
 
 ## 9. Open Questions / Unresolved Issues
 
