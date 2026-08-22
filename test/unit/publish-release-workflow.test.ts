@@ -3,15 +3,16 @@ import { readFileSync } from "node:fs";
 import { describe, test } from "vitest";
 import {
 	collectConfiguredRequiredChecks,
+	createReleaseBoundary,
 	evaluatePreparationReuse,
 	evaluatePublishRuns,
 	evaluateRequiredChecks,
 	type PollClock,
-	type PreparationInspection,
 	type PublishRun,
-	pollPublish,
 	pollRequiredChecks,
 	prereleaseVersionPattern,
+	type ReleaseCommandResult,
+	type ReleaseCommandTransport,
 	type RequiredChecksSnapshot,
 	releaseVersionPattern,
 	validateReleaseRequest,
@@ -75,6 +76,7 @@ function fakeClock(): PollClock & { readonly elapsed: () => number } {
 
 function validReuseState() {
 	return {
+		worktreeStatus: "",
 		baseSha,
 		remoteSha: headSha,
 		localSha: headSha,
@@ -92,6 +94,56 @@ function validReuseState() {
 		],
 		commit: { sha: headSha, parents: [baseSha], changedFiles: ["packages/coding-agent/CHANGELOG.md"] },
 	};
+}
+
+function commandResult(stdout = "", exitCode = 0, stderr = ""): ReleaseCommandResult {
+	return { exitCode, stdout, stderr };
+}
+
+function apiPull() {
+	return {
+		number: 42,
+		html_url: pullRequest.url,
+		state: "open",
+		merged: false,
+		base: { ref: "main", repo: { full_name: "bastani-inc/atomic" } },
+		head: { ref: release.branch, sha: headSha },
+	};
+}
+
+function fakeTransport(
+	respond: (argv: readonly string[], call: number) => ReleaseCommandResult | Promise<ReleaseCommandResult>,
+): ReleaseCommandTransport & {
+	readonly calls: readonly (readonly string[])[];
+	readonly signals: readonly AbortSignal[];
+} {
+	const calls: (readonly string[])[] = [];
+	const signals: AbortSignal[] = [];
+	return {
+		calls,
+		signals,
+		run: async (argv, _cwd, signal) => {
+			calls.push(argv);
+			signals.push(signal);
+			return await respond(argv, calls.length);
+		},
+	};
+}
+
+function exactPreparationResponse(argv: readonly string[], worktreeStatus = ""): ReleaseCommandResult | undefined {
+	const command = argv.join(" ");
+	if (command === "git status --porcelain=v1 --untracked-files=all") return commandResult(worktreeStatus);
+	if (command.includes(`git ls-remote --heads origin refs/heads/${release.branch}`)) {
+		return commandResult(`${headSha}\trefs/heads/${release.branch}`);
+	}
+	if (command.includes("git ls-remote --heads origin refs/heads/main")) {
+		return commandResult(`${baseSha}\trefs/heads/main`);
+	}
+	if (command.includes(`git show-ref --verify refs/heads/${release.branch}`)) {
+		return commandResult(`${headSha} refs/heads/${release.branch}`);
+	}
+	if (command.includes("/pulls?state=open")) return commandResult(JSON.stringify([apiPull()]));
+	return undefined;
 }
 
 describe("publish-release request validation", () => {
@@ -215,6 +267,89 @@ test("conflicting reuse base, files, commit, branch, and PR identity are rejecte
 	);
 });
 
+test("preparation adapter exhausts commit pages and validates both sides of renames", async () => {
+	const firstPage = Array.from({ length: 100 }, (_, index) => ({
+		filename: `packages/package-${index}/CHANGELOG.md`,
+	}));
+	const paginated = fakeTransport((argv) => {
+		const preparation = exactPreparationResponse(argv);
+		if (preparation !== undefined) return preparation;
+		const command = argv.join(" ");
+		if (command.endsWith(`commits/${headSha}?per_page=100&page=1`)) {
+			return commandResult(JSON.stringify({ sha: headSha, parents: [{ sha: baseSha }], files: firstPage }));
+		}
+		if (command.endsWith(`commits/${headSha}?per_page=100&page=2`)) {
+			return commandResult(
+				JSON.stringify({ sha: headSha, parents: [{ sha: baseSha }], files: [{ filename: "package.json" }] }),
+			);
+		}
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	await assert.rejects(
+		createReleaseBoundary("/safe/fake/repository", { transport: paginated }).inspectPreparation({
+			cwd: "/safe/fake/repository",
+			release,
+			baseRef: "main",
+			signal: new AbortController().signal,
+		}),
+		/not changelog-only.*package\.json/u,
+	);
+	assert.ok(paginated.calls.some((argv) => argv.join(" ").endsWith("per_page=100&page=2")));
+
+	const renamed = fakeTransport((argv) => {
+		const preparation = exactPreparationResponse(argv);
+		if (preparation !== undefined) return preparation;
+		const command = argv.join(" ");
+		if (command.endsWith(`commits/${headSha}?per_page=100&page=1`)) {
+			return commandResult(
+				JSON.stringify({
+					sha: headSha,
+					parents: [{ sha: baseSha }],
+					files: [{ filename: "packages/new/CHANGELOG.md", previous_filename: "package.json" }],
+				}),
+			);
+		}
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	await assert.rejects(
+		createReleaseBoundary("/safe/fake/repository", { transport: renamed }).inspectPreparation({
+			cwd: "/safe/fake/repository",
+			release,
+			baseRef: "main",
+			signal: new AbortController().signal,
+		}),
+		/not changelog-only.*package\.json/u,
+	);
+});
+
+test("rules lookup failures cannot be hidden by a partial classic protection set", async () => {
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+		if (command.includes("/protection/required_status_checks")) {
+			return commandResult(JSON.stringify({ contexts: ["classic"] }));
+		}
+		if (command.includes("/rules/branches/main")) return commandResult("", 1, "HTTP 404: Not Found");
+		if (command.includes("/check-runs")) {
+			return commandResult(
+				JSON.stringify({
+					check_runs: [{ id: 1, name: "classic", status: "completed", conclusion: "success", app: { id: 1 } }],
+				}),
+			);
+		}
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	await assert.rejects(
+		createReleaseBoundary("/safe/fake/repository", {
+			transport,
+			clock: fakeClock(),
+			requiredCheckIntervalMs: 1,
+			requiredCheckTimeoutMs: 2,
+		}).waitForRequiredChecks({ release, baseRef: "main", pullRequest, signal: new AbortController().signal }),
+		/rules\/branches\/main failed.*404/u,
+	);
+});
 test("release-0.9.15 CI regression keeps configured checks pending until they materialize", () => {
 	const result = evaluateRequiredChecks(ciSnapshot(), expectedCi);
 	assert.equal(result.status, "pending");
@@ -322,56 +457,97 @@ test("publish evaluation fails on identity drift and terminal failure", () => {
 	assert.match(failed.summary, /completed with failure/u);
 });
 
-test("safe fake-boundary E2E reuses exact prep and reaches delayed CI and publish success", async () => {
+test("safe fake-boundary E2E executes production Git/GitHub adapters through delayed CI and publish", async () => {
 	const controller = new AbortController();
 	const toolCalls: string[] = [];
 	const taskCalls: string[] = [];
 	const sideEffects: string[] = [];
-	const reuse: PreparationInspection = {
-		mode: "reuse",
-		summary: "exact changelog-only branch and PR",
-		changedFiles: ["packages/coding-agent/CHANGELOG.md"],
-		pullRequest,
-	};
+	let checkRunCalls = 0;
+	let publishCalls = 0;
+	const transport = fakeTransport((argv) => {
+		const preparation = exactPreparationResponse(argv);
+		if (preparation !== undefined) return preparation;
+		const command = argv.join(" ");
+		if (command.endsWith(`commits/${headSha}?per_page=100&page=1`)) {
+			return commandResult(
+				JSON.stringify({
+					sha: headSha,
+					parents: [{ sha: baseSha }],
+					files: [{ filename: "packages/coding-agent/CHANGELOG.md" }],
+				}),
+			);
+		}
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+		if (command.includes("/protection/required_status_checks")) {
+			return commandResult(JSON.stringify({ checks: [{ context: "test (linux)", app_id: 15368 }] }));
+		}
+		if (command.includes("/rules/branches/main")) return commandResult("[]");
+		if (command.includes("/check-runs")) {
+			checkRunCalls += 1;
+			return commandResult(
+				JSON.stringify({
+					check_runs:
+						checkRunCalls < 3
+							? []
+							: [
+									{
+										id: 2,
+										name: "test (linux)",
+										status: "completed",
+										conclusion: "success",
+										html_url: "https://github.com/bastani-inc/atomic/actions/runs/2",
+										app: { id: 15368 },
+									},
+								],
+				}),
+			);
+		}
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		if (command.includes("/actions/workflows/publish.yml/runs")) {
+			publishCalls += 1;
+			return commandResult(
+				JSON.stringify({
+					workflow_runs:
+						publishCalls < 2
+							? []
+							: [
+									{
+										id: 100,
+										name: "Publish",
+										display_title: "Publish 1.2.3",
+										path: ".github/workflows/publish.yml",
+										event: "push",
+										head_branch: "1.2.3",
+										head_sha: releaseSha,
+										status: "completed",
+										conclusion: "success",
+										html_url: "https://github.com/bastani-inc/atomic/actions/runs/100",
+										repository: { full_name: "bastani-inc/atomic" },
+									},
+								],
+				}),
+			);
+		}
+		throw new Error(`unexpected fake command: ${command}`);
+	});
 	const ctx = {
 		inputs: { target_version: "1.2.3", release_kind: "release", base_ref: "main" },
 		cwd: "/safe/fake/repository",
-		tool: async (name: string) => {
+		releaseBoundaryOptions: {
+			transport,
+			clock: fakeClock(),
+			requiredCheckIntervalMs: 1,
+			requiredCheckTimeoutMs: 5,
+			publishIntervalMs: 1,
+			publishTimeoutMs: 5,
+		},
+		tool: async (
+			name: string,
+			_input: object,
+			callback: (input: { readonly signal: AbortSignal }) => Promise<unknown>,
+		) => {
 			toolCalls.push(name);
-			if (name === "inspect-release-preparation") return reuse;
-			if (name === "wait-required-ci") {
-				let calls = 0;
-				return await pollRequiredChecks({
-					expected: expectedCi,
-					signal: controller.signal,
-					clock: fakeClock(),
-					intervalMs: 1,
-					timeoutMs: 5,
-					inspect: async () => {
-						calls += 1;
-						return calls < 3
-							? ciSnapshot()
-							: ciSnapshot({
-									observations: [{ context: "test (linux)", appId: 15368, state: "success", sequence: 2 }],
-								});
-					},
-				});
-			}
-			if (name === "wait-publish-action") {
-				let calls = 0;
-				return await pollPublish({
-					expected: { release, releaseSha },
-					signal: controller.signal,
-					clock: fakeClock(),
-					intervalMs: 1,
-					timeoutMs: 5,
-					inspect: async () => {
-						calls += 1;
-						return calls < 2 ? [] : [publishRun()];
-					},
-				});
-			}
-			throw new Error(`unexpected fake tool ${name}`);
+			return await callback({ signal: controller.signal });
 		},
 		task: async (name: string) => {
 			taskCalls.push(name);
@@ -400,16 +576,34 @@ test("safe fake-boundary E2E reuses exact prep and reaches delayed CI and publis
 	assert.equal(result.status, "completed");
 	assert.equal(result.pr_url, pullRequest.url);
 	assert.equal(result.tag, "1.2.3");
+	assert.equal(checkRunCalls, 3);
+	assert.equal(publishCalls, 2);
 	assert.deepEqual(toolCalls, ["inspect-release-preparation", "wait-required-ci", "wait-publish-action"]);
 	assert.deepEqual(taskCalls, ["merge-exact-head-and-sync-base", "cut-and-push-release-tag"]);
 	assert.deepEqual(sideEffects, ["fake exact-head merge/base sync", "fake detached tag verification"]);
-	assert.doesNotMatch(JSON.stringify(ctx), /https?:\/\/(?!safe\/fake)/u);
+	assert.ok(transport.calls.every((argv) => argv[0] === "git" || argv[0] === "gh"));
+	assert.ok(transport.signals.every((signal) => signal === controller.signal));
 });
 
-test("release-0.9.15 retry regression skips prep mutations and blocks conflicting reuse", async () => {
+test("release-0.9.15 retry regression blocks a stale dirty checkout before reuse or mutation", async () => {
 	const source = workflowSource();
 	assert.match(source, /preparationInspection\.mode === "reuse"/u);
 	assert.doesNotMatch(source, /git reset|reset --hard|push --force/u);
+	const transport = fakeTransport((argv) => {
+		const response = exactPreparationResponse(argv, " M packages/coding-agent/CHANGELOG.md");
+		if (response !== undefined) return response;
+		const command = argv.join(" ");
+		if (command.endsWith(`commits/${headSha}?per_page=100&page=1`)) {
+			return commandResult(
+				JSON.stringify({
+					sha: headSha,
+					parents: [{ sha: baseSha }],
+					files: [{ filename: "packages/coding-agent/CHANGELOG.md" }],
+				}),
+			);
+		}
+		throw new Error(`unexpected fake command: ${command}`);
+	});
 
 	let taskCalled = false;
 	await assert.rejects(
@@ -417,14 +611,17 @@ test("release-0.9.15 retry regression skips prep mutations and blocks conflictin
 			await publishRelease.run({
 				inputs: { target_version: "1.2.3", release_kind: "release", base_ref: "main" },
 				cwd: "/safe/fake/repository",
-				tool: async () => {
-					throw new Error("release commit contains conflicting package.json");
-				},
+				releaseBoundaryOptions: { transport },
+				tool: async (
+					_name: string,
+					_input: object,
+					callback: (input: { readonly signal: AbortSignal }) => Promise<unknown>,
+				) => await callback({ signal: new AbortController().signal }),
 				task: async () => {
 					taskCalled = true;
 				},
 			} as never),
-		/conflicting package\.json/u,
+		/not clean.*CHANGELOG\.md/u,
 	);
 	assert.equal(taskCalled, false);
 });

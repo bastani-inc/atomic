@@ -49,6 +49,7 @@ export type PreparationInspection =
 	  };
 
 export type PreparationReuseState = {
+	readonly worktreeStatus: string;
 	readonly baseSha: string;
 	readonly remoteSha?: string;
 	readonly localSha?: string;
@@ -74,6 +75,9 @@ export function evaluatePreparationReuse(
 	baseRef: string,
 	state: PreparationReuseState,
 ): PreparationInspection {
+	if (state.worktreeStatus !== "") {
+		throw new Error(`release checkout is not clean: ${state.worktreeStatus}`);
+	}
 	if (state.localSha !== undefined && state.remoteSha === undefined) {
 		throw new Error(`local ${release.branch} exists without an exact remote branch and cannot be reused safely`);
 	}
@@ -372,14 +376,22 @@ export async function pollPublish(input: {
 	}
 }
 
-type CommandResult = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
+export type ReleaseCommandResult = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
+
+export type ReleaseCommandTransport = {
+	readonly run: (
+		argv: readonly string[],
+		cwd: string,
+		signal: AbortSignal,
+	) => Promise<ReleaseCommandResult>;
+};
 
 class ReleaseCommandError extends Error {
 	readonly exitCode: number;
 	readonly stdout: string;
 	readonly stderr: string;
 
-	constructor(command: readonly string[], result: CommandResult) {
+	constructor(command: readonly string[], result: ReleaseCommandResult) {
 		super(`${command.join(" ")} failed (${result.exitCode}): ${result.stderr || result.stdout}`);
 		this.name = "ReleaseCommandError";
 		this.exitCode = result.exitCode;
@@ -388,10 +400,14 @@ class ReleaseCommandError extends Error {
 	}
 }
 
-async function runCommand(argv: readonly string[], cwd: string, signal: AbortSignal): Promise<CommandResult> {
+async function systemRunCommand(
+	argv: readonly string[],
+	cwd: string,
+	signal: AbortSignal,
+): Promise<ReleaseCommandResult> {
 	const [command, ...args] = argv;
 	if (command === undefined) throw new Error("release command must not be empty");
-	return await new Promise<CommandResult>((resolve, reject) => {
+	return await new Promise<ReleaseCommandResult>((resolve, reject) => {
 		const child = spawn(command, args, { cwd, signal, stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
@@ -404,8 +420,15 @@ async function runCommand(argv: readonly string[], cwd: string, signal: AbortSig
 	});
 }
 
-async function checkedCommand(argv: readonly string[], cwd: string, signal: AbortSignal): Promise<string> {
-	const result = await runCommand(argv, cwd, signal);
+const systemReleaseCommandTransport: ReleaseCommandTransport = { run: systemRunCommand };
+
+async function checkedCommand(
+	transport: ReleaseCommandTransport,
+	argv: readonly string[],
+	cwd: string,
+	signal: AbortSignal,
+): Promise<string> {
+	const result = await transport.run(argv, cwd, signal);
 	if (result.exitCode !== 0) throw new ReleaseCommandError(argv, result);
 	return result.stdout;
 }
@@ -430,7 +453,10 @@ type ApiPullRequest = {
 type ApiCommit = {
 	readonly sha: string;
 	readonly parents: readonly { readonly sha: string }[];
-	readonly files?: readonly { readonly filename: string }[];
+	readonly files?: readonly {
+		readonly filename: string;
+		readonly previous_filename?: string;
+	}[];
 };
 export type ProtectionResponse = {
 	readonly contexts?: readonly string[];
@@ -479,30 +505,49 @@ type WorkflowRunsResponse = {
 	}[];
 };
 
-async function ghJson<T>(endpoint: string, cwd: string, signal: AbortSignal): Promise<T> {
-	return parseJson<T>(await checkedCommand(["gh", "api", endpoint], cwd, signal));
+async function ghJson<T>(
+	transport: ReleaseCommandTransport,
+	endpoint: string,
+	cwd: string,
+	signal: AbortSignal,
+): Promise<T> {
+	return parseJson<T>(await checkedCommand(transport, ["gh", "api", endpoint], cwd, signal));
 }
 
-async function optionalGhJson<T>(endpoint: string, cwd: string, signal: AbortSignal): Promise<T | undefined> {
+async function optionalClassicProtection<T>(
+	transport: ReleaseCommandTransport,
+	endpoint: string,
+	cwd: string,
+	signal: AbortSignal,
+): Promise<T | undefined> {
 	const command = ["gh", "api", endpoint] as const;
-	const result = await runCommand(command, cwd, signal);
+	const result = await transport.run(command, cwd, signal);
 	if (result.exitCode === 0) return parseJson<T>(result.stdout);
 	if (/HTTP 404|Not Found/u.test(`${result.stderr}\n${result.stdout}`)) return undefined;
 	throw new ReleaseCommandError(command, result);
 }
 
 async function inspectPreparation(input: {
+	readonly transport: ReleaseCommandTransport;
 	readonly cwd: string;
 	readonly release: ValidatedRelease;
 	readonly baseRef: string;
 	readonly signal: AbortSignal;
 }): Promise<PreparationInspection> {
+	const worktreeStatus = await checkedCommand(
+		input.transport,
+		["git", "status", "--porcelain=v1", "--untracked-files=all"],
+		input.cwd,
+		input.signal,
+	);
 	const remoteBranch = await checkedCommand(
+		input.transport,
 		["git", "ls-remote", "--heads", "origin", `refs/heads/${input.release.branch}`],
 		input.cwd,
 		input.signal,
 	);
 	const remoteBase = await checkedCommand(
+		input.transport,
 		["git", "ls-remote", "--heads", "origin", `refs/heads/${input.baseRef}`],
 		input.cwd,
 		input.signal,
@@ -514,7 +559,7 @@ async function inspectPreparation(input: {
 	if (remoteSha !== undefined && !/^[0-9a-f]{40}$/u.test(remoteSha))
 		throw new Error(`${input.release.branch} remote identity is malformed`);
 
-	const localBranch = await runCommand(
+	const localBranch = await input.transport.run(
 		["git", "show-ref", "--verify", `refs/heads/${input.release.branch}`],
 		input.cwd,
 		input.signal,
@@ -526,15 +571,34 @@ async function inspectPreparation(input: {
 
 	const owner = "bastani-inc";
 	const pulls = await ghJson<readonly ApiPullRequest[]>(
+		input.transport,
 		`repos/${RELEASE_REPOSITORY}/pulls?state=open&head=${encoded(`${owner}:${input.release.branch}`)}&per_page=100`,
 		input.cwd,
 		input.signal,
 	);
-	const commit =
-		remoteSha === undefined
-			? undefined
-			: await ghJson<ApiCommit>(`repos/${RELEASE_REPOSITORY}/commits/${remoteSha}`, input.cwd, input.signal);
+	let commit: ApiCommit | undefined;
+	const changedFiles: string[] = [];
+	if (remoteSha !== undefined) {
+		let page = 1;
+		for (;;) {
+			const response = await ghJson<ApiCommit>(
+				input.transport,
+				`repos/${RELEASE_REPOSITORY}/commits/${remoteSha}?per_page=100&page=${page}`,
+				input.cwd,
+				input.signal,
+			);
+			commit ??= response;
+			const files = response.files ?? [];
+			for (const file of files) {
+				changedFiles.push(file.filename);
+				if (file.previous_filename !== undefined) changedFiles.push(file.previous_filename);
+			}
+			if (files.length < 100) break;
+			page += 1;
+		}
+	}
 	return evaluatePreparationReuse(input.release, input.baseRef, {
+		worktreeStatus,
 		baseSha,
 		...(remoteSha === undefined ? {} : { remoteSha }),
 		...(localSha === undefined ? {} : { localSha }),
@@ -554,7 +618,7 @@ async function inspectPreparation(input: {
 					commit: {
 						sha: commit.sha,
 						parents: commit.parents.map((parent) => parent.sha),
-						changedFiles: (commit.files ?? []).map((file) => file.filename),
+						changedFiles,
 					},
 				}),
 	});
@@ -576,13 +640,20 @@ export function collectConfiguredRequiredChecks(
 	return required;
 }
 
-async function configuredChecks(baseRef: string, cwd: string, signal: AbortSignal): Promise<readonly RequiredCheck[]> {
-	const protection = await optionalGhJson<ProtectionResponse>(
+async function configuredChecks(
+	transport: ReleaseCommandTransport,
+	baseRef: string,
+	cwd: string,
+	signal: AbortSignal,
+): Promise<readonly RequiredCheck[]> {
+	const protection = await optionalClassicProtection<ProtectionResponse>(
+		transport,
 		`repos/${RELEASE_REPOSITORY}/branches/${encoded(baseRef)}/protection/required_status_checks`,
 		cwd,
 		signal,
 	);
-	const rules = await optionalGhJson<readonly Rule[]>(
+	const rules = await ghJson<readonly Rule[]>(
+		transport,
 		`repos/${RELEASE_REPOSITORY}/rules/branches/${encoded(baseRef)}`,
 		cwd,
 		signal,
@@ -591,6 +662,7 @@ async function configuredChecks(baseRef: string, cwd: string, signal: AbortSigna
 }
 
 async function requiredChecksSnapshot(input: {
+	readonly transport: ReleaseCommandTransport;
 	readonly cwd: string;
 	readonly release: ValidatedRelease;
 	readonly baseRef: string;
@@ -598,18 +670,21 @@ async function requiredChecksSnapshot(input: {
 	readonly signal: AbortSignal;
 }): Promise<RequiredChecksSnapshot> {
 	const pull = await ghJson<ApiPullRequest>(
+		input.transport,
 		`repos/${RELEASE_REPOSITORY}/pulls/${input.pullRequest.number}`,
 		input.cwd,
 		input.signal,
 	);
 	const [required, checkRuns, statuses] = await Promise.all([
-		configuredChecks(input.baseRef, input.cwd, input.signal),
+		configuredChecks(input.transport, input.baseRef, input.cwd, input.signal),
 		ghJson<CheckRunsResponse>(
+			input.transport,
 			`repos/${RELEASE_REPOSITORY}/commits/${input.pullRequest.headSha}/check-runs?per_page=100`,
 			input.cwd,
 			input.signal,
 		),
 		ghJson<CommitStatusResponse>(
+			input.transport,
 			`repos/${RELEASE_REPOSITORY}/commits/${input.pullRequest.headSha}/status?per_page=100`,
 			input.cwd,
 			input.signal,
@@ -647,8 +722,13 @@ async function requiredChecksSnapshot(input: {
 	};
 }
 
-async function publishRuns(cwd: string, signal: AbortSignal): Promise<readonly PublishRun[]> {
+async function publishRuns(
+	transport: ReleaseCommandTransport,
+	cwd: string,
+	signal: AbortSignal,
+): Promise<readonly PublishRun[]> {
 	const response = await ghJson<WorkflowRunsResponse>(
+		transport,
 		`repos/${RELEASE_REPOSITORY}/actions/workflows/publish.yml/runs?event=push&per_page=100`,
 		cwd,
 		signal,
@@ -668,20 +748,36 @@ async function publishRuns(cwd: string, signal: AbortSignal): Promise<readonly P
 	}));
 }
 
-export function createReleaseBoundary(cwd: string): ReleaseBoundary {
+export type ReleaseBoundaryOptions = {
+	readonly transport?: ReleaseCommandTransport;
+	readonly clock?: PollClock;
+	readonly requiredCheckTimeoutMs?: number;
+	readonly requiredCheckIntervalMs?: number;
+	readonly publishTimeoutMs?: number;
+	readonly publishIntervalMs?: number;
+};
+
+export function createReleaseBoundary(cwd: string, options: ReleaseBoundaryOptions = {}): ReleaseBoundary {
+	const transport = options.transport ?? systemReleaseCommandTransport;
 	return {
-		inspectPreparation,
+		inspectPreparation: async (input) => await inspectPreparation({ ...input, transport }),
 		waitForRequiredChecks: async (input) =>
 			await pollRequiredChecks({
 				expected: { release: input.release, baseRef: input.baseRef, pullRequest: input.pullRequest },
-				inspect: async (signal) => await requiredChecksSnapshot({ ...input, cwd, signal }),
+				inspect: async (signal) => await requiredChecksSnapshot({ ...input, transport, cwd, signal }),
 				signal: input.signal,
+				...(options.clock === undefined ? {} : { clock: options.clock }),
+				...(options.requiredCheckTimeoutMs === undefined ? {} : { timeoutMs: options.requiredCheckTimeoutMs }),
+				...(options.requiredCheckIntervalMs === undefined ? {} : { intervalMs: options.requiredCheckIntervalMs }),
 			}),
 		waitForPublish: async (input) =>
 			await pollPublish({
 				expected: { release: input.release, releaseSha: input.releaseSha },
-				inspect: async (signal) => await publishRuns(cwd, signal),
+				inspect: async (signal) => await publishRuns(transport, cwd, signal),
 				signal: input.signal,
+				...(options.clock === undefined ? {} : { clock: options.clock }),
+				...(options.publishTimeoutMs === undefined ? {} : { timeoutMs: options.publishTimeoutMs }),
+				...(options.publishIntervalMs === undefined ? {} : { intervalMs: options.publishIntervalMs }),
 			}),
 	};
 }

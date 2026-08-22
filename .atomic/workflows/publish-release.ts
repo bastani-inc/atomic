@@ -11,6 +11,7 @@ import {
 	type GateResult,
 	type PreparationInspection,
 	type PullRequestIdentity,
+	type ReleaseBoundaryOptions,
 	type ValidatedRelease,
 } from "./lib/publish-release.js";
 
@@ -158,7 +159,9 @@ export default workflow({
 		}
 		const baseRef = releaseBaseRef.slice("refs/heads/".length);
 		const facts = releaseFacts(release, baseRef);
-		const boundary = createReleaseBoundary(ctx.cwd ?? process.cwd());
+		const boundaryOptions = (ctx as typeof ctx & { readonly releaseBoundaryOptions?: ReleaseBoundaryOptions })
+			.releaseBoundaryOptions;
+		const boundary = createReleaseBoundary(ctx.cwd ?? process.cwd(), boundaryOptions);
 		const inspectPreparation = async (stageName: string): Promise<PreparationInspection> =>
 			await ctx.tool(
 				stageName,
