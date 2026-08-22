@@ -730,7 +730,7 @@ test("routes later-first aggregate live data to each sibling without leakage", a
 	}
 });
 
-test("preserves parent ask pause fields and text in every projected final", async () => {
+test("preserves parent ask pause fields and projects text only to the asking route", async () => {
 	const harness = makeHarness({
 		runSync: async (_parentCwd, _agents, agentName, task, options) => {
 			const child = result(agentName, task);
@@ -765,11 +765,14 @@ test("preserves parent ask pause fields and text in every projected final", asyn
 		for (const output of outputs) {
 			assert.equal(Object.hasOwn(output.details!, "parentAskPaused"), true);
 			assert.equal(output.details?.parentAskPaused, true);
-			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
-			assert.match(text, /Subagent paused for parent input/);
-			assert.match(text, /Question:\nKeep {2}this question\nverbatim\./);
-			assert.match(text, /Resume with: subagent\(\{ action: "resume", id:/);
 		}
+		const ownerText = outputs[0]!.content[0]?.type === "text" ? outputs[0]!.content[0].text : "";
+		assert.match(ownerText, /Subagent paused for parent input \(echo, child 1\)\./);
+		assert.match(ownerText, /Question:\nKeep {2}this question\nverbatim\./);
+		assert.match(ownerText, /Resume with: subagent\(\{ action: "resume", id:/);
+		assert.doesNotMatch(ownerText, /released-sibling/);
+		const siblingText = outputs[1]!.content[0]?.type === "text" ? outputs[1]!.content[0].text : "";
+		assert.doesNotMatch(siblingText, /Subagent paused for parent input|Keep {2}this question|asking-child/);
 
 		const ownerContext = {
 			toolCallId: "parent-ask-first",
@@ -785,6 +788,68 @@ test("preserves parent ask pause fields and text in every projected final", asyn
 		assert.match(rendered, /paused parallel/);
 		assert.match(rendered, /Keep {2}this question/);
 		assert.match(rendered, /Resume with: subagent/);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("rebases later-route parent ask guidance without leaking it to sibling output", async () => {
+	const question = "Keep  this later question\nverbatim.";
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task, options) => {
+			const child = result(agentName, task);
+			if (task === "later-asking-child") {
+				assert.ok(options.onParentAskClaim);
+				const request: ParentAskPauseRequest = {
+					runId: options.runId,
+					index: options.index ?? 0,
+					agent: agentName,
+					childIntercomTarget: options.intercomSessionName ?? "child-target",
+					orchestratorTarget: options.orchestratorIntercomTarget ?? "orchestrator-target",
+					kind: "decision",
+					question,
+					claimed: true,
+				};
+				options.onParentAskClaim(request);
+				child.interrupted = true;
+			}
+			return child;
+		},
+	});
+	try {
+		const [first, later] = await Promise.all([
+			execute(harness, "parent-ask-earlier-route", { agent: "echo", task: "earlier-sibling" }),
+			execute(harness, "parent-ask-later-route", { agent: "echo", task: "later-asking-child" }),
+		]);
+
+		assert.deepEqual(
+			first.details?.results.map((child) => child.task),
+			["earlier-sibling"],
+		);
+		assert.deepEqual(
+			later.details?.results.map((child) => child.task),
+			["later-asking-child"],
+		);
+		const firstText = first.content[0]?.type === "text" ? first.content[0].text : "";
+		const laterText = later.content[0]?.type === "text" ? later.content[0].text : "";
+		assert.match(firstText, /output:earlier-sibling/);
+		assert.doesNotMatch(firstText, /Subagent paused for parent input|this later question|later-asking-child/);
+
+		const runId = later.details?.runId;
+		assert.ok(runId);
+		assert.equal(
+			laterText,
+			[
+				"Subagent paused for parent input (echo, child 1).",
+				`Run: ${runId}`,
+				"Question:",
+				question,
+				"",
+				`Resume with: subagent({ action: "resume", id: "${runId}", message: "<answer>" })`,
+			].join("\n"),
+		);
+		assert.doesNotMatch(laterText, /child 2|earlier-sibling/);
+		assert.doesNotMatch(JSON.stringify(later.details), /earlier-sibling/);
 	} finally {
 		harness.cleanup();
 	}

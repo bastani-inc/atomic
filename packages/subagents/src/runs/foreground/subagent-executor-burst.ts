@@ -3,8 +3,10 @@ import type { ExtensionContext } from "@bastani/atomic";
 import type { SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
+import { formatParentAskPauseOutput } from "./parent-ask-output.js";
 import { registerBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
 import { getLiveResultIndices } from "./subagent-executor-live-update.js";
+import { getParentAskPause } from "./subagent-executor-parent-ask-projection.js";
 import { resolveRequestedCwd } from "./subagent-executor-resume.js";
 import {
 	BURST_TASK_DISCOVERY_CWD,
@@ -191,14 +193,48 @@ function formatStandardParallelContent(results: SingleResult[]): string {
 	);
 }
 
+function projectParentAskContent(
+	result: SubagentToolResult,
+	route: ResultRoute,
+	projectedResults: SingleResult[],
+): SubagentToolResult["content"] | undefined {
+	const pause = getParentAskPause(result);
+	if (!pause) return undefined;
+	const originalItem =
+		result.content.length === 1 && result.content[0]?.type === "text"
+			? result.content[0]
+			: { type: "text" as const, text: "" };
+	const routeEnd = route.start + route.length;
+	const inRoute = (index: number): boolean => index >= route.start && index < routeEnd;
+	if (!inRoute(pause.askingChildIndex)) {
+		return [{ ...originalItem, text: formatStandardParallelContent(projectedResults) }];
+	}
+	const projectIndex = (index: number): number => index - route.start;
+	return [
+		{
+			...originalItem,
+			text: formatParentAskPauseOutput({
+				...pause,
+				askingChildIndex: projectIndex(pause.askingChildIndex),
+				releasedChildIndices: pause.releasedChildIndices.filter(inRoute).map(projectIndex),
+				unlaunchedChildIndices: pause.unlaunchedChildIndices.filter(inRoute).map(projectIndex),
+				request: { ...pause.request, index: projectIndex(pause.request.index) },
+			}),
+		},
+	];
+}
+
 function projectParallelContent(
 	result: SubagentToolResult,
 	sharedResults: SingleResult[],
 	projectedResults: SingleResult[],
+	route: ResultRoute,
 	live: boolean,
 ): SubagentToolResult["content"] {
 	const projectedText = formatStandardParallelContent(projectedResults);
 	if (live) return [{ type: "text", text: projectedText }];
+	const parentAskContent = projectParentAskContent(result, route, projectedResults);
+	if (parentAskContent) return parentAskContent;
 	if (result.content.length !== 1 || result.content[0]?.type !== "text") return result.content;
 	const originalItem = result.content[0];
 	const originalText = originalItem.text;
@@ -232,7 +268,7 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 	const artifactFiles = results.flatMap((child) => (child.artifactPaths ? [child.artifactPaths] : []));
 
 	return {
-		content: projectParallelContent(result, sharedDetails.results, results, live),
+		content: projectParallelContent(result, sharedDetails.results, results, route, live),
 		...(result.isError !== undefined ? { isError: result.isError } : {}),
 		details: {
 			mode: "parallel",

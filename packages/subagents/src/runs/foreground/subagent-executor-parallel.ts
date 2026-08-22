@@ -31,6 +31,7 @@ import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.js";
 import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.js";
 import { formatParentAskPauseOutput } from "./parent-ask-output.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
+import { markParentAskPause } from "./subagent-executor-parent-ask-projection.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
@@ -295,10 +296,12 @@ export async function runParallelPath(
 			...(parentAsk && retainedWorktreeCleanup ? { cleanup: retainedWorktreeCleanup } : {}),
 		});
 		if (parentAsk) {
-			return {
+			const pausedResult: SubagentToolResult = {
 				content: [{ type: "text", text: formatParentAskPauseOutput(parentAsk) }],
 				details,
 			};
+			markParentAskPause(pausedResult, parentAsk);
+			return pausedResult;
 		}
 		if (interrupted) {
 			return {
