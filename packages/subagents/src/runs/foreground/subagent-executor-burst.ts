@@ -1,0 +1,304 @@
+import { isDeepStrictEqual } from "node:util";
+import type { ExtensionContext } from "@bastani/atomic";
+import type { SingleResult, SubagentToolResult } from "../../shared/types.js";
+import { getSingleResultOutput } from "../../shared/utils.js";
+import { formatParallelResultContent } from "../shared/parallel-utils.js";
+import { resolveRequestedCwd } from "./subagent-executor-resume.js";
+import {
+	BURST_TASK_DISCOVERY_CWD,
+	type BurstTaskParam,
+	type SubagentParamsLike,
+	type TaskParam,
+} from "./subagent-executor-types.js";
+
+interface BurstItem {
+	id: string;
+	params: SubagentParamsLike;
+	signal: AbortSignal;
+	onUpdate?: (result: SubagentToolResult) => void;
+	ctx: ExtensionContext;
+	resolve: (result: SubagentToolResult) => void;
+	reject: (error: Error) => void;
+}
+
+interface ResultRoute {
+	start: number;
+	length: number;
+}
+
+type ExecuteSubagent = (
+	id: string,
+	params: SubagentParamsLike,
+	signal: AbortSignal,
+	onUpdate: ((result: SubagentToolResult) => void) | undefined,
+	ctx: ExtensionContext,
+) => Promise<SubagentToolResult>;
+
+type SharedField =
+	| "concurrency"
+	| "worktree"
+	| "context"
+	| "share"
+	| "control"
+	| "sessionDir"
+	| "maxOutput"
+	| "artifacts"
+	| "includeProgress"
+	| "agentScope";
+
+const SHARED_FIELDS: readonly SharedField[] = [
+	"concurrency",
+	"worktree",
+	"context",
+	"share",
+	"control",
+	"sessionDir",
+	"maxOutput",
+	"artifacts",
+	"includeProgress",
+	"agentScope",
+];
+
+function incompatibleField(items: BurstItem[]): SharedField | undefined {
+	const first = items[0]!.params;
+	for (const field of SHARED_FIELDS) {
+		for (let index = 1; index < items.length; index++) {
+			if (!isDeepStrictEqual(first[field], items[index]!.params[field])) return field;
+		}
+	}
+	return undefined;
+}
+
+function incompatibleFieldResult(field: SharedField): SubagentToolResult {
+	return {
+		content: [
+			{
+				type: "text",
+				text: `Cannot coalesce sibling subagent calls: incompatible top-level field '${field}'.`,
+			},
+		],
+		isError: true,
+		details: { mode: "parallel", results: [] },
+	};
+}
+
+function incompatibleWorktreeCwdResult(): SubagentToolResult {
+	return {
+		content: [
+			{
+				type: "text",
+				text: "Cannot coalesce sibling subagent calls: incompatible top-level field 'cwd' for worktree.",
+			},
+		],
+		isError: true,
+		details: { mode: "parallel", results: [] },
+	};
+}
+
+function taskExpandedLength(task: TaskParam): number {
+	const count = task.count;
+	return typeof count === "number" && Number.isInteger(count) && count >= 1 ? count : 1;
+}
+
+function originatingCallCwd(item: BurstItem): string {
+	return resolveRequestedCwd(item.ctx.cwd, item.params.cwd);
+}
+
+function originatingTaskCwd(callCwd: string, taskCwd: string | undefined): string {
+	return resolveRequestedCwd(callCwd, taskCwd);
+}
+
+function topLevelSingleTask(item: BurstItem): BurstTaskParam | undefined {
+	if (!item.params.agent) return undefined;
+	const callCwd = originatingCallCwd(item);
+	return {
+		agent: item.params.agent,
+		task: item.params.task ?? "",
+		cwd: originatingTaskCwd(callCwd, undefined),
+		[BURST_TASK_DISCOVERY_CWD]: callCwd,
+		...(item.params.output !== undefined ? { output: item.params.output } : {}),
+		...(item.params.outputMode !== undefined ? { outputMode: item.params.outputMode } : {}),
+		...(item.params.reads !== undefined ? { reads: item.params.reads } : {}),
+		...(item.params.progress !== undefined ? { progress: item.params.progress } : {}),
+		...(item.params.model !== undefined ? { model: item.params.model } : {}),
+		...(item.params.skill !== undefined ? { skill: item.params.skill } : {}),
+		...(item.params.group !== undefined ? { group: item.params.group } : {}),
+	};
+}
+
+function existingParallelTask(item: BurstItem, task: TaskParam): BurstTaskParam {
+	const callCwd = originatingCallCwd(item);
+	return {
+		...task,
+		cwd: originatingTaskCwd(callCwd, task.cwd),
+		[BURST_TASK_DISCOVERY_CWD]: callCwd,
+		...(task.group === undefined && item.params.group !== undefined ? { group: item.params.group } : {}),
+	};
+}
+
+function mergeBurst(items: BurstItem[]): {
+	params?: SubagentParamsLike;
+	routes?: ResultRoute[];
+	error?: SubagentToolResult;
+} {
+	const field = incompatibleField(items);
+	if (field) return { error: incompatibleFieldResult(field) };
+	const callCwds = items.map(originatingCallCwd);
+	const commonCwd = callCwds.every((cwd) => cwd === callCwds[0]) ? callCwds[0] : undefined;
+	if (items[0]!.params.worktree === true && commonCwd === undefined) return { error: incompatibleWorktreeCwdResult() };
+
+	const tasks: TaskParam[] = [];
+	const routes: ResultRoute[] = [];
+	for (const item of items) {
+		const start = tasks.reduce((total, task) => total + taskExpandedLength(task), 0);
+		const single = topLevelSingleTask(item);
+		if (single) tasks.push(single);
+		for (const task of item.params.tasks ?? []) tasks.push(existingParallelTask(item, task));
+		const end = tasks.reduce((total, task) => total + taskExpandedLength(task), 0);
+		routes.push({ start, length: end - start });
+	}
+
+	const first = items[0]!.params;
+	return {
+		params: {
+			...(commonCwd ? { cwd: commonCwd } : {}),
+			tasks,
+			concurrency: first.concurrency,
+			worktree: first.worktree,
+			context: first.context,
+			share: first.share,
+			control: first.control,
+			sessionDir: first.sessionDir,
+			maxOutput: first.maxOutput,
+			artifacts: first.artifacts,
+			includeProgress: first.includeProgress,
+			agentScope: first.agentScope,
+		},
+		routes,
+	};
+}
+function formatStandardParallelContent(results: SingleResult[]): string {
+	return formatParallelResultContent(
+		results.map((child) => ({
+			agent: child.agent,
+			output: child.truncation?.text || getSingleResultOutput(child),
+			status: child.status,
+			error: child.error,
+		})),
+		(index, agent) => `=== Task ${index + 1}: ${agent} ===`,
+	);
+}
+
+function projectParallelContent(
+	result: SubagentToolResult,
+	sharedResults: SingleResult[],
+	projectedResults: SingleResult[],
+): SubagentToolResult["content"] {
+	if (result.content.length !== 1 || result.content[0]?.type !== "text") return result.content;
+	const originalItem = result.content[0];
+	const originalText = originalItem.text;
+	const sharedText = formatStandardParallelContent(sharedResults);
+	const projectedText = formatStandardParallelContent(projectedResults);
+	if (originalText === sharedText) return [{ ...originalItem, text: projectedText }];
+	if (originalText.startsWith(`${sharedText}\n\n`)) {
+		return [{ ...originalItem, text: `${projectedText}${originalText.slice(sharedText.length)}` }];
+	}
+	return result.content;
+}
+
+function projectResult(result: SubagentToolResult, route: ResultRoute): SubagentToolResult {
+	const sharedDetails = result.details;
+	if (!sharedDetails || sharedDetails.results.length === 0) return result;
+
+	const results = sharedDetails.results.slice(route.start, route.start + route.length);
+	const progress = sharedDetails.progress
+		?.filter((item) => item.index >= route.start && item.index < route.start + route.length)
+		.map((item) => ({ ...item, index: item.index - route.start }));
+	const controlEvents = sharedDetails.controlEvents
+		?.filter(
+			(event) =>
+				event.index === undefined || (event.index >= route.start && event.index < route.start + route.length),
+		)
+		.map((event) => (event.index === undefined ? event : { ...event, index: event.index - route.start }));
+	const artifactFiles = results.flatMap((child) => (child.artifactPaths ? [child.artifactPaths] : []));
+
+	return {
+		content: projectParallelContent(result, sharedDetails.results, results),
+		...(result.isError !== undefined ? { isError: result.isError } : {}),
+		details: {
+			mode: "parallel",
+			...(sharedDetails.runId !== undefined ? { runId: sharedDetails.runId } : {}),
+			...(sharedDetails.context !== undefined ? { context: sharedDetails.context } : {}),
+			results,
+			...(progress?.length ? { progress } : {}),
+			...(controlEvents?.length ? { controlEvents } : {}),
+			...(sharedDetails.totalSteps !== undefined ? { totalSteps: route.length } : {}),
+			...(sharedDetails.artifacts && artifactFiles.length
+				? { artifacts: { dir: sharedDetails.artifacts.dir, files: artifactFiles } }
+				: {}),
+		},
+	};
+}
+
+export function createExecutionBurstDispatcher(input: {
+	execute: ExecuteSubagent;
+	isActive: () => boolean;
+	setActive: (active: boolean) => void;
+	duplicateResult: (params: SubagentParamsLike) => SubagentToolResult;
+}): ExecuteSubagent {
+	let queue: BurstItem[] = [];
+	let flushScheduled = false;
+
+	const run = async (items: BurstItem[]): Promise<void> => {
+		if (items.length === 1) {
+			const item = items[0]!;
+			input.setActive(true);
+			try {
+				item.resolve(await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx));
+			} catch (error) {
+				item.reject(error instanceof Error ? error : new Error(String(error)));
+			} finally {
+				input.setActive(false);
+			}
+			return;
+		}
+
+		const merged = mergeBurst(items);
+		if (merged.error) {
+			for (const item of items) item.resolve(merged.error);
+			return;
+		}
+
+		const first = items[0]!;
+		input.setActive(true);
+		try {
+			const result = await input.execute(first.id, merged.params!, first.signal, first.onUpdate, first.ctx);
+			for (let index = 0; index < items.length; index++) {
+				items[index]!.resolve(projectResult(result, merged.routes![index]!));
+			}
+		} catch (error) {
+			const rejection = error instanceof Error ? error : new Error(String(error));
+			for (const item of items) item.reject(rejection);
+		} finally {
+			input.setActive(false);
+		}
+	};
+
+	const flush = (): void => {
+		flushScheduled = false;
+		const items = queue;
+		queue = [];
+		void run(items);
+	};
+
+	return (id, params, signal, onUpdate, ctx) => {
+		if (input.isActive()) return Promise.resolve(input.duplicateResult(params));
+		return new Promise<SubagentToolResult>((resolve, reject) => {
+			queue.push({ id, params, signal, onUpdate, ctx, resolve, reject });
+			if (!flushScheduled) {
+				flushScheduled = true;
+				setImmediate(flush);
+			}
+		});
+	};
+}

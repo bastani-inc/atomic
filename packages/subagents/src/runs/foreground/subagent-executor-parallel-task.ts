@@ -30,6 +30,7 @@ interface ForegroundParallelRunInput {
 	tasks: TaskParam[];
 	taskTexts: string[];
 	agents: AgentConfig[];
+	agentConfigs?: AgentConfig[];
 	ctx: ExtensionContext;
 	intercomEvents: IntercomEventBus;
 	signal: AbortSignal;
@@ -143,7 +144,8 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				return true;
 			};
 		}
-		const agentConfig = input.agents.find((agent) => agent.name === task.agent);
+		const agentConfig = input.agentConfigs?.[index] ?? input.agents.find((agent) => agent.name === task.agent);
+		const taskAgents = input.agentConfigs && agentConfig ? [agentConfig] : input.agents;
 		const runOptions: RunSyncOptions = {
 			cwd: taskCwd,
 			signal: input.signal,
@@ -238,7 +240,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				: undefined,
 		};
 		input.onExecution?.(index, input.ctx.cwd, runOptions);
-		return input.runtime.runSync(input.ctx.cwd, input.agents, task.agent, taskText, runOptions).finally(() => {
+		return input.runtime.runSync(input.ctx.cwd, taskAgents, task.agent, taskText, runOptions).finally(() => {
 			activeIndices.delete(index);
 			parentAskController.signal.removeEventListener("abort", interruptForParentAsk);
 			if (input.foregroundControl?.currentIndex === index) {

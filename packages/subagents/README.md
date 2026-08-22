@@ -540,6 +540,16 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 ], worktree: true }
 ```
 
+### Sibling execution calls
+
+If one assistant response emits several sibling execution-mode `subagent` calls, Atomic collects the synchronous burst before any child starts and runs it through one indexed parallel set. Each original tool call receives only its own children in source order. A solitary call keeps its original mode, sequential awaited calls stay independent, and management actions bypass collection. A call that arrives after a child has started still gets the existing in-progress rejection. Prefer one explicit `{ tasks: [...] }` call when you intend parallel work; burst collection handles model-emitted sibling calls.
+
+In a collected burst, a call's top-level `agent` task comes first, followed by its `tasks` array. Duplicates and array order are preserved, and `count` expands in place. The task cap applies after all calls are flattened and counts are expanded, with the same hard maximum of 50. Each call-level `cwd` selects that call's agent-discovery scope and child base directory. A task-level `cwd` stays relative to that base and affects child execution, not agent discovery. This per-origin rule applies only to collected sibling calls; an ordinary explicit `{ tasks: [...] }` call keeps one discovery scope from its top-level `cwd`. Per-call and per-task `group` values also remain attached to their children, and a task-level group wins.
+
+For a collected `worktree: true` burst, every call-level `cwd` must resolve to the same path. That common path becomes the shared worktree root; differing origins reject the burst before launch, and any task-level `cwd` must still resolve to that root. Each projected caller result keeps shared worktree diff text and terminal control guidance while its child results and standard child-output sections remain route-local.
+
+One parallel run also needs one value for each run-wide option. Sibling calls must agree on `concurrency`, `worktree`, `context`, `share`, `control`, `sessionDir`, `maxOutput`, `artifacts`, `includeProgress`, and `agentScope`. If any value differs, Atomic rejects the full burst before launch and names the field instead of mixing settings.
+
 ### Management actions
 
 Agent definitions are not loaded into context by default. Management actions let the LLM discover, inspect, create, update, and delete agents at runtime.

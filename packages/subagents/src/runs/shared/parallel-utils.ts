@@ -59,4 +59,12 @@ export function aggregateParallelOutputs(
 		.join("\n\n");
 }
 
+export function formatParallelResultContent(
+	results: ParallelTaskResult[],
+	headerFormat: (index: number, agent: string) => string,
+): string {
+	const ok = results.filter((result) => result.status === "ok").length;
+	return `${ok}/${results.length} succeeded\n\n${aggregateParallelOutputs(results, headerFormat)}`;
+}
+
 export const MAX_PARALLEL_CONCURRENCY = 4;

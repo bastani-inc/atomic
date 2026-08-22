@@ -7,6 +7,7 @@ export function validateExecutionInput(
 	agents: AgentConfig[],
 	hasTasks: boolean,
 	hasSingle: boolean,
+	parallelAgentConfigs?: AgentConfig[],
 ): SubagentToolResult | null {
 	if (Number(hasTasks) + Number(hasSingle) !== 1) {
 		return {
@@ -47,7 +48,8 @@ export function validateExecutionInput(
 	if (hasTasks && params.tasks) {
 		for (let i = 0; i < params.tasks.length; i++) {
 			const task = params.tasks[i]!;
-			if (!agents.find((agent) => agent.name === task.agent)) {
+			const agent = parallelAgentConfigs?.[i] ?? agents.find((candidate) => candidate.name === task.agent);
+			if (!agent || agent.name !== task.agent) {
 				return {
 					content: [{ type: "text", text: `Unknown agent: ${task.agent} (task ${i + 1})` }],
 					isError: true,

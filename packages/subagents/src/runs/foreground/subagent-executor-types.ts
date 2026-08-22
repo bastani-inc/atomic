@@ -14,6 +14,8 @@ import type {
 import type { ChildModePolicy } from "../inprocess/child-policy.js";
 import type { runSync } from "./execution.js";
 
+export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
+
 export interface TaskParam {
 	agent: string;
 	task: string;
@@ -27,6 +29,10 @@ export interface TaskParam {
 	skill?: string | string[] | boolean;
 	group?: string | true;
 }
+
+export type BurstTaskParam = TaskParam & {
+	[BURST_TASK_DISCOVERY_CWD]?: string;
+};
 
 export interface SubagentParamsLike {
 	action?: (typeof SUBAGENT_ACTIONS)[number];
@@ -94,6 +100,7 @@ export interface ExecutionContextData {
 	signal: AbortSignal;
 	onUpdate?: (r: SubagentToolResult) => void;
 	agents: AgentConfig[];
+	parallelAgentConfigs?: AgentConfig[];
 	runId: string;
 	shareEnabled: boolean;
 	sessionRoot: string;

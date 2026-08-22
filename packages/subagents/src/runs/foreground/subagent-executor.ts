@@ -26,7 +26,11 @@ import {
 	interruptInProcessChild,
 	resumeInProcessChild,
 } from "../inprocess/control-status.js";
+import { inheritedIntercomGroup } from "../shared/intercom-group.js";
+import { currentModelFullId } from "../shared/model-fallback.js";
+import { resolveControlConfig } from "../shared/subagent-control.js";
 import { formatParentAskPauseOutput, RELEASED_SIBLING_RESUME_MESSAGE } from "./parent-ask-output.js";
+import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
 import { runParallelPath } from "./subagent-executor-parallel.js";
@@ -610,22 +614,19 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		);
 	};
 
-	const executeWithSingleDispatchGuard = async (
-		id: string,
-		params: SubagentParamsLike,
-		signal: AbortSignal,
-		onUpdate: ((r: SubagentToolResult) => void) | undefined,
-		ctx: ExtensionContext,
-	): Promise<SubagentToolResult> => {
-		if (params.action) return execute(id, params, signal, onUpdate, ctx);
-		if (deps.state.subagentInProgress === true) return duplicateSubagentCallResult(params);
-		deps.state.subagentInProgress = true;
-		try {
-			return await execute(id, params, signal, onUpdate, ctx);
-		} finally {
-			deps.state.subagentInProgress = false;
-		}
-	};
+	const executeWithBurstCollection = createExecutionBurstDispatcher({
+		execute,
+		isActive: () => deps.state.subagentInProgress === true,
+		setActive: (active) => {
+			deps.state.subagentInProgress = active;
+		},
+		duplicateResult: duplicateSubagentCallResult,
+	});
 
-	return { execute: executeWithSingleDispatchGuard };
+	return {
+		execute: (id, params, signal, onUpdate, ctx) =>
+			params.action
+				? execute(id, params, signal, onUpdate, ctx)
+				: executeWithBurstCollection(id, params, signal, onUpdate, ctx),
+	};
 }

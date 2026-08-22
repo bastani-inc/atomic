@@ -24,7 +24,7 @@ import {
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
 import { resolveModelCandidate } from "../shared/model-fallback.js";
-import { aggregateParallelOutputs } from "../shared/parallel-utils.js";
+import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
 import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.js";
@@ -86,17 +86,19 @@ export async function runParallelPath(
 			details: { mode: "parallel" as const, results: [] },
 		};
 
-	const agentConfigs: AgentConfig[] = [];
-	for (const t of tasks) {
-		const config = agents.find((a) => a.name === t.agent);
-		if (!config) {
-			return {
-				content: [{ type: "text", text: `Unknown agent: ${t.agent}` }],
-				isError: true,
-				details: { mode: "parallel" as const, results: [] },
-			};
+	const agentConfigs: AgentConfig[] = data.parallelAgentConfigs ? [...data.parallelAgentConfigs] : [];
+	if (!data.parallelAgentConfigs) {
+		for (const task of tasks) {
+			const config = agents.find((agent) => agent.name === task.agent);
+			if (!config) {
+				return {
+					content: [{ type: "text", text: `Unknown agent: ${task.agent}` }],
+					isError: true,
+					details: { mode: "parallel" as const, results: [] },
+				};
+			}
+			agentConfigs.push(config);
 		}
-		agentConfigs.push(config);
 	}
 
 	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
@@ -224,6 +226,7 @@ export async function runParallelPath(
 			tasks,
 			taskTexts,
 			agents,
+			...(data.parallelAgentConfigs ? { agentConfigs } : {}),
 			ctx,
 			intercomEvents: deps.pi.events,
 			signal,
@@ -340,8 +343,7 @@ export async function runParallelPath(
 		}
 
 		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
-		const ok = results.filter((result) => result.status === "ok").length;
-		const aggregatedOutput = aggregateParallelOutputs(
+		const childContent = formatParallelResultContent(
 			results.map((result) => ({
 				agent: result.agent,
 				output: result.truncation?.text || getSingleResultOutput(result),
@@ -350,11 +352,7 @@ export async function runParallelPath(
 			})),
 			(i, agent) => `=== Task ${i + 1}: ${agent} ===`,
 		);
-
-		const summary = `${ok}/${results.length} succeeded`;
-		const fullContent = worktreeSuffix
-			? `${summary}\n\n${aggregatedOutput}\n\n${worktreeSuffix}`
-			: `${summary}\n\n${aggregatedOutput}`;
+		const fullContent = worktreeSuffix ? `${childContent}\n\n${worktreeSuffix}` : childContent;
 
 		return {
 			content: [{ type: "text", text: fullContent }],

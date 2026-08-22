@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
+import type { AgentConfig } from "../../agents/agents.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -29,11 +30,14 @@ import {
 	validateExecutionInput,
 	withForkContext,
 } from "./subagent-executor-input.js";
-import type {
-	ExecutionContextBuildResult,
-	ExecutorDeps,
-	ResolvedExecutorDeps,
-	SubagentParamsLike,
+import {
+	BURST_TASK_DISCOVERY_CWD,
+	type BurstTaskParam,
+	type ExecutionContextBuildResult,
+	type ExecutionContextData,
+	type ExecutorDeps,
+	type ResolvedExecutorDeps,
+	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
 
 /**
@@ -71,8 +75,39 @@ export function prepareExecutionContext(input: {
 	const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 	const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 	deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
-	const discoveredAgents = deps.discoverAgents(effectiveCwd, scope).agents;
-	effectiveParams = applyAgentDefaultContext(effectiveParams, discoveredAgents);
+	const initialDiscoveryCwd =
+		(effectiveParams.tasks?.[0] as BurstTaskParam | undefined)?.[BURST_TASK_DISCOVERY_CWD] ?? effectiveCwd;
+	const discoveredAgents = deps.discoverAgents(initialDiscoveryCwd, scope).agents;
+	let resolvedTaskAgents: AgentConfig[] | undefined;
+	if (effectiveParams.tasks?.some((task) => (task as BurstTaskParam)[BURST_TASK_DISCOVERY_CWD] !== undefined)) {
+		const agentsByCwd = new Map<string, AgentConfig[]>([[initialDiscoveryCwd, discoveredAgents]]);
+		resolvedTaskAgents = [];
+		for (let index = 0; index < effectiveParams.tasks.length; index++) {
+			const task = effectiveParams.tasks[index]!;
+			const discoveryCwd = (task as BurstTaskParam)[BURST_TASK_DISCOVERY_CWD] ?? effectiveCwd;
+			let taskAgents = agentsByCwd.get(discoveryCwd);
+			if (!taskAgents) {
+				taskAgents = deps.discoverAgents(discoveryCwd, scope).agents;
+				agentsByCwd.set(discoveryCwd, taskAgents);
+			}
+			const agent = taskAgents.find((candidate) => candidate.name === task.agent);
+			if (!agent) {
+				return {
+					error: {
+						content: [{ type: "text", text: `Unknown agent: ${task.agent} (task ${index + 1})` }],
+						isError: true,
+						details: { mode: "parallel", results: [] },
+					},
+				};
+			}
+			resolvedTaskAgents.push(agent);
+		}
+	}
+	if (effectiveParams.context === undefined && resolvedTaskAgents?.some((agent) => agent.defaultContext === "fork")) {
+		effectiveParams = { ...effectiveParams, context: "fork" };
+	} else {
+		effectiveParams = applyAgentDefaultContext(effectiveParams, discoveredAgents);
+	}
 	const sessionName = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
 	const intercomBridge = resolveIntercomBridge({
 		config: deps.config.intercomBridge,
@@ -83,11 +118,14 @@ export function prepareExecutionContext(input: {
 	const agents = intercomBridge.active
 		? discoveredAgents.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge))
 		: discoveredAgents;
+	const parallelAgentConfigs = intercomBridge.active
+		? resolvedTaskAgents?.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge))
+		: resolvedTaskAgents;
 	const runId = randomUUID().slice(0, 8);
 	const shareEnabled = effectiveParams.share === true;
 	const hasTasks = (effectiveParams.tasks?.length ?? 0) > 0;
 	const hasSingle = !hasTasks && Boolean(effectiveParams.agent);
-	const validationError = validateExecutionInput(effectiveParams, agents, hasTasks, hasSingle);
+	const validationError = validateExecutionInput(effectiveParams, agents, hasTasks, hasSingle, parallelAgentConfigs);
 	if (validationError) return { error: validationError };
 	if (hasSingle) {
 		const readInstruction = buildReadInstruction(effectiveParams.reads, effectiveCwd);
@@ -137,13 +175,14 @@ export function prepareExecutionContext(input: {
 		? (r: SubagentToolResult) => onUpdate(withForkContext(r, effectiveParams.context))
 		: undefined;
 
-	const execData = {
+	const execData: ExecutionContextData = {
 		params: effectiveParams,
 		effectiveCwd,
 		ctx,
 		signal,
 		onUpdate: onUpdateWithContext,
 		agents,
+		...(parallelAgentConfigs ? { parallelAgentConfigs } : {}),
 		runId,
 		shareEnabled,
 		sessionRoot,
