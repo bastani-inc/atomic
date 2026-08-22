@@ -165,6 +165,46 @@ describe("installStoreWidget", () => {
 		assert.equal(widgetCalls.length, 0);
 	});
 
+	test("late durability hydration mounts a zero-stage tool-only run and invalidates its live node update", async () => {
+		const { pi, widgetCalls, renderRequests } = makeMockPi();
+		installStoreWidget(pi, storeInstance);
+		const hydrated: RunSnapshot = {
+			...makeRun("hydrated-tool-run", "publish-release"),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:publish-watcher",
+					name: "publish-watcher",
+					argsHash: "publish-watcher-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					startedAt: Date.now(),
+					attachable: false,
+				},
+			],
+		};
+
+		storeInstance.recordRunStart(hydrated);
+		await Promise.resolve();
+		const mounted = widgetCalls.findLast((call) => call.factory !== undefined);
+		assert.ok(mounted?.factory);
+		assert.equal(mounted.opts?.placement, "belowEditor");
+		assert.match(mounted.factory(undefined, undefined).render(120).join("\n"), /publish-watcher · running/);
+		const rendersAfterHydration = renderRequests.count;
+
+		assert.equal(
+			storeInstance.recordToolNodeEnd("hydrated-tool-run", "tool:publish-watcher", {
+				status: "completed",
+				endedAt: Date.now(),
+			}),
+			true,
+		);
+		await Promise.resolve();
+		assert.ok(renderRequests.count > rendersAfterHydration);
+		assert.doesNotMatch(mounted.factory(undefined, undefined).render(120).join("\n"), /publish-watcher · running/);
+	});
+
 	test("mounts the widget with a factory exactly once when a run starts", () => {
 		const { pi, widgetCalls } = makeMockPi();
 		installStoreWidget(pi, storeInstance);

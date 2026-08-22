@@ -6,7 +6,7 @@
  *    badges (`✓ n  ● n  ○ n  ✗ n`) in the title.
  *  - One compact rounded card per run:
  *      title: `<status glyph>  <full id>`
- *      row 1: `<name> · <dim mode · progress · duration>`
+ *      row 1: `<name> · <dim mode · progress · live tool nodes · duration>`
  *  - Collapsed single-line form below 80 cells:
  *      `▾  N background · X ●` in dim+warning.
  *
@@ -215,6 +215,17 @@ function elapsedLabel(run: RunSnapshot, now: number): string {
 	return "";
 }
 
+function activeToolNodes(run: RunSnapshot): NonNullable<RunSnapshot["toolNodes"]> {
+	return (run.toolNodes ?? []).filter((node) => node.status === "pending" || node.status === "running");
+}
+
+function activeToolLabel(run: RunSnapshot): string | undefined {
+	const nodes = activeToolNodes(run);
+	if (nodes.length === 0) return undefined;
+	const details = nodes.map((node) => `${node.name} · ${node.status}`).join(", ");
+	return nodes.length === 1 ? details : `${nodes.length} tools · ${details}`;
+}
+
 function metaLine(run: RunSnapshot, now: number): string {
 	if (run.endedAt !== undefined) {
 		return elapsedLabel(run, now);
@@ -224,6 +235,8 @@ function metaLine(run: RunSnapshot, now: number): string {
 	const parts: string[] = [modeLabel(run)];
 	const prog = progressLabel(run);
 	if (prog) parts.push(prog);
+	const tools = activeToolLabel(run);
+	if (tools) parts.push(tools);
 	const elapsed = elapsedLabel(run, now);
 	if (elapsed) parts.push(elapsed);
 	return parts.join(" · ");
@@ -306,7 +319,7 @@ function plainRunLines(run: RunSnapshot, now: number, allRuns: readonly RunSnaps
 // Collapsed (< 80 cell) form
 // ---------------------------------------------------------------------------
 
-function themedCollapsed(counts: RunCounts, theme: GraphTheme): string {
+function themedCollapsed(counts: RunCounts, activeTools: number, theme: GraphTheme): string {
 	const mauve = hexToAnsi(theme.mauve);
 	const dim = hexToAnsi(theme.dim);
 	const muted = hexToAnsi(theme.textMuted);
@@ -316,15 +329,18 @@ function themedCollapsed(counts: RunCounts, theme: GraphTheme): string {
 	const paused = counts.paused > 0 ? `${dim} · ${RESET}${warning}${counts.paused} ❚❚${RESET}` : "";
 	const quit = counts.quit > 0 ? `${dim} · ${RESET}${warning}${counts.quit} quit${RESET}` : "";
 	const blocked = counts.blocked > 0 ? `${dim} · ${RESET}${warning}${counts.blocked} ↑${RESET}` : "";
-	return ` ${mauve}▾${RESET}  ${muted}${total} background${RESET}${dim} · ${RESET}${warning}${active} ●${RESET}${paused}${quit}${blocked}`;
+	const tools =
+		activeTools > 0 ? `${dim} · ${RESET}${warning}${activeTools} tool${activeTools === 1 ? "" : "s"}${RESET}` : "";
+	return ` ${mauve}▾${RESET}  ${muted}${total} background${RESET}${dim} · ${RESET}${warning}${active} ●${RESET}${paused}${quit}${blocked}${tools}`;
 }
 
-function plainCollapsed(counts: RunCounts): string {
+function plainCollapsed(counts: RunCounts, activeTools: number): string {
 	const total = counts.active + counts.paused + counts.quit + counts.done + counts.blocked + counts.failed;
 	const paused = counts.paused > 0 ? ` · ${counts.paused} ❚❚` : "";
 	const quit = counts.quit > 0 ? ` · ${counts.quit} quit` : "";
 	const blocked = counts.blocked > 0 ? ` · ${counts.blocked} ↑` : "";
-	return ` ▾  ${total} background · ${counts.active} ●${paused}${quit}${blocked}`;
+	const tools = activeTools > 0 ? ` · ${activeTools} tool${activeTools === 1 ? "" : "s"}` : "";
+	return ` ▾  ${total} background · ${counts.active} ●${paused}${quit}${blocked}${tools}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,10 +385,13 @@ export function buildThemedWidgetLines(
 
 	const themed = piTheme !== undefined;
 	const graphTheme = deriveGraphTheme({});
+	const activeTools = display.filter(isActive).reduce((total, run) => total + activeToolNodes(run).length, 0);
 
 	// Collapsed single-line form for narrow terminals.
 	if (width < COLLAPSED_BREAKPOINT_COLS) {
-		return [themed ? themedCollapsed(visibleCounts, graphTheme) : plainCollapsed(visibleCounts)];
+		return [
+			themed ? themedCollapsed(visibleCounts, activeTools, graphTheme) : plainCollapsed(visibleCounts, activeTools),
+		];
 	}
 
 	const total = display.length;

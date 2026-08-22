@@ -33,18 +33,37 @@ export function createEventBus(): EventBusController {
 }
 
 /**
+ * Shared by duplicate host-module instances in packaged/split-loader builds.
+ * The `@1` suffix versions the stored WeakMap shape.
+ */
+const CANONICAL_EVENT_BUSES_KEY = Symbol.for("atomic-coding-agent/canonical-event-buses@1");
+
+type CanonicalEventBuses = WeakMap<object, object>;
+
+function canonicalEventBusBag(): Record<symbol, CanonicalEventBuses | undefined> {
+	return globalThis as typeof globalThis & Record<symbol, CanonicalEventBuses | undefined>;
+}
+
+/**
  * Per-extension `events` facades mapped back to the canonical EventBus each
  * forwards to. Weak so neither facades nor buses are retained: an entry lives
  * exactly as long as the facade it keys on.
  */
-const canonicalEventBuses = new WeakMap<object, object>();
+function getCanonicalEventBuses(): CanonicalEventBuses {
+	const bag = canonicalEventBusBag();
+	const existing = bag[CANONICAL_EVENT_BUSES_KEY];
+	if (existing !== undefined) return existing;
+	const created = new WeakMap<object, object>();
+	bag[CANONICAL_EVENT_BUSES_KEY] = created;
+	return created;
+}
 
 /**
  * Register `facade` as forwarding to `bus`, so `canonicalEventBusFor(facade)`
  * resolves to `bus`.
  */
 export function registerCanonicalEventBus(facade: object, bus: object): void {
-	canonicalEventBuses.set(facade, bus);
+	getCanonicalEventBuses().set(facade, bus);
 }
 
 /**
@@ -54,5 +73,5 @@ export function registerCanonicalEventBus(facade: object, bus: object): void {
  * so canonical buses are fixed points.
  */
 export function canonicalEventBusFor(scope: object): object {
-	return canonicalEventBuses.get(scope) ?? scope;
+	return getCanonicalEventBuses().get(scope) ?? scope;
 }
