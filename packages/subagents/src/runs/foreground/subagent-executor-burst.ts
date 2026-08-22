@@ -3,6 +3,8 @@ import type { ExtensionContext } from "@bastani/atomic";
 import type { SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
+import { registerBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
+import { getLiveResultIndices } from "./subagent-executor-live-update.js";
 import { resolveRequestedCwd } from "./subagent-executor-resume.js";
 import {
 	BURST_TASK_DISCOVERY_CWD,
@@ -193,12 +195,14 @@ function projectParallelContent(
 	result: SubagentToolResult,
 	sharedResults: SingleResult[],
 	projectedResults: SingleResult[],
+	live: boolean,
 ): SubagentToolResult["content"] {
+	const projectedText = formatStandardParallelContent(projectedResults);
+	if (live) return [{ type: "text", text: projectedText }];
 	if (result.content.length !== 1 || result.content[0]?.type !== "text") return result.content;
 	const originalItem = result.content[0];
 	const originalText = originalItem.text;
 	const sharedText = formatStandardParallelContent(sharedResults);
-	const projectedText = formatStandardParallelContent(projectedResults);
 	if (originalText === sharedText) return [{ ...originalItem, text: projectedText }];
 	if (originalText.startsWith(`${sharedText}\n\n`)) {
 		return [{ ...originalItem, text: `${projectedText}${originalText.slice(sharedText.length)}` }];
@@ -206,24 +210,29 @@ function projectParallelContent(
 	return result.content;
 }
 
-function projectResult(result: SubagentToolResult, route: ResultRoute): SubagentToolResult {
+function projectResult(result: SubagentToolResult, route: ResultRoute, live = false): SubagentToolResult {
 	const sharedDetails = result.details;
-	if (!sharedDetails || sharedDetails.results.length === 0) return result;
+	if (!sharedDetails || (!live && sharedDetails.results.length === 0)) return result;
 
-	const results = sharedDetails.results.slice(route.start, route.start + route.length);
+	const liveIndices = live ? getLiveResultIndices(result) : undefined;
+	const results = liveIndices
+		? sharedDetails.results.filter((_child, index) => {
+				const resultIndex = liveIndices[index];
+				return resultIndex !== undefined && resultIndex >= route.start && resultIndex < route.start + route.length;
+			})
+		: sharedDetails.results.slice(route.start, route.start + route.length);
 	const progress = sharedDetails.progress
 		?.filter((item) => item.index >= route.start && item.index < route.start + route.length)
 		.map((item) => ({ ...item, index: item.index - route.start }));
 	const controlEvents = sharedDetails.controlEvents
 		?.filter(
-			(event) =>
-				event.index === undefined || (event.index >= route.start && event.index < route.start + route.length),
+			(event) => event.index !== undefined && event.index >= route.start && event.index < route.start + route.length,
 		)
-		.map((event) => (event.index === undefined ? event : { ...event, index: event.index - route.start }));
+		.map((event) => ({ ...event, index: event.index! - route.start }));
 	const artifactFiles = results.flatMap((child) => (child.artifactPaths ? [child.artifactPaths] : []));
 
 	return {
-		content: projectParallelContent(result, sharedDetails.results, results),
+		content: projectParallelContent(result, sharedDetails.results, results, live),
 		...(result.isError !== undefined ? { isError: result.isError } : {}),
 		details: {
 			mode: "parallel",
@@ -233,6 +242,7 @@ function projectResult(result: SubagentToolResult, route: ResultRoute): Subagent
 			...(progress?.length ? { progress } : {}),
 			...(controlEvents?.length ? { controlEvents } : {}),
 			...(sharedDetails.totalSteps !== undefined ? { totalSteps: route.length } : {}),
+			...(sharedDetails.parentAskPaused !== undefined ? { parentAskPaused: sharedDetails.parentAskPaused } : {}),
 			...(sharedDetails.artifacts && artifactFiles.length
 				? { artifacts: { dir: sharedDetails.artifacts.dir, files: artifactFiles } }
 				: {}),
@@ -270,9 +280,20 @@ export function createExecutionBurstDispatcher(input: {
 		}
 
 		const first = items[0]!;
+		const display = registerBurstDisplay(
+			items.map((item) => item.id),
+			merged.routes!.reduce((total, route) => total + route.length, 0),
+		);
+		const onUpdate = (update: SubagentToolResult): void => {
+			updateBurstDisplay(display, update);
+			for (let index = 0; index < items.length; index++) {
+				items[index]!.onUpdate?.(projectResult(update, merged.routes![index]!, true));
+			}
+		};
 		input.setActive(true);
 		try {
-			const result = await input.execute(first.id, merged.params!, first.signal, first.onUpdate, first.ctx);
+			const result = await input.execute(first.id, merged.params!, first.signal, onUpdate, first.ctx);
+			updateBurstDisplay(display, result);
 			for (let index = 0; index < items.length; index++) {
 				items[index]!.resolve(projectResult(result, merged.routes![index]!));
 			}

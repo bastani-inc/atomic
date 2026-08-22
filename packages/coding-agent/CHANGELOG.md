@@ -5,7 +5,7 @@
 ### Fixed
 
 - Foreground child decisions, structured interviews, and `intercom.ask` calls resolved to their launching parent now pause the retained child and return the question plus ordered attachments through the parent `subagent` call instead of deadlocking behind Intercom reply delivery. Real typed foreground children receive exact broker authorization for `contact_supervisor`, including successful non-blocking progress delivery. Bare run-ID resume preserves each paused child's session, cwd, Intercom group, execution settings, canonical index, worktree, and dirty changes while rebuilding control and detach callbacks; a sibling completed at the ask boundary stays terminal without blocking paused siblings. Queued work remains unlaunched and unauthorized, worktree diff capture and cleanup wait for terminal resume, and completed children remain non-resumable ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
-- Coalesced same-turn sibling `subagent` execution calls into one indexed parallel run instead of rejecting every call after the first, while preserving solitary, sequential, management, and true-overlap behavior ([#2588](https://github.com/bastani-inc/atomic/issues/2588)).
+- Coalesced same-turn sibling `subagent` execution calls into one indexed parallel run instead of rejecting every call after the first. Live result, progress, control, and artifact updates and final results stay route-local without sibling data, while the TUI redraws the shared run as one aggregate parallel widget. Solitary, sequential, management, and true-overlap behavior remains unchanged ([#2588](https://github.com/bastani-inc/atomic/issues/2588)).
 
 ## [0.9.15] - 2026-08-21
 

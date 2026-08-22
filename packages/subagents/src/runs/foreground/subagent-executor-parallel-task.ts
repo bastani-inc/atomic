@@ -23,6 +23,7 @@ import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/int
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
+import { markLiveResultIndices } from "./subagent-executor-live-update.js";
 import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 
@@ -220,22 +221,36 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 						}
 						if (stepResults.length > 0) input.liveResults[index] = stepResults[0];
 						if (stepProgress.length > 0) input.liveProgress[index] = stepProgress[0];
-						const mergedResults = input.liveResults.filter(
-							(result): result is SingleResult => result !== undefined,
+						const indexedResults = input.liveResults.flatMap((result, resultIndex) =>
+							result === undefined ? [] : [{ result, index: resultIndex }],
 						);
+						const mergedResults = indexedResults.map(({ result }) => result);
 						const mergedProgress = input.liveProgress.filter(
 							(progress): progress is AgentProgress => progress !== undefined,
 						);
-						input.onUpdate?.({
+						const controlEvents = progressUpdate.details?.controlEvents?.map((event) => ({ ...event, index }));
+						const artifactDir = progressUpdate.details?.artifacts?.dir;
+						const artifactFiles = mergedResults.flatMap((result) =>
+							result.artifactPaths ? [result.artifactPaths] : [],
+						);
+						const aggregateUpdate: SubagentToolResult = {
 							content: progressUpdate.content,
 							details: {
 								mode: "parallel",
 								results: mergedResults,
 								progress: mergedProgress,
-								controlEvents: progressUpdate.details?.controlEvents,
+								...(controlEvents?.length ? { controlEvents } : {}),
 								totalSteps: input.tasks.length,
+								...(artifactDir && artifactFiles.length
+									? { artifacts: { dir: artifactDir, files: artifactFiles } }
+									: {}),
 							},
-						});
+						};
+						markLiveResultIndices(
+							aggregateUpdate,
+							indexedResults.map(({ index: resultIndex }) => resultIndex),
+						);
+						input.onUpdate?.(aggregateUpdate);
 					}
 				: undefined,
 		};

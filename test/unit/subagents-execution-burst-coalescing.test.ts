@@ -7,6 +7,10 @@ import { test } from "vitest";
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
+import {
+	renderSubagentToolCall,
+	renderSubagentToolResult,
+} from "../../packages/subagents/src/extension/tool-rendering.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type {
 	ExecutorDeps,
@@ -14,12 +18,14 @@ import type {
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type {
+	ParentAskPauseRequest,
 	SingleResult,
 	SubagentAttemptStatus,
 	SubagentToolResult,
 	Usage,
 } from "../../packages/subagents/src/shared/types.js";
 import { spawnSyncCollect } from "../helpers/runtime.js";
+import { theme } from "./subagents-render-stability-helpers.js";
 
 const usage: Usage = {
 	input: 0,
@@ -180,6 +186,8 @@ test("coalesces concurrent sibling SINGLE calls and routes one child result to e
 			[["A"], ["B"], ["C"]],
 		);
 		for (let index = 0; index < outputs.length; index++) {
+			assert.equal(Object.hasOwn(outputs[index]!.details!, "parentAskPaused"), true);
+			assert.equal(outputs[index]!.details?.parentAskPaused, false);
 			const content = outputs[index]?.content[0];
 			const text = content?.type === "text" ? content.text : "";
 			assert.match(text, new RegExp(`output:${["A", "B", "C"][index]}`));
@@ -547,13 +555,16 @@ test("flattens mixed SINGLE and tasks input in source order without deduplicatin
 	}
 });
 
-test("keeps result routing index-aligned after out-of-order completion and emits one aggregate live stream", async () => {
-	const releaseFirst = Promise.withResolvers<void>();
+test("routes later-first aggregate live data to each sibling without leakage", async () => {
+	const allowFirstUpdate = Promise.withResolvers<void>();
+	const firstUpdated = Promise.withResolvers<void>();
+	const secondUpdated = Promise.withResolvers<void>();
+	const releaseCompletion = Promise.withResolvers<void>();
 	const firstUpdates: SubagentToolResult[] = [];
 	const secondUpdates: SubagentToolResult[] = [];
-	const completionOrder: string[] = [];
 	const harness = makeHarness({
 		runSync: async (_parentCwd, _agents, agentName, task, options) => {
+			if (task === "slow-first") await allowFirstUpdate.promise;
 			const child = result(agentName, task);
 			child.progress = {
 				index: options.index ?? 0,
@@ -561,39 +572,84 @@ test("keeps result routing index-aligned after out-of-order completion and emits
 				status: "completed",
 				task,
 				recentTools: [],
-				recentOutput: [],
+				recentOutput: [`progress:${task}`],
 				toolCount: 0,
 				tokens: 0,
 				durationMs: 1,
 			};
+			const controlEvent = {
+				type: "needs_attention" as const,
+				to: "needs_attention" as const,
+				ts: 1,
+				agent: agentName,
+				index: options.index ?? 0,
+				runId: options.runId,
+				message: `control:${task}`,
+			};
 			options.onUpdate?.({
 				content: [{ type: "text", text: `live:${task}` }],
-				details: { mode: "single", results: [child] },
+				details: {
+					mode: "single",
+					runId: options.runId,
+					results: [child],
+					progress: [child.progress],
+					controlEvents: [controlEvent],
+					artifacts: { dir: "/tmp/artifacts", files: [child.artifactPaths!] },
+				},
 			});
-			if (task === "slow-first") await releaseFirst.promise;
-			else releaseFirst.resolve();
-			completionOrder.push(task);
+			if (task === "slow-first") firstUpdated.resolve();
+			else secondUpdated.resolve();
+			await releaseCompletion.promise;
 			return child;
 		},
 	});
 	try {
-		const outputs = await Promise.all([
-			execute(harness, "first", { agent: "echo", task: "slow-first", includeProgress: true }, (update) =>
-				firstUpdates.push(update),
-			),
-			execute(harness, "second", { agent: "echo", task: "fast-second", includeProgress: true }, (update) =>
-				secondUpdates.push(update),
-			),
-		]);
+		const firstOutput = execute(
+			harness,
+			"first",
+			{ agent: "echo", task: "slow-first", includeProgress: true },
+			(update) => firstUpdates.push(update),
+		);
+		const secondOutput = execute(
+			harness,
+			"second",
+			{ agent: "echo", task: "fast-second", includeProgress: true },
+			(update) => secondUpdates.push(update),
+		);
 
-		assert.deepEqual(completionOrder, ["fast-second", "slow-first"]);
+		await secondUpdated.promise;
+		assert.equal(firstUpdates.length, 1, "every aggregate update must reach the first callback");
+		assert.deepEqual(firstUpdates[0]?.details?.results, []);
+		assert.equal(firstUpdates[0]?.details?.progress, undefined);
+		assert.equal(firstUpdates[0]?.details?.controlEvents, undefined);
+		assert.equal(firstUpdates[0]?.details?.artifacts, undefined);
+		assert.doesNotMatch(JSON.stringify(firstUpdates[0]), /fast-second/);
+		assert.equal(secondUpdates.length, 1, "every aggregate update must reach the second callback");
 		assert.deepEqual(
-			outputs[0]?.details?.results.map((child) => child.task),
-			["slow-first"],
+			secondUpdates[0]?.details?.results.map((child) => child.task),
+			["fast-second"],
 		);
 		assert.deepEqual(
-			outputs[1]?.details?.results.map((child) => child.task),
-			["fast-second"],
+			secondUpdates[0]?.details?.progress?.map((item) => [item.index, item.task]),
+			[[0, "fast-second"]],
+		);
+		assert.deepEqual(
+			secondUpdates[0]?.details?.controlEvents?.map((event) => [event.index, event.message]),
+			[[0, "control:fast-second"]],
+		);
+		assert.deepEqual(
+			secondUpdates[0]?.details?.artifacts?.files.map((file) => file.outputPath),
+			["/tmp/fast-second-out.md"],
+		);
+
+		allowFirstUpdate.resolve();
+		await firstUpdated.promise;
+		releaseCompletion.resolve();
+		const outputs = await Promise.all([firstOutput, secondOutput]);
+
+		assert.deepEqual(
+			outputs.map((output) => output.details?.results.map((child) => child.task)),
+			[["slow-first"], ["fast-second"]],
 		);
 		assert.deepEqual(
 			outputs.map((output) => output.details?.progress?.map((item) => [item.index, item.task])),
@@ -603,14 +659,133 @@ test("keeps result routing index-aligned after out-of-order completion and emits
 			outputs.map((output) => output.details?.artifacts?.files.map((file) => file.outputPath)),
 			[["/tmp/slow-first-out.md"], ["/tmp/fast-second-out.md"]],
 		);
-		assert.equal(firstUpdates.length > 0, true);
-		assert.equal(secondUpdates.length, 0);
-		for (const update of firstUpdates) {
-			assert.equal(update.details?.mode, "parallel");
-			assert.equal(update.details?.totalSteps, 2);
+		for (const [routeTask, siblingTask, updates] of [
+			["slow-first", "fast-second", firstUpdates],
+			["fast-second", "slow-first", secondUpdates],
+		] as const) {
+			assert.equal(updates.length, 2, "every aggregate update must reach every queued callback");
+			for (const update of updates) {
+				assert.equal(update.details?.mode, "parallel");
+				assert.equal(update.details?.totalSteps, 1);
+				assert.deepEqual(
+					update.details?.results.map((child) => child.task),
+					update.details?.results.length ? [routeTask] : [],
+				);
+				assert.deepEqual(
+					update.details?.progress?.map((item) => [item.index, item.task]),
+					update.details?.progress?.length ? [[0, routeTask]] : undefined,
+				);
+				assert.deepEqual(
+					update.details?.controlEvents?.map((event) => [event.index, event.message]),
+					update.details?.controlEvents?.length ? [[0, `control:${routeTask}`]] : undefined,
+				);
+				assert.deepEqual(
+					update.details?.artifacts?.files.map((file) => file.outputPath),
+					update.details?.artifacts ? [`/tmp/${routeTask}-out.md`] : undefined,
+				);
+				assert.doesNotMatch(JSON.stringify(update), new RegExp(siblingTask));
+			}
+			assert.deepEqual(
+				updates.flatMap((update) => update.details?.controlEvents?.map((event) => event.message) ?? []),
+				[`control:${routeTask}`],
+			);
+			assert.equal(
+				updates.some((update) => update.details?.artifacts?.files.length === 1),
+				true,
+			);
 		}
+
+		const ownerContext = {
+			toolCallId: "first",
+			state: {},
+			invalidate: () => {},
+		} as Parameters<typeof renderSubagentToolCall>[2];
+		const siblingContext = {
+			toolCallId: "second",
+			state: {},
+			invalidate: () => {},
+		} as Parameters<typeof renderSubagentToolCall>[2];
+		const ownerWidget = [
+			...renderSubagentToolCall({ agent: "echo", task: "slow-first" }, theme, ownerContext).render(120),
+			...renderSubagentToolResult(outputs[0]!, { expanded: false, isPartial: false }, theme, ownerContext).render(
+				120,
+			),
+		].join("\n");
+		const siblingWidget = [
+			...renderSubagentToolCall({ agent: "echo", task: "fast-second" }, theme, siblingContext).render(120),
+			...renderSubagentToolResult(outputs[1]!, { expanded: false, isPartial: false }, theme, siblingContext).render(
+				120,
+			),
+		].join("\n");
+		assert.match(ownerWidget, /subagent parallel \(2\)/);
+		assert.match(ownerWidget, /parallel · 2\/2/);
+		assert.doesNotMatch(ownerWidget, /parallel · 1\/1/);
+		assert.equal(siblingWidget, "", "the sibling tool slot must redraw into the aggregate owner widget");
 	} finally {
-		releaseFirst.resolve();
+		allowFirstUpdate.resolve();
+		firstUpdated.resolve();
+		secondUpdated.resolve();
+		releaseCompletion.resolve();
+		harness.cleanup();
+	}
+});
+
+test("preserves parent ask pause fields and text in every projected final", async () => {
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task, options) => {
+			const child = result(agentName, task);
+			if (task === "asking-child") {
+				assert.ok(options.onParentAskClaim);
+				const request: ParentAskPauseRequest = {
+					runId: options.runId,
+					index: options.index ?? 0,
+					agent: agentName,
+					childIntercomTarget: options.intercomSessionName ?? "child-target",
+					orchestratorTarget: options.orchestratorIntercomTarget ?? "orchestrator-target",
+					kind: "decision",
+					question: "Keep  this question\nverbatim.",
+					claimed: true,
+				};
+				options.onParentAskClaim(request);
+				child.interrupted = true;
+			}
+			return child;
+		},
+	});
+	try {
+		const outputs = await Promise.all([
+			execute(harness, "parent-ask-first", { agent: "echo", task: "asking-child" }),
+			execute(harness, "parent-ask-second", { agent: "echo", task: "released-sibling" }),
+		]);
+
+		assert.deepEqual(
+			outputs.map((output) => output.details?.results.map((child) => child.task)),
+			[["asking-child"], ["released-sibling"]],
+		);
+		for (const output of outputs) {
+			assert.equal(Object.hasOwn(output.details!, "parentAskPaused"), true);
+			assert.equal(output.details?.parentAskPaused, true);
+			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
+			assert.match(text, /Subagent paused for parent input/);
+			assert.match(text, /Question:\nKeep {2}this question\nverbatim\./);
+			assert.match(text, /Resume with: subagent\(\{ action: "resume", id:/);
+		}
+
+		const ownerContext = {
+			toolCallId: "parent-ask-first",
+			state: {},
+			invalidate: () => {},
+		} as Parameters<typeof renderSubagentToolCall>[2];
+		const rendered = [
+			...renderSubagentToolCall({ agent: "echo", task: "asking-child" }, theme, ownerContext).render(120),
+			...renderSubagentToolResult(outputs[0]!, { expanded: true, isPartial: false }, theme, ownerContext).render(
+				120,
+			),
+		].join("\n");
+		assert.match(rendered, /paused parallel/);
+		assert.match(rendered, /Keep {2}this question/);
+		assert.match(rendered, /Resume with: subagent/);
+	} finally {
 		harness.cleanup();
 	}
 });

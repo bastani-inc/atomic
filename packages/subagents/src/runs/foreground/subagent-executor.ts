@@ -26,9 +26,6 @@ import {
 	interruptInProcessChild,
 	resumeInProcessChild,
 } from "../inprocess/control-status.js";
-import { inheritedIntercomGroup } from "../shared/intercom-group.js";
-import { currentModelFullId } from "../shared/model-fallback.js";
-import { resolveControlConfig } from "../shared/subagent-control.js";
 import { formatParentAskPauseOutput, RELEASED_SIBLING_RESUME_MESSAGE } from "./parent-ask-output.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";

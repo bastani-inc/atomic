@@ -5,7 +5,7 @@
 ### Fixed
 
 - Parent-targeted blocking asks now interrupt foreground children into retained pause state and surface the question, ordered attachments, and resume hint to the launching parent. Initial children receive exact supervisor authorization, and every resume rebuilds fresh authorization, control forwarding, and parallel detach coordination. Parallel pauses withhold queued tasks and preserve each paused child's session, cwd, Intercom group, execution settings, canonical index, worktree, and dirty changes; a sibling completed at the ask boundary remains terminal without blocking paused siblings. Diff capture and cleanup wait for terminal resume, and completed children are never rerun ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
-- Coalesced same-turn sibling `subagent` execution calls into one indexed parallel run instead of rejecting every call after the first, while preserving solitary, sequential, management, and true-overlap behavior ([#2588](https://github.com/bastani-inc/atomic/issues/2588)).
+- Coalesced same-turn sibling `subagent` execution calls into one indexed parallel run instead of rejecting every call after the first. Live result, progress, control, and artifact updates and final results stay route-local without sibling data, while the TUI redraws the shared run as one aggregate parallel widget. Solitary, sequential, management, and true-overlap behavior remains unchanged ([#2588](https://github.com/bastani-inc/atomic/issues/2588)).
 
 ## [0.9.15] - 2026-08-21
 
