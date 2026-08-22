@@ -63,17 +63,17 @@ This is an additive project-local workflow. It must not change existing package 
 
 ```mermaid
 flowchart TB
-  User[Maintainer launches publish-release] --> Input[Workflow input validation]
-  Input --> Branch[prepare_release_branch]
-  Branch --> Metadata[update_release_metadata]
-  Metadata --> LocalChecks[run_release_checks]
-  LocalChecks --> PR[open_release_pr]
-  PR --> CI[wait_for_release_ci]
-  CI --> Merge[merge_verified_release_pr ⚠]
-  Merge --> Sync[sync_main_after_merge]
-  Sync --> Tag[publish_release_tag ⚠]
-  Tag --> Monitor[verify_published_release]
-  Monitor --> Summary[release_summary]
+  User[Maintainer launches publish-release] --> Input[validate-release-request]
+  Input --> Inspect[inspect-release-preparation]
+  Inspect -->|no reusable state| Prepare[prepare-changelog-branch]
+  Prepare --> PR[validate-commit-push-open-pr]
+  PR --> Verify[verify-release-preparation]
+  Inspect -->|exact reusable state| CI[wait-required-ci]
+  Verify --> CI
+  CI --> Merge[merge-exact-head-and-sync-base ⚠]
+  Merge --> Tag[cut-and-push-release-tag ⚠]
+  Tag --> Publish[wait-publish-action]
+  Publish --> Summary[completed output]
 ```
 
 ### 4.2 Architectural Pattern
@@ -88,14 +88,15 @@ Selected starter pattern: **Classify-and-act + loop until done + adversarial ver
 
 | Component | Responsibility | Implementation |
 | --------- | -------------- | -------------- |
-| Workflow definition | Declares inputs/outputs and tracked stages | `.atomic/workflows/publish-release.ts` |
-| Agent stages | Execute git/Bun/gh release work with tool access | `ctx.task(...)` prompts |
-| Human/runtime failure handling | Ask user only when checks fail or publish fails | Stage prompt uses available UI/tooling; workflow remains inspectable |
-| Output contract | Expose release status and references | Declared `.output(...)` keys |
+| Workflow definition | Declares the unchanged inputs/outputs and ordered release stages | `.atomic/workflows/publish-release.ts` |
+| Durable boundaries | Inspect exact Git/GitHub preparation state and poll required CI/publish identity with finite timeouts and abort propagation | `ctx.tool(...)` callbacks backed by `.atomic/workflows/lib/publish-release.ts` |
+| Agent stages | Prepare changelogs, create the exact PR, merge/synchronize the base, and cut the detached tag after deterministic gates admit each effect | `ctx.task(...)` prompts |
+| Failure handling | Exit blocked/failed before later effects on conflict, empty protection, drift, command/auth error, terminal failure, abort, or timeout | Deterministic workflow-code checks and `ctx.exit(...)` |
+| Output contract | Expose release status and exact references | Declared workflow outputs |
 
 ### 4.4 The Door Set at a Glance
 
-`launch_publish_release`, `validate_release_request`, `prepare_release_branch`, `update_release_metadata`, `verify_release_preparation`, `run_local_release_checks`, `open_release_pr`, `verify_release_pr_reference`, `wait_for_release_ci`, `verify_release_pr_checks_passed`, `merge_verified_release_pr` ⚠, `verify_release_pr_merged`, `sync_main_after_merge`, `verify_main_ready_for_tag`, `publish_release_tag` ⚠, `verify_release_tag_published`, `verify_published_release`, `summarize_release`.
+`validate-release-request`, `inspect-release-preparation`, `prepare-changelog-branch`, `validate-commit-push-open-pr`, `verify-release-preparation`, `wait-required-ci`, `merge-exact-head-and-sync-base` ⚠, `cut-and-push-release-tag` ⚠, `wait-publish-action`, completed output.
 
 ## 5. Detailed Design
 
@@ -105,34 +106,33 @@ Selected starter pattern: **Classify-and-act + loop until done + adversarial ver
 type ReleaseKind = "release" | "prerelease";
 type ReleaseStatus = "completed" | "blocked" | "failed";
 
-launch_publish_release(input: { target_version: string; release_kind: ReleaseKind }): ReleaseRun
-// Guarantee: starts exactly one tracked release workflow for the supplied version.
-
-validate_release_request(input): ValidReleaseRequest | VersionFormatError
+validateReleaseRequest(input): ValidReleaseRequest | VersionFormatError
 // Guarantee: returns typed release metadata only when kind and version format agree.
 
-verify_release_pr_checks_passed(pr: ReleasePr): CheckedReleasePr | CiFailure
-// Guarantee: returns checked PR evidence only when required checks pass for the captured PR head SHA.
+inspectReleasePreparation(input): PrepareRequired | ExactReusableRelease
+// Guarantee: returns reusable state only for a clean checkout, one exact changelog-only commit atop the remote base, and one matching open PR.
 
-merge_verified_release_pr(pr: CheckedReleasePr): MergedReleasePr | CiFailure
-// Guarantee: merges only a PR whose required checks have passed. IRREVERSIBLE remote effect.
+waitRequiredCi(pr: ExactReleasePr): PassedCi | ReleaseFailure
+// Guarantee: passes only when every exact configured required check succeeds for the captured head, or that exact PR was admin-merged.
 
-verify_main_ready_for_tag(merged: MergedReleasePr): TaggableMain | TagFailure
-// Guarantee: returns taggable main evidence only when local main matches origin/main, contains the merge commit, and the tag does not already exist.
+mergeExactHeadAndSyncBase(pr: PassedCi): SynchronizedBase | ReleaseFailure
+// Guarantee: merges or verifies only the captured PR head and fast-forwards the selected versionless base. IRREVERSIBLE remote effect.
 
-publish_release_tag(main: TaggableMain): PublishedTag | TagFailure
-// Guarantee: pushes the version tag that triggers CI publishing. IRREVERSIBLE remote effect.
+cutAndPushReleaseTag(base: SynchronizedBase): DetachedRelease | ReleaseFailure
+// Guarantee: runs the repository release cutter and verifies the exact detached tag/commit without moving the base. IRREVERSIBLE remote effect.
+
+waitPublishAction(release: DetachedRelease): PublishedRelease | ReleaseFailure
+// Guarantee: passes only for the exact successful publish.yml push run matching the tag and release SHA.
 ```
 
 | Door | Joint | One-sentence guarantee | Refusals | Chokepoint |
 | ---- | ----- | ---------------------- | -------- | ---------- |
-| `validate_release_request` | Release request validity | Produces validated release metadata. | Wrong release/prerelease format; leading `v`; invalid alpha revision. | Input airlock |
-| `verify_release_pr_checks_passed` | CI pass evidence | Accepts only required checks passing for the captured PR head SHA. | Failed/pending/missing checks; PR head changed; wrong PR state. | Deterministic CI gate |
-| `merge_verified_release_pr` ⚠ | Merge release PR | Merges only verified release changes. | Failing CI; missing PR; wrong branch; gh auth failure. | Sole merge door |
-| `verify_main_ready_for_tag` | Tag readiness | Accepts only clean local main matching origin/main with no existing release tag. | Missing main sync; existing local/remote tag; merge commit absent. | Deterministic tag precondition |
-| `publish_release_tag` ⚠ | Publish release tag | Pushes the tag that starts publishing. | Missing main sync; existing tag; failed merge; git push failure. | Sole publish trigger |
-| `verify_release_tag_published` | Tag publication evidence | Accepts only a local and remote tag pointing to the verified main commit. | Missing tag; tag points to wrong commit; push failed. | Deterministic tag postcondition |
-| `verify_published_release` | Release completion evidence | Reports publish outcome from GitHub Actions. | Failed action; timed out/unknown status; run head SHA differs from tag target. | Final verification gate |
+| `validate-release-request` | Request validity | Produces validated release/base metadata. | Wrong release/prerelease format; leading `v`; invalid alpha revision; noncanonical base. | Input airlock |
+| `inspect-release-preparation` / `verify-release-preparation` | Exact preparation identity | Requires a clean checkout and either no reusable state or one exact changelog-only commit plus matching open PR. | Dirty state; conflicting base, files, commit, branch, local ref, or PR identity; Git/GitHub errors. | Durable preparation gate |
+| `wait-required-ci` | Exact required-CI evidence | Polls until every configured context/app identity passes for the captured head, or the exact PR was admin-merged. | Empty protection; missing checks at timeout; failure; identity drift; command/auth error; abort. | Durable CI gate |
+| `merge-exact-head-and-sync-base` ⚠ | Exact-head merge and base synchronization | Merges or verifies only the CI-admitted head and synchronizes the selected versionless base. | Changed PR/head/base/check state; non-fast-forward or dirty base. | Sole merge door |
+| `cut-and-push-release-tag` ⚠ | Detached release creation | Cuts and verifies the exact detached release tag from the synchronized base. | Base drift; conflicting tag; version/base-trailer mismatch; command failure. | Sole publish trigger |
+| `wait-publish-action` | Exact publish completion | Polls until the matching publish workflow push run exists and succeeds. | Missing run at timeout; repository/workflow/tag/SHA/event drift; non-success; command/auth error; abort. | Final durable gate |
 
 ### 5.2 Workflow Inputs
 

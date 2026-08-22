@@ -523,7 +523,7 @@ async function optionalClassicProtection<T>(
 	const command = ["gh", "api", endpoint] as const;
 	const result = await transport.run(command, cwd, signal);
 	if (result.exitCode === 0) return parseJson<T>(result.stdout);
-	if (/HTTP 404|Not Found/u.test(`${result.stderr}\n${result.stdout}`)) return undefined;
+	if (result.stdout.trim() === "" && result.stderr.trim() === "gh: Branch not protected (HTTP 404)") return undefined;
 	throw new ReleaseCommandError(command, result);
 }
 

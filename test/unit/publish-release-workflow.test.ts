@@ -350,6 +350,76 @@ test("rules lookup failures cannot be hidden by a partial classic protection set
 		/rules\/branches\/main failed.*404/u,
 	);
 });
+
+test("the exact classic unprotected-branch response is the only allowed absent source", async () => {
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+		if (command.includes("/protection/required_status_checks")) {
+			return commandResult("", 1, "gh: Branch not protected (HTTP 404)");
+		}
+		if (command.includes("/rules/branches/main")) {
+			return commandResult(
+				JSON.stringify([
+					{
+						type: "required_status_checks",
+						parameters: { required_status_checks: [{ context: "rules-only", integration_id: 15368 }] },
+					},
+				]),
+			);
+		}
+		if (command.includes("/check-runs")) {
+			return commandResult(
+				JSON.stringify({
+					check_runs: [
+						{ id: 1, name: "rules-only", status: "completed", conclusion: "success", app: { id: 15368 } },
+					],
+				}),
+			);
+		}
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	const result = await createReleaseBoundary("/safe/fake/repository", {
+		transport,
+		clock: fakeClock(),
+		requiredCheckIntervalMs: 1,
+		requiredCheckTimeoutMs: 2,
+	}).waitForRequiredChecks({ release, baseRef: "main", pullRequest, signal: new AbortController().signal });
+	assert.equal(result.status, "passed");
+});
+
+test("a generic classic protection 404 cannot hide a partial required-check set", async () => {
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+		if (command.includes("/protection/required_status_checks")) {
+			return commandResult("", 1, "HTTP 404: Not Found");
+		}
+		if (command.includes("/rules/branches/main")) {
+			return commandResult(
+				JSON.stringify([
+					{
+						type: "required_status_checks",
+						parameters: { required_status_checks: [{ context: "rules-only", integration_id: 15368 }] },
+					},
+				]),
+			);
+		}
+		if (command.includes("/check-runs")) return commandResult(JSON.stringify({ check_runs: [] }));
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	await assert.rejects(
+		createReleaseBoundary("/safe/fake/repository", {
+			transport,
+			clock: fakeClock(),
+			requiredCheckIntervalMs: 1,
+			requiredCheckTimeoutMs: 2,
+		}).waitForRequiredChecks({ release, baseRef: "main", pullRequest, signal: new AbortController().signal }),
+		/protection\/required_status_checks failed.*HTTP 404: Not Found/u,
+	);
+});
 test("release-0.9.15 CI regression keeps configured checks pending until they materialize", () => {
 	const result = evaluateRequiredChecks(ciSnapshot(), expectedCi);
 	assert.equal(result.status, "pending");
