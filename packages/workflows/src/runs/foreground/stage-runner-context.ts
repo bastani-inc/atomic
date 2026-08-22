@@ -37,9 +37,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		signal,
 		stageOptions: effectiveStageOptions,
 		executionMode,
-		...(effectiveStageOptions?.sessionAdapter === undefined
-			? {}
-			: { sessionAdapter: effectiveStageOptions.sessionAdapter }),
+		// Run-level placement: one adapter owns every stage session of the run;
+		// it is carried on the runner opts, never per-stage authoring options.
+		...(opts.sessionAdapter !== undefined ? { sessionAdapter: opts.sessionAdapter } : {}),
 	};
 	const controller = new StageSessionController(opts, meta, effectiveStageOptions, structuredOutputCapture);
 	let lastAssistantText: string | undefined;

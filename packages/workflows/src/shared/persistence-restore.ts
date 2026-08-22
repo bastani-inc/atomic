@@ -229,6 +229,7 @@ export function restoreOnSessionStart(
 					: {}),
 				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
 				...(blockedMeta.budgetState !== undefined ? { budgetState: blockedMeta.budgetState } : {}),
+				...(runMeta.sessionAdapter !== undefined ? { sessionAdapter: runMeta.sessionAdapter } : {}),
 			};
 			store.recordRunStart(runSnapshot);
 			store.recordRunBlocked(run.runId, blockedMeta.error, {
@@ -270,6 +271,7 @@ export function restoreOnSessionStart(
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 					: {}),
+				...(runMeta.sessionAdapter !== undefined ? { sessionAdapter: runMeta.sessionAdapter } : {}),
 			};
 			store.recordRunStart(runSnapshot);
 			callbacks.onResume?.(run);
@@ -297,6 +299,7 @@ export function restoreOnSessionStart(
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 					: {}),
+				...(runMeta.sessionAdapter !== undefined ? { sessionAdapter: runMeta.sessionAdapter } : {}),
 			};
 			store.recordRunStart(runSnapshot);
 			store.recordRunEnd(run.runId, "failed");

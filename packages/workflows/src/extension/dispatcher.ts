@@ -20,6 +20,7 @@ import { store as defaultStore, type Store } from "../shared/store.js";
 import type { WorkflowActor } from "../shared/store-types.js";
 import {
 	INTERACTIVE_WORKFLOW_POLICY,
+	type SessionAdapterSelector,
 	type WorkflowExecutionPolicy,
 	type WorkflowMcpPort,
 	type WorkflowModelCatalogPort,
@@ -95,6 +96,8 @@ export interface DispatcherOpts {
 	signal?: AbortSignal;
 	/** Reports the exact detached identity before startup admission is awaited. */
 	onRunAccepted?: (runId: string) => void;
+	/** Run-level session adapter selector applied to the dispatched run's stages. */
+	sessionAdapter?: SessionAdapterSelector;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +188,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				launch = launchDetachedUntilStartup(def, inputs, {
 					registry: opts.registry,
 					adapters: opts.adapters,
+					...(opts.sessionAdapter !== undefined ? { sessionAdapter: opts.sessionAdapter } : {}),
 					store: opts.store,
 					cancellation: opts.cancellation,
 					jobs: opts.jobs,

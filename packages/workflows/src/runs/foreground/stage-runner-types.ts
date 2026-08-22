@@ -1,6 +1,13 @@
-import type { AgentSession, CreateAgentSessionOptions, PromptOptions, SessionStats, SettingsManager } from "@bastani/atomic";
+import type {
+	AgentSession,
+	CreateAgentSessionOptions,
+	PromptOptions,
+	SessionStats,
+	SettingsManager,
+} from "@bastani/atomic";
 import type {
 	CompleteStageOpts,
+	SessionAdapterSelector,
 	StageContext,
 	StageExecutionMeta,
 	StageOptions,
@@ -156,6 +163,8 @@ export interface StageRunnerOpts {
 	executionMode?: WorkflowExecutionMode;
 	/** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
 	defaultSessionDir?: string;
+	/** Run-level named session adapter selector owning every stage session of this run. */
+	sessionAdapter?: SessionAdapterSelector;
 	/** Internal: notifies the executor when an in-flight fallback changes model/fast metadata. */
 	onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
 	/** Internal: persist stage-session identity once the SDK has created its path. */

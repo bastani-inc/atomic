@@ -270,7 +270,6 @@ function stripWorkflowOnlyOptions(
 		mcp: _mcp,
 		fallbackModels: _fallbackModels,
 		group: _group,
-		sessionAdapter: _sessionAdapter,
 		...sessionOptions
 	} = maybeWorkflowOptions;
 	return sessionOptions as CreateAgentSessionOptions;

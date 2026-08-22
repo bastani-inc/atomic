@@ -627,7 +627,6 @@ function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readon
 			: {}),
 		...(draft.sessionId !== undefined ? { sessionId: draft.sessionId } : {}),
 		...(draft.sessionFile !== undefined ? { sessionFile: draft.sessionFile } : {}),
-		...(draft.sessionAdapter !== undefined ? { sessionAdapter: structuredClone(draft.sessionAdapter) } : {}),
 		...(draft.model !== undefined ? { model: draft.model } : {}),
 		...(draft.fastMode !== undefined ? { fastMode: draft.fastMode } : {}),
 		...(draft.attemptedModels !== undefined ? { attemptedModels: draft.attemptedModels } : {}),

@@ -34,7 +34,6 @@ export function createReplayStageContext(input: {
 			stageId,
 			name,
 			parentIds: stageSnapshot.parentIds,
-			...(stageSnapshot.sessionAdapter !== undefined ? { sessionAdapter: stageSnapshot.sessionAdapter } : {}),
 			...stageReplayFields(stageSnapshot),
 			ts: stageSnapshot.startedAt ?? Date.now(),
 		});
@@ -53,7 +52,6 @@ export function createReplayStageContext(input: {
 			...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
 			...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
 			...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
-			...(stageSnapshot.sessionAdapter !== undefined ? { sessionAdapter: stageSnapshot.sessionAdapter } : {}),
 			...stageReplayFields(stageSnapshot),
 		});
 	};

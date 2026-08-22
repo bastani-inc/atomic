@@ -102,7 +102,7 @@ function adaptersRecording(session: StageSessionRuntime, counter: { creates: num
 }
 
 describe("ensurePostMortemStageHandle", () => {
-	test("reopens through the adapter selection retained by the completed stage", async () => {
+	test("reopens through the run-level adapter selection recorded on the run", async () => {
 		const registry = createStageControlRegistry();
 		const named = new SessionAdapterRegistry();
 		const sessionFile = retainedSession("named-adapter");
@@ -118,15 +118,13 @@ describe("ensurePostMortemStageHandle", () => {
 				},
 			},
 		});
-		const stage = completedStage({
-			sessionFile,
-			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
-		});
+		const stage = completedStage({ sessionFile });
 		const result = ensurePostMortemStageHandle("run-1", stage, {
 			registry,
 			adapters: {
 				sessionAdapters: named,
 			},
+			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 			cwd: tempDir,
 		});
 		assert.equal(result.ok, true);
@@ -151,18 +149,12 @@ describe("ensurePostMortemStageHandle", () => {
 				},
 			},
 		});
-		const result = acquirePostMortemStageHandle(
-			"run-1",
-			completedStage({
-				sessionFile,
-				sessionAdapter: { name: "named-only" },
-			}),
-			{
-				registry,
-				adapters: { sessionAdapters: named },
-				cwd: tempDir,
-			},
-		);
+		const result = acquirePostMortemStageHandle("run-1", completedStage({ sessionFile }), {
+			registry,
+			adapters: { sessionAdapters: named },
+			sessionAdapter: { name: "named-only" },
+			cwd: tempDir,
+		});
 		assert.equal(result.ok, true);
 		if (!result.ok) return;
 		await result.lease.handle.ensureAttached();
@@ -172,18 +164,21 @@ describe("ensurePostMortemStageHandle", () => {
 
 	test("keeps the transcript read-only when a persisted named adapter is unavailable", () => {
 		const sessionFile = retainedSession("missing-named-adapter");
-		const stage = completedStage({ sessionFile, sessionAdapter: { name: "no-longer-loaded" } });
+		const stage = completedStage({ sessionFile });
 		const adapters = { sessionAdapters: new SessionAdapterRegistry() };
+		const runSelector = { name: "no-longer-loaded" };
 
 		const ensured = ensurePostMortemStageHandle("run-1", stage, {
 			registry: createStageControlRegistry(),
 			adapters,
+			sessionAdapter: runSelector,
 		});
 		assert.deepEqual(ensured, { ok: false, reason: "no_adapter" });
 
 		const acquired = acquirePostMortemStageHandle("run-1", stage, {
 			registry: createStageControlRegistry(),
 			adapters,
+			sessionAdapter: runSelector,
 		});
 		assert.deepEqual(acquired, { ok: false, reason: "no_adapter" });
 	});
@@ -233,10 +228,7 @@ describe("ensurePostMortemStageHandle", () => {
 			},
 		});
 
-		const stage = completedStage({
-			sessionFile,
-			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
-		});
+		const stage = completedStage({ sessionFile });
 		const result = ensurePostMortemStageHandle("run-1", stage, {
 			registry,
 			adapters: {
@@ -247,6 +239,7 @@ describe("ensurePostMortemStageHandle", () => {
 				},
 				sessionAdapters: named,
 			},
+			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 			cwd: tempDir,
 		});
 		assert.equal(result.ok, true);

@@ -11,7 +11,11 @@ import {
 } from "../../packages/workflows/src/runs/foreground/session-adapter-registry.js";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { AgentSessionAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
-import { appendStageEnd, appendStageStart } from "../../packages/workflows/src/shared/persistence-session-entries.js";
+import {
+	appendRunStart,
+	appendStageEnd,
+	appendStageStart,
+} from "../../packages/workflows/src/shared/persistence-session-entries.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
@@ -138,7 +142,7 @@ describe("named workflow session adapters", () => {
 		const ctx = createStageContext(
 			makeOpts({
 				adapters: { agentSession: local, sessionAdapters: registry },
-				stageOptions: { sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } } },
+				sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 			}),
 		);
 		await ctx.__ensureSession();
@@ -147,7 +151,7 @@ describe("named workflow session adapters", () => {
 		await ctx.__dispose();
 	});
 
-	test("selector is retained in session entries and durable checkpoint metadata", () => {
+	test("selector is retained on run.start only; stage entries and durable metadata carry none", () => {
 		const entries: Array<{ type: string; payload: Record<string, unknown> }> = [];
 		const persistence = {
 			appendEntry(type: string, payload: Record<string, unknown>) {
@@ -156,32 +160,38 @@ describe("named workflow session adapters", () => {
 			},
 		};
 		const selector = { name: "remote-pi", config: { profile: "example-profile" } };
+		appendRunStart(persistence, {
+			runId: "run",
+			name: "remote",
+			inputs: {},
+			sessionAdapter: selector,
+			ts: 1,
+		});
 		appendStageStart(persistence, {
 			runId: "run",
 			stageId: "stage",
 			name: "remote",
 			parentIds: [],
-			sessionAdapter: selector,
-			ts: 1,
+			ts: 2,
 		});
 		appendStageEnd(persistence, {
 			runId: "run",
 			stageId: "stage",
 			status: "completed",
-			sessionAdapter: selector,
 		});
-		assert.deepEqual(
-			entries.map((entry) => entry.payload.sessionAdapter),
-			[selector, selector],
-		);
+		const runStart = entries.find((entry) => entry.type === "workflow.run.start");
+		assert.deepEqual(runStart?.payload.sessionAdapter, selector);
+		for (const entry of entries) {
+			if (entry.type === "workflow.run.start") continue;
+			assert.equal("sessionAdapter" in entry.payload, false, `${entry.type} must not carry sessionAdapter`);
+		}
 		const stage: StageSnapshot = {
 			id: "stage",
 			name: "remote",
 			status: "completed",
 			parentIds: [],
 			toolEvents: [],
-			sessionAdapter: selector,
 		};
-		assert.deepEqual(durableStageCheckpointMetadata(stage).sessionAdapter, selector);
+		assert.equal("sessionAdapter" in durableStageCheckpointMetadata(stage), false);
 	});
 });

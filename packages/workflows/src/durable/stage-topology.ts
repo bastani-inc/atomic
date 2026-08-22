@@ -44,7 +44,6 @@ export function durableStageCheckpointMetadata(
 		...(stage.result !== undefined ? { result: stage.result } : {}),
 		...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
 		...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
-		...(stage.sessionAdapter !== undefined ? { sessionAdapter: structuredClone(stage.sessionAdapter) } : {}),
 		...(stage.durationMs !== undefined ? { durationMs: stage.durationMs } : {}),
 		...(stage.model !== undefined ? { model: stage.model } : {}),
 		...(stage.fastMode !== undefined ? { fastMode: stage.fastMode } : {}),

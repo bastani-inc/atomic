@@ -218,6 +218,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			: sameBudget
 				? continuedBudgetState
 				: { accounting: continuedBudgetState.accounting };
+	const inheritedSessionAdapter = opts.continuation?.source.sessionAdapter;
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -245,6 +246,14 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		// recomputing it, so resuming an agent-started run still reads as one the
 		// agent started. Only the resume itself is attributed to its requester.
 		...(continuationOrigin !== undefined ? { origin: continuationOrigin } : {}),
+		// A continuation keeps the remote placement of the run it continues rather
+		// than recomputing it; an explicit launch selector wins over the inherited
+		// one.
+		...(opts.sessionAdapter !== undefined
+			? { sessionAdapter: structuredClone(opts.sessionAdapter) }
+			: inheritedSessionAdapter !== undefined
+				? { sessionAdapter: structuredClone(inheritedSessionAdapter) }
+				: {}),
 		// A resumed run reports the resume that produced it, never a fresh start —
 		// whether it continues under a new id or reclaims the original one.
 		...(opts.resumeActor !== undefined
@@ -315,6 +324,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
 			...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
 			...(runSnapshot.origin !== undefined ? { origin: runSnapshot.origin } : {}),
+			...(runSnapshot.sessionAdapter !== undefined ? { sessionAdapter: runSnapshot.sessionAdapter } : {}),
 			...(runSnapshot.resumeFromStageId !== undefined ? { resumeFromStageId: runSnapshot.resumeFromStageId } : {}),
 			...(runSnapshot.accumulatedDurationMs !== undefined
 				? { accumulatedDurationMs: runSnapshot.accumulatedDurationMs }
@@ -399,6 +409,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		onStageSession: durableOnStageSession,
 		confirmStageReadiness: opts.confirmStageReadiness,
 		usePromptNodesForUi: opts.usePromptNodesForUi,
+		// Effective run-level placement: the explicit launch selector, or the one
+		// inherited from the continued source run — never recomputed per stage.
+		...(runSnapshot.sessionAdapter !== undefined ? { sessionAdapter: runSnapshot.sessionAdapter } : {}),
 	};
 	const workflowBoundaryOptions: EngineWorkflowBoundaryOptions = {
 		persistence: opts.persistence,
@@ -435,6 +448,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		rootBudget,
 		durableBackend,
 		durableRootBackend: rootBackend,
+		...(runSnapshot.sessionAdapter !== undefined ? { sessionAdapter: runSnapshot.sessionAdapter } : {}),
 	};
 	const runtime = new EngineRuntime({
 		runId,

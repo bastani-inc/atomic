@@ -20,6 +20,7 @@ import type { Store } from "../shared/store.js";
 import { store as defaultStore } from "../shared/store.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
 import type {
+	SessionAdapterSelector,
 	WorkflowBudget,
 	WorkflowDefinition,
 	WorkflowExecutionPolicy,
@@ -59,7 +60,11 @@ export interface ExtensionRuntimeOpts {
 	definitions?: WorkflowDefinition[];
 	/** Stage adapters forwarded to the executor (prompt/complete). */
 	adapters?: StageAdapters;
-
+	/**
+	 * Run-level session adapter selector applied to every stage of every run this
+	 * extension runtime launches. Absent means the local session runtime.
+	 */
+	sessionAdapter?: SessionAdapterSelector;
 	/** Store override (defaults to the singleton store). */
 	store?: Store;
 	/** Cancellation registry forwarded to the executor. */
@@ -148,6 +153,7 @@ export interface RuntimeDispatchOptions {
 export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): ExtensionRuntime {
 	const registry = opts.registry ?? createRegistry(opts.definitions ?? []);
 	const adapters = opts.adapters;
+	const sessionAdapter = opts.sessionAdapter;
 	const activeStore = opts.store ?? defaultStore;
 	const cancellation = opts.cancellation;
 	const persistence = opts.persistence;
@@ -176,6 +182,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			mcp,
 			config,
 			models,
+			...(sessionAdapter !== undefined ? { sessionAdapter } : {}),
 			...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
 			...(policy !== undefined ? { executionMode: policy.mode } : {}),
 			registry,
@@ -407,6 +414,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			return dispatch(args, {
 				registry,
 				adapters,
+				...(sessionAdapter !== undefined ? { sessionAdapter } : {}),
 				store: activeStore,
 				cancellation,
 				jobs,

@@ -84,6 +84,7 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 				parentIds: input.parentIds,
 				answerReplay: "unavailable",
 			}),
+			registerToolNode: () => undefined,
 			markPromptAnswerReplayed: () => {},
 		};
 	}

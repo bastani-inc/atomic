@@ -97,7 +97,6 @@ export interface DurableWorkflowBackend {
 		| {
 				sessionId?: string;
 				sessionFile?: string;
-				sessionAdapter?: import("../shared/types.js").SessionAdapterSelector;
 				startedAt?: number;
 				durationMs?: number;
 		  }
@@ -331,7 +330,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		| {
 				sessionId?: string;
 				sessionFile?: string;
-				sessionAdapter?: import("../shared/types.js").SessionAdapterSelector;
 				startedAt?: number;
 				durationMs?: number;
 		  }
@@ -341,9 +339,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		return {
 			...(checkpoint.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}),
 			...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),
-			...(checkpoint.sessionAdapter !== undefined
-				? { sessionAdapter: structuredClone(checkpoint.sessionAdapter) }
-				: {}),
 			...(checkpoint.startedAt !== undefined ? { startedAt: checkpoint.startedAt } : {}),
 			...(checkpoint.durationMs !== undefined ? { durationMs: checkpoint.durationMs } : {}),
 		};

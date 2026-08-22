@@ -277,8 +277,6 @@ export interface StageSnapshot {
 	 */
 	sessionId?: string;
 	sessionFile?: string;
-	/** Named session adapter selection retained for replay and post-mortem attachment. */
-	sessionAdapter?: import("./types.js").SessionAdapterSelector;
 	/** Effective model id selected for this stage after fallback resolution. */
 	model?: string;
 	/** True when Codex fast mode applied to this workflow stage. */
@@ -363,6 +361,13 @@ export interface RunSnapshot {
 	 * recorded it, in which case attribution is omitted rather than guessed.
 	 */
 	origin?: WorkflowActor;
+	/**
+	 * Named session adapter selection for every stage of this run. Set once at
+	 * run launch from the run-level input; a continuation inherits it from the
+	 * source run instead of recomputing it. Absent on legacy runs, in which
+	 * case the local agent-session adapter is used.
+	 */
+	sessionAdapter?: import("./types.js").SessionAdapterSelector;
 	/** Timestamp recorded on the most recent resume from a paused state. */
 	resumedAt?: number;
 	result?: WorkflowOutputValues;

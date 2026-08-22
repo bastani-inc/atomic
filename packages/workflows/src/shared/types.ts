@@ -237,7 +237,7 @@ export interface StageExecutionMeta {
 	executionMode?: WorkflowExecutionMode;
 	/** Internal stage-generation context reused across model-fallback sessions. */
 	orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
-	/** Serializable selector for the named adapter owning this stage. */
+	/** Serializable selector of the named adapter owning this run's stage sessions. */
 	sessionAdapter?: SessionAdapterSelector;
 }
 

@@ -72,8 +72,7 @@ function getUsageLine(source: AgentSession | SessionStats, autoCompactEnabled: b
 
 	if (isStats) {
 		const latestPromptTokens = source.tokens.input + source.tokens.cacheRead + source.tokens.cacheWrite;
-		latestCacheHitRate =
-			latestPromptTokens > 0 ? (source.tokens.cacheRead / latestPromptTokens) * 100 : undefined;
+		latestCacheHitRate = latestPromptTokens > 0 ? (source.tokens.cacheRead / latestPromptTokens) * 100 : undefined;
 	} else {
 		for (const entry of source.sessionManager.getEntries()) {
 			if (entry.type === "message" && entry.message.role === "assistant") {
@@ -114,9 +113,11 @@ function getUsageLine(source: AgentSession | SessionStats, autoCompactEnabled: b
 	}
 
 	// Kimi Coding is subscription-backed despite using API-key authentication.
-	const usingSubscription = !isStats && source.state.model
-		? source.state.model.provider === "kimi-coding" || source.modelRuntime.isUsingOAuth(source.state.model.provider)
-		: false;
+	const usingSubscription =
+		!isStats && source.state.model
+			? source.state.model.provider === "kimi-coding" ||
+				source.modelRuntime.isUsingOAuth(source.state.model.provider)
+			: false;
 	if (totals.cost || usingSubscription) {
 		usageParts.push(
 			`${theme.fg("muted", `$${totals.cost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,

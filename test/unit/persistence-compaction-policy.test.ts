@@ -116,6 +116,7 @@ describe("installCompactionHook", () => {
 		const st = createStore();
 
 		const run = makeRunSnapshot({
+			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 			stages: [
 				{
 					id: "s1",
@@ -124,7 +125,6 @@ describe("installCompactionHook", () => {
 					parentIds: [],
 					toolEvents: [],
 					startedAt: 1050,
-					sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 					// no endedAt → in-flight
 				},
 				{
@@ -156,7 +156,10 @@ describe("installCompactionHook", () => {
 		const stageStarts = appended.filter((e) => e.type === "workflow.stage.start");
 		assert.equal(stageStarts.length, 1);
 		assert.equal(stageStarts[0]!.payload.stageId, "s1");
-		assert.deepEqual(stageStarts[0]!.payload.sessionAdapter, {
+		// sessionAdapter is run-level now; it must not appear on the stage entry
+		assert.equal("sessionAdapter" in stageStarts[0]!.payload, false);
+		const runStart = appended.find((e) => e.type === "workflow.run.start");
+		assert.deepEqual(runStart!.payload.sessionAdapter, {
 			name: "remote-pi",
 			config: { profile: "example-profile" },
 		});

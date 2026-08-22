@@ -259,7 +259,10 @@ export type NoExtraOutputs<TDeclared extends WorkflowOutputValues, TActual exten
 	Record<Exclude<keyof TActual, keyof TDeclared>, never>;
 
 export interface WorkflowOverlayAdapter extends WorkflowSerializableObject {}
-export interface RunSnapshot extends WorkflowSerializableObject {}
+export interface RunSnapshot extends WorkflowSerializableObject {
+	/** Serializable selector of the named adapter that owns this run's stages. */
+	readonly sessionAdapter?: SessionAdapterSelector;
+}
 export interface ActiveRunEntry {
 	readonly controller: AbortController;
 	readonly children: readonly AbortController[];
@@ -287,6 +290,11 @@ export interface WorkflowParentRunLink {
 
 export interface RunOpts {
 	readonly adapters?: StageAdapters;
+	/**
+	 * Serializable selector of the named external AgentSessionAdapter that owns
+	 * every stage of this run. Absent means the local session runtime.
+	 */
+	readonly sessionAdapter?: SessionAdapterSelector;
 	readonly cwd?: string;
 	readonly ui?: WorkflowUIAdapter;
 	readonly executionMode?: WorkflowExecutionMode;
@@ -377,7 +385,6 @@ export interface StageSnapshot extends WorkflowSerializableObject {
 	readonly status: StageStatus;
 	readonly result?: WorkflowSerializableValue;
 	readonly error?: string;
-	readonly sessionAdapter?: SessionAdapterSelector;
 }
 
 export interface ToolNodeSnapshot extends WorkflowSerializableObject {

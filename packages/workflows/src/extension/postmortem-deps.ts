@@ -23,6 +23,7 @@ import { stageControlRegistry } from "../runs/foreground/stage-control-registry.
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
+import type { SessionAdapterSelector } from "../shared/types.js";
 
 export interface PostMortemResolverDeps {
 	readonly adapters: StageAdapters;
@@ -43,11 +44,17 @@ function resolveStageCwd(runId: string): string | undefined {
 	}
 }
 
+/** Run-level session adapter selector recorded on the run snapshot, when present. */
+function resolveRunSessionAdapter(runId: string): SessionAdapterSelector | undefined {
+	return readGraphStoreSnapshot(store).runs.find((candidate) => candidate.id === runId)?.sessionAdapter;
+}
+
 /** Resolver deps for a specific run, keyed so revived handles use the real run cwd. */
 export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps): PostMortemStageChatDeps {
 	return {
 		registry: stageControlRegistry,
 		adapters: deps.adapters,
+		sessionAdapter: resolveRunSessionAdapter(runId),
 		cwd: resolveStageCwd(runId),
 		defaultSessionDir: deps.resolveDefaultStageSessionDir(),
 	};

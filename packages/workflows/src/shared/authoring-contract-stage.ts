@@ -196,8 +196,6 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	 * Only applied when the stage session actually has intercom access.
 	 */
 	readonly group?: string | true;
-	/** Use a named external AgentSessionAdapter instead of Atomic's local session runtime. */
-	readonly sessionAdapter?: SessionAdapterSelector;
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {

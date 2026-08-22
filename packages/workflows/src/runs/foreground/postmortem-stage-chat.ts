@@ -28,6 +28,7 @@
 
 import { isReopenableSessionTranscript } from "../../shared/session-transcript.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
+import type { SessionAdapterSelector } from "../../shared/types.js";
 import { findSessionAdapter } from "./session-adapter-registry.js";
 import type {
 	AgentSessionEventListener,
@@ -53,6 +54,11 @@ export type AcquirePostMortemStageHandleResult =
 export interface PostMortemStageChatDeps {
 	readonly registry: StageControlRegistry;
 	readonly adapters?: StageAdapters;
+	/**
+	 * Run-level named session adapter selector owning this run's stage sessions.
+	 * Absent means the local agent-session adapter.
+	 */
+	readonly sessionAdapter?: SessionAdapterSelector;
 	/** Working directory used when reopening the retained session. */
 	readonly cwd?: string;
 	/** Default stage session directory to restore after a host restart. */
@@ -94,7 +100,7 @@ export function ensurePostMortemStageHandle(
 		return { ok: true, handle: existing };
 	}
 	const adapters = deps.adapters;
-	if (adapters === undefined || findSessionAdapter(adapters, stage.sessionAdapter) === undefined) {
+	if (adapters === undefined || findSessionAdapter(adapters, deps.sessionAdapter) === undefined) {
 		return { ok: false, reason: "no_adapter" };
 	}
 	const sessionFile = stage.sessionFile;
@@ -102,7 +108,15 @@ export function ensurePostMortemStageHandle(
 	if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
 
 	const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
-		createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
+		createPostMortemStageHandle(
+			runId,
+			stage,
+			sessionFile,
+			adapters,
+			deps.cwd,
+			deps.defaultSessionDir,
+			deps.sessionAdapter,
+		),
 	);
 	return { ok: true, handle };
 }
@@ -122,14 +136,22 @@ export function acquirePostMortemStageHandle(
 		};
 	}
 	const adapters = deps.adapters;
-	if (adapters === undefined || findSessionAdapter(adapters, stage.sessionAdapter) === undefined) {
+	if (adapters === undefined || findSessionAdapter(adapters, deps.sessionAdapter) === undefined) {
 		return { ok: false, reason: "no_adapter" };
 	}
 	const sessionFile = stage.sessionFile;
 	if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
 	if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
 	const lease = deps.registry.acquireDetached(runId, stage.id, () =>
-		createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
+		createPostMortemStageHandle(
+			runId,
+			stage,
+			sessionFile,
+			adapters,
+			deps.cwd,
+			deps.defaultSessionDir,
+			deps.sessionAdapter,
+		),
 	);
 	return { ok: true, lease };
 }
@@ -141,11 +163,13 @@ export function acquirePostMortemStageHandle(
  */
 export function createPostMortemStageHandle(
 	runId: string,
-	stage: Pick<StageSnapshot, "id" | "name" | "sessionId" | "sessionAdapter">,
+	stage: Pick<StageSnapshot, "id" | "name" | "sessionId">,
 	sessionFile: string,
 	adapters: StageAdapters,
 	cwd: string | undefined,
 	defaultSessionDir: string | undefined,
+	/** Run-level named session adapter selector owning this run's stage sessions. */
+	sessionAdapter?: SessionAdapterSelector,
 ): StageControlHandle {
 	const context = createStageContext({
 		runId,
@@ -154,9 +178,9 @@ export function createPostMortemStageHandle(
 		adapters,
 		stageOptions: {
 			resumeFromSessionFile: sessionFile,
-			...(stage.sessionAdapter !== undefined ? { sessionAdapter: stage.sessionAdapter } : {}),
 			...(cwd !== undefined ? { cwd } : {}),
 		},
+		...(sessionAdapter !== undefined ? { sessionAdapter } : {}),
 		...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
 	});
 	let disposed = false;

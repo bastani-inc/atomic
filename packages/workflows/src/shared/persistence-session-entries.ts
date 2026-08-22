@@ -13,7 +13,13 @@ import type {
 	WorkflowFailureDisposition,
 	WorkflowFailureKind,
 } from "./store-types.js";
-import type { SessionAdapterSelector, WorkflowExitStatus, WorkflowInputValues, WorkflowModelAttempt, WorkflowOutputValues } from "./types.js";
+import type {
+	SessionAdapterSelector,
+	WorkflowExitStatus,
+	WorkflowInputValues,
+	WorkflowModelAttempt,
+	WorkflowOutputValues,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Structural API type (subset of ExtensionAPI needed here)
@@ -48,6 +54,8 @@ export interface RunStartPayload {
 	readonly accumulatedDurationMs?: number;
 	readonly budget?: import("./store-types.js").RunBudgetSnapshot;
 	readonly budgetState?: import("./store-types.js").RunBudgetState;
+	/** Run-level named session adapter selector applied to every stage in this run. */
+	readonly sessionAdapter?: SessionAdapterSelector;
 	readonly ts: number;
 }
 
@@ -57,7 +65,6 @@ export interface StageStartPayload {
 	readonly name: string;
 	readonly parentIds: readonly string[];
 	readonly model?: string;
-	readonly sessionAdapter?: SessionAdapterSelector;
 	readonly replayKey?: string;
 	readonly replayedFromStageId?: string;
 	readonly replayed?: boolean;
@@ -167,6 +174,7 @@ export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): v
 		...(payload.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: payload.accumulatedDurationMs } : {}),
 		...(payload.budget !== undefined ? { budget: payload.budget } : {}),
 		...(payload.budgetState !== undefined ? { budgetState: payload.budgetState } : {}),
+		...(payload.sessionAdapter !== undefined ? { sessionAdapter: payload.sessionAdapter } : {}),
 		ts: payload.ts,
 	});
 	if (entryId && typeof api.setLabel === "function") {
@@ -183,7 +191,6 @@ export function appendStageStart(api: PersistenceAPI, payload: StageStartPayload
 		name: payload.name,
 		parentIds: [...payload.parentIds],
 		...(payload.model !== undefined ? { model: payload.model } : {}),
-		...(payload.sessionAdapter !== undefined ? { sessionAdapter: payload.sessionAdapter } : {}),
 		...(payload.replayKey !== undefined ? { replayKey: payload.replayKey } : {}),
 		...(payload.replayedFromStageId !== undefined ? { replayedFromStageId: payload.replayedFromStageId } : {}),
 		...(payload.replayed !== undefined ? { replayed: payload.replayed } : {}),

@@ -15,7 +15,7 @@ import type {
 	WorkflowFailureDisposition,
 	WorkflowFailureKind,
 } from "./store-types.js";
-import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
+import type { SessionAdapterSelector, WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
 import {
 	isWorkflowFailureCode,
 	isWorkflowFailureDisposition,
@@ -55,7 +55,6 @@ export function _buildStageSnapshots(
 			const name = entry.payload.name;
 			const parentIds = entry.payload.parentIds;
 			const ts = entry.payload.ts;
-			const sessionAdapter = restoredSessionAdapter(entry.payload.sessionAdapter);
 			if (typeof stageId !== "string" || typeof name !== "string") continue;
 			if (!stageMap.has(stageId)) {
 				stageMap.set(stageId, {
@@ -64,7 +63,6 @@ export function _buildStageSnapshots(
 					status: "running",
 					parentIds: Array.isArray(parentIds) ? (parentIds as string[]) : [],
 					startedAt: typeof ts === "number" ? ts : undefined,
-					...(sessionAdapter !== undefined ? { sessionAdapter } : {}),
 					...replayMetadata(entry.payload),
 					toolEvents: [],
 				});
@@ -87,7 +85,6 @@ export function _buildStageSnapshots(
 			const sessionId = entry.payload.sessionId;
 			const sessionFile = entry.payload.sessionFile;
 			const modelAttempts = entry.payload.modelAttempts;
-			const sessionAdapter = restoredSessionAdapter(entry.payload.sessionAdapter);
 			if (typeof stageId !== "string") continue;
 			endedStages.add(stageId);
 			const snap = stageMap.get(stageId);
@@ -108,7 +105,6 @@ export function _buildStageSnapshots(
 				if (typeof sessionId === "string") snap.sessionId = sessionId;
 				if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
 				if (isModelAttempts(modelAttempts)) snap.modelAttempts = modelAttempts as StageSnapshot["modelAttempts"];
-				if (sessionAdapter !== undefined) snap.sessionAdapter = sessionAdapter;
 				Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
 			}
 		}
@@ -128,13 +124,13 @@ export function _buildStageSnapshots(
 	return [...stageMap.values()];
 }
 
-function restoredSessionAdapter(value: unknown): StageSnapshot["sessionAdapter"] | undefined {
+function restoredSessionAdapter(value: unknown): SessionAdapterSelector | undefined {
 	if (!Value.Check(workflowSerializableObjectSchema, value)) return undefined;
 	const candidate = value as { readonly name?: unknown; readonly config?: unknown };
 	if (typeof candidate.name !== "string" || candidate.name.length === 0) return undefined;
 	if (candidate.config !== undefined && !Value.Check(workflowSerializableObjectSchema, candidate.config))
 		return undefined;
-	return structuredClone(value) as StageSnapshot["sessionAdapter"];
+	return structuredClone(value) as SessionAdapterSelector;
 }
 
 function hasRestoredAncestor(
@@ -508,11 +504,13 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
 			...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
 			...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
+			...(runMeta.sessionAdapter !== undefined ? { sessionAdapter: runMeta.sessionAdapter } : {}),
 			...(runMeta.accumulatedDurationMs !== undefined
 				? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 				: {}),
 			...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
 			...(runMeta.budgetState !== undefined ? { budgetState: runMeta.budgetState } : {}),
+			...(runMeta.sessionAdapter !== undefined ? { sessionAdapter: runMeta.sessionAdapter } : {}),
 		});
 
 		const error = end.error;
@@ -594,6 +592,8 @@ export function findRunStartMetadata(
 	readonly origin?: WorkflowActor;
 	readonly budget?: RunBudgetSnapshot;
 	readonly budgetState?: RunBudgetState;
+	/** Run-level named session adapter selector recovered from the run.start entry. */
+	readonly sessionAdapter?: SessionAdapterSelector;
 } {
 	for (const entry of entries) {
 		if (entry.type !== "workflow.run.start" || entry.payload.runId !== runId) continue;
@@ -606,6 +606,7 @@ export function findRunStartMetadata(
 		const budget = restoreBudgetSnapshot(entry.payload.budget);
 		const budgetState = restoreBudgetState(entry.payload.budgetState);
 		const origin = entry.payload.origin;
+		const sessionAdapter = restoredSessionAdapter(entry.payload.sessionAdapter);
 		return {
 			...(typeof parentRunId === "string" ? { parentRunId } : {}),
 			...(typeof parentStageId === "string" ? { parentStageId } : {}),
@@ -620,6 +621,7 @@ export function findRunStartMetadata(
 			...(origin === "user" || origin === "agent" ? { origin } : {}),
 			...(budget !== undefined ? { budget } : {}),
 			...(budgetState !== undefined ? { budgetState } : {}),
+			...(sessionAdapter !== undefined ? { sessionAdapter } : {}),
 		};
 	}
 	return {};

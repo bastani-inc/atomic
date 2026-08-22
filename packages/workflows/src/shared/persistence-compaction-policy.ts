@@ -53,6 +53,7 @@ export function installCompactionHook(api: CompactionAPI & PersistenceAPI, store
 				runId: run.id,
 				name: run.name,
 				inputs: run.inputs,
+				...(run.sessionAdapter !== undefined ? { sessionAdapter: run.sessionAdapter } : {}),
 				ts: run.startedAt ?? now,
 			});
 
@@ -64,7 +65,6 @@ export function installCompactionHook(api: CompactionAPI & PersistenceAPI, store
 					stageId: stage.id,
 					name: stage.name,
 					parentIds: [...stage.parentIds],
-					...(stage.sessionAdapter !== undefined ? { sessionAdapter: stage.sessionAdapter } : {}),
 					ts: stage.startedAt ?? now,
 				});
 			}

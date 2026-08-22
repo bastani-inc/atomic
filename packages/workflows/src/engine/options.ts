@@ -12,6 +12,7 @@ export type EngineStageRuntimeOptions = Pick<
 	| "onStageSession"
 	| "confirmStageReadiness"
 	| "usePromptNodesForUi"
+	| "sessionAdapter"
 >;
 
 export type EngineWorkflowBoundaryOptions = Pick<RunOpts, "persistence" | "onStageStart" | "onStageEnd">;
@@ -41,4 +42,5 @@ export type EngineChildRunOptions = Pick<
 	| "durableBackend"
 	| "durableRootBackend"
 	| "rootBudget"
+	| "sessionAdapter"
 >;

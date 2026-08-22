@@ -122,10 +122,20 @@ describe("restoreOnSessionStart", () => {
 		const run = st.runs()[0]!;
 		assert.notEqual(run.endedAt, undefined);
 	});
-	test("stage session metadata is restored from stage.end entries", () => {
+	test("stage session metadata is restored from stage.end entries; adapter is run-level", () => {
 		const st = createStore();
 		const entries: SessionEntry[] = [
-			{ id: "e1", type: "workflow.run.start", payload: { runId: "r1", name: "wf", inputs: {}, ts: 1 } },
+			{
+				id: "e1",
+				type: "workflow.run.start",
+				payload: {
+					runId: "r1",
+					name: "wf",
+					inputs: {},
+					sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
+					ts: 1,
+				},
+			},
 			{
 				id: "e2",
 				type: "workflow.stage.start",
@@ -140,15 +150,48 @@ describe("restoreOnSessionStart", () => {
 					status: "failed",
 					sessionId: "session-1",
 					sessionFile: "/tmp/session-1.jsonl",
-					sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 				},
 			},
 		];
 		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
-		const stage = st.runs()[0]?.stages[0];
+		const run = st.runs()[0]!;
+		const stage = run.stages[0];
 		assert.equal(stage?.sessionId, "session-1");
 		assert.equal(stage?.sessionFile, "/tmp/session-1.jsonl");
-		assert.deepEqual(stage?.sessionAdapter, { name: "remote-pi", config: { profile: "example-profile" } });
+		// Adapter selection is run-level; the restored stage no longer carries it.
+		assert.equal(stage?.sessionAdapter, undefined);
+		assert.deepEqual(run.sessionAdapter, { name: "remote-pi", config: { profile: "example-profile" } });
+	});
+	test("run-level session adapter is restored from run.start entries", () => {
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{
+				id: "e1",
+				type: "workflow.run.start",
+				payload: {
+					runId: "r1",
+					name: "wf",
+					inputs: {},
+					sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
+					ts: 1,
+				},
+			},
+			{
+				id: "e2",
+				type: "workflow.stage.start",
+				payload: { runId: "r1", stageId: "s1", name: "review", parentIds: [], ts: 2 },
+			},
+			{
+				id: "e3",
+				type: "workflow.stage.end",
+				payload: { runId: "r1", stageId: "s1", status: "completed", durationMs: 100 },
+			},
+			{ id: "e4", type: "workflow.run.end", payload: { runId: "r1", status: "completed", ts: 3 } },
+		];
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const run = st.runs()[0];
+		assert.deepEqual(run?.sessionAdapter, { name: "remote-pi", config: { profile: "example-profile" } });
+		assert.equal(run?.stages[0]?.sessionAdapter, undefined);
 	});
 	test("stage snapshots are rebuilt from session entries", () => {
 		const st = createStore();

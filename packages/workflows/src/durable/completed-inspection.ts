@@ -129,6 +129,7 @@ function registerCompletedChatHandles(snapshot: RunSnapshot, deps: OpenCompleted
 			deps.adapters,
 			deps.cwd,
 			deps.defaultSessionDir,
+			snapshot.sessionAdapter,
 		);
 		const unregister = registry.register(handle);
 		registrations.set(key, { handle, unregister });
