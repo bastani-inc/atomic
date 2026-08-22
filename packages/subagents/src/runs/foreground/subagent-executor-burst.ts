@@ -21,8 +21,9 @@ interface BurstItem {
 	signal: AbortSignal;
 	onUpdate?: (result: SubagentToolResult) => void;
 	ctx: ExtensionContext;
+	settled: boolean;
 	resolve: (result: SubagentToolResult) => void;
-	reject: (error: Error) => void;
+	reject: (reason?: unknown) => void;
 }
 
 interface ResultRoute {
@@ -286,6 +287,40 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 	};
 }
 
+function resolveItem(item: BurstItem, result: SubagentToolResult): void {
+	if (item.settled) return;
+	item.settled = true;
+	item.resolve(result);
+}
+
+function rejectItem(item: BurstItem, reason: unknown): void {
+	if (item.settled) return;
+	item.settled = true;
+	item.reject(reason);
+}
+
+function observeLaterAbort(item: BurstItem): () => void {
+	let listening = false;
+	const cleanup = (): void => {
+		if (!listening) return;
+		listening = false;
+		item.signal.removeEventListener("abort", onAbort);
+	};
+	const onAbort = (): void => {
+		cleanup();
+		const reason = item.signal.reason;
+		rejectItem(item, reason === undefined ? new DOMException("The operation was aborted", "AbortError") : reason);
+	};
+	if (item.signal.aborted) {
+		onAbort();
+	} else {
+		listening = true;
+		item.signal.addEventListener("abort", onAbort, { once: true });
+		if (item.signal.aborted) onAbort();
+	}
+	return cleanup;
+}
+
 export function createExecutionBurstDispatcher(input: {
 	execute: ExecuteSubagent;
 	isActive: () => boolean;
@@ -309,9 +344,14 @@ export function createExecutionBurstDispatcher(input: {
 			return;
 		}
 
+		const abortCleanups = items.slice(1).map(observeLaterAbort);
+		const cleanupLaterAborts = (): void => {
+			for (const cleanup of abortCleanups) cleanup();
+		};
 		const merged = mergeBurst(items);
 		if (merged.error) {
-			for (const item of items) item.resolve(merged.error);
+			for (const item of items) resolveItem(item, merged.error);
+			cleanupLaterAborts();
 			return;
 		}
 
@@ -323,7 +363,8 @@ export function createExecutionBurstDispatcher(input: {
 		const onUpdate = (update: SubagentToolResult): void => {
 			updateBurstDisplay(display, update);
 			for (let index = 0; index < items.length; index++) {
-				items[index]!.onUpdate?.(projectResult(update, merged.routes![index]!, true));
+				const item = items[index]!;
+				if (!item.settled) item.onUpdate?.(projectResult(update, merged.routes![index]!, true));
 			}
 		};
 		input.setActive(true);
@@ -331,13 +372,14 @@ export function createExecutionBurstDispatcher(input: {
 			const result = await input.execute(first.id, merged.params!, first.signal, onUpdate, first.ctx);
 			updateBurstDisplay(display, result);
 			for (let index = 0; index < items.length; index++) {
-				items[index]!.resolve(projectResult(result, merged.routes![index]!));
+				resolveItem(items[index]!, projectResult(result, merged.routes![index]!));
 			}
 		} catch (error) {
 			const rejection = error instanceof Error ? error : new Error(String(error));
-			for (const item of items) item.reject(rejection);
+			for (const item of items) rejectItem(item, rejection);
 		} finally {
 			input.setActive(false);
+			cleanupLaterAborts();
 		}
 	};
 
@@ -351,7 +393,7 @@ export function createExecutionBurstDispatcher(input: {
 	return (id, params, signal, onUpdate, ctx) => {
 		if (input.isActive()) return Promise.resolve(input.duplicateResult(params));
 		return new Promise<SubagentToolResult>((resolve, reject) => {
-			queue.push({ id, params, signal, onUpdate, ctx, resolve, reject });
+			queue.push({ id, params, signal, onUpdate, ctx, settled: false, resolve, reject });
 			if (!flushScheduled) {
 				flushScheduled = true;
 				setImmediate(flush);

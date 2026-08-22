@@ -12,6 +12,7 @@ import {
 	renderSubagentToolResult,
 } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
+import { createExecutionBurstDispatcher } from "../../packages/subagents/src/runs/foreground/subagent-executor-burst.js";
 import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
@@ -108,6 +109,17 @@ function result(
 	};
 }
 
+function aggregateResult(tasks: string[] = ["A", "B"]): SubagentToolResult {
+	return {
+		content: [],
+		details: {
+			mode: "parallel",
+			runId: "shared-run",
+			results: tasks.map((task) => result("echo", task)),
+		},
+	};
+}
+
 function makeHarness(input?: {
 	agents?: AgentConfig[];
 	discoverAgents?: ExecutorDeps["discoverAgents"];
@@ -155,6 +167,37 @@ function execute(
 	return harness.executor.execute(id, params, new AbortController().signal, onUpdate, harness.ctx);
 }
 
+function trackAbortListeners(signal: AbortSignal): () => number {
+	const listeners = new Set<EventListenerOrEventListenerObject>();
+	const addEventListener = signal.addEventListener.bind(signal);
+	const removeEventListener = signal.removeEventListener.bind(signal);
+	Object.defineProperties(signal, {
+		addEventListener: {
+			configurable: true,
+			value: (
+				type: string,
+				listener: EventListenerOrEventListenerObject,
+				options?: AddEventListenerOptions | boolean,
+			) => {
+				if (type === "abort") listeners.add(listener);
+				addEventListener(type, listener, options);
+			},
+		},
+		removeEventListener: {
+			configurable: true,
+			value: (
+				type: string,
+				listener: EventListenerOrEventListenerObject,
+				options?: EventListenerOptions | boolean,
+			) => {
+				if (type === "abort") listeners.delete(listener);
+				removeEventListener(type, listener, options);
+			},
+		},
+	});
+	return () => listeners.size;
+}
+
 test("coalesces concurrent sibling SINGLE calls and routes one child result to each caller", async () => {
 	const launches: string[] = [];
 	let launchObservedCallCount = 0;
@@ -199,6 +242,358 @@ test("coalesces concurrent sibling SINGLE calls and routes one child result to e
 	} finally {
 		harness.cleanup();
 	}
+});
+
+test("rejects an already-aborted later route without canceling the shared burst", async () => {
+	const launches: string[] = [];
+	const firstUpdates: SubagentToolResult[] = [];
+	const laterUpdates: SubagentToolResult[] = [];
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task, options) => {
+			launches.push(task);
+			const child = result(agentName, task);
+			options.onUpdate?.({
+				content: [{ type: "text", text: `live:${task}` }],
+				details: { mode: "single", runId: options.runId, results: [child] },
+			});
+			return child;
+		},
+	});
+	const firstController = new AbortController();
+	const laterController = new AbortController();
+	const laterCancellation = new Error("later route cancelled before launch");
+	laterController.abort(laterCancellation);
+	try {
+		const firstCall = harness.executor.execute(
+			"first",
+			{ agent: "echo", task: "A" },
+			firstController.signal,
+			(update) => firstUpdates.push(update),
+			harness.ctx,
+		);
+		const laterCall = harness.executor.execute(
+			"later",
+			{ agent: "echo", task: "B" },
+			laterController.signal,
+			(update) => laterUpdates.push(update),
+			harness.ctx,
+		);
+
+		await assert.rejects(laterCall, (error) => error === laterCancellation);
+		const first = await firstCall;
+
+		assert.deepEqual(launches, ["A", "B"], "later cancellation must not cancel shared children");
+		assert.deepEqual(
+			first.details?.results.map((child) => child.task),
+			["A"],
+		);
+		assert.equal(laterUpdates.length, 0);
+		for (const update of firstUpdates) assert.doesNotMatch(JSON.stringify(update), /\bB\b/);
+		assert.equal(firstController.signal.aborted, false);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("stops later-route updates after mid-run abort while shared children finish", async () => {
+	const laterUpdated = Promise.withResolvers<void>();
+	const releaseAfterAbort = Promise.withResolvers<void>();
+	const launches: string[] = [];
+	const firstUpdates: SubagentToolResult[] = [];
+	const laterUpdates: SubagentToolResult[] = [];
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task, options) => {
+			launches.push(task);
+			const child = result(agentName, task);
+			if (task === "B") {
+				options.onUpdate?.({
+					content: [{ type: "text", text: "live:B:before-abort" }],
+					details: { mode: "single", runId: options.runId, results: [child] },
+				});
+				laterUpdated.resolve();
+			}
+			await releaseAfterAbort.promise;
+			options.onUpdate?.({
+				content: [{ type: "text", text: `live:${task}:after-abort` }],
+				details: { mode: "single", runId: options.runId, results: [child] },
+			});
+			return child;
+		},
+	});
+	const firstController = new AbortController();
+	const laterController = new AbortController();
+	const activeLaterAbortListeners = trackAbortListeners(laterController.signal);
+	const laterCancellation = new Error("later route cancelled during shared run");
+	try {
+		const firstCall = harness.executor.execute(
+			"first",
+			{ agent: "echo", task: "A" },
+			firstController.signal,
+			(update) => firstUpdates.push(update),
+			harness.ctx,
+		);
+		const laterCall = harness.executor.execute(
+			"later",
+			{ agent: "echo", task: "B" },
+			laterController.signal,
+			(update) => laterUpdates.push(update),
+			harness.ctx,
+		);
+
+		await laterUpdated.promise;
+		assert.equal(laterUpdates.length, 1, "the later route receives its update before cancellation");
+		assert.equal(activeLaterAbortListeners(), 1);
+		laterController.abort(laterCancellation);
+		await assert.rejects(laterCall, (error) => error === laterCancellation);
+		const laterUpdateCountAtAbort = laterUpdates.length;
+		assert.equal(activeLaterAbortListeners(), 0, "the settled later route removes its listener immediately");
+
+		releaseAfterAbort.resolve();
+		const first = await firstCall;
+
+		assert.deepEqual(launches, ["A", "B"]);
+		assert.deepEqual(
+			first.details?.results.map((child) => child.task),
+			["A"],
+		);
+		assert.equal(laterUpdates.length, laterUpdateCountAtAbort, "the aborted route receives no later updates");
+		assert.equal(firstController.signal.aborted, false);
+		assert.equal(
+			firstUpdates.some((update) => update.details?.results.some((child) => child.task === "A")),
+			true,
+		);
+		assert.equal(activeLaterAbortListeners(), 0);
+		for (const update of firstUpdates) assert.doesNotMatch(JSON.stringify(update), /\bB\b/);
+	} finally {
+		releaseAfterAbort.resolve();
+		harness.cleanup();
+	}
+});
+
+test("keeps first-route abort as shared-run cancellation and cleans later listeners", async () => {
+	const started = Promise.withResolvers<void>();
+	const firstController = new AbortController();
+	const laterController = new AbortController();
+	const activeLaterAbortListeners = trackAbortListeners(laterController.signal);
+	const firstCancellation = new Error("first route cancelled the shared run");
+	const dispatcher = createExecutionBurstDispatcher({
+		execute: async (_id, _params, signal) => {
+			assert.equal(signal, firstController.signal);
+			started.resolve();
+			return new Promise<SubagentToolResult>((_resolve, reject) => {
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			});
+		},
+		isActive: () => false,
+		setActive: () => {},
+		duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+	});
+	const first = dispatcher(
+		"first",
+		{ agent: "echo", task: "A" },
+		firstController.signal,
+		undefined,
+		makeContext("/tmp"),
+	);
+	const later = dispatcher(
+		"later",
+		{ agent: "echo", task: "B" },
+		laterController.signal,
+		undefined,
+		makeContext("/tmp"),
+	);
+
+	await started.promise;
+	assert.equal(activeLaterAbortListeners(), 1);
+	firstController.abort(firstCancellation);
+	await Promise.all([
+		assert.rejects(first, (error) => error === firstCancellation),
+		assert.rejects(later, (error) => error === firstCancellation),
+	]);
+	assert.equal(laterController.signal.aborted, false);
+	assert.equal(activeLaterAbortListeners(), 0);
+});
+
+test("preserves every explicit later-route abort reason and only defaults undefined", async () => {
+	const objectReason = { kind: "caller cancellation" };
+	for (const expectedReason of [null, false, 0, "", objectReason]) {
+		const firstController = new AbortController();
+		const laterController = new AbortController();
+		laterController.abort(expectedReason);
+		const dispatcher = createExecutionBurstDispatcher({
+			execute: async () => aggregateResult(),
+			isActive: () => false,
+			setActive: () => {},
+			duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+		});
+		const first = dispatcher(
+			"first",
+			{ agent: "echo", task: "A" },
+			firstController.signal,
+			undefined,
+			makeContext("/tmp"),
+		);
+		const later = dispatcher(
+			"later",
+			{ agent: "echo", task: "B" },
+			laterController.signal,
+			undefined,
+			makeContext("/tmp"),
+		);
+
+		const fulfilled = Symbol("unexpected fulfillment");
+		const rejection = await later.then(
+			() => fulfilled,
+			(reason: unknown) => reason,
+		);
+		assert.notEqual(rejection, fulfilled);
+		assert.equal(rejection, expectedReason);
+		assert.deepEqual(
+			(await first).details?.results.map((child) => child.task),
+			["A"],
+		);
+	}
+
+	const undefinedReasonSignal = {
+		aborted: true,
+		reason: undefined,
+		addEventListener: () => {},
+		removeEventListener: () => {},
+	} as unknown as AbortSignal;
+	const dispatcher = createExecutionBurstDispatcher({
+		execute: async () => aggregateResult(),
+		isActive: () => false,
+		setActive: () => {},
+		duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+	});
+	const first = dispatcher(
+		"first",
+		{ agent: "echo", task: "A" },
+		new AbortController().signal,
+		undefined,
+		makeContext("/tmp"),
+	);
+	const later = dispatcher(
+		"later",
+		{ agent: "echo", task: "B" },
+		undefinedReasonSignal,
+		undefined,
+		makeContext("/tmp"),
+	);
+	const fallback = await later.then(
+		() => undefined,
+		(reason: unknown) => reason,
+	);
+	assert.ok(fallback instanceof DOMException);
+	assert.equal(fallback.name, "AbortError");
+	assert.equal(fallback.message, "The operation was aborted");
+	await first;
+});
+
+test("removes a later listener after final success before a subsequent abort", async () => {
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const laterController = new AbortController();
+	const activeLaterAbortListeners = trackAbortListeners(laterController.signal);
+	const dispatcher = createExecutionBurstDispatcher({
+		execute: async () => {
+			started.resolve();
+			await release.promise;
+			return aggregateResult();
+		},
+		isActive: () => false,
+		setActive: () => {},
+		duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+	});
+	const first = dispatcher(
+		"first",
+		{ agent: "echo", task: "A" },
+		new AbortController().signal,
+		undefined,
+		makeContext("/tmp"),
+	);
+	const later = dispatcher(
+		"later",
+		{ agent: "echo", task: "B" },
+		laterController.signal,
+		undefined,
+		makeContext("/tmp"),
+	);
+
+	await started.promise;
+	assert.equal(activeLaterAbortListeners(), 1);
+	release.resolve();
+	const [firstResult, laterResult] = await Promise.all([first, later]);
+	assert.deepEqual(
+		firstResult.details?.results.map((child) => child.task),
+		["A"],
+	);
+	assert.deepEqual(
+		laterResult.details?.results.map((child) => child.task),
+		["B"],
+	);
+	assert.equal(activeLaterAbortListeners(), 0, "ordinary final settlement removes the listener");
+
+	laterController.abort(new Error("too late to change the final result"));
+	assert.equal(await later, laterResult, "a later abort cannot replace the resolved final object");
+	assert.equal(activeLaterAbortListeners(), 0);
+});
+
+test("stops a later route that aborts synchronously inside its own update callback", async () => {
+	const laterController = new AbortController();
+	const activeLaterAbortListeners = trackAbortListeners(laterController.signal);
+	const laterCancellation = { kind: "abort from onUpdate" };
+	const firstUpdates: SubagentToolResult[] = [];
+	const laterUpdates: SubagentToolResult[] = [];
+	const dispatcher = createExecutionBurstDispatcher({
+		execute: async (_id, _params, _signal, onUpdate) => {
+			onUpdate?.(aggregateResult());
+			onUpdate?.(aggregateResult());
+			return aggregateResult();
+		},
+		isActive: () => false,
+		setActive: () => {},
+		duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+	});
+	const first = dispatcher(
+		"first",
+		{ agent: "echo", task: "A" },
+		new AbortController().signal,
+		(update) => firstUpdates.push(update),
+		makeContext("/tmp"),
+	);
+	const later = dispatcher(
+		"later",
+		{ agent: "echo", task: "B" },
+		laterController.signal,
+		(update) => {
+			laterUpdates.push(update);
+			laterController.abort(laterCancellation);
+		},
+		makeContext("/tmp"),
+	);
+	let laterSettlements = 0;
+	const capturedLater = later.then(
+		() => {
+			laterSettlements += 1;
+			return Symbol("unexpected fulfillment");
+		},
+		(reason: unknown) => {
+			laterSettlements += 1;
+			return reason;
+		},
+	);
+
+	assert.equal(await capturedLater, laterCancellation);
+	const firstResult = await first;
+	assert.deepEqual(
+		firstResult.details?.results.map((child) => child.task),
+		["A"],
+	);
+	assert.equal(firstUpdates.length, 2, "the nonaborted sibling keeps receiving aggregate updates");
+	assert.equal(laterUpdates.length, 1, "the synchronous abort suppresses the next later-route update");
+	assert.equal(laterSettlements, 1);
+	assert.equal(activeLaterAbortListeners(), 0);
 });
 
 test("preserves each sibling call's cwd-scoped agent discovery", async () => {
