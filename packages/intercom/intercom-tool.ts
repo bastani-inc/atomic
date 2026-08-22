@@ -355,6 +355,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
                 requestParentAskPause(pi.events, metadata, {
                   kind: "intercom",
                   question: message,
+                  attachments,
                   resolvedTargetId: sendTo,
                 })
               ) {

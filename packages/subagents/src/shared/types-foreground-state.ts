@@ -7,8 +7,30 @@
  */
 
 import type { ExtensionContext } from "@bastani/atomic";
-import type { ParentAskPauseRequest } from "./types-config.js";
+import type { ParentAskPauseRequest, RunSyncOptions } from "./types-config.js";
 import type { ActivityState, SingleResult, SubagentResultStatus, SubagentRunMode } from "./types-results.js";
+
+type RetainedRunSyncOptionKeys = Exclude<
+	keyof RunSyncOptions,
+	| "signal"
+	| "interruptSignal"
+	| "intercomEvents"
+	| "onDetachedExit"
+	| "intercomDetachSignal"
+	| "onIntercomDetachCommit"
+	| "onParentAskClaim"
+	| "onUpdate"
+	| "onControlEvent"
+	| "supervisorAuthorization"
+>;
+
+export type RetainedRunSyncOptions = Pick<RunSyncOptions, RetainedRunSyncOptionKeys>;
+
+export interface ForegroundChildExecution {
+	runtimeCwd: string;
+	agentScope?: string;
+	options: RetainedRunSyncOptions;
+}
 
 export interface ForegroundResumeChild {
 	agent: string;
@@ -16,6 +38,7 @@ export interface ForegroundResumeChild {
 	sessionFile?: string;
 	status: SubagentResultStatus;
 	result?: SingleResult;
+	execution: ForegroundChildExecution;
 }
 
 export interface ForegroundParentAskPause {
@@ -25,6 +48,12 @@ export interface ForegroundParentAskPause {
 	request: ParentAskPauseRequest;
 }
 
+export interface ForegroundRunCleanup {
+	finalize(): string;
+	defer(indices: number[]): boolean;
+	recover(index: number): void;
+}
+
 export interface ForegroundResumeRun {
 	runId: string;
 	mode: SubagentRunMode;
@@ -32,6 +61,7 @@ export interface ForegroundResumeRun {
 	updatedAt: number;
 	children: ForegroundResumeChild[];
 	parentAsk?: ForegroundParentAskPause;
+	cleanup?: ForegroundRunCleanup;
 }
 
 export interface SubagentState {

@@ -10,7 +10,10 @@ import {
 import {
 	type ControlEvent,
 	type Details,
+	type ForegroundChildExecution,
 	type ForegroundParentAskPause,
+	type ForegroundRunCleanup,
+	type RunSyncOptions,
 	type SingleResult,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
@@ -114,14 +117,46 @@ function takeEarlyDetachedResult(state: SubagentState, runId: string, index: num
 	return result;
 }
 
+export function retainForegroundChildExecution(
+	runtimeCwd: string,
+	options: RunSyncOptions,
+	agentScope?: string,
+): ForegroundChildExecution {
+	const {
+		signal,
+		interruptSignal,
+		intercomEvents,
+		onDetachedExit,
+		intercomDetachSignal,
+		onIntercomDetachCommit,
+		onParentAskClaim,
+		onUpdate,
+		onControlEvent,
+		supervisorAuthorization,
+		...retainedOptions
+	} = options;
+	void signal;
+	void interruptSignal;
+	void intercomEvents;
+	void onDetachedExit;
+	void intercomDetachSignal;
+	void onIntercomDetachCommit;
+	void onParentAskClaim;
+	void onUpdate;
+	void onControlEvent;
+	void supervisorAuthorization;
+	return { runtimeCwd, ...(agentScope !== undefined ? { agentScope } : {}), options: retainedOptions };
+}
+
 export function rememberForegroundRun(
 	state: SubagentState,
 	input: {
 		runId: string;
 		mode: "single" | "parallel";
 		cwd: string;
-		results: SingleResult[];
+		children: Array<{ index: number; result: SingleResult; execution: ForegroundChildExecution }>;
 		parentAsk?: ForegroundParentAskPause;
+		cleanup?: ForegroundRunCleanup;
 	},
 ): void {
 	state.foregroundRuns ??= new Map();
@@ -131,7 +166,8 @@ export function rememberForegroundRun(
 		cwd: input.cwd,
 		updatedAt: Date.now(),
 		...(input.parentAsk ? { parentAsk: input.parentAsk } : {}),
-		children: input.results.map((originalResult, index) => {
+		...(input.cleanup ? { cleanup: input.cleanup } : {}),
+		children: input.children.map(({ index, result: originalResult, execution }) => {
 			const result = takeEarlyDetachedResult(state, input.runId, index) ?? originalResult;
 			return {
 				agent: result.agent,
@@ -143,6 +179,7 @@ export function rememberForegroundRun(
 				}),
 				...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
 				result,
+				execution,
 			};
 		}),
 	});

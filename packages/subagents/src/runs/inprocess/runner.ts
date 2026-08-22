@@ -896,6 +896,7 @@ export class SubagentControlRuntime {
 						})
 					).session,
 				};
+				await created.session.extensionRunner.emit({ type: "session_start", reason: "startup" });
 			}
 			session = created.session;
 			if (session.sessionFile) this.sessionFiles.set(admitted.identity.path, session.sessionFile);

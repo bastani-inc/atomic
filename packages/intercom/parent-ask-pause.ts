@@ -3,6 +3,7 @@ import type {
   ChildOrchestratorMetadata,
   SupervisorInterviewRequest,
 } from "./intercom-utils.js";
+import type { Attachment } from "./types.js";
 
 export const PARENT_ASK_PAUSE_REQUEST_EVENT = "subagent:parent-ask-pause-request";
 
@@ -29,6 +30,7 @@ export interface ParentAskPauseRequest {
   orchestratorTarget: string;
   kind: ParentAskKind;
   question: string;
+  attachments?: Attachment[];
   interview?: SupervisorInterviewRequest;
   resolvedTargetId?: string;
   claimed: boolean;
@@ -37,7 +39,7 @@ export interface ParentAskPauseRequest {
 export function requestParentAskPause(
   events: ExtensionAPI["events"] | undefined,
   metadata: ChildOrchestratorMetadata,
-  input: Pick<ParentAskPauseRequest, "kind" | "question" | "interview" | "resolvedTargetId">,
+  input: Pick<ParentAskPauseRequest, "kind" | "question" | "attachments" | "interview" | "resolvedTargetId">,
 ): boolean {
   const index = Number(metadata.index);
   if (!events || !Number.isInteger(index) || index < 0 || !metadata.sessionName) return false;
@@ -49,6 +51,7 @@ export function requestParentAskPause(
     orchestratorTarget: metadata.orchestratorTarget,
     kind: input.kind,
     question: input.question,
+    ...(input.attachments ? { attachments: input.attachments } : {}),
     ...(input.interview ? { interview: input.interview } : {}),
     ...(input.resolvedTargetId ? { resolvedTargetId: input.resolvedTargetId } : {}),
     claimed: false,

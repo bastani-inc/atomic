@@ -91,7 +91,7 @@ async function createChildSession(options: {
 		options.withoutBundledPackages ? { ...loaderOptions, builtinPackagePaths: [] } : loaderOptions,
 	);
 	await resourceLoader.reload();
-	return createAgentSession({
+	const created = await createAgentSession({
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 		settingsManager,
@@ -109,6 +109,8 @@ async function createChildSession(options: {
 			...options.policy,
 		},
 	});
+	await created.session.extensionRunner.emit({ type: "session_start", reason: "startup" });
+	return created;
 }
 
 function sessionCwd(prefix: string): { cwd: string; agentDir: string } {
@@ -187,6 +189,40 @@ describe("in-process child session resources", () => {
 						toolNames.includes(bundled),
 						`expected the bundled '${bundled}' tool, got: ${toolNames.join(", ")}`,
 					);
+				}
+				assert.equal(toolNames.includes("contact_supervisor"), false);
+				assert.equal(session.getActiveToolNames().includes("contact_supervisor"), false);
+			} finally {
+				session.dispose();
+			}
+		},
+		CHILD_SESSION_RELOAD_TIMEOUT_MS,
+	);
+
+	test(
+		"a typed Intercom child activates contact_supervisor with every supported reason",
+		async () => {
+			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-supervisor-cwd-");
+			const { session } = await createChildSession({
+				cwd,
+				agentDir,
+				policy: {
+					intercom: {
+						orchestratorTarget: "parent-id",
+						runId: "typed-run",
+						agent: "worker",
+						index: 0,
+						sessionName: "subagent-worker-typed-run-1",
+					},
+				},
+			});
+			try {
+				const tool = session.getToolDefinition("contact_supervisor");
+				assert.ok(tool, "typed child must register contact_supervisor through the bundled lifecycle");
+				assert.ok(session.getActiveToolNames().includes("contact_supervisor"));
+				const schema = JSON.stringify(tool.parameters);
+				for (const reason of ["need_decision", "interview_request", "progress_update"]) {
+					assert.ok(schema.includes(`"${reason}"`), `missing ${reason} from contact_supervisor schema`);
 				}
 			} finally {
 				session.dispose();

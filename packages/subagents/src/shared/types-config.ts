@@ -65,6 +65,13 @@ export interface ParentAskInterviewRequest extends Record<string, unknown> {
 	questions: ParentAskInterviewQuestion[];
 }
 
+export interface ParentAskAttachment {
+	type: "file" | "snippet" | "context";
+	name: string;
+	content: string;
+	language?: string;
+}
+
 export interface ParentAskPauseRequest {
 	runId: string;
 	index: number;
@@ -73,6 +80,7 @@ export interface ParentAskPauseRequest {
 	orchestratorTarget: string;
 	kind: ParentAskKind;
 	question: string;
+	attachments?: ParentAskAttachment[];
 	interview?: ParentAskInterviewRequest;
 	resolvedTargetId?: string;
 	claimed: boolean;

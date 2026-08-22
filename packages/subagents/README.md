@@ -235,9 +235,9 @@ The child can use one dedicated coordination tool:
 
 - `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for a blocking decision, `reason: "interview_request"` for structured questions, and `reason: "progress_update"` for a short non-blocking update when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
-Child-side routine completion handoffs are still not expected. With the Intercom bridge active, a blocking decision or interview from the exact foreground child pauses at the source before broker send or reply-waiter admission. The parent `subagent` call returns with the unmodified question, run ID, and a resume hint. `intercom.ask` does the same only when its resolved target is the launching parent. The parent answers with `subagent({ action: "resume", id, message })`, which continues the same retained child.
+Child-side routine completion handoffs are still not expected. With the Intercom bridge active, a blocking decision or interview from the exact foreground child pauses at the source before broker send or reply-waiter admission. The parent `subagent` call returns with the unmodified question, ordered attachments when present, run ID, and a resume hint. `intercom.ask` does the same only when its resolved target is the launching parent. The parent answers with `subagent({ action: "resume", id, message })`, which continues the same retained child.
 
-For parallel runs, the claim interrupts every active sibling and prevents queued work from starting. Bare run-ID resume sends the answer only to the asker, gives released siblings a neutral continuation prompt, and leaves withheld tasks unlaunched. `intercom.send`, progress updates, and asks to siblings or other peers retain the exact-child probe/commit detach and ordinary Intercom delivery paths.
+For parallel runs, the claim interrupts every active sibling and prevents queued work from starting. Bare run-ID resume sends the answer only to the asker, gives released siblings a neutral continuation prompt, and leaves withheld tasks unlaunched. Released children keep their original cwd, Intercom group, execution settings, canonical indexes, and worktrees. `intercom.send`, progress updates, and asks to siblings or other peers retain the exact-child probe/commit detach and ordinary Intercom delivery paths.
 
 Parent and child connections remain tool-driven. A claimed `contact_supervisor` decision or interview can pause before child broker connection because typed admission already identifies the launching parent; `intercom.ask` still connects to resolve both targets. Foreground launches and management-only actions do not force Intercom loading or broker startup.
 
@@ -643,7 +643,7 @@ Requirements:
 - the main repository's Husky or populated `.git/hooks` directory is shared through `core.hooksPath`
 - gitignored files matched by `.worktreeinclude` are copied into the worktree
 
-After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Cleanup forcibly removes each worktree, waits briefly for Git's lock release, and deletes its `worktree-*` branch; the same cleanup runs after post-creation setup failures.
+After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. If a parent ask pauses the active set, Atomic leaves every worktree and its staged or unstaged child changes untouched, including across another pause after resume. Diff capture and forced cleanup run only when the released set reaches a terminal result; cleanup then waits briefly for Git's lock release and deletes each `worktree-*` branch. The same cleanup runs after post-creation setup failures.
 
 ## Configuration
 

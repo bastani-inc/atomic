@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
@@ -17,7 +17,7 @@ import {
 	PARENT_ASK_PAUSE_REQUEST_EVENT,
 	type ParentAskPauseRequest,
 } from "../../packages/subagents/src/shared/types.js";
-import { sleep } from "../helpers/runtime.js";
+import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 class TestEvents {
 	private readonly handlers = new Map<string, Set<(payload: unknown) => void>>();
@@ -97,6 +97,12 @@ function text(result: Awaited<ReturnType<ReturnType<typeof createSubagentExecuto
 	return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 }
 
+function git(root: string, args: string[]): string {
+	const result = spawnSyncCollect(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	return result.stdout.toString().trim();
+}
+
 test("SINGLE parent ask pauses, resumes with the answer, and cannot resume after completion", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-single-parent-ask-"));
 	const events = new TestEvents();
@@ -161,6 +167,10 @@ test("SINGLE parent ask pauses, resumes with the answer, and cannot resume after
 			orchestratorTarget: options.orchestratorIntercomTarget,
 			kind: "decision",
 			question: "Keep  this question\nverbatim",
+			attachments: [
+				{ type: "snippet", name: "choice.ts", content: "const  choice = 42;", language: "ts" },
+				{ type: "context", name: "choice.ts", content: "second\nattachment" },
+			],
 			claimed: false,
 		};
 		events.emit(PARENT_ASK_PAUSE_REQUEST_EVENT, request);
@@ -171,11 +181,14 @@ test("SINGLE parent ask pauses, resumes with the answer, and cannot resume after
 		assert.match(text(paused), /Subagent paused for parent input/);
 		assert.match(text(paused), /Keep {2}this question\nverbatim/);
 		assert.match(text(paused), /subagent\(\{ action: "resume", id:/);
+		assert.match(text(paused), /📎 choice\.ts\n~~~ts\nconst {2}choice = 42;\n~~~/);
+		assert.match(text(paused), /📎 choice\.ts\nsecond\nattachment/);
 		assert.equal(paused.details.results[0]?.status, "interrupted");
 		assert.notEqual(paused.details.results[0]?.finalOutput, "must not complete");
 		const retained = childState.foregroundRuns?.get(options.runId);
 		assert.equal(retained?.children[0]?.status, "paused");
 		assert.equal(retained?.parentAsk?.request.question, "Keep  this question\nverbatim");
+		assert.equal(retained?.parentAsk?.request.attachments, request.attachments);
 		assert.equal(retained?.children[0]?.sessionFile, paused.details.results[0]?.sessionFile);
 
 		initialGate.resolve();
@@ -246,11 +259,15 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 	const childState = state();
 	const initialGate = Promise.withResolvers<void>();
 	const initialOptions = new Map<number, Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]>();
+	const allOptions = new Map<number, Array<Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]>>();
 	const calls: Array<{ index: number; task: string }> = [];
 	const runtime: SubagentExecutorRuntimeDeps = {
 		runSync: async (cwd, agents, agentName, task, runOptions) => {
 			const index = runOptions.index ?? -1;
 			calls.push({ index, task });
+			const optionsForIndex = allOptions.get(index) ?? [];
+			optionsForIndex.push(runOptions);
+			allOptions.set(index, optionsForIndex);
 			if (!initialOptions.has(index)) initialOptions.set(index, runOptions);
 			return runSync(cwd, agents, agentName, task, {
 				...runOptions,
@@ -277,12 +294,30 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 	});
 	clearSubagentControls();
 	try {
+		mkdirSync(join(root, "child-0"));
+		mkdirSync(join(root, "child-1"));
 		const execution = executor.execute(
 			"parallel-parent-ask",
 			{
 				tasks: [
-					{ agent: "worker", task: "ask parent", progress: false },
-					{ agent: "worker", task: "active sibling", progress: false },
+					{
+						agent: "worker",
+						task: "ask parent",
+						cwd: "child-0",
+						group: "group-zero",
+						output: "deliver-0.md",
+						outputMode: "file-only",
+						progress: false,
+					},
+					{
+						agent: "worker",
+						task: "active sibling",
+						cwd: "child-1",
+						group: "group-one",
+						output: "deliver-1.md",
+						outputMode: "file-only",
+						progress: false,
+					},
 					{ agent: "worker", task: "queued task", progress: false },
 				],
 				concurrency: 2,
@@ -313,10 +348,13 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 		const paused = await execution;
 
 		assert.equal(request.claimed, true);
-		assert.deepEqual(calls, [
-			{ index: 0, task: "ask parent" },
-			{ index: 1, task: "active sibling" },
-		]);
+		assert.deepEqual(
+			calls.map((call) => ({ index: call.index, task: call.task.split("\n", 1)[0] })),
+			[
+				{ index: 0, task: "ask parent" },
+				{ index: 1, task: "active sibling" },
+			],
+		);
 		assert.match(text(paused), /Parallel choice\?/);
 		assert.equal(paused.details.parentAskPaused, true);
 		assert.ok(paused.details.results.slice(0, 2).every((result) => result.interrupted));
@@ -329,6 +367,8 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 			[0, 1],
 		);
 		assert.ok(retained?.children.every((child) => child.status === "paused"));
+		assert.equal(retained?.children[0]?.execution.options.cwd, join(root, "child-0"));
+		assert.equal(retained?.children[1]?.execution.options.cwd, join(root, "child-1"));
 
 		initialGate.resolve();
 		const resumed = await executor.execute(
@@ -343,6 +383,43 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 			{ index: 0, task: "choose B" },
 			{ index: 1, task: RELEASED_SIBLING_RESUME_MESSAGE },
 		]);
+		for (const index of [0, 1]) {
+			const [initial, replayed] = allOptions.get(index) ?? [];
+			assert.ok(initial && replayed);
+			for (const key of [
+				"cwd",
+				"share",
+				"artifactsDir",
+				"artifactConfig",
+				"maxOutput",
+				"outputPath",
+				"outputMode",
+				"parentDepth",
+				"workflowStageSubagentGuard",
+				"workflowSessionMetadata",
+				"controlConfig",
+				"intercomSessionName",
+				"orchestratorIntercomTarget",
+				"intercomGroup",
+				"modelOverride",
+				"availableModels",
+				"knownModelProviders",
+				"resolveCandidateModel",
+				"preferredModelProvider",
+				"currentModel",
+				"currentThinkingLevel",
+				"skills",
+			] as const) {
+				assert.equal(replayed[key], initial[key], `child ${index} changed ${key}`);
+			}
+			assert.equal(replayed.index, index);
+			assert.equal(replayed.sessionFile, retained?.children[index]?.sessionFile);
+		}
+		assert.deepEqual(
+			resumed.details.results.map((result) => result.progress?.index),
+			[0, 1],
+		);
+		assert.equal(resumed.details.totalSteps, 2);
 		assert.equal(
 			calls.some((call) => call.index === 2),
 			false,
@@ -351,6 +428,150 @@ test("PARALLEL parent ask releases active siblings, withholds the queue, and res
 		assert.ok(retained?.children.every((child) => child.status === "completed"));
 	} finally {
 		initialGate.resolve();
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("PARALLEL worktrees and dirty child work survive repeated parent-ask pauses until terminal resume", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-parent-ask-worktrees-"));
+	const events = new TestEvents();
+	const childState = state();
+	const initialGate = Promise.withResolvers<void>();
+	const repeatedGate = Promise.withResolvers<void>();
+	const optionsByIndex = new Map<number, Array<Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]>>();
+	const runtime: SubagentExecutorRuntimeDeps = {
+		runSync: async (cwd, agents, agentName, task, runOptions) => {
+			const index = runOptions.index ?? -1;
+			const attempts = optionsByIndex.get(index) ?? [];
+			attempts.push(runOptions);
+			optionsByIndex.set(index, attempts);
+			assert.ok(runOptions.cwd);
+			const marker = join(runOptions.cwd, `dirty-${index}.txt`);
+			if (attempts.length === 1) writeFileSync(marker, `dirty child ${index}\n`);
+			else assert.equal(readFileSync(marker, "utf8"), `dirty child ${index}\n`);
+			return runSync(cwd, agents, agentName, task, {
+				...runOptions,
+				testSession:
+					attempts.length === 1
+						? { output: "initial must pause", promptGate: initialGate.promise, abortResolvesPrompt: true }
+						: attempts.length === 2
+							? {
+									output: "resume must pause again",
+									promptGate: repeatedGate.promise,
+									abortResolvesPrompt: true,
+								}
+							: { output: `terminal child ${index}` },
+			});
+		},
+	};
+	try {
+		git(root, ["init", "-b", "main"]);
+		writeFileSync(join(root, "README.md"), "base\n");
+		git(root, ["add", "README.md"]);
+		git(root, [
+			"-c",
+			"user.name=Atomic Test",
+			"-c",
+			"user.email=atomic@example.com",
+			"-c",
+			"commit.gpgsign=false",
+			"commit",
+			"-m",
+			"base",
+		]);
+		const executor = createSubagentExecutor({
+			pi: { events, getSessionName: () => "parent-session" } as never,
+			state: childState,
+			config: { parallel: { concurrency: 2, maxTasks: 10 } },
+			tempArtifactsDir: join(root, "artifacts"),
+			getSubagentSessionRoot: () => join(root, "sessions"),
+			expandTilde: (value) => value,
+			discoverAgents: () => ({ agents: [worker()] }),
+			runtime,
+		});
+		clearSubagentControls();
+		const execution = executor.execute(
+			"worktree-parent-ask",
+			{
+				tasks: [
+					{ agent: "worker", task: "ask from worktree", progress: false },
+					{ agent: "worker", task: "sibling worktree", progress: false },
+					{ agent: "worker", task: "queued worktree", progress: false },
+				],
+				concurrency: 2,
+				worktree: true,
+				artifacts: false,
+			},
+			new AbortController().signal,
+			undefined,
+			context(root),
+		);
+		for (let attempt = 0; attempt < 200 && optionsByIndex.size < 2; attempt++) await sleep(1);
+		const asker = optionsByIndex.get(0)?.[0];
+		assert.ok(asker?.intercomSessionName && asker.orchestratorIntercomTarget);
+		const firstRequest: ParentAskPauseRequest = {
+			runId: asker.runId,
+			index: 0,
+			agent: "worker",
+			childIntercomTarget: asker.intercomSessionName,
+			orchestratorTarget: asker.orchestratorIntercomTarget,
+			kind: "decision",
+			question: "Keep worktrees?",
+			claimed: false,
+		};
+		events.emit(PARENT_ASK_PAUSE_REQUEST_EVENT, firstRequest);
+		await execution;
+		const worktreePaths = [0, 1].map((index) => optionsByIndex.get(index)?.[0]?.cwd);
+		for (const [index, worktreePath] of worktreePaths.entries()) {
+			assert.ok(worktreePath && existsSync(worktreePath));
+			assert.equal(readFileSync(join(worktreePath, `dirty-${index}.txt`), "utf8"), `dirty child ${index}\n`);
+			assert.equal(git(worktreePath, ["diff", "--cached", "--name-only"]), "");
+			assert.match(git(worktreePath, ["status", "--porcelain"]), new RegExp(`dirty-${index}\\.txt`));
+		}
+
+		initialGate.resolve();
+		const repeatedExecution = executor.execute(
+			"worktree-parent-resume",
+			{ action: "resume", id: firstRequest.runId, message: "first answer", artifacts: false },
+			new AbortController().signal,
+			undefined,
+			context(root),
+		);
+		for (
+			let attempt = 0;
+			attempt < 200 && [...optionsByIndex.values()].some((options) => options.length < 2);
+			attempt++
+		)
+			await sleep(1);
+		const repeatedRequest: ParentAskPauseRequest = {
+			...firstRequest,
+			question: "Keep them one more time?",
+			claimed: false,
+		};
+		events.emit(PARENT_ASK_PAUSE_REQUEST_EVENT, repeatedRequest);
+		const pausedAgain = await repeatedExecution;
+		assert.match(text(pausedAgain), /Keep them one more time/);
+		for (const [index, worktreePath] of worktreePaths.entries()) {
+			assert.ok(worktreePath && existsSync(join(worktreePath, `dirty-${index}.txt`)));
+			assert.equal(optionsByIndex.get(index)?.[1]?.cwd, worktreePath);
+		}
+
+		repeatedGate.resolve();
+		const completed = await executor.execute(
+			"worktree-parent-resume-final",
+			{ action: "resume", id: firstRequest.runId, message: "final answer", artifacts: false },
+			new AbortController().signal,
+			undefined,
+			context(root),
+		);
+		assert.match(text(completed), /=== Worktree Changes ===/);
+		assert.equal(optionsByIndex.has(2), false);
+		for (const worktreePath of worktreePaths) assert.ok(worktreePath && !existsSync(worktreePath));
+		assert.equal(childState.foregroundRuns?.get(firstRequest.runId)?.cleanup, undefined);
+	} finally {
+		initialGate.resolve();
+		repeatedGate.resolve();
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
 	}

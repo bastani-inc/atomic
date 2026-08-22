@@ -12,8 +12,10 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
+	type ForegroundChildExecution,
 	isWorkflowStageOrchestrationContext,
 	type ParentAskPauseRequest,
+	type RunSyncOptions,
 	type SingleResult,
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
@@ -37,6 +39,7 @@ import {
 	notifyDetachedForegroundChildExit,
 	rememberForegroundRun,
 	replaceForegroundRunChild,
+	retainForegroundChildExecution,
 } from "./subagent-executor-status.js";
 import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.js";
 
@@ -186,8 +189,9 @@ export async function runSinglePath(
 	const forwardSingleUpdate = createForwardSingleUpdate(onUpdate, foregroundControl, params.agent!, 0);
 
 	let r: SingleResult;
+	let execution: ForegroundChildExecution;
 	try {
-		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
+		const runOptions: RunSyncOptions = {
 			cwd: effectiveCwd,
 			signal,
 			interruptSignal: interruptController.signal,
@@ -232,7 +236,9 @@ export async function runSinglePath(
 			currentModel: currentModelFullId(ctx.model),
 			currentThinkingLevel: ctx.thinkingLevel,
 			skills: effectiveSkills,
-		});
+		};
+		execution = retainForegroundChildExecution(ctx.cwd, runOptions, params.agentScope);
+		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions);
 	} catch (error) {
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;
@@ -280,7 +286,7 @@ export async function runSinglePath(
 		runId,
 		mode: "single",
 		cwd: effectiveCwd,
-		results: details.results,
+		children: [{ index: 0, result: details.results[0]!, execution }],
 		...(parentAsk && r.interrupted
 			? {
 					parentAsk: {

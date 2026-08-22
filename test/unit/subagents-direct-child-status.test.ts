@@ -85,7 +85,13 @@ describe("direct-child status rendering", () => {
 			runId: "run-3",
 			mode: "parallel",
 			cwd: "/tmp/project",
-			results: [childResult("alpha"), childResult("beta", { status: "error", error: "beta failed" })],
+			children: [childResult("alpha"), childResult("beta", { status: "error", error: "beta failed" })].map(
+				(result, index) => ({
+					index,
+					result,
+					execution: { runtimeCwd: "/tmp/project", options: { runId: "run-3", index } },
+				}),
+			),
 		});
 
 		const result = retainedForegroundStatusResult(state, "run-3");

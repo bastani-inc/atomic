@@ -18,7 +18,7 @@ import {
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
-import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import type { Attachment, Message, SessionInfo } from "../../packages/intercom/types.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { registerExecutionParentAskPause } from "../../packages/subagents/src/runs/foreground/execution-parent-ask-pause.js";
@@ -63,7 +63,13 @@ function fixture(kind: "intercom" | "supervisor") {
 	const sent: Array<{
 		to: string;
 		supervisor: boolean;
-		message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string };
+		message: {
+			messageId?: string;
+			text: string;
+			attachments?: Attachment[];
+			expectsReply?: boolean;
+			replyTo?: string;
+		};
 	}> = [];
 	const waiterCalls: Array<{ from: string; replyTo: string }> = [];
 	const emitter = new EventEmitter();
@@ -75,13 +81,28 @@ function fixture(kind: "intercom" | "supervisor") {
 		async listSessions() {
 			return [];
 		},
-		async send(to: string, message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string }) {
+		async send(
+			to: string,
+			message: {
+				messageId?: string;
+				text: string;
+				attachments?: Attachment[];
+				expectsReply?: boolean;
+				replyTo?: string;
+			},
+		) {
 			sent.push({ to, message, supervisor: false });
 			return { id: message.messageId ?? "sent", delivered: true };
 		},
 		async sendToSupervisor(
 			to: string,
-			message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string },
+			message: {
+				messageId?: string;
+				text: string;
+				attachments?: Attachment[];
+				expectsReply?: boolean;
+				replyTo?: string;
+			},
 		) {
 			sent.push({ to, message, supervisor: true });
 			return { id: message.messageId ?? "sent", delivered: true };
@@ -264,6 +285,30 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(captured?.question, "Keep  spacing\nraw");
 		assert.equal(captured?.resolvedTargetId, "parent-id");
 	});
+	test("parent-targeted intercom ask preserves ordered attachments", async () => {
+		const current = fixture("intercom");
+		let captured: ParentAskPauseRequest | undefined;
+		current.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskPauseRequest;
+			captured.claimed = true;
+		});
+		const attachments: Attachment[] = [
+			{ type: "file", name: "first.txt", content: "first  content" },
+			{ type: "snippet", name: "duplicate", content: "const x = 1;", language: "ts" },
+			{ type: "context", name: "duplicate", content: "last\ncontext" },
+		];
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "parent", message: "Review attachments", attachments },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(result.isError, false);
+		assert.equal(captured?.attachments, attachments);
+		assert.deepEqual(captured?.attachments, attachments);
+		assert.equal(current.sent.length, 0);
+	});
 	test("intercom ask also yields for the exact launching-parent session ID", async () => {
 		const current = fixture("intercom");
 		let captured: ParentAskPauseRequest | undefined;
@@ -301,6 +346,24 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(current.sent[0]?.to, "sibling");
 		assert.equal(current.waiterCalls.length, 1);
 		current.reply("Peer answer");
+		assert.equal((await execution).isError, false);
+	});
+	test("non-parent intercom ask sends attachments unchanged", async () => {
+		const current = fixture("intercom");
+		const attachments: Attachment[] = [
+			{ type: "snippet", name: "same", content: "one", language: "txt" },
+			{ type: "context", name: "same", content: "two" },
+		];
+		const execution = current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "Peer attachments", attachments },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		assert.equal(current.sent[0]?.message.attachments, attachments);
+		current.reply("Received");
 		assert.equal((await execution).isError, false);
 	});
 	test("intercom ask waits for an exact threaded reply and resumes", async () => {

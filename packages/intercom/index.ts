@@ -230,22 +230,28 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		return promise;
 	}
   let typedContactSupervisorRegistered = hasSubagentIntercomEnv();
+  const activateTypedContactSupervisor = (): void => {
+    const activeTools = pi.getActiveTools();
+    if (!activeTools.includes("contact_supervisor")) pi.setActiveTools([...activeTools, "contact_supervisor"]);
+  };
   const registerTypedContactSupervisor = (): void => {
-    if (typedContactSupervisorRegistered) return;
-    typedContactSupervisorRegistered = true;
-    pi.registerTool({
-      name: "contact_supervisor",
-      label: "Contact Supervisor",
-      description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
-      promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
-      parameters: Type.Object({
-        reason: Type.String({ enum: ["need_decision", "progress_update", "interview_request"] }),
-        message: Type.Optional(Type.String()),
-        interview: Type.Optional(Type.Unknown()),
-      }),
-      execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
-      renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
-    });
+    if (!typedContactSupervisorRegistered) {
+      typedContactSupervisorRegistered = true;
+      pi.registerTool({
+        name: "contact_supervisor",
+        label: "Contact Supervisor",
+        description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
+        promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
+        parameters: Type.Object({
+          reason: Type.String({ enum: ["need_decision", "progress_update", "interview_request"] }),
+          message: Type.Optional(Type.String()),
+          interview: Type.Optional(Type.Unknown()),
+        }),
+        execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
+        renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
+      });
+    }
+    activateTypedContactSupervisor();
   };
   pi.on("session_start", async (event, ctx) => {
     const typedIdentity = ctx.subagentPolicy?.intercom;

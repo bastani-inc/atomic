@@ -17,9 +17,10 @@ function parallelChild(
 		model?: string;
 		thinking?: string;
 		fastMode?: boolean;
+		progressIndex?: number;
 	} = {},
 ): Details["results"][number] {
-	return {
+	const result = {
 		agent,
 		task: `task for ${agent}`,
 		status,
@@ -27,6 +28,20 @@ function parallelChild(
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		...extra,
 	} as Details["results"][number];
+	if (extra.progressIndex !== undefined) {
+		result.progress = {
+			index: extra.progressIndex,
+			agent,
+			status: "completed",
+			task: result.task,
+			durationMs: 1,
+			toolCount: 0,
+			tokens: 0,
+			recentTools: [],
+			recentOutput: [],
+		};
+	}
+	return result;
 }
 
 function renderParallel(
@@ -97,6 +112,17 @@ describe("top-level parallel status reduction", () => {
 	test("every child ok still reads ok", () => {
 		const rendered = renderParallel([parallelChild("alpha", "ok"), parallelChild("beta", "ok")]);
 		assert.match(rendered, /ok parallel · 2\/2 done/);
+	});
+
+	test("resumed children with canonical indexes render 2/2 and distinct rows", () => {
+		const rendered = renderParallel([
+			parallelChild("alpha", "ok", { progressIndex: 0 }),
+			parallelChild("beta", "ok", { progressIndex: 1 }),
+		]);
+		assert.match(rendered, /ok parallel · 2\/2 done/);
+		assert.match(rendered, /Agent 1\/2: alpha/);
+		assert.match(rendered, /Agent 2\/2: beta/);
+		assert.equal(rendered.match(/Agent 1\/2:/g)?.length, 1);
 	});
 });
 

@@ -11,6 +11,7 @@ import type {
 	ForegroundParentAskPause,
 	IntercomEventBus,
 	MaxOutputConfig,
+	RunSyncOptions,
 	SingleResult,
 	SubagentState,
 	SubagentToolResult,
@@ -60,6 +61,7 @@ interface ForegroundParallelRunInput {
 	onUpdate?: (r: SubagentToolResult) => void;
 	onParentAskPause?: (pause: ForegroundParentAskPause) => void;
 	onDetachedExit?: (index: number, result: SingleResult) => void;
+	onExecution?: (index: number, runtimeCwd: string, options: RunSyncOptions) => void;
 	worktreeSetup?: WorktreeSetup;
 	runtime: Pick<SubagentExecutorRuntimeDeps, "runSync">;
 }
@@ -128,106 +130,106 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			};
 		}
 		const agentConfig = input.agents.find((agent) => agent.name === task.agent);
-		return input.runtime
-			.runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
-				cwd: taskCwd,
-				signal: input.signal,
-				interruptSignal: interruptController.signal,
-				allowIntercomDetach: agentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-				intercomEvents: input.intercomEvents,
-				runId: input.runId,
-				index,
-				sessionDir: input.sessionDirForIndex(index),
-				sessionFile: input.sessionFileForIndex(index),
-				share: input.shareEnabled,
-				artifactsDir: input.artifactConfig.enabled ? input.artifactsDir : undefined,
-				artifactConfig: input.artifactConfig,
-				maxOutput: input.maxOutput,
-				outputPath,
-				outputMode: behavior?.outputMode,
-				parentDepth: input.parentDepth,
-				workflowStageSubagentGuard: input.workflowStageSubagentGuard,
-				workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
-				controlConfig: input.controlConfig,
-				onControlEvent: input.onControlEvent,
-				intercomSessionName: input.childIntercomTarget?.(task.agent, index),
-				orchestratorIntercomTarget: input.orchestratorIntercomTarget,
-				intercomGroup: resolveChildIntercomGroup(
-					task.group ?? input.setIntercomGroup,
-					inheritedIntercomGroup(input.ctx),
-					input.sharedAutoIntercomGroup,
-				),
-				onDetachedExit: (result) => input.onDetachedExit?.(index, result),
-				intercomDetachSignal: intercomDetachController.signal,
-				onIntercomDetachCommit: () => intercomDetachController.abort(),
-				onParentAskClaim: input.onParentAskPause
-					? (request) => {
-							if (parentAskController.signal.aborted) return;
-							input.onParentAskPause?.({
-								askingChildIndex: request.index,
-								releasedChildIndices: [...activeIndices].sort((left, right) => left - right),
-								unlaunchedChildIndices: input.tasks
-									.map((_, taskIndex) => taskIndex)
-									.filter((taskIndex) => !startedIndices.has(taskIndex)),
-								request,
-							});
-							parentAskController.abort();
+		const runOptions: RunSyncOptions = {
+			cwd: taskCwd,
+			signal: input.signal,
+			interruptSignal: interruptController.signal,
+			allowIntercomDetach: agentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
+			intercomEvents: input.intercomEvents,
+			runId: input.runId,
+			index,
+			sessionDir: input.sessionDirForIndex(index),
+			sessionFile: input.sessionFileForIndex(index),
+			share: input.shareEnabled,
+			artifactsDir: input.artifactConfig.enabled ? input.artifactsDir : undefined,
+			artifactConfig: input.artifactConfig,
+			maxOutput: input.maxOutput,
+			outputPath,
+			outputMode: behavior?.outputMode,
+			parentDepth: input.parentDepth,
+			workflowStageSubagentGuard: input.workflowStageSubagentGuard,
+			workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
+			controlConfig: input.controlConfig,
+			onControlEvent: input.onControlEvent,
+			intercomSessionName: input.childIntercomTarget?.(task.agent, index),
+			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
+			intercomGroup: resolveChildIntercomGroup(
+				task.group ?? input.setIntercomGroup,
+				inheritedIntercomGroup(input.ctx),
+				input.sharedAutoIntercomGroup,
+			),
+			onDetachedExit: (result) => input.onDetachedExit?.(index, result),
+			intercomDetachSignal: intercomDetachController.signal,
+			onIntercomDetachCommit: () => intercomDetachController.abort(),
+			onParentAskClaim: input.onParentAskPause
+				? (request) => {
+						if (parentAskController.signal.aborted) return;
+						input.onParentAskPause?.({
+							askingChildIndex: request.index,
+							releasedChildIndices: [...activeIndices].sort((left, right) => left - right),
+							unlaunchedChildIndices: input.tasks
+								.map((_, taskIndex) => taskIndex)
+								.filter((taskIndex) => !startedIndices.has(taskIndex)),
+							request,
+						});
+						parentAskController.abort();
+					}
+				: undefined,
+			modelOverride: input.modelOverrides[index],
+			availableModels: input.availableModels,
+			knownModelProviders: input.knownModelProviders,
+			resolveCandidateModel: input.resolveCandidateModel,
+			preferredModelProvider: input.ctx.model?.provider,
+			currentModel: currentModelFullId(input.ctx.model),
+			currentThinkingLevel: input.ctx.thinkingLevel,
+			skills: effectiveSkills === false ? [] : effectiveSkills,
+			onUpdate: input.onUpdate
+				? (progressUpdate) => {
+						const stepResults = progressUpdate.details?.results || [];
+						const stepProgress = progressUpdate.details?.progress || [];
+						if (input.foregroundControl && stepProgress.length > 0) {
+							const current = stepProgress[0];
+							input.foregroundControl.currentAgent = task.agent;
+							input.foregroundControl.currentIndex = index;
+							input.foregroundControl.currentActivityState = current?.activityState;
+							input.foregroundControl.lastActivityAt = current?.lastActivityAt;
+							input.foregroundControl.currentTool = current?.currentTool;
+							input.foregroundControl.currentToolStartedAt = current?.currentToolStartedAt;
+							input.foregroundControl.currentPath = current?.currentPath;
+							input.foregroundControl.turnCount = current?.turnCount;
+							input.foregroundControl.tokens = current?.tokens;
+							input.foregroundControl.toolCount = current?.toolCount;
+							input.foregroundControl.updatedAt = Date.now();
 						}
-					: undefined,
-				modelOverride: input.modelOverrides[index],
-				availableModels: input.availableModels,
-				knownModelProviders: input.knownModelProviders,
-				resolveCandidateModel: input.resolveCandidateModel,
-				preferredModelProvider: input.ctx.model?.provider,
-				currentModel: currentModelFullId(input.ctx.model),
-				currentThinkingLevel: input.ctx.thinkingLevel,
-				skills: effectiveSkills === false ? [] : effectiveSkills,
-				onUpdate: input.onUpdate
-					? (progressUpdate) => {
-							const stepResults = progressUpdate.details?.results || [];
-							const stepProgress = progressUpdate.details?.progress || [];
-							if (input.foregroundControl && stepProgress.length > 0) {
-								const current = stepProgress[0];
-								input.foregroundControl.currentAgent = task.agent;
-								input.foregroundControl.currentIndex = index;
-								input.foregroundControl.currentActivityState = current?.activityState;
-								input.foregroundControl.lastActivityAt = current?.lastActivityAt;
-								input.foregroundControl.currentTool = current?.currentTool;
-								input.foregroundControl.currentToolStartedAt = current?.currentToolStartedAt;
-								input.foregroundControl.currentPath = current?.currentPath;
-								input.foregroundControl.turnCount = current?.turnCount;
-								input.foregroundControl.tokens = current?.tokens;
-								input.foregroundControl.toolCount = current?.toolCount;
-								input.foregroundControl.updatedAt = Date.now();
-							}
-							if (stepResults.length > 0) input.liveResults[index] = stepResults[0];
-							if (stepProgress.length > 0) input.liveProgress[index] = stepProgress[0];
-							const mergedResults = input.liveResults.filter(
-								(result): result is SingleResult => result !== undefined,
-							);
-							const mergedProgress = input.liveProgress.filter(
-								(progress): progress is AgentProgress => progress !== undefined,
-							);
-							input.onUpdate?.({
-								content: progressUpdate.content,
-								details: {
-									mode: "parallel",
-									results: mergedResults,
-									progress: mergedProgress,
-									controlEvents: progressUpdate.details?.controlEvents,
-									totalSteps: input.tasks.length,
-								},
-							});
-						}
-					: undefined,
-			})
-			.finally(() => {
-				activeIndices.delete(index);
-				parentAskController.signal.removeEventListener("abort", interruptForParentAsk);
-				if (input.foregroundControl?.currentIndex === index) {
-					input.foregroundControl.interrupt = undefined;
-					input.foregroundControl.updatedAt = Date.now();
-				}
-			});
+						if (stepResults.length > 0) input.liveResults[index] = stepResults[0];
+						if (stepProgress.length > 0) input.liveProgress[index] = stepProgress[0];
+						const mergedResults = input.liveResults.filter(
+							(result): result is SingleResult => result !== undefined,
+						);
+						const mergedProgress = input.liveProgress.filter(
+							(progress): progress is AgentProgress => progress !== undefined,
+						);
+						input.onUpdate?.({
+							content: progressUpdate.content,
+							details: {
+								mode: "parallel",
+								results: mergedResults,
+								progress: mergedProgress,
+								controlEvents: progressUpdate.details?.controlEvents,
+								totalSteps: input.tasks.length,
+							},
+						});
+					}
+				: undefined,
+		};
+		input.onExecution?.(index, input.ctx.cwd, runOptions);
+		return input.runtime.runSync(input.ctx.cwd, input.agents, task.agent, taskText, runOptions).finally(() => {
+			activeIndices.delete(index);
+			parentAskController.signal.removeEventListener("abort", interruptForParentAsk);
+			if (input.foregroundControl?.currentIndex === index) {
+				input.foregroundControl.interrupt = undefined;
+				input.foregroundControl.updatedAt = Date.now();
+			}
+		});
 	});
 }

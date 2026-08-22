@@ -128,6 +128,7 @@ function stateFor(
 							index: 0,
 							status,
 							result: retainedResult(childAgent.name, status),
+							execution: { runtimeCwd: cwd, options: { runId, index: 0 } },
 						},
 					],
 				},
