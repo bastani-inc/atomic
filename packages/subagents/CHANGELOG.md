@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.1] - 2026-08-23
+
 ### Breaking Changes
 
 - Removed the public `subagent({ action: "resume" })` action and its `index`/`message` inputs. Completed, interrupted, and parent-question children are terminal; migrate follow-ups to a fresh `subagent({ agent, task })` launch with explicit `[TASK_CONTEXT]` and expect a new run identity ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
