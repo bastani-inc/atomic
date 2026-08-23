@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.16-alpha.1] - 2026-08-23
+
 ### Breaking Changes
 
 - Parent-targeted blocking asks no longer pause a child for `subagent` resume. They end the child and return a fresh-subagent `[TASK_CONTEXT]` handoff; migrate supervisors to launch a new child with the answer ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).

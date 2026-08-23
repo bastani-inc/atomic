@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.16-alpha.1] - 2026-08-23
+
 ### Fixed
 
 - Fixed Windows embedded Postgres startup waiting forever when the daemon inherited `pg_ctl` pipes by directly spawning Postgres behind an opaque native process lease. Orderly shutdown now sends fast shutdown and bounded-waits on that exact retained child/HANDLE, preventing mutable-pidfile and PID-reuse races while leaving attached clusters untouched; failed or timed-out shutdown retains the lease for retry. Linux root runtime copies are now exact, root-owned, read/execute-only generations for the dropped Postgres account, with source and post-rename validation, atomically replaced monotonic setup heartbeats, final publication-lease checks, and bounded fail-closed corruption handling ([#2547](https://github.com/bastani-inc/atomic/issues/2547), [#2544](https://github.com/bastani-inc/atomic/pull/2544) by [@darionco](https://github.com/darionco)).

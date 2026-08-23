@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.1] - 2026-08-23
+
 ### Added
 
 - Added the opaque retained-Postgres lease used by workflow durability: direct log-redirected spawn, Unix uid/gid ownership with inherited supplementary groups cleared before a root privilege drop, process-instance-safe PostgreSQL fast shutdown on Unix and Windows, bounded wait/reap, retry retention after timeout, and explicit release without termination ([#2544](https://github.com/bastani-inc/atomic/pull/2544) by [@darionco](https://github.com/darionco)).
