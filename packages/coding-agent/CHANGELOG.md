@@ -2,9 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.4] - 2026-08-23
+
 ### Fixed
 
 - Workflow stages on installed/prebundled builds now resolve credentials from `~/.atomic/agent` again. The companion extension bundle was treating `@bastani/workflows` as the app package, so stages created an empty `~/.workflows/agent` and reported `No API key found` for every provider.
+
 
 ## [0.9.16-alpha.3] - 2026-08-23
 

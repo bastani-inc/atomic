@@ -6,10 +6,13 @@ export const COMPANION_BUILTIN_PACKAGE_NAMES: readonly string[] = BUILTIN_PACKAG
 	(dirName) => `@bastani/${dirName}`,
 );
 
-type PackageIdentityJson = {
+type JsonObject = { readonly [key: string]: JsonValue };
+type JsonValue = boolean | JsonObject | JsonValue[] | null | number | string;
+
+export type PackageIdentityJson = {
 	readonly name?: string;
-	readonly atomicConfig?: unknown;
-	readonly piConfig?: unknown;
+	readonly atomicConfig?: JsonObject;
+	readonly piConfig?: JsonObject;
 };
 
 export function isCompanionBuiltinPackageName(name: string | undefined): boolean {
@@ -18,7 +21,7 @@ export function isCompanionBuiltinPackageName(name: string | undefined): boolean
 
 export function packageJsonDefinesAppIdentity(pkg: PackageIdentityJson): boolean {
 	if (pkg.name === "@bastani/atomic" || pkg.name === "@mariozechner/pi") return true;
-	return hasObjectField(pkg.atomicConfig) || hasObjectField(pkg.piConfig);
+	return pkg.atomicConfig !== undefined || pkg.piConfig !== undefined;
 }
 
 /**
@@ -49,16 +52,30 @@ function shouldUsePackageDir(pkg: PackageIdentityJson): boolean {
 	return !isCompanionBuiltinPackageName(pkg.name);
 }
 
-function hasObjectField(value: unknown): boolean {
+function isJsonValue(value: unknown): value is JsonValue {
+	if (value === null || typeof value === "boolean" || typeof value === "string") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (Array.isArray(value)) return value.every(isJsonValue);
+	if (typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) return false;
+	return Object.values(value).every(isJsonValue);
+}
+
+function isJsonObject(value: JsonValue): value is JsonObject {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function readPackageIdentity(packageJsonPath: string): PackageIdentityJson {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
-		if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return parsed as PackageIdentityJson;
-		}
+		if (!isJsonValue(parsed) || !isJsonObject(parsed)) return {};
+		const name = parsed.name;
+		const atomicConfig = parsed.atomicConfig;
+		const piConfig = parsed.piConfig;
+		return {
+			...(typeof name === "string" ? { name } : {}),
+			...(atomicConfig !== undefined && isJsonObject(atomicConfig) ? { atomicConfig } : {}),
+			...(piConfig !== undefined && isJsonObject(piConfig) ? { piConfig } : {}),
+		};
 	} catch {
 		// Unreadable or invalid JSON is not an app identity package.
 	}

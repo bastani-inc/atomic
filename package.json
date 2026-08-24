@@ -26,7 +26,7 @@
     "test:ci-contracts": "vitest --run --project ci",
     "test:all": "npm run test:unit && npm run test:integration",
     "test:scripts": "node --test \"scripts/*.test.mjs\"",
-    "typecheck": "npm --workspace=@bastani/pi-ai run build && tsc --noEmit && npm --workspace=@bastani/atomic run typecheck",
+    "typecheck": "npm --workspace=@bastani/pi-ai run build && node scripts/alias-pi-ai.mjs && tsc --noEmit && npm --workspace=@bastani/atomic run typecheck",
     "format": "biome format --write .",
     "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap",
     "lint": "npm run check",
