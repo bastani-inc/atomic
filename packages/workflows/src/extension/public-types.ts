@@ -3,7 +3,7 @@ import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
-import type { WorkflowBudget, WorkflowInputValues } from "../shared/types.js";
+import type { SessionAdapterSelector, WorkflowBudget, WorkflowInputValues } from "../shared/types.js";
 import type { WidgetFactory } from "../tui/store-widget-installer.js";
 import type { RenderResultOpts, WorkflowRegisteredToolResult } from "./render-result.js";
 import type { PiUISurface } from "./wiring.js";
@@ -199,6 +199,12 @@ export interface WorkflowToolArgs {
 	inputs?: WorkflowInputValues;
 	/** Per-run budget override for action "run". */
 	budget?: WorkflowBudget;
+	/**
+	 * Launch-time session adapter selector for action "run": routes this run's stage
+	 * sessions to a named extension-provided adapter instead of the local session
+	 * runtime. Recorded once on the run snapshot; stages and continuations inherit it.
+	 */
+	sessionAdapter?: SessionAdapterSelector;
 	action?:
 		| "models"
 		| "run"

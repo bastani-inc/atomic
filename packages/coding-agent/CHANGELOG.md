@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a launch-time `sessionAdapter` selector to the `workflow` tool's `run` action: `workflow run <name> inputs={...} sessionAdapter={ name: "remote-pi", config: { profile: "example-profile" } }` routes that run's stage sessions to a named external session runtime registered by an extension instead of the local in-process runtime. The selector is validated at launch — an invalid shape or an unknown adapter name fails the run with an error naming the adapter instead of silently falling back to the local model — is recorded once on the run snapshot, and resumed runs inherit it from their source run.
+
 ## [0.9.16-alpha.4] - 2026-08-23
 
 ### Fixed

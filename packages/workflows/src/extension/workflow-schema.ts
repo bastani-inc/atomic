@@ -57,6 +57,27 @@ export const WorkflowParametersSchema = Type.Object(
 			}),
 		),
 		budget: Type.Optional(WorkflowBudgetSchema),
+		sessionAdapter: Type.Optional(
+			Type.Object(
+				{
+					name: Type.String({
+						description:
+							"Registered session adapter name (e.g. remote-pi). Unknown names fail the run launch with an error naming the adapter.",
+					}),
+					config: Type.Optional(
+						Type.Record(Type.String(), Type.Unknown(), {
+							description:
+								"Adapter-specific launch configuration, for example { profile: jakass }, passed to the adapter unchanged.",
+						}),
+					),
+				},
+				{
+					additionalProperties: false,
+					description:
+						'Launch-time session adapter selector for action "run": routes this run\'s stage sessions to a named extension-provided adapter instead of the local in-process session runtime. Omit to keep the default local runtime; the selector is recorded once on the run and inherited by stages and continuations.',
+				},
+			),
+		),
 		action: Type.Optional(
 			Type.Union(
 				[

@@ -44,6 +44,41 @@ function failedRunResult(name: string | undefined, runId: string, error: string)
 		stages: [],
 	};
 }
+
+type LaunchSessionAdapterResolution =
+	| { readonly kind: "none" }
+	| { readonly kind: "selected"; readonly selector: SessionAdapterSelector }
+	| { readonly kind: "error"; readonly message: string };
+
+/**
+ * Resolve the launch-time session adapter selector. The per-launch tool argument
+ * wins over the dispatch/runtime-level default. The tool argument is untrusted
+ * provider JSON, so validate its shape before it reaches the engine.
+ */
+function resolveLaunchSessionAdapter(
+	fromArgs: WorkflowToolArgs["sessionAdapter"],
+	fromOpts: SessionAdapterSelector | undefined,
+): LaunchSessionAdapterResolution {
+	const requested = fromArgs !== undefined ? fromArgs : fromOpts;
+	if (requested === undefined) return { kind: "none" };
+	const candidate = requested as Partial<SessionAdapterSelector>;
+	if (typeof candidate.name !== "string" || candidate.name.length === 0) {
+		return { kind: "error", message: "sessionAdapter.name must be a non-empty registered adapter name" };
+	}
+	if (
+		candidate.config !== undefined &&
+		(typeof candidate.config !== "object" || candidate.config === null || Array.isArray(candidate.config))
+	) {
+		return { kind: "error", message: "sessionAdapter.config must be a plain object" };
+	}
+	return {
+		kind: "selected",
+		selector: {
+			name: candidate.name,
+			...(candidate.config !== undefined ? { config: { ...candidate.config } } : {}),
+		},
+	};
+}
 async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<void> {
 	activeStore.removeRun(runId);
 	const backend = getDurableBackend();
@@ -172,6 +207,11 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			}
 
 			const policy = opts.policy ?? INTERACTIVE_WORKFLOW_POLICY;
+			const adapterResolution = resolveLaunchSessionAdapter(args.sessionAdapter, opts.sessionAdapter);
+			if (adapterResolution.kind === "error") {
+				return failedRunResult(def.name, "", adapterResolution.message);
+			}
+			const launchSessionAdapter = adapterResolution.kind === "selected" ? adapterResolution.selector : undefined;
 			// Pre-validate inputs and budget declarations. The executor would otherwise
 			// reject them deep in the background promise, silently from the caller's
 			// perspective. Catch errors here so the dispatch result names the problem.
@@ -188,7 +228,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				launch = launchDetachedUntilStartup(def, inputs, {
 					registry: opts.registry,
 					adapters: opts.adapters,
-					...(opts.sessionAdapter !== undefined ? { sessionAdapter: opts.sessionAdapter } : {}),
+					...(launchSessionAdapter !== undefined ? { sessionAdapter: launchSessionAdapter } : {}),
 					store: opts.store,
 					cancellation: opts.cancellation,
 					jobs: opts.jobs,

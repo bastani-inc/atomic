@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added a launch-time session adapter selector to the `workflow` tool's `run` action: `sessionAdapter: { name, config? }` routes that run's stage sessions to a named extension-provided session runtime instead of the local in-process runtime. The selector is validated at launch (an invalid shape or an unknown adapter name fails the run with an error naming the adapter, never a silent fallback to local), is recorded once on the run snapshot, and is inherited by resumed runs from their source run. Programmatic dispatches can supply the same selector through `RuntimeDispatchOptions.sessionAdapter`; the per-launch tool argument wins over both the dispatch option and a runtime-level default.
+
 ## [0.9.16-alpha.2] - 2026-08-23
 
 ### Added

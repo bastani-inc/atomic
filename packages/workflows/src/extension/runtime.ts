@@ -128,6 +128,12 @@ export interface RuntimeDispatchOptions {
 	readonly actor?: WorkflowActor;
 	/** Run-level budget override used when a continuation is launched. */
 	readonly budget?: WorkflowBudget;
+	/**
+	 * Launch-time session adapter selector: routes this dispatched run's stage sessions
+	 * to a named extension-provided adapter instead of the local session runtime.
+	 * Takes precedence over the runtime-level default; omitted runs keep the local runtime.
+	 */
+	readonly sessionAdapter?: SessionAdapterSelector;
 	/** Cancels only the public request/admission wait, never detached execution after acknowledgement. */
 	readonly signal?: AbortSignal;
 	/** Reports the exact detached identity before startup admission is awaited. */
@@ -411,10 +417,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
 			await raceWorkflowRequestAbort(ensureDbosReady(), options?.signal);
 			const defaultSessionDir = resolveDefaultStageSessionDir?.();
+			// Per-launch selector (tool arg or dispatch option) wins over the runtime-level default.
+			const launchSessionAdapter = args.sessionAdapter ?? options?.sessionAdapter ?? sessionAdapter;
 			return dispatch(args, {
 				registry,
 				adapters,
-				...(sessionAdapter !== undefined ? { sessionAdapter } : {}),
+				...(launchSessionAdapter !== undefined ? { sessionAdapter: launchSessionAdapter } : {}),
 				store: activeStore,
 				cancellation,
 				jobs,

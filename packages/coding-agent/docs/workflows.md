@@ -2188,16 +2188,14 @@ ctx.stage<TSchemaDef extends TSchema>(
 ctx.stage(name: string, options?: StageOptions): StageContext;
 ```
 
-By default, a stage uses Atomic's in-process session adapter. Extensions can register named external session runtimes and workflows can select one with a serializable selector:
+By default, a run's stage sessions use Atomic's in-process session adapter. Extensions can register named external session runtimes, and the caller of a workflow run selects one with a serializable **launch-time** selector. The run, not the stage, is the unit of remote placement: the selector is recorded once on the run snapshot, every stage of the run resolves through it, and continuations inherit it instead of recomputing it.
 
 ```ts
-const stage = ctx.stage("remote-review", {
-  sessionAdapter: {
-    name: "remote-pi",
-    config: { profile: "example-profile" },
-  },
-});
+// tool call from chat or an agent
+workflow run remote-review inputs={...} sessionAdapter={ name: "remote-pi", config: { profile: "example-profile" } }
 ```
+
+The `workflow` tool's `run` action accepts an optional `sessionAdapter` object (`{ name, config? }`). Omitting it keeps the default local session runtime. The selector is validated at launch: an invalid shape or an unknown adapter name fails the run with an error naming the adapter, never a silent fallback to the local runtime.
 
 An adapter extension answers the shared discovery event and publishes its
 implementation. Keep `source` stable across extension reloads so a fresh
@@ -2221,7 +2219,7 @@ pi.events.on(SESSION_ADAPTER_DISCOVER_EVENT, () => {
 });
 ```
 
-Atomic retains `sessionAdapter` in live snapshots, session-entry restore, durable stage checkpoints, completed-run inspection, and post-mortem stage handles. Reopening a completed stage therefore uses the same adapter and configuration rather than silently falling back to the local runtime. Remote adapters can mirror a valid transcript locally for inspection and reopen while keeping transport identity and recovery private to the adapter. A missing adapter fails clearly and lists registered names; duplicate registration of the same adapter is harmless, while another adapter claiming an existing name is rejected. Stages without `sessionAdapter` are unchanged.
+Atomic retains `sessionAdapter` in live run snapshots, session-entry restore, durable stage checkpoints, completed-run inspection, and post-mortem stage handles. Reopening a completed stage therefore uses the same adapter and configuration rather than silently falling back to the local runtime, and a resumed run inherits its source run's placement. Remote adapters can mirror a valid transcript locally for inspection and reopen while keeping transport identity and recovery private to the adapter. A missing adapter fails clearly and lists registered names; duplicate registration of the same adapter is harmless, while another adapter claiming an existing name is rejected. Runs launched without a selector are unchanged.
 
 The adapter owns one stage session only. Use `ctx.parallel` and its `concurrency` option for fan-out; do not make one adapter instance multiplex workflow items internally.
 
