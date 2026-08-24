@@ -21,6 +21,8 @@ This proof of concept is that host:
 
 It does not read credential or configuration files. The engine still owns sessions, tools, extensions, settings, models, trust, and authentication.
 
+Treat the webview as trusted local UI, not as a sandbox: it can spawn the engine command and send any RPC frame, including `bash`. That is acceptable for `cargo run` from a checkout. It is not a distribution or CI surface. The trust-boundary section in `apps/desktop/README.md` is the longer form.
+
 ## Run it
 
 From a source checkout:

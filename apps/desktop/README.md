@@ -16,6 +16,14 @@ Placement is `apps/desktop`, outside `packages/*` and outside the Rust natives w
 
 The webview does not read `~/.atomic` credential or settings files. It spawns the engine and talks JSONL. Session files, auth, tools, and extensions stay in the engine.
 
+## Trust boundary
+
+The webview is a trusted local compositor, not a sandbox. Starting the engine runs whatever command is in the Engine / Args / Cwd fields (or `ATOMIC_DESKTOP_ENGINE`). Once the child is up, the host can send any RPC frame, including `bash`, which default RPC executes immediately. The child inherits this process's environment, including provider keys.
+
+That is the right shape for a source-checkout proof of concept. It is not a shipping app. Do not package it, sign it, or add it to required CI until a later pass replaces PATH spawning with a bundled sidecar and treats the Engine bar as a developer override.
+
+Hardening (sidecar, CSP, code signing, updater) is follow-up 4 below. Typed permission prompts and host identity are protocol work, listed in [PROTOCOL_GAPS.md](./PROTOCOL_GAPS.md).
+
 ## What it renders
 
 - Engine start/stop. Default command prefers this checkout's CLI (`bun packages/coding-agent/src/cli.ts --mode rpc`). Args are one token per line, so paths with spaces stay intact. Engine and cwd wrap instead of clipping.
