@@ -141,7 +141,7 @@
     "ajv": "8.20.0",
     "shx": "0.4.0",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   },
   "keywords": [
     "coding-agent",
