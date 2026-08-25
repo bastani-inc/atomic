@@ -29,9 +29,11 @@ export function collectSettingsDiagnostics(
 	settingsManager: SettingsManager,
 	context: string,
 ): AgentSessionRuntimeDiagnostic[] {
-	return settingsManager.drainErrors().map(({ scope, error }) => ({
+	return settingsManager.drainErrors().map(({ scope, path, error }) => ({
 		type: "warning",
-		message: `(${context}, ${scope} settings) ${error.message}`,
+		message: path
+			? `(${context}) Invalid settings file ${path}: ${error.message}`
+			: `(${context}, ${scope} settings) ${error.message}`,
 	}));
 }
 

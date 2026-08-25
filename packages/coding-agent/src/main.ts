@@ -55,6 +55,7 @@ import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from ".
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { SessionManager } from "./core/session-manager.ts";
+import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
@@ -396,7 +397,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
-	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
+	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager, "startup session lookup");
 
 	// --use-theme steers this run only: the override lives in the startup
 	// manager's effective settings and never reaches its global settings file.
@@ -655,6 +656,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 	if (parsed.help) {
+		reportDiagnostics(startupSettingsDiagnostics);
 		const extensionFlags = resourceLoader
 			.getExtensions()
 			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
@@ -666,6 +668,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 
 	if (parsed.listModels !== undefined) {
+		reportDiagnostics(startupSettingsDiagnostics);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		if (shouldRestoreStdoutForMetadata) {
 			restoreStdout();
@@ -701,8 +704,10 @@ export async function main(argv: string[], options?: MainOptions) {
 
 	const scopedModels = [...session.scopedModels];
 	time("resolveModelScope");
-	reportDiagnostics(runtime.diagnostics);
-	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
+	if (appMode !== "interactive" || hasRuntimeErrors) reportDiagnostics(startupDiagnostics);
+	if (hasRuntimeErrors) {
 		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
@@ -738,6 +743,7 @@ export async function main(argv: string[], options?: MainOptions) {
 
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
+			startupDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			initialMessage,

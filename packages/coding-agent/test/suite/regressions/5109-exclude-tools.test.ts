@@ -1,11 +1,19 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { getDefaultToolNames } from "../../../src/core/tools/index.ts";
 import type { ExtensionFactory } from "../../../src/index.ts";
 import { createHarness } from "../harness.ts";
 
 function toolNames(tools: Array<{ name: string }>): string[] {
 	return tools.map((tool) => tool.name).sort();
 }
+
+/**
+ * `powershell` is a conditional default: it registers only on Windows with a
+ * resolvable executable. Deriving it keeps this regression about exclusion
+ * filtering instead of hard-coding one platform's default tool set.
+ */
+const conditionalDefaults = getDefaultToolNames().includes("powershell") ? ["powershell"] : [];
 
 describe("regression #5109: exclude tools", () => {
 	const extensionFactories: ExtensionFactory[] = [
@@ -50,16 +58,19 @@ describe("regression #5109: exclude tools", () => {
 			expect(allToolNames).not.toContain("ask_question");
 			expect(allToolNames).toContain("bash");
 			expect(allToolNames).toContain("dynamic_tool");
-			expect(harness.session.getActiveToolNames().sort()).toEqual([
-				"ask_user_question",
-				"bash",
-				"dynamic_tool",
-				"edit",
-				"find",
-				"search",
-				"todo",
-				"write",
-			]);
+			expect(harness.session.getActiveToolNames().sort()).toEqual(
+				[
+					"ask_user_question",
+					"bash",
+					"dynamic_tool",
+					"edit",
+					"find",
+					"search",
+					"todo",
+					"write",
+					...conditionalDefaults,
+				].sort(),
+			);
 			expect(harness.session.systemPrompt).not.toContain("- read:");
 			expect(harness.session.systemPrompt).not.toContain("ask_question");
 			expect(harness.session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");

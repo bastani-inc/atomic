@@ -35,7 +35,7 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
-import { defaultToolNames } from "./tools/index.ts";
+import { getDefaultToolNames } from "./tools/index.ts";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
 export * from "./sdk-exports.ts";
@@ -224,7 +224,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		? [...options.tools]
 		: options.noTools
 			? []
-			: [...(configuredDefaultToolNames ?? defaultToolNames)];
+			: [...(configuredDefaultToolNames ?? getDefaultToolNames())];
 
 	let agent: Agent;
 

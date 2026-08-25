@@ -73,9 +73,14 @@ export class FileSettingsStorage implements SettingsStorage {
 		for (let i = readPaths.length - 1; i >= 0; i--) {
 			const readPath = readPaths[i]!;
 			if (!existsSync(readPath)) continue;
-			const parsed = parseJsonFileContent(readFileSync(readPath, "utf-8")) as Settings;
-			merged = deepMergeSettings(merged, parsed);
-			found = true;
+			try {
+				const parsed = parseJsonFileContent(readFileSync(readPath, "utf-8")) as Settings;
+				merged = deepMergeSettings(merged, parsed);
+				found = true;
+			} catch (error) {
+				if (error instanceof Error) (error as Error & { path?: string }).path = readPath;
+				throw error;
+			}
 		}
 		return found ? JSON.stringify(merged, null, 2) : undefined;
 	}

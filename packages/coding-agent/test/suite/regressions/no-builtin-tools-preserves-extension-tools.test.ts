@@ -12,6 +12,7 @@ import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
+import { getDefaultToolNames } from "../../../src/core/tools/index.ts";
 
 describe("noTools builtin mode keeps extension tools enabled", () => {
 	let tempDir: string;
@@ -78,7 +79,21 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 				.getAllTools()
 				.map((tool) => tool.name)
 				.sort(),
-		).toEqual(["ask_user_question", "bash", "dynamic_tool", "edit", "find", "ls", "read", "search", "todo", "write"]);
+		).toEqual(
+			[
+				"ask_user_question",
+				"bash",
+				"dynamic_tool",
+				"edit",
+				"find",
+				"ls",
+				...(getDefaultToolNames().includes("powershell") ? (["powershell"] as const) : []),
+				"read",
+				"search",
+				"todo",
+				"write",
+			].sort(),
+		);
 		expect(session.getActiveToolNames()).toEqual(["dynamic_tool"]);
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(session.systemPrompt).not.toContain("- read:");

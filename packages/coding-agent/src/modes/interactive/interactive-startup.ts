@@ -324,7 +324,13 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 	}, 500);
 
 	// Show startup warnings
-	const { migratedProviders, initialMessage, initialImages, initialMessages } = this.options;
+	const { migratedProviders, startupDiagnostics, initialMessage, initialImages, initialMessages } = this.options;
+
+	for (const diagnostic of startupDiagnostics ?? []) {
+		if (diagnostic.type === "error") this.showError(diagnostic.message);
+		else if (diagnostic.type === "warning") this.showWarning(diagnostic.message);
+		else this.showStatus(diagnostic.message);
+	}
 
 	if (migratedProviders && migratedProviders.length > 0) {
 		this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);

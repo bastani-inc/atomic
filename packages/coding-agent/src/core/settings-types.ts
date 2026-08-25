@@ -176,5 +176,6 @@ export interface SettingsStorage {
 
 export interface SettingsError {
 	scope: SettingsScope;
+	path?: string;
 	error: Error;
 }
