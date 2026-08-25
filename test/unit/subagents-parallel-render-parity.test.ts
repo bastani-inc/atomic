@@ -14,6 +14,7 @@ function parallelChild(
 	extra: {
 		interrupted?: boolean;
 		detached?: boolean;
+		cause?: string;
 		model?: string;
 		thinking?: string;
 		fastMode?: boolean;
@@ -76,6 +77,16 @@ describe("top-level parallel status reduction", () => {
 		]);
 		assert.match(rendered, /failed parallel · 1\/2 done/);
 		assert.doesNotMatch(rendered, /paused parallel/);
+	});
+
+	test("a parent-cancelled child reads cancelled, never failed", () => {
+		const rendered = renderParallel([
+			parallelChild("alpha", "ok"),
+			parallelChild("beta", "interrupted", { interrupted: true, cause: "abort" }),
+		]);
+		assert.match(rendered, /cancelled/);
+		assert.doesNotMatch(rendered, /failed/);
+		assert.doesNotMatch(rendered, /✓/);
 	});
 
 	test("a detached child reads failed, never paused", () => {

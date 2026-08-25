@@ -1,3 +1,4 @@
+import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatDuration, formatTokens, formatToolCall } from "../shared/formatters.js";
 import { formatActivityLabel } from "../shared/status-format.js";
 import type { AgentProgress, Details } from "../shared/types.js";
@@ -135,6 +136,8 @@ export function firstOutputLine(text: string): string {
 export function resultStatusLine(result: Details["results"][number], output: string): string {
 	if (result.detached) return result.detachedReason ? `Detached: ${result.detachedReason}` : "Detached";
 	if (result.status === "continued") return "Continued";
+	if (isParentCancellation(result.cause) && (result.interrupted || result.status === "interrupted"))
+		return "Cancelled";
 	if (result.interrupted || result.status === "interrupted") return "Interrupted";
 	if (result.status === "skipped") return result.error ? `Skipped: ${result.error}` : "Skipped";
 	if (result.status === "error") return `Error: ${result.error ?? (firstOutputLine(output) || "failed")}`;

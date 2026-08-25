@@ -124,6 +124,7 @@ function compactCompletedProgress(progress: AgentProgress): AgentProgress {
 		tokens: progress.tokens,
 		durationMs: progress.durationMs,
 		error: progress.error,
+		...(progress.cause === undefined ? {} : { cause: progress.cause }),
 		failedTool: progress.failedTool,
 		recentTools: [],
 		recentOutput: [],

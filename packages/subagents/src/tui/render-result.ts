@@ -1,6 +1,7 @@
 import { getMarkdownTheme, keyHintIfBound } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
@@ -109,9 +110,11 @@ export function renderSubagentResult(
 				? theme.fg("warning", "yielded")
 				: r.detached || r.status === "continued"
 					? theme.fg("warning", "detached")
-					: r.status === "ok"
-						? theme.fg("success", "ok")
-						: theme.fg("error", "failed");
+					: isParentCancellation(r.cause) && (r.interrupted || r.status === "interrupted")
+						? theme.fg("warning", "cancelled")
+						: r.status === "ok"
+							? theme.fg("success", "ok")
+							: theme.fg("error", "failed");
 		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 		const output = r.truncation?.text || getSingleResultOutput(r);
 
@@ -221,6 +224,9 @@ export function renderSubagentResult(
 			r.progress?.status !== "running" &&
 			hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
+	const hasCancelled = d.results.some(
+		(result) => isParentCancellation(result.cause) && (result.interrupted || result.status === "interrupted"),
+	);
 	const icon = hasRunning
 		? theme.fg("warning", "running")
 		: d.parentAskYielded
@@ -229,7 +235,11 @@ export function renderSubagentResult(
 				? theme.fg("warning", "warning")
 				: ok === d.results.length
 					? theme.fg("success", "ok")
-					: theme.fg("error", "failed");
+					: d.results.some((result) => result.status === "error")
+						? theme.fg("error", "failed")
+						: hasCancelled
+							? theme.fg("warning", "cancelled")
+							: theme.fg("error", "failed");
 
 	const totalSummary =
 		d.progressSummary ||
@@ -342,11 +352,13 @@ export function renderSubagentResult(
 			? theme.fg("warning", "running")
 			: r.status === "error"
 				? theme.fg("error", "failed")
-				: r.status === "skipped" || r.status === "interrupted" || r.status === "continued"
-					? theme.fg("warning", r.status)
-					: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
-						? theme.fg("warning", "warning")
-						: theme.fg("success", "done");
+				: isParentCancellation(r.cause) && (r.interrupted || r.status === "interrupted")
+					? theme.fg("warning", "cancelled")
+					: r.status === "skipped" || r.status === "interrupted" || r.status === "continued"
+						? theme.fg("warning", r.status)
+						: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
+							? theme.fg("warning", "warning")
+							: theme.fg("success", "done");
 		const stats = rProg
 			? ` | ${rProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(rProg, options.now))}`
 			: "";

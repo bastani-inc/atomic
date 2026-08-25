@@ -539,7 +539,7 @@ subagent({ action: "status", id: "<run-id>" })
 subagent({ action: "interrupt", id: "<run-id>" })
 ```
 
-Completed, interrupted, and parent-question children are terminal for continuation. A prior run ID cannot revive a child or parallel sibling set. Start a fresh subagent call with an explicit context handoff for follow-up work.
+Completed, interrupted, and parent-question children are terminal for continuation. A prior run ID cannot revive a child or parallel sibling set. Start a fresh subagent call with an explicit context handoff for follow-up work. Parent cancellation of a still-running foreground child uses that same interrupted/abort state: receipts, Intercom summaries, and progress present it as cancelled rather than failed, persisted metadata keeps interrupted/abort, pre-cancel fallback metadata is preserved, and bounded partial findings are recovered from `progress.md` or earlier assistant text when they exist.
 
 ## Worktree isolation
 

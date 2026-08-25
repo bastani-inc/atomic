@@ -99,6 +99,7 @@ export interface SubagentResultIntercomChild {
 	status: SubagentResultStatus;
 	summary: string;
 	index?: number;
+	cause?: string;
 	artifactPath?: string;
 	sessionPath?: string;
 	intercomTarget?: string;
@@ -126,7 +127,7 @@ export interface SubagentResultIntercomPayload {
 export interface AgentProgress {
 	index: number;
 	agent: string;
-	status: "pending" | "running" | "completed" | "failed" | "detached";
+	status: "pending" | "running" | "completed" | "failed" | "detached" | "interrupted";
 	activityState?: ActivityState;
 	task: string;
 	/** Effective model for this live attempt, including fallback changes. */
@@ -148,6 +149,8 @@ export interface AgentProgress {
 	tokens: number;
 	durationMs: number;
 	error?: string;
+	/** Terminal abort cause, when progress is an interrupted parent cancellation. */
+	cause?: string;
 	failedTool?: string;
 }
 

@@ -1,3 +1,4 @@
+import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatAgentRunningLabel } from "../shared/status-format.js";
 import type { Details } from "../shared/types.js";
 
@@ -52,9 +53,14 @@ export function buildMultiProgressLabel(
 		}
 		const running = statuses.filter((status) => status === "running").length;
 		const done = statuses.filter((status) => status === "completed").length;
+		const cancelled = details.results.filter(
+			(result) => isParentCancellation(result.cause) && (result.interrupted || result.status === "interrupted"),
+		).length;
 		const headerLabel = hasRunning
 			? `${formatAgentRunningLabel(running)} · ${done}/${totalCount} done`
-			: `${done}/${totalCount} done`;
+			: cancelled > 0
+				? `${done}/${totalCount} done · ${cancelled} cancelled`
+				: `${done}/${totalCount} done`;
 		return {
 			headerLabel,
 			itemTitle,

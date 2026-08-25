@@ -204,6 +204,7 @@ async function emitForegroundResultIntercom(input: {
 						}),
 						summary: resultSummaryForIntercom(result),
 						index,
+						...(result.cause ? { cause: result.cause } : {}),
 						artifactPath: result.artifactPaths?.outputPath,
 						sessionPath: result.sessionFile,
 						intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index),

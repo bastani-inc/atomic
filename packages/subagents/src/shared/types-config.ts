@@ -161,6 +161,10 @@ export interface RunSyncOptions {
 	currentThinkingLevel?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
+	/** Run-scoped progress.md path used to recover partial findings after parent abort. */
+	progressPath?: string;
+	/** Surviving progress.md path to cite after parent cancellation. */
+	progressArtifactPath?: string;
 	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */
 	testSession?:
 		| false
@@ -181,6 +185,12 @@ export interface RunSyncOptions {
 				sessionThinkingLevel?: string;
 				/** Test-only session events emitted in order after the initial agent_start event. */
 				events?: readonly AgentSessionEvent[];
+				/** Seed an earlier assistant message so abort recovery can find real text. */
+				seededAssistantText?: string;
+				/** After abort, append a thinking-only aborted message with no text. */
+				thinkingOnlyOnAbort?: boolean;
+				/** Emit the fallback event before the prompt gate so abort can preserve live fallback metadata. */
+				fallbackBeforeGate?: boolean;
 		  };
 }
 
