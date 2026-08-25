@@ -246,6 +246,7 @@ runtime_deps_dir="binaries/.runtime-node_modules"
 rm -rf "$runtime_deps_dir"
 bun run scripts/copy-runtime-dependencies.ts "$runtime_deps_dir"
 cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-modifiers.js" "$shared_app_dir/native-modifiers.js"
+cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-module-path.js" "$shared_app_dir/native-module-path.js"
 bun run scripts/assert-pi-runtime-assets.ts --node-modules "$runtime_deps_dir" --app "$shared_app_dir/app.js"
 clipboard_copy_args=()
 if [[ "$SKIP_DEPS" == "true" ]]; then
@@ -419,6 +420,7 @@ for platform in "${PLATFORMS[@]}"; do
     cp CHANGELOG.md "binaries/$platform/"
     cp "$shared_app_dir/app.js" "binaries/$platform/"
     cp "$shared_app_dir/native-modifiers.js" "binaries/$platform/"
+    cp "$shared_app_dir/native-module-path.js" "binaries/$platform/"
     cp "$shared_app_dir/image-resize-worker.js" "binaries/$platform/"
     cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "binaries/$platform/"
     mkdir -p "binaries/$platform/theme"

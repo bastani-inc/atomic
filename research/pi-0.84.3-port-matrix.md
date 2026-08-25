@@ -9,7 +9,7 @@ tags: [implementation, evidence, pi-0.84.3, port-matrix]
 status: in_progress
 last_updated: 2026-08-25
 last_updated_by: Claude Opus 5
-port_outcome: planned — this matrix is written before the stack lands, so each cell records the *decided* outcome and names the slice (`S1`–`S8`) that will carry it; cells flip to shipped outcomes as each PR merges
+port_outcome: in progress — S1 shipped the dependency-carried outcomes and verified the already-equivalent defaults; S2–S8 remain planned
 breaking_changes_allowed: false
 compatibility_context: Preserve Atomic public SDK, branding, CLI names and paths, legacy PI_*/.pi aliases, providers, isolated runtime, fullscreen-only renderer, Verbatim Compaction, versionless 0.0.0 manifests, and Atomic's Bun-compiled release/CI pipeline.
 ---
@@ -21,10 +21,10 @@ upstream `main`, four commits past the v0.84.3 tag — against Atomic's tree. **
 `packages/coding-agent`**; the other 28 are upstream-package, script, CI, or governance
 changes.
 
-Atomic resolves `@earendil-works/pi-*` at `^0.84.2` before this migration. Slice **S1** moves
-every range to `^0.84.3` and regenerates `package-lock.json` with npm; `packages/tui`,
-`packages/agent`, `packages/client`, and `packages/protocol` changes in this range arrive
-through that bump and are **never** source-ported.
+Atomic resolves every external `@earendil-works/pi-*` compatibility dependency at `^0.84.3`
+after Slice **S1**. The regenerated lockfile carries `packages/tui`, `packages/agent`,
+`packages/client`, and `packages/protocol` changes from this range; those changes are **never**
+source-ported.
 
 **`packages/ai` is not touched on any branch.** Atomic vendors its own `packages/ai` fork,
 published as `@bastani/pi-ai`, which was independently verified to already carry every
@@ -64,7 +64,7 @@ Slice labels used below map to the stack branches:
 |---:|---|---|---|---|
 | 19 | `d5278eaac3`, `086c32e745`, `d3ab2af969`, `86d001d36b`, `af2c352238`, `10acee6045`, `87205484bf`, `6db110e6fa`, `9117326b4c`, `ad58801ce7`, `e5dde9a76b`, `a6c6f80180`, `59a71b235d`, `55b0db4d3e`, `d57e531f5d`, `3de00332f7`, `87af49dec2`, `4ca636c5e0`, `b7bb00b936` | `packages/ai` provider/transport/auth/catalog work | **skipped-vendored-ai** | Atomic's `packages/ai` fork already carries every behavior; sampled and verified file-by-file in [B0](#b0-vendored-ai-verification). `59a71b235d` reverts `a6c6f80180` and is superseded by `4809c2abca` (listed in [B2](#b2-dependency-carried-anthropic-summarization-shim-3) because it also touches `packages/coding-agent`); the net state is what the fork holds. `4ca636c5e0` and `b7bb00b936` also touch `packages/server`, which Atomic does not ship — its RPC surface is `src/modes/rpc*`, covered by `830a0a59e9` in S6. |
 | 2 | `2509b5c037`, `3a0b9a3eee` | `packages/agent` provider-context construction, added then reverted | **not applicable** | Net zero upstream. Atomic constructs `Agent` from `@earendil-works/pi-agent-core` (`src/core/sdk.ts`); nothing to inherit. |
-| 2 | `f0c5d86d20`, `8f2ae3fadd` | `packages/tui` narrow-width text padding, wrapped-table link colour leaks | **inherited dependency** | Arrives with `@earendil-works/pi-tui@0.84.3` in S1. Atomic vendors no renderer copy. |
+| 2 | `f0c5d86d20`, `8f2ae3fadd` | `packages/tui` narrow-width text padding, wrapped-table link colour leaks | **inherited dependency; shipped** | Arrived with `@earendil-works/pi-tui@0.84.3` in S1. Atomic vendors no renderer copy. |
 | 1 | `5cd93f688a` | `scripts/auto-pi.sh` developer `pi` PATH wrapper defaulting `PI_EXPERIMENTAL=1` | **not applicable** | Developer convenience for the `pi` binary name; Atomic's CLI is `atomic` and copying it would ship wrong branding and paths. |
 | 1 | `39d869f02a` | Publish installer artifacts + advance an R2 installer pointer | **not applicable** | Touches `.github/workflows/build-binaries.yml` and `scripts/publish-release-announcement.mjs`, neither of which exists in Atomic. Atomic publishes through tag-triggered `publish.yml`, GitHub release assets, npm OIDC, and `scripts/cut-release.ts`. |
 | 1 | `bfb004d441` | Extract Windows release ZIPs with PowerShell instead of `tar` in CI | **equivalent** | Atomic's `publish.yml` Windows smoke job already runs on Windows and uses `Expand-Archive`; the archive creator carries a PowerShell fallback. |
@@ -177,14 +177,14 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 | `5e11f65865` | Load nested markdown skills (#8255) | **ported**, S5 | `src/core/package-manager-resource-files.ts:140` includes loose Markdown only for `mode === "pi" && dir === root`; nested Agents-format Markdown is dropped. |
 | `080932e53c` | Use `semver.gt` for version comparison (#8239) | **ported**, S5 | `package-manager-operations.ts:199` and `package-manager-npm.ts:256` both compare with `!==`, so a newer installed package can be downgraded. |
 | `f8f03460a0` | Reduce workspace dependency tree | **ported (adapted)**, S5 | Only the coding-agent half: replace the `glob` dependency with deterministic `node:fs` globbing in `package-manager-resource-collector.ts`, drop the direct dependency, regenerate lock/shrinkwrap. The `packages/{ai,agent,evals,telemetry}` manifest hunks are **not applicable** — Atomic must not touch its vendored fork and ships none of the others in upstream's shape. |
-| `a1f955e9f4` | Remove redundant development dependencies | **ported**, S1 | Atomic has no root `jiti` duplicate but still lists `@types/diff` and `@types/ms`; `diff@8` ships its own types and no `ms` import exists. Removed during S1's lock regeneration. |
+| `a1f955e9f4` | Remove redundant development dependencies | **ported; shipped**, S1 | Removed coding-agent's redundant `@types/diff` and `@types/ms` during S1's lock regeneration. Atomic had no root `jiti` duplicate. |
 | `955a543b31` | Expose sleeping llama.cpp models (#8235) | **ported (adapted)**, S5 | `src/extensions/llama/provider.ts:64-65` filters sleeping models out even though `index.ts` and the UI already recognize them. |
 | `a1bc0ec790` | llama.cpp guidance as no default (#8236) | **ported (adapted)**, S5 | Atomic's split `interactive-auth-login.ts:36-47` offers no llama-specific guidance; `docs/llama-cpp.md` needs the matching note. |
 | `d3e3bbc011` | Allow network for llama model discovery (#8238) | **ported**, S5 | `src/extensions/llama/index.ts:54-57` refuses catalog refresh under offline mode; a local router is not the network policy's concern. |
 | `dcd461925d` | Show llama presets if autoload enabled (#8558) | **ported (adapted)**, S5 | Atomic's llama client has no `/props` probe, no autoload detection, and no preset selection. Port while preserving Atomic's generation-checked catalog publishing. |
-| `e429d90b80` | Update Z.AI Coding Plan defaults | **equivalent** | Already at `src/core/model-resolver-defaults.ts:22-23` (`glm-5.3` for `zai` and `zai-coding-cn`). |
-| `70e878d4cf` | Route xAI through Responses, default Grok 4.6 (#8124) | **equivalent** (coding-agent) / **skipped-vendored-ai** (`packages/ai`) | `model-resolver-defaults.ts:18` is already `grok-4.6`; routing lives in the fork. |
-| `1c28f3032e` | Update Cloudflare gateway sonnet test id (#8260) | **equivalent** | Atomic's resolver default (`cerebras: gpt-oss-120b`, `model-resolver-defaults.ts:20`) and its Cloudflare compat test already match. |
+| `e429d90b80` | Update Z.AI Coding Plan defaults | **equivalent; verified**, S1 | `src/core/model-resolver-defaults.ts:22-23` already uses `glm-5.3` for `zai` and `zai-coding-cn`. |
+| `70e878d4cf` | Route xAI through Responses, default Grok 4.6 (#8124) | **equivalent; verified** (coding-agent) / **skipped-vendored-ai** (`packages/ai`), S1 | `model-resolver-defaults.ts:18` is already `grok-4.6`; routing lives in the fork. |
+| `1c28f3032e` | Update Cloudflare gateway sonnet test id (#8260) | **equivalent; verified**, S1 | Atomic's resolver default (`cerebras: gpt-oss-120b`, `model-resolver-defaults.ts:20`) and its Cloudflare compat test already match. |
 
 ### B6. Extensions, events, export, and input robustness (12) — S6
 
@@ -226,7 +226,7 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 
 | Commit | Subject | Outcome |
 |---|---|---|
-| `7d4c0e05dd` | Bundle Node runtime (#8474) | **not applicable** — Atomic ships a Bun-compiled executable. `src/config.ts` already exposes `isBunBinary`/`isBundledBuild`/`isBunRuntime`, honours `ATOMIC_PACKAGE_DIR ?? PI_PACKAGE_DIR`, and `loader-virtual-modules.ts` already selects embedded modules for `isBunBinary \|\| isBundledBuild`. |
+| `7d4c0e05dd` | Bundle Node runtime (#8474) | **ported (adapted); dependency compatibility shipped in S1** — Node SEA remains not applicable because Atomic ships a Bun-compiled executable. However, pi-tui 0.84.3 extracted native lookup into `native-module-path.js`; Atomic now stages that required sidecar beside `native-modifiers.js` in both package and release binary builds, with the compiled-launcher boundary test covering execution from an unrelated cwd. |
 | `c061328981` | Load extensions in Node SEA hosts (#8237) | **not applicable** — Node SEA is not an Atomic distribution; `loader-virtual-modules.ts:517` already covers Atomic's compiled artifact. |
 | `c1279a65b3` | Defer jiti until extension loading | **not applicable** — touches only `scripts/build-coding-agent-bundle.mjs`, which Atomic does not have; Atomic's loader imports `jiti/static` under a Bun build that consumes raw TypeScript. |
 | `309b524f4f` | Avoid duplicate clipboard binaries | **equivalent** — Atomic's `scripts/build-binaries.sh`, `stage-clipboard-native-bindings.ts`, and `copy-clipboard-native-bindings.ts` already stage target binaries into `@mariozechner/clipboard` without retaining native leaf packages, and `publish.yml` smoke-tests Linux, Windows, and musl archives. |
@@ -252,8 +252,8 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 
 | Commit | Subject | Outcome |
 |---|---|---|
-| `209bc7b9a8` | Remove unused opentelemetry dependency | **equivalent** — the coding-agent hunk is `npm-shrinkwrap.json`/`install-lock` only, and Atomic's fork already has no direct `@opentelemetry/api` dependency; remaining lock entries are transitive. |
-| `374e56e553` | Avoid duplicate VS Code right-click paste | **inherited dependency** — the fix is in `packages/tui/src/tui-alt-screen.ts`; the coding-agent hunk is a changelog line. Arrives with `@earendil-works/pi-tui@0.84.3` in S1, and Atomic's `AtomicTuiAltScreen extends TuiAltScreen` inherits it directly. |
+| `209bc7b9a8` | Remove unused opentelemetry dependency | **equivalent; verified**, S1 — the regenerated lock and shrinkwrap retain no direct `@opentelemetry/api` dependency; remaining entries are transitive. Atomic's fork already omitted the direct dependency. |
+| `374e56e553` | Avoid duplicate VS Code right-click paste | **inherited dependency; shipped**, S1 — `@earendil-works/pi-tui@0.84.3` carries the renderer fix, which Atomic's `AtomicTuiAltScreen extends TuiAltScreen` inherits directly; Atomic's changelog records the user-visible outcome. |
 | `a470b121bf` | Expose finish reason compatibility override (#8487) | **equivalent** — `src/core/model-config.ts:77` already declares `supportsFinishReason: Type.Optional(Type.Boolean())`, and Atomic's vendored fork consumes the compat field. |
 
 The release and bookkeeping commits `914cf1472e`, `4e58f324fa`, `0e0021fbbe`, and `31d4ed5860`

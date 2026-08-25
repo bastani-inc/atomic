@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 /** Remaining registry Pi packages (`pi-agent-core`, `pi-tui`, …) stay on this version. */
-export const expectedPiVersion = "0.84.2";
+export const expectedPiVersion = "0.84.3";
 export const expectedPiAiPackage = "@bastani/pi-ai";
 const requiredPiAiFiles = [
 	"package.json",
@@ -21,6 +21,7 @@ const requiredPiTuiFiles = [
 	"package.json",
 	"dist/index.js",
 	"dist/native-modifiers.js",
+	"dist/native-module-path.js",
 	"native/win32/prebuilds/win32-x64/win32-console-mode.node",
 	"native/win32/prebuilds/win32-arm64/win32-console-mode.node",
 ] as const;
@@ -65,6 +66,7 @@ export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
 		const appBundlePath = resolve(options.appBundlePath);
 		requireFile(appBundlePath);
 		requireFile(join(dirname(appBundlePath), "native-modifiers.js"));
+		requireFile(join(dirname(appBundlePath), "native-module-path.js"));
 		const appBundle = readFileSync(appBundlePath, "utf-8");
 		for (const marker of requiredAppMarkers) {
 			if (!appBundle.includes(marker)) throw new Error(`Pi runtime marker is absent from ${appBundlePath}: ${marker}`);

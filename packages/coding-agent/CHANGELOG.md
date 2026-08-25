@@ -6,6 +6,9 @@
 
 - Fixed Windows compiled binaries crashing with `ERR_INVALID_FILE_URL_PATH` when Return reached native modifier detection, including from the `/model` selector. Release app bundles keep only `pi-tui`'s native modifier loader runtime-relative, avoiding both the Linux build host's frozen module URL and Bun's inability to resolve a fully external `pi-tui` from a compiled split launcher, while retaining the staged Windows native helper for Shift+Enter handling.
 - Fixed `bundle:dev` and `start:fast` omitting the statically registered OAuth adapters. Development bundles now use the Bun entrypoint shared with compiled builds, so OpenAI Codex and xAI OAuth derivation and refresh no longer fail on unresolved runtime imports.
+- Fixed duplicate fullscreen right-click paste in VS Code-based terminals on Windows ([#8186](https://github.com/earendil-works/pi/issues/8186)).
+- Fixed padded text exceeding narrow terminal widths ([#8252](https://github.com/earendil-works/pi/issues/8252)).
+- Fixed wrapped Markdown table links leaking color into borders and neighboring cells, including tables inside blockquotes ([#8335](https://github.com/earendil-works/pi/issues/8335)).
 
 ## [0.9.16-alpha.4] - 2026-08-23
 
