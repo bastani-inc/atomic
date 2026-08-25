@@ -186,6 +186,10 @@ export interface PromptOptions {
 	preflightResult?: (success: boolean) => void;
 }
 
+export interface ModelMutationOptions {
+	persist?: boolean;
+}
+
 export interface ModelCycleResult {
 	model: Model<Api>;
 	thinkingLevel: ThinkingLevel;

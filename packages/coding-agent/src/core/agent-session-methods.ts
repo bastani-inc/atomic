@@ -18,6 +18,7 @@ import type {
 	ExtensionBindings,
 	InterruptQueueHold,
 	ModelCycleResult,
+	ModelMutationOptions,
 	PromptOptions,
 	SessionStats,
 	ToolDefinitionEntry,
@@ -217,15 +218,24 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		previousModel: Model<Api> | undefined,
 		source: "set" | "cycle" | "restore" | "fallback",
 	): Promise<void>;
-	setModel(model: Model<Api>): Promise<void>;
-	cycleModel(direction?: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
-	_cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
-	_cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
-	setThinkingLevel(level: ThinkingLevel): void;
-	cycleThinkingLevel(): ThinkingLevel | undefined;
+	setModel(model: Model<Api>, options?: ModelMutationOptions): Promise<void>;
+	cycleModel(
+		direction?: "forward" | "backward",
+		options?: ModelMutationOptions,
+	): Promise<ModelCycleResult | undefined>;
+	_cycleScopedModel(
+		direction: "forward" | "backward",
+		options: ModelMutationOptions,
+	): Promise<ModelCycleResult | undefined>;
+	_cycleAvailableModel(
+		direction: "forward" | "backward",
+		options: ModelMutationOptions,
+	): Promise<ModelCycleResult | undefined>;
+	setThinkingLevel(level: ThinkingLevel, options?: ModelMutationOptions): void;
+	cycleThinkingLevel(options?: ModelMutationOptions): ThinkingLevel | undefined;
 	getAvailableThinkingLevels(): ThinkingLevel[];
 	supportsThinking(): boolean;
-	_getThinkingLevelForModelSwitch(explicitLevel?: ThinkingLevel): ThinkingLevel;
+	_getThinkingLevelForModelSwitch(targetModel?: Model<Api>, explicitLevel?: ThinkingLevel): ThinkingLevel;
 	_clampThinkingLevel(level: ThinkingLevel, availableLevels: ThinkingLevel[]): ThinkingLevel;
 
 	_applyVerbatimCompaction(options: VerbatimCompactionApplyOptions): Promise<VerbatimCompactionResult | undefined>;

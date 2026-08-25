@@ -91,7 +91,7 @@ describe("AgentSession cycle fallback controls", () => {
 		expect(modelChanges(harness)).toEqual([`${current.provider}/${current.id}`]);
 	});
 
-	it("clears the lock after a real backward cycle changes and persists the model", async () => {
+	it("clears the lock after a real backward cycle changes the session model", async () => {
 		const harness = await createHarness({
 			models: [
 				{ id: "faux-1", name: "One", reasoning: true },
@@ -99,6 +99,7 @@ describe("AgentSession cycle fallback controls", () => {
 			],
 		});
 		harnesses.push(harness);
+		const previousDefault = harness.settingsManager.getDefaultModel();
 		const runtime = lockedRuntime(harness);
 
 		const response = await cycleHandler(
@@ -117,7 +118,7 @@ describe("AgentSession cycle fallback controls", () => {
 			data: { model: { provider: harness.getModel("faux-2")?.provider, id: "faux-2" } },
 		});
 		expect(harness.session.model?.id).toBe("faux-2");
-		expect(harness.settingsManager.getDefaultModel()).toBe("faux-2");
+		expect(harness.settingsManager.getDefaultModel()).toBe(previousDefault);
 		expect(modelChanges(harness)).toEqual([`${harness.getModel().provider}/faux-2`]);
 		expect(runtime.modelFallbackMessage).toBeUndefined();
 		expect(runtime.modelFallbackReason).toBeUndefined();
@@ -142,6 +143,7 @@ describe("AgentSession cycle fallback controls", () => {
 			],
 		});
 		harnesses.push(harness);
+		const previousDefault = harness.settingsManager.getDefaultModel();
 		await harness.session.bindExtensions({
 			shutdownHandler: () => {},
 			onError: (error) => extensionErrors.push(`${error.event}:${error.error}`),
@@ -155,7 +157,7 @@ describe("AgentSession cycle fallback controls", () => {
 		expect(hookCalls).toBe(1);
 		expect(extensionErrors).toEqual(["model_select:cycle selection rejected"]);
 		expect(harness.session.model?.id).toBe("faux-2");
-		expect(harness.settingsManager.getDefaultModel()).toBe("faux-2");
+		expect(harness.settingsManager.getDefaultModel()).toBe(previousDefault);
 		expect(modelChanges(harness)).toEqual([`${harness.getModel().provider}/faux-2`]);
 		expect(runtime.modelFallbackMessage).toBeUndefined();
 		expect(runtime.modelFallbackReason).toBeUndefined();
