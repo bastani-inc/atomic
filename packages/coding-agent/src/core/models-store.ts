@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { ModelsStore, ModelsStoreEntry } from "@bastani/pi-ai";
 import { getAgentDir } from "../config.ts";
+import { stripBom } from "../utils/text.ts";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "./auth-storage-backends.ts";
 
 type StoredModels = Record<string, ModelsStoreEntry>;
@@ -30,7 +31,7 @@ export class FileModelsStore implements ModelsStore {
 	}
 
 	private parse(content: string | undefined): StoredModels {
-		return content ? (JSON.parse(content) as StoredModels) : {};
+		return content ? (JSON.parse(stripBom(content)) as StoredModels) : {};
 	}
 
 	async read(providerId: string): Promise<ModelsStoreEntry | undefined> {

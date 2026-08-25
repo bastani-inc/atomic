@@ -3,6 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { gt, maxSatisfying, rcompare, satisfies } from "semver";
 import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.ts";
 import { markPathIgnoredByCloudSync } from "../utils/paths.ts";
+import { stripBom } from "../utils/text.ts";
 import { runCommand, runCommandCapture, runCommandSync } from "./package-manager-command.ts";
 import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
@@ -264,7 +265,7 @@ export function getInstalledNpmVersion(installedPath: string): string | undefine
 	if (!existsSync(packageJsonPath)) return undefined;
 	try {
 		const content = readFileSync(packageJsonPath, "utf-8");
-		const pkg = JSON.parse(content) as { version?: string };
+		const pkg = JSON.parse(stripBom(content)) as { version?: string };
 		return pkg.version;
 	} catch {
 		return undefined;

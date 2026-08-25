@@ -64,7 +64,7 @@ async function loadExtension(
 		}
 
 		const extension = createExtension(extensionPath, resolvedPath);
-		const api = createExtensionAPI(
+		const transaction = createExtensionAPI(
 			extension,
 			runtime,
 			cwd,
@@ -73,7 +73,13 @@ async function loadExtension(
 			resourceLoaderInheritanceSnapshotProvider,
 		);
 		const factorySpan = startTimingSpan(`loadExtensions.${extensionPath}.factory`, "extensions");
-		await factory(api);
+		try {
+			await factory(transaction.api);
+			transaction.commit();
+		} catch (error) {
+			transaction.discard();
+			throw error;
+		}
 		endTimingSpan(factorySpan);
 
 		return { extension, error: null };
@@ -97,7 +103,7 @@ export async function loadExtensionFromFactory(
 ): Promise<Extension> {
 	const extension = createExtension(extensionPath, extensionPath);
 	const resolvedCwd = resolvePath(cwd);
-	const api = createExtensionAPI(
+	const transaction = createExtensionAPI(
 		extension,
 		runtime,
 		resolvedCwd,
@@ -105,7 +111,13 @@ export async function loadExtensionFromFactory(
 		workflowResourceProvider,
 		resourceLoaderInheritanceSnapshotProvider,
 	);
-	await factory(api);
+	try {
+		await factory(transaction.api);
+		transaction.commit();
+	} catch (error) {
+		transaction.discard();
+		throw error;
+	}
 	return extension;
 }
 

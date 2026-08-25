@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { APP_NAME, getProjectConfigDirs } from "../config.ts";
 import type { GitSource } from "../utils/git.ts";
+import { stripBom } from "../utils/text.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";
 import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
@@ -81,7 +82,7 @@ function hasMissingGitDependencies(targetDir: string): boolean {
 	const packageJsonPath = join(targetDir, "package.json");
 	if (!existsSync(packageJsonPath)) return false;
 	try {
-		const manifest = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { dependencies?: unknown };
+		const manifest = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as { dependencies?: unknown };
 		if (!manifest.dependencies || typeof manifest.dependencies !== "object" || Array.isArray(manifest.dependencies)) {
 			return false;
 		}

@@ -41,7 +41,7 @@ for (const origin of ["inherited-pi", "bundled"] as const) {
 			for (const name of candidate.tools.keys()) registryTools.add(name);
 			activeTools = [...new Set([...activeTools, ...additions])];
 		};
-		const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		const { api: pi } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
 		let sawTool = false;
 		let sawCommand = false;
 		let sawActiveTool = false;
@@ -77,7 +77,7 @@ for (const origin of ["inherited-pi", "bundled"] as const) {
 test("preserves constrainedSampling own-property state in staged inherited inspection", () => {
 	const runtime = createExtensionRuntime();
 	const candidate = extension("sampling", "inherited-pi");
-	const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+	const { api: pi } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
 	const grammar = {
 		type: "grammar" as const,
 		variants: { openai_lark: 'start: "α" | "β"\n', openai_regex: "^(a|a)$" },
@@ -118,7 +118,7 @@ test("keeps original event order while committing only the bundled collision win
 	const trace: string[] = [];
 	let inheritedObserved: boolean | string | undefined;
 	for (const candidate of [inherited, bundled]) {
-		const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		const { api: pi } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
 		pi.on("session_start", async () => {
 			trace.push(candidate.sourceInfo.configurationOrigin ?? "missing");
 			pi.registerFlag("shared", { type: "string", default: candidate.path });
@@ -154,7 +154,7 @@ test("preserves first-registration views across pending inherited duplicates", a
 	let secondView: Array<boolean | string | undefined> = [];
 	let secondCommands: string[] = [];
 	for (const candidate of extensions) {
-		const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		const { api: pi } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
 		pi.on("session_start", async () => {
 			pi.registerFlag("shared", { type: "string", default: candidate.path });
 			pi.registerTool({
@@ -192,8 +192,8 @@ for (const origin of ["inherited-pi", "atomic"] as const) {
 		const first = extension(`${origin}-first`, origin);
 		const second = extension(`${origin}-second`, origin);
 		let observed: boolean | string | undefined;
-		const firstApi = createExtensionAPI(first, runtime, "/tmp", createEventBus());
-		const secondApi = createExtensionAPI(second, runtime, "/tmp", createEventBus());
+		const { api: firstApi } = createExtensionAPI(first, runtime, "/tmp", createEventBus());
+		const { api: secondApi } = createExtensionAPI(second, runtime, "/tmp", createEventBus());
 		firstApi.on("session_start", async () => firstApi.registerFlag("later-default", { type: "string" }));
 		secondApi.on("session_start", async () => {
 			secondApi.registerFlag("later-default", { type: "string", default: "ready" });
@@ -229,8 +229,8 @@ test("replays the latest mixed-origin active-tool selection after staged commit"
 	runtime.refreshTools = () => {
 		activeTools = [...new Set([...activeTools, ...extensions.flatMap((candidate) => [...candidate.tools.keys()])])];
 	};
-	const inheritedApi = createExtensionAPI(inherited, runtime, "/tmp", createEventBus());
-	const bundledApi = createExtensionAPI(bundled, runtime, "/tmp", createEventBus());
+	const { api: inheritedApi } = createExtensionAPI(inherited, runtime, "/tmp", createEventBus());
+	const { api: bundledApi } = createExtensionAPI(bundled, runtime, "/tmp", createEventBus());
 	inheritedApi.on("session_start", async () => {
 		inheritedApi.registerTool({
 			name: "inherited-tool",

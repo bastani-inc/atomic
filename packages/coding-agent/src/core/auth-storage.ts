@@ -6,6 +6,7 @@
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@bastani/pi-ai";
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir } from "../config.ts";
+import { stripBom } from "../utils/text.ts";
 import {
 	type AuthStorageBackend,
 	FileAuthStorageBackend,
@@ -50,7 +51,7 @@ export class AuthStorage implements CredentialStore {
 		if (!content) {
 			return {};
 		}
-		return JSON.parse(content) as AuthStorageData;
+		return JSON.parse(stripBom(content)) as AuthStorageData;
 	}
 
 	/**
@@ -146,7 +147,7 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 		let parsed: unknown;
 		try {
 			const content = this.storage.read();
-			parsed = content === undefined ? {} : JSON.parse(content);
+			parsed = content === undefined ? {} : JSON.parse(stripBom(content));
 		} catch (error) {
 			// The no-refresh path must not turn a corrupt auth file into an empty
 			// credential set. Surface invalid state without touching the file.
@@ -229,7 +230,7 @@ export function readStoredCredential(providerId: string, authPath?: string | str
 	try {
 		let credential: Credential | undefined;
 		storage.withLock((content) => {
-			credential = content ? (JSON.parse(content) as AuthStorageData)[providerId] : undefined;
+			credential = content ? (JSON.parse(stripBom(content)) as AuthStorageData)[providerId] : undefined;
 			return { result: undefined };
 		});
 		return credential;

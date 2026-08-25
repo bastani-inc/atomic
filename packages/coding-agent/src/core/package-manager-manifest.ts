@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { APP_NAME } from "../config.ts";
+import { stripBom } from "../utils/text.ts";
 import type { PiManifest, ResourceType } from "./package-manager-types.ts";
 
 const MANIFEST_ENTRY_FIELDS = ["extensions", "skills", "prompts", "themes", "workflows", "workflow"] as const;
@@ -29,7 +30,7 @@ export function getManifestFromPackageJson(pkg: unknown): PiManifest | null {
 export function readPiManifestFile(packageJsonPath: string): PiManifest | null {
 	try {
 		const content = readFileSync(packageJsonPath, "utf-8");
-		const pkg = JSON.parse(content) as Record<string, unknown>;
+		const pkg = JSON.parse(stripBom(content)) as Record<string, unknown>;
 		return getManifestFromPackageJson(pkg);
 	} catch {
 		return null;

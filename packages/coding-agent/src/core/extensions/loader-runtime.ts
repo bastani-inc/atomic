@@ -243,10 +243,16 @@ export function createExtensionRuntime(): ExtensionRuntime {
 				});
 			}
 		},
-		unregisterProvider: (name) => {
-			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((registration) =>
-				"provider" in registration ? registration.provider.id !== name : registration.name !== name,
-			);
+		unregisterProvider: (name, extensionPath) => {
+			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((registration) => {
+				const matchesName =
+					"provider" in registration ? registration.provider.id === name : registration.name === name;
+				if (!matchesName) return true;
+				// A transactional rollback owns only what its own extension
+				// registered. Without this, a later extension reusing a provider
+				// name would drop an earlier extension's working registration.
+				return extensionPath !== undefined && registration.extensionPath !== extensionPath;
+			});
 		},
 	};
 	return runtime;

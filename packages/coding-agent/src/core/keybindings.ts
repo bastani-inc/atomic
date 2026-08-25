@@ -9,6 +9,7 @@ import {
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getAgentDir } from "../config.ts";
+import { stripBom } from "../utils/text.ts";
 
 export interface AppKeybindings {
 	"app.interrupt": true;
@@ -336,7 +337,7 @@ function orderKeybindingsConfig(config: Record<string, unknown>): Record<string,
 function loadRawConfig(path: string): Record<string, unknown> | undefined {
 	if (!existsSync(path)) return undefined;
 	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+		const parsed = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as unknown;
 		return isRecord(parsed) ? parsed : undefined;
 	} catch {
 		return undefined;

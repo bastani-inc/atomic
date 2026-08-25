@@ -258,8 +258,8 @@ export interface ExtensionUIContext {
 	/** Set a custom footer component, or undefined to restore the built-in footer.
 	 *
 	 * The factory receives a FooterDataProvider for data not otherwise accessible:
-	 * git branch and extension statuses from setStatus(). Token stats, model info,
-	 * etc. are available via ctx.sessionManager and ctx.model.
+	 * git branch and extension statuses from setStatus(). Context usage is on
+	 * ctx.getContextUsage(), token stats on ctx.sessionManager.getEntries(), and model info on ctx.model.
 	 */
 	setFooter(
 		factory:

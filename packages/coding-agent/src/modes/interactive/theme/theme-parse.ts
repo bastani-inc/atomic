@@ -1,3 +1,4 @@
+import { stripBom } from "../../../utils/text.ts";
 import type { ThemeJson } from "./theme-schema.ts";
 import { validateThemeJson } from "./theme-schema.ts";
 
@@ -53,7 +54,7 @@ export function parseThemeJson(label: string, json: unknown): ThemeJson {
 export function parseThemeJsonContent(label: string, content: string): ThemeJson {
 	let json: unknown;
 	try {
-		json = JSON.parse(content);
+		json = JSON.parse(stripBom(content));
 	} catch (error) {
 		throw new Error(`Failed to parse theme ${label}: ${error}`);
 	}

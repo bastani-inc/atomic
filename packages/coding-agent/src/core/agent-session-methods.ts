@@ -315,7 +315,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getSessionStats(): SessionStats;
 	getContextUsage(): ContextUsage | undefined;
 	exportToHtml(outputPath?: string, options?: { themeName?: string }): Promise<string>;
-	exportToJsonl(outputPath?: string): string;
+	exportToJsonl(outputPath?: string, options?: { includeShareContext?: boolean }): string;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;
 	sealWorkflowStageGeneration(): void;
