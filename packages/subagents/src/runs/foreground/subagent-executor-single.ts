@@ -22,6 +22,7 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.js";
 import { recordRun } from "../shared/run-history.js";
@@ -193,6 +194,7 @@ export async function runSinglePath(
 			cwd: effectiveCwd,
 			signal,
 			interruptSignal: interruptController.signal,
+			...(progressDir ? { progressPath: path.join(progressDir, "progress.md") } : {}),
 			allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 			intercomEvents: deps.pi.events,
 			runId,
@@ -279,7 +281,7 @@ export async function runSinglePath(
 		truncation: r.truncation,
 	});
 
-	if (!r.detached && !r.interrupted) {
+	if (!r.detached && !(r.interrupted && !isParentCancellation(r.cause))) {
 		const intercomReceipt = await maybeBuildForegroundIntercomReceipt({
 			pi: deps.pi,
 			intercomBridge: data.intercomBridge,
@@ -321,6 +323,13 @@ export async function runSinglePath(
 					}),
 				},
 			],
+			details,
+		};
+	}
+
+	if (r.interrupted && isParentCancellation(r.cause)) {
+		return {
+			content: [{ type: "text", text: finalizedOutput.displayOutput || r.envelope || "Run cancelled by parent." }],
 			details,
 		};
 	}

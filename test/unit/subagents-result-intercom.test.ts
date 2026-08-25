@@ -42,4 +42,55 @@ describe("subagent result intercom helpers", () => {
 		assert.match(payload.message, /Children: 1 completed, 1 failed/);
 		assert.doesNotMatch(payload.message, /Nested subagents:/);
 	});
+
+	test("grouped intercom status is cancelled only when every child is interrupted with abort", () => {
+		const cancelled = buildSubagentResultIntercomPayload({
+			to: "orchestrator",
+			runId: "cancel",
+			mode: "parallel",
+			children: [
+				{ agent: "analysis", status: "interrupted", cause: "abort", summary: "Run cancelled by parent." },
+				{ agent: "reviewer", status: "interrupted", cause: "abort", summary: "Run cancelled by parent." },
+			],
+		});
+		assert.equal(cancelled.status, "interrupted");
+		assert.match(cancelled.message, /^Status: cancelled$/m);
+		assert.match(cancelled.message, /Children: 2 cancelled/);
+
+		const errorNamedAbort = buildSubagentResultIntercomPayload({
+			to: "orchestrator",
+			runId: "error-abort",
+			mode: "single",
+			children: [{ agent: "analysis", status: "failed", cause: "abort", summary: "abort" }],
+		});
+		assert.match(errorNamedAbort.message, /^Status: failed$/m);
+		assert.doesNotMatch(errorNamedAbort.message, /Status: cancelled/);
+
+		const empty = buildSubagentResultIntercomPayload({
+			to: "orchestrator",
+			runId: "empty",
+			mode: "parallel",
+			children: [],
+		});
+		assert.match(empty.message, /^Status: failed$/m);
+		assert.doesNotMatch(empty.message, /Status: cancelled/);
+	});
+
+	test("a mixed completed and parent-cancelled set reports Status: cancelled", () => {
+		const payload = buildSubagentResultIntercomPayload({
+			to: "orchestrator",
+			runId: "mixed-complete-cancel",
+			mode: "parallel",
+			children: [
+				{ agent: "worker", status: "completed", summary: "done", artifactPath: "/no/out", sessionPath: "/no/sess" },
+				{ agent: "analysis", status: "interrupted", cause: "abort", summary: "Run cancelled by parent." },
+			],
+		});
+		assert.equal(payload.status, "interrupted");
+		assert.match(payload.message, /^Status: cancelled$/m);
+		assert.match(payload.message, /Children: 1 completed, 1 cancelled/);
+		assert.match(payload.message, /Output artifact: \/no\/out[\s\S]*Session: \/no\/sess/);
+		assert.doesNotMatch(payload.message, /^Status: interrupted$/m);
+		assert.doesNotMatch(payload.message, / — interrupted$/m);
+	});
 });

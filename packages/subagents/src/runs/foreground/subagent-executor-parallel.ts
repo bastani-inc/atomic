@@ -21,6 +21,7 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
 import { resolveModelCandidate } from "../shared/model-fallback.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
@@ -244,7 +245,7 @@ export async function runParallelPath(
 			if (result.artifactPaths) allArtifactPaths.push(result.artifactPaths);
 		}
 
-		const interrupted = results.find((result) => result.interrupted);
+		const interrupted = results.find((result) => result.interrupted && !isParentCancellation(result.cause));
 		const details = compactForegroundDetails({
 			mode: "parallel",
 			runId,
@@ -263,7 +264,12 @@ export async function runParallelPath(
 			markParentAskHandoff(yieldedResult, parentAsk);
 			return yieldedResult;
 		}
-		if (interrupted) {
+		if (
+			interrupted &&
+			!results.some(
+				(result) => isParentCancellation(result.cause) && (result.interrupted || result.status === "interrupted"),
+			)
+		) {
 			return {
 				content: [
 					{
@@ -312,6 +318,7 @@ export async function runParallelPath(
 				output: result.truncation?.text || getSingleResultOutput(result),
 				status: result.status,
 				error: result.error,
+				...(result.cause ? { cause: result.cause } : {}),
 			})),
 			(i, agent) => `=== Task ${i + 1}: ${agent} ===`,
 		);

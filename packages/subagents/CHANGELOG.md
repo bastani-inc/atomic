@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Parent cancellation of a foreground in-process child now finishes as a terminal interrupted/abort outcome instead of `error` / failed. Parent receipts, Intercom summaries, and progress present the child as cancelled; persisted metadata keeps `status: "interrupted"` with `cause: "abort"` rather than a new public status. The run stays non-retryable, preserves any fallback metadata already recorded before abort, and recovers bounded partial findings from a modified run-scoped `progress.md`, then the last non-empty assistant text, then a cancellation notice with artifact references. Progress and Output paths are cited only when those files exist when the cancelled envelope is built. A queued child that never started does not claim "0 tool calls" ([#2635](https://github.com/bastani-inc/atomic/issues/2635)).
+- Parent cancellation of a foreground in-process child now finishes as a terminal interrupted/abort outcome instead of `error` / failed. Parent receipts, Intercom summaries, and progress present the child as cancelled; persisted metadata keeps `status: "interrupted"` with `cause: "abort"` rather than a new public status. The run stays non-retryable, preserves any fallback metadata already recorded before abort, and recovers bounded partial findings from a modified run-scoped `progress.md`, then the last non-empty assistant text, then a cancellation notice with artifact references. Progress and Output paths are cited only when those files exist when the cancelled envelope is built. A queued child that never started does not claim "0 tool calls"; a mixed completed-and-cancelled set reports `Status: cancelled` rather than `interrupted` ([#2635](https://github.com/bastani-inc/atomic/issues/2635)).
 
 ## [0.9.16-alpha.2] - 2026-08-23
 
