@@ -185,7 +185,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			startedAt: 1000,
 		});
 
-		await sleep(50);
+		await writer.flush();
 		writer.unsubscribe();
 
 		const raw = await readFile(filePath, "utf8");
@@ -210,7 +210,7 @@ describe("createStatusWriter — statusFile:true", () => {
 		});
 		s.recordRunEnd("r-terminal", "completed", { x: 1 });
 
-		await sleep(50);
+		await writer.flush();
 		writer.unsubscribe();
 
 		const parsed = JSON.parse(await readFile(filePath, "utf8")) as {
@@ -233,7 +233,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			startedAt: Date.now(),
 		});
 
-		await sleep(50);
+		await writer.flush();
 
 		// Unsubscribe BEFORE the next store update
 		writer.unsubscribe();
@@ -294,7 +294,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			stages: [],
 			startedAt: Date.now(),
 		});
-		await sleep(50);
+		await writer.flush();
 
 		const raw = await readFile(filePath, "utf8");
 		assert.ok(JSON.parse(raw));

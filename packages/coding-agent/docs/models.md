@@ -334,6 +334,8 @@ Example for a model where thinking cannot be disabled:
 
 Migration: older configs that used `compat.reasoningEffortMap` should move that mapping to model-level `thinkingLevelMap`. Use `null` for levels that should not appear in the UI.
 
+`/thinking` opens the thinking-level selector. Enter applies the level to the current session only. Persist (the selector's save action) writes `settings.modelThinkingLevels` for the active model instead of replacing the global `defaultThinkingLevel`. Settings → Default thinking level per model lists those overrides.
+
 ### Context Window
 
 `contextWindow` is the model's context size in tokens and drives local budgeting,

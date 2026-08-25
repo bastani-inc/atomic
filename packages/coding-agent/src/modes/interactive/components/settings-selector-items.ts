@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCapabilities, type SettingItem } from "@earendil-works/pi-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { keyDisplayText } from "./keybinding-hints.ts";
-import { DEFAULT_PROJECT_TRUST_LABELS, THINKING_DESCRIPTIONS } from "./settings-selector-options.ts";
+import { DEFAULT_PROJECT_TRUST_LABELS } from "./settings-selector-options.ts";
 import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu } from "./settings-selector-submenus.ts";
 import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
 
@@ -246,26 +246,61 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 				),
 		},
 		{
-			id: "thinking",
-			label: "Thinking level",
-			description: "Reasoning depth for thinking-capable models",
-			currentValue: config.thinkingLevel,
-			submenu: (currentValue, done) =>
-				new SelectSubmenu(
-					"Thinking Level",
-					"Select reasoning depth for thinking-capable models",
-					config.availableThinkingLevels.map((level) => ({
-						value: level,
-						label: level,
-						description: THINKING_DESCRIPTIONS[level],
-					})),
-					currentValue,
+			id: "model-thinking",
+			label: "Default thinking level per model",
+			description: "Search models and set a startup thinking override",
+			currentValue:
+				Object.keys(config.modelThinkingLevels ?? {}).length === 0
+					? "none"
+					: `${Object.keys(config.modelThinkingLevels ?? {}).length} configured`,
+			submenu: (_currentValue, done) => {
+				const levels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+				const thinkingCountLabel = () => {
+					const count = Object.keys(config.modelThinkingLevels ?? {}).length;
+					return count === 0 ? "none" : `${count} configured`;
+				};
+				const options = (config.availableDefaultModels ?? []).flatMap((model) => {
+					const key = `${model.provider}/${model.id}`;
+					const available = model.reasoning ? levels : (["off"] as ThinkingLevel[]);
+					const items = available.map((level) => ({
+						value: `${key}\0${level}`,
+						label: `${model.id} [${model.provider}]`,
+						description: `${level}${config.modelThinkingLevels?.[key] === level ? " · default" : ""}`,
+					}));
+					if (config.modelThinkingLevels?.[key] !== undefined)
+						items.push({
+							value: `${key}\0`,
+							label: `${model.id} [${model.provider}]`,
+							description: "clear override",
+						});
+					return items;
+				});
+				return new SelectSubmenu(
+					"Per-Model Thinking Level",
+					"Select a model and thinking level",
+					options,
+					"",
 					(value) => {
-						callbacks.onThinkingLevelChange(value as ThinkingLevel);
-						done(value);
+						const [key, level] = value.split("\0");
+						const slash = key.indexOf("/");
+						const provider = key.slice(0, slash);
+						const modelId = key.slice(slash + 1);
+						if (level) {
+							callbacks.onModelThinkingLevelChange?.(provider, modelId, level as ThinkingLevel);
+							config.modelThinkingLevels = { ...config.modelThinkingLevels, [key]: level as ThinkingLevel };
+						} else {
+							callbacks.onModelThinkingLevelRemove?.(provider, modelId);
+							const next = { ...config.modelThinkingLevels };
+							delete next[key];
+							config.modelThinkingLevels = next;
+						}
+						done(thinkingCountLabel());
 					},
 					() => done(),
-				),
+					undefined,
+					true,
+				);
+			},
 		},
 		{
 			id: "theme",

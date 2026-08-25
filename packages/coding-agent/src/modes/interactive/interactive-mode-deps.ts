@@ -164,6 +164,7 @@ export { ScopedModelsSelectorComponent } from "./components/scoped-models-select
 export { SessionSelectorComponent } from "./components/session-selector.ts";
 export { SettingsSelectorComponent } from "./components/settings-selector.ts";
 export { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
+export { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 export { ToolExecutionComponent } from "./components/tool-execution.ts";
 export { TreeSelectorComponent } from "./components/tree-selector.ts";
 export { TrustSelectorComponent } from "./components/trust-selector.ts";

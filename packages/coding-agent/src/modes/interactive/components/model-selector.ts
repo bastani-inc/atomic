@@ -53,9 +53,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private filteredModels: ModelItem[] = [];
 	private selectedIndex: number = 0;
 	private currentModel?: Model<Api>;
-	private settingsManager: SettingsManager;
+	private defaultModelKey?: string;
 	private modelRuntime: ModelRuntime;
-	private onSelectCallback: (model: Model<Api>) => void;
+	private onSelectCallback: (model: Model<Api>, persist: boolean) => void;
 	private onCancelCallback: () => void;
 	private errorMessage?: string;
 	private tui: TUI;
@@ -71,10 +71,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	constructor(
 		tui: TUI,
 		currentModel: Model<Api> | undefined,
-		settingsManager: SettingsManager,
+		_settingsManager: SettingsManager,
 		modelRuntime: ModelRuntime,
 		scopedModels: ReadonlyArray<ScopedModelItem>,
-		onSelect: (model: Model<Api>) => void,
+		onSelect: (model: Model<Api>, persist: boolean) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
 	) {
@@ -82,7 +82,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 		this.tui = tui;
 		this.currentModel = currentModel;
-		this.settingsManager = settingsManager;
+		const defaultProvider = _settingsManager.getDefaultProvider();
+		const defaultModel = _settingsManager.getDefaultModel();
+		this.defaultModelKey = defaultProvider && defaultModel ? `${defaultProvider}/${defaultModel}` : undefined;
 		this.modelRuntime = modelRuntime;
 		this.scopedModels = scopedModels;
 		this.scope = scopedModels.length > 0 ? "scoped" : "all";
@@ -113,7 +115,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.searchInput.onSubmit = () => {
 			// Enter on search input selects the first filtered item
 			if (this.filteredModels[this.selectedIndex]) {
-				this.handleSelect(this.filteredModels[this.selectedIndex].model);
+				this.handleSelect(this.filteredModels[this.selectedIndex].model, false);
 			}
 		};
 		this.addChild(this.searchInput);
@@ -196,12 +198,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private sortModels(models: ModelItem[]): ModelItem[] {
 		const sorted = [...models];
-		// Sort: current model first, then by provider
+		// Sort current first, saved default second, then by provider.
 		sorted.sort((a, b) => {
 			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
 			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
-			if (aIsCurrent && !bIsCurrent) return -1;
-			if (!aIsCurrent && bIsCurrent) return 1;
+			if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
+			const aIsDefault = `${a.provider}/${a.id}` === this.defaultModelKey;
+			const bIsDefault = `${b.provider}/${b.id}` === this.defaultModelKey;
+			if (aIsDefault !== bIsDefault) return aIsDefault ? -1 : 1;
 			return a.provider.localeCompare(b.provider);
 		});
 		return sorted;
@@ -231,8 +235,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private filterModels(query: string): void {
 		this.filteredModels = query
-			? fuzzyFilter(this.activeModels, query, ({ id, provider, model }) =>
-					getModelSelectorSearchText({ id, provider, name: model.name }),
+			? fuzzyFilter(
+					this.activeModels,
+					query,
+					({ id, provider, model }) =>
+						`${getModelSelectorSearchText({ id, provider, name: model.name })} ${`${provider}/${id}` === this.defaultModelKey ? "default" : ""}`,
 				)
 			: this.activeModels;
 		// When filtering by a query, move the selector to the top row so the best
@@ -259,18 +266,19 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
+			const isDefault = `${item.provider}/${item.id}` === this.defaultModelKey;
 
 			let line = "";
 			if (isSelected) {
 				const prefix = theme.fg("accent", "→ ");
 				const modelText = `${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+				const checkmark = isCurrent ? theme.fg("success", " ✓") : isDefault ? theme.fg("muted", " · default") : "";
 				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
 			} else {
 				const modelText = `  ${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+				const checkmark = isCurrent ? theme.fg("success", " ✓") : isDefault ? theme.fg("muted", " · default") : "";
 				line = `${modelText} ${providerBadge}${checkmark}`;
 			}
 
@@ -329,11 +337,16 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.selectedIndex = this.selectedIndex === this.filteredModels.length - 1 ? 0 : this.selectedIndex + 1;
 			this.updateList();
 		}
+		// Ctrl+S persists the selected model as the startup default
+		else if (kb.matches(keyData, "app.models.save")) {
+			const selectedModel = this.filteredModels[this.selectedIndex];
+			if (selectedModel) this.handleSelect(selectedModel.model, true);
+		}
 		// Enter
 		else if (kb.matches(keyData, "tui.select.confirm")) {
 			const selectedModel = this.filteredModels[this.selectedIndex];
 			if (selectedModel) {
-				this.handleSelect(selectedModel.model);
+				this.handleSelect(selectedModel.model, false);
 			}
 		}
 		// Escape or Ctrl+C
@@ -349,11 +362,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		return true;
 	}
 
-	private handleSelect(model: Model<Api>): void {
+	private handleSelect(model: Model<Api>, persist: boolean): void {
 		this.dispose();
-		// Save as new default
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
-		this.onSelectCallback(model);
+		this.onSelectCallback(model, persist);
 	}
 
 	getSearchInput(): Input {

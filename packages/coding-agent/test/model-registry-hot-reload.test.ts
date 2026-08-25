@@ -62,7 +62,11 @@ describe("model config hot reload", () => {
 			refresh,
 		} as unknown as ModelRuntime;
 		const tui = { requestRender: vi.fn() } as unknown as TUI;
-		const settings = { setDefaultModelAndProvider: vi.fn() } as unknown as SettingsManager;
+		const settings = {
+			setDefaultModelAndProvider: vi.fn(),
+			getDefaultProvider: () => undefined,
+			getDefaultModel: () => undefined,
+		} as unknown as SettingsManager;
 		const openPicker = () =>
 			new ModelSelectorComponent(
 				tui,

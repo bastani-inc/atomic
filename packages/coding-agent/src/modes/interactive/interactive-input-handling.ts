@@ -296,6 +296,12 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				await this.handleModelCommand(searchTerm);
 				return;
 			}
+			if (text === "/thinking" || text.startsWith("/thinking ")) {
+				this.editor.setText("");
+				await this.ensureDeferredStartupComplete();
+				this.handleThinkingCommand(text.startsWith("/thinking ") ? text.slice(10).trim() : undefined);
+				return;
+			}
 			if (text === "/export" || text.startsWith("/export ")) {
 				await this.handleExportCommand(text);
 				this.editor.setText("");
