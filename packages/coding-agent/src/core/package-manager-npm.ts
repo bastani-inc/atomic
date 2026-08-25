@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { maxSatisfying, rcompare, satisfies } from "semver";
+import { gt, maxSatisfying, rcompare, satisfies } from "semver";
 import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.ts";
 import { markPathIgnoredByCloudSync } from "../utils/paths.ts";
 import { runCommand, runCommandCapture, runCommandSync } from "./package-manager-command.ts";
@@ -253,7 +253,7 @@ export async function npmHasAvailableUpdate(
 			source.version ? source.spec : source.name,
 			source.range,
 		);
-		return targetVersion !== installedVersion;
+		return gt(targetVersion, installedVersion);
 	} catch {
 		return false;
 	}

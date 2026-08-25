@@ -1,4 +1,5 @@
 import { modelsAreEqual } from "@bastani/pi-ai/compat";
+import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Container,
@@ -81,6 +82,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		void this.updateAvailableProviderCount().catch(() => {});
 		this.updateEditorBorderColor();
 		this.ui.requestRender();
+		void loadAllHighlightLanguages().then(() => this.ui.requestRender());
 	} catch (error) {
 		// Same ownership rule as the success path: this catch swallows the error,
 		// so prompt preflight continues and must keep its indicator.

@@ -137,7 +137,12 @@ async function collectSkillEntries(
 			const info = await getEntryInfo(dir, entry.name, entry.isDirectory(), entry.isFile(), entry.isSymbolicLink());
 			if (!info) continue;
 			const relPath = toPosixPath(relative(root, info.fullPath));
-			if (mode === "pi" && dir === root && info.isFile && entry.name.endsWith(".md") && !ig.ignores(relPath)) {
+			const shouldIncludeMarkdownFile =
+				info.isFile &&
+				entry.name.endsWith(".md") &&
+				!ig.ignores(relPath) &&
+				((mode === "pi" && dir === root) || (mode === "agents" && dir !== root));
+			if (shouldIncludeMarkdownFile) {
 				entries.push(info.fullPath);
 				continue;
 			}

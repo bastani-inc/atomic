@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { gt } from "semver";
 import { runWithConcurrency } from "./package-manager-command.ts";
 import { GIT_UPDATE_CONCURRENCY, UPDATE_CHECK_CONCURRENCY } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
@@ -196,7 +197,7 @@ async function shouldUpdateNpmSource(
 			source.version ? source.spec : source.name,
 			source.range,
 		);
-		return targetVersion !== installedVersion;
+		return gt(targetVersion, installedVersion);
 	} catch {
 		return true;
 	}

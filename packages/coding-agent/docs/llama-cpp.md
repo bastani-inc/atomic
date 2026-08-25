@@ -35,7 +35,7 @@ Run:
 /login llama.cpp
 ```
 
-Enter the router URL and optional API key. The default URL is `http://127.0.0.1:8080`. The same values can be supplied without `/login`:
+Enter the router URL and optional API key. The default URL is `http://127.0.0.1:8080`. If the router uses `--no-models-autoload`, login only stores the connection; use `/llama` to load a model, then `/model` to select it. The same values can be supplied without `/login`:
 
 ```bash
 export LLAMA_BASE_URL=http://127.0.0.1:8080
