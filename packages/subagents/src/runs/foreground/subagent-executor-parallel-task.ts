@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.js";
@@ -147,10 +148,15 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		}
 		const agentConfig = input.agentConfigs?.[index] ?? input.agents.find((agent) => agent.name === task.agent);
 		const taskAgents = input.agentConfigs && agentConfig ? [agentConfig] : input.agents;
+		const sharedProgress =
+			index === input.behaviors.findIndex((candidate) => candidate.progress)
+				? join(input.paramsCwd, "progress.md")
+				: undefined;
 		const runOptions: RunSyncOptions = {
 			cwd: taskCwd,
 			signal: input.signal,
 			interruptSignal: interruptController.signal,
+			...(sharedProgress ? { progressPath: sharedProgress, progressArtifactPath: sharedProgress } : {}),
 			allowIntercomDetach: agentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 			intercomEvents: input.intercomEvents,
 			runId: input.runId,
