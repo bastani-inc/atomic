@@ -178,6 +178,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			retryConsumedProtectedStreamingCustomMessages(this);
 		}
 	}
+	if (event.type === "turn_end") this._flushPendingCustomMessages();
 
 	// Handle session persistence
 	if (event.type === "message_end") {

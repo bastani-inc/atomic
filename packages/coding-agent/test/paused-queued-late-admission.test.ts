@@ -205,9 +205,6 @@ describe("paused queue late admission gate", () => {
 			{ triggerTurn: false },
 		);
 
-		const overlappingHistory = harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType.startsWith("overlap-history-"),
-		);
 		const paused = harness.session as AgentSession & {
 			readonly _activeInterruptQueueHold?: {
 				readonly steering: readonly object[];
@@ -222,6 +219,12 @@ describe("paused queue late admission gate", () => {
 		await Promise.all([active, aborting]);
 		const released = await harness.session.resumeQueuedMessages();
 
+		// Non-trigger custom arrivals during a streaming turn are held until the
+		// turn settles, so they cannot land between a tool call and its result.
+		// They must still reach history in order once it does.
+		const overlappingHistory = harness.session.messages.filter(
+			(message) => message.role === "custom" && message.customType.startsWith("overlap-history-"),
+		);
 		expect(overlappingHistory.map((message) => message.details)).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
 		expect(heldDuringAbort).toBe(0);
 		expect(released).toBe(false);

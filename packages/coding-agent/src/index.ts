@@ -481,5 +481,6 @@ export { createGitEnvironment, GIT_LOCAL_ENV_VARS } from "./utils/git-env.ts";
 export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 export { INTERACTIVE_ENGINE_ENV_VARS, scrubInteractiveEngineEnv } from "./utils/interactive-engine-env.ts";
+export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
 // Shell utilities
 export { getShellConfig } from "./utils/shell.ts";

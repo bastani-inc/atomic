@@ -194,6 +194,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_commitAdmittedCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_commitAdmittedCustomMessages<T>(messages: CustomMessage<T>[], options?: SendMessagesOptions): Promise<void>;
 	_appendCustomMessage<T>(message: CustomMessage<T>): void;
+	_flushPendingCustomMessages(): void;
 	_enqueueInterruptCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_sendInterruptCustomMessageNow<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_ensureActiveInterruptQueueHold(): InterruptQueueHold;
@@ -442,6 +443,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined;
 	_activeInterruptAbortMessage: string | undefined;
 	_pendingNextTurnMessages: CustomMessage[];
+	_pendingCustomMessages: CustomMessage[];
 	_protectedStreamingCustomMessages: Array<{
 		message: CustomMessage;
 		delivery: "steer" | "followUp";

@@ -373,7 +373,7 @@ interface OAuthCredentials {
 
 ## Custom Streaming API
 
-For providers with non-standard APIs, implement `streamSimple`. Study the existing streaming implementations before writing your own:
+For providers with non-standard APIs, implement `streamSimple`. Study the existing API implementations before writing your own:
 
 **Reference implementations:**
 

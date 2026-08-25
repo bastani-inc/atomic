@@ -86,6 +86,19 @@ export async function _emitModelSelect(
 	});
 }
 
+function addPersistedDefaultToNonEmptyScope(session: AgentSession, model: Model<Api>): void {
+	if (session._scopedModels.length === 0) return;
+	if (session._scopedModels.some((scoped) => modelsAreEqual(scoped.model, model))) return;
+
+	session._scopedModels = [...session._scopedModels, { model }];
+	const enabledModels = session.settingsManager.getEnabledModels();
+	if (!enabledModels?.length) return;
+
+	const modelReference = `${model.provider}/${model.id}`;
+	if (enabledModels.some((pattern) => pattern.toLowerCase() === modelReference.toLowerCase())) return;
+	session.settingsManager.setEnabledModels([...enabledModels, modelReference]);
+}
+
 /**
  * Set model directly.
  * Validates that auth is configured, saves to session and settings.
@@ -107,7 +120,10 @@ export async function setModel(
 	const nextModel = model;
 	this.agent.state.model = nextModel;
 	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-	if (options.persist) this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+	if (options.persist) {
+		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+		addPersistedDefaultToNonEmptyScope(this, nextModel);
+	}
 
 	// Re-clamp thinking level for new model's capabilities
 	this.setThinkingLevel(thinkingLevel);
@@ -159,7 +175,10 @@ export async function _cycleScopedModel(
 	this._clearFallbackModelScope?.();
 	this.agent.state.model = nextModel;
 	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-	if (options.persist) this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+	if (options.persist) {
+		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+		addPersistedDefaultToNonEmptyScope(this, nextModel);
+	}
 
 	// Apply thinking level.
 	// - Explicit scoped model thinking level overrides current session level
@@ -195,7 +214,10 @@ export async function _cycleAvailableModel(
 	this._clearFallbackModelScope?.();
 	this.agent.state.model = selectedModel;
 	this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id);
-	if (options.persist) this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
+	if (options.persist) {
+		this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
+		addPersistedDefaultToNonEmptyScope(this, selectedModel);
+	}
 
 	// Re-clamp thinking level for new model's capabilities
 	this.setThinkingLevel(thinkingLevel);

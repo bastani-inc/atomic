@@ -8,6 +8,8 @@
 - Added a Windows PowerShell tool that prefers PowerShell 7 and falls back to Windows PowerShell when `pwsh.exe` or `powershell.exe` is on `PATH`. The tool is omitted when neither executable is available. Bash remains the shell for `!`/`!!`, plus Windows/WSL-friendly default keybindings ([#8512](https://github.com/earendil-works/pi/issues/8512)).
 - Added path-aware, deduplicated settings diagnostics and routed startup diagnostics into the fullscreen transcript so alternate-screen startup cannot hide configuration errors.
 - Added export-only `atomic.share` context records containing the system prompt and tool schemas. Session sharing keeps private-Gist transport and Atomic viewer URLs; no persisted session is mutated and no Radius upload is introduced.
+- Added RPC `clear_queue` to retrieve and remove queued steering and follow-up messages ([#8432](https://github.com/earendil-works/pi/issues/8432)).
+- Exported `detectSupportedImageMimeTypeFromFile` from the public coding-agent API ([#8600](https://github.com/earendil-works/pi/pull/8600)).
 
 ### Changed
 
@@ -39,6 +41,8 @@
 - Fixed hung authenticated model-catalog attempts consuming the whole request budget without retrying by applying a per-attempt timeout before retrying.
 - Fixed UTF-8 BOMs breaking auth, model, keybinding, frontmatter, package, resource, theme, and CLI text inputs while preserving BOM-aware hashline edits.
 - Fixed atomic managed-state rewrites resetting existing file permissions. Credential files are always rewritten as `0600` so a world-readable `auth.json` cannot leak replacement secrets.
+- Fixed explicitly persisted default models disappearing from non-empty model scopes; persisted defaults are now added to both the active and saved scope.
+- Fixed extension messages sent with `triggerTurn: false` while the agent is running being inserted between a tool call and its result; they are now appended after the turn's tool results ([#8537](https://github.com/earendil-works/pi/issues/8537)).
 
 ## [0.9.16-alpha.4] - 2026-08-23
 

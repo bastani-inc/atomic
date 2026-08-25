@@ -47,6 +47,9 @@ export abstract class RpcClientApi {
 	async abort(): Promise<void> {
 		await this.request({ type: "abort" });
 	}
+	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+		return this.data(await this.request({ type: "clear_queue" }));
+	}
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
 		return this.data(await this.request({ type: "new_session", parentSession }));
 	}

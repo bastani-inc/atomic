@@ -174,6 +174,7 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			async (model, persist) => {
 				try {
 					await this.session.setModel(model, { persist });
+					await this.updateAvailableProviderCount();
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
 					done();

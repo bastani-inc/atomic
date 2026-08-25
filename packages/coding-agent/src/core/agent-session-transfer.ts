@@ -33,6 +33,7 @@ export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: ob
 	};
 	transferProtectedStreamingCustomMessages(source, next, sourceQueues);
 	next._pendingNextTurnMessages.unshift(...source._pendingNextTurnMessages.splice(0));
+	next._pendingCustomMessages.unshift(...source._pendingCustomMessages.splice(0));
 	next._steeringMessages = [...source._steeringMessages.splice(0), ...next._steeringMessages];
 	next._followUpMessages = [...source._followUpMessages.splice(0), ...next._followUpMessages];
 	source._activeInterruptQueueHold = undefined;
