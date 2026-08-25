@@ -894,7 +894,7 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `message_start` | Message begins |
 | `message_update` | Streaming update (text/thinking/toolcall deltas) |
 | `message_end` | Message completes |
-| `tool_execution_start` | Tool begins execution |
+| `tool_execution_start` | Tool begins execution; includes `toolCallId`, `toolName`, and initial arguments |
 | `tool_execution_update` | Tool execution progress (streaming output) |
 | `tool_execution_end` | Tool completes |
 | `bash_execution_update` | Correlated direct-bash stdout/stderr delta |

@@ -6,10 +6,10 @@ branch: pi-0.84.3/00-port-matrix
 repository: atomic-monorepo
 topic: Pi v0.84.2..upstream-main (v0.84.3 + 4) upstream commit and file port matrix
 tags: [implementation, evidence, pi-0.84.3, port-matrix]
-status: in_progress
+status: completed
 last_updated: 2026-08-25
-last_updated_by: Claude Opus 5
-port_outcome: in progress — S1 shipped dependency-carried outcomes; S2 shipped compaction correctness; S3–S8 remain planned
+last_updated_by: Claude Fable 5
+port_outcome: shipped on the pi-0.84.3/* stack
 breaking_changes_allowed: false
 compatibility_context: Preserve Atomic public SDK, branding, CLI names and paths, legacy PI_*/.pi aliases, providers, isolated runtime, fullscreen-only renderer, Verbatim Compaction, versionless 0.0.0 manifests, and Atomic's Bun-compiled release/CI pipeline.
 ---
@@ -161,7 +161,7 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 | `f0a2880f29` | Revert token-estimate removal | **equivalent** | Restores the state Atomic already has. |
 | `496185f6e4` | `/thinking` command | **ported (adapted)** | S4. Atomic has `components/thinking-selector.ts` but no `/thinking` in `core/slash-commands.ts`, no autocomplete entry, and no routing in `interactive-input-handling.ts`. Port the final `/thinking <level>` form; omit the superseded `--default` parser. |
 | `9c8070fbe4` | Ctrl+S persists `/model` | **ported (adapted)** | S4. Atomic's model selector always persists on Enter; split into session-only Enter and persisting Ctrl+S callbacks. |
-| `ee29aa118b` | Searchable default model and thinking level | **ported (adapted)** | S4. Atomic's top-level `SettingsList` search is on, but `SelectSubmenu` is not searchable. Port only the surviving per-model thinking submenu. |
+| `ee29aa118b` | Searchable default model and thinking level | **ported (adapted); shipped S4** | Atomic shipped one searchable combined model/level editor rather than upstream's stepped model-then-level picker, preserving per-model overrides with a simpler Atomic settings surface. |
 | `a669db3c33` | Show `modelid [provider]` like `/model` | **ported (adapted)** | S4. Atomic's `/model` already renders id plus provider badge; the settings-side per-model picker and wider layout are new. |
 | `1d3503fb9b` | Show and search saved defaults (#8399) | **ported (adapted)** | S4. Neither Atomic selector has a default badge or default-aware search. |
 | `768184923a` | Narrow default-model query matching | **ported** | S4. Ships with the selector port; no standalone Atomic analogue. |
@@ -176,7 +176,7 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 | `8c2529daeb` | Don't load root `.md` files as skills (#8012) | **ported**, S5 | `src/core/skills.ts:264` still routes every root `.md` through `loadSkillFromFile`, and line 279 diagnoses undeclared files. Silently skip non-`SKILL.md` files without frontmatter; keep diagnostics for malformed declared skills. Doc delta in `docs/skills.md`. |
 | `5e11f65865` | Load nested markdown skills (#8255) | **ported**, S5 | `src/core/package-manager-resource-files.ts:140` includes loose Markdown only for `mode === "pi" && dir === root`; nested Agents-format Markdown is dropped. |
 | `080932e53c` | Use `semver.gt` for version comparison (#8239) | **ported**, S5 | `package-manager-operations.ts:199` and `package-manager-npm.ts:256` both compare with `!==`, so a newer installed package can be downgraded. |
-| `f8f03460a0` | Reduce workspace dependency tree | **ported (adapted)**, S5 | Only the coding-agent half: replace the `glob` dependency with deterministic `node:fs` globbing in `package-manager-resource-collector.ts`, drop the direct dependency, regenerate lock/shrinkwrap. The `packages/{ai,agent,evals,telemetry}` manifest hunks are **not applicable** — Atomic must not touch its vendored fork and ships none of the others in upstream's shape. |
+| `f8f03460a0` | Reduce workspace dependency tree | **intentionally deferred** | The coding-agent `glob` removal was attempted in S5, but removing the dependency broke ambient type resolution in Atomic's local toolchain. The dependency and existing collector remain; upstream workspace-package manifest hunks remain not applicable to Atomic's vendored/package layout. |
 | `a1f955e9f4` | Remove redundant development dependencies | **ported; shipped**, S1 | Removed coding-agent's redundant `@types/diff` and `@types/ms` during S1's lock regeneration. Atomic had no root `jiti` duplicate. |
 | `955a543b31` | Expose sleeping llama.cpp models (#8235) | **ported (adapted)**, S5 | `src/extensions/llama/provider.ts:64-65` filters sleeping models out even though `index.ts` and the UI already recognize them. |
 | `a1bc0ec790` | llama.cpp guidance as no default (#8236) | **ported (adapted)**, S5 | Atomic's split `interactive-auth-login.ts:36-47` offers no llama-specific guidance; `docs/llama-cpp.md` needs the matching note. |
@@ -197,8 +197,8 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 | `830a0a59e9` | Expose tool metadata at stream start (#7953) | **ported (adapted)**, S6 | `src/modes/json-event.ts:41-49` strips `partial` generically and loses the starting tool call's `id`/`toolName`; the adaptation must keep Atomic's `withEndTurn` (`:52-59`) and cumulative `usage`. Docs in `docs/json.md` + `docs/rpc.md`. |
 | `460191cfcf` | Include context in Radius session shares | **ported (adapted)**, S6 | Only the export half: emit an export-only, Atomic-branded `atomic.share` custom entry carrying system prompt and tool schemas from `agent-session-export.ts`, without mutating the persisted session. The Radius upload half is rejected — see `686f3487f5`. |
 | `f4585b8bec` | Simplify session sharing links | **ported (adapted)**, S6 | Atomic prints plain Gist/pi.dev URLs and runs the `gh auth status` preflight before export. Take the canonical-hyperlink and preflight-ordering cleanup; keep `ATOMIC_SHARE_VIEWER_URL` with its legacy `PI_SHARE_VIEWER_URL` alias. |
-| `686f3487f5` | Share via Radius artifacts under experimental (#8443) | **intentionally rejected** | Uploading session artifacts — including the system prompt and tool schemas — to upstream's hosted Radius service is an upstream product surface. Atomic keeps private-Gist sharing under its own branding and viewer variable. |
-| `77f2d1235e` | Only share via Radius if logged in | **intentionally rejected** | Same boundary: silently routing `/share` to a hosted upstream service whenever a Radius credential happens to exist is exactly the behavior Atomic declines. |
+| `686f3487f5` | Share via Radius artifacts under experimental (#8443) | **intentionally rejected; confirmed S6** | Uploading session artifacts — including the system prompt and tool schemas — to upstream's hosted Radius service remains outside Atomic's product boundary. Atomic ships only an export-time `atomic.share` context record and retains private-Gist sharing. |
+| `77f2d1235e` | Only share via Radius if logged in | **intentionally rejected; confirmed S6** | Atomic does not silently route `/share` to an upstream-hosted service when a Radius credential exists; S6 preserved the existing private-Gist transport and Atomic viewer URL. |
 | `df018b6020` | Retry hung model catalog requests | **ported**, S6 | `src/utils/management-http.ts:9-11` exposes only an overall `timeoutMs` and reuses one combined signal, so a hung attempt can never be retried; `remote-catalog-provider.ts:85` needs the 4 s per-attempt limit. |
 | `1355cd36e0` | Normalize UTF-8 BOMs in text inputs | **ported (adapted)**, S6 | Partly present: `src/utils/json.ts:9-15` already provides `stripJsonBom`/`parseJsonFileContent` for settings and trust, and `test/hashline-tools.test.ts:513` proves hashline edits preserve a file's BOM. Port the remaining readers (auth, models, model config, keybindings, frontmatter, package manager, resource loader, theme, CLI file processor) without disturbing either. |
 | `c49906ec77` | Preserve managed state file permissions | **ported (adapted)**, S6 | `auth-storage-backends.ts:113-119` writes a temp file, chmods `0600`, and renames over the target, so simply dropping the chmod would still replace the inode and its mode. Carry the existing target mode onto the replacement while keeping `0600` as the creation default. |

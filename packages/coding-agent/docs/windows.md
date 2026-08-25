@@ -22,13 +22,13 @@ After the script is fetched, it enables TLS 1.2 for its own GitHub requests and 
 
 The installer adds the bin directory to the User PATH and the current PowerShell process. Restart the terminal when it finishes so other processes see the new PATH. A custom `ATOMIC_BIN_DIR` containing `;` cannot be one Windows PATH entry, so the installer leaves PATH untouched and prints a direct-run command for `atomic.cmd` instead. If the bin directory already holds a same-stem launcher that `PATHEXT` resolves before `atomic.cmd`, such as a stale `atomic.exe` from an older Node-based install, the installer reports it and stops before downloading anything; remove that entry and rerun. Because the shim is `atomic.cmd`, `PATHEXT` must include `.CMD` for bare `atomic` to resolve; if it does not, the installer says so and stops rather than reporting a success you could not use. An unexpected regular `current` entry under `ATOMIC_INSTALL_DIR`, or a regular `atomic-current` entry under `ATOMIC_BIN_DIR`, is reported and left untouched instead of being moved or deleted. A pinned `-Ref` is honored literally: if GitHub answers with a different release tag, the install stops before downloading anything. Package-manager installation remains available but requires Node.js; see the [Quickstart](/quickstart#package-managers).
 
-After installation, Atomic requires a bash shell for its shell tool. Checked locations (in order):
+By default, Atomic uses a Bash shell for the `bash` tool and `!`/`!!` shortcuts. If you use those surfaces, Atomic checks these locations in order:
 
 1. Custom path from `~/.atomic/agent/settings.json` (legacy `~/.pi/agent/settings.json` also supported)
 2. Git Bash (`C:\Program Files\Git\bin\bash.exe`)
 3. `bash.exe` on PATH (Cygwin, MSYS2, WSL)
 
-For most users, [Git for Windows](https://git-scm.com/download/win) is sufficient.
+For users who want the default Bash surfaces, [Git for Windows](https://git-scm.com/download/win) is sufficient. Native Windows users can instead enable the optional PowerShell tool described below; `!`/`!!` remain Bash-only.
 
 ## Custom Shell Path
 

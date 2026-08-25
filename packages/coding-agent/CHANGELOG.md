@@ -4,8 +4,20 @@
 
 ### Added
 
-- Added `/thinking` and a thinking-level selector. Enter applies the level to the current session; persist writes a per-model startup override. Settings can list, change, and clear those overrides.
-- Added a Windows `powershell` tool, registered by default only when `pwsh.exe` or `powershell.exe` is on `PATH`.
+- Added `/thinking [level]` plus searchable model and per-model thinking selectors. Selectors show saved defaults, search by model/provider/default state, order the current and default models first, and use `Ctrl+S` to persist a startup default while Enter changes only the current session ([#8399](https://github.com/earendil-works/pi/issues/8399)).
+- Added a Windows PowerShell tool that prefers PowerShell 7 and falls back to Windows PowerShell when `pwsh.exe` or `powershell.exe` is on `PATH`. The tool is omitted when neither executable is available. Bash remains the shell for `!`/`!!`, plus Windows/WSL-friendly default keybindings ([#8512](https://github.com/earendil-works/pi/issues/8512)).
+- Added path-aware, deduplicated settings diagnostics and routed startup diagnostics into the fullscreen transcript so alternate-screen startup cannot hide configuration errors.
+- Added export-only `atomic.share` context records containing the system prompt and tool schemas. Session sharing keeps private-Gist transport and Atomic viewer URLs; no persisted session is mutated and no Radius upload is introduced.
+
+### Changed
+
+- Updated the external pi runtime dependencies to 0.84.3, inheriting the matching agent/client/protocol updates and TUI fixes for narrow-width padding and wrapped Markdown-table link colors ([#8252](https://github.com/earendil-works/pi/issues/8252), [#8335](https://github.com/earendil-works/pi/issues/8335)).
+- Model and thinking-level changes are session-scoped by default; saved per-model thinking overrides determine startup behavior, and persistence is now explicit through `Ctrl+S` ([#8356](https://github.com/earendil-works/pi/issues/8356)).
+- Skill discovery silently ignores ordinary root Markdown files without skill frontmatter, continues diagnosing malformed declared skills, and loads nested Markdown skills from packages ([#8012](https://github.com/earendil-works/pi/issues/8012), [#8255](https://github.com/earendil-works/pi/issues/8255)).
+- llama.cpp catalogs now expose sleeping models, refresh local-router catalogs even in offline mode, detect autoload support and offer presets, and explain when `/llama` is required after login ([#8235](https://github.com/earendil-works/pi/issues/8235), [#8236](https://github.com/earendil-works/pi/issues/8236), [#8238](https://github.com/earendil-works/pi/issues/8238), [#8558](https://github.com/earendil-works/pi/issues/8558)).
+- Deferred uncommon syntax grammars until after first render to reduce interactive startup work while keeping common languages available immediately.
+- Extension examples whose intent is final settlement now listen for `agent_settled`; JSON mode exposes tool-call ID and tool name at stream start; session-share links use canonical terminal hyperlinks and perform GitHub authentication preflight before export ([#8242](https://github.com/earendil-works/pi/issues/8242), [#7953](https://github.com/earendil-works/pi/issues/7953)).
+- Compaction now reports truthful aggregate planner usage notices, including multi-attempt Verbatim planning, when cache-miss notices are enabled.
 
 ### Fixed
 
@@ -17,11 +29,16 @@
 - Fixed duplicate fullscreen right-click paste in VS Code-based terminals on Windows ([#8186](https://github.com/earendil-works/pi/issues/8186)).
 - Fixed padded text exceeding narrow terminal widths ([#8252](https://github.com/earendil-works/pi/issues/8252)).
 - Fixed wrapped Markdown table links leaking color into borders and neighboring cells, including tables inside blockquotes ([#8335](https://github.com/earendil-works/pi/issues/8335)).
-- Compaction failures and cancellations now emit `session_compact_failed` to extensions with their trigger, error, abort/retry state, and whether an extension supplied the compacted text ([#8241](https://github.com/earendil-works/pi/issues/8241)).
+- Compaction failures and cancellations now emit `session_compact_failed` to extensions and expose public failure details with their trigger, error, abort/retry state, and whether an extension supplied the compacted text ([#8241](https://github.com/earendil-works/pi/issues/8241)).
 - Automatic compaction now estimates message size when providers report all-zero usage instead of silently skipping the threshold check ([#8328](https://github.com/earendil-works/pi/issues/8328)).
 - Branch and session summaries reject tool calls, and their requests explicitly disable tools; planner requests do the same while retaining validated truncated-range recovery.
 - Branch and session summaries reject token-cap-truncated prose instead of persisting incomplete checkpoints ([#7048](https://github.com/earendil-works/pi/issues/7048)).
 - Branch summaries record the source leaf rather than the navigation destination.
+- Fixed package updates comparing versions for inequality and potentially downgrading a newer installed package; upgrades now use semantic-version ordering ([#8239](https://github.com/earendil-works/pi/issues/8239)).
+- Fixed extension flags accepting runtime defaults whose value did not match the declared boolean/string type, and failed extension factories leaking partially registered commands, tools, flags, and inherited resources into later loads ([#8123](https://github.com/earendil-works/pi/issues/8123), [#8424](https://github.com/earendil-works/pi/issues/8424)).
+- Fixed hung authenticated model-catalog attempts consuming the whole request budget without retrying by applying a per-attempt timeout before retrying.
+- Fixed UTF-8 BOMs breaking auth, model, keybinding, frontmatter, package, resource, theme, and CLI text inputs while preserving BOM-aware hashline edits.
+- Fixed atomic managed-state rewrites resetting existing file permissions. Credential files are always rewritten as `0600` so a world-readable `auth.json` cannot leak replacement secrets.
 
 ## [0.9.16-alpha.4] - 2026-08-23
 

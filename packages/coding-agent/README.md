@@ -492,7 +492,7 @@ Upstream Pi's minimal-core rationale is documented in the [original blog post](h
 ## CLI Reference
 
 ```bash
-atomic [options] [@files...] [messages...]
+atomic [options] [--] [@files...] [messages...]
 ```
 
 ### Package Commands
@@ -596,6 +596,7 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 | `--append-system-prompt <text>` | Append to system prompt |
 | `--offline` | Disable startup network operations, including update checks, package updates, and telemetry |
 | `--verbose` | Force verbose startup |
+| `--` | Stop option parsing; remaining arguments are prompts or `@file` inputs |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
 
@@ -617,6 +618,9 @@ atomic "List all .ts files in src/"
 
 # Non-interactive
 atomic -p "Summarize this codebase"
+
+# Prompt beginning with a dash
+atomic -p -- "- Summarize these points"
 
 # Non-interactive with piped stdin
 cat README.md | atomic -p "Summarize this text"
