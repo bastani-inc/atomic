@@ -9,6 +9,11 @@
 - Fixed duplicate fullscreen right-click paste in VS Code-based terminals on Windows ([#8186](https://github.com/earendil-works/pi/issues/8186)).
 - Fixed padded text exceeding narrow terminal widths ([#8252](https://github.com/earendil-works/pi/issues/8252)).
 - Fixed wrapped Markdown table links leaking color into borders and neighboring cells, including tables inside blockquotes ([#8335](https://github.com/earendil-works/pi/issues/8335)).
+- Compaction failures and cancellations now emit `session_compact_failed` to extensions with their trigger, error, abort/retry state, and whether an extension supplied the compacted text ([#8241](https://github.com/earendil-works/pi/issues/8241)).
+- Automatic compaction now estimates message size when providers report all-zero usage instead of silently skipping the threshold check ([#8328](https://github.com/earendil-works/pi/issues/8328)).
+- Branch and session summaries reject tool calls, and their requests explicitly disable tools; planner requests do the same while retaining validated truncated-range recovery.
+- Branch and session summaries reject token-cap-truncated prose instead of persisting incomplete checkpoints ([#7048](https://github.com/earendil-works/pi/issues/7048)).
+- Branch summaries record the source leaf rather than the navigation destination.
 
 ## [0.9.16-alpha.4] - 2026-08-23
 

@@ -64,6 +64,7 @@ import type {
 	SessionBeforeSwitchEvent,
 	SessionBeforeTreeEvent,
 	SessionCompactEvent,
+	SessionCompactFailedEvent,
 	SessionInfoChangedEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
@@ -97,6 +98,7 @@ export interface ExtensionAPI {
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;

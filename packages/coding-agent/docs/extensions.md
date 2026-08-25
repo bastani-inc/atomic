@@ -394,7 +394,8 @@ user sends another prompt ◄─────────────────
 /compact or auto-compaction
   ├─► compaction_start / compaction_end (verbatim line-compaction status)
   ├─► session_before_compact (can cancel or provide compactedText)
-  └─► session_compact (after the compaction boundary is persisted)
+  ├─► session_compact (after the compaction boundary is persisted)
+  └─► session_compact_failed (failure or cancellation)
 
 /tree navigation
   ├─► session_before_tree (can cancel or customize)
@@ -512,7 +513,7 @@ pi.on("session_before_fork", async (event, ctx) => {
 After a successful fork or clone, Atomic emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "fork"` and `previousSessionFile`.
 Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
 
-#### session_before_compact / session_compact
+#### session_before_compact / session_compact / session_compact_failed
 
 Fired by `/compact` and auto-compaction, including a threshold crossing detected after tool results enter the prospective next-turn context. Atomic prepares the complete active transcript except for the exact newest `preserve_recent` context-visible messages. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials. A successful post-tool compaction returns its rebuilt context directly to the already-active Pi loop; it does not start a separate continuation. Cancellation or failure prevents that loop's follow-up provider request.
 
@@ -544,6 +545,13 @@ pi.on("session_compact", async (event) => {
   // event.compactionEntry - saved CompactionEntry with strategy "verbatim-lines"
   // event.fromExtension - true when session_before_compact provided compactedText
   // Observe-only: errors are isolated after persistence.
+});
+
+pi.on("session_compact_failed", async (event) => {
+  // event.reason - "manual" | "threshold" | "overflow"
+  // event.errorMessage - absent for cancellation
+  // event.aborted / event.willRetry - terminal state
+  // event.fromExtension - whether extension-provided text was active
 });
 ```
 

@@ -66,7 +66,7 @@
   "scripts": {
     "clean": "shx rm -rf dist",
     "dev": "tsgo -p tsconfig.build.json --watch --preserveWatchOutput",
-    "typecheck": "tsgo -p tsconfig.build.json --noEmit",
+    "typecheck": "tsgo -p tsconfig.build.json --noEmit && tsgo -p tsconfig.typetests.json",
     "build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && bun run copy-assets",
     "bundle:dev": "bun build src/bun/cli.ts --target=bun --minify --external mupdf --define process.env.ATOMIC_BUNDLED_BUILD=\"'1'\" --outfile dist-dev/cli.js",
     "start:fast": "bun run bundle:dev && bun dist-dev/cli.js",

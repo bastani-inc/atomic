@@ -201,12 +201,12 @@ test("branch summarization classifies every stop reason without an unhandled var
 			assert.deepEqual(result, { aborted: true }, "an aborted summary stays an abort");
 			continue;
 		}
-		if (stopReason === "error") {
-			assert.ok(result.error, "an errored summary stays an error");
+		if (stopReason === "error" || stopReason === "length") {
+			assert.ok(result.error, `${stopReason} must stay a summarization failure`);
 			continue;
 		}
-		// Everything else — pending included — is a completed summary, which is
-		// what a terminal reason produced before the raw-stop-reason batch.
+		// pending, stop, toolUse, and deferred complete a summary when the
+		// payload is plain text. Truncated `length` answers are rejected.
 		assert.equal(result.error, undefined, `${stopReason} must not become a summarization failure`);
 		assert.equal(result.aborted, undefined, `${stopReason} must not be reported as an abort`);
 		assert.match(result.summary ?? "", /body text/u, `${stopReason} lost the summary text`);

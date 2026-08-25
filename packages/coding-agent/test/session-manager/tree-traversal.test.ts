@@ -320,12 +320,12 @@ describe("SessionManager append and tree traversal", () => {
 	});
 
 	describe("branchWithSummary", () => {
-		it("inserts branch summary and advances leaf", () => {
+		it("inserts branch summary with the source and destination and advances leaf", () => {
 			const session = SessionManager.inMemory();
 
 			const id1 = session.appendMessage(userMsg("1"));
 			const _id2 = session.appendMessage(assistantMsg("2"));
-			const _id3 = session.appendMessage(userMsg("3"));
+			const id3 = session.appendMessage(userMsg("3"));
 
 			const summaryId = session.branchWithSummary(id1, "Summary of abandoned work");
 
@@ -336,6 +336,7 @@ describe("SessionManager append and tree traversal", () => {
 			expect(summaryEntry).toBeDefined();
 			expect(summaryEntry?.parentId).toBe(id1);
 			if (summaryEntry?.type === "branch_summary") {
+				expect(summaryEntry.fromId).toBe(id3);
 				expect(summaryEntry.summary).toBe("Summary of abandoned work");
 			}
 		});

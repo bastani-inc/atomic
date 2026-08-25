@@ -63,6 +63,8 @@ export interface VerbatimCompactionApplyOptions {
 	preserve_recent?: number;
 	query?: string;
 	reason: "manual" | "threshold" | "overflow";
+	/** Reports when a session_before_compact override becomes the active compaction source. */
+	onCompactionSource?: (fromExtension: boolean) => void;
 	/** Only `load_bearing` may reach the context-destroying fresh rung. */
 	urgency: CompactionUrgency;
 	/**
