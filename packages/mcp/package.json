@@ -33,7 +33,7 @@
   "peerDependencies": {
     "@bastani/atomic": "*",
     "@bastani/pi-ai": "*",
-    "@earendil-works/pi-tui": "^0.84.2",
+    "@earendil-works/pi-tui": "0.84.3",
     "zod": "^3.25.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {

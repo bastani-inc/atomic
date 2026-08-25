@@ -89,7 +89,7 @@
     "@bastani/pi-ai": "0.0.0",
     "@earendil-works/pi-client": "^0.84.2",
     "@earendil-works/pi-protocol": "^0.84.2",
-    "@earendil-works/pi-tui": "^0.84.2",
+    "@earendil-works/pi-tui": "^0.84.3",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@mozilla/readability": "^0.6.0",
