@@ -4,8 +4,10 @@
  * Visual contract:
  *   - One transparent rounded `BACKGROUND` panel with `N runs` subtitle and
  *     status-icon count badges in the title.
- *   - Two-line entry per run (status glyph + full id on line 1; workflow name
- *     and dim mode · progress · duration on line 2).
+ *   - Two-line ordinary entry per run (status glyph + full id on line 1;
+ *     workflow name and dim mode · progress · duration on line 2).
+ *   - Four-line awaiting-input entry adds a quoted prompt and exact connect
+ *     action after the ordinary identity rows.
  *   - Hides entirely (returns []) when no active or recently-ended runs.
  *
  * cross-ref: src/tui/widget.ts · orchestrator-panel-ui.png · DESIGN.md §5
@@ -18,6 +20,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { pendingInputAffordance } from "../../packages/workflows/src/tui/pending-input-affordance.js";
 import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import {
@@ -507,6 +510,304 @@ describe("renderWidgetLines — standard form", () => {
 				);
 			}
 		}
+	});
+});
+
+describe("pendingInputAffordance", () => {
+	test("derives a normalized run-level prompt with a concrete identity", () => {
+		const run = makeRun("run-level-owner", "release-docs", "running");
+		run.pendingPrompt = {
+			id: "run-prompt",
+			kind: "confirm",
+			message: "  Approve\n\tthis   release?  ",
+			createdAt: 1,
+		};
+
+		assert.deepEqual(pendingInputAffordance(run, [run]), {
+			identity: [run.id, null, "run-prompt"],
+			visibleRunId: run.id,
+			message: "Approve this release?",
+		});
+	});
+
+	test("derives stage prompts and gives a pending prompt precedence over inputRequest", () => {
+		const run = makeRun("stage-owner", "build-check", "running");
+		const stage = makeStage("approve", "approve", "awaiting_input");
+		stage.pendingPrompt = {
+			id: "primitive-prompt",
+			kind: "input",
+			message: "Enter the approval note",
+			createdAt: 1,
+		};
+		stage.inputRequest = {
+			id: "structured-prompt",
+			kind: "ask_user_question",
+			questions: [{ question: "Should not be counted twice", options: [] }],
+			createdAt: 1,
+		};
+		run.stages.push(stage);
+
+		assert.deepEqual(pendingInputAffordance(run, [run]), {
+			identity: [run.id, stage.id, "primitive-prompt"],
+			visibleRunId: run.id,
+			message: "Enter the approval note",
+		});
+	});
+
+	test("derives a single-question structured request", () => {
+		const run = makeRun("structured-owner", "readiness", "running", [makeStage("gate", "gate", "awaiting_input")]);
+		run.stages[0]!.inputRequest = {
+			id: "readiness-request",
+			kind: "readiness_gate",
+			questions: [{ question: "Ready to continue?", options: [] }],
+			createdAt: 1,
+		};
+
+		assert.deepEqual(pendingInputAffordance(run, [run]), {
+			identity: [run.id, "gate", "readiness-request"],
+			visibleRunId: run.id,
+			message: "Ready to continue?",
+		});
+	});
+
+	test("retains nested owner identity while targeting the visible root", () => {
+		const root = makeRun("visible-root", "nested-release", "running");
+		const child = {
+			...makeRun("nested-owner", "hidden-child", "running", [makeStage("child-ask", "ask", "awaiting_input")]),
+			parentRunId: root.id,
+			rootRunId: root.id,
+		};
+		child.stages[0]!.pendingPrompt = {
+			id: "nested-prompt",
+			kind: "confirm",
+			message: "Continue the child workflow?",
+			createdAt: 1,
+		};
+
+		assert.deepEqual(pendingInputAffordance(root, [child, root]), {
+			identity: [child.id, "child-ask", "nested-prompt"],
+			visibleRunId: root.id,
+			message: "Continue the child workflow?",
+		});
+	});
+
+	test("does not count promptless markers, but does count descriptor-bearing prompts", () => {
+		const root = makeRun("promptless-root", "promptless-sibling", "running", [
+			makeStage("waiting", "waiting", "awaiting_input"),
+			makeStage("ask", "ask", "awaiting_input"),
+		]);
+		root.stages[1]!.pendingPrompt = {
+			id: "real-prompt",
+			kind: "confirm",
+			message: "Answer the real prompt",
+			createdAt: 1,
+		};
+
+		const affordance = pendingInputAffordance(root, [root]);
+		assert.equal(affordance?.message, "Answer the real prompt");
+		assert.deepEqual(affordance?.identity, [root.id, "ask", "real-prompt"]);
+	});
+
+	test("falls back for empty, multi-question, or multiple prompt occurrences", () => {
+		const empty = makeRun("empty-prompt", "empty", "running", [makeStage("ask", "ask", "awaiting_input")]);
+		empty.stages[0]!.pendingPrompt = {
+			id: "empty",
+			kind: "input",
+			message: " \n\t",
+			createdAt: 1,
+		};
+		assert.equal(pendingInputAffordance(empty, [empty]), undefined);
+
+		const emptySibling = makeRun("empty-sibling", "empty-sibling", "running", [
+			makeStage("empty", "empty", "awaiting_input"),
+			makeStage("valid", "valid", "awaiting_input"),
+		]);
+		emptySibling.stages[0]!.pendingPrompt = { ...empty.stages[0]!.pendingPrompt! };
+		emptySibling.stages[1]!.pendingPrompt = {
+			id: "valid-sibling-prompt",
+			kind: "confirm",
+			message: "Valid sibling prompt",
+			createdAt: 1,
+		};
+		assert.equal(pendingInputAffordance(emptySibling, [emptySibling]), undefined);
+
+		const multi = makeRun("multi-question", "multi", "running", [makeStage("ask", "ask", "awaiting_input")]);
+		multi.stages[0]!.inputRequest = {
+			id: "multi",
+			kind: "ask_user_question",
+			questions: [
+				{ question: "First question", options: [] },
+				{ question: "Second question", options: [] },
+			],
+			createdAt: 1,
+		};
+		assert.equal(pendingInputAffordance(multi, [multi]), undefined);
+
+		const multiple = makeRun("multiple-prompts", "multiple", "running", [makeStage("ask", "ask", "awaiting_input")]);
+		multiple.pendingPrompt = {
+			id: "run-prompt",
+			kind: "confirm",
+			message: "Run prompt",
+			createdAt: 1,
+		};
+		multiple.stages[0]!.pendingPrompt = {
+			id: "stage-prompt",
+			kind: "confirm",
+			message: "Stage prompt",
+			createdAt: 1,
+		};
+		assert.equal(pendingInputAffordance(multiple, [multiple]), undefined);
+	});
+
+	test("ignores stale descriptors on terminal or blocked owners", () => {
+		for (const status of ["completed", "failed", "blocked"] as const) {
+			const run = makeRun(`${status}-owner`, "stale", status, [makeStage("ask", "ask", "awaiting_input")]);
+			run.pendingPrompt = {
+				id: `${status}-prompt`,
+				kind: "confirm",
+				message: "Stale prompt",
+				createdAt: 1,
+			};
+			assert.equal(pendingInputAffordance(run, [run]), undefined, `${status} owner must not surface a prompt`);
+		}
+	});
+});
+
+describe("renderWidgetLines — awaiting-input affordances", () => {
+	function awaitingRun(id: string, name: string, message: string, startedAt = Date.now() - 5_000): RunSnapshot {
+		const run = makeRun(id, name, "running", [makeStage("ask", "ask", "awaiting_input")], startedAt);
+		run.stages[0]!.pendingPrompt = {
+			id: `${id}-prompt`,
+			kind: "confirm",
+			message,
+			createdAt: startedAt,
+		};
+		return run;
+	}
+
+	test("renders run-level, stage-level, and structured prompts as four-row waiting cards", () => {
+		const runLevel = makeRun("run-level-card", "run-level", "running");
+		runLevel.pendingPrompt = {
+			id: "run-level-prompt",
+			kind: "confirm",
+			message: "Approve the run?",
+			createdAt: 1,
+		};
+		const stageLevel = awaitingRun("stage-level-card", "stage-level", "Approve the generated migration?");
+		const structured = makeRun("structured-card", "structured", "running", [
+			makeStage("gate", "gate", "awaiting_input"),
+		]);
+		structured.stages[0]!.inputRequest = {
+			id: "structured-card-request",
+			kind: "readiness_gate",
+			questions: [{ question: "Approve the readiness gate?", options: [] }],
+			createdAt: 1,
+		};
+
+		for (const [run, message] of [
+			[runLevel, "Approve the run?"],
+			[stageLevel, "Approve the generated migration?"],
+			[structured, "Approve the readiness gate?"],
+		] as const) {
+			const lines = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+			const joined = lines.join("\n");
+			assert.equal(lines.length, 6, "waiting cards add exactly two rows to the ordinary card");
+			assert.ok(joined.includes(`"${message}"`));
+			assert.ok(joined.includes(`/workflow connect ${run.id}`));
+			assert.ok(joined.includes("F2 answer"));
+			assert.ok(joined.includes(statusIcon("awaiting_input")));
+		}
+	});
+
+	test("connect action targets the visible root for nested prompts", () => {
+		const root = makeRun("nested-visible-root", "nested-root", "running");
+		const child = {
+			...awaitingRun("nested-hidden-child", "nested-child", "Answer in the child workflow?"),
+			parentRunId: root.id,
+			rootRunId: root.id,
+		};
+		const lines = renderWidgetLines(makeSnap([child, root]), 120).map(stripAnsi);
+		const joined = lines.join("\n");
+
+		assert.ok(joined.includes('"Answer in the child workflow?"'));
+		assert.ok(joined.includes(`/workflow connect ${root.id}`));
+		assert.ok(!joined.includes(child.id), "the hidden owner id is not substituted for the visible connect target");
+	});
+
+	test("only the store active run gets the F2 answer hint", () => {
+		const first = awaitingRun("first-waiting-root", "first-waiting", "Answer first?", Date.now() - 2_000);
+		const second = awaitingRun("second-waiting-root", "second-waiting", "Answer second?", Date.now() - 1_000);
+		const lines = renderWidgetLines(makeSnap([first, second]), 120).map(stripAnsi);
+		const firstName = lines.findIndex((line) => line.includes("first-waiting ·"));
+		const secondName = lines.findIndex((line) => line.includes("second-waiting ·"));
+		assert.ok(firstName >= 0 && secondName >= 0);
+		const firstAction = lines.slice(firstName).find((line) => line.includes("/workflow connect"));
+		const secondAction = lines.slice(secondName).find((line) => line.includes("/workflow connect"));
+		assert.ok(firstAction !== undefined && secondAction !== undefined);
+		assert.doesNotMatch(firstAction!, /F2 answer/);
+		assert.match(secondAction!, /F2 answer/);
+	});
+
+	test("a newer non-awaiting active run suppresses F2 on an older waiting card", () => {
+		const waiting = awaitingRun("older-waiting-root", "older-waiting", "Answer the older run?", Date.now() - 2_000);
+		const newer = makeRun("newer-active-root", "newer-active", "running", [], Date.now() - 1_000);
+		const lines = renderWidgetLines(makeSnap([waiting, newer]), 120).map(stripAnsi);
+		const waitingName = lines.findIndex((line) => line.includes("older-waiting ·"));
+		assert.ok(waitingName >= 0);
+		const waitingAction = lines.slice(waitingName).find((line) => line.includes("/workflow connect"));
+		assert.ok(waitingAction !== undefined);
+		assert.doesNotMatch(waitingAction!, /F2 answer/);
+	});
+
+	test("keeps prompt and exact command within 80 and 120 cells, with collapsed output below 80", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const run = awaitingRun(
+			runId,
+			"width-aware-waiting",
+			"Approve this generated migration before deployment? This message is intentionally long enough to exercise cell truncation.",
+		);
+
+		for (const width of [80, 120]) {
+			const lines = renderWidgetLines(makeSnap([run]), width).map(stripAnsi);
+			for (const line of lines) assert.equal(visibleWidth(line), width, `line must fill width ${width}`);
+			const joined = lines.join("\n");
+			assert.ok(joined.includes(`/workflow connect ${runId}`), `full command must survive at width ${width}`);
+			const promptLine = lines.find((line) => line.includes('"'));
+			assert.match(promptLine ?? "", /".*…"/);
+		}
+
+		const collapsed = renderWidgetLines(makeSnap([run]), 79).map(stripAnsi);
+		assert.equal(collapsed.length, 1);
+		assert.ok(!collapsed.join("\n").includes("Approve this generated migration"));
+		assert.ok(!collapsed.join("\n").includes("/workflow connect"));
+	});
+
+	test("falls back to the ordinary status row for ambiguous prompts", () => {
+		const run = makeRun("ambiguous-card", "ambiguous", "running", [makeStage("ask", "ask", "awaiting_input")]);
+		run.stages[0]!.inputRequest = {
+			id: "ambiguous-request",
+			kind: "ask_user_question",
+			questions: [
+				{ question: "First", options: [] },
+				{ question: "Second", options: [] },
+			],
+			createdAt: 1,
+		};
+		const lines = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+		const joined = lines.join("\n");
+		assert.equal(lines.length, 4);
+		assert.ok(joined.includes(statusIcon("awaiting_input")));
+		assert.ok(!joined.includes("First"));
+		assert.ok(!joined.includes(`/workflow connect ${run.id}`));
+	});
+
+	test("themed waiting rows use the info-blue role", () => {
+		const run = awaitingRun("themed-waiting", "themed", "Approve the themed prompt?");
+		const theme = deriveGraphTheme({});
+		const lines = buildThemedWidgetLines(makeSnap([run]), NULL_PI_THEME, 120);
+		const joined = lines.join("\n");
+		assert.ok(joined.includes(hexToAnsi(theme.info)));
+		assert.ok(lines.some((line) => line.includes(`${hexToAnsi(theme.info)}    ❯`)));
 	});
 });
 
