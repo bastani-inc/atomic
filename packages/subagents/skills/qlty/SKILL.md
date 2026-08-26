@@ -103,6 +103,15 @@ qlty smells --upstream origin/main           # smells introduced by this branch
 
 `--level` sets what is displayed (`note`, `fmt`, `low`, `medium`, `high`); `--fail-level` sets what makes the command exit non-zero. `--sarif` emits SARIF for tooling.
 
+## Offline use
+
+The `qlty` binary is self-contained, but its commands split on network needs:
+
+- **Offline-safe:** `qlty metrics` and `qlty smells` use qlty's own built-in static analysis — no plugin or runtime downloads, so they work with no network at all.
+- **Network on first use:** `qlty check` and `qlty fmt` install the enabled plugins and any qlty-managed language runtimes on demand, per repository, on their first run. With no network that first run fails.
+
+In a network-restricted environment (sandboxes, locked-down CI, benchmark runs), either pre-warm the cache while you still have network — run `qlty init` and one `qlty check --all` in the target repository so plugins and runtimes land in `~/.qlty` — or scope quality verification to `qlty metrics` and `qlty smells` and say so in your report rather than presenting them as full lint coverage.
+
 ## Working loop
 
 Upstream's own recommendation for agents, and a good default here:

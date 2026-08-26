@@ -118,6 +118,17 @@ def _qlty_install_command() -> str:
     The installer detects musl and rewrites its target triple accordingly, so
     Alpine images are supported and need no degradation branch. It unpacks a
     ``.tar.xz``; ``root_install_command`` installs ``xz`` for that.
+
+    This phase deliberately installs only the CLI. Plugin-dependent commands
+    (``qlty check`` / ``qlty fmt``) download plugins and qlty-managed language
+    runtimes on first use *per repository*, and the benchmark task repository
+    does not exist yet at install time, so those downloads cannot be preseeded
+    here. Offline runs therefore get qlty's plugin-free surface — ``qlty
+    metrics`` and ``qlty smells``, which use its built-in static analysis and
+    need no network. The bundled qlty skill documents exactly that split and
+    instructs the agent to scope offline quality verification to those
+    commands (or pre-warm the cache where network exists) rather than treating
+    a failed first ``qlty check`` as full lint coverage.
     """
     return (
         "qlty_status=0; "
