@@ -856,39 +856,38 @@ test("Blacksmith runners are used everywhere they are supported", async () => {
 });
 
 /**
- * Every suite CI runs must also gate a push.
+ * Nothing local gates a push any more, so CI has to run every suite.
  *
- * The hooks used to stop at `npm run test:unit`, so an integration or contract
- * failure was invisible locally and reached CI by default. Two did: a
- * Windows-only line-ending bug in a changelog check, and an integration fixture
- * broken by a change in the same branch. Neither could fail the suite anyone was
- * actually running.
+ * The hooks used to run test:unit, test:integration and test:ci-contracts at
+ * `pre-push`, which cost ~110 s on every push. Scoping that to the changed
+ * surface was measured and rejected: `vitest related` took 42 s cold, 21 s warm
+ * and 95 s on a third attempt to run *zero* tests on this repository. The cost is
+ * vite transform and setup across three projects, not test execution, so a
+ * targeted hook cannot be made cheap. `node_modules/.vite` caching helps but
+ * cannot reach a floor worth paying per push.
  *
- * This asserts coverage, not spelling. A hook may run at every stage or only at
- * `pre-push`; what it may not do is exclude the push, because that is the last
- * point before CI. `test:all` and `test:scripts` are deliberately out of scope —
- * the first is a convenience wrapper over suites already covered here, and the
- * second is not part of the `test` workflow's required checks.
+ * Two bugs — a Windows-only line-ending bug in a changelog check, and an
+ * integration fixture broken by a change in the same branch — once reached CI
+ * because the hooks stopped at test:unit. With no push gate at all, CI is now the
+ * only thing between that class of bug and main, so this asserts the suites are
+ * actually wired into the workflow rather than merely declared in package.json.
  */
-test("every CI test suite also gates a push", async () => {
+test("CI runs every test suite, because no hook gates a push", async () => {
 	const prek = await readText(join(root, "prek.toml"));
-	const manifest = await readJson<{ scripts: Record<string, string> }>(join(root, "package.json"));
+	assert.doesNotMatch(
+		prek,
+		/pre-push/u,
+		"prek.toml reinstates a push gate; `vitest related` was measured too slow to make one worth paying for",
+	);
 
+	const manifest = await readJson<{ scripts: Record<string, string> }>(join(root, "package.json"));
+	const workflow = await readText(testPath);
 	for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
 		assert.ok(manifest.scripts[script], `missing script: ${script}`);
-		const hook = new RegExp(String.raw`\{[^}]*entry\s*=\s*"npm run ${script}"[^}]*\}`, "u").exec(prek);
-		assert.ok(
-			hook,
-			`prek.toml declares no hook running \`npm run ${script}\`; a suite CI runs must not be able to fail only in CI`,
+		assert.match(
+			workflow,
+			new RegExp(String.raw`npm run ${script}`, "u"),
+			`.github/workflows/test.yml never runs \`npm run ${script}\`; with no push gate, a suite CI skips is a suite nothing runs`,
 		);
-
-		const stages = /stages\s*=\s*\[([^\]]*)\]/u.exec(hook[0]);
-		if (stages) {
-			assert.match(
-				stages[1] as string,
-				/"pre-push"/u,
-				`the \`${script}\` hook restricts itself to ${stages[1]} and so does not gate a push`,
-			);
-		}
 	}
 });
