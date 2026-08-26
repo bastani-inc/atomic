@@ -20,7 +20,10 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { pendingInputAffordance } from "../../packages/workflows/src/tui/pending-input-affordance.js";
+import {
+	pendingInputAffordance,
+	sanitizePromptDisplay,
+} from "../../packages/workflows/src/tui/pending-input-affordance.js";
 import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import {
@@ -690,6 +693,13 @@ describe("pendingInputAffordance", () => {
 		});
 	});
 
+	test("strips 8-bit CSI/OSC, RIS, and line separators without eating following text", () => {
+		assert.equal(sanitizePromptDisplay("Keep\x1bc this"), "Keep this");
+		assert.equal(sanitizePromptDisplay("Approve\x9b2J this\x9d0;pwned\x07 release?"), "Approve this release?");
+		assert.equal(sanitizePromptDisplay("Line\u2028break\u2029now"), "Line break now");
+		assert.equal(sanitizePromptDisplay("Approve\x1b[2J this\x1b]0;pwned\x07 release?"), "Approve this release?");
+	});
+
 	test("derives stage prompts and gives a pending prompt precedence over inputRequest", () => {
 		const run = makeRun("stage-owner", "build-check", "running");
 		const stage = makeStage("approve", "approve", "awaiting_input");
@@ -978,6 +988,23 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 		assert.equal(joined.includes("\x1b"), false, "plain widget output must not contain ESC");
 		assert.equal(joined.includes("\x07"), false, "plain widget output must not contain BEL");
 		assert.ok(!joined.includes("[2J"));
+		assert.ok(!joined.includes("]0;"));
+		assert.ok(!joined.includes("pwned"));
+	});
+
+	test("themed waiting prompt rows keep chrome SGR but drop untrusted CSI/OSC", () => {
+		const run = awaitingRun(
+			"themed-control-render",
+			"themed-control-render",
+			"Approve\x1b[2J this\x1b]0;pwned\x07 release?",
+		);
+		const joined = buildThemedWidgetLines(makeSnap([run]), NULL_PI_THEME, 120).join("\n");
+		const chromeStripped = stripAnsi(joined);
+		assert.ok(chromeStripped.includes('"Approve this release?"'));
+		assert.equal(chromeStripped.includes("\x1b"), false, "SGR-stripped themed output must not retain ESC");
+		assert.equal(joined.includes("\x07"), false, "themed widget output must not contain BEL");
+		assert.ok(!joined.includes("[2J"));
+		assert.ok(!joined.includes("]0;"));
 		assert.ok(!joined.includes("pwned"));
 	});
 

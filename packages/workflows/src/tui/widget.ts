@@ -32,7 +32,11 @@ import { ELLIPSIS, renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { deriveGraphTheme } from "./graph-theme.js";
-import { type PendingInputAffordance, pendingInputAffordance } from "./pending-input-affordance.js";
+import {
+	type PendingInputAffordance,
+	pendingInputAffordance,
+	sanitizePromptDisplay,
+} from "./pending-input-affordance.js";
 import { renderRunIdentityRows, wrapIdentifierLines } from "./run-identity-rows.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
@@ -321,7 +325,9 @@ function plainRunLines(run: RunSnapshot, now: number, allRuns: readonly RunSnaps
 function renderAwaitingPromptLine(message: string, bodyWidth: number, theme: GraphTheme | undefined): string {
 	const indent = " ".repeat(5);
 	const messageBudget = Math.max(1, bodyWidth - visibleWidth(indent) - 2);
-	const clipped = truncateToWidth(message, messageBudget, ELLIPSIS);
+	// truncateToWidth is ANSI-aware, so untrusted prompt bytes must be
+	// control-stripped at this sink even if the projection already sanitized.
+	const clipped = truncateToWidth(sanitizePromptDisplay(message), messageBudget, ELLIPSIS);
 	const row = `${indent}"${clipped}"`;
 	return theme === undefined ? row : `${hexToAnsi(theme.info)}${row}${RESET}`;
 }

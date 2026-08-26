@@ -66,7 +66,7 @@ function skipEscSequence(message: string, start: number): number {
 	if (next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
 		return skipStringControl(message, start + 1, false);
 	}
-	let i = start + 1;
+	let i = start;
 	while (i < message.length) {
 		const code = message.charCodeAt(i);
 		if (code >= 0x20 && code <= 0x2f) {
@@ -113,11 +113,16 @@ function stripTerminalControls(message: string): string {
 		out += String.fromCodePoint(cp);
 		i += cp > 0xffff ? 2 : 1;
 	}
-	return out;
+	return out.replace(/[\u2028\u2029]+/g, " ");
+}
+
+/** Strip CSI/OSC/DCS and leftover C0/C1, then collapse to one display line. */
+export function sanitizePromptDisplay(message: string): string {
+	return stripTerminalControls(message).replace(/\s+/g, " ").trim();
 }
 
 function normalizePromptMessage(message: string): string {
-	return stripTerminalControls(message).replace(/\s+/g, " ").trim();
+	return sanitizePromptDisplay(message);
 }
 
 function runPromptOccurrence(run: RunSnapshot, prompt: PendingPrompt): PendingInputOccurrence {
