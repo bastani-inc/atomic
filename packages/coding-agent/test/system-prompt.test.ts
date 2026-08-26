@@ -218,4 +218,55 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).not.toContain("- **Workflows**:");
 		});
 	});
+
+	describe("repository intent", () => {
+		test("teaches repository-intent inference when a shell tool is available", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("**Repository intent**");
+			expect(prompt).toContain("review recent commits, open and merged PRs, issues and their comments");
+			expect(prompt).toContain("identify the requesting user");
+			expect(prompt).toContain("interpret ambiguous requests the way they would");
+		});
+
+		test("omits repository-intent guidance without a shell tool", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read", "edit"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).not.toContain("**Repository intent**");
+		});
+	});
+
+	describe("ask_user_question fallback", () => {
+		test("instructs autonomous continuation when ask_user_question is unavailable", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read", "bash"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("Clarify ambiguous requirements using the ask_user_question tool if available.");
+			expect(prompt).toContain("continue fully autonomously on best judgment");
+		});
+
+		test("omits the fallback guideline when ask_user_question is selected", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read", "bash", "ask_user_question"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).not.toContain("Clarify ambiguous requirements");
+		});
+	});
 });
