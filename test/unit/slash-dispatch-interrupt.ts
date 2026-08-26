@@ -433,6 +433,42 @@ describe("/workflow run-control chat commands", () => {
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
+
+	test.sequential("exact slash status recognizes a live task tail", async () => {
+		const { TASK_RESULT_CHECKPOINT_CONTROL_PREFIX } = await import(
+			"../../packages/workflows/src/durable/stage-primitive.js"
+		);
+		const { IMPOSSIBLE_ROOT_LIVENESS_MESSAGE } = await import("../../packages/workflows/src/engine/run-liveness.js");
+		const { toolControlRegistry } = await import("../../packages/workflows/src/engine/run-tool-control-registry.js");
+		const runId = testRunId("slash-status-task-tail");
+		store.recordRunStart({
+			...makeInflightRun(runId),
+			startedAt: 0,
+			budget: { maxDurationMs: 10, warnAtPercent: 80 },
+			stages: [
+				{
+					id: "review",
+					name: "review",
+					status: "completed",
+					parentIds: [],
+					toolEvents: [],
+				},
+			],
+		});
+		toolControlRegistry.register({
+			runId,
+			nodeId: `${TASK_RESULT_CHECKPOINT_CONTROL_PREFIX}stage:task:review:1`,
+			name: "review",
+			controller: new AbortController(),
+			settled: new Promise(() => {}),
+		});
+		const { workflowCmd, sent } = await registerWorkflowCommand();
+		const { ctx } = buildCtx();
+		await workflowCmd.options.handler(`status ${runId}`, ctx);
+		const payload = JSON.stringify(sent);
+		assert.doesNotMatch(payload, new RegExp(IMPOSSIBLE_ROOT_LIVENESS_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.match(payload, new RegExp(runId));
+	});
 });
 
 // ---------------------------------------------------------------------------

@@ -608,6 +608,17 @@ const { session } = await createAgentSession({
 
 Atomic's built-in `bash` tool matches upstream pi: when `bash` is enabled, commands execute through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes the `bash` tool at all. Atomic no longer provides a command-level allow/deny option for `bash`; use an operating-system/container sandbox or a custom tool/extension when you need command allowlisting or stronger isolation.
 
+
+#### PowerShell tool behavior
+
+`createPowerShellTool()` and `createPowerShellToolDefinition()` provide the same tool used by interactive sessions. When their default local operations execute on native Windows, they prefer `pwsh.exe`, fall back to `powershell.exe`, and throw a clear error when neither executable is available. `createLocalPowerShellOperations()` and `getPowerShellConfig()` are also exported for custom integrations. The PowerShell factories expose the current `ATOMIC_*` and legacy `PI_*` session snapshot by default; set `exposeSessionEnvironment: false` to opt out.
+
+```typescript
+import { createPowerShellTool } from "@bastani/atomic";
+
+const powershell = createPowerShellTool("C:\\path\\to\\project");
+```
+
 #### Tools with Custom cwd
 
 When you pass a custom `cwd`, `createAgentSession()` builds selected built-in tools for that cwd.

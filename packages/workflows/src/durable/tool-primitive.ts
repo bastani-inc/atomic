@@ -84,6 +84,8 @@ export type ToolCallAdmission =
 
 export interface CreateToolPrimitiveInput {
 	readonly workflowId: string;
+	/** Source run whose completed checkpoints may be replayed into this workflow. */
+	readonly checkpointSourceWorkflowId?: string;
 	readonly backend: DurableWorkflowBackend;
 	/** Monotonic checkpoint id counter source. */
 	readonly nextCheckpointId: () => string;
@@ -244,7 +246,18 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 	ordinals.set(callKey, ordinal);
 	const argsHash = durableHash({ name, args, ordinal, ...identityMode });
 
-	const cached = input.backend.getToolCheckpoint(input.workflowId, argsHash);
+	// Source lookup is a no-op under a scoped child backend: getToolCheckpoint
+	// ignores workflowId and always reads the scoped root key, so own and
+	// source resolve to the same row. Nested child continuations therefore
+	// cannot reuse a parent-run checkpoint here.
+
+	const own = input.backend.getToolCheckpoint(input.workflowId, argsHash);
+	const cached =
+		own ??
+		(input.checkpointSourceWorkflowId === undefined || input.checkpointSourceWorkflowId === input.workflowId
+			? undefined
+			: input.backend.getToolCheckpoint(input.checkpointSourceWorkflowId, argsHash));
+	const fromSource = own === undefined && cached !== undefined;
 	const capturedSource = cached?.source ?? source;
 	const node: ToolNodeSnapshot = {
 		kind: "tool",
@@ -270,7 +283,7 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		control.releaseAdmission();
 		const endedAt = cached.topology?.endedAt ?? cached.completedAt;
 		try {
-			await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
+			await recordReplayedToolTopology(input, node, cached, argsHash, endedAt, fromSource);
 			const returnedOutcome =
 				cached.outcomeKind === undefined ? undefined : workflowToolOutcomeFromValue<T>(cached.output);
 			if (cached.outcomeKind !== undefined && returnedOutcome === undefined) {
@@ -758,10 +771,14 @@ async function recordReplayedToolTopology(
 	cached: DurableToolCheckpoint,
 	argsHash: string,
 	endedAt: number,
+	fromSource: boolean,
 ): Promise<void> {
 	const runTopology = input.runTopology;
 	if (runTopology === undefined) return;
-	if (cached.topology === undefined && runTopology.parentRunId === undefined) return;
+	// Same-run replay of a pre-#1991 record must not invent topology, even when
+	// this executor also has a continuation source. Only a cache hit that came
+	// from the source run may write topology under the new run id.
+	if (cached.topology === undefined && runTopology.parentRunId === undefined && !fromSource) return;
 	if (cached.topology?.run?.runId === runTopology.runId) return;
 	const topology =
 		cached.topology === undefined
@@ -818,8 +835,9 @@ function summarizeToolResult(value: WorkflowSerializableValue): string {
 export async function recordCheckpointDurably(
 	backend: DurableWorkflowBackend,
 	checkpoint: DurableCheckpoint,
+	signal?: AbortSignal,
 ): Promise<void> {
-	await backend.recordCheckpointAsync(checkpoint);
+	await backend.recordCheckpointAsync(checkpoint, signal === undefined ? undefined : { signal });
 }
 
 async function executeWithRetries<T>(

@@ -87,7 +87,8 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider["zai-coding-cn"]).toBe("glm-5.3");
 		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
 		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider.cerebras).toBe("zai-glm-4.7");
+		expect(defaultModelPerProvider.cerebras).toBe("gpt-oss-120b");
+		expect(defaultModelPerProvider.xai).toBe("grok-4.6");
 		expect(defaultModelPerProvider["ant-ling"]).toBe("Ring-2.6-1T");
 	});
 	test("ai-gateway default tracks current model", () => {

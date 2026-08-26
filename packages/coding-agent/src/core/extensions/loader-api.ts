@@ -36,32 +36,50 @@ export function createExtensionAPI(
 	eventBus: EventBus,
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
-): ExtensionAPI {
+): { api: ExtensionAPI; commit: () => void; discard: () => void } {
 	const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
+	const pendingRuntimeChanges: Array<{ apply: () => void; rollback: () => void }> = [];
+	const loadingUnsubscribers: Array<() => void> = [];
+	const initialFlagValues = new Map(runtime.flagValues);
+	const initialFlagOwners = new Map(runtime.flagOwners);
+	const initialFlagOwnerOrigins = new Map(runtime.flagOwnerOrigins);
+	let state: "loading" | "active" | "failed" = "loading";
+	const assertActive = () => {
+		if (state === "failed")
+			throw new Error(`Extension "${extension.path}" failed to load and its API is no longer active.`);
+		runtime.assertActive();
+	};
+	const applyRuntimeChange = (change: { apply: () => void; rollback: () => void }) => {
+		if (state === "loading") pendingRuntimeChanges.push(change);
+		else if (state === "active") change.apply();
+		else assertActive();
+	};
 	// Successive load generations of one session each build a new facade over
 	// the same shared bus; mapping the facade back to that bus lets
 	// session-scoped state re-bind across module re-evaluation.
 	const events: EventBus = {
 		emit(channel, data) {
-			runtime.assertActive();
+			assertActive();
 			eventBus.emit(channel, data);
 		},
 		on(channel, handler) {
-			runtime.assertActive();
-			return runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+			assertActive();
+			const unsubscribe = runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+			if (state === "loading") loadingUnsubscribers.push(unsubscribe);
+			return unsubscribe;
 		},
 	};
 	registerCanonicalEventBus(events, eventBus);
 	const api = {
 		on(event: string, handler: HandlerFn): void {
-			runtime.assertActive();
+			assertActive();
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
 		},
 
 		registerTool(tool: ToolDefinition): void {
-			runtime.assertActive();
+			assertActive();
 			if (runtime.canRegisterResource?.(extension, "tool", tool.name) === false) return;
 			const registration = { definition: tool, sourceInfo: extension.sourceInfo };
 			if (runtime.stageToolRegistration?.(extension, tool.name, registration)) return;
@@ -71,7 +89,7 @@ export function createExtensionAPI(
 		},
 
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
-			runtime.assertActive();
+			assertActive();
 			if (runtime.canRegisterResource?.(extension, "command", name) === false) return;
 			const registration = { name, sourceInfo: extension.sourceInfo, ...options };
 			if (runtime.stageCommandRegistration?.(extension, name, registration)) return;
@@ -85,7 +103,7 @@ export function createExtensionAPI(
 				handler: (ctx: ExtensionContext) => Promise<void> | void;
 			},
 		): void {
-			runtime.assertActive();
+			assertActive();
 			if (runtime.canRegisterResource?.(extension, "shortcut", shortcut) === false) return;
 			const registration = { shortcut, extensionPath: extension.path, ...options };
 			if (runtime.stageShortcutRegistration?.(extension, shortcut, registration)) return;
@@ -100,7 +118,12 @@ export function createExtensionAPI(
 				default?: boolean | string;
 			},
 		): void {
-			runtime.assertActive();
+			assertActive();
+			if (options.default !== undefined && typeof options.default !== options.type) {
+				throw new Error(
+					`Invalid default for flag "${name}": expected ${options.type}, got ${typeof options.default}`,
+				);
+			}
 			if (runtime.canRegisterResource?.(extension, "flag", name) === false) return;
 			const registration = { name, extensionPath: extension.path, ...options };
 			if (runtime.stageFlagRegistration?.(extension, name, registration, options.default)) return;
@@ -128,135 +151,194 @@ export function createExtensionAPI(
 		},
 
 		registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
-			runtime.assertActive();
+			assertActive();
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
 		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
-			runtime.assertActive();
+			assertActive();
 			extension.markdownTransformer = transformer;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
-			runtime.assertActive();
+			assertActive();
 			extension.entryRenderers.set(customType, renderer as EntryRenderer);
 		},
 
 		getFlag(name: string): boolean | string | undefined {
-			runtime.assertActive();
+			assertActive();
 			const pendingDefault = runtime.getPendingFlagDefault?.(extension.path, name);
 			if (!extension.flags.has(name) && pendingDefault === undefined) return undefined;
 			return runtime.flagValues.get(name) ?? pendingDefault;
 		},
 
 		getWorkflowResources() {
-			runtime.assertActive();
+			assertActive();
 			return [...workflowResources.get()];
 		},
 
 		async refreshWorkflowResources() {
-			runtime.assertActive();
+			assertActive();
 			const refreshed = await workflowResources.refresh?.();
 			return [...(refreshed ?? workflowResources.get())];
 		},
 
 		getResourceLoaderInheritanceSnapshot() {
-			runtime.assertActive();
+			assertActive();
 			return resourceLoaderInheritanceSnapshotProvider?.() ?? {};
 		},
 
 		sendMessage(message, options): void | Promise<void> {
-			runtime.assertActive();
+			assertActive();
 			return runtime.sendMessage(message, options);
 		},
 
 		sendMessages(messages, options): void | Promise<void> {
-			runtime.assertActive();
+			assertActive();
 			return runtime.sendMessages(messages, options);
 		},
 
 		sendUserMessage(content, options): void {
-			runtime.assertActive();
+			assertActive();
 			runtime.sendUserMessage(content, options);
 		},
 
 		appendEntry(customType: string, data?: unknown): void {
-			runtime.assertActive();
+			assertActive();
 			runtime.appendEntry(customType, data);
 		},
 
 		setSessionName(name: string): void {
-			runtime.assertActive();
+			assertActive();
 			runtime.setSessionName(name);
 		},
 
 		getSessionName(): string | undefined {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getSessionName();
 		},
 
 		setLabel(entryId: string, label: string | undefined): void {
-			runtime.assertActive();
+			assertActive();
 			runtime.setLabel(entryId, label);
 		},
 
 		exec(command: string, args: string[], options?: ExecOptions) {
-			runtime.assertActive();
+			assertActive();
 			return execCommand(command, args, options?.cwd ?? cwd, options);
 		},
 
 		getActiveTools(): string[] {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getActiveToolsAfterRegistration?.(extension) ?? runtime.getActiveTools();
 		},
 
 		getAllTools() {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getAllToolsAfterRegistration?.(extension) ?? runtime.getAllTools();
 		},
 
 		setActiveTools(toolNames: string[]): void {
-			runtime.assertActive();
+			assertActive();
 			if (!runtime.setActiveToolsAfterRegistration?.(extension, toolNames)) runtime.setActiveTools(toolNames);
 		},
 
 		getCommands() {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getCommandsAfterRegistration?.(extension) ?? runtime.getCommands();
 		},
 
 		setModel(model) {
-			runtime.assertActive();
+			assertActive();
 			return runtime.setModel(model);
 		},
 
 		getThinkingLevel() {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getThinkingLevel();
 		},
 
 		setThinkingLevel(level) {
-			runtime.assertActive();
+			assertActive();
 			runtime.setThinkingLevel(level);
 		},
 
 		registerProvider(nameOrProvider: string | Provider, config?: ProviderConfig) {
-			runtime.assertActive();
+			assertActive();
 			if (typeof nameOrProvider === "string") {
 				if (!config) throw new Error("Provider config is required");
-				runtime.registerProvider(nameOrProvider, config, extension.path);
+				const name = nameOrProvider;
+				applyRuntimeChange({
+					apply: () => runtime.registerProvider(name, config, extension.path),
+					rollback: () => runtime.unregisterProvider(name, extension.path),
+				});
 			} else {
-				runtime.registerProvider(nameOrProvider, extension.path);
+				const provider = nameOrProvider;
+				applyRuntimeChange({
+					apply: () => runtime.registerProvider(provider, extension.path),
+					rollback: () => runtime.unregisterProvider(provider.id, extension.path),
+				});
 			}
 		},
 
 		unregisterProvider(name: string) {
-			runtime.assertActive();
-			runtime.unregisterProvider(name, extension.path);
+			assertActive();
+			const prior = runtime.pendingProviderRegistrations.filter((registration) =>
+				"provider" in registration ? registration.provider.id === name : registration.name === name,
+			);
+			applyRuntimeChange({
+				// Explicit unregistration stays name-wide: its rollback below
+				// restores every prior registration, so a narrower removal here
+				// would re-register entries that were never taken away.
+				apply: () => runtime.unregisterProvider(name),
+				rollback: () => {
+					for (const registration of prior) {
+						if ("provider" in registration) {
+							runtime.registerProvider(registration.provider, registration.extensionPath);
+						} else {
+							runtime.registerProvider(registration.name, registration.config, registration.extensionPath);
+						}
+					}
+				},
+			});
 		},
 
 		events,
 	} as ExtensionAPI;
 
-	return api;
+	return {
+		api,
+		commit: () => {
+			if (state !== "loading") return;
+			const applied: Array<{ apply: () => void; rollback: () => void }> = [];
+			try {
+				for (const change of pendingRuntimeChanges) {
+					change.apply();
+					applied.push(change);
+				}
+				state = "active";
+				pendingRuntimeChanges.length = 0;
+				loadingUnsubscribers.length = 0;
+			} catch (error) {
+				for (const change of applied.reverse()) {
+					try {
+						change.rollback();
+					} catch {
+						// Best-effort undo of provider ops already applied in this commit.
+					}
+				}
+				throw error;
+			}
+		},
+		discard: () => {
+			if (state !== "loading") return;
+			state = "failed";
+			for (const unsubscribe of loadingUnsubscribers) unsubscribe();
+			pendingRuntimeChanges.length = 0;
+			loadingUnsubscribers.length = 0;
+			runtime.flagValues = initialFlagValues;
+			runtime.flagOwners = initialFlagOwners;
+			runtime.flagOwnerOrigins = initialFlagOwnerOrigins;
+		},
+	};
 }

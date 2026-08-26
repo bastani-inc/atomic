@@ -75,7 +75,6 @@ function makeState(): ExecutorDeps["state"] {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
@@ -280,8 +279,10 @@ describe("recent upstream subagent syncs", () => {
 		}
 	});
 
-	test("rejects duplicate concurrent execution calls but allows management", async () => {
+	test("rejects execution overlap after child launch but allows management", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-upstream-sync-"));
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
 		try {
 			const calls: string[] = [];
 			const executor = makeExecutor({
@@ -289,7 +290,8 @@ describe("recent upstream subagent syncs", () => {
 				agents: [makeAgent("echo")],
 				runSync: async (_parentCwd, _agents, agentName, task) => {
 					calls.push(agentName);
-					await new Promise((resolve) => setTimeout(resolve, 50));
+					started.resolve();
+					await release.promise;
 					return result(agentName, task);
 				},
 			});
@@ -302,6 +304,7 @@ describe("recent upstream subagent syncs", () => {
 				undefined,
 				ctx,
 			);
+			await started.promise;
 			const second = await executor.execute(
 				"second",
 				{ agent: "echo", task: "Duplicate" },
@@ -316,6 +319,7 @@ describe("recent upstream subagent syncs", () => {
 				undefined,
 				ctx,
 			);
+			release.resolve();
 			const firstResult = await first;
 
 			assert.equal(firstResult.isError, undefined);
@@ -327,6 +331,7 @@ describe("recent upstream subagent syncs", () => {
 			assert.equal(status.isError, undefined);
 			assert.equal(calls.length, 1);
 		} finally {
+			release.resolve();
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});

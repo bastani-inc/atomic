@@ -134,7 +134,7 @@ When a blocking `intercom.ask` targets a workflow stage that has already complet
 
 When a blocking ask reaches a sibling workflow stage during an active model/tool turn, the target reserves it synchronously in the open stage generation before any asynchronous foreground-owner detach handshake. Queue insertion waits inside that reservation, and stage finalization drains it before publishing the terminal snapshot. This prevents a structured-output or other terminal tool call from overtaking a mid-turn ask. If destination-side admission genuinely cannot complete, the asker receives an exact-thread actionable error instead of consuming the full 10-minute timeout.
 
-For delegated children, queued messages and terminal lifecycle notices are ordered per child. Intercom claims the terminal child’s pre-terminal ordinary entries in FIFO order and atomically admits that prelude together with the paused, completed, or failed notice. A process-local companion bridge covers lazily loaded extensions whose event buses are distinct, while exact terminal-identity deduplication prevents double admission even when the successful terminal dispatch has no queued prelude. Failed dispatches remain retryable, and pause/resume/completion identities remain distinct. Other children’s entries remain independently queued, messages are not discarded, terminal admission does not wait for a separate model turn, and correlated ask replies still bypass unrelated queued sends.
+For delegated children, queued messages and terminal lifecycle notices are ordered per child. Intercom claims the terminal child's pre-terminal ordinary entries in FIFO order and atomically admits that prelude together with the interrupted, completed, or failed notice. A process-local companion bridge covers lazily loaded extensions whose event buses are distinct, while exact terminal-identity deduplication prevents double admission even when the successful terminal dispatch has no queued prelude. Failed dispatches remain retryable, and each terminal child identity is admitted only once. Other children's entries remain independently queued, messages are not discarded, terminal admission does not wait for a separate model turn, and correlated ask replies still bypass unrelated queued sends.
 
 ## Workflow: Planner-Worker Coordination
 
@@ -230,7 +230,7 @@ This matters because the agent receiving the message doesn't need to reconstruct
 
 `send` is fire-and-forget — the tool returns immediately after delivery. By default, it sends immediately even in interactive sessions. If you want an approval dialog before non-reply sends, set `confirmSend: true` in config. Replies that include `replyTo` still skip confirmation so reply-hint flows can continue without an extra approval step.
 
-`ask` sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. No confirmation dialog — if you're asking and waiting, the intent is clear. A completed workflow-stage target with a retained conversation is automatically reopened for one post-mortem turn; unavailable or non-resumable completed targets fail actionably without consuming the full reply timeout.
+`ask` sends the message and blocks until the recipient responds (10-minute timeout). If the recipient disconnects after delivery, the ask fails promptly with an error naming that session; the timeout remains the backstop for a connected but unresponsive recipient. The reply comes back as the tool result, so the agent continues in the same turn with full context. No confirmation dialog — if you're asking and waiting, the intent is clear. A completed workflow-stage target with a retained conversation is automatically reopened for one post-mortem turn; unavailable or non-resumable completed targets fail actionably without consuming the full reply timeout.
 
 `reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom({ action: "reply", message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom({ action: "pending" })` to inspect them and then call `reply` with `to` to disambiguate.
 
@@ -244,21 +244,21 @@ This workflow uses Atomic's in-process subagent admission. When the runtime admi
 
 `contact_supervisor` is registered from the typed admission record. The record binds the supervisor target, canonical child identity, child index, session name, and broker-issued capability to the child session; these values are not inherited from environment variables. If the parent does not grant supervisor coordination, the session falls back to the regular `intercom` tool.
 
-The child identity remains stable across foreground continuation, interruption, and cold resume. Intercom detach uses the same in-process continuation as foreground coordination, so the terminal envelope retains one canonical path.
+Parent-targeted decisions, interviews, and `intercom.ask` make the current child terminal for continuation. The parent receives the original question, ordered attachments, agent identity, and a dynamic `[TASK_CONTEXT]` handoff for a fresh child with a new run identity. Ordinary Intercom detach for sends, progress updates, and non-parent asks remains separate.
 
 ### Three Reasons
 
 | Reason | Behavior | Use When |
 |--------|----------|----------|
-| `need_decision` | Sends an ask and blocks until the supervisor replies (10-minute timeout) | The subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision |
-| `interview_request` | Sends structured questions and blocks until the supervisor replies | The subagent needs multiple machine-readable answers from the supervisor in one exchange |
+| `need_decision` | In a claimed foreground run, ends the child and returns a fresh-child handoff; otherwise uses the normal ask fallback | The subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision |
+| `interview_request` | In a claimed foreground run, ends the child and returns structured questions in a fresh-child handoff | The subagent needs multiple machine-readable answers from the supervisor in one exchange |
 | `progress_update` | Fire-and-forget update to the supervisor | Meaningful progress or unexpected discoveries that change the plan |
 
-Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
+Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally.
 
 Cross-group delivery uses a dedicated broker protocol. Ordinary raw `send` frames always remain group-isolated and are rejected if they include a forged `channel: "supervisor"` marker. A child can cross groups only after its broker-issued capability has bound its registered socket to the exact supervisor. The broker adds the `supervisor` channel marker to validated inbound traffic so parent relays can distinguish it. Replies cross back only when `replyTo` matches a recorded supervisor message in the exact reverse direction; fabricated thread IDs do not bypass isolation.
 
-During a foreground subagent run, Atomic probes for an exact live foreground owner before delivery. The matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before asks, sends, decisions, interviews, and progress updates enter the parent's model-visible steering queue. A busy workflow stage first reserves the message in its AgentSession generation boundary, then waits inside that admission for the same detach handshake before model-visible queue insertion. This prevents terminal stage close from overtaking the handshake while still preventing the active subagent tool from blocking the child request that would release it; unclaimed traffic and a still-current receiver whose owner disappears before commit fall back to ordinary queue insertion. One accepted commit releases foreground supervision for every active member of a parallel group while retaining each in-process session and eventual result. Blocking calls remain alive until the parent sends the exact threaded reply; fire-and-forget calls create no reply waiter. Background and unmatched traffic for ordinary sessions keeps queued-until-idle behavior, and generation cancellation/replacement invalidates stale handshakes.
+During a foreground subagent run, parent-targeted decisions, interviews, and asks are claimed before broker delivery or reply-waiter admission. The current child ends and its parent tool call receives the fresh-start handoff. Parallel claims interrupt active siblings, prevent queued tasks from launching, and retain no sibling set for later bare-run-ID continuation. Sends, progress updates, and asks to other peers retain the exact-child probe/commit detach path and ordinary Intercom delivery behavior.
 
 ### Example: Blocked Subagent Asks for Guidance
 
@@ -267,7 +267,7 @@ contact_supervisor({
   reason: "need_decision",
   message: "The auth service returns 403 instead of 401 for expired tokens. Should I treat 403 as a re-auth trigger or a hard failure?"
 })
-// → Reply from supervisor: Treat 403 as re-auth trigger. Update the token refresh logic.
+// → Parent receives a [TASK_CONTEXT] handoff and launches a fresh child with the answer.
 ```
 
 ### Example: Structured Supervisor Interview
@@ -284,7 +284,7 @@ contact_supervisor({
     ]
   }
 })
-// → Reply from supervisor: { "responses": [{ "id": "api", "value": "Stable API" }, ...] }
+// → Parent includes the structured supervisor answer in a fresh child's task.
 ```
 
 ### Example: Progress Update
@@ -350,7 +350,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 | `message` | string | The decision request, optional interview note, or progress update |
 | `interview` | object | Required for `interview_request`: `{ title?, description?, questions: [...] }` |
 
-**`need_decision`** — Sends a formatted ask to the supervisor and blocks until it replies (10-minute timeout). The reply comes back as the tool result. Includes run metadata in the message so the supervisor knows which subagent is asking.
+**`need_decision`** — Sends a formatted ask to the supervisor and blocks until it replies (10-minute timeout). If the supervisor disconnects after delivery, the wait fails promptly instead. The reply comes back as the tool result. Includes run metadata in the message so the supervisor knows which subagent is asking.
 
 **`interview_request`** — Sends a formatted, agent-readable interview to the supervisor and blocks until it replies. Questions use a local pi-interview-like shape: `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info`. `info` questions are context-only and do not need responses. The supervisor reply should be JSON with `{ "responses": [{ "id": "...", "value": ... }] }`. Parsed JSON replies are returned in `details.structuredReply`.
 
@@ -368,11 +368,13 @@ Target lookup accepts only an exact full session ID or an exact case-insensitive
 
 **`send`** — Sends a message to the specified session. By default it sends immediately, including in interactive sessions. Set `confirmSend: true` in config if you want a confirmation dialog for non-reply sends. Replies that include `replyTo` skip confirmation. Returns delivery confirmation.
 
-**`ask`** — Sends a message and waits for the recipient to reply (10-minute timeout). The reply is returned as the tool result. No confirmation dialog. Only one pending `ask` is allowed per session at a time; if several blocking requests race (parallel `ask` calls, or `ask` alongside `contact_supervisor`), one wins the reservation and each other call returns a normal "Already waiting for a reply" tool error without disturbing the pending ask. Use this when the agent needs the answer to continue working.
+**`ask`** — Sends a message and waits for the recipient to reply (10-minute timeout). A recipient disconnect after delivery fails only that peer's exact wait promptly; the timeout remains the backstop while the recipient stays connected. Up to `maxPendingAsks` blocking asks (default: 6) may run concurrently, including same-target and mixed-target fan-out. Replies resolve by exact sender and message ID, so out-of-order replies cannot cross-settle another call. When capacity is full, new asks receive a structured refusal. Use this when the agent needs the answer to continue working.
 
-**`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass an exact name or exact full session ID in `to`, or inspect them with `pending` first. Under the hood this is still a normal `send` with the exact `replyTo` value.
+**`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass an exact name/full session ID in `to`, or the listed message ID in `replyTo`; use `pending` to inspect them first. `replyTo` also disambiguates multiple asks from the same sender. Under the hood this is still a normal `send` with the exact `replyTo` value.
 
 **`pending`** — Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. Useful when replying after the original triggered turn.
+
+`contact_supervisor` decisions and interviews are deliberately exclusive per child: one supervisor wait may coexist with ordinary peer asks, but a second concurrent supervisor wait receives `Already waiting for a supervisor reply`. Claimed foreground parent handoffs remain first-claim-wins and do not allocate a waiter. Multiple children can contact the same parent independently because inbound asks and handoffs are keyed by child/message identity. Mutual peer asks are supported, but each side must process inbound work to reply; the per-waiter timeout remains the deadlock backstop.
 
 **`status`** — Shows connection status, session ID, current group, and the total count of active sessions in that group. A `group` filter remains a read-only peek.
 

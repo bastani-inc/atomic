@@ -274,6 +274,46 @@ test("repository declarations resolve to their real budgets", async () => {
 	assert.equal(notification.size, 0, "no test may restate the suite default as an explicit lower budget");
 });
 
+test("the real sequential workflow reload declaration keeps its explicit timeout budget", () => {
+	const file = "test/unit/workflow-run-state-real-reload.test.ts";
+	const name = "user-global agent launch keeps its real publish watcher through resource and installed full reload";
+	const scored = evaluateDurations(
+		report([{ file, tests: [{ title: name, status: "passed", duration: 21_611 }] }]),
+		30_000,
+		root,
+	);
+	const sample = scored.samples[0];
+	assert.equal(sample?.timeoutMs, 120_000);
+	assert.equal(sample?.explicit, true);
+	assert.equal(sample?.ratio, 21_611 / 120_000);
+	assert.deepEqual(scored.warnings, []);
+	assert.deepEqual(scored.failures, []);
+});
+
+test("unsupported wrappers and lookalike members do not donate timeout budgets", () => {
+	const source = [
+		"test.each([1])(",
+		'  "table wrapper",',
+		"  async () => {",
+		"  },",
+		"  90_000,",
+		");",
+		"",
+		"test.runIf(true)(",
+		'  "conditional wrapper",',
+		"  async () => {",
+		"  },",
+		"  120_000,",
+		");",
+		"",
+		'helper.test.sequential("foreign member", async () => {',
+		"}, 180_000);",
+		'test.sequentially("lookalike member", async () => {',
+		"}, 240_000);",
+	].join("\n");
+	assert.deepEqual([...declaredTimeouts(source)], []);
+});
+
 /**
  * The budget now lives in the resolved vitest config rather than a `--timeout`
  * flag, so resolution follows the same one indirection CI uses: `npm run

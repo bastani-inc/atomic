@@ -40,7 +40,10 @@ export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdo
 		} else if (entry.type === "message" && entry.message.role === "toolResult") {
 			usage = (entry.message as MessageWithUsage).usage;
 			key = usage ? "Tools/summaries" : undefined;
-		} else if ((entry.type === "branch_summary" || entry.type === "session_summary") && entry.usage) {
+		} else if (
+			(entry.type === "branch_summary" || entry.type === "session_summary" || entry.type === "compaction") &&
+			entry.usage
+		) {
 			key = "Tools/summaries";
 			usage = entry.usage;
 		}

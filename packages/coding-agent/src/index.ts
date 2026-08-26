@@ -215,6 +215,7 @@ export {
 	createEditTool,
 	createFindTool,
 	createLsTool,
+	createPowerShellTool,
 	createReadOnlyTools,
 	createReadTool,
 	createSearchTool,
@@ -293,6 +294,7 @@ export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from ".
 // invoking the structured ask_user_question UI deterministically).
 // Tools
 export {
+	BASH_SHELL_PRESENTATION,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -305,7 +307,9 @@ export {
 	createEditToolDefinition,
 	createFindToolDefinition,
 	createLocalBashOperations,
+	createLocalPowerShellOperations,
 	createLsToolDefinition,
+	createPowerShellToolDefinition,
 	createReadToolDefinition,
 	createSearchToolDefinition,
 	createWriteToolDefinition,
@@ -327,6 +331,12 @@ export {
 	type LsToolInput,
 	type LsToolOptions,
 	lsToolSystemPromptContribution,
+	type PowerShellOperations,
+	type PowerShellSpawnContext,
+	type PowerShellSpawnHook,
+	type PowerShellToolDetails,
+	type PowerShellToolInput,
+	type PowerShellToolOptions,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,
@@ -335,6 +345,7 @@ export {
 	type SearchToolDetails,
 	type SearchToolInput,
 	type SearchToolOptions,
+	type ShellToolPresentation,
 	searchToolSystemPromptContribution,
 	type ToolsOptions,
 	type TruncationOptions,
@@ -481,5 +492,6 @@ export { createGitEnvironment, GIT_LOCAL_ENV_VARS } from "./utils/git-env.ts";
 export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 export { INTERACTIVE_ENGINE_ENV_VARS, scrubInteractiveEngineEnv } from "./utils/interactive-engine-env.ts";
+export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
 // Shell utilities
-export { getShellConfig } from "./utils/shell.ts";
+export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";

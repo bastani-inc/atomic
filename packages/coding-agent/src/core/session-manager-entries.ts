@@ -107,6 +107,7 @@ export function createCompactionEntry(
 	firstKeptEntryId: string | null,
 	tokensBefore: number,
 	details: VerbatimCompactionDetails,
+	usage: Usage | undefined,
 	byId: { has(id: string): boolean },
 	parentId: string | null,
 ): CompactionEntry<VerbatimCompactionDetails> {
@@ -117,6 +118,7 @@ export function createCompactionEntry(
 		firstKeptEntryId,
 		tokensBefore,
 		details,
+		usage,
 		fromHook: details.rung === "extension" || undefined,
 	};
 }
@@ -256,6 +258,7 @@ export function createLabelEntry(
 
 export function createBranchSummaryEntry(
 	branchFromId: string | null,
+	fromId: string,
 	summary: string,
 	details: unknown,
 	usage: Usage | undefined,
@@ -265,7 +268,7 @@ export function createBranchSummaryEntry(
 	return {
 		type: "branch_summary",
 		...entryBase(byId, branchFromId),
-		fromId: branchFromId ?? "root",
+		fromId,
 		summary,
 		details,
 		usage,

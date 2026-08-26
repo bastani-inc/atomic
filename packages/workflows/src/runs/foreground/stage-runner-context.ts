@@ -83,6 +83,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 					{ kind: "workflow.stage_adapter", name: `prompt:${stageName}`, runId, stageId },
 					() => adapters.prompt!.prompt(promptText, meta),
 				);
+				if (typeof rawText !== "string") return rawText as never;
 				adapterMessages = assistantMessage(rawText);
 				lastAssistantText = await finalizePromptOutput(
 					rawText,

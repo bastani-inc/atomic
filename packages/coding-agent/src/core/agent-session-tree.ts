@@ -195,6 +195,7 @@ export async function navigateTree(
 				summaryDetails,
 				fromExtension,
 				summaryUsage,
+				oldLeafId ?? "root",
 			);
 			summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 

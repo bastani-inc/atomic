@@ -32,6 +32,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
@@ -253,6 +254,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			timestamp: Date.now(),
 		};
 
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+
 		try {
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
@@ -311,7 +314,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 									stream.push({ type: "start", partial: output });
 								}
 							},
-							httpTimeoutMs,
+							streamDeadline.deadlineMs,
 							websocketConnectTimeoutMs,
 							cacheSessionId,
 							accountId,
@@ -387,7 +390,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				try {
 					const headerTimeoutSignal =
 						httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
-					const combinedSignal = combineAbortSignals([options?.signal, headerTimeoutSignal]);
+					const combinedSignal = combineAbortSignals([streamDeadline.signal, headerTimeoutSignal]);
 					try {
 						response = await (options?.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
 							method: "POST",
@@ -464,7 +467,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				startEmitted = true;
 				stream.push({ type: "start", partial: output });
 			}
-			await processStream(response, output, stream, model, grammarToolInputProperties, options);
+			await processStream(response, output, stream, model, grammarToolInputProperties, options, streamDeadline);
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -483,6 +486,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 
@@ -499,7 +504,10 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}
 
-	const base = buildBaseOptions(model, context, options, apiKey);
+	const base = {
+		...buildBaseOptions(model, context, options, apiKey),
+		toolChoice: options?.toolChoice,
+	} satisfies OpenAICodexResponsesOptions;
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
@@ -652,14 +660,22 @@ async function processStream(
 	stream: AssistantMessageEventStream,
 	model: Model<"openai-codex-responses">,
 	grammarToolInputProperties: ReadonlyMap<string, string>,
-	options?: OpenAICodexResponsesOptions,
+	options: OpenAICodexResponsesOptions | undefined,
+	streamDeadline: StreamDeadlineHandle,
 ): Promise<void> {
-	await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal), output), output, stream, model, {
-		serviceTier: options?.serviceTier,
-		grammarToolInputProperties,
-		resolveServiceTier: resolveCodexServiceTier,
-		applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
-	});
+	const events = mapCodexEvents(parseSSE(response, streamDeadline.signal), output);
+	await processResponsesStream(
+		withStreamDeadline(events, streamDeadline.deadlineMs, streamDeadline.abort),
+		output,
+		stream,
+		model,
+		{
+			serviceTier: options?.serviceTier,
+			grammarToolInputProperties,
+			resolveServiceTier: resolveCodexServiceTier,
+			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+		},
+	);
 }
 
 class CodexApiError extends Error {

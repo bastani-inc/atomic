@@ -103,7 +103,7 @@ function shouldPollGitHead(repoDir: string): boolean {
 
 /**
  * Provides git branch and extension statuses - data not otherwise accessible to extensions.
- * Token stats, model info available via ctx.sessionManager and ctx.model.
+ * Context usage is on ctx.getContextUsage(), token stats on ctx.sessionManager.getEntries(), and model info on ctx.model.
  */
 export class FooterDataProvider {
 	private cwd: string;

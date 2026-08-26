@@ -91,7 +91,7 @@ export interface ControlEvent {
 	recentFailureSummary?: string;
 }
 
-export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached";
+export type SubagentResultStatus = "completed" | "failed" | "interrupted" | "detached";
 export type SubagentRunMode = "single" | "parallel";
 
 export interface SubagentResultIntercomChild {
@@ -99,6 +99,7 @@ export interface SubagentResultIntercomChild {
 	status: SubagentResultStatus;
 	summary: string;
 	index?: number;
+	cause?: string;
 	artifactPath?: string;
 	sessionPath?: string;
 	intercomTarget?: string;
@@ -126,7 +127,7 @@ export interface SubagentResultIntercomPayload {
 export interface AgentProgress {
 	index: number;
 	agent: string;
-	status: "pending" | "running" | "completed" | "failed" | "detached";
+	status: "pending" | "running" | "completed" | "failed" | "detached" | "interrupted";
 	activityState?: ActivityState;
 	task: string;
 	/** Effective model for this live attempt, including fallback changes. */
@@ -148,6 +149,8 @@ export interface AgentProgress {
 	tokens: number;
 	durationMs: number;
 	error?: string;
+	/** Terminal abort cause, when progress is an interrupted parent cancellation. */
+	cause?: string;
 	failedTool?: string;
 }
 
@@ -220,6 +223,8 @@ export interface Details {
 	controlEvents?: ControlEvent[];
 	progress?: AgentProgress[];
 	totalSteps?: number;
+	/** Parent ask ended the current child and returned a fresh-subagent handoff. */
+	parentAskYielded?: boolean;
 	progressSummary?: ProgressSummary;
 	artifacts?: {
 		dir: string;

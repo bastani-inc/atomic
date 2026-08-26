@@ -67,13 +67,23 @@ export interface SessionBeforeCompactEvent {
 	signal: AbortSignal;
 }
 
-/** Fired after context compaction */
+/** Fired after context compaction succeeds */
 export interface SessionCompactEvent {
 	type: "session_compact";
 	reason: "manual" | "threshold" | "overflow";
 	parameters: VerbatimCompactionPreparation["parameters"];
 	result: VerbatimCompactionResult;
 	compactionEntry: CompactionEntry<VerbatimCompactionDetails>;
+	fromExtension: boolean;
+}
+
+/** Fired after context compaction fails or is aborted. */
+export interface SessionCompactFailedEvent {
+	type: "session_compact_failed";
+	reason: "manual" | "threshold" | "overflow";
+	errorMessage?: string;
+	aborted: boolean;
+	willRetry: boolean;
 	fromExtension: boolean;
 }
 
@@ -123,6 +133,7 @@ export type SessionEvent =
 	| SessionBeforeForkEvent
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
+	| SessionCompactFailedEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;

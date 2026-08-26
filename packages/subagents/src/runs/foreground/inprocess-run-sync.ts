@@ -20,9 +20,11 @@ import type {
 } from "../../shared/types.js";
 import { getOrCreateSubagentControl } from "../inprocess/control-registry.js";
 import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.js";
+import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.js";
 import { buildModelCandidates } from "../shared/model-fallback.js";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js";
+import { registerExecutionParentAskHandoff } from "./execution-parent-ask-handoff.js";
 
 function emptyUsage(): Usage {
 	return {
@@ -67,7 +69,12 @@ function progressFor(
 	startedAt: number,
 	fastMode: boolean,
 ): AgentProgress {
-	const status = outcome.status === "ok" ? "completed" : outcome.status === "interrupted" ? "failed" : "failed";
+	const status =
+		outcome.status === "ok"
+			? "completed"
+			: outcome.status === "interrupted" && isParentCancellation(outcome.cause)
+				? "interrupted"
+				: "failed";
 	return {
 		index: 0,
 		agent: agent.name,
@@ -84,6 +91,7 @@ function progressFor(
 		durationMs: Math.max(0, Date.now() - startedAt),
 		lastActivityAt: Date.now(),
 		...(outcome.status === "error" ? { error: outcome.cause } : {}),
+		...(outcome.status === "interrupted" && isParentCancellation(outcome.cause) ? { cause: outcome.cause } : {}),
 	};
 }
 
@@ -113,7 +121,11 @@ function resultFromOutcome(
 		agent: agent.name,
 		task,
 		status,
-		...(outcome.status === "error" ? { cause: outcome.cause, error: outcome.cause } : {}),
+		...(outcome.status === "error"
+			? { cause: outcome.cause, error: outcome.cause }
+			: outcome.status === "interrupted" && isParentCancellation(outcome.cause)
+				? { cause: outcome.cause }
+				: {}),
 		stats: outcome.stats,
 		path: outcome.path,
 		envelope: outcome.envelope,
@@ -123,10 +135,8 @@ function resultFromOutcome(
 		...(model === undefined ? {} : { model }),
 		...(thinking === undefined ? {} : { thinking }),
 		...(fastModeEnabled ? { fastMode: true } : {}),
-		...(outcome.status === "ok" || outcome.status === "error"
-			? outcome.attemptedModels?.length
-				? { attemptedModels: [...outcome.attemptedModels] }
-				: {}
+		...("attemptedModels" in outcome && outcome.attemptedModels?.length
+			? { attemptedModels: [...outcome.attemptedModels] }
 			: {}),
 		...(outcome.skills?.length ? { skills: [...outcome.skills] } : {}),
 		...(outcome.skillsWarning ? { skillsWarning: outcome.skillsWarning } : {}),
@@ -262,6 +272,13 @@ export async function runSingleInProcess(
 		cwd,
 		testSession: testSession,
 		sessionFile: options.sessionFile,
+		...(options.progressPath ? { progressPath: options.progressPath } : {}),
+		...(options.progressArtifactPath
+			? { progressArtifactPath: options.progressArtifactPath }
+			: options.progressPath && artifactsDir
+				? { progressArtifactPath: options.progressPath }
+				: {}),
+		...(artifactPaths?.outputPath ? { outputArtifactPath: artifactPaths.outputPath } : {}),
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,
@@ -349,11 +366,6 @@ export async function runSingleInProcess(
 			lastActivityAt: Date.now(),
 		});
 	}
-	control.registerAttempt(options.runId, running, {
-		model: resolvedCandidate?.model,
-		modelId: candidate,
-		thinkingLevel: spec.thinkingLevel,
-	});
 	let detached = false;
 	let resolveContinuation!: () => void;
 	const continuation = new Promise<void>((resolve) => {
@@ -369,10 +381,15 @@ export async function runSingleInProcess(
 			resolveContinuation();
 		},
 	});
+	const parentAskCleanup = registerExecutionParentAskHandoff(options, {
+		agent: agent.name,
+		isUnavailable: () => running.status !== "running" || detached,
+	});
 	const terminal = running.promise.then((value) => ({ kind: "terminal" as const, value }));
 	const winner = await Promise.race([terminal, continuation.then(() => ({ kind: "continued" as const }))]);
 	if (winner.kind === "continued") {
 		detachCleanup();
+		parentAskCleanup();
 		void running.promise.then(async (continuedOutcome) => {
 			const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths, {
 				cwd,
@@ -383,7 +400,10 @@ export async function runSingleInProcess(
 				{
 					path: continuedOutcome.path,
 					status: continuedOutcome.status,
-					...(continuedOutcome.status === "error" ? { cause: continuedOutcome.cause } : {}),
+					...(continuedOutcome.status === "error" ||
+					(continuedOutcome.status === "interrupted" && continuedOutcome.cause)
+						? { cause: continuedOutcome.cause }
+						: {}),
 					stats: continuedOutcome.stats,
 					envelope: continuedOutcome.envelope,
 					...(recovered.model === undefined ? {} : { model: recovered.model }),
@@ -441,6 +461,7 @@ export async function runSingleInProcess(
 		return continuedResult;
 	}
 	detachCleanup();
+	parentAskCleanup();
 	const outcome = winner.value;
 	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, {
 		cwd,
@@ -453,7 +474,9 @@ export async function runSingleInProcess(
 		{
 			path: outcome.path,
 			status: outcome.status,
-			...(outcome.status === "error" ? { cause: outcome.cause } : {}),
+			...(outcome.status === "error" || (outcome.status === "interrupted" && outcome.cause)
+				? { cause: outcome.cause }
+				: {}),
 			stats: outcome.stats,
 			envelope: outcome.envelope,
 			...(result.model === undefined ? {} : { model: result.model }),

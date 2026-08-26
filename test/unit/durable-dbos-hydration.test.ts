@@ -19,9 +19,10 @@ import type {
 	DurableToolCheckpoint,
 	DurableUiCheckpoint,
 } from "../../packages/workflows/src/durable/types.js";
-import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import type { WorkflowSerializableValue, WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
+import { createStore, run, Type, workflow } from "./executor-shared.js";
 
 describe("DbosDurableBackend hydration (fresh process)", () => {
 	let sdk: ReturnType<typeof createMockSdk>;
@@ -473,5 +474,260 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 		assert.equal(session2.getToolOutput("wf-resume", hash), "COMPUTED");
 		assert.equal(session2.getWorkflow("wf-resume")!.name, "test");
 		assert.equal(session2.listCheckpoints("wf-resume").length, 1);
+	});
+
+	test("hydrateWorkflow reconstructs a terminal-only task stage and replays without prompting", async () => {
+		const workflowId = "wf-task-terminal-hydrate";
+		const replayKey = "stage:task:review:1";
+		const cp: DurableStageCheckpoint = {
+			kind: "stage",
+			workflowId,
+			checkpointId: `stage:${replayKey}`,
+			name: "review",
+			replayKey,
+			output: "hydrated terminal review",
+			completedAt: 1400,
+			sessionFile: "/tmp/review.jsonl",
+			startedAt: 1000,
+			durationMs: 400,
+			structured: { approved: true },
+			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
+			warnings: ["hydrated warning"],
+		};
+		seedMockWorkflow(sdk, { workflowId, name: "task-terminal-hydrate", status: "PENDING" });
+		seedMockCheckpoint(sdk, workflowId, cp);
+		const fresh = new DbosDurableBackend(sdk);
+		await fresh.hydrateWorkflow(workflowId);
+		assert.equal(fresh.getStageOutput(workflowId, replayKey), "hydrated terminal review");
+		const hydrated = fresh
+			.listCheckpoints(workflowId)
+			.find((checkpoint): checkpoint is DurableStageCheckpoint => checkpoint.kind === "stage");
+		assert.deepEqual(hydrated?.structured, { approved: true });
+		assert.deepEqual(hydrated?.artifacts, [{ kind: "output", path: "/tmp/review.md" }]);
+		assert.deepEqual(hydrated?.warnings, ["hydrated warning"]);
+		let prompts = 0;
+		const def = workflow({
+			name: "task-terminal-hydrate",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const review = await ctx.task("review", { prompt: "ignored" });
+				return {
+					result: JSON.stringify({
+						text: review.text,
+						structured: review.structured,
+						artifacts: review.artifacts,
+						warnings: review.warnings,
+					}),
+				};
+			},
+		});
+		const result = await run(
+			def,
+			{},
+			{
+				runId: workflowId,
+				store: createStore(),
+				durableBackend: fresh,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "completed");
+		assert.deepEqual(JSON.parse(result.result?.result ?? ""), {
+			text: "hydrated terminal review",
+			structured: { approved: true },
+			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
+			warnings: ["hydrated warning"],
+		});
+		assert.equal(prompts, 0);
+		assert.equal(fresh.getWorkflow(workflowId)?.status, "completed");
+	});
+
+	test("fresh DBOS hydration preserves terminal-only task fallback metadata without prompting", async () => {
+		const workflowId = "wf-task-terminal-hydrate";
+		const replayKey = "stage:task:review:1";
+		const attemptedModels = ["anthropic/claude-primary", "openai/gpt-fallback", "anthropic/claude-primary"];
+		const modelAttempts = [
+			{
+				model: "anthropic/claude-primary",
+				success: false,
+				reasoningLevel: "xhigh" as const,
+				error: "provider unavailable",
+				usage: { input: 23, output: 4, cacheRead: 7, cacheWrite: 8, cost: 1.25, turns: 2 },
+			},
+			{
+				model: "openai/gpt-fallback",
+				success: true,
+				reasoningLevel: "low" as const,
+				usage: { input: 29, output: 13, cacheRead: 9, cacheWrite: 10, cost: 1.75, turns: 3 },
+			},
+		];
+		const cp: DurableStageCheckpoint = {
+			kind: "stage",
+			workflowId,
+			checkpointId: `stage:${replayKey}`,
+			name: "review",
+			replayKey,
+			output: "hydrated terminal review",
+			completedAt: 1400,
+			sessionFile: "/tmp/review.jsonl",
+			startedAt: 1000,
+			durationMs: 400,
+			fastMode: true,
+			attemptedModels,
+			modelAttempts,
+			structured: { approved: true },
+			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
+			warnings: ["hydrated warning"],
+		};
+		seedMockWorkflow(sdk, { workflowId, name: "task-terminal-hydrate", status: "PENDING" });
+		seedMockCheckpoint(sdk, workflowId, cp);
+		const fresh = new DbosDurableBackend(sdk);
+		await fresh.hydrateWorkflow(workflowId);
+		assert.equal(fresh.getStageOutput(workflowId, replayKey), "hydrated terminal review");
+		const hydrated = fresh
+			.listCheckpoints(workflowId)
+			.find((checkpoint): checkpoint is DurableStageCheckpoint => checkpoint.kind === "stage");
+		assert.deepEqual(hydrated?.structured, { approved: true });
+		assert.deepEqual(hydrated?.artifacts, [{ kind: "output", path: "/tmp/review.md" }]);
+		assert.deepEqual(hydrated?.warnings, ["hydrated warning"]);
+		let prompts = 0;
+		const def = workflow({
+			name: "task-terminal-hydrate",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const review = await ctx.task("review", { prompt: "ignored" });
+				return {
+					result: JSON.stringify({
+						text: review.text,
+						structured: review.structured,
+						artifacts: review.artifacts,
+						warnings: review.warnings,
+						fastMode: review.fastMode,
+						attemptedModels: review.attemptedModels,
+						modelAttempts: review.modelAttempts,
+					}),
+				};
+			},
+		});
+		const result = await run(
+			def,
+			{},
+			{
+				runId: workflowId,
+				store: createStore(),
+				durableBackend: fresh,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "completed");
+		assert.deepEqual(JSON.parse(result.result?.result ?? ""), {
+			text: "hydrated terminal review",
+			structured: { approved: true },
+			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
+			warnings: ["hydrated warning"],
+			fastMode: true,
+			attemptedModels,
+			modelAttempts,
+		});
+		assert.equal(prompts, 0);
+		assert.equal(fresh.getWorkflow(workflowId)?.status, "completed");
+	});
+
+	test("complete task result round-trips through fresh DBOS hydration", async () => {
+		const workflowId = "wf-complete-task-hydrate";
+		const replayKey = "stage:task:review:1";
+		const output: WorkflowTaskResult = {
+			name: "review",
+			stageName: "review",
+			text: JSON.stringify({ approved: true }, null, 2),
+			structured: { approved: true },
+			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
+			warnings: ["hydrated warning"],
+			sessionFile: "/tmp/review.jsonl",
+			model: "openai/gpt-test",
+		};
+		const cp: DurableStageCheckpoint = {
+			kind: "stage",
+			workflowId,
+			checkpointId: `task:${replayKey}`,
+			name: "review",
+			replayKey,
+			output,
+			completedAt: 1400,
+			structured: output.structured,
+			artifacts: output.artifacts,
+			warnings: output.warnings,
+			sessionFile: output.sessionFile,
+			model: output.model,
+		};
+		seedMockWorkflow(sdk, { workflowId, name: "complete-task-hydrate", status: "PENDING" });
+		seedMockCheckpoint(sdk, workflowId, cp);
+		const fresh = new DbosDurableBackend(sdk);
+		await fresh.hydrateWorkflow(workflowId);
+		let prompts = 0;
+		const result = await run(
+			workflow({
+				name: "complete-task-hydrate",
+				description: "",
+				inputs: {},
+				outputs: { result: Type.String() },
+				run: async (ctx) => {
+					const review = await ctx.task("review", { prompt: "ignored" });
+					return {
+						result: JSON.stringify({
+							text: review.text,
+							structured: review.structured,
+							artifacts: review.artifacts,
+							warnings: review.warnings,
+							sessionFile: review.sessionFile,
+							model: review.model,
+						}),
+					};
+				},
+			}),
+			{},
+			{
+				runId: workflowId,
+				store: createStore(),
+				durableBackend: fresh,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "completed");
+		assert.deepEqual(JSON.parse(result.result?.result ?? ""), {
+			text: output.text,
+			structured: output.structured,
+			artifacts: output.artifacts,
+			warnings: output.warnings,
+			sessionFile: output.sessionFile,
+			model: output.model,
+		});
+		assert.equal(prompts, 0);
+		assert.equal(fresh.getWorkflow(workflowId)?.status, "completed");
 	});
 });

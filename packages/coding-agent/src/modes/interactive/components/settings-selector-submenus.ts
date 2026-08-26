@@ -1,5 +1,14 @@
 import type { Component, SelectItem, SelectListLayoutOptions, SettingItem } from "@earendil-works/pi-tui";
-import { Container, SelectList, SettingsList, Spacer, Text } from "@earendil-works/pi-tui";
+import {
+	Container,
+	fuzzyFilter,
+	getKeybindings,
+	Input,
+	SelectList,
+	SettingsList,
+	Spacer,
+	Text,
+} from "@earendil-works/pi-tui";
 import type { WarningSettings } from "../../../core/settings-manager.ts";
 import {
 	getSelectListTheme,
@@ -65,6 +74,12 @@ export class WarningSettingsSubmenu extends Container {
 
 export class SelectSubmenu extends Container {
 	private selectList: SelectList;
+	private readonly allOptions: SelectItem[];
+	private readonly currentValue: string;
+	private readonly onSelectValue: (value: string) => void;
+	private readonly onCancelValue: () => void;
+	private searchInput?: Input;
+	private listChildIndex = 0;
 
 	constructor(
 		title: string,
@@ -74,14 +89,25 @@ export class SelectSubmenu extends Container {
 		onSelect: (value: string) => void,
 		onCancel: () => void,
 		onSelectionChange?: (value: string) => void,
+		searchable = false,
 	) {
 		super();
+		this.allOptions = options;
+		this.currentValue = currentValue;
+		this.onSelectValue = onSelect;
+		this.onCancelValue = onCancel;
 
 		this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
 
 		if (description) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("muted", description), 0, 0));
+		}
+
+		if (searchable) {
+			this.addChild(new Spacer(1));
+			this.searchInput = new Input();
+			this.addChild(this.searchInput);
 		}
 
 		this.addChild(new Spacer(1));
@@ -110,6 +136,7 @@ export class SelectSubmenu extends Container {
 			};
 		}
 
+		this.listChildIndex = this.children.length;
 		this.addChild(this.selectList);
 
 		this.addChild(new Spacer(1));
@@ -117,7 +144,37 @@ export class SelectSubmenu extends Container {
 	}
 
 	handleInput(data: string): boolean {
-		this.selectList.handleInput(data);
+		if (!this.searchInput) {
+			this.selectList.handleInput(data);
+			return true;
+		}
+		const kb = getKeybindings();
+		if (
+			kb.matches(data, "tui.select.up") ||
+			kb.matches(data, "tui.select.down") ||
+			kb.matches(data, "tui.select.confirm") ||
+			kb.matches(data, "tui.select.cancel")
+		) {
+			this.selectList.handleInput(data);
+			return true;
+		}
+		this.searchInput.handleInput(data);
+		const query = this.searchInput.getValue();
+		const options = query
+			? fuzzyFilter(this.allOptions, query, (item) => `${item.label} ${item.description ?? ""}`)
+			: this.allOptions;
+		const list = new SelectList(
+			options,
+			Math.min(options.length, 10),
+			getSelectListTheme(),
+			SETTINGS_SUBMENU_SELECT_LIST_LAYOUT,
+		);
+		const currentIndex = options.findIndex((item) => item.value === this.currentValue);
+		if (currentIndex !== -1) list.setSelectedIndex(currentIndex);
+		list.onSelect = (item) => this.onSelectValue(item.value);
+		list.onCancel = this.onCancelValue;
+		this.children[this.listChildIndex] = list;
+		this.selectList = list;
 		return true;
 	}
 }

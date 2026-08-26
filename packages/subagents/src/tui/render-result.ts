@@ -1,6 +1,7 @@
 import { getMarkdownTheme, keyHintIfBound } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
@@ -23,6 +24,19 @@ import {
 	hasEmptyTextOutputWithoutOutputTarget,
 	snapshotNowForProgress,
 } from "./render-status-progress.js";
+
+function parentAskOutput(result: AgentToolResult<Details>): string | undefined {
+	if (!result.details?.parentAskYielded) return undefined;
+	return result.content.find((part) => part.type === "text")?.text;
+}
+
+function appendParentAskOutput(component: Component, output: string | undefined, theme: Theme): Component {
+	if (!output) return component;
+	const container = new Container();
+	container.addChild(component);
+	container.addChild(new Text(theme.fg("accent", output), 0, 0));
+	return container;
+}
 
 export function renderLiveSubagentResult(
 	result: AgentToolResult<Details>,
@@ -79,18 +93,28 @@ export function renderSubagentResult(
 
 	const expanded = options.expanded;
 	const mdTheme = getMarkdownTheme();
+	const handoffOutput = parentAskOutput(result);
 
 	if (d.mode === "single" && d.results.length === 1) {
 		const r = d.results[0];
-		if (!expanded) return renderSingleCompact(d, r, theme, options.now, options.pulseFrame);
+		if (!expanded)
+			return appendParentAskOutput(
+				renderSingleCompact(d, r, theme, options.now, options.pulseFrame),
+				handoffOutput,
+				theme,
+			);
 		const isRunning = r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
-			: r.detached || r.status === "continued"
-				? theme.fg("warning", "detached")
-				: r.status === "ok"
-					? theme.fg("success", "ok")
-					: theme.fg("error", "failed");
+			: d.parentAskYielded
+				? theme.fg("warning", "yielded")
+				: r.detached || r.status === "continued"
+					? theme.fg("warning", "detached")
+					: isParentCancellation(r.cause) && (r.interrupted || r.status === "interrupted")
+						? theme.fg("warning", "cancelled")
+						: r.status === "ok"
+							? theme.fg("success", "ok")
+							: theme.fg("error", "failed");
 		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 		const output = r.truncation?.text || getSingleResultOutput(r);
 
@@ -183,10 +207,11 @@ export function renderSubagentResult(
 			c.addChild(new Spacer(1));
 			c.addChild(new Text(fit(theme.fg("dim", `Artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0));
 		}
-		return c;
+		return appendParentAskOutput(c, handoffOutput, theme);
 	}
 
-	if (!expanded) return renderMultiCompact(d, theme, options.now, options.pulseFrame);
+	if (!expanded)
+		return appendParentAskOutput(renderMultiCompact(d, theme, options.now, options.pulseFrame), handoffOutput, theme);
 
 	const hasRunning =
 		d.progress?.some((p) => p.status === "running") || d.results.some((r) => r.progress?.status === "running");
@@ -199,13 +224,22 @@ export function renderSubagentResult(
 			r.progress?.status !== "running" &&
 			hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
+	const hasCancelled = d.results.some(
+		(result) => isParentCancellation(result.cause) && (result.interrupted || result.status === "interrupted"),
+	);
 	const icon = hasRunning
 		? theme.fg("warning", "running")
-		: hasEmptyWithoutTarget
-			? theme.fg("warning", "warning")
-			: ok === d.results.length
-				? theme.fg("success", "ok")
-				: theme.fg("error", "failed");
+		: d.parentAskYielded
+			? theme.fg("warning", "yielded")
+			: hasEmptyWithoutTarget
+				? theme.fg("warning", "warning")
+				: ok === d.results.length
+					? theme.fg("success", "ok")
+					: d.results.some((result) => result.status === "error")
+						? theme.fg("error", "failed")
+						: hasCancelled
+							? theme.fg("warning", "cancelled")
+							: theme.fg("error", "failed");
 
 	const totalSummary =
 		d.progressSummary ||
@@ -318,11 +352,13 @@ export function renderSubagentResult(
 			? theme.fg("warning", "running")
 			: r.status === "error"
 				? theme.fg("error", "failed")
-				: r.status === "skipped" || r.status === "interrupted" || r.status === "continued"
-					? theme.fg("warning", r.status)
-					: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
-						? theme.fg("warning", "warning")
-						: theme.fg("success", "done");
+				: isParentCancellation(r.cause) && (r.interrupted || r.status === "interrupted")
+					? theme.fg("warning", "cancelled")
+					: r.status === "skipped" || r.status === "interrupted" || r.status === "continued"
+						? theme.fg("warning", r.status)
+						: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
+							? theme.fg("warning", "warning")
+							: theme.fg("success", "done");
 		const stats = rProg
 			? ` | ${rProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(rProg, options.now))}`
 			: "";
@@ -410,5 +446,5 @@ export function renderSubagentResult(
 		c.addChild(new Spacer(1));
 		c.addChild(new Text(fit(theme.fg("dim", `Artifacts dir: ${shortenPath(d.artifacts.dir)}`)), 0, 0));
 	}
-	return c;
+	return appendParentAskOutput(c, handoffOutput, theme);
 }

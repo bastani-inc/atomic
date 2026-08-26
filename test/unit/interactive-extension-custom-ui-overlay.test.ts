@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-custom-ui.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import "../../packages/coding-agent/src/modes/interactive/interactive-extension-context.ts";
+import "../../packages/coding-agent/src/modes/interactive/interactive-extension-runtime.ts";
+import { installReactiveWidget } from "../../packages/coding-agent/src/core/extensions/reactive-widget.ts";
 import { sleep } from "../helpers/runtime.js";
 
 initTheme("dark");
@@ -202,4 +206,73 @@ test("an in-process overlay that omits the opt-in leaves its component unmarked"
 	);
 	done(undefined);
 	await settled;
+});
+
+test("clearExtensionWidgets and resetExtensionUI reattach a live below-editor widget", () => {
+	const scheduled: Array<() => void> = [];
+	const mode = Object.assign(Object.create(InteractiveModeBase.prototype), {
+		extensionWidgetsAbove: new Map(),
+		extensionWidgetsBelow: new Map(),
+		widgetReleaseListeners: new Map(),
+		renderWidgets: () => {},
+		ui: { hideOverlay: () => {}, requestRender: () => {} },
+		clearExtensionTerminalInputListeners: () => {},
+		setExtensionFooter: () => {},
+		setExtensionHeader: () => {},
+		footerDataProvider: { clearExtensionStatuses: () => {} },
+		footer: { invalidate: () => {} },
+		autocompleteProviderWrappers: [],
+		setCustomEditorComponent: () => {},
+		setupAutocompleteProvider: () => {},
+		defaultEditor: { onExtensionShortcut: undefined },
+		interactiveEngineShortcutHandler: () => false,
+		updateTerminalTitle: () => {},
+		workingMessage: undefined,
+		workingVisible: true,
+		setWorkingIndicator: () => {},
+		loadingAnimation: undefined,
+		chatContainer: { children: [] },
+		streamingComponent: undefined,
+		setHiddenThinkingLabel: () => {},
+	});
+	const snapshot = { visible: true };
+	const controller = installReactiveWidget({
+		ui: {
+			setWidget: (key, factory, options) => {
+				const hostFactory =
+					factory === undefined
+						? undefined
+						: (tui: TUI, theme: Parameters<NonNullable<typeof factory>>[1]): Component & { dispose?(): void } => {
+								const component = factory(tui, theme);
+								return {
+									render: (width) => component.render(width),
+									invalidate: component.invalidate ?? (() => {}),
+									...(component.dispose ? { dispose: () => component.dispose?.() } : {}),
+								};
+							};
+				InteractiveModeBase.prototype.setExtensionWidget.call(mode, key, hostFactory, options);
+			},
+			onWidgetRelease: (key, listener) =>
+				InteractiveModeBase.prototype.onExtensionWidgetRelease.call(mode, key, listener),
+		},
+		key: "test.widget",
+		placement: "belowEditor",
+		scheduler: { queueMicrotask: (handler: () => void) => scheduled.push(handler) },
+		getSnapshot: () => snapshot,
+		getPreviewLines: (current) => (current.visible ? ["running"] : []),
+		render: () => ["running"],
+	});
+	while (scheduled.length > 0) scheduled.shift()!();
+	assert.equal(mode.extensionWidgetsBelow.has("test.widget"), true);
+
+	InteractiveModeBase.prototype.clearExtensionWidgets.call(mode);
+	assert.equal(mode.extensionWidgetsBelow.has("test.widget"), false);
+	while (scheduled.length > 0) scheduled.shift()!();
+	assert.equal(mode.extensionWidgetsBelow.has("test.widget"), true);
+
+	InteractiveModeBase.prototype.resetExtensionUI.call(mode);
+	assert.equal(mode.extensionWidgetsBelow.has("test.widget"), false);
+	while (scheduled.length > 0) scheduled.shift()!();
+	assert.equal(mode.extensionWidgetsBelow.has("test.widget"), true);
+	controller.dispose();
 });

@@ -1,8 +1,9 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
+import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";
 
 export type LockResult<T> = {
@@ -96,7 +97,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		for (let i = this.readPaths.length - 1; i >= 0; i--) {
 			const readPath = this.readPaths[i]!;
 			if (!existsSync(readPath)) continue;
-			const parsed = JSON.parse(readFileSync(readPath, "utf-8")) as AuthStorageData;
+			const parsed = JSON.parse(stripBom(readFileSync(readPath, "utf-8"))) as AuthStorageData;
 			merged = { ...merged, ...parsed };
 			found = true;
 		}
@@ -112,10 +113,13 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	 */
 	private writeAtomic(content: string, path = this.authPath): void {
 		const dir = dirname(path);
+		const mode = existsSync(path) ? statSync(path).mode & 0o777 : AUTH_FILE_WRITE_OPTIONS.mode;
 		const tempPath = join(dir, `.${`auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`}.tmp`);
 		try {
-			writeFileSync(tempPath, content, AUTH_FILE_WRITE_OPTIONS);
-			chmodSync(tempPath, 0o600);
+			writeFileSync(tempPath, content, { ...AUTH_FILE_WRITE_OPTIONS, mode });
+			// Creation mode is filtered through umask; restore the exact managed mode
+			// before publishing the replacement inode.
+			chmodSync(tempPath, mode);
 			renameSync(tempPath, path);
 		} catch (error) {
 			try {
@@ -137,7 +141,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		try {
 			for (const path of paths) releases.push(this.acquireLockSyncWithRetry(path));
 			for (const path of paths) {
-				const data = JSON.parse(readFileSync(path, "utf-8")) as AuthStorageData;
+				const data = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as AuthStorageData;
 				if (!(provider in data)) continue;
 				delete data[provider];
 				this.writeAtomic(JSON.stringify(data, null, 2), path);
@@ -166,7 +170,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 				);
 			}
 			for (const path of paths) {
-				const data = JSON.parse(readFileSync(path, "utf-8")) as AuthStorageData;
+				const data = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as AuthStorageData;
 				if (!(provider in data)) continue;
 				delete data[provider];
 				this.writeAtomic(JSON.stringify(data, null, 2), path);

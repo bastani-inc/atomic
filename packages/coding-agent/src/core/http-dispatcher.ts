@@ -33,6 +33,18 @@ function installUndiciGlobals(): void {
 	});
 }
 
+const DURATION_STRING_PATTERN = /^(\d+)(ms|s|m|h)$/i;
+
+function parseDurationString(value: string): number | undefined {
+	const match = DURATION_STRING_PATTERN.exec(value);
+	if (!match) return undefined;
+	const amount = Number(match[1]);
+	const unit = match[2].toLowerCase();
+	const multiplier = unit === "ms" ? 1 : unit === "s" ? 1_000 : unit === "m" ? 60_000 : 3_600_000;
+	const milliseconds = amount * multiplier;
+	return Number.isFinite(milliseconds) ? milliseconds : undefined;
+}
+
 export const HTTP_IDLE_TIMEOUT_CHOICES = [
 	{ label: "30 sec", timeoutMs: 30_000 },
 	{ label: "1 min", timeoutMs: 60_000 },
@@ -47,6 +59,8 @@ export function parseHttpIdleTimeoutMs(value: unknown): number | undefined {
 		const trimmed = value.trim();
 		if (trimmed.toLowerCase() === "disabled") return 0;
 		if (trimmed.length === 0) return undefined;
+		const durationMs = parseDurationString(trimmed);
+		if (durationMs !== undefined) return durationMs;
 		return parseHttpIdleTimeoutMs(Number(trimmed));
 	}
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;

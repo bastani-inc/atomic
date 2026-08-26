@@ -19,8 +19,10 @@ import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
+import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import {
 	buildCopilotDynamicHeaders,
@@ -130,6 +132,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			timestamp: Date.now(),
 		};
 
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+
 		try {
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
@@ -155,7 +159,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
 			const requestOptions = {
-				...(options?.signal ? { signal: options.signal } : {}),
+				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
@@ -164,17 +168,23 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
+					signal: streamDeadline.signal,
 				},
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
-			await processResponsesStream(openaiStream, output, stream, model, {
-				serviceTier: options?.serviceTier,
-				grammarToolInputProperties,
-				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
-			});
+			await processResponsesStream(
+				withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort),
+				output,
+				stream,
+				model,
+				{
+					serviceTier: options?.serviceTier,
+					grammarToolInputProperties,
+					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+				},
+			);
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -200,6 +210,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			output.errorMessage = formatOpenAIResponsesError(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 
@@ -213,7 +225,10 @@ export const streamSimple: StreamFunction<"openai-responses", SimpleStreamOption
 ): AssistantMessageEventStream => {
 	getClientApiKey(model.provider, options?.apiKey, options?.headers);
 
-	const base = buildBaseOptions(model, context, options, options?.apiKey);
+	const base = {
+		...buildBaseOptions(model, context, options, options?.apiKey),
+		toolChoice: options?.toolChoice,
+	} satisfies OpenAIResponsesOptions;
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
@@ -233,7 +248,7 @@ function createClient(
 	copilotApiKey?: string,
 ) {
 	const compat = getCompat(model);
-	const headers: ProviderHeaders = { ...model.headers };
+	const headers: ProviderHeaders = { "User-Agent": getPiUserAgent(), ...model.headers };
 	if (model.provider === "github-copilot") {
 		const hasImages = hasCopilotVisionInput(context.messages);
 		const copilotHeaders = preserveCopilotIntegrationHeader(

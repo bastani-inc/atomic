@@ -1760,7 +1760,7 @@ describe("openai-codex streaming", () => {
 			apiKey: token,
 			sessionId: "ws-idle-before-start",
 			transport: "auto",
-			timeoutMs: 50,
+			streamDeadlineMs: 50,
 		}).result();
 
 		await vi.advanceTimersByTimeAsync(0);
@@ -1777,7 +1777,7 @@ describe("openai-codex streaming", () => {
 		});
 	});
 
-	it("errors when a websocket is idle after the stream started", async () => {
+	it("uses the configured stream deadline for an idle connected websocket", async () => {
 		vi.useFakeTimers();
 		const token = mockToken();
 
@@ -1850,15 +1850,16 @@ describe("openai-codex streaming", () => {
 		const resultPromise = streamOpenAICodexResponses(model, context, {
 			apiKey: token,
 			transport: "auto",
-			timeoutMs: 50,
+			timeoutMs: 100,
+			streamDeadlineMs: 25,
 		}).result();
 
 		await vi.advanceTimersByTimeAsync(0);
-		await vi.advanceTimersByTimeAsync(50);
+		await vi.advanceTimersByTimeAsync(25);
 
 		const result = await resultPromise;
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toBe("WebSocket idle timeout after 50ms");
+		expect(result.errorMessage).toBe("WebSocket idle timeout after 25ms");
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 

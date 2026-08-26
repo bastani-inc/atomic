@@ -24,6 +24,13 @@ export const defaultWorkflowHeartbeatTimerApi: WorkflowHeartbeatTimerApi = {
  */
 export const WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS = 5;
 
+/**
+ * Maximum time a single host admission may remain in flight. Two minutes is
+ * comfortably shorter than the default fifteen-minute heartbeat cadence while
+ * leaving a legitimately slow host enough time to admit a card.
+ */
+export const WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS = 120_000;
+
 interface WorkflowHeartbeatDeliveryOptions {
 	readonly emit: (details: WorkflowHeartbeatEventDetails) => boolean | Promise<boolean>;
 	/**
@@ -83,6 +90,9 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 	const retryTimers = new Set<WorkflowHeartbeatTimerHandle>();
 	const queue: WorkflowHeartbeatEventDetails[] = [];
 	let attempt = 0;
+	let attemptToken = 0;
+	let activeAttemptToken: number | undefined;
+	let watchdogHandle: WorkflowHeartbeatTimerHandle | undefined;
 	let running = false;
 	let active = true;
 	/**
@@ -97,8 +107,16 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 	 */
 	let headDiscarded = false;
 
+	const clearWatchdog = (): void => {
+		if (watchdogHandle === undefined) return;
+		options.timers.clearTimeout(watchdogHandle);
+		watchdogHandle = undefined;
+	};
+
 	/** Finish the head identity and start the next one, in handover order. */
 	const settleHead = (details: WorkflowHeartbeatEventDetails, delivered: boolean): void => {
+		clearWatchdog();
+		activeAttemptToken = undefined;
 		queue.shift();
 		attempt = 0;
 		running = false;
@@ -123,7 +141,12 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 		running = true;
 		attempt += 1;
 		const thisAttempt = attempt;
+		const thisAttemptToken = ++attemptToken;
+		activeAttemptToken = thisAttemptToken;
 		const settle = (delivered: boolean): void => {
+			if (activeAttemptToken !== thisAttemptToken) return;
+			activeAttemptToken = undefined;
+			clearWatchdog();
 			// A discarded head settles straight through, whatever the host answered:
 			// no retry, and the real result is still reported once.
 			if (delivered || headDiscarded || thisAttempt >= WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS || !active) {
@@ -141,9 +164,29 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 			handle.unref?.();
 			retryTimers.add(handle);
 		};
-		const result = options.emit(details);
-		if (typeof result === "boolean") settle(result);
-		else void result.then(settle);
+		let result: boolean | Promise<boolean>;
+		try {
+			result = options.emit(details);
+		} catch {
+			// A host can throw synchronously before returning its admission result.
+			// Treat that exactly like an asynchronous rejection so the failed head
+			// enters capped backoff instead of leaving `running` set forever.
+			settle(false);
+			return;
+		}
+		if (typeof result === "boolean") {
+			settle(result);
+			return;
+		}
+		const watchdog = options.timers.setTimeout(() => {
+			if (activeAttemptToken !== thisAttemptToken) return;
+			activeAttemptToken = undefined;
+			watchdogHandle = undefined;
+			settleHead(details, false);
+		}, WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS);
+		watchdogHandle = watchdog;
+		watchdog.unref?.();
+		void result.then(settle, () => settle(false));
 	};
 
 	const deliver = (details: WorkflowHeartbeatEventDetails): void => {
@@ -187,11 +230,12 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 		discard,
 		dispose() {
 			active = false;
+			clearWatchdog();
 			for (const handle of retryTimers) options.timers.clearTimeout(handle);
 			retryTimers.clear();
 			queue.length = 0;
 			// An in-flight send is left to settle on its own; `active` keeps it from
-			// starting a further retry.
+			// starting a further retry. Its watchdog is cleared with the other timers.
 		},
 	};
 }

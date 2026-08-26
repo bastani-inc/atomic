@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { isContextOverflow, isRecoverableLength } from "@bastani/pi-ai/compat";
+import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession, AutoCompactionRunOutcome } from "./agent-session-methods.ts";
 import {
 	type CompactionUrgency,
@@ -127,6 +128,9 @@ export async function _checkCompaction(
 			// context overflow may now advance to a larger-context fallback; a
 			// recoverable output truncation stops without claiming overflow.
 			if (contextOverflow) this._contextOverflowUnresolved = true;
+			const errorMessage = contextOverflow
+				? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+				: "Response truncation recovery stopped after one retry.";
 			this._emit({
 				type: "compaction_end",
 				reason: "overflow",
@@ -134,9 +138,14 @@ export async function _checkCompaction(
 				aborted: false,
 				willRetry: false,
 				...(contextOverflow ? { unresolvedOverflow: true } : {}),
-				errorMessage: contextOverflow
-					? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
-					: "Response truncation recovery stopped after one retry.",
+				errorMessage,
+			});
+			await emitSessionCompactFailed(this, {
+				reason: "overflow",
+				errorMessage,
+				aborted: false,
+				willRetry: false,
+				fromExtension: false,
 			});
 			return;
 		}
@@ -172,40 +181,45 @@ export async function _checkCompaction(
 	}
 
 	// Case 2: Threshold - context is getting large
-	// For error messages (no usage data), estimate from last successful response.
-	// This ensures sessions that hit persistent API errors (e.g. 529) can still compact.
-	let contextTokens: number;
-	if (assistantMessage.stopReason === "error") {
+	// For errors or all-zero provider usage, estimate from message content.
+	let contextTokens = calculateContextTokens(assistantMessage.usage, assistantMessage.api);
+	if (assistantMessage.stopReason === "error" || contextTokens === 0) {
 		const messages = this.agent.state.messages;
 		const estimate = estimateContextTokens(messages);
-		if (estimate.lastUsageIndex === null) return; // No usage data at all
-		// Verify the usage source is post-compaction. Kept pre-compaction messages
-		// have stale usage reflecting the old (larger) context and would falsely
-		// trigger compaction right after one just finished.
-		const usageMsg = messages[estimate.lastUsageIndex];
-		if (
-			compactionBoundaryEntry &&
-			usageMsg.role === "assistant" &&
-			(usageMsg as AssistantMessage).timestamp <= new Date(compactionBoundaryEntry.timestamp).getTime()
-		) {
-			return;
+		// Without provider usage, estimate.tokens is the pure message-size estimate.
+		// Only usage-backed estimates need the stale pre-compaction check.
+		if (estimate.lastUsageIndex !== null) {
+			const usageMsg = messages[estimate.lastUsageIndex];
+			if (
+				compactionBoundaryEntry &&
+				usageMsg.role === "assistant" &&
+				(usageMsg as AssistantMessage).timestamp <= new Date(compactionBoundaryEntry.timestamp).getTime()
+			) {
+				return;
+			}
 		}
 		contextTokens = estimate.tokens;
-	} else {
-		contextTokens = calculateContextTokens(assistantMessage.usage, assistantMessage.api);
 	}
 	if (shouldCompact(contextTokens, contextWindow, settings)) {
 		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage, desiredMaxOutput, isLiveTurnCompletion);
 		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
 			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
+				const errorMessage =
+					"Output-budget recovery stopped after a compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
 				this._emit({
 					type: "compaction_end",
 					reason: "threshold",
 					result: undefined,
 					aborted: false,
 					willRetry: false,
-					errorMessage:
-						"Output-budget recovery stopped after a compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+					errorMessage,
+				});
+				await emitSessionCompactFailed(this, {
+					reason: "threshold",
+					errorMessage,
+					aborted: false,
+					willRetry: false,
+					fromExtension: false,
 				});
 				return;
 			}
@@ -341,18 +355,18 @@ export function _schedulePostAutoCompactionContinuationProbe(
 	pending = new Promise<void>((resolve) => {
 		setTimeout(() => {
 			void (async () => {
-				const restoreIfOwned = async (): Promise<void> => {
+				const settleIfOwned = async (): Promise<void> => {
 					if (
 						fallbackScopeGeneration === undefined ||
 						this._fallbackOriginGeneration !== fallbackScopeGeneration ||
-						typeof this._restoreFallbackModel !== "function"
+						typeof this._settleFallbackModelScope !== "function"
 					)
 						return;
 					try {
-						await this._restoreFallbackModel();
+						await this._settleFallbackModelScope();
 					} catch {
-						// A listener must not strand the continuation waiter. The model
-						// state was already restored before lifecycle notifications ran.
+						// A listener must not strand the continuation waiter. The fallback
+						// state was already settled before lifecycle notifications ran.
 					}
 				};
 				try {
@@ -364,12 +378,12 @@ export function _schedulePostAutoCompactionContinuationProbe(
 						if (this._postCompactionContinuationToken !== token) return;
 						if (this.isCompacting || this.isStreaming) return;
 						if (!this.agent.hasQueuedMessages()) {
-							await restoreIfOwned();
+							await settleIfOwned();
 							return;
 						}
-						// A queued message starts the next user turn. Restore before
-						// Agent snapshots the next request's model.
-						await restoreIfOwned();
+						// A queued message starts the next user turn. Settle before Agent
+						// snapshots the next request's model.
+						await settleIfOwned();
 					}
 
 					if (this._pendingPostCompactionContinuation !== pending) return;
@@ -379,7 +393,7 @@ export function _schedulePostAutoCompactionContinuationProbe(
 					this._pendingPostCompactionContinuation = undefined;
 					await this._resumeAfterAutoCompaction();
 					if (willRetry && this._pendingPostCompactionContinuation === undefined) {
-						await restoreIfOwned();
+						await settleIfOwned();
 					}
 				} finally {
 					if (this._pendingPostCompactionContinuation === pending) {
@@ -464,6 +478,7 @@ export async function _runAutoCompaction(
 	this._autoCompactionAbortController = controller;
 	this._autoCompactionCompletion = completion.promise;
 	this._compactionReason = reason;
+	let fromExtension = false;
 	try {
 		this._emit({ type: "compaction_start", reason });
 	} catch (error) {
@@ -488,6 +503,12 @@ export async function _runAutoCompaction(
 				unresolvedOverflow: overflowUnresolved.call(this, urgency === "load_bearing"),
 				...(manualTakeoverPending ? { manualTakeoverPending: true } : {}),
 			});
+			await emitSessionCompactFailed(this, {
+				reason,
+				aborted: false,
+				willRetry: false,
+				fromExtension: false,
+			});
 			return manualTakeoverPending ? "deferred" : "failed";
 		}
 
@@ -504,6 +525,9 @@ export async function _runAutoCompaction(
 			backupLabel: urgency === "load_bearing" ? "overflow-auto-compact" : "auto-compact",
 			reason,
 			urgency,
+			onCompactionSource: (value) => {
+				fromExtension = value;
+			},
 			// Only an actual context overflow proved the context cannot fit. A
 			// recoverable length stop must never reach the fresh-context fallback.
 			...(urgency === "load_bearing" ? { allowSmallRegion: true } : {}),
@@ -518,6 +542,12 @@ export async function _runAutoCompaction(
 				willRetry: false,
 				unresolvedOverflow: overflowUnresolved.call(this, urgency === "load_bearing"),
 				...(manualTakeoverPending ? { manualTakeoverPending: true } : {}),
+			});
+			await emitSessionCompactFailed(this, {
+				reason,
+				aborted: false,
+				willRetry: false,
+				fromExtension,
 			});
 			return manualTakeoverPending ? "deferred" : "not_compactable";
 		}
@@ -543,6 +573,13 @@ export async function _runAutoCompaction(
 		const aborted =
 			errorMessage === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
 		const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
+		const formattedErrorMessage = aborted
+			? undefined
+			: reason === "overflow"
+				? urgency === "recoverable"
+					? `Response truncation recovery failed: ${errorMessage}`
+					: `Context overflow recovery failed: ${errorMessage}`
+				: `Auto-compaction failed: ${errorMessage}`;
 		this._emit({
 			type: "compaction_end",
 			reason,
@@ -551,13 +588,14 @@ export async function _runAutoCompaction(
 			willRetry: false,
 			unresolvedOverflow: overflowUnresolved.call(this, urgency === "load_bearing", aborted),
 			...(manualTakeoverPending ? { manualTakeoverPending: true } : {}),
-			errorMessage: aborted
-				? undefined
-				: reason === "overflow"
-					? urgency === "recoverable"
-						? `Response truncation recovery failed: ${errorMessage}`
-						: `Context overflow recovery failed: ${errorMessage}`
-					: `Auto-compaction failed: ${errorMessage}`,
+			errorMessage: formattedErrorMessage,
+		});
+		await emitSessionCompactFailed(this, {
+			reason,
+			errorMessage: formattedErrorMessage,
+			aborted,
+			willRetry: false,
+			fromExtension,
 		});
 		return manualTakeoverPending ? "deferred" : "failed";
 	} finally {

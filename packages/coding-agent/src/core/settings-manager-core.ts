@@ -86,12 +86,20 @@ export class SettingsManager {
 		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
 		const initialErrors: SettingsError[] = [];
 		if (globalLoad.error) {
-			initialErrors.push({ scope: "global", error: globalLoad.error });
+			initialErrors.push({
+				scope: "global",
+				path: (globalLoad.error as Error & { path?: string }).path,
+				error: globalLoad.error,
+			});
 		} else {
 			initialErrors.push(...SettingsManager.validateLoadedSettings("global", globalLoad.settings));
 		}
 		if (projectLoad.error) {
-			initialErrors.push({ scope: "project", error: projectLoad.error });
+			initialErrors.push({
+				scope: "project",
+				path: (projectLoad.error as Error & { path?: string }).path,
+				error: projectLoad.error,
+			});
 		} else {
 			initialErrors.push(...SettingsManager.validateLoadedSettings("project", projectLoad.settings));
 		}

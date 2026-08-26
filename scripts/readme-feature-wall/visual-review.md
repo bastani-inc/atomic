@@ -3,6 +3,10 @@
 Reviewed on 2026-08-11 against the shipped GIFs and posters, re-derived from the media
 frames rather than from the tape each clip was supposed to produce.
 
+Row A.5, Parallel review composition, was reviewed here but has since been removed from the
+wall along with the packaged `/parallel-review` prompt, its tape, and its media. Its row and
+note below record that review as it stood on 2026-08-11; the current wall is 38 rows.
+
 ## Method
 
 ```bash

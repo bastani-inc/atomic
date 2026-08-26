@@ -95,6 +95,8 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				bashInterceptorEnabled: this.settingsManager.getBashInterceptorEnabled(),
 				thinkingLevel: this.session.thinkingLevel,
 				availableThinkingLevels: this.session.getAvailableThinkingLevels(),
+				availableDefaultModels: [...this.session.modelRuntime.getAvailableSnapshot()],
+				modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
 				currentTheme: this.themeController.getThemeSelection() || "dark",
 				terminalTheme: this.themeController.getTerminalTheme(),
 				availableThemes: getAvailableThemes(),
@@ -170,6 +172,12 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 					this.session.setThinkingLevel(level);
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
+				},
+				onModelThinkingLevelChange: (provider, modelId, level) => {
+					this.settingsManager.setModelThinkingLevel(provider, modelId, level);
+				},
+				onModelThinkingLevelRemove: (provider, modelId) => {
+					this.settingsManager.removeModelThinkingLevel(provider, modelId);
 				},
 				onThemeChange: (themeSetting) => {
 					this.settingsManager.setTheme(themeSetting);

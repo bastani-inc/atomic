@@ -9,6 +9,7 @@ import {
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { generateBranchSummary, prepareBranchEntries } from "../src/core/compaction/branch-summarization.ts";
+import { generateSessionSummary } from "../src/core/compaction/session-summarization.ts";
 import { serializeConversation } from "../src/core/compaction/utils.ts";
 import { convertToLlm } from "../src/core/messages.ts";
 import type { ContextCompactionEntry, SessionEntry, SessionMessageEntry } from "../src/core/session-manager.ts";
@@ -128,6 +129,64 @@ function contextEntry(targets: ContextCompactionEntry["deletedTargets"]): Contex
 	lastId = id;
 	return result;
 }
+
+describe("safe prose summarization", () => {
+	it.each([
+		["branch", generateBranchSummary],
+		["session", generateSessionSummary],
+	] as const)("disables tools for %s summaries", async (_label, summarize) => {
+		resetIds();
+		let requestOptions: import("@bastani/pi-ai/compat").SimpleStreamOptions | undefined;
+		await summarize([entry(user("summarize safely"))], {
+			model: nonCopilotModel(),
+			signal: new AbortController().signal,
+			streamFn: async (requestModel, _context, options) => {
+				requestOptions = options;
+				const stream = createAssistantMessageEventStream();
+				stream.end({ ...assistantBlocks([{ type: "text", text: "summary" }]), model: requestModel.id });
+				return stream;
+			},
+		});
+		expect(requestOptions?.toolChoice).toBe("none");
+	});
+
+	it.each([
+		["branch", generateBranchSummary],
+		["session", generateSessionSummary],
+	] as const)("rejects tool calls from %s summaries", async (_label, summarize) => {
+		resetIds();
+		const result = await summarize([entry(user("summarize safely"))], {
+			model: nonCopilotModel(),
+			signal: new AbortController().signal,
+			streamFn: async () => {
+				const stream = createAssistantMessageEventStream();
+				stream.end({
+					...assistantBlocks([{ type: "toolCall", id: "call-1", name: "read", arguments: {} }]),
+					stopReason: "toolUse",
+				});
+				return stream;
+			},
+		});
+		expect(result.error).toMatch(/summarization attempted to call a tool/i);
+	});
+
+	it.each([
+		["branch", generateBranchSummary],
+		["session", generateSessionSummary],
+	] as const)("rejects length-limited %s summaries", async (_label, summarize) => {
+		resetIds();
+		const result = await summarize([entry(user("summarize safely"))], {
+			model: nonCopilotModel(),
+			signal: new AbortController().signal,
+			streamFn: async () => {
+				const stream = createAssistantMessageEventStream();
+				stream.end({ ...assistantBlocks([{ type: "text", text: "partial" }]), stopReason: "length" });
+				return stream;
+			},
+		});
+		expect(result.error).toContain("generation hit the token cap");
+	});
+});
 
 describe("branch summarization with archival compaction entries", () => {
 	it("leaves non-Copilot prompt-limit summarization errors unchanged", async () => {

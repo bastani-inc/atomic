@@ -2,6 +2,64 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.5] - 2026-08-26
+
+### Changed
+
+- Foreground subagent completion, failure, and interruption notifications now render as status-colored tool blocks while preserving their result preview, expansion hint, duration, and session path.
+
+### Fixed
+
+- Parent cancellation of a foreground in-process child now finishes as a terminal interrupted/abort outcome instead of `error` / failed. Parent receipts, Intercom summaries, and progress present the child as cancelled; persisted metadata keeps `status: "interrupted"` with `cause: "abort"` rather than a new public status. The run stays non-retryable, preserves any fallback metadata already recorded before abort, and recovers bounded partial findings from a modified run-scoped `progress.md`, then the last non-empty assistant text, then a cancellation notice with artifact references. Session, Progress, and Output paths are cited only when those files exist when the cancelled envelope or receipt is built. A queued child that never started does not claim "0 tool calls"; a mixed completed-and-cancelled set reports `Status: cancelled` rather than `interrupted`. A mixed parallel set that contains both a user interrupt and a parent cancellation presents the cancellation summary rather than interrupt-specific follow-up guidance ([#2635](https://github.com/bastani-inc/atomic/issues/2635)).
+- In-process subagent children no longer load the workflows extension or expose its `workflow` tool. Child sessions still receive bundled workflow definitions as resources, but they cannot rebind the parent session's workflow store, strand active runs, or disconnect the parent's `BACKGROUND` panel and run controls.
+
+## [0.9.16-alpha.2] - 2026-08-23
+
+### Breaking Changes
+
+- Removed the `subagent({ action: "doctor" })` management action and the `/subagents-doctor` slash command. `doctor` is no longer a valid `action` value, and the observing management actions available to a child are now `list`, `get`, and `status`. Agent discovery still reports invalid-frontmatter files through its load diagnostics; use `intercom({ action: "status" })` to inspect intercom bridge state.
+- Removed the `/run` and `/parallel` slash commands. Launch children with the `subagent` tool (`{ agent, task }` or `{ tasks: [...] }`).
+- Removed `diagnoseIntercomBridge` and the `IntercomBridgeDiagnostic` type. Use `resolveIntercomBridge` when you need bridge availability.
+
+### Removed
+
+- Removed every packaged subagent prompt template, including `/parallel-review`, `/parallel-handoff-plan`, `/gather-context-and-clarify`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, and `/parallel-cleanup`. Compose those passes directly with `subagent(...)` or a workflow.
+
+
+## [0.9.16-alpha.1] - 2026-08-23
+
+### Breaking Changes
+
+- Removed the public `subagent({ action: "resume" })` action and its `index`/`message` inputs. Completed, interrupted, and parent-question children are terminal; migrate follow-ups to a fresh `subagent({ agent, task })` launch with explicit `[TASK_CONTEXT]` and expect a new run identity ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
+
+### Changed
+
+- Parent-targeted `contact_supervisor` and Intercom asks now end the child and return the verbatim question, ordered attachments, agent identity, and a dynamic fresh-child handoff. Parallel asks no longer retain sibling sets for bare-run-ID continuation ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
+
+### Fixed
+- Coalesced same-turn sibling `subagent` execution calls into one indexed parallel run instead of rejecting every call after the first. Live result, progress, control, and artifact updates and final results stay route-local without sibling data, while the TUI redraws the shared run as one aggregate parallel widget. Solitary, sequential, management, and true-overlap behavior remains unchanged ([#2588](https://github.com/bastani-inc/atomic/issues/2588)).
+
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Breaking Changes
+
+- Subagent delegation is now fixed at one level. A top-level chat or workflow stage may launch subagents, but a subagent child may not launch, resume, or interrupt another child. Read-only management actions remain available, and the executor plus Rust admission boundary both enforce the rule.
+
+### Removed
+
+- Removed the extension config and agent frontmatter options for delegation depth. Stale keys remain parseable and are ignored; agent-management rewrites strip the old frontmatter field.
+- Removed inherited per-child delegation limits and the unreachable multi-level nested-run transport, registry, recursive status, and result payload fields. Direct-child status and results remain unchanged, and startup still cleans route directories left by older versions.
+
+### Changed
+
+- Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
+- Updated the fanout-child boundary prompt to reflect that child delegation is unavailable.
+- Replaced built-in `gpt-5.6-luna:max` primary and fallback pins with `gpt-5.6-sol`, using `:medium` for worker and analysis agents and `:low` for locator and pattern agents.
+
+## [0.9.15-alpha.1] - 2026-08-21
+
 ### Breaking Changes
 
 - Subagent delegation is now exactly one level deep and is no longer configurable. A top-level session — main chat or a workflow stage — may call the `subagent` tool; a session that was itself admitted as a subagent child may not. Every launch, `resume`, and `interrupt` attempted from inside a child is refused with a single fixed message; the observing actions `list`, `get`, `status`, and `doctor` remain available to a child. Workflow stages are unchanged and still delegate once. The Rust `SubagentControl` admission door now refuses any child deeper than the single permitted level, and the executor refuses a child before any run starts, so the rule holds at both doors.
@@ -19,6 +77,7 @@
 
 - Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
 - The fanout-child boundary prompt no longer tells an authorized child that it may delegate, because no child can.
+- Replaced built-in `gpt-5.6-luna:max` primary and fallback pins with `gpt-5.6-sol` at the same thinking level as each agent's `gpt-5.5` fallback: `:medium` for `worker`, `code-simplifier`, `codebase-analyzer`, `codebase-online-researcher`, and `codebase-research-analyzer`; `:low` for `codebase-locator`, `codebase-pattern-finder`, and `codebase-research-locator`.
 
 ## [0.9.14] - 2026-08-19
 

@@ -32,6 +32,8 @@ pub enum AdmissionRefusalKind {
 	InvalidCwd,
 	#[napi(value = "unknownAgent")]
 	UnknownAgent,
+	#[napi(value = "terminalChild")]
+	TerminalChild,
 }
 
 #[derive(Clone, Debug)]
@@ -254,19 +256,6 @@ impl NapiSubagentControl {
 			grace_ms: u32::try_from(receipt.grace_ms).unwrap_or(u32::MAX),
 		})
 	}
-
-	#[napi]
-	pub fn reload_cold_child(&self, path: String, message: String) -> NativeAdmissionResult {
-		match self.inner.reload_cold_child(path, &message) {
-			Ok(child) => NativeAdmissionResult {
-				child: Some(child.identity(self.inner.residency())),
-				refusal: None,
-			},
-			Err(refusal) => {
-				NativeAdmissionResult { child: None, refusal: Some(native_refusal(refusal)) }
-			},
-		}
-	}
 }
 
 /// Hard ceiling on admitted child depth. Delegation is exactly one level:
@@ -387,6 +376,7 @@ pub enum AdmissionRefusal {
 	DispatchGuardBusy,
 	InvalidCwd(String),
 	UnknownAgent,
+	TerminalChild,
 }
 
 impl fmt::Display for AdmissionRefusal {
@@ -397,6 +387,7 @@ impl fmt::Display for AdmissionRefusal {
 			Self::DispatchGuardBusy => formatter.write_str("child dispatch guard is busy"),
 			Self::InvalidCwd(reason) => write!(formatter, "invalid cwd: {reason}"),
 			Self::UnknownAgent => formatter.write_str("unknown agent"),
+			Self::TerminalChild => formatter.write_str("child is terminal"),
 		}
 	}
 }

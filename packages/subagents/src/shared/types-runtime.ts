@@ -81,17 +81,7 @@ export const SLASH_SUBAGENT_STARTED_EVENT = "subagent:slash:started";
 export const SLASH_SUBAGENT_RESPONSE_EVENT = "subagent:slash:response";
 export const SLASH_SUBAGENT_UPDATE_EVENT = "subagent:slash:update";
 export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
-export const SUBAGENT_ACTIONS = [
-	"list",
-	"get",
-	"create",
-	"update",
-	"delete",
-	"status",
-	"interrupt",
-	"resume",
-	"doctor",
-] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

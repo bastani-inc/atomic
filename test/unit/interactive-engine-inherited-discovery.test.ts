@@ -18,10 +18,51 @@ const PREFIX = "@@ATOMIC_TEST@@";
 const INHERITED_DISCOVERY_TIMEOUT_MS = 60_000;
 const INHERITED_REPORT_TIMEOUT_MS = 30_000;
 
+/**
+ * Kill a detached engine child and everything it spawned.
+ *
+ * The interactive engine is launched detached, so it leads its own process
+ * group and survives a SIGKILL to the fixture host until its parent guardian
+ * notices (~50 ms poll). Targeting the negative pid reaps the whole group at
+ * once so nothing outlives the test to keep writing into the temporary home.
+ */
+function killEngineProcessGroup(pid: number): void {
+	try {
+		process.kill(-pid, "SIGKILL");
+	} catch {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {}
+	}
+}
+
+/**
+ * Remove a test's temporary directory without racing a dying engine.
+ *
+ * An engine killed moments ago can still have a cache write in flight inside
+ * the temporary home, which makes `rmSync` fail with ENOTEMPTY between listing
+ * a directory and removing it. Retrying briefly absorbs those writes; anything
+ * else is a real failure and is rethrown.
+ */
+async function removeTempDirectory(path: string): Promise<void> {
+	const codes = new Set(["ENOTEMPTY", "EBUSY", "EPERM"]);
+	for (let attempt = 0; attempt < 20; attempt++) {
+		try {
+			rmSync(path, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			if (!codes.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
+			await sleep(50);
+		}
+	}
+	rmSync(path, { recursive: true, force: true });
+}
+
 interface HarnessReport {
 	type?: string;
 	editorText?: string;
 	prefix?: string;
+	enginePid?: number;
 	items?: Array<{ value?: string; label?: string }> | null;
 }
 
@@ -30,6 +71,7 @@ class InteractiveDriver {
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
+	private readonly enginePids = new Set<number>();
 
 	constructor(args: string[], overrides: Record<string, string | undefined>) {
 		const inherited: Record<string, string | undefined> = { ...process.env };
@@ -100,6 +142,9 @@ class InteractiveDriver {
 	async stop(): Promise<void> {
 		if (this.process.exitCode === null) this.process.kill("SIGKILL");
 		await this.process.exited;
+		// Killing the host skips the teardown that reaps the detached engine
+		// child, so reap every engine group this session reported directly.
+		for (const pid of this.enginePids) killEngineProcessGroup(pid);
 	}
 
 	private async readReports(): Promise<void> {
@@ -119,7 +164,9 @@ class InteractiveDriver {
 				const marker = line.indexOf(PREFIX);
 				if (marker === -1) continue;
 				try {
-					this.reports.push(JSON.parse(line.slice(marker + PREFIX.length)) as HarnessReport);
+					const report = JSON.parse(line.slice(marker + PREFIX.length)) as HarnessReport;
+					if (typeof report.enginePid === "number") this.enginePids.add(report.enginePid);
+					this.reports.push(report);
 					for (const waiter of this.waiters) waiter();
 				} catch {}
 			}
@@ -140,11 +187,15 @@ function writeLegacyCommandExtension(home: string): string {
 	writeFileSync(
 		join(extensionDir, "legacy-command.ts"),
 		`
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 export default function(pi) {
   pi.registerCommand("legacy-compatible", {
     description: "legacy compatible command",
-    handler: async () => appendFileSync(process.env.ATOMIC_LEGACY_COMMAND_LOG, "invoked\\n"),
+    handler: async () => {
+      writeFileSync(process.env.ATOMIC_LEGACY_COMMAND_LOG, "");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      appendFileSync(process.env.ATOMIC_LEGACY_COMMAND_LOG, "invoked\\n");
+    },
   });
 }
 `,
@@ -204,11 +255,16 @@ serialTest(
 			await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/legacy-compatible");
 			driver.send({ type: "input", data: "\r" });
 			const deadline = performance.now() + INHERITED_REPORT_TIMEOUT_MS;
-			while (!existsSync(logFile) && performance.now() < deadline) await sleep(20);
-			assert.equal(readFileSync(logFile, "utf8"), "invoked\n");
+			let commandLog = "";
+			while (performance.now() < deadline) {
+				if (existsSync(logFile)) commandLog = readFileSync(logFile, "utf8");
+				if (commandLog === "invoked\n") break;
+				await sleep(20);
+			}
+			assert.equal(commandLog, "invoked\n");
 		} finally {
 			await driver.stop();
-			rmSync(temp, { recursive: true, force: true });
+			await removeTempDirectory(temp);
 		}
 	},
 	INHERITED_DISCOVERY_TIMEOUT_MS,
@@ -234,7 +290,7 @@ serialTest(
 			assert.equal((await driver.autocomplete("/legacy-compatible")).has("legacy-compatible"), false);
 		} finally {
 			await driver.stop();
-			rmSync(temp, { recursive: true, force: true });
+			await removeTempDirectory(temp);
 		}
 	},
 	INHERITED_DISCOVERY_TIMEOUT_MS,

@@ -18,6 +18,7 @@ import {
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
 import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import type {
+	WorkflowArtifact,
 	WorkflowChainOptions,
 	WorkflowParallelOptions,
 	WorkflowTaskOptions,
@@ -105,12 +106,17 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			runtime.worktreeSymlinkDirectories,
 		);
 		const preparedTask = prepared.tasks[0]!;
+		let collected: readonly WorkflowArtifact[] | undefined;
+		const collect = () => {
+			collected ??= collectWorktreeDiffs(prepared, options.artifacts !== false).artifacts;
+			return collected;
+		};
+		const replayKey = preparedTask.durableReplayKey;
+		if (replayKey !== undefined) runtime.registerTerminalArtifactCollector(replayKey, collect);
 		try {
 			const result = await runTaskOnce(preparedTask);
-			const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
-			return worktreeDiffs.artifacts.length === 0
-				? result
-				: { ...result, artifacts: [...(result.artifacts ?? []), ...worktreeDiffs.artifacts] };
+			const artifacts = collect();
+			return artifacts.length === 0 ? result : { ...result, artifacts: [...(result.artifacts ?? []), ...artifacts] };
 		} finally {
 			cleanupPreparedWorktrees(prepared);
 		}

@@ -5,6 +5,7 @@ import { subset as semverSubset } from "semver";
 import { globSync } from "tinyglobby";
 import { describe, test } from "vitest";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
+import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.ts";
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
 import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json" };
 import nativesPackageJson from "../../packages/natives/package.json" with { type: "json" };
@@ -152,6 +153,29 @@ describe("package metadata", () => {
 			types: "./dist/client/index.d.ts",
 			import: "./dist/client/index.js",
 		});
+	});
+
+	test("@bastani/atomic publish payload keeps in-product docs and prebundled builtins", async () => {
+		assert.deepEqual(atomicPackageJson.files, ["dist", "docs", "examples", "CHANGELOG.md", "npm-shrinkwrap.json"]);
+		assert.equal(Object.hasOwn(atomicPackageJson, "contentPolicy"), false);
+
+		const buildTsconfig = (await readJson("packages/coding-agent/tsconfig.build.json")) as {
+			compilerOptions?: {
+				sourceMap?: boolean;
+				declarationMap?: boolean;
+				inlineSources?: boolean;
+			};
+		};
+		assert.equal(buildTsconfig.compilerOptions?.sourceMap, undefined);
+		assert.equal(buildTsconfig.compilerOptions?.declarationMap, undefined);
+		assert.equal(buildTsconfig.compilerOptions?.inlineSources, undefined);
+		assert.deepEqual(Object.values(INSTALLED_EXTENSION_ENTRIES), [
+			"src/extension/index.bundle.mjs",
+			"src/extension/index.bundle.mjs",
+			"index.bundle.mjs",
+			"index.bundle.mjs",
+			"index.bundle.mjs",
+		]);
 	});
 
 	test("@bastani/atomic package manifest is installable outside the workspace", () => {

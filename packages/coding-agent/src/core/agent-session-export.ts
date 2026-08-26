@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
@@ -19,7 +20,10 @@ export function getSessionStats(this: AgentSession): SessionStats {
 	let toolCalls = 0;
 	const totals = createUsageTotals();
 	for (const entry of this.sessionManager.getEntries()) {
-		if ((entry.type === "branch_summary" || entry.type === "session_summary") && entry.usage) {
+		if (
+			(entry.type === "branch_summary" || entry.type === "session_summary" || entry.type === "compaction") &&
+			entry.usage
+		) {
 			addUsageToTotals(totals, entry.usage);
 		}
 		if (entry.type !== "message") continue;
@@ -146,7 +150,11 @@ export async function exportToHtml(
  * @returns The resolved output file path.
  */
 
-export function exportToJsonl(this: AgentSession, outputPath?: string): string {
+export function exportToJsonl(
+	this: AgentSession,
+	outputPath?: string,
+	options: { includeShareContext?: boolean } = {},
+): string {
 	const filePath = resolvePath(
 		outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
 		process.cwd(),
@@ -173,6 +181,24 @@ export function exportToJsonl(this: AgentSession, outputPath?: string): string {
 		const linear = { ...entry, parentId: prevId };
 		lines.push(JSON.stringify(linear));
 		prevId = entry.id;
+	}
+	if (options.includeShareContext) {
+		const shareEntry = {
+			type: "custom",
+			id: randomUUID(),
+			parentId: prevId,
+			timestamp: new Date().toISOString(),
+			customType: "atomic.share",
+			data: {
+				systemPrompt: this.systemPrompt,
+				tools: this.agent.state.tools.map(({ name, description, parameters }) => ({
+					name,
+					description,
+					parameters,
+				})),
+			},
+		};
+		lines.push(JSON.stringify(shareEntry));
 	}
 
 	writeFileSync(filePath, `${lines.join("\n")}\n`);

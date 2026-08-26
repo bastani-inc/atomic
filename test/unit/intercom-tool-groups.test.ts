@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 
 type ToolResult = {
@@ -61,7 +61,7 @@ function fixture(homeGroup = "default") {
 			return { id: "message-id", delivered: true };
 		},
 	};
-	const waiterSlot = new ReplyWaiterSlot();
+	const waiterSlot = new ReplyWaiterRegistry();
 	registerIntercomTool(
 		{
 			registerTool(value: Tool) {
@@ -83,7 +83,6 @@ function fixture(homeGroup = "default") {
 			beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) =>
 				waiterSlot.begin(from, replyTo, signal),
 			replyTracker: new ReplyTracker(),
-			hasReplyWaiter: () => waiterSlot.has(),
 		} as never,
 	);
 	assert.ok(tool);

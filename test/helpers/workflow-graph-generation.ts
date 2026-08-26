@@ -2,6 +2,7 @@
  * One-import surface over the workflows module graph. A jiti re-evaluation of
  * this file is a real second evaluation of that graph, including the factory.
  */
+export { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 export { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.ts";
 export { adoptWorkflowSessionRunState } from "../../packages/workflows/src/extension/adopt-session-run-state.ts";
 export { default as factory } from "../../packages/workflows/src/extension/extension-factory.ts";

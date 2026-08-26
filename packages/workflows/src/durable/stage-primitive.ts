@@ -169,6 +169,8 @@ export function createDurableStagePrimitive(input: {
 	};
 }
 
+export const TASK_RESULT_CHECKPOINT_CONTROL_PREFIX = "task-checkpoint:";
+
 export function createDurableTaskPrimitive(input: {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
@@ -184,6 +186,14 @@ export function createDurableTaskPrimitive(input: {
 		checkpoint: DurableCompletedStageCheckpoint,
 		stageFailFastScope?: ParallelFailFastScope,
 	) => void;
+	readonly afterLiveResult?: (name: string) => Promise<void>;
+	readonly signal?: AbortSignal;
+	readonly registerTailControl?: (registration: {
+		readonly nodeId: string;
+		readonly name: string;
+		readonly controller: AbortController;
+		readonly settled: Promise<void>;
+	}) => () => void;
 }): (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult> {
 	return async (
 		name: string,
@@ -191,10 +201,10 @@ export function createDurableTaskPrimitive(input: {
 		stageFailFastScope?: ParallelFailFastScope,
 	): Promise<WorkflowTaskResult> => {
 		const replayKey = input.nextReplayKey(`task:${name}`);
-		const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey, isWorkflowTaskResult);
-		if (cached !== undefined && isWorkflowTaskResult(cached.output)) {
-			input.recordCachedTask?.(name, replayKey, cached, stageFailFastScope);
-			return cached.output;
+		const replayed = replayableTaskResult(name, input.backend, input.workflowId, replayKey);
+		if (replayed !== undefined) {
+			input.recordCachedTask?.(name, replayKey, replayed.checkpoint, stageFailFastScope);
+			return replayed.result;
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
@@ -216,19 +226,177 @@ export function createDurableTaskPrimitive(input: {
 		};
 		const result = await input.task(name, taskOptions, stageFailFastScope);
 		const completedTopology = activeStageTopology(input.backend, input.workflowId, replayKey);
-		await recordCheckpointDurably(input.backend, {
-			kind: "stage",
-			workflowId: input.workflowId,
-			checkpointId: stableCheckpointId("task", replayKey),
+		const tailController = new AbortController();
+		const settlement = Promise.withResolvers<void>();
+		const unregisterTail = input.registerTailControl?.({
+			nodeId: `${TASK_RESULT_CHECKPOINT_CONTROL_PREFIX}${replayKey}`,
 			name,
-			replayKey,
-			output: result,
-			completedAt: Date.now(),
-			...taskCheckpointMetadata(result),
-			...(completedTopology !== undefined ? { topology: completedTopology } : {}),
+			controller: tailController,
+			settled: settlement.promise,
 		});
+		const signal = mergeAbortSignals(input.signal, tailController.signal);
+		try {
+			await awaitAbortable(
+				signal,
+				recordCheckpointDurably(
+					input.backend,
+					{
+						kind: "stage",
+						workflowId: input.workflowId,
+						checkpointId: stableCheckpointId("task", replayKey),
+						name,
+						replayKey,
+						output: result,
+						completedAt: Date.now(),
+						...taskCheckpointMetadata(result),
+						...(completedTopology !== undefined ? { topology: completedTopology } : {}),
+					},
+					signal,
+				),
+			);
+		} catch (error) {
+			if (error instanceof Error) throw error;
+			throw new Error(String(error));
+		} finally {
+			settlement.resolve();
+			unregisterTail?.();
+		}
+		if (input.afterLiveResult !== undefined) await input.afterLiveResult(name);
 		return result;
 	};
+}
+
+function abortReasonError(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled");
+}
+
+function mergeAbortSignals(left?: AbortSignal, right?: AbortSignal): AbortSignal | undefined {
+	if (left === undefined) return right;
+	if (right === undefined) return left;
+	return AbortSignal.any([left, right]);
+}
+
+function replayableTaskResult(
+	name: string,
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+	replayKey: string,
+): { readonly result: WorkflowTaskResult; readonly checkpoint: DurableCompletedStageCheckpoint } | undefined {
+	const taskShaped = stageCheckpointWithOutput(backend, workflowId, replayKey, isWorkflowTaskResult);
+	if (taskShaped !== undefined && isWorkflowTaskResult(taskShaped.output)) {
+		return { result: completeTaskResult(name, taskShaped.output, taskShaped), checkpoint: taskShaped };
+	}
+	const terminal = stageCheckpointWithOutput(backend, workflowId, replayKey);
+	if (terminal === undefined) return undefined;
+	const result = taskResultFromTerminalCheckpoint(name, terminal);
+	if (result === undefined) return undefined;
+	return { result, checkpoint: { ...terminal, output: result } };
+}
+
+function taskResultFromTerminalCheckpoint(
+	name: string,
+	terminal: DurableCompletedStageCheckpoint,
+): WorkflowTaskResult | undefined {
+	if (isWorkflowTaskResult(terminal.output)) return completeTaskResult(name, terminal.output, terminal);
+	if (terminal.structured !== undefined) {
+		return completeTaskResult(
+			name,
+			{
+				name,
+				stageName: name,
+				text: persistedTaskText(terminal, terminal.structured),
+				structured: terminal.structured,
+			},
+			terminal,
+		);
+	}
+	if (typeof terminal.output === "string") {
+		return completeTaskResult(name, { name, stageName: name, text: terminal.output }, terminal);
+	}
+	if (terminal.output !== undefined) {
+		return completeTaskResult(
+			name,
+			{
+				name,
+				stageName: name,
+				text: terminal.result ?? taskTextFromValue(terminal.output),
+				structured: terminal.output,
+			},
+			terminal,
+		);
+	}
+	if (typeof terminal.result === "string") {
+		return completeTaskResult(name, { name, stageName: name, text: terminal.result }, terminal);
+	}
+	return undefined;
+}
+
+function persistedTaskText(terminal: DurableCompletedStageCheckpoint, fallback: WorkflowSerializableValue): string {
+	if (typeof terminal.result === "string") return terminal.result;
+	if (typeof terminal.output === "string") return terminal.output;
+	return taskTextFromValue(fallback);
+}
+
+function taskTextFromValue(value: WorkflowSerializableValue): string {
+	return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function completeTaskResult(
+	name: string,
+	base: WorkflowTaskResult,
+	checkpoint: DurableStageCheckpoint,
+): WorkflowTaskResult {
+	return {
+		name: typeof base.name === "string" && base.name.length > 0 ? base.name : name,
+		stageName: typeof base.stageName === "string" && base.stageName.length > 0 ? base.stageName : name,
+		text: base.text,
+		...(base.structured !== undefined || checkpoint.structured !== undefined
+			? { structured: base.structured !== undefined ? base.structured : checkpoint.structured }
+			: {}),
+		...(base.sessionId !== undefined || checkpoint.sessionId !== undefined
+			? { sessionId: base.sessionId ?? checkpoint.sessionId }
+			: {}),
+		...(base.sessionFile !== undefined || checkpoint.sessionFile !== undefined
+			? { sessionFile: base.sessionFile ?? checkpoint.sessionFile }
+			: {}),
+		...(base.artifacts !== undefined || checkpoint.artifacts !== undefined
+			? { artifacts: [...(base.artifacts ?? checkpoint.artifacts ?? [])] }
+			: {}),
+		...(base.model !== undefined || checkpoint.model !== undefined ? { model: base.model ?? checkpoint.model } : {}),
+		...(base.fastMode !== undefined || checkpoint.fastMode !== undefined
+			? { fastMode: base.fastMode ?? checkpoint.fastMode }
+			: {}),
+		...(base.attemptedModels !== undefined || checkpoint.attemptedModels !== undefined
+			? { attemptedModels: [...(base.attemptedModels ?? checkpoint.attemptedModels ?? [])] }
+			: {}),
+		...(base.modelAttempts !== undefined || checkpoint.modelAttempts !== undefined
+			? { modelAttempts: [...(base.modelAttempts ?? checkpoint.modelAttempts ?? [])] }
+			: {}),
+		...(base.warnings !== undefined || checkpoint.warnings !== undefined
+			? { warnings: [...(base.warnings ?? checkpoint.warnings ?? [])] }
+			: {}),
+	};
+}
+
+async function awaitAbortable(signal: AbortSignal | undefined, work: Promise<void>): Promise<void> {
+	if (signal === undefined) {
+		await work;
+		return;
+	}
+	if (signal.aborted) {
+		void work.catch(() => undefined);
+		throw abortReasonError(signal);
+	}
+	let onAbort: (() => void) | undefined;
+	try {
+		await new Promise<void>((resolve, reject) => {
+			onAbort = () => reject(abortReasonError(signal));
+			signal.addEventListener("abort", onAbort, { once: true });
+			work.then(resolve, reject);
+		});
+	} finally {
+		if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+	}
 }
 
 function wrapSchemaStageForDurability(input: {
@@ -324,6 +492,9 @@ function taskCheckpointMetadata(result: WorkflowTaskResult): Partial<DurableStag
 		...(result.fastMode !== undefined ? { fastMode: result.fastMode } : {}),
 		...(result.attemptedModels !== undefined ? { attemptedModels: [...result.attemptedModels] } : {}),
 		...(result.modelAttempts !== undefined ? { modelAttempts: [...result.modelAttempts] } : {}),
+		...(result.structured !== undefined ? { structured: result.structured } : {}),
+		...(result.artifacts !== undefined ? { artifacts: [...result.artifacts] } : {}),
+		...(result.warnings !== undefined ? { warnings: [...result.warnings] } : {}),
 	};
 }
 
@@ -370,6 +541,9 @@ function mergeCheckpointHydrationMetadata(
 		...(replayValueCheckpoint.fastMode === undefined ? metadataValue(checkpoints, "fastMode") : {}),
 		...(replayValueCheckpoint.attemptedModels === undefined ? metadataValue(checkpoints, "attemptedModels") : {}),
 		...(replayValueCheckpoint.modelAttempts === undefined ? metadataValue(checkpoints, "modelAttempts") : {}),
+		...(replayValueCheckpoint.structured === undefined ? metadataValue(checkpoints, "structured") : {}),
+		...(replayValueCheckpoint.artifacts === undefined ? metadataValue(checkpoints, "artifacts") : {}),
+		...(replayValueCheckpoint.warnings === undefined ? metadataValue(checkpoints, "warnings") : {}),
 	};
 }
 
@@ -481,6 +655,9 @@ export function recordCachedStageIntoStore(
 		...(checkpoint?.fastMode !== undefined ? { fastMode: checkpoint.fastMode } : {}),
 		...(checkpoint?.attemptedModels !== undefined ? { attemptedModels: checkpoint.attemptedModels } : {}),
 		...(checkpoint?.modelAttempts !== undefined ? { modelAttempts: checkpoint.modelAttempts } : {}),
+		...(checkpoint?.structured !== undefined ? { structured: checkpoint.structured } : {}),
+		...(checkpoint?.artifacts !== undefined ? { artifacts: checkpoint.artifacts } : {}),
+		...(checkpoint?.warnings !== undefined ? { warnings: checkpoint.warnings } : {}),
 	};
 	store.recordStageStart(runId, snapshot);
 	store.recordStageEnd(runId, snapshot);

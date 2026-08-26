@@ -172,6 +172,49 @@ async function makeIsolatedRoots(label: string): Promise<{ root: string; project
 }
 
 describe("workflow reload rediscovery matrix", () => {
+	test.sequential("resource reload keeps a live zero-stage tool-only BACKGROUND widget mounted", async () => {
+		await makeIsolatedRoots("workflow-reload-live-widget");
+		store.recordRunStart({
+			id: testRunId("resource-reload-tool-only"),
+			name: "publish-release",
+			inputs: {},
+			status: "running",
+			stages: [],
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:publish-watcher",
+					name: "publish-watcher",
+					argsHash: "publish-watcher-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					startedAt: Date.now(),
+					attachable: false,
+				},
+			],
+			startedAt: Date.now(),
+		});
+		type CapturedWidgetFactory = (tui: unknown, theme: unknown) => { render(width: number): string[] };
+		const widgetFactories: CapturedWidgetFactory[] = [];
+		const ui = {
+			setWidget: (_key: string, factory: unknown): void => {
+				if (typeof factory === "function") widgetFactories.push(factory as CapturedWidgetFactory);
+			},
+			requestRender: (): void => undefined,
+		} as unknown as NonNullable<ExtensionAPI["ui"]>;
+		const harness = createHarness({ ui });
+		assert.equal(widgetFactories.length, 1);
+		const mounted = widgetFactories[0]!;
+		assert.match(mounted(undefined, undefined).render(120).join("\n"), /publish-watcher · running/);
+
+		const reload = reloadResult(await harness.execute({ action: "reload" }));
+		assert.equal(reload.status, "ok");
+		assert.equal(reload.outcome, "applied");
+		assert.equal(widgetFactories.length, 1, "resource reload must update in place rather than remount");
+		assert.match(mounted(undefined, undefined).render(120).join("\n"), /publish-watcher · running/);
+	});
+
 	test.sequential("reload refreshes all discovery scopes and public list/get/inputs/help/completion/invocation surfaces", async () => {
 		const { root, project, agent } = await makeIsolatedRoots("workflow-reload-matrix");
 		const paths = {

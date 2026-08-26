@@ -57,6 +57,7 @@ function openSettingsSelector() {
 				getAvailableThinkingLevels: () => ["off"],
 				isStreaming: false,
 				isCompacting: false,
+				modelRuntime: { getAvailableSnapshot: () => [] },
 			},
 		},
 		renderer,

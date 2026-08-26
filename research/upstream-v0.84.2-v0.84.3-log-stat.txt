@@ -1,0 +1,870 @@
+914cf1472e Release v0.84.2
+
+ package-lock.json                                  | 60 +++++++++++-----------
+ packages/agent/CHANGELOG.md                        |  2 +-
+ packages/agent/package.json                        |  6 +--
+ packages/ai/CHANGELOG.md                           |  2 +-
+ packages/ai/package.json                           |  4 +-
+ packages/ai/src/image-models.generated.ts          | 45 ++++++++++++++++
+ packages/client/CHANGELOG.md                       |  2 +-
+ packages/client/package.json                       |  4 +-
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ .../custom-provider-anthropic/package-lock.json    |  4 +-
+ .../custom-provider-anthropic/package.json         |  2 +-
+ .../custom-provider-gitlab-duo/package.json        |  2 +-
+ .../examples/extensions/gondolin/package-lock.json |  4 +-
+ .../examples/extensions/gondolin/package.json      |  2 +-
+ .../examples/extensions/sandbox/package-lock.json  |  4 +-
+ .../examples/extensions/sandbox/package.json       |  2 +-
+ .../extensions/with-deps/package-lock.json         |  4 +-
+ .../examples/extensions/with-deps/package.json     |  2 +-
+ .../coding-agent/install-lock/package-lock.json    | 52 +++++++++----------
+ packages/coding-agent/install-lock/package.json    |  4 +-
+ packages/coding-agent/npm-shrinkwrap.json          | 46 ++++++++---------
+ packages/coding-agent/package.json                 | 12 ++---
+ packages/evals/package.json                        |  6 +--
+ packages/protocol/CHANGELOG.md                     |  2 +-
+ packages/protocol/package.json                     |  2 +-
+ packages/server/CHANGELOG.md                       |  2 +-
+ packages/server/package.json                       |  6 +--
+ packages/session-backends/sqlite-node/CHANGELOG.md |  2 +-
+ packages/session-backends/sqlite-node/package.json |  6 +--
+ packages/telemetry/CHANGELOG.md                    |  2 +-
+ packages/telemetry/package.json                    |  2 +-
+ packages/tui/CHANGELOG.md                          |  2 +-
+ packages/tui/package.json                          |  2 +-
+ 33 files changed, 173 insertions(+), 128 deletions(-)
+0e0021fbbe Add [Unreleased] section for next cycle
+
+ packages/agent/CHANGELOG.md                        | 2 ++
+ packages/ai/CHANGELOG.md                           | 2 ++
+ packages/client/CHANGELOG.md                       | 2 ++
+ packages/coding-agent/CHANGELOG.md                 | 2 ++
+ packages/protocol/CHANGELOG.md                     | 2 ++
+ packages/server/CHANGELOG.md                       | 2 ++
+ packages/session-backends/sqlite-node/CHANGELOG.md | 2 ++
+ packages/telemetry/CHANGELOG.md                    | 2 ++
+ packages/tui/CHANGELOG.md                          | 2 ++
+ 9 files changed, 18 insertions(+)
+c36552212e agents: Adjust rules for changelog entries
+
+ .pi/prompts/wr.md | 1 +
+ AGENTS.md         | 1 +
+ 2 files changed, 2 insertions(+)
+e429d90b80 fix(coding-agent): update Z.AI Coding Plan defaults
+
+ packages/coding-agent/CHANGELOG.md                |  4 ++++
+ packages/coding-agent/src/core/model-resolver.ts  |  4 ++--
+ packages/coding-agent/test/model-resolver.test.ts | 14 +++++++++++++-
+ 3 files changed, 19 insertions(+), 3 deletions(-)
+b1efcf7d7c chore: approve contributors from issue #8124
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+d5278eaac3 fix(ai): enable Copilot model policies sequentially during login
+
+ packages/ai/src/auth/oauth/github-copilot.ts  | 10 ++--------
+ packages/ai/test/github-copilot-oauth.test.ts |  6 +++---
+ 2 files changed, 5 insertions(+), 11 deletions(-)
+086c32e745 fix(ai): retry Copilot GET /models once on 429 during login
+
+ packages/ai/src/auth/oauth/device-code.ts     |  2 +-
+ packages/ai/src/auth/oauth/github-copilot.ts  | 42 ++++++++++++++-----
+ packages/ai/test/github-copilot-oauth.test.ts | 59 +++++++++++++++++++++++++++
+ 3 files changed, 91 insertions(+), 12 deletions(-)
+70e878d4cf feat(ai): route xAI models through Responses and default to Grok 4.6 (#8124)
+
+ packages/ai/README.md                             |   2 +-
+ packages/ai/scripts/generate-models.ts            |  20 ++-
+ packages/ai/src/api/openai-completions.ts         |   5 +
+ packages/ai/src/api/openai-responses.ts           |   5 +
+ packages/ai/src/providers/xai.ts                  |   8 +-
+ packages/ai/src/utils/pi-user-agent.ts            |   8 ++
+ packages/ai/test/model-catalog-types.test.ts      |   4 +-
+ packages/ai/test/stream.test.ts                   |   2 +-
+ packages/ai/test/supports-xhigh.test.ts           |   6 +
+ packages/ai/test/xai-responses.test.ts            | 144 +++++++++++++++++++++-
+ packages/coding-agent/src/core/model-resolver.ts  |   2 +-
+ packages/coding-agent/test/model-resolver.test.ts |   4 +
+ 12 files changed, 185 insertions(+), 25 deletions(-)
+d3ab2af969 fix: track kimi cached tokens (#8119)
+
+ packages/ai/CHANGELOG.md                  | 4 ++++
+ packages/ai/src/api/openai-completions.ts | 9 +++++++--
+ 2 files changed, 11 insertions(+), 2 deletions(-)
+47bf47f11f docs(coding-agent): clarify compaction paths
+
+ packages/coding-agent/src/core/agent-session.ts | 58 ++++++++++++++++++-------
+ 1 file changed, 42 insertions(+), 16 deletions(-)
+58302d34e7 feat(coding-agent): support compaction routing sessions
+
+ packages/coding-agent/src/core/agent-session.ts    |  2 ++
+ .../coding-agent/src/core/compaction/compaction.ts | 30 ++++++++++++++++++----
+ .../test/compaction-summary-reasoning.test.ts      | 14 ++++++++++
+ 3 files changed, 41 insertions(+), 5 deletions(-)
+ca21c16861 fix: single edit input (#8011)
+
+ packages/agent/src/harness/tools/edit.ts     | 15 ++++++++++++++-
+ packages/coding-agent/CHANGELOG.md           |  1 +
+ packages/coding-agent/src/core/tools/edit.ts | 22 ++++++++++++++++++++--
+ 3 files changed, 35 insertions(+), 3 deletions(-)
+8c2529daeb fix: dont load root mds as skills in settings (#8012)
+
+ packages/agent/src/harness/skills.ts       | 17 +++++-
+ packages/agent/test/harness/skills.test.ts | 19 ++++++
+ packages/coding-agent/CHANGELOG.md         |  1 +
+ packages/coding-agent/docs/skills.md       |  5 +-
+ packages/coding-agent/src/core/skills.ts   | 92 ++++++++++++++++++------------
+ 5 files changed, 93 insertions(+), 41 deletions(-)
+f47faf459f fix: register flag type mismatch (#8123)
+
+ packages/coding-agent/CHANGELOG.md                   |  1 +
+ packages/coding-agent/src/core/extensions/loader.ts  |  5 +++++
+ packages/coding-agent/src/core/extensions/types.ts   | 16 +++++++++++-----
+ packages/coding-agent/test/extensions-runner.test.ts | 20 ++++++++++++++++++++
+ 4 files changed, 37 insertions(+), 5 deletions(-)
+86d001d36b fix(ai): expose low thinking level for DeepSeek V4 Flash on opencode/opencode-go (#8181)
+
+ packages/ai/scripts/generate-models.ts  | 3 ++-
+ packages/ai/test/supports-xhigh.test.ts | 4 ++--
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+c7c763f5c4 fix(coding-agent): clarify truncated recovery failure
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/agent-session.ts    |  9 ++++---
+ .../test/suite/agent-session-compaction.test.ts    | 28 ++++++++++++++++++++++
+ 3 files changed, 35 insertions(+), 3 deletions(-)
+955a543b31 fix: expose sleeping llama.cpp models (#8235)
+
+ packages/coding-agent/src/extensions/llama/provider.ts |  9 +++++++--
+ packages/coding-agent/test/llama-extension.test.ts     | 15 +++++++++++----
+ 2 files changed, 18 insertions(+), 6 deletions(-)
+374e56e553 fix(tui): avoid duplicate VS Code right-click paste
+
+ packages/coding-agent/CHANGELOG.md       |  1 +
+ packages/tui/CHANGELOG.md                |  4 ++++
+ packages/tui/src/tui-alt-screen.ts       |  8 +++++++-
+ packages/tui/test/tui-alt-screen.test.ts | 11 ++++++++++-
+ 4 files changed, 22 insertions(+), 2 deletions(-)
+a1bc0ec790 fix: llama.cpp guidance as no default (#8236)
+
+ packages/coding-agent/CHANGELOG.md                            |  1 +
+ packages/coding-agent/docs/llama-cpp.md                       |  2 ++
+ .../coding-agent/src/modes/interactive/interactive-mode.ts    | 11 ++++++++++-
+ 3 files changed, 13 insertions(+), 1 deletion(-)
+d3e3bbc011 fix: llama.cpp allow network for model discovery (#8238)
+
+ packages/coding-agent/CHANGELOG.md                  | 1 +
+ packages/coding-agent/src/extensions/llama/index.ts | 2 ++
+ 2 files changed, 3 insertions(+)
+080932e53c fix(package-manager): use semver.gt for version comparison (#8239)
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/package-manager.ts  |  6 ++---
+ packages/coding-agent/test/package-manager.test.ts | 31 ++++++++++++++++++++++
+ 3 files changed, 35 insertions(+), 3 deletions(-)
+df018b6020 fix(coding-agent): retry hung model catalog requests
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../src/core/remote-catalog-provider.ts            | 19 ++++++++-----
+ packages/coding-agent/src/utils/management-http.ts | 32 ++++++++++++++--------
+ packages/coding-agent/test/management-http.test.ts | 21 ++++++++++++++
+ 4 files changed, 55 insertions(+), 18 deletions(-)
+a6b1dbceb1 fix(extensions): emit compaction failed for extensions (#8241)
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/docs/compaction.md           | 15 ++++++
+ packages/coding-agent/docs/extensions.md           | 13 ++++-
+ packages/coding-agent/src/core/agent-session.ts    | 56 +++++++++++++++++++---
+ packages/coding-agent/src/core/extensions/index.ts |  1 +
+ packages/coding-agent/src/core/extensions/types.ts | 19 +++++++-
+ .../test/suite/agent-session-compaction.test.ts    | 44 +++++++++++++++++
+ 7 files changed, 139 insertions(+), 10 deletions(-)
+1d08508ef6 fix(extension-examples): use agent_settled instead of end (#8242)
+
+ packages/coding-agent/examples/extensions/border-status-editor.ts | 2 +-
+ packages/coding-agent/examples/extensions/git-checkpoint.ts       | 4 ++--
+ packages/coding-agent/examples/extensions/notify.ts               | 4 +++-
+ packages/coding-agent/examples/extensions/titlebar-spinner.ts     | 2 +-
+ packages/coding-agent/examples/rpc-extension-ui.ts                | 2 +-
+ packages/coding-agent/examples/sdk/06-extensions.ts               | 2 +-
+ packages/coding-agent/examples/sdk/README.md                      | 2 +-
+ 7 files changed, 10 insertions(+), 8 deletions(-)
+af2c352238 fix(ai): honor Google thinking level maps
+
+ packages/ai/CHANGELOG.md                           |   5 +
+ packages/ai/src/api/google-generative-ai.ts        |  39 ++---
+ packages/ai/src/api/google-shared.ts               |  37 ++++-
+ packages/ai/src/api/google-vertex.ts               |  34 ++---
+ packages/ai/src/index.ts                           |   2 +-
+ packages/ai/test/google-thinking-level-map.test.ts | 170 +++++++++++++++++++++
+ 6 files changed, 247 insertions(+), 40 deletions(-)
+10acee6045 fix(ai): bedrock response to include smithy headers (#8243)
+
+ packages/ai/CHANGELOG.md                          |  1 +
+ packages/ai/src/api/bedrock-converse-stream.ts    | 46 ++++++++++++++++-
+ packages/ai/test/bedrock-response-headers.test.ts | 63 +++++++++++++++++++++++
+ 3 files changed, 108 insertions(+), 2 deletions(-)
+0e4d495414 fix(ai,coding-agent): remove deprecated Xiaomi models
+
+ packages/ai/CHANGELOG.md               |  1 +
+ packages/ai/scripts/generate-models.ts |  1 +
+ packages/ai/test/xiaomi-models.test.ts | 23 ++++++++++++-----------
+ packages/coding-agent/CHANGELOG.md     |  1 +
+ 4 files changed, 15 insertions(+), 11 deletions(-)
+87205484bf fix(ai): use Chinese ZAI Coding Plan catalog
+
+ packages/ai/CHANGELOG.md                        |  4 ++
+ packages/ai/scripts/generate-models.ts          | 77 ++++++++++++++-----------
+ packages/ai/test/zai-coding-plan-models.test.ts | 53 +++++++++++++++++
+ 3 files changed, 99 insertions(+), 35 deletions(-)
+6db110e6fa fix(ai): add Qwen Token Plan Individual DeepSeek V4 Pro 0813
+
+ packages/ai/CHANGELOG.md                        | 1 +
+ packages/ai/scripts/generate-models.ts          | 1 +
+ packages/ai/test/generate-models-strict.test.ts | 1 +
+ packages/ai/test/qwen-token-plan-models.test.ts | 3 ++-
+ 4 files changed, 5 insertions(+), 1 deletion(-)
+1c28f3032e fix(ai): update cloudflare gateway sonnet test id (#8260)
+
+ packages/ai/test/stream.test.ts                   | 4 ++--
+ packages/coding-agent/src/core/model-resolver.ts  | 2 +-
+ packages/coding-agent/test/model-resolver.test.ts | 2 +-
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+5e11f65865 fix(coding-agent): load nested markdown skills (#8255)
+
+ packages/coding-agent/docs/skills.md               |  2 +-
+ packages/coding-agent/src/core/package-manager.ts  |  7 ++++++-
+ packages/coding-agent/test/package-manager.test.ts | 10 +++++++++-
+ 3 files changed, 16 insertions(+), 3 deletions(-)
+eb1f87fa9a fix(coding-agent/ai): anthropic refusal error and fallbacks (#8258)
+
+ packages/ai/scripts/generate-models.ts             | 19 ++++++++++++
+ packages/ai/src/api/anthropic-messages.ts          | 36 +++++++++++++++++++---
+ packages/ai/src/types.ts                           | 10 ++++++
+ .../coding-agent/src/core/compaction/compaction.ts | 15 +++++++++
+ .../test/compaction-summary-reasoning.test.ts      | 28 ++++++++++++++++-
+ 5 files changed, 103 insertions(+), 5 deletions(-)
+54d22b74b3 fix(coding-agent): reduce redundant git update tests
+
+ packages/coding-agent/test/git-update.test.ts | 212 +-------------------------
+ 1 file changed, 4 insertions(+), 208 deletions(-)
+b82a374c7d fix(coding-agent): reduce redundant slow tests
+
+ packages/coding-agent/src/cli/args.ts              |   5 +
+ packages/coding-agent/src/main.ts                  |   8 +-
+ packages/coding-agent/test/args.test.ts            |  22 ++-
+ .../coding-agent/test/session-id-readonly.test.ts  | 219 ++++++++++-----------
+ .../coding-agent/test/startup-session-name.test.ts |  13 --
+ .../coding-agent/test/stdout-cleanliness.test.ts   |  30 +--
+ .../suite/agent-session-tool-result-images.test.ts |  77 +-------
+ packages/coding-agent/test/tools.test.ts           |   5 +-
+ 8 files changed, 145 insertions(+), 234 deletions(-)
+209bc7b9a8 fix(ai): remove unused opentelemetry dependency
+
+ package-lock.json                                    | 10 ----------
+ packages/ai/package.json                             |  1 -
+ packages/coding-agent/install-lock/package-lock.json | 10 ----------
+ packages/coding-agent/npm-shrinkwrap.json            | 10 ----------
+ 4 files changed, 31 deletions(-)
+9117326b4c fix(ai): forward Azure Responses tool choice
+
+ packages/ai/CHANGELOG.md                          |  1 +
+ packages/ai/src/api/azure-openai-responses.ts     |  4 ++
+ packages/ai/test/azure-openai-tool-choice.test.ts | 49 +++++++++++++++++++++++
+ 3 files changed, 54 insertions(+)
+ad58801ce7 fix(ai): update Baseten GLM input modalities
+
+ packages/ai/test/baseten-models.test.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+e5dde9a76b feat(ai): add simple tool choice option
+
+ packages/ai/CHANGELOG.md                          |  1 +
+ packages/ai/src/api/anthropic-messages.ts         |  5 +++-
+ packages/ai/src/api/azure-openai-responses.ts     |  5 +++-
+ packages/ai/src/api/bedrock-converse-stream.ts    |  5 +++-
+ packages/ai/src/api/google-generative-ai.ts       |  5 +++-
+ packages/ai/src/api/google-vertex.ts              |  5 +++-
+ packages/ai/src/api/mistral-conversations.ts      |  5 +++-
+ packages/ai/src/api/openai-codex-responses.ts     |  5 +++-
+ packages/ai/src/api/openai-completions.ts         |  7 ++---
+ packages/ai/src/api/openai-responses.ts           |  5 +++-
+ packages/ai/src/api/pi-messages.ts                |  2 +-
+ packages/ai/src/types.ts                          |  3 +++
+ packages/ai/test/azure-openai-tool-choice.test.ts | 32 ++++++++++++++++++++++-
+ packages/ai/test/pi-messages.test.ts              |  4 +--
+ 14 files changed, 74 insertions(+), 15 deletions(-)
+90305d90a0 fix(coding-agent): disable tools during summarization
+
+ .../src/core/compaction/branch-summarization.ts    |  3 +
+ .../coding-agent/src/core/compaction/compaction.ts |  7 ++
+ .../coding-agent/test/branch-summarization.test.ts | 90 ++++++++++++++++++++++
+ .../test/compaction-summary-reasoning.test.ts      | 35 ++++++++-
+ 4 files changed, 134 insertions(+), 1 deletion(-)
+8af7690c4f fix(coding-agent): skip trusted subagent prompts
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../examples/extensions/subagent/README.md         |  2 +-
+ .../examples/extensions/subagent/index.ts          |  7 +-
+ .../8261-subagent-project-trust.test.ts            | 82 ++++++++++++++++++++++
+ 4 files changed, 90 insertions(+), 2 deletions(-)
+2509b5c037 feat(agent): expose provider context construction
+
+ packages/agent/src/agent-loop.ts  | 31 +++++++++++++--------
+ packages/agent/src/agent.ts       | 16 ++++++++++-
+ packages/agent/test/agent.test.ts | 57 ++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 91 insertions(+), 13 deletions(-)
+836aee6d38 feat(coding-agent): show compaction usage notices
+
+ packages/coding-agent/CHANGELOG.md                 |   4 +
+ packages/coding-agent/docs/settings.md             |   2 +-
+ packages/coding-agent/src/core/settings-manager.ts |   2 +-
+ .../interactive/components/settings-selector.ts    |   2 +-
+ .../src/modes/interactive/interactive-mode.ts      |  55 +++++++-
+ .../test/interactive-mode-compaction.test.ts       | 148 ++++++++++++++++++++-
+ 6 files changed, 202 insertions(+), 11 deletions(-)
+ef8dc7385b feat(coding-agent): centralize compaction summary requests
+
+ packages/coding-agent/src/core/agent-session.ts    | 44 ++++++++++++++++------
+ .../coding-agent/src/core/compaction/compaction.ts | 41 ++++++++++----------
+ .../test/compaction-summary-reasoning.test.ts      | 21 ++++++++++-
+ .../test/suite/agent-session-compaction.test.ts    | 40 +++++++++++++++++++-
+ 4 files changed, 111 insertions(+), 35 deletions(-)
+cff1cf52c6 feat(coding-agent): add cache-friendly compaction primitives
+
+ packages/ai/src/index.ts                           |   1 +
+ packages/coding-agent/docs/compaction.md           |   2 +
+ packages/coding-agent/src/core/agent-session.ts    |   2 +-
+ .../coding-agent/src/core/compaction/compaction.ts | 257 +++++++++++++++++----
+ packages/coding-agent/src/index.ts                 |   1 +
+ .../test/compaction-summary-reasoning.test.ts      | 227 +++++++++++++++++-
+ packages/coding-agent/test/compaction.test.ts      |  85 ++++++-
+ 7 files changed, 529 insertions(+), 46 deletions(-)
+a6c6f80180 fix(ai): anthropic fallback usage (#8308)
+
+ packages/ai/CHANGELOG.md                  |  1 +
+ packages/ai/src/api/anthropic-messages.ts | 11 +++++++++--
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+b237412699 feat(ai): generalize openai-completions thinking token budget fields (#8275)
+
+ packages/ai/README.md                              |   6 +-
+ packages/ai/scripts/generate-models.ts             |   7 +-
+ packages/ai/src/api/openai-completions.ts          |  71 +++++++----
+ packages/ai/src/api/simple-options.ts              |  31 +++--
+ packages/ai/src/types.ts                           |  19 ++-
+ .../openai-completions-thinking-as-text.test.ts    |   7 +-
+ ...penai-completions-thinking-token-budget.test.ts | 130 ++++++++++++++++-----
+ .../openai-completions-tool-result-images.test.ts  |   4 +-
+ packages/coding-agent/docs/custom-provider.md      |   7 +-
+ packages/coding-agent/docs/models.md               |  10 +-
+ packages/coding-agent/docs/settings.md             |   2 +-
+ 11 files changed, 218 insertions(+), 76 deletions(-)
+c061328981 fix(coding-agent): load extensions in Node SEA hosts, closes #8237
+
+ .../coding-agent/src/core/extensions/loader.ts     | 13 +++---
+ .../8237-node-sea-extension-loading.test.ts        | 50 ++++++++++++++++++++++
+ 2 files changed, 58 insertions(+), 5 deletions(-)
+f0c5d86d20 fix(tui): fit text padding to narrow widths, closes #8252
+
+ packages/tui/CHANGELOG.md           | 1 +
+ packages/tui/src/components/text.ts | 9 +++++----
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+59a71b235d Revert "fix(ai): anthropic fallback usage (#8308)" (#8313)
+
+ packages/ai/CHANGELOG.md                  |  1 -
+ packages/ai/src/api/anthropic-messages.ts | 11 ++---------
+ 2 files changed, 2 insertions(+), 10 deletions(-)
+4809c2abca fix(ai): anthropic fallback usage (#8319)
+
+ packages/ai/CHANGELOG.md                           |  1 +
+ packages/ai/scripts/generate-models.ts             | 27 +++++++++++++++++++++-
+ packages/ai/src/api/anthropic-messages.ts          | 18 ++++++++++++---
+ packages/ai/src/types.ts                           | 10 ++++++--
+ .../coding-agent/src/core/compaction/compaction.ts |  4 ++--
+ .../test/compaction-summary-reasoning.test.ts      | 10 ++++++--
+ 6 files changed, 60 insertions(+), 10 deletions(-)
+55b0db4d3e fix(ai): prevent copilot policy login rate limits (#8254)
+
+ packages/ai/CHANGELOG.md                      |   1 +
+ packages/ai/src/auth/oauth/github-copilot.ts  | 194 +++++++++++++------
+ packages/ai/src/auth/oauth/kimi-coding.ts     |  16 +-
+ packages/ai/src/utils/sleep.ts                |  14 ++
+ packages/ai/test/github-copilot-oauth.test.ts | 269 +++++++++++++++++---------
+ 5 files changed, 331 insertions(+), 163 deletions(-)
+8dab70281b Revert "feat(coding-agent): add cache-friendly compaction primitives"
+
+ packages/ai/src/index.ts                           |   1 -
+ packages/coding-agent/docs/compaction.md           |   2 -
+ packages/coding-agent/src/core/agent-session.ts    |   2 +-
+ .../coding-agent/src/core/compaction/compaction.ts | 257 ++++-----------------
+ packages/coding-agent/src/index.ts                 |   1 -
+ .../test/compaction-summary-reasoning.test.ts      | 227 +-----------------
+ packages/coding-agent/test/compaction.test.ts      |  85 +------
+ 7 files changed, 46 insertions(+), 529 deletions(-)
+3a0b9a3eee Revert "feat(agent): expose provider context construction"
+
+ packages/agent/src/agent-loop.ts  | 31 ++++++++-------------
+ packages/agent/src/agent.ts       | 16 +----------
+ packages/agent/test/agent.test.ts | 57 +--------------------------------------
+ 3 files changed, 13 insertions(+), 91 deletions(-)
+ed867e9094 fix(ai): fallback cost not via stream options (#8352)
+
+ packages/ai/scripts/generate-models.ts             | 24 +++++++---------
+ packages/ai/src/api/anthropic-messages.ts          | 33 ++++++++--------------
+ packages/ai/src/types.ts                           | 19 ++++++-------
+ .../coding-agent/src/core/compaction/compaction.ts | 15 ----------
+ .../test/compaction-summary-reasoning.test.ts      | 14 ++++-----
+ 5 files changed, 37 insertions(+), 68 deletions(-)
+d711bd5f0a fix(coding-agent): preserve branch summary source leaf
+
+ packages/coding-agent/CHANGELOG.md                                | 1 +
+ packages/coding-agent/src/core/session-manager.ts                 | 3 ++-
+ packages/coding-agent/test/branch-summary-extensions.test.ts      | 4 +++-
+ packages/coding-agent/test/session-manager/tree-traversal.test.ts | 5 +++--
+ 4 files changed, 9 insertions(+), 4 deletions(-)
+830a0a59e9 fix(coding-agent): expose tool metadata at stream start (#7953)
+
+ packages/coding-agent/docs/json.md                 |  9 +++-
+ packages/coding-agent/docs/rpc.md                  | 12 +++--
+ packages/coding-agent/src/modes/json-event.ts      | 57 ++++++++++++++--------
+ .../7925-toolcall-start-metadata.test.ts           | 43 ++++++++++++++++
+ 4 files changed, 95 insertions(+), 26 deletions(-)
+d57e531f5d fix(ai): round-trip Bedrock redacted reasoning (#8314)
+
+ packages/ai/src/api/bedrock-converse-stream.ts     | 104 +++++++-
+ .../ai/test/bedrock-redacted-reasoning.test.ts     | 274 +++++++++++++++++++++
+ 2 files changed, 372 insertions(+), 6 deletions(-)
+1e1a6e27be feat(coding-agent): include paths in settings errors
+
+ packages/coding-agent/src/core/settings-manager.ts | 40 ++++++++++++++++++----
+ .../coding-agent/test/settings-manager.test.ts     |  8 +++--
+ 2 files changed, 40 insertions(+), 8 deletions(-)
+913bcf3391 fix(coding-agent): report settings diagnostic paths
+
+ .../coding-agent/src/core/settings-diagnostics.ts  | 25 ++++++++++++
+ packages/coding-agent/src/main.ts                  | 15 ++-----
+ .../coding-agent/test/settings-diagnostics.test.ts | 47 ++++++++++++++++++++++
+ 3 files changed, 75 insertions(+), 12 deletions(-)
+678f0af30d fix(coding-agent): show startup diagnostics in TUI
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/main.ts                  | 15 ++++--
+ .../src/modes/interactive/interactive-mode.ts      | 22 ++++++++-
+ .../7829-invalid-settings-warning.test.ts          | 56 ++++++++++++++++++++++
+ 4 files changed, 89 insertions(+), 5 deletions(-)
+3de00332f7 fix(ai): derive Z.AI reasoning effort metadata
+
+ packages/ai/scripts/generate-models.ts             | 118 +++++++++++----------
+ .../ai/test/openai-completions-tool-choice.test.ts |  28 +++--
+ 2 files changed, 83 insertions(+), 63 deletions(-)
+4495469a5e fix(coding-agent): compact without provider usage
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/agent-session.ts    | 25 ++++---
+ .../8328-zero-usage-auto-compaction.test.ts        | 80 ++++++++++++++++++++++
+ 3 files changed, 95 insertions(+), 11 deletions(-)
+1355cd36e0 fix(coding-agent): normalize UTF-8 BOMs in text inputs
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/cli/file-processor.ts    |  3 +-
+ packages/coding-agent/src/config.ts                |  3 +-
+ packages/coding-agent/src/core/auth-storage.ts     |  7 ++--
+ packages/coding-agent/src/core/keybindings.ts      |  3 +-
+ packages/coding-agent/src/core/model-config.ts     |  3 +-
+ packages/coding-agent/src/core/models-store.ts     |  3 +-
+ packages/coding-agent/src/core/package-manager.ts  |  5 ++-
+ packages/coding-agent/src/core/pi-manifest.ts      |  3 +-
+ packages/coding-agent/src/core/resource-loader.ts  |  5 ++-
+ packages/coding-agent/src/core/settings-manager.ts |  5 ++-
+ packages/coding-agent/src/core/tools/edit-diff.ts  |  8 +---
+ packages/coding-agent/src/core/tools/edit.ts       |  4 +-
+ packages/coding-agent/src/core/trust-manager.ts    |  3 +-
+ packages/coding-agent/src/migrations.ts            |  7 ++--
+ .../src/modes/interactive/external-editor.ts       |  3 +-
+ .../src/modes/interactive/theme/theme.ts           |  7 ++--
+ packages/coding-agent/src/utils/frontmatter.ts     |  3 +-
+ packages/coding-agent/src/utils/text.ts            |  9 ++++
+ .../regressions/8337-utf8-bom-parsing.test.ts      | 49 ++++++++++++++++++++++
+ 20 files changed, 102 insertions(+), 32 deletions(-)
+87af49dec2 Add pi user-agent to most api adapters (#8361)
+
+ packages/ai/src/api/anthropic-messages.ts          |  17 +---
+ packages/ai/src/api/azure-openai-responses.ts      |   3 +-
+ packages/ai/src/api/google-generative-ai.ts        |   3 +-
+ packages/ai/src/api/google-vertex.ts               |   3 +-
+ packages/ai/src/api/mistral-conversations.ts       |   2 +
+ packages/ai/src/api/openai-completions.ts          |   8 +-
+ packages/ai/src/api/openai-responses.ts            |   8 +-
+ packages/ai/src/utils/pi-user-agent.ts             |   8 --
+ packages/ai/test/anthropic-auth-token.test.ts      |  20 ++--
+ packages/ai/test/azure-openai-base-url.test.ts     |  24 +++++
+ packages/ai/test/google-raw-stop-reason.test.ts    |  32 +++++++
+ .../test/google-vertex-api-key-resolution.test.ts  |  21 +++-
+ packages/ai/test/mistral-http-transport.test.ts    |   7 +-
+ packages/ai/test/xai-responses.test.ts             | 106 ++++++++++++---------
+ 14 files changed, 168 insertions(+), 94 deletions(-)
+4ca636c5e0 feat(ai): opeani completions reasoning details (#8246)
+
+ packages/ai/CHANGELOG.md                           |   1 +
+ packages/ai/src/api/openai-completions.ts          | 136 +++++++++++++++++----
+ packages/ai/src/types.ts                           |   1 +
+ .../openai-completions-reasoning-details.test.ts   |  50 ++++++++
+ packages/server/src/protocol.ts                    |   1 +
+ 5 files changed, 163 insertions(+), 26 deletions(-)
+2ff8ba6223 fix(coding-agent): keep model and thinking level changes session scoped (#8356)
+
+ packages/coding-agent/src/core/agent-session.ts    |  90 ++++---
+ packages/coding-agent/src/core/defaults.ts         |   9 +
+ packages/coding-agent/src/core/model-resolver.ts   |  13 +-
+ packages/coding-agent/src/core/sdk.ts              |   9 +-
+ packages/coding-agent/src/core/settings-manager.ts |  28 +++
+ packages/coding-agent/src/core/slash-commands.ts   |   2 +-
+ .../modes/interactive/components/model-selector.ts |   6 -
+ .../interactive/components/settings-selector.ts    | 276 +++++++++++++++------
+ .../interactive/components/settings-submenu.ts     | 196 +++++++++++++++
+ .../src/modes/interactive/interactive-mode.ts      | 130 ++++++++--
+ .../test/interactive-mode-status.test.ts           |  64 ++++-
+ packages/coding-agent/test/model-selector.test.ts  |   1 -
+ .../coding-agent/test/settings-selector.test.ts    |   3 +
+ .../suite/agent-session-model-extension.test.ts    | 108 +++++++-
+ .../regressions/3217-scoped-model-order.test.ts    |   1 -
+ .../6999-models-json-hot-reload.test.ts            |   2 -
+ ...-model-selector-filter-resets-selection.test.ts |   2 -
+ packages/tui/src/components/settings-list.ts       |  49 +++-
+ 18 files changed, 836 insertions(+), 153 deletions(-)
+98767a25d2 fix(settings-selector): remove token estimates
+
+ .../src/modes/interactive/components/settings-selector.ts      | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+ee29aa118b feat(settings-selector): make default model and thinking level searchable
+
+ .../interactive/components/settings-selector.ts    |   3 +
+ .../interactive/components/settings-submenu.ts     | 109 ++++++++++++++++-----
+ 2 files changed, 88 insertions(+), 24 deletions(-)
+a669db3c33 fix(settings-selector): show modelid [provider] like /model
+
+ .../interactive/components/settings-selector.ts    | 66 +++++++++++++++-------
+ .../interactive/components/settings-submenu.ts     | 15 ++---
+ 2 files changed, 54 insertions(+), 27 deletions(-)
+f0a2880f29 fix(settings-selector): revert token estimate removal
+
+ .../src/modes/interactive/components/settings-selector.ts      | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+9c8070fbe4 feat(settings-selector): ctrl + s persists /model
+
+ .../modes/interactive/components/model-selector.ts | 19 +++++++++++++
+ .../interactive/components/settings-selector.ts    |  5 ++--
+ .../src/modes/interactive/interactive-mode.ts      | 32 +++++++++++-----------
+ 3 files changed, 38 insertions(+), 18 deletions(-)
+496185f6e4 feat(coding-agent): /thinking command
+
+ packages/coding-agent/src/core/slash-commands.ts   |   1 +
+ .../interactive/components/thinking-selector.ts    |  45 +++++++++-
+ .../src/modes/interactive/interactive-mode.ts      | 100 +++++++++++++++++++--
+ .../test/interactive-mode-status.test.ts           |   8 +-
+ 4 files changed, 141 insertions(+), 13 deletions(-)
+b7bb00b936 fix(ai): retain reasoning details in thinking signature
+
+ packages/ai/src/api/openai-completions.ts          | 134 +++++++++------------
+ packages/ai/src/types.ts                           |   3 +-
+ .../openai-completions-reasoning-details.test.ts   |  38 ++++--
+ packages/server/src/protocol.ts                    |   1 -
+ 4 files changed, 85 insertions(+), 91 deletions(-)
+5133c9284f chore(settings-selector): get rid of --default and global model
+
+ packages/coding-agent/src/core/agent-session.ts    |  17 ++-
+ packages/coding-agent/src/core/slash-commands.ts   |   4 +-
+ .../interactive/components/settings-selector.ts    | 101 +----------------
+ .../src/modes/interactive/interactive-mode.ts      | 125 ++++-----------------
+ .../test/interactive-mode-status.test.ts           |  64 +----------
+ .../suite/agent-session-model-extension.test.ts    |  19 +++-
+ 6 files changed, 50 insertions(+), 280 deletions(-)
+5b3caaf4cb chore(settings-selector): get rid of default thinking in settings, ctrl + S is enough
+
+ .../interactive/components/settings-selector.ts    | 23 ----------------------
+ .../src/modes/interactive/interactive-mode.ts      |  5 -----
+ 2 files changed, 28 deletions(-)
+1d3503fb9b feat(settings-selector): show default, make default searchable for model and thinking (#8399)
+
+ .../modes/interactive/components/model-selector.ts | 41 +++++++++--
+ .../interactive/components/thinking-selector.ts    | 80 +++++++++++++++-------
+ .../src/modes/interactive/interactive-mode.ts      |  4 ++
+ 3 files changed, 94 insertions(+), 31 deletions(-)
+768184923a fix(settings-selector): nit spacing
+
+ .../src/modes/interactive/components/model-selector.ts           | 9 +++++++--
+ packages/tui/src/components/settings-list.ts                     | 2 +-
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+cffe4d776c fix(settings-selector): nit ordering in default t.l. per model
+
+ .../src/modes/interactive/components/model-selector.ts         |  6 +++++-
+ .../src/modes/interactive/components/settings-selector.ts      | 10 ++++++----
+ .../coding-agent/src/modes/interactive/interactive-mode.ts     |  1 +
+ 3 files changed, 12 insertions(+), 5 deletions(-)
+8f2ae3fadd fix(tui): prevent wrapped table link color leaks (#8363)
+
+ packages/tui/CHANGELOG.md               |   1 +
+ packages/tui/src/components/markdown.ts |  13 ++--
+ packages/tui/test/markdown.test.ts      | 123 ++++++++++++++++++++++++++++----
+ 3 files changed, 118 insertions(+), 19 deletions(-)
+5cd93f688a feat(coding-agent): add development pi wrapper
+
+ scripts/auto-pi.sh | 75 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 75 insertions(+)
+686f3487f5 feat(interactive-mode): share via radius artifacts under experimental (#8443)
+
+ packages/coding-agent/src/config.ts                |   2 +-
+ .../src/modes/interactive/interactive-mode.ts      | 176 ++++++++++++++++++---
+ 2 files changed, 153 insertions(+), 25 deletions(-)
+a2f369d63a fix(slash-commands): order tree above thinking
+
+ packages/coding-agent/src/core/slash-commands.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+77f2d1235e chore(interactive-mode): get rid of theme, only share via radius if logged in
+
+ .../src/modes/interactive/interactive-mode.ts      | 50 ++++++----------------
+ 1 file changed, 12 insertions(+), 38 deletions(-)
+f4585b8bec fix(coding-agent): simplify session sharing links
+
+ packages/coding-agent/CHANGELOG.md                 |  4 ++
+ packages/coding-agent/src/config.ts                |  2 +-
+ .../src/modes/interactive/interactive-mode.ts      | 77 +++++++++-------------
+ 3 files changed, 35 insertions(+), 48 deletions(-)
+c49906ec77 fix(coding-agent): preserve managed state file permissions
+
+ packages/coding-agent/CHANGELOG.md              |  1 +
+ packages/coding-agent/src/core/auth-storage.ts  |  6 ++----
+ packages/coding-agent/test/auth-storage.test.ts | 18 +++++++++++++++++-
+ packages/coding-agent/test/models-store.test.ts | 13 ++++++++++++-
+ 4 files changed, 32 insertions(+), 6 deletions(-)
+7d4c0e05dd feat(coding-agent): bundle Node runtime (#8474)
+
+ package-lock.json                                  |   2 +-
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ .../coding-agent/install-lock/package-lock.json    |   2 +-
+ packages/coding-agent/npm-shrinkwrap.json          |   2 +-
+ packages/coding-agent/package.json                 |   9 +-
+ packages/coding-agent/src/config.ts                |  32 +++--
+ .../coding-agent/src/core/extensions/loader.ts     |   9 +-
+ packages/coding-agent/test/config.test.ts          |  14 ++
+ .../coding-agent/test/package-distribution.test.ts |  26 ++++
+ packages/tui/src/native-modifiers.ts               |  11 +-
+ packages/tui/src/native-module-path.ts             |  31 +++++
+ packages/tui/src/terminal.ts                       |  14 +-
+ packages/tui/test/native-module-path.test.ts       |  45 ++++++
+ scripts/build-coding-agent-bundle.mjs              | 154 +++++++++++++++++++++
+ scripts/profile-coding-agent-node.mjs              | 137 +++++++++++-------
+ 15 files changed, 397 insertions(+), 92 deletions(-)
+39d869f02a fix: publish installer artifacts
+
+ .github/workflows/build-binaries.yml     |   4 +-
+ scripts/publish-release-announcement.mjs | 116 +++++++++++++++++++++++++++++--
+ 2 files changed, 112 insertions(+), 8 deletions(-)
+cec3a91c02 feat(coding-agent): defer uncommon syntax grammars
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../src/modes/interactive/interactive-mode.ts      |  9 +++
+ .../src/utils/highlight-js-lib-index.d.ts          | 19 ------
+ packages/coding-agent/src/utils/highlight-js.d.ts  | 36 ++++++++++
+ .../coding-agent/src/utils/syntax-highlight.ts     | 79 +++++++++++++++++++++-
+ .../coding-agent/test/syntax-highlight.test.ts     | 39 ++++++++++-
+ 6 files changed, 162 insertions(+), 21 deletions(-)
+74786a748f fix(coding-agent): support -- end-of-options, closes #7269
+
+ packages/coding-agent/src/cli/args.ts              | 11 +++++-
+ .../regressions/7269-cli-end-of-options.test.ts    | 39 ++++++++++++++++++++++
+ 2 files changed, 49 insertions(+), 1 deletion(-)
+62bcbf6be0 docs(coding-agent): document -- end-of-options delimiter
+
+ packages/coding-agent/README.md       | 6 +++++-
+ packages/coding-agent/docs/usage.md   | 6 +++++-
+ packages/coding-agent/src/cli/args.ts | 6 +++++-
+ 3 files changed, 15 insertions(+), 3 deletions(-)
+faecac2ca8 feat(coding-agent): reduce bundled startup work
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../coding-agent/src/utils/syntax-highlight.ts     | 25 ++++++----------------
+ scripts/build-coding-agent-bundle.mjs              | 12 +++++++++++
+ 3 files changed, 20 insertions(+), 18 deletions(-)
+77c540704d meta(changelog): Add missing changelog entry
+
+ packages/coding-agent/CHANGELOG.md | 1 +
+ 1 file changed, 1 insertion(+)
+a1f955e9f4 fix(coding-agent): remove redundant development dependencies
+
+ package-lock.json                  | 10 ----------
+ package.json                       |  1 -
+ packages/coding-agent/package.json |  2 --
+ 3 files changed, 13 deletions(-)
+f8f03460a0 fix: reduce workspace dependency tree
+
+ package-lock.json                                  | 138 +--------------------
+ packages/agent/package.json                        |   2 +-
+ packages/ai/package.json                           |   2 +-
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/docs/packages.md             |   2 +-
+ .../coding-agent/install-lock/package-lock.json    |  43 -------
+ packages/coding-agent/npm-shrinkwrap.json          |  43 -------
+ packages/coding-agent/package.json                 |   3 +-
+ packages/coding-agent/src/core/package-manager.ts  |  32 +++--
+ packages/coding-agent/test/package-manager.test.ts |  54 ++++++++
+ packages/evals/package.json                        |   2 +-
+ packages/telemetry/package.json                    |   2 +-
+ 12 files changed, 90 insertions(+), 234 deletions(-)
+309b524f4f fix(coding-agent): avoid duplicate clipboard binaries
+
+ .github/workflows/build-binaries.yml | 68 +++++++++++++++++++++++++++++++++++-
+ packages/coding-agent/CHANGELOG.md   |  1 +
+ scripts/build-binaries.sh            | 57 ++++++++++++++++--------------
+ 3 files changed, 98 insertions(+), 28 deletions(-)
+c1279a65b3 feat(coding-agent): defer jiti until extension loading
+
+ packages/coding-agent/CHANGELOG.md    |  2 +-
+ scripts/build-coding-agent-bundle.mjs | 24 +++++++++++++++++++++---
+ 2 files changed, 22 insertions(+), 4 deletions(-)
+bcad846f93 fix(coding-agent): update end-of-options CLI test
+
+ packages/coding-agent/test/experimental-cli-command.test.ts | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+a69bef789b fix(coding-agent): discard failed extension factory state (#8424)
+
+ .../coding-agent/src/core/extensions/loader.ts     | 146 ++++++++++++++-------
+ .../8423-extension-factory-failure.test.ts         |  88 +++++++++++++
+ 2 files changed, 190 insertions(+), 44 deletions(-)
+460191cfcf feat(coding-agent): include context in Radius session shares
+
+ packages/coding-agent/CHANGELOG.md                 |   2 +-
+ packages/coding-agent/src/core/agent-session.ts    |  37 +---
+ packages/coding-agent/src/core/session-export.ts   |  42 +++++
+ .../src/modes/interactive/interactive-mode.ts      | 189 +------------------
+ .../src/modes/interactive/session-share.ts         | 210 +++++++++++++++++++++
+ .../coding-agent/test/export-jsonl-share.test.ts   | 122 ++++++++++++
+ 6 files changed, 389 insertions(+), 213 deletions(-)
+27b7a626de fix(coding-agent): use Windows-friendly keybinding defaults
+
+ packages/coding-agent/CHANGELOG.md             |  1 +
+ packages/coding-agent/docs/keybindings.md      | 16 +++++-----
+ packages/coding-agent/docs/terminal-setup.md   | 20 ++++++------
+ packages/coding-agent/src/core/keybindings.ts  | 33 +++++++++++++++++---
+ packages/coding-agent/test/keybindings.test.ts | 42 ++++++++++++++++++++++++++
+ packages/tui/src/keybindings.ts                |  4 +--
+ packages/tui/test/keybindings.test.ts          |  4 +--
+ 7 files changed, 95 insertions(+), 25 deletions(-)
+81152d88bb docs(coding-agent): clarify custom footer usage APIs (#8482)
+
+ packages/coding-agent/src/core/extensions/types.ts     | 4 ++--
+ packages/coding-agent/src/core/footer-data-provider.ts | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+a470b121bf fix(coding-agent): expose finish reason compatibility override (#8487)
+
+ packages/coding-agent/CHANGELOG.md                |  1 +
+ packages/coding-agent/src/core/model-config.ts    |  1 +
+ packages/coding-agent/test/model-registry.test.ts | 21 +++++++++++++++++++++
+ 3 files changed, 23 insertions(+)
+4af9d21d3b feat(coding-agent): update managed installations in place
+
+ packages/coding-agent/docs/packages.md             |   2 +-
+ packages/coding-agent/src/main.ts                  |   3 +-
+ packages/coding-agent/src/package-manager-cli.ts   | 217 ++++++++++++++++++++-
+ .../test/package-command-paths.test.ts             | 180 ++++++++++++++++-
+ scripts/publish-release-announcement.mjs           | 108 +++++-----
+ 5 files changed, 449 insertions(+), 61 deletions(-)
+80e62761f7 feat(coding-agent): add optional PowerShell tool (#8512)
+
+ packages/coding-agent/README.md                    |  6 +-
+ .../coding-agent/docs/environment-variables.md     | 16 ++---
+ packages/coding-agent/docs/extensions.md           | 11 ++--
+ packages/coding-agent/docs/sdk.md                  |  9 ++-
+ packages/coding-agent/docs/settings.md             | 10 ++-
+ packages/coding-agent/docs/usage.md                |  2 +-
+ packages/coding-agent/docs/windows.md              | 26 +++++++-
+ packages/coding-agent/src/cli/args.ts              | 15 +++--
+ packages/coding-agent/src/core/extensions/index.ts |  3 +
+ packages/coding-agent/src/core/extensions/types.ts | 18 +++++
+ packages/coding-agent/src/core/sdk.ts              |  2 +
+ packages/coding-agent/src/core/system-prompt.ts    | 11 +++-
+ packages/coding-agent/src/core/tools/bash.ts       | 76 ++++++++++++++++------
+ packages/coding-agent/src/core/tools/index.ts      | 32 ++++++++-
+ packages/coding-agent/src/core/tools/powershell.ts | 67 +++++++++++++++++++
+ packages/coding-agent/src/index.ts                 | 13 +++-
+ packages/coding-agent/src/utils/shell.ts           | 26 ++++++--
+ .../test/default-tools-setting.test.ts             | 13 +++-
+ .../test/experimental-tool-strict-mode.test.ts     |  2 +
+ packages/coding-agent/test/powershell-tool.test.ts | 30 +++++++++
+ ...-no-builtin-tools-keeps-extension-tools.test.ts |  2 +-
+ packages/coding-agent/test/system-prompt.test.ts   | 14 ++++
+ .../test/tool-system-prompt-contributions.test.ts  | 12 +++-
+ 23 files changed, 351 insertions(+), 65 deletions(-)
+7623e8a0f1 docs: audit unreleased changelogs
+
+ packages/agent/CHANGELOG.md        |  5 +++++
+ packages/ai/CHANGELOG.md           | 13 ++++++++++-
+ packages/coding-agent/CHANGELOG.md | 46 ++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 61 insertions(+), 3 deletions(-)
+4e58f324fa Release v0.84.3
+
+ package-lock.json                                  | 60 +++++++++++-----------
+ packages/agent/CHANGELOG.md                        |  2 +-
+ packages/agent/package.json                        |  6 +--
+ packages/ai/CHANGELOG.md                           |  2 +-
+ packages/ai/package.json                           |  4 +-
+ packages/client/CHANGELOG.md                       |  2 +-
+ packages/client/package.json                       |  4 +-
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ .../custom-provider-anthropic/package-lock.json    |  4 +-
+ .../custom-provider-anthropic/package.json         |  2 +-
+ .../custom-provider-gitlab-duo/package.json        |  2 +-
+ .../examples/extensions/gondolin/package-lock.json |  4 +-
+ .../examples/extensions/gondolin/package.json      |  2 +-
+ .../examples/extensions/sandbox/package-lock.json  |  4 +-
+ .../examples/extensions/sandbox/package.json       |  2 +-
+ .../extensions/with-deps/package-lock.json         |  4 +-
+ .../examples/extensions/with-deps/package.json     |  2 +-
+ .../coding-agent/install-lock/package-lock.json    | 52 +++++++++----------
+ packages/coding-agent/install-lock/package.json    |  4 +-
+ packages/coding-agent/npm-shrinkwrap.json          | 46 ++++++++---------
+ packages/coding-agent/package.json                 | 12 ++---
+ packages/evals/package.json                        |  6 +--
+ packages/protocol/CHANGELOG.md                     |  2 +-
+ packages/protocol/package.json                     |  2 +-
+ packages/server/CHANGELOG.md                       |  2 +-
+ packages/server/package.json                       |  6 +--
+ packages/session-backends/sqlite-node/CHANGELOG.md |  2 +-
+ packages/session-backends/sqlite-node/package.json |  6 +--
+ packages/telemetry/CHANGELOG.md                    |  2 +-
+ packages/telemetry/package.json                    |  2 +-
+ packages/tui/CHANGELOG.md                          |  2 +-
+ packages/tui/package.json                          |  2 +-
+ 32 files changed, 128 insertions(+), 128 deletions(-)
+31d4ed5860 Add [Unreleased] section for next cycle
+
+ packages/agent/CHANGELOG.md                        | 2 ++
+ packages/ai/CHANGELOG.md                           | 2 ++
+ packages/client/CHANGELOG.md                       | 2 ++
+ packages/coding-agent/CHANGELOG.md                 | 2 ++
+ packages/protocol/CHANGELOG.md                     | 2 ++
+ packages/server/CHANGELOG.md                       | 2 ++
+ packages/session-backends/sqlite-node/CHANGELOG.md | 2 ++
+ packages/telemetry/CHANGELOG.md                    | 2 ++
+ packages/tui/CHANGELOG.md                          | 2 ++
+ 9 files changed, 18 insertions(+)
+bfb004d441 fix: extract Windows release ZIPs in CI
+
+ .github/workflows/build-binaries.yml | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+97fa14e39c fix(coding-agent): reject truncated compaction summaries closes #7048
+
+ packages/coding-agent/CHANGELOG.md                 |  2 +
+ .../src/core/compaction/branch-summarization.ts    |  7 ++--
+ .../coding-agent/src/core/compaction/compaction.ts | 24 +++++++++--
+ .../coding-agent/test/branch-summarization.test.ts | 24 +++++++++++
+ .../test/compaction-summary-reasoning.test.ts      | 33 +++++++++++++++
+ .../7048-compaction-truncated-summary.test.ts      | 48 ++++++++++++++++++++++
+ 6 files changed, 131 insertions(+), 7 deletions(-)
+dcd461925d feat: show llama presets if autoload enabled (#8558)
+
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ .../coding-agent/src/extensions/llama/client.ts    | 11 ++++
+ .../coding-agent/src/extensions/llama/provider.ts  | 39 +++++++++---
+ packages/coding-agent/test/llama-extension.test.ts | 72 ++++++++++++++++++++++
+ 4 files changed, 116 insertions(+), 8 deletions(-)

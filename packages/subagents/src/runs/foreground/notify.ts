@@ -21,7 +21,7 @@ interface SubagentStepResult {
 
 export interface SubagentNotifyDetails {
 	agent: string;
-	status: "completed" | "failed" | "paused";
+	status: "completed" | "failed" | "interrupted";
 	taskInfo?: string;
 	resultPreview: string;
 	durationMs?: number;
@@ -211,14 +211,13 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		inFlight.set(key, ownership.promise);
 		const agent = result.agent ?? "unknown";
 		const summary = typeof result.summary === "string" ? result.summary : "";
-		const paused =
-			result.status === "interrupted" || result.state === "paused" || summary.startsWith("Paused after interrupt.");
-		const status = paused
-			? "paused"
+		const interrupted = result.status === "interrupted" || result.state === "interrupted";
+		const status = interrupted
+			? "interrupted"
 			: result.status === "ok"
 				? "completed"
 				: result.status === "continued"
-					? "paused"
+					? "interrupted"
 					: "failed";
 
 		const taskInfo =

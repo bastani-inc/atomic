@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
+import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import { renderContactSupervisorResult } from "./result-renderers.js";
 import {
   type ChildOrchestratorMetadata,
@@ -23,37 +24,35 @@ interface ContactSupervisorDeps {
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
-  /**
-   * Atomically reserve the single reply-waiter slot. Returns a structured
-   * refusal when another blocking ask already holds it, so concurrent calls
-   * never observe a rejected promise.
-   */
-  beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
-  /** Advisory fast-path check; beginReplyWait is the authoritative reservation. */
-  hasReplyWaiter(): boolean;
+	/** Atomically reserves one correlation-keyed reply waiter from the shared capacity. */
+	beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
 }
 
 export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSupervisorDeps): void {
-  const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, resolveSessionTarget, beginReplyWait, hasReplyWaiter } = deps;
+	const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, resolveSessionTarget, beginReplyWait } = deps;
   const getMetadata = typeof childOrchestratorMetadata === "function"
     ? childOrchestratorMetadata
     : () => childOrchestratorMetadata;
+	// Supervisor decisions/interviews are exclusive (one blocking wait per child),
+	// while ordinary peer asks may coexist under the shared registry cap.
+	let supervisorWaitActive = false;
+	let supervisorHandoffClaimed = false;
   if (childOrchestratorMetadata !== null) {
     pi.registerTool({
       name: "contact_supervisor",
       label: "Contact Supervisor",
-      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits for the supervisor's reply. Use interview_request when multiple structured questions need supervisor answers; this also waits for a reply. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
-      promptSnippet: "Subagent-only: contact the supervisor for decisions, structured interviews, or meaningful plan-changing updates. Do not use for routine completion handoffs.",
+      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. In a live foreground child, need_decision and interview_request end the child and return a fresh-subagent handoff to the supervisor; fallback Intercom delivery waits for a reply when no foreground owner claims the request. One blocking supervisor request is allowed per child and may coexist with ordinary intercom asks. progress_update is fire-and-forget. Do not use for routine completion handoffs.",
+      promptSnippet: "Subagent-only: yield decisions or structured interviews to the supervisor for a fresh-child follow-up, or send meaningful plan-changing progress updates.",
       promptGuidelines: [
-        "Use contact_supervisor with reason='need_decision' when a subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision before continuing.",
-        "Use contact_supervisor with reason='interview_request' when the child needs multiple structured answers from the supervisor in one blocking exchange.",
+        "Use contact_supervisor with reason='need_decision' when a subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision. A claimed foreground request ends this child; do not wait for a reply.",
+        "Use contact_supervisor with reason='interview_request' when the child needs multiple structured answers. A claimed foreground request ends this child; the supervisor starts a fresh child with the answers.",
         "Use contact_supervisor with reason='progress_update' only for meaningful progress or unexpected discoveries that change the plan.",
         "Do not use contact_supervisor for routine completion handoffs; return the final subagent result normally.",
       ],
       parameters: Type.Object({
         reason: Type.String({
           enum: ["need_decision", "progress_update", "interview_request"],
-          description: "Contact reason: 'need_decision' waits for a reply; 'interview_request' sends structured questions and waits for a reply; 'progress_update' sends a non-blocking update",
+          description: "Contact reason: 'need_decision' and 'interview_request' yield a live foreground child for a fresh follow-up; 'progress_update' sends a non-blocking update",
         }),
         message: Type.Optional(Type.String({
           description: "Decision request, optional interview note, or meaningful progress update for the supervisor",
@@ -79,7 +78,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             details: { error: true },
           };
         }
-        if ((reason === "need_decision" || reason === "progress_update") && typeof params.message !== "string") {
+        if (reason === "progress_update" && typeof params.message !== "string") {
           return {
             content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
             isError: true,
@@ -97,36 +96,89 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           };
         }
         const supervisorInterview = interviewValidation?.ok === true ? interviewValidation.interview : undefined;
+		const metadata = getMetadata();
+		if (reason === "need_decision" && typeof params.message !== "string" && !metadata) {
+			return {
+				content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
+				isError: true,
+				details: { error: true },
+			};
+		}
 
-        let connectedClient: IntercomClient;
-        try {
-          connectedClient = await ensureConnected("tool");
-        } catch (error) {
-          return {
-            content: [{ type: "text", text: `Intercom not connected: ${getErrorMessage(error)}` }],
-            isError: true,
-            details: { error: true },
-          };
-        }
+		if (!metadata) {
+			return {
+				content: [{ type: "text", text: "Supervisor contact is unavailable for this session" }],
+				isError: true,
+				details: { error: true },
+			};
+		}
+		if (signal?.aborted) {
+			return {
+				content: [{ type: "text", text: "Cancelled" }],
+				isError: true,
+				details: { error: true },
+			};
+		}
+		const blockingSupervisorWait = reason !== "progress_update";
+		if (blockingSupervisorWait && supervisorHandoffClaimed) {
+			return {
+				content: [{ type: "text", text: "Parent ask already claimed; this child is ending for a fresh subagent start." }],
+				isError: true,
+				details: { error: true },
+			};
+		}
+		if (blockingSupervisorWait && supervisorWaitActive) {
+			return {
+				content: [{ type: "text", text: "Already waiting for a supervisor reply" }],
+				isError: true,
+				details: { error: true },
+			};
+		}
+		if (blockingSupervisorWait) supervisorWaitActive = true;
+		try {
+			if (
+				blockingSupervisorWait &&
+				requestParentAskHandoff(pi.events, metadata, {
+					kind: reason === "interview_request" ? "interview" : "decision",
+					question: typeof params.message === "string" ? params.message : "",
+					...(supervisorInterview ? { interview: supervisorInterview } : {}),
+				})
+			) {
+				supervisorHandoffClaimed = true;
+				return {
+					content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
+					isError: false,
+					details: { yielded: true },
+				};
+			}
 
-        syncPresenceIdentity(ctx.sessionManager.getSessionId());
+			if (reason === "need_decision" && typeof params.message !== "string") {
+				return {
+					content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
+					isError: true,
+					details: { error: true },
+				};
+			}
+			let connectedClient: IntercomClient;
+		try {
+			connectedClient = await ensureConnected("tool");
+		} catch (error) {
+			return {
+				content: [{ type: "text", text: `Intercom not connected: ${getErrorMessage(error)}` }],
+				isError: true,
+				details: { error: true },
+			};
+		}
 
-        if (signal?.aborted) {
-          return {
-            content: [{ type: "text", text: "Cancelled" }],
-            isError: true,
-            details: { error: true },
-          };
-        }
+		syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
-        const metadata = getMetadata();
-        if (!metadata) {
-          return {
-            content: [{ type: "text", text: "Supervisor contact is unavailable for this session" }],
-            isError: true,
-            details: { error: true },
-          };
-        }
+		if (signal?.aborted) {
+			return {
+				content: [{ type: "text", text: "Cancelled" }],
+				isError: true,
+				details: { error: true },
+			};
+		}
         let sendTo: string;
         if (connectedClient.supervisorSessionId || metadata.supervisor) {
           sendTo = connectedClient.supervisorSessionId ?? metadata.supervisor!.supervisorSessionId;
@@ -191,24 +243,16 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           }
         }
 
-        if (hasReplyWaiter()) {
-          return {
-            content: [{ type: "text", text: "Already waiting for a reply" }],
-            isError: true,
-            details: { error: true },
-          };
-        }
-
         let wait: ReplyWait | null = null;
         try {
           const questionId = randomUUID();
           const admission = beginReplyWait(sendTo, questionId, signal);
           if (!admission.ok) {
-            return {
-              content: [{ type: "text", text: admission.reason === "busy" ? "Already waiting for a reply" : "Cancelled" }],
-              isError: true,
-              details: { error: true },
-            };
+			return {
+				content: [{ type: "text", text: admission.reason === "busy" ? `Too many pending asks (${admission.limit}); reply-wait slots are full` : "Cancelled" }],
+				isError: true,
+				details: { error: true },
+			};
           }
           wait = admission.wait;
           const requestText = reason === "interview_request"
@@ -271,6 +315,9 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             details: { error: true },
           };
         }
+		} finally {
+			if (blockingSupervisorWait && !supervisorHandoffClaimed) supervisorWaitActive = false;
+		}
       },
       renderCall(args, theme) {
         const reason = typeof args.reason === "string" ? args.reason : "contact";

@@ -16,7 +16,7 @@ import type { ConcurrencyLimiter } from "../runs/shared/concurrency.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
-import type { StageOptions } from "../shared/types.js";
+import type { StageOptions, WorkflowArtifact } from "../shared/types.js";
 import type { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
 import type { RunBudgetController } from "./run-budget.js";
@@ -90,7 +90,7 @@ export class EngineRuntime {
 	readonly rootBudget: RunBudgetController;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
-
+	private readonly terminalArtifactCollectors = new Map<string, () => readonly WorkflowArtifact[]>();
 	private readonly spawnAgentStage: (
 		name: string,
 		options?: StageOptions,
@@ -141,6 +141,7 @@ export class EngineRuntime {
 			exit: input.exit,
 			classifyExecutorFailure: input.classifyExecutorFailure,
 			createMcpScope: (stageId, options) => this.createMcpScope(stageId, options),
+			takeTerminalArtifacts: (replayKey) => this.takeTerminalArtifacts(replayKey),
 		});
 		this.spawnWorkflowBoundary = createWorkflowBoundaryFactory({
 			runId: input.runId,
@@ -165,6 +166,17 @@ export class EngineRuntime {
 			};
 		}
 		return { kind: "agent", context: this.spawnAgentStage(name, opts.options, opts.failFastScope) };
+	}
+
+	registerTerminalArtifactCollector(replayKey: string, collect: () => readonly WorkflowArtifact[]): void {
+		this.terminalArtifactCollectors.set(replayKey, collect);
+	}
+
+	private takeTerminalArtifacts(replayKey: string): readonly WorkflowArtifact[] | undefined {
+		const collect = this.terminalArtifactCollectors.get(replayKey);
+		if (collect === undefined) return undefined;
+		this.terminalArtifactCollectors.delete(replayKey);
+		return collect();
 	}
 
 	readonly stage = (

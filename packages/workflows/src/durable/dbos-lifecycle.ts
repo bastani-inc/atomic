@@ -3,6 +3,7 @@ import {
 	provisionResolvedLocalDbos,
 	resolveDbosSystemDatabaseUrl,
 	shouldProvisionLocalDbos,
+	shutdownResolvedLocalDbos,
 } from "./dbos-local-postgres.js";
 import { getDbosProcessOwner, resetDbosProcessOwner } from "./dbos-process-owner.js";
 import { classifyDbosDurabilityFailure, readDbosFailureDetail } from "./dbos-registration-diagnostics.js";
@@ -41,6 +42,7 @@ export class DbosShutdownError extends DbosDurabilityError {
 }
 type DbosConfigurator = () => Promise<ConfiguredDbosDurability>;
 type LocalDbosProvisioner = () => Promise<void>;
+type LocalDbosShutdowner = () => Promise<void>;
 
 /**
  * Default path: resolve the local database first (explicit env URL, embedded
@@ -53,6 +55,7 @@ const defaultConfigurator: DbosConfigurator = async () => {
 
 let configureDurability: DbosConfigurator = defaultConfigurator;
 let provisionLocalDbos: LocalDbosProvisioner = provisionResolvedLocalDbos;
+let shutdownLocalDbos: LocalDbosShutdowner = shutdownResolvedLocalDbos;
 
 function owner(): ReturnType<typeof getDbosProcessOwner> {
 	return getDbosProcessOwner();
@@ -67,6 +70,11 @@ async function durabilityFailure(action: string, error: unknown): Promise<DbosDu
 			: "Set DBOS_SYSTEM_DATABASE_URL to an existing Postgres when local provisioning is unavailable.";
 	const cause = error instanceof Error ? { cause: error } : undefined;
 	return new DbosDurabilityError(`DBOS workflow durability ${action} failed: ${detail}. ${guidance}`, cause);
+}
+
+function combinedShutdownFailure(errors: readonly unknown[]): unknown {
+	if (errors.length === 1) return errors[0];
+	return new AggregateError(errors, errors.map((error) => readDbosFailureDetail(error)).join("; "));
 }
 
 export async function configureDbosOnce(): Promise<ConfiguredDbosDurability> {
@@ -140,17 +148,29 @@ export async function shutdownDbos(): Promise<void> {
 	const configuredPromise = slot.configured;
 	if (configuredPromise === undefined) return;
 	slot.shutdownPromise = (async () => {
-		// A backend that never reached "ready" has nothing to flush or stop.
-		// `configured`/`launchPromise` memoize rejections, so re-awaiting them
-		// unguarded would rethrow the original provisioning failure out of every
-		// session dispose — crashing otherwise-successful runs at process exit.
+		// Configuration and launch failures are intentionally not rethrown during
+		// session disposal, but local provisioning may already have started an
+		// owned cluster. Always attempt that cleanup exactly once.
 		const durability = await configuredPromise.catch(() => undefined);
-		if (durability === undefined) return;
+		if (durability === undefined) {
+			await shutdownLocalDbos();
+			return;
+		}
 		if (slot.launchPromise !== undefined) await slot.launchPromise.catch(() => undefined);
-		if (slot.state !== "ready") return;
+		if (slot.state !== "ready") {
+			await shutdownLocalDbos();
+			return;
+		}
 		slot.state = "shutting_down";
-		await durability.backend.flush();
-		await durability.shutdown();
+		const errors: unknown[] = [];
+		for (const shutdown of [() => durability.backend.flush(), () => durability.shutdown(), shutdownLocalDbos]) {
+			try {
+				await shutdown();
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		if (errors.length > 0) throw combinedShutdownFailure(errors);
 		slot.state = "shut_down";
 	})().catch(async (error: unknown) => {
 		slot.failure = await durabilityFailure("shutdown", error);
@@ -179,8 +199,10 @@ export function dbosLifecycleState(): DbosLifecycleState {
 export function resetDbosLifecycleForTests(
 	configurator: DbosConfigurator = defaultConfigurator,
 	provisioner: LocalDbosProvisioner = provisionResolvedLocalDbos,
+	shutdowner: LocalDbosShutdowner = shutdownResolvedLocalDbos,
 ): void {
 	resetDbosProcessOwner();
 	configureDurability = configurator;
 	provisionLocalDbos = provisioner;
+	shutdownLocalDbos = shutdowner;
 }

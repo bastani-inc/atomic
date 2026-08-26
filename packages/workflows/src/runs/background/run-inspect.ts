@@ -8,6 +8,12 @@
  * cross-ref: spec §5.5
  */
 
+import {
+	hasActiveTaskCheckpointControl,
+	IMPOSSIBLE_ROOT_LIVENESS_MESSAGE,
+	isImpossibleRootLiveness,
+} from "../../engine/run-liveness.js";
+import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import {
 	actionableReturnedStatusText,
@@ -18,6 +24,7 @@ import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type { RunSnapshot, RunStatus } from "../../shared/store-types.js";
 import type { WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
+import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
 
 /**
  * Per-run detail returned by {@link inspectRun}. A read-only view over the
@@ -59,6 +66,8 @@ export interface RunDetail {
 	/** True when a fresh durable owner is active in another Atomic process. */
 	readonly ownerActiveElsewhere?: boolean;
 	readonly blockedAt?: number;
+	/** True when a raw-running root has a completed frontier and no control node over budget. */
+	readonly strandedRoot?: true;
 }
 
 export type InspectRunResult =
@@ -75,7 +84,10 @@ export type InspectRunResult =
  *
  * Read-only: does not mutate the store.
  */
-export function inspectRun(runId: string, opts?: { store?: Store }): InspectRunResult {
+export function inspectRun(
+	runId: string,
+	opts?: { store?: Store; now?: number; toolControlRegistry?: ToolControlRegistry },
+): InspectRunResult {
 	const activeStore = opts?.store ?? defaultStore;
 	const candidate = activeStore.runs().find((r) => r.id === runId);
 
@@ -87,6 +99,13 @@ export function inspectRun(runId: string, opts?: { store?: Store }): InspectRunR
 	const copy = structuredClone(candidate);
 	const expandedGraph = expandWorkflowGraph(activeStore.snapshot(), copy.id);
 	const expandedStages = expandedGraph.stages;
+	const now = opts?.now ?? Date.now();
+	const hasActiveControlNode = hasActiveTaskCheckpointControl(
+		expandedControlRunIds(activeStore, copy.id).flatMap((id) =>
+			(opts?.toolControlRegistry?.active(id) ?? []).map((handle) => handle.nodeId),
+		),
+	);
+	const strandedRoot = isImpossibleRootLiveness(copy, now, { hasActiveControlNode });
 
 	const detail: RunDetail = {
 		runId: copy.id,
@@ -106,9 +125,11 @@ export function inspectRun(runId: string, opts?: { store?: Store }): InspectRunR
 		result: copy.result,
 		error:
 			copy.error ??
-			(effectiveRunStatus(copy) === copy.status
-				? undefined
-				: (structuredRecoverableWorkflowFailureText(copy) ?? actionableReturnedStatusText(copy.result))),
+			(strandedRoot
+				? IMPOSSIBLE_ROOT_LIVENESS_MESSAGE
+				: effectiveRunStatus(copy) === copy.status
+					? undefined
+					: (structuredRecoverableWorkflowFailureText(copy) ?? actionableReturnedStatusText(copy.result))),
 		exited: copy.exited,
 		exitReason: copy.exitReason,
 		failureKind: copy.failureKind,
@@ -120,6 +141,7 @@ export function inspectRun(runId: string, opts?: { store?: Store }): InspectRunR
 		resumable: copy.resumable,
 		retryAfterMs: copy.retryAfterMs,
 		blockedAt: copy.blockedAt,
+		...(strandedRoot ? { strandedRoot: true as const } : {}),
 	};
 
 	return { ok: true, runId: copy.id, detail };

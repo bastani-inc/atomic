@@ -125,6 +125,11 @@ describe("fullscreen input navigation", () => {
 			new KeybindingsManager({
 				"tui.altScreen.halfPageUp": "ctrl+u",
 				"tui.altScreen.halfPageDown": "ctrl+d",
+				// Pinned so this covers marked-message navigation itself. The
+				// platform defaults diverge (Windows drops ctrl+shift+arrow), and
+				// keybindings.test.ts owns that default-resolution contract.
+				"tui.altScreen.previousPrompt": "ctrl+shift+up",
+				"tui.altScreen.nextPrompt": "ctrl+shift+down",
 			}),
 		);
 		const terminal = new RecordingTerminal();

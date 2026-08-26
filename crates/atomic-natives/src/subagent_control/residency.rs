@@ -175,7 +175,7 @@ impl Residency {
 		candidate
 	}
 
-	pub fn protect_for_reload(
+	pub fn protect_for_load(
 		&self,
 		path: &ChildPath,
 	) -> Result<ProtectedResidencySlot, ResidencyError> {
@@ -188,12 +188,12 @@ impl Residency {
 		Ok(ProtectedResidencySlot { residency: self.clone(), path: path.clone() })
 	}
 
-	pub fn reload_cold_child(&self, path: &ChildPath) -> Result<(), ResidencyError> {
+	pub fn ensure_child_loaded(&self, path: &ChildPath) -> Result<(), ResidencyError> {
 		if self.is_loaded(path)? {
 			self.touch(path)?;
 			return Ok(());
 		}
-		let protected = self.protect_for_reload(path)?;
+		let protected = self.protect_for_load(path)?;
 		if self.loaded_count() >= self.capacity && self.evict_lru().is_none() {
 			drop(protected);
 			return Err(ResidencyError::CapacityExhausted);
@@ -214,7 +214,7 @@ fn loaded_count(inner: &ResidencyInner) -> usize {
 	inner.entries.values().filter(|entry| entry.loaded).count()
 }
 
-/// Keeps a cold child out of LRU eviction while its runtime is reloaded.
+/// Keeps a cold slot out of LRU eviction while its runtime is loaded.
 pub struct ProtectedResidencySlot {
 	residency: Residency,
 	path: ChildPath,

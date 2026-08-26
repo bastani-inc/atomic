@@ -3,7 +3,7 @@ import { describe, test } from "vitest";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -77,7 +77,7 @@ function toolFixture(replyTracker: ReplyTracker, sessions: SessionInfo[] = []) {
 			return { id: message.messageId ?? "reply-message", delivered: true };
 		},
 	};
-	const waiterSlot = new ReplyWaiterSlot();
+	const waiterSlot = new ReplyWaiterRegistry();
 	registerIntercomTool(
 		{
 			registerTool(value: Tool) {
@@ -92,7 +92,6 @@ function toolFixture(replyTracker: ReplyTracker, sessions: SessionInfo[] = []) {
 			beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) =>
 				waiterSlot.begin(from, replyTo, signal),
 			replyTracker,
-			hasReplyWaiter: () => waiterSlot.has(),
 		} as never,
 	);
 	assert.ok(tool);
@@ -145,9 +144,9 @@ describe("Intercom full session ID targeting", () => {
 			context,
 		);
 		await sleep(0);
-		const waiter = current.waiterSlot.current();
+		const waiter = current.waiterSlot.pending()[0];
 		const routed =
-			waiter === null
+			waiter === undefined
 				? false
 				: routeIncomingReply(waiter, recipient, {
 						id: "threaded-reply",

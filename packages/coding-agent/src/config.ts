@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
+import { resolvePackageDirFrom } from "./config-package-identity.ts";
 import { getHomeDir, normalizePath } from "./utils/paths.ts";
 import { isSplitLauncherRuntime, moduleFileFromMetaUrl } from "./utils/split-launcher.ts";
+import { stripBom } from "./utils/text.ts";
 
 // =============================================================================
 // Package Detection
@@ -104,16 +106,10 @@ export function getPackageDir(): string {
 		// Bun binary: process.execPath points to the compiled executable
 		return dirname(process.execPath);
 	}
-	// Node.js: walk up from __dirname until we find package.json
-	let dir = __dirname;
-	while (dir !== dirname(dir)) {
-		if (existsSync(join(dir, "package.json"))) {
-			return dir;
-		}
-		dir = dirname(dir);
-	}
-	// Fallback (shouldn't happen)
-	return __dirname;
+	// Node.js: walk up from __dirname to the Atomic app package. Prebundled
+	// companion extensions ship under dist/builtin/<name>/ with their own
+	// package.json; stopping at the first one made APP_NAME "workflows".
+	return resolvePackageDirFrom(__dirname);
 }
 
 /**
@@ -218,7 +214,7 @@ interface PackageJson extends Record<string, unknown> {
 
 let pkg: PackageJson = {};
 try {
-	pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as PackageJson;
+	pkg = JSON.parse(stripBom(readFileSync(getPackageJsonPath(), "utf-8"))) as PackageJson;
 } catch (e: unknown) {
 	const err = e as NodeJS.ErrnoException;
 	if (err.code !== "ENOENT") throw e;

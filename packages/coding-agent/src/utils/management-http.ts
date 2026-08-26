@@ -9,6 +9,8 @@ export interface FetchRetryOptions {
 	retryOnStatus?: boolean;
 	/** Overall timeout shared by all attempts. */
 	timeoutMs?: number;
+	/** Per-attempt timeout; timed-out attempts remain retryable. */
+	attemptTimeoutMs?: number;
 }
 
 /**
@@ -35,14 +37,17 @@ export async function fetchWithRetry(
 	const parentSignal = init?.signal;
 	const timeoutSignal =
 		options.timeoutMs !== undefined && options.timeoutMs > 0 ? AbortSignal.timeout(options.timeoutMs) : undefined;
-	const signal = timeoutSignal
-		? parentSignal
-			? AbortSignal.any([parentSignal, timeoutSignal])
-			: timeoutSignal
-		: parentSignal;
+	const attemptTimeoutMs =
+		options.attemptTimeoutMs && options.attemptTimeoutMs > 0 ? options.attemptTimeoutMs : undefined;
 
 	for (let attempt = 0; ; attempt += 1) {
-		signal?.throwIfAborted();
+		parentSignal?.throwIfAborted();
+		timeoutSignal?.throwIfAborted();
+		const attemptTimeoutSignal = attemptTimeoutMs ? AbortSignal.timeout(attemptTimeoutMs) : undefined;
+		const signals = [parentSignal, timeoutSignal, attemptTimeoutSignal].filter(
+			(signal): signal is AbortSignal => signal !== undefined,
+		);
+		const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
 		try {
 			const response = await fetch(input, signal ? { ...init, signal } : init);
 			const shouldRetry = retryOnStatus && RETRYABLE_STATUS_CODES.has(response.status) && attempt < maxRetries;
@@ -54,10 +59,15 @@ export async function fetchWithRetry(
 				// to do if cancelling its body also fails.
 			}
 		} catch (error) {
+			const attemptTimedOut =
+				attemptTimeoutSignal?.aborted === true && !parentSignal?.aborted && !timeoutSignal?.aborted;
 			if (
 				parentSignal?.aborted ||
 				timeoutSignal?.aborted ||
-				(error instanceof Error && error.name === "AbortError" && timeoutSignal === undefined) ||
+				(error instanceof Error &&
+					error.name === "AbortError" &&
+					!attemptTimedOut &&
+					timeoutSignal === undefined) ||
 				attempt >= maxRetries
 			) {
 				throw error;

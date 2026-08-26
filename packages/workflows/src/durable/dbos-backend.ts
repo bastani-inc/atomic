@@ -229,14 +229,37 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.enqueueWrite(() => this.persistCheckpoint(checkpoint));
 	}
 
-	async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+	async recordCheckpointAsync(
+		checkpoint: DurableCheckpoint,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<void> {
 		if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
+		const signal = options?.signal;
+		if (signal?.aborted) throw abortSignalReason(signal);
 		await this.enqueueWrite(async () => {
-			if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
-			await this.persistCheckpointRecord(checkpoint);
-			this.mem.recordCheckpoint(checkpoint);
-			await this.writeMetadata(checkpoint.workflowId);
+			if (signal?.aborted || !this.isWorkflowLoadable(checkpoint.workflowId)) return;
+			const persist = (async () => {
+				await this.persistCheckpointRecord(checkpoint);
+				this.mem.recordCheckpoint(checkpoint);
+				if (signal?.aborted || !this.isWorkflowLoadable(checkpoint.workflowId)) return;
+				await this.writeMetadata(checkpoint.workflowId);
+			})();
+			if (signal === undefined) {
+				await persist;
+				return;
+			}
+			try {
+				await Promise.race([persist, abortSignalWait(signal)]);
+			} catch (error) {
+				if (signal.aborted) {
+					void persist.catch(() => undefined);
+					return;
+				}
+				throw error;
+			}
+			if (signal.aborted) void persist.catch(() => undefined);
 		});
+		if (signal?.aborted) throw abortSignalReason(signal);
 	}
 
 	async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
@@ -457,6 +480,22 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	}
 	async hydrateWorkflowForInspection(workflowId: string): Promise<DurableWorkflowHydrationResult> {
 		if (this.locallyRegistered.has(workflowId)) {
+			const records = await this.sdk.listStepRecords(workflowId);
+			for (const record of records) {
+				if (
+					isMetadataStep(record.stepName) ||
+					isDbosPromptStateStep(record.stepName) ||
+					record.stepName === DBOS_DELETION_STEP
+				) {
+					continue;
+				}
+				const classified = classifyCheckpointPayload(workflowId, record.stepName, record.output);
+				if (classified.kind === "unknown") {
+					await this.suppressWorkflow(workflowId);
+					return { kind: "malformed" };
+				}
+				this.mem.recordCheckpoint(classified.checkpoint);
+			}
 			const handle = this.getLoadableWorkflow(workflowId);
 			return handle === undefined ? { kind: "malformed" } : { kind: "current", handle };
 		}
@@ -576,5 +615,19 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		if (metadata.workflowId !== workflowId) return;
 		this.mem.registerWorkflow(metadata);
 	}
+}
+
+function abortSignalReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled");
+}
+
+function abortSignalWait(signal: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal.aborted) {
+			resolve();
+			return;
+		}
+		signal.addEventListener("abort", () => resolve(), { once: true });
+	});
 }
 // Metadata encoding/classification lives in dbos-metadata.ts to keep this adapter focused.

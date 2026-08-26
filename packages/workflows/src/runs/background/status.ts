@@ -8,7 +8,12 @@
  * cross-ref: spec §5.5, §8.1 Phase D
  */
 
+import { TASK_RESULT_CHECKPOINT_CONTROL_PREFIX } from "../../durable/stage-primitive.js";
 import { selectedRunTerminalEvent } from "../../engine/run-terminal-event.js";
+import {
+	toolControlRegistry as defaultToolControlRegistry,
+	type ToolControlRegistry,
+} from "../../engine/run-tool-control-registry.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { appendRunEnd } from "../../shared/persistence-session-entries.js";
 import { effectiveRunStatus } from "../../shared/returned-run-status.js";
@@ -22,6 +27,7 @@ import type { StageControlRegistry } from "../foreground/stage-control-registry.
 import { stageControlRegistry as defaultStageControlRegistry } from "../foreground/stage-control-registry.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
 import { markDurableResumed } from "./durable-resume-transition.js";
+import { quitRun } from "./quit.js";
 import {
 	resumeAcknowledgementMessage,
 	settleResumeAcknowledgements,
@@ -490,9 +496,28 @@ export async function interruptRun(
 	opts?: {
 		store?: Store;
 		stageControlRegistry?: StageControlRegistry;
+		toolControlRegistry?: ToolControlRegistry;
 		stageId?: string;
 	},
 ): Promise<InterruptRunResult> {
+	if (opts?.stageId === undefined) {
+		const activeStore = opts?.store ?? defaultStore;
+		const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
+		const hasTaskTail = expandedControlRunIds(activeStore, runId).some((controlRunId) =>
+			toolControls
+				.active(controlRunId)
+				.some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX)),
+		);
+		if (hasTaskTail) {
+			const quit = await quitRun(aggregateWorkflowRootRunId(activeStore, runId), {
+				store: activeStore,
+				stageControlRegistry: opts?.stageControlRegistry,
+				toolControlRegistry: toolControls,
+			});
+			if (quit.ok) return { ok: true, runId: quit.runId, paused: quit.paused };
+			return { ok: false, runId: quit.runId, reason: quit.reason };
+		}
+	}
 	return pauseRun(runId, opts);
 }
 
@@ -500,12 +525,17 @@ export async function interruptRun(
 export async function interruptAllRuns(opts?: {
 	store?: Store;
 	stageControlRegistry?: StageControlRegistry;
+	toolControlRegistry?: ToolControlRegistry;
 }): Promise<InterruptRunResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
 	return Promise.all(
 		inFlight.map((run) =>
-			interruptRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry }),
+			interruptRun(run.id, {
+				store: activeStore,
+				stageControlRegistry: opts?.stageControlRegistry,
+				toolControlRegistry: opts?.toolControlRegistry,
+			}),
 		),
 	);
 }

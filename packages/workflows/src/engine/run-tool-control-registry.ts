@@ -136,8 +136,10 @@ const singleton = createSessionScopedSingleton(SESSION_KEY, createToolControlReg
 
 export const toolControlRegistry: ToolControlRegistry = singleton.facade;
 
-export function adoptToolControlRegistry(scope: object): ToolControlRegistry {
-	return singleton.adopt(scope);
+export function adoptToolControlRegistry(scope: object, preserveCurrentWhenTargetExists = false): ToolControlRegistry {
+	return singleton.adopt(scope, {
+		preserveCurrentWhenTargetExists: preserveCurrentWhenTargetExists ? () => true : undefined,
+	});
 }
 
 /**

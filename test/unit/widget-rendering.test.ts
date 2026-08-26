@@ -134,6 +134,150 @@ describe("renderWidgetLines — standard form", () => {
 		assert.ok(lines[2]!.includes("my-wf · single"), "line 2 should join the workflow name and meta");
 	});
 
+	test("zero-stage tool-only run renders its live durable ctx.tool node in the BACKGROUND panel", () => {
+		const run: RunSnapshot = {
+			...makeRun("tool-only-run", "publish-release", "running"),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:publish-watcher",
+					name: "publish-watcher",
+					argsHash: "watcher-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					startedAt: Date.now() - 1_000,
+					attachable: false,
+				},
+			],
+		};
+
+		const normalLines = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+		const normal = normalLines.join("\n");
+		assert.match(normal, /BACKGROUND/);
+		assert.match(normal, /publish-watcher · running/);
+		assert.doesNotMatch(normal, /0\/0/);
+		assert.ok(normalLines.every((line) => visibleWidth(line) <= 120));
+
+		const narrow = renderWidgetLines(makeSnap([run]), 60).map(stripAnsi);
+		assert.deepEqual(narrow, [" ▾  1 background · 1 ● · 1 tool"]);
+	});
+
+	test("width-80 tool-only card keeps the live-tool total visible when node details clip", () => {
+		const run: RunSnapshot = {
+			...makeRun("tool-only-run", "global-publish-watch", "running"),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:publish-watcher",
+					name: "publish-watcher",
+					argsHash: "watcher-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					startedAt: Date.now() - 1_000,
+					attachable: false,
+				},
+				{
+					kind: "tool",
+					id: "tool:release-verification",
+					name: "release-verification",
+					argsHash: "verification-hash",
+					ordinal: 1,
+					parentIds: [],
+					status: "pending",
+					startedAt: Date.now() - 500,
+					attachable: false,
+				},
+			],
+		};
+
+		const lines = renderWidgetLines(makeSnap([run]), 80).map(stripAnsi);
+		assert.ok(lines.every((line) => visibleWidth(line) <= 80));
+		assert.match(lines.join("\n"), /2 tools/);
+	});
+
+	test("retained killed and quit cards remain visible but contribute no live tools", () => {
+		const now = Date.now();
+		for (const status of ["pending", "running"] as const) {
+			const retainedTool: NonNullable<RunSnapshot["toolNodes"]>[number] = {
+				kind: "tool",
+				id: `tool:retained-${status}`,
+				name: `retained-${status}`,
+				argsHash: `retained-${status}-hash`,
+				ordinal: 0,
+				parentIds: [],
+				status,
+				startedAt: now - 2_000,
+				attachable: false,
+			};
+			const killed: RunSnapshot = {
+				...makeRun(`killed-${status}`, `killed-${status}-publish`, "killed", [], now - 4_000, now - 500),
+				toolNodes: [retainedTool],
+			};
+			const quit: RunSnapshot = {
+				...makeRun(`quit-${status}`, `quit-${status}-publish`, "paused", [], now - 5_000),
+				exitReason: "quit",
+				quitAt: now - 400,
+				resumable: true,
+				toolNodes: [{ ...retainedTool, id: `tool:quit-${status}` }],
+			};
+
+			const killedWide = renderWidgetLines(makeSnap([killed]), 120)
+				.map(stripAnsi)
+				.join("\n");
+			assert.match(killedWide, new RegExp(`killed-${status}-publish`));
+			assert.doesNotMatch(killedWide, new RegExp(`retained-${status} · ${status}`));
+			const killedNarrow = renderWidgetLines(makeSnap([killed]), 60).map(stripAnsi);
+			assert.deepEqual(killedNarrow, [" ▾  1 background · 0 ●"]);
+			assert.notEqual(killedNarrow[0], " ▾  1 background · 0 ● · 1 tool");
+
+			const quitWide = renderWidgetLines(makeSnap([quit]), 120)
+				.map(stripAnsi)
+				.join("\n");
+			assert.match(quitWide, new RegExp(`quit-${status}-publish`));
+			assert.doesNotMatch(quitWide, new RegExp(`retained-${status} · ${status}`));
+			assert.deepEqual(renderWidgetLines(makeSnap([quit]), 60).map(stripAnsi), [" ▾  1 background · 0 ● · 1 quit"]);
+		}
+	});
+
+	test("active pending and running tool nodes both contribute to the live aggregate", () => {
+		const now = Date.now();
+		const active: RunSnapshot = {
+			...makeRun("active-tools", "active-publish", "running", [], now - 3_000),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:pending-watcher",
+					name: "pending-watcher",
+					argsHash: "pending-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "pending",
+					startedAt: now - 2_000,
+					attachable: false,
+				},
+				{
+					kind: "tool",
+					id: "tool:running-watcher",
+					name: "running-watcher",
+					argsHash: "running-hash",
+					ordinal: 1,
+					parentIds: [],
+					status: "running",
+					startedAt: now - 1_000,
+					attachable: false,
+				},
+			],
+		};
+
+		const wide = renderWidgetLines(makeSnap([active]), 120)
+			.map(stripAnsi)
+			.join("\n");
+		assert.match(wide, /pending-watcher · pending/);
+		assert.match(wide, /running-watcher · running/);
+		assert.deepEqual(renderWidgetLines(makeSnap([active]), 60).map(stripAnsi), [" ▾  1 background · 1 ● · 2 tools"]);
+	});
 	test("quit run renders resumable quit badge and note", () => {
 		const run: RunSnapshot = {
 			...makeRun("quit1234", "resume-me", "paused"),
@@ -530,6 +674,22 @@ describe("pendingInputAffordance", () => {
 		});
 	});
 
+	test("strips CSI, OSC, and leftover C0/C1 from displayable prompt text", () => {
+		const run = makeRun("control-owner", "release-docs", "running");
+		run.pendingPrompt = {
+			id: "control-prompt",
+			kind: "confirm",
+			message: "  Approve\x1b[2J this\x1b]0;pwned\x07 release?\x07\x08  ",
+			createdAt: 1,
+		};
+
+		assert.deepEqual(pendingInputAffordance(run, [run]), {
+			identity: [run.id, null, "control-prompt"],
+			visibleRunId: run.id,
+			message: "Approve this release?",
+		});
+	});
+
 	test("derives stage prompts and gives a pending prompt precedence over inputRequest", () => {
 		const run = makeRun("stage-owner", "build-check", "running");
 		const stage = makeStage("approve", "approve", "awaiting_input");
@@ -617,6 +777,15 @@ describe("pendingInputAffordance", () => {
 			createdAt: 1,
 		};
 		assert.equal(pendingInputAffordance(empty, [empty]), undefined);
+
+		const controlsOnly = makeRun("controls-only", "empty", "running", [makeStage("ask", "ask", "awaiting_input")]);
+		controlsOnly.stages[0]!.pendingPrompt = {
+			id: "controls-only",
+			kind: "input",
+			message: "\x1b[2J\x1b]0;pwned\x07\x07",
+			createdAt: 1,
+		};
+		assert.equal(pendingInputAffordance(controlsOnly, [controlsOnly]), undefined);
 
 		const emptySibling = makeRun("empty-sibling", "empty-sibling", "running", [
 			makeStage("empty", "empty", "awaiting_input"),
@@ -799,6 +968,17 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 		assert.ok(joined.includes(statusIcon("awaiting_input")));
 		assert.ok(!joined.includes("First"));
 		assert.ok(!joined.includes(`/workflow connect ${run.id}`));
+	});
+
+	test("waiting prompt rows do not emit raw ESC or OSC from untrusted prompt text", () => {
+		const run = awaitingRun("control-render", "control-render", "Approve\x1b[2J this\x1b]0;pwned\x07 release?");
+		const lines = renderWidgetLines(makeSnap([run]), 120);
+		const joined = lines.join("\n");
+		assert.ok(joined.includes('"Approve this release?"'));
+		assert.equal(joined.includes("\x1b"), false, "plain widget output must not contain ESC");
+		assert.equal(joined.includes("\x07"), false, "plain widget output must not contain BEL");
+		assert.ok(!joined.includes("[2J"));
+		assert.ok(!joined.includes("pwned"));
 	});
 
 	test("themed waiting rows use the info-blue role", () => {

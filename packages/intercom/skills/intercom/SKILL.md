@@ -197,13 +197,15 @@ intercom({
 })
 ```
 
-**If you receive multiple pending asks from different subagents:**
+**If you receive multiple pending asks:**
 
 ```typescript
 intercom({ action: "pending" })
-// → Shows all unresolved inbound asks with sender, elapsed time, and preview
+// → Shows every unresolved ask with sender, exact message ID, age, and preview
 
 intercom({ action: "reply", to: "subagent-worker-78f659a3-1", message: "Use the v2 API." })
+// If that sender has multiple asks, select the exact listed thread:
+intercom({ action: "reply", replyTo: "message-id", message: "Use the v2 API." })
 ```
 
 **Important:** Only sessions where the `subagent` runtime supplied child bridge
@@ -336,20 +338,17 @@ If neither `cmux` nor `tmux` is available, skip this path and use normal `interc
 ### `ask` Limitations
 
 - **10-minute timeout**: If no reply comes within 10 minutes, the ask fails
-- **One at a time**: Cannot have multiple pending asks from the same session
+- **Bounded concurrency**: Up to `maxPendingAsks` asks (default: 6) may wait concurrently; additional calls receive a structured capacity error
+- **Exact correlation**: Same-target and mixed-target asks may run together; out-of-order replies and peer disconnects settle only the matching sender/message pair
 - **Cannot self-target**: A session cannot ask itself
-- **Concurrency-safe**: If several blocking requests (multiple `ask` calls, or
-  `ask` plus `contact_supervisor`) race in the same session — for example from
-  parallel tool calls — exactly one wins the reservation. Every other call gets
-  a normal `"Already waiting for a reply"` tool error and can retry or fall
-  back to `send`; the losing calls never disturb the winning ask.
+- **Supervisor exclusivity**: One blocking `contact_supervisor` decision/interview may coexist with peer asks, but a second supervisor wait is refused with `Already waiting for a supervisor reply`
 
 ```typescript
-// Check if already waiting before asking
-const result = await intercom({ action: "ask", to: "planner", message: "..." });
-if (result.isError && result.content[0].text.includes("Already waiting")) {
-  // Use send instead, or wait for current ask to complete
-}
+// Parallel fan-out is supported within the configured capacity.
+const [design, tests] = await Promise.all([
+  intercom({ action: "ask", to: "architect", message: "Review the design" }),
+  intercom({ action: "ask", to: "qa", message: "Review the tests" }),
+]);
 ```
 
 ### `send` Behavior
@@ -417,15 +416,17 @@ Use `/name` so others can target you easily:
 
 ### Common Errors and Solutions
 
-**"Already waiting for a reply"**
+**"Too many pending asks"**
 ```typescript
-// You can only have one pending ask at a time. Concurrent blocking requests
-// (parallel asks, or ask + contact_supervisor) return this error safely; the
-// winning request keeps waiting for its reply.
-// Option 1: Use send instead
+// This session reached maxPendingAsks. Wait for an existing ask to settle,
+// or use fire-and-forget send when the answer need not be this tool result.
 intercom({ action: "send", to: "planner", message: "..." });
+```
 
-// Option 2: Wait for the current ask to complete, then retry
+**"Already waiting for a supervisor reply"**
+```typescript
+// Supervisor decisions/interviews are exclusive per child. Ordinary peer
+// asks may continue concurrently; wait for the current supervisor call.
 ```
 
 **"Cannot message the current session"**

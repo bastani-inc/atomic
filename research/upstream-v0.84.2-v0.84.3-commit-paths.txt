@@ -1,0 +1,760 @@
+914cf1472e Release v0.84.2
+
+package-lock.json
+packages/agent/CHANGELOG.md
+packages/agent/package.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/ai/src/image-models.generated.ts
+packages/client/CHANGELOG.md
+packages/client/package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+packages/coding-agent/examples/extensions/gondolin/package-lock.json
+packages/coding-agent/examples/extensions/gondolin/package.json
+packages/coding-agent/examples/extensions/sandbox/package-lock.json
+packages/coding-agent/examples/extensions/sandbox/package.json
+packages/coding-agent/examples/extensions/with-deps/package-lock.json
+packages/coding-agent/examples/extensions/with-deps/package.json
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/install-lock/package.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/evals/package.json
+packages/protocol/CHANGELOG.md
+packages/protocol/package.json
+packages/server/CHANGELOG.md
+packages/server/package.json
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/session-backends/sqlite-node/package.json
+packages/telemetry/CHANGELOG.md
+packages/telemetry/package.json
+packages/tui/CHANGELOG.md
+packages/tui/package.json
+0e0021fbbe Add [Unreleased] section for next cycle
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/client/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/protocol/CHANGELOG.md
+packages/server/CHANGELOG.md
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/telemetry/CHANGELOG.md
+packages/tui/CHANGELOG.md
+c36552212e agents: Adjust rules for changelog entries
+
+.pi/prompts/wr.md
+AGENTS.md
+e429d90b80 fix(coding-agent): update Z.AI Coding Plan defaults
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/test/model-resolver.test.ts
+b1efcf7d7c chore: approve contributors from issue #8124
+
+.github/APPROVED_CONTRIBUTORS
+d5278eaac3 fix(ai): enable Copilot model policies sequentially during login
+
+packages/ai/src/auth/oauth/github-copilot.ts
+packages/ai/test/github-copilot-oauth.test.ts
+086c32e745 fix(ai): retry Copilot GET /models once on 429 during login
+
+packages/ai/src/auth/oauth/device-code.ts
+packages/ai/src/auth/oauth/github-copilot.ts
+packages/ai/test/github-copilot-oauth.test.ts
+70e878d4cf feat(ai): route xAI models through Responses and default to Grok 4.6 (#8124)
+
+packages/ai/README.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/providers/xai.ts
+packages/ai/src/utils/pi-user-agent.ts
+packages/ai/test/model-catalog-types.test.ts
+packages/ai/test/stream.test.ts
+packages/ai/test/supports-xhigh.test.ts
+packages/ai/test/xai-responses.test.ts
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/test/model-resolver.test.ts
+d3ab2af969 fix: track kimi cached tokens (#8119)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/openai-completions.ts
+47bf47f11f docs(coding-agent): clarify compaction paths
+
+packages/coding-agent/src/core/agent-session.ts
+58302d34e7 feat(coding-agent): support compaction routing sessions
+
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+ca21c16861 fix: single edit input (#8011)
+
+packages/agent/src/harness/tools/edit.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/tools/edit.ts
+8c2529daeb fix: dont load root mds as skills in settings (#8012)
+
+packages/agent/src/harness/skills.ts
+packages/agent/test/harness/skills.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/skills.md
+packages/coding-agent/src/core/skills.ts
+f47faf459f fix: register flag type mismatch (#8123)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/extensions/loader.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/test/extensions-runner.test.ts
+86d001d36b fix(ai): expose low thinking level for DeepSeek V4 Flash on opencode/opencode-go (#8181)
+
+packages/ai/scripts/generate-models.ts
+packages/ai/test/supports-xhigh.test.ts
+c7c763f5c4 fix(coding-agent): clarify truncated recovery failure
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/test/suite/agent-session-compaction.test.ts
+955a543b31 fix: expose sleeping llama.cpp models (#8235)
+
+packages/coding-agent/src/extensions/llama/provider.ts
+packages/coding-agent/test/llama-extension.test.ts
+374e56e553 fix(tui): avoid duplicate VS Code right-click paste
+
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/tui-alt-screen.test.ts
+a1bc0ec790 fix: llama.cpp guidance as no default (#8236)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/llama-cpp.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+d3e3bbc011 fix: llama.cpp allow network for model discovery (#8238)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/extensions/llama/index.ts
+080932e53c fix(package-manager): use semver.gt for version comparison (#8239)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/package-manager.ts
+packages/coding-agent/test/package-manager.test.ts
+df018b6020 fix(coding-agent): retry hung model catalog requests
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/remote-catalog-provider.ts
+packages/coding-agent/src/utils/management-http.ts
+packages/coding-agent/test/management-http.test.ts
+a6b1dbceb1 fix(extensions): emit compaction failed for extensions (#8241)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/compaction.md
+packages/coding-agent/docs/extensions.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/extensions/index.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/test/suite/agent-session-compaction.test.ts
+1d08508ef6 fix(extension-examples): use agent_settled instead of end (#8242)
+
+packages/coding-agent/examples/extensions/border-status-editor.ts
+packages/coding-agent/examples/extensions/git-checkpoint.ts
+packages/coding-agent/examples/extensions/notify.ts
+packages/coding-agent/examples/extensions/titlebar-spinner.ts
+packages/coding-agent/examples/rpc-extension-ui.ts
+packages/coding-agent/examples/sdk/06-extensions.ts
+packages/coding-agent/examples/sdk/README.md
+af2c352238 fix(ai): honor Google thinking level maps
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/google-generative-ai.ts
+packages/ai/src/api/google-shared.ts
+packages/ai/src/api/google-vertex.ts
+packages/ai/src/index.ts
+packages/ai/test/google-thinking-level-map.test.ts
+10acee6045 fix(ai): bedrock response to include smithy headers (#8243)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/bedrock-converse-stream.ts
+packages/ai/test/bedrock-response-headers.test.ts
+0e4d495414 fix(ai,coding-agent): remove deprecated Xiaomi models
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/test/xiaomi-models.test.ts
+packages/coding-agent/CHANGELOG.md
+87205484bf fix(ai): use Chinese ZAI Coding Plan catalog
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/test/zai-coding-plan-models.test.ts
+6db110e6fa fix(ai): add Qwen Token Plan Individual DeepSeek V4 Pro 0813
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/test/generate-models-strict.test.ts
+packages/ai/test/qwen-token-plan-models.test.ts
+1c28f3032e fix(ai): update cloudflare gateway sonnet test id (#8260)
+
+packages/ai/test/stream.test.ts
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/test/model-resolver.test.ts
+5e11f65865 fix(coding-agent): load nested markdown skills (#8255)
+
+packages/coding-agent/docs/skills.md
+packages/coding-agent/src/core/package-manager.ts
+packages/coding-agent/test/package-manager.test.ts
+eb1f87fa9a fix(coding-agent/ai): anthropic refusal error and fallbacks (#8258)
+
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/types.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+54d22b74b3 fix(coding-agent): reduce redundant git update tests
+
+packages/coding-agent/test/git-update.test.ts
+b82a374c7d fix(coding-agent): reduce redundant slow tests
+
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/test/args.test.ts
+packages/coding-agent/test/session-id-readonly.test.ts
+packages/coding-agent/test/startup-session-name.test.ts
+packages/coding-agent/test/stdout-cleanliness.test.ts
+packages/coding-agent/test/suite/agent-session-tool-result-images.test.ts
+packages/coding-agent/test/tools.test.ts
+209bc7b9a8 fix(ai): remove unused opentelemetry dependency
+
+package-lock.json
+packages/ai/package.json
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+9117326b4c fix(ai): forward Azure Responses tool choice
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/azure-openai-responses.ts
+packages/ai/test/azure-openai-tool-choice.test.ts
+ad58801ce7 fix(ai): update Baseten GLM input modalities
+
+packages/ai/test/baseten-models.test.ts
+e5dde9a76b feat(ai): add simple tool choice option
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/api/azure-openai-responses.ts
+packages/ai/src/api/bedrock-converse-stream.ts
+packages/ai/src/api/google-generative-ai.ts
+packages/ai/src/api/google-vertex.ts
+packages/ai/src/api/mistral-conversations.ts
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/api/pi-messages.ts
+packages/ai/src/types.ts
+packages/ai/test/azure-openai-tool-choice.test.ts
+packages/ai/test/pi-messages.test.ts
+90305d90a0 fix(coding-agent): disable tools during summarization
+
+packages/coding-agent/src/core/compaction/branch-summarization.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/test/branch-summarization.test.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+8af7690c4f fix(coding-agent): skip trusted subagent prompts
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/subagent/README.md
+packages/coding-agent/examples/extensions/subagent/index.ts
+packages/coding-agent/test/suite/regressions/8261-subagent-project-trust.test.ts
+2509b5c037 feat(agent): expose provider context construction
+
+packages/agent/src/agent-loop.ts
+packages/agent/src/agent.ts
+packages/agent/test/agent.test.ts
+836aee6d38 feat(coding-agent): show compaction usage notices
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-mode-compaction.test.ts
+ef8dc7385b feat(coding-agent): centralize compaction summary requests
+
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+packages/coding-agent/test/suite/agent-session-compaction.test.ts
+cff1cf52c6 feat(coding-agent): add cache-friendly compaction primitives
+
+packages/ai/src/index.ts
+packages/coding-agent/docs/compaction.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/src/index.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+packages/coding-agent/test/compaction.test.ts
+a6c6f80180 fix(ai): anthropic fallback usage (#8308)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/anthropic-messages.ts
+b237412699 feat(ai): generalize openai-completions thinking token budget fields (#8275)
+
+packages/ai/README.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/simple-options.ts
+packages/ai/src/types.ts
+packages/ai/test/openai-completions-thinking-as-text.test.ts
+packages/ai/test/openai-completions-thinking-token-budget.test.ts
+packages/ai/test/openai-completions-tool-result-images.test.ts
+packages/coding-agent/docs/custom-provider.md
+packages/coding-agent/docs/models.md
+packages/coding-agent/docs/settings.md
+c061328981 fix(coding-agent): load extensions in Node SEA hosts, closes #8237
+
+packages/coding-agent/src/core/extensions/loader.ts
+packages/coding-agent/test/suite/regressions/8237-node-sea-extension-loading.test.ts
+f0c5d86d20 fix(tui): fit text padding to narrow widths, closes #8252
+
+packages/tui/CHANGELOG.md
+packages/tui/src/components/text.ts
+59a71b235d Revert "fix(ai): anthropic fallback usage (#8308)" (#8313)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/anthropic-messages.ts
+4809c2abca fix(ai): anthropic fallback usage (#8319)
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/types.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+55b0db4d3e fix(ai): prevent copilot policy login rate limits (#8254)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/auth/oauth/github-copilot.ts
+packages/ai/src/auth/oauth/kimi-coding.ts
+packages/ai/src/utils/sleep.ts
+packages/ai/test/github-copilot-oauth.test.ts
+8dab70281b Revert "feat(coding-agent): add cache-friendly compaction primitives"
+
+packages/ai/src/index.ts
+packages/coding-agent/docs/compaction.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/src/index.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+packages/coding-agent/test/compaction.test.ts
+3a0b9a3eee Revert "feat(agent): expose provider context construction"
+
+packages/agent/src/agent-loop.ts
+packages/agent/src/agent.ts
+packages/agent/test/agent.test.ts
+ed867e9094 fix(ai): fallback cost not via stream options (#8352)
+
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/types.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+d711bd5f0a fix(coding-agent): preserve branch summary source leaf
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/session-manager.ts
+packages/coding-agent/test/branch-summary-extensions.test.ts
+packages/coding-agent/test/session-manager/tree-traversal.test.ts
+830a0a59e9 fix(coding-agent): expose tool metadata at stream start (#7953)
+
+packages/coding-agent/docs/json.md
+packages/coding-agent/docs/rpc.md
+packages/coding-agent/src/modes/json-event.ts
+packages/coding-agent/test/suite/regressions/7925-toolcall-start-metadata.test.ts
+d57e531f5d fix(ai): round-trip Bedrock redacted reasoning (#8314)
+
+packages/ai/src/api/bedrock-converse-stream.ts
+packages/ai/test/bedrock-redacted-reasoning.test.ts
+1e1a6e27be feat(coding-agent): include paths in settings errors
+
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/test/settings-manager.test.ts
+913bcf3391 fix(coding-agent): report settings diagnostic paths
+
+packages/coding-agent/src/core/settings-diagnostics.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/test/settings-diagnostics.test.ts
+678f0af30d fix(coding-agent): show startup diagnostics in TUI
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/suite/regressions/7829-invalid-settings-warning.test.ts
+3de00332f7 fix(ai): derive Z.AI reasoning effort metadata
+
+packages/ai/scripts/generate-models.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+4495469a5e fix(coding-agent): compact without provider usage
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/test/suite/regressions/8328-zero-usage-auto-compaction.test.ts
+1355cd36e0 fix(coding-agent): normalize UTF-8 BOMs in text inputs
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/cli/file-processor.ts
+packages/coding-agent/src/config.ts
+packages/coding-agent/src/core/auth-storage.ts
+packages/coding-agent/src/core/keybindings.ts
+packages/coding-agent/src/core/model-config.ts
+packages/coding-agent/src/core/models-store.ts
+packages/coding-agent/src/core/package-manager.ts
+packages/coding-agent/src/core/pi-manifest.ts
+packages/coding-agent/src/core/resource-loader.ts
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/core/tools/edit-diff.ts
+packages/coding-agent/src/core/tools/edit.ts
+packages/coding-agent/src/core/trust-manager.ts
+packages/coding-agent/src/migrations.ts
+packages/coding-agent/src/modes/interactive/external-editor.ts
+packages/coding-agent/src/modes/interactive/theme/theme.ts
+packages/coding-agent/src/utils/frontmatter.ts
+packages/coding-agent/src/utils/text.ts
+packages/coding-agent/test/suite/regressions/8337-utf8-bom-parsing.test.ts
+87af49dec2 Add pi user-agent to most api adapters (#8361)
+
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/api/azure-openai-responses.ts
+packages/ai/src/api/google-generative-ai.ts
+packages/ai/src/api/google-vertex.ts
+packages/ai/src/api/mistral-conversations.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/utils/pi-user-agent.ts
+packages/ai/test/anthropic-auth-token.test.ts
+packages/ai/test/azure-openai-base-url.test.ts
+packages/ai/test/google-raw-stop-reason.test.ts
+packages/ai/test/google-vertex-api-key-resolution.test.ts
+packages/ai/test/mistral-http-transport.test.ts
+packages/ai/test/xai-responses.test.ts
+4ca636c5e0 feat(ai): opeani completions reasoning details (#8246)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/types.ts
+packages/ai/test/openai-completions-reasoning-details.test.ts
+packages/server/src/protocol.ts
+2ff8ba6223 fix(coding-agent): keep model and thinking level changes session scoped (#8356)
+
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/defaults.ts
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/src/core/sdk.ts
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/core/slash-commands.ts
+packages/coding-agent/src/modes/interactive/components/model-selector.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/components/settings-submenu.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-mode-status.test.ts
+packages/coding-agent/test/model-selector.test.ts
+packages/coding-agent/test/settings-selector.test.ts
+packages/coding-agent/test/suite/agent-session-model-extension.test.ts
+packages/coding-agent/test/suite/regressions/3217-scoped-model-order.test.ts
+packages/coding-agent/test/suite/regressions/6999-models-json-hot-reload.test.ts
+packages/coding-agent/test/suite/regressions/7209-model-selector-filter-resets-selection.test.ts
+packages/tui/src/components/settings-list.ts
+98767a25d2 fix(settings-selector): remove token estimates
+
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+ee29aa118b feat(settings-selector): make default model and thinking level searchable
+
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/components/settings-submenu.ts
+a669db3c33 fix(settings-selector): show modelid [provider] like /model
+
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/components/settings-submenu.ts
+f0a2880f29 fix(settings-selector): revert token estimate removal
+
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+9c8070fbe4 feat(settings-selector): ctrl + s persists /model
+
+packages/coding-agent/src/modes/interactive/components/model-selector.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+496185f6e4 feat(coding-agent): /thinking command
+
+packages/coding-agent/src/core/slash-commands.ts
+packages/coding-agent/src/modes/interactive/components/thinking-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-mode-status.test.ts
+b7bb00b936 fix(ai): retain reasoning details in thinking signature
+
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/types.ts
+packages/ai/test/openai-completions-reasoning-details.test.ts
+packages/server/src/protocol.ts
+5133c9284f chore(settings-selector): get rid of --default and global model
+
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/slash-commands.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-mode-status.test.ts
+packages/coding-agent/test/suite/agent-session-model-extension.test.ts
+5b3caaf4cb chore(settings-selector): get rid of default thinking in settings, ctrl + S is enough
+
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+1d3503fb9b feat(settings-selector): show default, make default searchable for model and thinking (#8399)
+
+packages/coding-agent/src/modes/interactive/components/model-selector.ts
+packages/coding-agent/src/modes/interactive/components/thinking-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+768184923a fix(settings-selector): nit spacing
+
+packages/coding-agent/src/modes/interactive/components/model-selector.ts
+packages/tui/src/components/settings-list.ts
+cffe4d776c fix(settings-selector): nit ordering in default t.l. per model
+
+packages/coding-agent/src/modes/interactive/components/model-selector.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+8f2ae3fadd fix(tui): prevent wrapped table link color leaks (#8363)
+
+packages/tui/CHANGELOG.md
+packages/tui/src/components/markdown.ts
+packages/tui/test/markdown.test.ts
+5cd93f688a feat(coding-agent): add development pi wrapper
+
+scripts/auto-pi.sh
+686f3487f5 feat(interactive-mode): share via radius artifacts under experimental (#8443)
+
+packages/coding-agent/src/config.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+a2f369d63a fix(slash-commands): order tree above thinking
+
+packages/coding-agent/src/core/slash-commands.ts
+77f2d1235e chore(interactive-mode): get rid of theme, only share via radius if logged in
+
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+f4585b8bec fix(coding-agent): simplify session sharing links
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/config.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+c49906ec77 fix(coding-agent): preserve managed state file permissions
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/auth-storage.ts
+packages/coding-agent/test/auth-storage.test.ts
+packages/coding-agent/test/models-store.test.ts
+7d4c0e05dd feat(coding-agent): bundle Node runtime (#8474)
+
+package-lock.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/coding-agent/src/config.ts
+packages/coding-agent/src/core/extensions/loader.ts
+packages/coding-agent/test/config.test.ts
+packages/coding-agent/test/package-distribution.test.ts
+packages/tui/src/native-modifiers.ts
+packages/tui/src/native-module-path.ts
+packages/tui/src/terminal.ts
+packages/tui/test/native-module-path.test.ts
+scripts/build-coding-agent-bundle.mjs
+scripts/profile-coding-agent-node.mjs
+39d869f02a fix: publish installer artifacts
+
+.github/workflows/build-binaries.yml
+scripts/publish-release-announcement.mjs
+cec3a91c02 feat(coding-agent): defer uncommon syntax grammars
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/utils/highlight-js-lib-index.d.ts
+packages/coding-agent/src/utils/highlight-js.d.ts
+packages/coding-agent/src/utils/syntax-highlight.ts
+packages/coding-agent/test/syntax-highlight.test.ts
+74786a748f fix(coding-agent): support -- end-of-options, closes #7269
+
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/test/suite/regressions/7269-cli-end-of-options.test.ts
+62bcbf6be0 docs(coding-agent): document -- end-of-options delimiter
+
+packages/coding-agent/README.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/cli/args.ts
+faecac2ca8 feat(coding-agent): reduce bundled startup work
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/utils/syntax-highlight.ts
+scripts/build-coding-agent-bundle.mjs
+77c540704d meta(changelog): Add missing changelog entry
+
+packages/coding-agent/CHANGELOG.md
+a1f955e9f4 fix(coding-agent): remove redundant development dependencies
+
+package-lock.json
+package.json
+packages/coding-agent/package.json
+f8f03460a0 fix: reduce workspace dependency tree
+
+package-lock.json
+packages/agent/package.json
+packages/ai/package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/packages.md
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/coding-agent/src/core/package-manager.ts
+packages/coding-agent/test/package-manager.test.ts
+packages/evals/package.json
+packages/telemetry/package.json
+309b524f4f fix(coding-agent): avoid duplicate clipboard binaries
+
+.github/workflows/build-binaries.yml
+packages/coding-agent/CHANGELOG.md
+scripts/build-binaries.sh
+c1279a65b3 feat(coding-agent): defer jiti until extension loading
+
+packages/coding-agent/CHANGELOG.md
+scripts/build-coding-agent-bundle.mjs
+bcad846f93 fix(coding-agent): update end-of-options CLI test
+
+packages/coding-agent/test/experimental-cli-command.test.ts
+a69bef789b fix(coding-agent): discard failed extension factory state (#8424)
+
+packages/coding-agent/src/core/extensions/loader.ts
+packages/coding-agent/test/suite/regressions/8423-extension-factory-failure.test.ts
+460191cfcf feat(coding-agent): include context in Radius session shares
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/session-export.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/interactive/session-share.ts
+packages/coding-agent/test/export-jsonl-share.test.ts
+27b7a626de fix(coding-agent): use Windows-friendly keybinding defaults
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/keybindings.md
+packages/coding-agent/docs/terminal-setup.md
+packages/coding-agent/src/core/keybindings.ts
+packages/coding-agent/test/keybindings.test.ts
+packages/tui/src/keybindings.ts
+packages/tui/test/keybindings.test.ts
+81152d88bb docs(coding-agent): clarify custom footer usage APIs (#8482)
+
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/src/core/footer-data-provider.ts
+a470b121bf fix(coding-agent): expose finish reason compatibility override (#8487)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/model-config.ts
+packages/coding-agent/test/model-registry.test.ts
+4af9d21d3b feat(coding-agent): update managed installations in place
+
+packages/coding-agent/docs/packages.md
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/package-manager-cli.ts
+packages/coding-agent/test/package-command-paths.test.ts
+scripts/publish-release-announcement.mjs
+80e62761f7 feat(coding-agent): add optional PowerShell tool (#8512)
+
+packages/coding-agent/README.md
+packages/coding-agent/docs/environment-variables.md
+packages/coding-agent/docs/extensions.md
+packages/coding-agent/docs/sdk.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/docs/windows.md
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/core/extensions/index.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/src/core/sdk.ts
+packages/coding-agent/src/core/system-prompt.ts
+packages/coding-agent/src/core/tools/bash.ts
+packages/coding-agent/src/core/tools/index.ts
+packages/coding-agent/src/core/tools/powershell.ts
+packages/coding-agent/src/index.ts
+packages/coding-agent/src/utils/shell.ts
+packages/coding-agent/test/default-tools-setting.test.ts
+packages/coding-agent/test/experimental-tool-strict-mode.test.ts
+packages/coding-agent/test/powershell-tool.test.ts
+packages/coding-agent/test/suite/regressions/3592-no-builtin-tools-keeps-extension-tools.test.ts
+packages/coding-agent/test/system-prompt.test.ts
+packages/coding-agent/test/tool-system-prompt-contributions.test.ts
+7623e8a0f1 docs: audit unreleased changelogs
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+4e58f324fa Release v0.84.3
+
+package-lock.json
+packages/agent/CHANGELOG.md
+packages/agent/package.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/client/CHANGELOG.md
+packages/client/package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+packages/coding-agent/examples/extensions/gondolin/package-lock.json
+packages/coding-agent/examples/extensions/gondolin/package.json
+packages/coding-agent/examples/extensions/sandbox/package-lock.json
+packages/coding-agent/examples/extensions/sandbox/package.json
+packages/coding-agent/examples/extensions/with-deps/package-lock.json
+packages/coding-agent/examples/extensions/with-deps/package.json
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/install-lock/package.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/evals/package.json
+packages/protocol/CHANGELOG.md
+packages/protocol/package.json
+packages/server/CHANGELOG.md
+packages/server/package.json
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/session-backends/sqlite-node/package.json
+packages/telemetry/CHANGELOG.md
+packages/telemetry/package.json
+packages/tui/CHANGELOG.md
+packages/tui/package.json
+31d4ed5860 Add [Unreleased] section for next cycle
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/client/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/protocol/CHANGELOG.md
+packages/server/CHANGELOG.md
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/telemetry/CHANGELOG.md
+packages/tui/CHANGELOG.md
+bfb004d441 fix: extract Windows release ZIPs in CI
+
+.github/workflows/build-binaries.yml
+97fa14e39c fix(coding-agent): reject truncated compaction summaries closes #7048
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/compaction/branch-summarization.ts
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/test/branch-summarization.test.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+packages/coding-agent/test/suite/regressions/7048-compaction-truncated-summary.test.ts
+dcd461925d feat: show llama presets if autoload enabled (#8558)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/extensions/llama/client.ts
+packages/coding-agent/src/extensions/llama/provider.ts
+packages/coding-agent/test/llama-extension.test.ts

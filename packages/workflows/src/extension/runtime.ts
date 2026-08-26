@@ -13,6 +13,7 @@
 import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
+import type { DetachedRunOpts } from "../runs/background/runner.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import { type RunOpts, resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
@@ -36,10 +37,12 @@ import type { WorkflowToolResult } from "./render-result.js";
 import {
 	claimActiveBlockedResume,
 	discardFailedActiveBlockedContinuation,
+	finalizeActiveBlockedSourceAfterContinuation,
 	finalizeResumedActiveBlockedSourceRun,
 	releaseActiveBlockedClaim,
 } from "./runtime-active-block-claim.js";
 import { createDurableResumeRuntime, type DurableResumeRuntime } from "./runtime-durable-resume.js";
+import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -122,6 +125,10 @@ export interface RuntimeDispatchOptions {
 	readonly actor?: WorkflowActor;
 	/** Run-level budget override used when a continuation is launched. */
 	readonly budget?: WorkflowBudget;
+	/** Cancels only the public request/admission wait, never detached execution after acknowledgement. */
+	readonly signal?: AbortSignal;
+	/** Reports the exact detached identity before startup admission is awaited. */
+	readonly onRunAccepted?: (runId: string) => void;
 }
 // ---------------------------------------------------------------------------
 // Factory
@@ -274,7 +281,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		}
 		const stageMessage = (verb: string, runId: string): string =>
 			`${verb} workflow "${def.name}" from run ${source.id}${resolvedStage.stageId === undefined ? " at workflow start" : ` at stage ${resolvedStage.stageId}`} (run ${runId}).`;
-		const launchContinuation = () =>
+		const launchContinuation = (hooks?: Pick<DetachedRunOpts, "onWorkflowStartReady" | "onRawSettled">) =>
 			launchDetachedUntilStartup(def, sourceInputs, {
 				...runOptions(options?.policy),
 				continuation: {
@@ -284,21 +291,47 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 				...(jobs !== undefined ? { jobs } : {}),
 				...(options?.budget === undefined ? {} : { budget: options.budget }),
+				...(hooks?.onWorkflowStartReady === undefined ? {} : { onWorkflowStartReady: hooks.onWorkflowStartReady }),
+				...(hooks?.onRawSettled === undefined ? {} : { onRawSettled: hooks.onRawSettled }),
 			});
 		if (isActiveBlockedResumable) {
-			// Keep the durable blocked source recoverable until fresh-ID startup admission succeeds.
-			if (!claimActiveBlockedResume(getDurableBackend(), source.id)) {
+			// Durable source stays blocked/resumable. The local snapshot is killed
+			// as soon as the continuation is admitted so this session has one
+			// active entry. A fail-closed mismatch puts the reserved snapshot back.
+			const claim = claimActiveBlockedResume(activeStore, source.id);
+			if (claim === undefined) {
 				return {
 					ok: false,
 					reason: "not_resumable",
 					message: `run ${source.id} is already being resumed in this session`,
 				};
 			}
+			const reservedSource: RunSnapshot = {
+				...source,
+				stages: source.stages.map((stage) => ({ ...stage })),
+				toolNodes: source.toolNodes?.map((node) => ({ ...node })),
+			};
+			let admitted = false;
 			let launch: ReturnType<typeof launchContinuation>;
 			try {
-				launch = launchContinuation();
+				launch = launchContinuation({
+					onWorkflowStartReady: () => {
+						admitted = true;
+					},
+					onRawSettled: (_ok, result, error) => {
+						if (!admitted) return;
+						finalizeActiveBlockedSourceAfterContinuation({
+							claim,
+							source: reservedSource,
+							continuationRunId: result?.runId ?? launch.accepted.runId,
+							persistence,
+							result,
+							error,
+						});
+					},
+				});
 			} catch (error) {
-				releaseActiveBlockedClaim(source.id);
+				releaseActiveBlockedClaim(claim);
 				return {
 					ok: false,
 					reason: "insufficient_state",
@@ -316,14 +349,14 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				try {
 					await discardFailedActiveBlockedContinuation(getDurableBackend(), accepted.runId, activeStore);
 				} catch (error) {
-					releaseActiveBlockedClaim(source.id);
+					releaseActiveBlockedClaim(claim);
 					return {
 						ok: false,
 						reason: "insufficient_state",
 						message: `continuation for run ${source.id} failed to start (${startupError}) and cleanup failed: ${error instanceof Error ? error.message : String(error)}; source left resumable`,
 					};
 				}
-				releaseActiveBlockedClaim(source.id);
+				releaseActiveBlockedClaim(claim);
 				return {
 					ok: false,
 					reason: "insufficient_state",
@@ -331,16 +364,15 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				};
 			}
 			try {
-				finalizeResumedActiveBlockedSourceRun(source, accepted.runId, activeStore, persistence);
+				finalizeResumedActiveBlockedSourceRun(claim, source, accepted.runId);
 			} catch (error) {
-				releaseActiveBlockedClaim(source.id);
+				releaseActiveBlockedClaim(claim);
 				return {
 					ok: false,
 					reason: "insufficient_state",
-					message: `failed to finalize resumed source ${source.id}: ${error instanceof Error ? error.message : String(error)}`,
+					message: `insufficient_state: failed to finalize resumed source ${source.id}: ${error instanceof Error ? error.message : String(error)}`,
 				};
 			}
-			releaseActiveBlockedClaim(source.id);
 			return {
 				ok: true,
 				runId: accepted.runId,
@@ -397,7 +429,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		},
 
 		async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
-			await ensureDbosReady();
+			await raceWorkflowRequestAbort(ensureDbosReady(), options?.signal);
 			const defaultSessionDir = resolveDefaultStageSessionDir?.();
 			return dispatch(args, {
 				registry,
@@ -411,6 +443,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				models,
 				policy: options?.policy,
 				...(options?.origin === undefined ? {} : { origin: options.origin }),
+				...(options?.signal === undefined ? {} : { signal: options.signal }),
+				...(options?.onRunAccepted === undefined ? {} : { onRunAccepted: options.onRunAccepted }),
 				cwd: runtimeCwd,
 				...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
 			});

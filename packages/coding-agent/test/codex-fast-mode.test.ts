@@ -11,6 +11,7 @@ import {
 } from "@bastani/pi-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import {
+	buildOpenAIResponsesCodexFastModeOptions,
 	CODEX_FAST_MODE_SERVICE_TIER,
 	type CodexFastModeStreamers,
 	getCodexFastModeScope,
@@ -157,6 +158,12 @@ describe("codex fast mode helpers", () => {
 			headers: undefined,
 			serviceTier: CODEX_FAST_MODE_SERVICE_TIER,
 		});
+	});
+
+	it("preserves the configured stream deadline through native option reconstruction", () => {
+		const model = fullModel({});
+		expect(buildOpenAIResponsesCodexFastModeOptions(model, { streamDeadlineMs: 1234 }).streamDeadlineMs).toBe(1234);
+		expect(buildOpenAIResponsesCodexFastModeOptions(model, { streamDeadlineMs: 0 }).streamDeadlineMs).toBe(0);
 	});
 
 	it("defers the Codex harness identity until the final provider payload", () => {

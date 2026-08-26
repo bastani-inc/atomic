@@ -38,5 +38,21 @@ tree-sitter-c.workspace = true
 tree-sitter-cpp.workspace = true
 tree-sitter-java.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+	"Win32_Foundation",
+	"Win32_Security",
+	"Win32_Storage_FileSystem",
+	"Win32_System_IO",
+	"Win32_System_Pipes",
+	"Win32_System_Threading",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+	"Win32_System_Diagnostics_ToolHelp",
+	"Win32_UI_WindowsAndMessaging",
+] }
+
 [build-dependencies]
 napi-build.workspace = true

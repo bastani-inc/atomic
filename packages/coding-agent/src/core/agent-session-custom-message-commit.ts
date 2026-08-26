@@ -30,6 +30,8 @@ export async function commitAdmittedCustomMessage<T>(
 			} else {
 				self._queueAgentMessage(appMessage, delivery);
 			}
+		} else if (self.isStreaming) {
+			self._pendingCustomMessages.push(appMessage);
 		} else {
 			self._appendCustomMessage(appMessage);
 		}
@@ -44,6 +46,8 @@ export async function commitAdmittedCustomMessage<T>(
 		options.deliverAs === undefined
 	) {
 		self._appendCustomMessage(appMessage);
+	} else if (self.isStreaming && options?.triggerTurn === false) {
+		self._pendingCustomMessages.push(appMessage);
 	} else if (self.isStreaming && useProtectedReconciliation) {
 		await queueProtectedStreamingCustomMessage(
 			self,
@@ -115,6 +119,8 @@ export async function commitAdmittedCustomMessages<T>(
 			} else {
 				for (const item of appMessages) self._queueAgentMessage(item, delivery);
 			}
+		} else if (self.isStreaming) {
+			self._pendingCustomMessages.push(...appMessages);
 		} else {
 			for (const item of appMessages) self._appendCustomMessage(item);
 		}
@@ -125,6 +131,8 @@ export async function commitAdmittedCustomMessages<T>(
 		options.deliverAs === undefined
 	) {
 		for (const item of appMessages) self._appendCustomMessage(item);
+	} else if (self.isStreaming && options?.triggerTurn === false) {
+		self._pendingCustomMessages.push(...appMessages);
 	} else if (self.isStreaming && useProtectedReconciliation) {
 		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
 	} else if (self.isStreaming && options?.persistWhenStreaming === true) {

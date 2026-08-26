@@ -130,6 +130,11 @@ const singleton = createSessionScopedSingleton(SESSION_KEY, createCancellationRe
 
 export const cancellationRegistry: CancellationRegistry = singleton.facade;
 
-export function adoptCancellationRegistry(scope: object): CancellationRegistry {
-	return singleton.adopt(scope);
+export function adoptCancellationRegistry(
+	scope: object,
+	preserveCurrentWhenTargetExists = false,
+): CancellationRegistry {
+	return singleton.adopt(scope, {
+		preserveCurrentWhenTargetExists: preserveCurrentWhenTargetExists ? () => true : undefined,
+	});
 }

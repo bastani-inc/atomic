@@ -35,7 +35,7 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
-import { defaultToolNames } from "./tools/index.ts";
+import { getDefaultToolNames } from "./tools/index.ts";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
 export * from "./sdk-exports.ts";
@@ -173,6 +173,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			defaultProvider: settingsManager.getDefaultProvider(),
 			defaultModelId: settingsManager.getDefaultModel(),
 			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
+			modelThinkingLevels: settingsManager.getAllModelThinkingLevels(),
 			modelRuntime,
 		});
 		model = result.model;
@@ -198,7 +199,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
 	}
 
-	// Fall back to settings default
+	// Fall back to per-model override, then global default
+	if (thinkingLevel === undefined && model) {
+		thinkingLevel = settingsManager.getModelThinkingLevel(model.provider, model.id);
+	}
 	if (thinkingLevel === undefined) {
 		thinkingLevel = settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
 	}
@@ -220,7 +224,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		? [...options.tools]
 		: options.noTools
 			? []
-			: [...(configuredDefaultToolNames ?? defaultToolNames)];
+			: [...(configuredDefaultToolNames ?? getDefaultToolNames())];
 
 	let agent: Agent;
 
@@ -305,6 +309,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
 			const websocketConnectTimeoutMs =
 				streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
+			const streamDeadlineMs = streamOptions?.streamDeadlineMs ?? settingsManager.getStreamDeadlineMs();
 			const requestHeaders = mergeProviderAttributionHeaders(
 				model,
 				settingsManager,
@@ -335,6 +340,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					env: auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined,
 					timeoutMs,
 					websocketConnectTimeoutMs,
+					streamDeadlineMs,
 					maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
 					maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
 					headers: transportHeaders,

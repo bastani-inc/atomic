@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
-	diagnoseIntercomBridge,
+	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 } from "../../packages/subagents/src/intercom/intercom-bridge.js";
 
@@ -33,13 +33,12 @@ test("uses the full session ID for an unnamed Intercom alias", () => {
 });
 
 test("detects Atomic's bundled Intercom extension in a source checkout", () => {
-	const diagnostic = diagnoseIntercomBridge({
+	const bridge = resolveIntercomBridge({
 		config: undefined,
 		context: "fresh",
 		orchestratorTarget: "parent",
 		cwd: process.cwd(),
 	});
-	assert.equal(diagnostic.active, true);
-	assert.equal(diagnostic.piIntercomAvailable, true);
-	assert.match(diagnostic.extensionDir, /packages[/\\]intercom$/);
+	assert.equal(bridge.active, true);
+	assert.match(bridge.extensionDir, /packages[/\\]intercom$/);
 });

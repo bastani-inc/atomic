@@ -29,6 +29,7 @@ interface PauseRequest {
 	readonly abortBoundary: PromiseWithResolvers<void>;
 	readonly runnerOwnedDeliveries: Set<Promise<void>>;
 	readonly nativeQueuePause?: NativeQueuePauseControl;
+	confirmed: boolean;
 	resumePromise?: Promise<StageSessionPauseResumeResult>;
 }
 
@@ -47,6 +48,9 @@ export class StageSessionPause {
 	isPaused(): boolean {
 		return this.request !== null;
 	}
+	isConfirmedPaused(): boolean {
+		return this.request?.confirmed === true;
+	}
 
 	async requestPause(): Promise<void> {
 		if (this.request) return this.request.abortBoundary.promise;
@@ -56,6 +60,7 @@ export class StageSessionPause {
 			deferred: Promise.withResolvers<PauseResumeResolution>(),
 			abortBoundary: Promise.withResolvers<void>(),
 			runnerOwnedDeliveries: new Set(),
+			confirmed: false,
 			...(nativeQueuePause === undefined ? {} : { nativeQueuePause }),
 		};
 		void request.deferred.promise.catch(() => {});
@@ -67,6 +72,7 @@ export class StageSessionPause {
 			await session?.abort();
 			request.abortBoundary.resolve();
 			await request.abortBoundary.promise;
+			request.confirmed = true;
 		} catch (error) {
 			failed = true;
 			request.abortBoundary.reject(error);

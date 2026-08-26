@@ -109,6 +109,7 @@ export class EngineCustomUiService {
 	private readonly stateListeners = new Set<
 		(state: { blockingInlineCustomUiDepth: number; blockingInlineCustomUiActive: boolean }) => void
 	>();
+	private readonly widgetReleaseListeners = new Map<string, Set<() => void>>();
 
 	setWidget(
 		key: string,
@@ -116,7 +117,7 @@ export class EngineCustomUiService {
 		placement?: "aboveEditor" | "belowEditor",
 	): void {
 		const previous = this.widgetIds.get(key);
-		if (previous) this.disposeComponent(previous, false);
+		if (previous) this.disposeComponent(previous, false, false);
 		if (!factory) return;
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
@@ -234,6 +235,15 @@ export class EngineCustomUiService {
 		this.stateListeners.add(listener);
 		return () => this.stateListeners.delete(listener);
 	}
+	onWidgetRelease(key: string, listener: () => void): () => void {
+		const listeners = this.widgetReleaseListeners.get(key) ?? new Set<() => void>();
+		listeners.add(listener);
+		this.widgetReleaseListeners.set(key, listeners);
+		return () => {
+			listeners.delete(listener);
+			if (listeners.size === 0) this.widgetReleaseListeners.delete(key);
+		};
+	}
 
 	focusHostInlineCustomUi(): boolean {
 		return this.getHostCustomUiState().blockingInlineCustomUiActive;
@@ -316,9 +326,9 @@ export class EngineCustomUiService {
 	}
 
 	dispose(): void {
-		for (const componentId of [...this.active.keys()]) this.disposeComponent(componentId, true);
+		for (const componentId of [...this.active.keys()]) this.disposeComponent(componentId, true, false);
 	}
-	private disposeComponent(componentId: string, resolve: boolean): void {
+	private disposeComponent(componentId: string, resolve: boolean, notifyWidgetRelease = true): void {
 		const record = this.active.get(componentId);
 		if (!record) return;
 		this.active.delete(componentId);
@@ -327,9 +337,19 @@ export class EngineCustomUiService {
 		if (record.widgetKey) {
 			if (this.widgetIds.get(record.widgetKey) === componentId) this.widgetIds.delete(record.widgetKey);
 			this.send({ type: "engine_custom_close", componentId });
+			if (notifyWidgetRelease) this.notifyWidgetRelease(record.widgetKey);
 		}
 		this.notifyState();
 		if (resolve) record.resolve(undefined);
+	}
+	private notifyWidgetRelease(key: string): void {
+		for (const listener of this.widgetReleaseListeners.get(key) ?? []) {
+			try {
+				listener();
+			} catch {
+				// A release observer must not break engine UI teardown.
+			}
+		}
 	}
 	private notifyState(): void {
 		const state = this.getHostCustomUiState();

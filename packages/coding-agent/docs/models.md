@@ -289,6 +289,8 @@ For `modelOverrides`, `cost` is partial: any supplied scalar rate replaces that 
 
 This override changes only the base input rate, retains the model's other base rates, and clears its inherited long-context tiers.
 
+A constant thinking-token cap can go here too, but it will not follow `thinkingBudgets` or leave room for the answer. Prefer `compat.thinkingTokenBudgetField` (or the `supportsThinkingTokenBudget` alias) for that.
+
 ### Thinking Level Map
 
 Use `thinkingLevelMap` on a model to describe model-specific thinking controls. Keys are Atomic thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A level is selectable only when the active model supports it; `xhigh` and `max` are not universal provider capabilities.
@@ -331,6 +333,8 @@ Example for a model where thinking cannot be disabled:
 ```
 
 Migration: older configs that used `compat.reasoningEffortMap` should move that mapping to model-level `thinkingLevelMap`. Use `null` for levels that should not appear in the UI.
+
+`/thinking` opens the thinking-level selector. Enter applies the level to the current session only. Persist (the selector's save action) writes `settings.modelThinkingLevels` for the active model instead of replacing the global `defaultThinkingLevel`. Settings → Default thinking level per model lists those overrides.
 
 ### Context Window
 
@@ -518,14 +522,16 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `supportsReasoningEffort`                     | Support for `reasoning_effort` parameter                                                                                                                                                                                             |
 | `supportsUsageInStreaming`                    | Supports `stream_options: { include_usage: true }` (default: `true`)                                                                                                                                                                 |
 | `supportsFinishReason`                       | Whether streamed responses include `finish_reason`. When `false`, Atomic infers `stop` or `toolUse` when the stream ends. Default: `true`. |
-| `supportsThinkingTokenBudget`                | Whether the endpoint accepts top-level vLLM `thinking_token_budget`; use it with reasoning models that share the response budget. Default: `false`. |
+| `supportsThinkingTokenBudget`                | Alias for `thinkingTokenBudgetField: "thinking_token_budget"` (vLLM). Prefer `thinkingTokenBudgetField`. Default: `false`. |
+| `thinkingTokenBudgetField`                   | Top-level request field used to cap reasoning tokens from `thinkingBudgets`, clamped so at least 1024 tokens remain for the answer. `"thinking_token_budget"` (vLLM), `"thinking_budget"` (Qwen/DashScope/SGLang), `"thinking_budget_tokens"` (llama.cpp). Off by default; not set on the generated catalog. |
 | `maxTokensField`                              | Use `max_completion_tokens` or `max_tokens`                                                                                                                                                                                          |
 | `requiresToolResultName`                      | Include `name` on tool result messages                                                                                                                                                                                               |
 | `requiresAssistantAfterToolResult`            | Insert an assistant message before a user message after tool results                                                                                                                                                                 |
 | `requiresThinkingAsText`                      | Convert thinking blocks to plain text                                                                                                                                                                                                |
 | `requiresReasoningContentOnAssistantMessages` | Include empty `reasoning_content` on all replayed assistant messages when reasoning is enabled                                                                                                                                       |
 | `thinkingFormat`                              | Use `reasoning_effort`, `openrouter`, `deepseek`, `together`, `zai`, `qwen`, `chat-template`, or `qwen-chat-template` thinking parameters                                                                                            |
-| `chatTemplateKwargs`                          | `chat_template_kwargs` values for `thinkingFormat: "chat-template"`; use `{ "$var": "thinking.enabled" }` or `{ "$var": "thinking.effort" }` for Atomic-controlled thinking values                                          |
+| `chatTemplateKwargs`                          | `chat_template_kwargs` values for `thinkingFormat: "chat-template"`; use `{ "$var": "thinking.enabled" }`, `{ "$var": "thinking.effort" }`, or `{ "$var": "thinking.budget" }` for Atomic-controlled thinking values |
+| `chatTemplateArgs`                            | `chat_template_args` values for `thinkingFormat: "baseten"`; use `{ "$var": "thinking.enabled" }`, `{ "$var": "thinking.effort" }`, or `{ "$var": "thinking.budget" }` for Atomic-controlled thinking values |
 | `cacheControlFormat`                          | Use Anthropic-style `cache_control` markers on the system prompt, last tool definition, and last user/assistant text content. Currently only `anthropic` is supported.                                                               |
 | `supportsStrictMode`                          | OpenAI-compatible strict JSON-schema function tools. This is not a general guarantee for every API. |
 | `supportsStrictTools`                         | Anthropic/Bedrock strict-tool capability, normally generated from verified model metadata. |
@@ -546,7 +552,9 @@ Strict JSON-schema support currently includes OpenAI, Anthropic, capable Bedrock
 Authenticated remote catalogs are cached in `models-store.json`. Atomic revalidates pi.dev catalogs with the stored ETag through `If-None-Match`; an empty `304 Not Modified` is success and retains the cached body while updating its check time. A newer bundled catalog wins over an older persisted overlay even when package file mtimes are misleading. Final visibility is built-ins, persisted/remote data subject to freshness, the single active-agent `models.json` configuration, and live provider catalogs/overrides; Atomic does not merge project `.atomic`/`.pi` model files or a legacy agent-directory fallback. Provider failures retain the last usable provider-specific snapshot.
 
 Claude Opus 5 is present in the generated Anthropic and Amazon Bedrock catalogs. Its metadata enables adaptive thinking, including `xhigh` where advertised. Bedrock uses its generated inference-profile ID, prompt-caching and strict-tool metadata, and preserves provider/AWS validation errors. Custom entries must reproduce those capabilities honestly rather than copying a display name alone.
-`openrouter` uses `reasoning: { effort }`. `together` uses `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking` and `preserve_thinking`. Use `chat-template` for vLLM/Hugging Face chat templates that need configurable `chat_template_kwargs`, such as `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }` for DeepSeek V3.x templates.
+`openrouter` uses `reasoning: { effort }`. `together` uses `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking` and `preserve_thinking`. Use `chat-template` for vLLM/Hugging Face chat templates that need configurable `chat_template_kwargs`, such as `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }` for DeepSeek V3.x templates. Use `thinkingFormat: "baseten"` with `chatTemplateArgs` for providers that expose toggle controls through `chat_template_args` and optionally support top-level `reasoning_effort`.
+
+`thinkingTokenBudgetField` is independent of `thinkingFormat`. Do not enable it on the generated Qwen catalog: those models already send `reasoning_effort`, and DashScope rejects `thinking_budget` together with `reasoning_effort`.
 
 `cacheControlFormat: "anthropic"` is for OpenAI-compatible providers that expose Anthropic-style prompt caching through `cache_control` markers on text content and tool definitions.
 

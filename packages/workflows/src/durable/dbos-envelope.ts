@@ -11,7 +11,7 @@
  * Payloads without the current envelope marker and version are rejected.
  */
 
-import type { WorkflowSerializableObject, WorkflowSerializableValue } from "../shared/types.js";
+import type { WorkflowArtifact, WorkflowSerializableObject, WorkflowSerializableValue } from "../shared/types.js";
 import { DURABLE_FORMAT_VERSION, isCurrentDurableFormat } from "./format-version.js";
 import { workflowToolOutcomeFromValue } from "./tool-outcome.js";
 import {
@@ -69,6 +69,9 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
 	readonly fastMode?: boolean;
 	readonly attemptedModels?: WorkflowSerializableValue;
 	readonly modelAttempts?: WorkflowSerializableValue;
+	readonly structured?: WorkflowSerializableValue;
+	readonly artifacts?: WorkflowSerializableValue;
+	readonly warnings?: WorkflowSerializableValue;
 	readonly topology?: WorkflowSerializableValue;
 }
 
@@ -163,6 +166,9 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
 		...(s.fastMode !== undefined ? { fastMode: s.fastMode } : {}),
 		...(s.attemptedModels !== undefined ? { attemptedModels: [...s.attemptedModels] } : {}),
 		...(s.modelAttempts !== undefined ? { modelAttempts: s.modelAttempts as WorkflowSerializableValue } : {}),
+		...(s.structured !== undefined ? { structured: s.structured } : {}),
+		...(s.artifacts !== undefined ? { artifacts: s.artifacts as WorkflowSerializableValue } : {}),
+		...(s.warnings !== undefined ? { warnings: [...s.warnings] } : {}),
 	};
 }
 
@@ -291,7 +297,9 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 		(env.model !== undefined && typeof env.model !== "string") ||
 		(env.fastMode !== undefined && typeof env.fastMode !== "boolean") ||
 		(env.attemptedModels !== undefined && !isStringArray(env.attemptedModels)) ||
-		(env.modelAttempts !== undefined && !isModelAttempts(env.modelAttempts))
+		(env.modelAttempts !== undefined && !isModelAttempts(env.modelAttempts)) ||
+		(env.artifacts !== undefined && !isWorkflowArtifacts(env.artifacts)) ||
+		(env.warnings !== undefined && !isStringArray(env.warnings))
 	)
 		return undefined;
 	return {
@@ -313,6 +321,9 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 		...(Array.isArray(env.modelAttempts)
 			? { modelAttempts: env.modelAttempts as DurableStageCheckpoint["modelAttempts"] }
 			: {}),
+		...(env.structured !== undefined ? { structured: env.structured } : {}),
+		...(isWorkflowArtifacts(env.artifacts) ? { artifacts: env.artifacts } : {}),
+		...(isStringArray(env.warnings) ? { warnings: env.warnings } : {}),
 	} as DurableStageCheckpoint;
 }
 
@@ -506,6 +517,28 @@ function isOptionalFiniteNumber(value: WorkflowSerializableValue | undefined): b
 
 function isStringArray(value: WorkflowSerializableValue | undefined): value is readonly string[] {
 	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isWorkflowArtifacts(value: WorkflowSerializableValue | undefined): value is readonly WorkflowArtifact[] {
+	return Array.isArray(value) && value.every(isWorkflowArtifact);
+}
+
+function isWorkflowArtifact(value: WorkflowSerializableValue): value is WorkflowArtifact {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const record = value as Record<string, WorkflowSerializableValue>;
+	if (
+		(record.kind !== "output" && record.kind !== "session" && record.kind !== "diff" && record.kind !== "patch") ||
+		typeof record.path !== "string"
+	) {
+		return false;
+	}
+	if (record.taskName !== undefined && typeof record.taskName !== "string") return false;
+	if (record.branch !== undefined && typeof record.branch !== "string") return false;
+	if (record.diffStat !== undefined && typeof record.diffStat !== "string") return false;
+	for (const key of ["filesChanged", "insertions", "deletions"] as const) {
+		if (record[key] !== undefined && (typeof record[key] !== "number" || !Number.isFinite(record[key]))) return false;
+	}
+	return true;
 }
 
 function checkpointOutputValue(cp: DurableCheckpoint): WorkflowSerializableValue | undefined {

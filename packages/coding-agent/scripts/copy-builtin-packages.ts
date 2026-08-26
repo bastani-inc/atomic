@@ -1,11 +1,29 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, join, relative, resolve } from "node:path";
+import {
+	INSTALLED_EXTENSION_ENTRIES,
+	WORKFLOWS_SDK_BUNDLE_ENTRY,
+	type BuiltinPackageDirName,
+} from "../src/core/builtin-install-layout.ts";
 
 interface BuiltinCopy {
 	label: string;
-	destinationName: string;
+	destinationName: BuiltinPackageDirName;
 	sourceDir: string;
+}
+
+interface ManifestExtensionBlock {
+	extensions?: string[];
 }
 
 const packageRoot = resolve(import.meta.dir, "..");
@@ -62,6 +80,56 @@ const WORKSPACE_BUILTINS = [
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access" },
 	{ packageName: "@bastani/intercom", workspaceDirName: "intercom" },
 ] as const;
+
+const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> = {
+	workflows: [
+		"package.json",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE",
+		"ambient.d.ts",
+		INSTALLED_EXTENSION_ENTRIES.workflows,
+		WORKFLOWS_SDK_BUNDLE_ENTRY,
+		"src/authoring.d.ts",
+		"src/shared/authoring-contract.d.ts",
+		"builtin/",
+		"skills/",
+	],
+	subagents: [
+		"package.json",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE",
+		INSTALLED_EXTENSION_ENTRIES.subagents,
+		"agents/",
+		"skills/",
+	],
+	mcp: [
+		"package.json",
+		"README.md",
+		"OAUTH.md",
+		"CHANGELOG.md",
+		"LICENSE",
+		INSTALLED_EXTENSION_ENTRIES.mcp,
+		"app-bridge.bundle.js",
+	],
+	"web-access": [
+		"package.json",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE",
+		INSTALLED_EXTENSION_ENTRIES["web-access"],
+	],
+	intercom: [
+		"package.json",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE",
+		INSTALLED_EXTENSION_ENTRIES.intercom,
+		"broker/",
+		"skills/",
+	],
+};
 
 function readPackageName(packageDir: string): string | undefined {
 	try {
@@ -208,6 +276,84 @@ function injectWorkflowsAmbientReference(): void {
 	console.log(`Injected workflows ambient reference into ${join("dist", "index.d.ts")}`);
 }
 
+async function bundleEntrypoint(entry: string, outfile: string, label: string): Promise<void> {
+	if (!existsSync(entry)) {
+		throw new Error(`Missing ${label} bundle entry: ${entry}`);
+	}
+	const result = await Bun.build({
+		entrypoints: [entry],
+		target: "node",
+		format: "esm",
+		packages: "external",
+		external: HOST_PROVIDED_EXTERNALS,
+	});
+	const output = result.outputs[0];
+	if (!result.success || output === undefined) {
+		throw new Error(`Failed to bundle ${label}: ${result.logs.map((log) => log.message).join("\n")}`);
+	}
+	mkdirSync(join(outfile, ".."), { recursive: true });
+	writeFileSync(outfile, await output.text(), "utf-8");
+	console.log(`Bundled ${label} -> ${relative(distDir, outfile)}`);
+}
+
+function readManifest(packageJsonPath: string): Record<string, unknown> {
+	return JSON.parse(readFileSync(packageJsonPath, "utf-8")) as Record<string, unknown>;
+}
+
+function writeManifest(packageJsonPath: string, pkg: Record<string, unknown>): void {
+	writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf-8");
+}
+
+function setManifestExtensions(pkg: Record<string, unknown>, extensionPath: string): void {
+	for (const key of ["pi", "atomic"] as const) {
+		const block = pkg[key] as ManifestExtensionBlock | undefined;
+		if (block?.extensions?.length) {
+			block.extensions = [extensionPath];
+		}
+	}
+}
+
+function pointWorkflowsSdkAtBundle(pkg: Record<string, unknown>): void {
+	pkg.main = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
+	const exportsField = pkg.exports as
+		| { "."?: { types?: string; default?: string } }
+		| undefined;
+	if (exportsField?.["."]) {
+		exportsField["."].default = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
+	}
+}
+
+function shouldKeepInstalledPath(dirName: BuiltinPackageDirName, relativePath: string): boolean {
+	const normalized = relativePath.split("\\").join("/");
+	return INSTALLED_KEEP_PREFIXES[dirName].some((keep) => {
+		if (keep.endsWith("/")) {
+			return normalized === keep.slice(0, -1) || normalized.startsWith(keep);
+		}
+		return normalized === keep;
+	});
+}
+
+function pruneInstalledPackage(packageDir: string, dirName: BuiltinPackageDirName): void {
+	const visit = (dir: string): void => {
+		for (const entry of readdirSync(dir)) {
+			const fullPath = join(dir, entry);
+			const relativePath = relative(packageDir, fullPath);
+			const stats = statSync(fullPath);
+			if (stats.isDirectory()) {
+				visit(fullPath);
+				if (readdirSync(fullPath).length === 0) {
+					rmSync(fullPath, { recursive: true });
+				}
+				continue;
+			}
+			if (!shouldKeepInstalledPath(dirName, relativePath)) {
+				rmSync(fullPath);
+			}
+		}
+	};
+	visit(packageDir);
+}
+
 rmSync(distBuiltinDir, { recursive: true, force: true });
 mkdirSync(distBuiltinDir, { recursive: true });
 
@@ -217,42 +363,57 @@ for (const copy of getCopyPlan()) {
 	console.log(`Copied builtin ${copy.label} -> ${join("dist", "builtin", basename(destinationDir))}`);
 }
 
-// Bundle the workflows extension into a single ESM file so installed builds
-// load one module instead of a ~300-file TS graph (multi-second resolve +
-// transpile cost per launch on Windows, issue #1962). Only workflows is
-// bundled: it references no import.meta.url-relative sibling files, unlike
-// e.g. subagents/intercom which spawn sibling .ts entrypoints at runtime.
-async function bundleWorkflowsExtension(): Promise<void> {
-	const entry = join(workflowsDistDir, "src", "extension", "index.ts");
-	const outfile = join(workflowsDistDir, "src", "extension", "index.bundle.mjs");
-	const result = await Bun.build({
-		entrypoints: [entry],
-		target: "node",
-		format: "esm",
-		external: HOST_PROVIDED_EXTERNALS,
-	});
-	const output = result.outputs[0];
-	if (!result.success || output === undefined) {
-		throw new Error(`Failed to bundle workflows extension: ${result.logs.map((log) => log.message).join("\n")}`);
-	}
-	writeFileSync(outfile, await output.text(), "utf-8");
-
-	const packageJsonPath = join(workflowsDistDir, "package.json");
-	const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as Record<string, unknown>;
-	const manifest = pkg.pi as { extensions?: string[] } | undefined;
-	if (!manifest?.extensions?.length) {
-		throw new Error(`Expected pi.extensions in ${packageJsonPath}`);
-	}
-	manifest.extensions = ["./src/extension/index.bundle.mjs"];
-	writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf-8");
-	console.log(`Bundled @bastani/workflows extension -> ${join("dist", "builtin", "workflows", "src", "extension", "index.bundle.mjs")}`);
-}
-
 // Issue #1208: derive externally-resolvable @bastani/workflows types from source.
 emitWorkflowAuthoringTypes();
 pruneRawWorkflowAuthoringSources();
 writeWorkflowsAmbientDeclaration();
 injectWorkflowsAmbientReference();
 
-// Issue #1962: ship the workflows extension prebundled for fast startup.
-await bundleWorkflowsExtension();
+await bundleEntrypoint(
+	join(workflowsDistDir, "src", "extension", "index.ts"),
+	join(workflowsDistDir, INSTALLED_EXTENSION_ENTRIES.workflows),
+	"@bastani/workflows extension",
+);
+await bundleEntrypoint(
+	join(workflowsDistDir, "src", "index.ts"),
+	join(workflowsDistDir, WORKFLOWS_SDK_BUNDLE_ENTRY),
+	"@bastani/workflows SDK",
+);
+await bundleEntrypoint(
+	join(distBuiltinDir, "subagents", "src", "extension", "index.ts"),
+	join(distBuiltinDir, "subagents", INSTALLED_EXTENSION_ENTRIES.subagents),
+	"@bastani/subagents extension",
+);
+await bundleEntrypoint(
+	join(distBuiltinDir, "mcp", "index.ts"),
+	join(distBuiltinDir, "mcp", INSTALLED_EXTENSION_ENTRIES.mcp),
+	"@bastani/mcp extension",
+);
+await bundleEntrypoint(
+	join(distBuiltinDir, "web-access", "index.ts"),
+	join(distBuiltinDir, "web-access", INSTALLED_EXTENSION_ENTRIES["web-access"]),
+	"@bastani/web-access extension",
+);
+await bundleEntrypoint(
+	join(distBuiltinDir, "intercom", "index.ts"),
+	join(distBuiltinDir, "intercom", INSTALLED_EXTENSION_ENTRIES.intercom),
+	"@bastani/intercom extension",
+);
+
+const workflowsManifestPath = join(workflowsDistDir, "package.json");
+const workflowsManifest = readManifest(workflowsManifestPath);
+setManifestExtensions(workflowsManifest, `./${INSTALLED_EXTENSION_ENTRIES.workflows}`);
+pointWorkflowsSdkAtBundle(workflowsManifest);
+writeManifest(workflowsManifestPath, workflowsManifest);
+
+for (const dirName of ["subagents", "mcp", "web-access", "intercom"] as const) {
+	const manifestPath = join(distBuiltinDir, dirName, "package.json");
+	const manifest = readManifest(manifestPath);
+	setManifestExtensions(manifest, `./${INSTALLED_EXTENSION_ENTRIES[dirName]}`);
+	writeManifest(manifestPath, manifest);
+}
+
+for (const dirName of WORKSPACE_BUILTINS.map((entry) => entry.workspaceDirName)) {
+	pruneInstalledPackage(join(distBuiltinDir, dirName), dirName);
+	console.log(`Pruned installed sources for ${dirName}`);
+}

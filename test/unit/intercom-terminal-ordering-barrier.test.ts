@@ -4,7 +4,7 @@ import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.j
 import { InboundIdleQueue } from "../../packages/intercom/inbound-idle-queue.js";
 import type { InboundMessageEntry } from "../../packages/intercom/intercom-utils.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import { registerSubagentRelay } from "../../packages/intercom/subagent-relay.js";
 import {
 	emitGlobalTerminalOrderingBarrier,
@@ -626,13 +626,13 @@ describe("per-child terminal ordering barrier", () => {
 	test("a correlated ask reply bypasses unrelated queued ordinary sends", async () => {
 		const queue = new InboundIdleQueue();
 		queue.enqueue(entry(source("other-session", "other-child"), "ordinary", 1));
-		const waiters = new ReplyWaiterSlot(1_000);
+		const waiters = new ReplyWaiterRegistry(1_000);
 		const admission = waiters.begin("asking-child", "ask-id");
 		assert.equal(admission.ok, true);
 		if (!admission.ok) return;
 		const reply: Message = { id: "reply-id", timestamp: 2, replyTo: "ask-id", content: { text: "answer" } };
 
-		assert.equal(routeIncomingReply(waiters.current(), source("asking-session", "asking-child"), reply), true);
+		assert.equal(routeIncomingReply(waiters.pending(), source("asking-session", "asking-child"), reply), true);
 		assert.equal((await admission.wait.promise).id, "reply-id");
 		assert.deepEqual(
 			queue.drain().map((queued) => queued.message.id),

@@ -13,8 +13,25 @@ import {
   getIntercomDirPath,
 } from "./paths.js";
 
+function isIntercomPackageRoot(dir: string): boolean {
+  return existsSync(join(dir, "package.json")) && existsSync(join(dir, "broker"));
+}
+
+/** Package root whether this module is `broker/spawn.ts` or the installed `index.bundle.mjs`. */
+export function resolveIntercomPackageRoot(moduleHref: string): string {
+  const here = dirname(fileURLToPath(moduleHref));
+  if (isIntercomPackageRoot(here)) return here;
+  return join(here, "..");
+}
+
+export function resolveBrokerEntrypoint(packageRoot: string): string {
+  const bundled = join(packageRoot, "broker", "broker.bundle.mjs");
+  return existsSync(bundled) ? bundled : join(packageRoot, "broker", "broker.ts");
+}
+
+
 const INTERCOM_DIR = getIntercomDirPath();
-const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
+const EXTENSION_DIR = resolveIntercomPackageRoot(import.meta.url);
 const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = getBrokerPidPath();
 const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
@@ -95,6 +112,9 @@ function getDefaultBrokerCommandParts(
   }
   if (runtime === "bun-binary") {
     return { command: runtimePath, args: [INTERNAL_INTERCOM_BROKER_ARG, brokerPath] };
+  }
+  if (/\.m?js$/u.test(brokerPath)) {
+    return { command: runtimePath, args: [brokerPath] };
   }
   return { command: runtimePath, args: [getDefaultBrokerRunnerPath(extensionDir), brokerPath] };
 }
@@ -292,7 +312,7 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
       return;
     }
 
-    const brokerPath = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");
+    const brokerPath = resolveBrokerEntrypoint(EXTENSION_DIR);
     const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);

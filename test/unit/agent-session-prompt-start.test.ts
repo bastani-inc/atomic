@@ -8,6 +8,8 @@ describe("AgentSession prompt-start handshake", () => {
 		const events: string[] = [];
 		let streaming = false;
 		const session = {
+			_pendingCustomMessages: [],
+			_flushPendingCustomMessages() {},
 			agent: {
 				prompt() {
 					events.push("agent.prompt");
@@ -50,6 +52,8 @@ describe("AgentSession prompt-start handshake", () => {
 	test("does not report prompt ownership when agent.prompt throws synchronously", async () => {
 		let promptStarted = false;
 		const session = {
+			_pendingCustomMessages: [],
+			_flushPendingCustomMessages() {},
 			agent: {
 				prompt() {
 					throw new Error("startup failed");
@@ -76,6 +80,8 @@ describe("AgentSession prompt-start handshake", () => {
 	test("does not report prompt ownership when startup rejects before streaming", async () => {
 		let promptStarted = false;
 		const session = {
+			_pendingCustomMessages: [],
+			_flushPendingCustomMessages() {},
 			agent: { prompt: () => Promise.reject(new Error("startup rejected")) },
 			isStreaming: false,
 			abortSessionSummary: () => {},
@@ -104,6 +110,8 @@ describe("AgentSession workflow delivery authorization", () => {
 		let sideEffects = 0;
 		const delivered: string[] = [];
 		const session = {
+			_pendingCustomMessages: [],
+			_flushPendingCustomMessages() {},
 			isStreaming: false,
 			abortSessionSummary: () => {},
 			promptTemplates: [],

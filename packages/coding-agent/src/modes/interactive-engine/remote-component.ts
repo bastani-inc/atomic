@@ -10,7 +10,7 @@ export type RemoteComponentRuntime = Pick<
 	"onEngineMessage" | "onGenerationEnded" | "sendEngineCommand"
 >;
 
-export type RemoteComponentUI = Pick<ExtensionUIContext, "custom" | "requestRender" | "setWidget">;
+export type RemoteComponentUI = Pick<ExtensionUIContext, "custom" | "requestRender" | "setWidget" | "onWidgetRelease">;
 
 interface MountedRemoteComponent {
 	component: RemoteComponent;
@@ -22,6 +22,7 @@ interface MountedRemoteComponent {
 	handlesInternalUiAction: boolean;
 	handle?: OverlayHandle;
 	widgetKey?: string;
+	unsubscribeWidgetRelease?: () => void;
 }
 
 /**
@@ -253,6 +254,15 @@ export class RemoteComponentController {
 		return false;
 	}
 
+	private releaseWidget(widgetKey: string): void {
+		for (const [componentId, record] of this.mounted) {
+			if (record.widgetKey !== widgetKey) continue;
+			this.mounted.delete(componentId);
+			record.unsubscribeWidgetRelease?.();
+			record.unsubscribeWidgetRelease = undefined;
+			this.terminalModes.onUnmount(componentId);
+		}
+	}
 	/**
 	 * Close every mounted component.
 	 *
@@ -276,6 +286,7 @@ export class RemoteComponentController {
 		this.mounted.clear();
 		for (const [componentId, record] of records) {
 			this.terminalModes.onUnmount(componentId);
+			record.unsubscribeWidgetRelease?.();
 			record.component.dispose(reason === "host-shutdown" && !record.engineDone);
 			if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
 			else if (reason === "generation-lost") record.done(undefined);
@@ -356,6 +367,7 @@ export class RemoteComponentController {
 				() => rows,
 				handlesInternalUiAction,
 			);
+			const unsubscribeWidgetRelease = this.ui.onWidgetRelease?.(widgetKey, () => this.releaseWidget(widgetKey));
 			this.mounted.set(componentId, {
 				component,
 				done: () => {},
@@ -363,6 +375,7 @@ export class RemoteComponentController {
 				handlesCtrlC,
 				handlesInternalUiAction,
 				widgetKey,
+				unsubscribeWidgetRelease,
 			});
 			this.ui.setWidget(
 				widgetKey,
@@ -419,6 +432,7 @@ export class RemoteComponentController {
 		if (!record) return;
 		this.terminalModes.onUnmount(componentId);
 		this.mounted.delete(componentId);
+		record.unsubscribeWidgetRelease?.();
 		if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
 		record.component.dispose();
 	}

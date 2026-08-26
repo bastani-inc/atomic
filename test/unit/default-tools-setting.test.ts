@@ -14,7 +14,8 @@ import {
 } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { allToolNames, defaultToolNames } from "../../packages/coding-agent/src/core/tools/index.js";
+import { allToolNames, getDefaultToolNames } from "../../packages/coding-agent/src/core/tools/index.js";
+import { isPowerShellAvailable } from "../../packages/coding-agent/src/utils/shell.js";
 import {
 	fileExistsSync,
 	makeDirectorySync,
@@ -22,6 +23,13 @@ import {
 	removePathSync,
 	writeTextSync,
 } from "../helpers/runtime.js";
+
+/**
+ * Built-ins that this host can actually construct. Every name is registrable
+ * except `powershell`, which additionally requires a resolvable executable, so
+ * it is absent on non-Windows hosts even though the name is always valid.
+ */
+const registrableToolNames = [...allToolNames].filter((name) => name !== "powershell" || isPowerShellAvailable());
 
 const tempDirs: string[] = [];
 
@@ -142,7 +150,7 @@ describe("defaultTools setting", () => {
 				// "read" is the only initially active built-in; the others stay
 				// registered (reachable via /tools) but inactive.
 				assert.ok(active.includes("read"));
-				for (const builtin of allToolNames) {
+				for (const builtin of registrableToolNames) {
 					assert.ok(registered.includes(builtin), `expected built-in '${builtin}' to stay registered`);
 					if (builtin !== "read") {
 						assert.equal(
@@ -216,6 +224,7 @@ describe("defaultTools setting", () => {
 				"edit",
 				"find",
 				"ls",
+				...(getDefaultToolNames().includes("powershell") ? (["powershell"] as const) : []),
 				"read",
 				"sdk_tool",
 				"search",
@@ -271,7 +280,7 @@ describe("defaultTools setting", () => {
 	test("an unset setting keeps the standard built-in defaults; an empty list keeps none", async () => {
 		const unsetSession = await createSession(undefined);
 		try {
-			assert.deepEqual(unsetSession.getActiveToolNames(), [...defaultToolNames]);
+			assert.deepEqual(unsetSession.getActiveToolNames(), [...getDefaultToolNames()]);
 		} finally {
 			unsetSession.dispose();
 		}
@@ -279,7 +288,7 @@ describe("defaultTools setting", () => {
 		const emptySession = await createSession([], {}, [staticExtensionTool("static_tool")]);
 		try {
 			assert.deepEqual(emptySession.getActiveToolNames(), ["static_tool"]);
-			for (const builtin of allToolNames) {
+			for (const builtin of registrableToolNames) {
 				assert.ok(
 					emptySession
 						.getAllTools()
@@ -308,7 +317,7 @@ describe("defaultTools setting", () => {
 			try {
 				assert.deepEqual(
 					session.getActiveToolNames(),
-					[...defaultToolNames],
+					[...getDefaultToolNames()],
 					`expected malformed defaultTools ${raw} to fall back to the standard defaults`,
 				);
 			} finally {

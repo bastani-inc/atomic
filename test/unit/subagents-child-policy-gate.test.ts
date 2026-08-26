@@ -87,7 +87,6 @@ function makeState() {
 		baseCwd: "",
 		currentSessionId: null,
 		subagentInProgress: false,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
@@ -185,7 +184,7 @@ describe("subagent child policy gates fanout, not management", () => {
 	test("a child without fanout authorization can still run the observing management actions", async () => {
 		const executor = makeExecutor(policyFor({ fanoutAuthorized: false, managementActions: "full" }));
 
-		for (const action of ["list", "get", "status", "doctor"] as const) {
+		for (const action of ["list", "get", "status"] as const) {
 			const result = await runAction(executor, { action });
 			assert.notEqual(
 				resultText(result),
@@ -196,16 +195,14 @@ describe("subagent child policy gates fanout, not management", () => {
 		}
 	});
 
-	test("a child without fanout authorization is refused resume and interrupt", async () => {
+	test("a child without fanout authorization is refused interrupt", async () => {
 		const executor = makeExecutor(policyFor({ fanoutAuthorized: false, managementActions: "full" }));
 
-		// Both continue agent execution: resume revives a child, interrupt is
-		// privileged control over a running one. Neither is observation.
-		for (const action of ["resume", "interrupt"] as const) {
+		// Interrupt is privileged control over a running child, not observation.
+		for (const action of ["interrupt"] as const) {
 			const result = await runAction(executor, {
 				action,
 				id: "victim-run/victim_1",
-				message: "keep going",
 			});
 			assert.equal(result.isError, true, `'${action}' must be refused for a fanout-denied child`);
 			assert.equal(resultText(result), FANOUT_MESSAGE);
@@ -215,14 +212,13 @@ describe("subagent child policy gates fanout, not management", () => {
 		assert.deepEqual(runSyncCalls, []);
 	});
 
-	test("a fanout-authorized child still reaches resume and interrupt", async () => {
+	test("a fanout-authorized child still reaches interrupt", async () => {
 		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full" }));
 
-		for (const action of ["resume", "interrupt"] as const) {
+		for (const action of ["interrupt"] as const) {
 			const result = await runAction(executor, {
 				action,
 				id: "missing-run/missing_1",
-				message: "keep going",
 			});
 			// No such child exists, so the handler's own "not found" answer proves the
 			// request passed the gate rather than being refused as fanout.
@@ -282,7 +278,6 @@ describe("subagent child policy gates fanout, not management", () => {
 		const executionActions: Parameters<ExecutorForTest["execute"]>[1][] = [
 			{ agent: "alpha", task: "do work" },
 			{ tasks: [{ agent: "alpha", task: "do work" }] },
-			{ action: "resume", id: "run-1", message: "keep going" },
 			{ action: "interrupt", id: "run-1" },
 		];
 
@@ -297,7 +292,7 @@ describe("subagent child policy gates fanout, not management", () => {
 	test("an admitted child keeps the observing management actions", async () => {
 		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full", depth: 1 }));
 
-		for (const action of ["list", "get", "status", "doctor"] as const) {
+		for (const action of ["list", "get", "status"] as const) {
 			const result = await runAction(executor, { action });
 			assert.notEqual(resultText(result), SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
 			assert.equal(result.details.mode, "management");

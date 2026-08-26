@@ -87,7 +87,7 @@ describe("foreground intercom detach routing", () => {
 				allowIntercomDetach: true,
 				intercomEvents: eventBus(emitter),
 				artifactsDir: dir,
-				testSession: { output: "resumed result", promptGate: gate.promise },
+				testSession: { output: "detached result", promptGate: gate.promise },
 				onDetachedExit: (result) => {
 					recovered.push(result);
 					resolveRecovery();
@@ -103,10 +103,10 @@ describe("foreground intercom detach routing", () => {
 			assert.equal(recovered.length, 1);
 			const actual = recovered[0]!;
 			assert.equal(actual.status, "ok");
-			assert.match(actual.finalOutput ?? "", /resumed result/);
+			assert.match(actual.finalOutput ?? "", /detached result/);
 			const actualArtifacts = actual.artifactPaths;
 			assert.ok(actualArtifacts);
-			assert.match(fs.readFileSync(actualArtifacts.outputPath, "utf8"), /resumed result/);
+			assert.match(fs.readFileSync(actualArtifacts.outputPath, "utf8"), /detached result/);
 			const metadata = JSON.parse(fs.readFileSync(actualArtifacts.metadataPath, "utf8")) as { status: string };
 			assert.equal(metadata.status, "ok");
 		});
@@ -186,7 +186,8 @@ describe("foreground intercom detach routing", () => {
 			gate.release();
 			for (let i = 0; i < 30 && recovered.length === 0; i++) await sleep(20);
 			assert.equal(recovered.length, 1);
-			assert.equal(recovered[0]?.status, "error");
+			assert.equal(recovered[0]?.status, "interrupted");
+			assert.equal(recovered[0]?.cause, "abort");
 			assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
 		});
 	});
@@ -210,7 +211,8 @@ describe("foreground intercom detach routing", () => {
 			controller.abort();
 			gate.release();
 			const result = await pending;
-			assert.equal(result.status, "error");
+			assert.equal(result.status, "interrupted");
+			assert.equal(result.cause, "abort");
 			assert.equal(result.detached, undefined);
 			assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
 		});

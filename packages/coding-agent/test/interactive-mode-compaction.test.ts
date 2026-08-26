@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import type { Usage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Container, getKeybindings, setKeybindings, Text } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -35,6 +36,17 @@ const result: VerbatimCompactionResult = {
 		percentReduction: 50,
 	},
 };
+
+const compactionUsage: Usage = {
+	input: 1_200,
+	output: 34,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 1_234,
+	cost: { input: 0.02, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.02 },
+};
+
+const resultWithUsage: VerbatimCompactionResult = { ...result, usage: compactionUsage };
 
 const persistedBoundary = createVerbatimCompactionMessage(
 	result.compactedText,
@@ -77,7 +89,7 @@ const persistedContextMessages = [
 	{ role: "user", content: "retained context message", timestamp: 0 } as AgentMessage,
 ];
 
-function makeMode(messages: AgentMessage[] = persistedContextMessages) {
+function makeMode(messages: AgentMessage[] = persistedContextMessages, showCacheMissNotices = false) {
 	const entries: SessionEntry[] = messages.map((message, index) => ({
 		type: "message",
 		id: `m${index}`,
@@ -125,11 +137,12 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 			abortCompaction: vi.fn(),
 			agent: { waitForIdle: vi.fn().mockResolvedValue(undefined) },
 			extensionRunner: { getMarkdownTransformers: () => [], getMessageRenderer: () => undefined },
+			modelRuntime: { getModel: () => undefined },
 		},
 		settingsManager: {
 			getShowTerminalProgress: () => false,
 			getClearOnShrink: () => false,
-			getShowCacheMissNotices: () => false,
+			getShowCacheMissNotices: () => showCacheMissNotices,
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
 			getMermaidRenderingMode: () => "streaming",
@@ -161,6 +174,7 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 		renderDeferredUserInput: Reflect.get(InteractiveMode.prototype, "renderDeferredUserInput"),
 		rebuildChatFromMessages: Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages"),
 		addCompactionBoundaryToChat: vi.fn(Reflect.get(InteractiveMode.prototype, "addCompactionBoundaryToChat")),
+		addCompactionCostNotice: Reflect.get(InteractiveMode.prototype, "addCompactionCostNotice"),
 	};
 	return { mode, chatContainer, workingLoaders, entries };
 }
@@ -201,6 +215,114 @@ describe("InteractiveMode compaction events", () => {
 			expect(renderedText(chatContainer)).toContain("retained context message");
 		});
 	}
+
+	it("renders billed compaction usage after the live boundary when notices are enabled", async () => {
+		const { mode, chatContainer } = makeMode(persistedContextMessages, true);
+
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "manual",
+			result: resultWithUsage,
+			aborted: false,
+			willRetry: false,
+		});
+
+		const text = renderedText(chatContainer);
+		expect(text).toContain("Compaction: 1,234 tokens billed (~$0.02)");
+		expect(text.indexOf("✻ Context compacted")).toBeLessThan(text.indexOf("Compaction: 1,234 tokens billed"));
+	});
+
+	// The completed boundary is persisted with its usage *and* re-announced live.
+	// Without suppression the rebuild and the live append would both bill it.
+	it("bills a completed compaction exactly once when its boundary is already persisted", async () => {
+		const { mode, chatContainer } = makeMode([], true);
+		const persistedEntries: SessionEntry[] = [
+			{
+				type: "message",
+				id: "m0",
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				message: { role: "user", content: "dropped context message", timestamp: 0 } as AgentMessage,
+			},
+			{
+				type: "compaction",
+				id: "c1",
+				parentId: "m0",
+				timestamp: new Date(1).toISOString(),
+				summary: result.compactedText,
+				firstKeptEntryId: null,
+				tokensBefore: result.tokensBefore,
+				details: {
+					strategy: "verbatim-lines",
+					parameters: result.parameters,
+					promptVersion: result.promptVersion,
+					rung: result.rung,
+					stats: result.stats,
+				},
+				usage: compactionUsage,
+			},
+			{
+				type: "message",
+				id: "m2",
+				parentId: "c1",
+				timestamp: new Date(2).toISOString(),
+				message: { role: "user", content: "retained context message", timestamp: 2 } as AgentMessage,
+			},
+		];
+		mode.sessionManager = {
+			...mode.sessionManager,
+			getEntries: () => persistedEntries,
+			getLeafId: () => "m2",
+		};
+
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "manual",
+			result: resultWithUsage,
+			aborted: false,
+			willRetry: false,
+		});
+
+		const text = renderedText(chatContainer);
+		expect(text.match(/Compaction: 1,234 tokens billed/g)).toHaveLength(1);
+		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
+	});
+
+	it("hides billed compaction usage when notices are disabled", async () => {
+		const { mode, chatContainer } = makeMode();
+
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "manual",
+			result: resultWithUsage,
+			aborted: false,
+			willRetry: false,
+		});
+
+		expect(renderedText(chatContainer)).not.toContain("tokens billed");
+	});
+
+	it("renders persisted branch-summary billing at its chronological position", () => {
+		const { mode, chatContainer } = makeMode([], true);
+		const entry: SessionEntry = {
+			type: "branch_summary",
+			id: "summary-1",
+			parentId: null,
+			timestamp: new Date(1).toISOString(),
+			fromId: "source-1",
+			summary: "Tried the first branch",
+			usage: compactionUsage,
+		};
+
+		mode.renderSessionEntries([entry]);
+
+		const text = renderedText(chatContainer);
+		expect(text).toContain("Branch summary (ctrl+o Expand)");
+		expect(text).toContain("Branch summary: 1,234 tokens billed (~$0.02)");
+		expect(text.indexOf("Branch summary (ctrl+o Expand)")).toBeLessThan(
+			text.indexOf("Branch summary: 1,234 tokens billed"),
+		);
+	});
 
 	it("shows Atomic's ∀ indicator and a cancel hint while auto-compacting", async () => {
 		const { mode } = makeMode();

@@ -59,6 +59,7 @@ export type BrokerMessage =
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }
+  | { type: "peer_disconnected"; replyTo: string; peerSessionId: string; peerName?: string }
   | { type: "presence_ack"; requestId: string; group: string }
   | { type: "presence_failed"; requestId: string; reason: string }
   | { type: "error"; error: string }

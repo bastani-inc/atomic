@@ -10,7 +10,7 @@ Pull request / selected branch push
    ├─ suites (Linux, Windows): build package -> unit -> integration
    ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node, then Bun)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
-   ├─ static-checks (Linux): typecheck, docs, Mintlify, contracts
+   ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
    └─ test (2 legs): result gate carrying both required contexts
 
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
@@ -58,7 +58,7 @@ Its work runs as four independent jobs so the wall clock is one job's longest de
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
 | `agent-suite` | both | build native bindings -> coding-agent vitest (Node), then its Bun-hosted SQLite selector project | 126 s | 232 s |
 | `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s warm / 4m04s healthy p100 |
-| `static-checks` | Linux only | typecheck, docs links, Mintlify, CI contracts | 30 s | – |
+| `static-checks` | Linux only | typecheck, docs links, Mintlify, Alpine/Debian installer smoke, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
 
 The release-archive Windows samples above are warm-toolchain measurements. A cold
@@ -183,6 +183,8 @@ that stays a deliberate decision.
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
 
 Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
+
+The static job also runs `scripts/test-installers-containers.sh`. It executes `install.sh` with a restricted PATH and local release fixture inside `alpine:3.22` BusyBox `sh` and `debian:bookworm-slim`, checks the full payload and launcher, and gives the installer no JavaScript runtime or package manager. The Alpine fixture omits `ldd` from `PATH`, proving the `/etc/alpine-release` musl path.
 
 ## Direct release trigger and recovery
 
@@ -401,7 +403,7 @@ pins are supply-chain hygiene, not a fix for this incident.
 
 Linux and Windows x64 each run `scripts/build-binaries.sh` for their platform, extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
 
-The `alpine-binary-smoke` job downloads the x64 musl binding, builds `atomic-linux-x64-musl.tar.gz`, and runs it in an `alpine:3.22` Docker container. The container installs `libgcc` and `libstdc++`, runs `--version` and the clean-cwd `--no-session` smoke, and rejects extension-load failures. A separate `node:22-alpine` container directly requires the extracted native package and checks its search exports. This currently exercises the x64 archive; the native matrix builds and publishes both musl architectures.
+The `alpine-binary-smoke` matrix downloads each x64/arm64 musl binding, builds the matching archive, and passes it to `scripts/test-musl-release-archive.sh` on a matching runner. That script uses stock `alpine:3.22` with no package installation, checks the full payload and bundled `libgcc`/`libstdc++`, and runs `atomic --version`. A separate matching-architecture `node:22-alpine` container directly requires each extracted native package and checks its search exports.
 
 ### Release payload
 
@@ -409,7 +411,8 @@ After native and smoke jobs pass, `build`:
 
 1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
 2. Generates native platform package directories and the native root manifest.
-3. Runs `scripts/build-binaries.sh --skip-install` for all eight archives.
+3. Hydrates `@bastani/pi-ai` model data from models.dev, then runs `scripts/build-binaries.sh --skip-install --offline-model-data` for all eight archives. The script uses the just-staged `packages/natives/native/*.node` artifacts and does not `npm install` `@bastani/atomic-natives-*@$VERSION` from the registry (those packages are what this release publishes). If a registry install is attempted and fails, restore is `npm ci --ignore-scripts` followed by re-aliasing `@earendil-works/pi-ai` onto `packages/ai` and rebuilding `@bastani/pi-ai`.
+   Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
 5. Packs exactly ten npm tarballs.
 6. Extracts release notes from `packages/coding-agent/CHANGELOG.md`.
@@ -463,6 +466,16 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 | `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, clean failed drafts |
 | `.github/workflows/warm-toolchain-cache.yml` | manual dispatch (see gate above) | write the Zig and MSVC CRT cache keys into the default-branch scope |
+
+## Repository-local release workflow gates
+
+The `.atomic/workflows/publish-release.ts` workflow keeps the versionless-base and detached-tag sequence above, but external waiting is deterministic workflow code rather than model judgment.
+
+- A durable preparation preflight requires a clean worktree and reads the exact remote base/branch and matching open PR. It reuses an existing release only when the branch is one changelog-only commit atop the current remote base, every paginated commit-file destination and rename source is changelog-only, an optional local branch points to that same commit, and exactly one open PR matches the repository, base, head branch, and head SHA. Otherwise dirty state or conflicting base, commit, file set, branch, or PR fails closed. Reuse never resets or force-pushes and skips changelog preparation and PR creation entirely.
+- The required-CI tool reads configured contexts from both branch protection and active branch rulesets, preserving configured context/app identity. Only the classic unprotected-branch status-check lookup may return absent; a rules lookup error fails closed rather than accepting a partial set. A configured check missing from the commit remains pending. The gate fails on an actually empty configured set, PR/base/head drift, a terminal required-check failure, GitHub/auth/command errors, abort, or 45-minute timeout. It passes only when every exact configured check succeeds or the exact captured PR is already admin-merged.
+- The publish tool waits up to 60 minutes for the push-event run from `.github/workflows/publish.yml` with repository `bastani-inc/atomic`, exact tag, exact detached release SHA, and exact workflow identity. A run that has not appeared remains pending; drift or a completed non-success conclusion fails closed. The tool never dispatches or reruns publication.
+
+Both polling doors run through durable `ctx.tool` nodes, forward their `AbortSignal` to GitHub commands and sleeps, and have a finite tool deadline beyond their polling window. Tests use injected fake Git/GitHub observations and never exercise a real release side effect.
 
 ## Release checklist
 

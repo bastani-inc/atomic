@@ -390,7 +390,7 @@ async function main() {
 			return;
 		}
 
-		if (data.type === "agent_end") {
+		if (data.type === "agent_settled") {
 			isStreaming = false;
 			hideLoading();
 			outputLog.append("");

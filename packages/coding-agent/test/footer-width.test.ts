@@ -200,7 +200,9 @@ describe("FooterComponent width handling", () => {
 		}
 	});
 
-	it("includes branch summary and tool result usage in the total cost", () => {
+	// Upstream footer.ts:101 / usage-totals.ts:49 count compaction boundaries
+	// alongside branch summaries and tool results.
+	it("includes branch summary, compaction, and tool result usage in the total cost", () => {
 		const session = createSession({
 			sessionName: "",
 			usage: {
@@ -235,7 +237,9 @@ describe("FooterComponent width handling", () => {
 		const usageMeter = new UsageMeterComponent(session);
 
 		const statsLine = usageMeter.render(120).map(stripAnsi).join("\n");
-		expect(statsLine).toContain("$1.125");
+		expect(statsLine).toContain("$1.250");
+		expect(statsLine).toContain("↑140");
+		expect(statsLine).toContain("↓20");
 	});
 
 	it("shows the latest cache hit rate when cache usage is present", () => {

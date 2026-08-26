@@ -3,9 +3,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.js";
+import { INITIAL_PROGRESS_CONTENT } from "./progress-content.js";
 import type { OutputMode } from "./types.js";
 
-const INITIAL_PROGRESS_CONTENT = "# Progress\n\n## Status\nIn Progress\n\n## Tasks\n\n## Files Changed\n\n## Notes\n";
+export { INITIAL_PROGRESS_CONTENT };
 
 export interface ResolvedStepBehavior {
 	output: string | false;

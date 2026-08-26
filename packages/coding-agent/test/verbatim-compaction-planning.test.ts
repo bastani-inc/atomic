@@ -299,6 +299,7 @@ describe("one-pass range planner", () => {
 		expect(calls[0].request.reasoning).toBe("medium");
 		expect("maxTokens" in calls[0].request).toBe(false);
 		expect(calls[0].request.cacheRetention).toBe("none");
+		expect(calls[0].request.toolChoice).toBe("none");
 		expect(calls[0].request.sessionId).toEqual(expect.any(String));
 		const firstSessionId = calls[0].request.sessionId;
 		await planDeletedLineRanges(prep.region, prep.parameters, planner(reasoningModel, "off", { apiKey: "key" }), 10, {
@@ -306,6 +307,15 @@ describe("one-pass range planner", () => {
 		});
 		expect(calls[1].request.cacheRetention).toBe("none");
 		expect(calls[1].request.sessionId).not.toBe(firstSessionId);
+	});
+
+	it("rejects planner tool calls before the validated-range airlock", async () => {
+		const prep = preparation();
+		const faux = createFauxStreamFn([{ text: "1,20\n", toolCalls: [{ name: "read", args: {} }] }]);
+		const outcome = await planDeletedLineRanges(prep.region, prep.parameters, planner(model, "off"), 10, {
+			streamFn: faux.streamFn,
+		});
+		expect(outcome).toMatchObject({ kind: "unusable", category: "malformed_output" });
 	});
 
 	it.each([

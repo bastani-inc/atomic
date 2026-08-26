@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
 import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
@@ -13,12 +14,15 @@ import {
 	type AgentProgress,
 	type ArtifactPaths,
 	isWorkflowStageOrchestrationContext,
+	type ParentAskHandoffRequest,
+	type RunSyncOptions,
 	type SingleResult,
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.js";
 import { recordRun } from "../shared/run-history.js";
@@ -29,12 +33,11 @@ import {
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
+import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
-	rememberForegroundRun,
-	replaceForegroundRunChild,
 } from "./subagent-executor-status.js";
 import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.js";
 
@@ -123,7 +126,8 @@ export async function runSinglePath(
 	const currentProvider = ctx.model?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
-	let task = params.task ?? "";
+	const handoffTaskContext = params.task ?? "";
+	let task = handoffTaskContext;
 	const modelOverride: string | undefined = resolveModelCandidate(
 		(params.model as string | undefined) ?? agentConfig.model,
 		availableModels,
@@ -165,6 +169,7 @@ export async function runSinglePath(
 		effectiveSkills = skillOverride;
 	}
 	const interruptController = new AbortController();
+	let parentAsk: ParentAskHandoffRequest | undefined;
 	const foregroundControl = deps.state.foregroundControls.get(runId);
 	if (foregroundControl) {
 		foregroundControl.currentAgent = params.agent;
@@ -184,10 +189,12 @@ export async function runSinglePath(
 
 	let r: SingleResult;
 	try {
-		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
+		const supervisorAuthorization = await requestSupervisorAuthorization(deps.pi.events, childIntercomTarget);
+		const runOptions: RunSyncOptions = {
 			cwd: effectiveCwd,
 			signal,
 			interruptSignal: interruptController.signal,
+			...(progressDir ? { progressPath: path.join(progressDir, "progress.md") } : {}),
 			allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 			intercomEvents: deps.pi.events,
 			runId,
@@ -206,14 +213,18 @@ export async function runSinglePath(
 			controlConfig,
 			onControlEvent,
 			intercomSessionName: childIntercomTarget,
+			supervisorAuthorization,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
+			onParentAskHandoff: (request) => {
+				if (parentAsk) return;
+				request.taskContext = handoffTaskContext;
+				parentAsk = request;
+				interruptController.abort();
+			},
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);
-				if (result) {
-					replaceForegroundRunChild(deps.state, runId, 0, result);
-					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
-				}
+				if (result) notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
 			},
 			index: 0,
 			modelOverride,
@@ -224,7 +235,8 @@ export async function runSinglePath(
 			currentModel: currentModelFullId(ctx.model),
 			currentThinkingLevel: ctx.thinkingLevel,
 			skills: effectiveSkills,
-		});
+		};
+		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions);
 	} catch (error) {
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;
@@ -263,18 +275,13 @@ export async function runSinglePath(
 		mode: "single",
 		runId,
 		results: [r],
+		parentAskYielded: parentAsk !== undefined && r.interrupted,
 		progress: params.includeProgress ? allProgress : undefined,
 		artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		truncation: r.truncation,
 	});
-	rememberForegroundRun(deps.state, {
-		runId,
-		mode: "single",
-		cwd: effectiveCwd,
-		results: details.results,
-	});
 
-	if (!r.detached && !r.interrupted) {
+	if (!r.detached && !(r.interrupted && !isParentCancellation(r.cause))) {
 		const intercomReceipt = await maybeBuildForegroundIntercomReceipt({
 			pi: deps.pi,
 			intercomBridge: data.intercomBridge,
@@ -296,9 +303,33 @@ export async function runSinglePath(
 			content: [
 				{
 					type: "text",
-					text: `Detached for intercom coordination: ${params.agent}. Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`,
+					text: `Detached for intercom coordination: ${params.agent}. Reply to the supervisor request first. After the child exits, launch a fresh follow-up if needed.`,
 				},
 			],
+			details,
+		};
+	}
+
+	if (parentAsk && r.interrupted) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: formatParentAskHandoffOutput({
+						askingChildIndex: 0,
+						releasedChildIndices: [0],
+						unlaunchedChildIndices: [],
+						request: parentAsk,
+					}),
+				},
+			],
+			details,
+		};
+	}
+
+	if (r.interrupted && isParentCancellation(r.cause)) {
+		return {
+			content: [{ type: "text", text: finalizedOutput.displayOutput || r.envelope || "Run cancelled by parent." }],
 			details,
 		};
 	}
@@ -306,7 +337,10 @@ export async function runSinglePath(
 	if (r.interrupted) {
 		return {
 			content: [
-				{ type: "text", text: `Run paused after interrupt (${params.agent}). Waiting for explicit next action.` },
+				{
+					type: "text",
+					text: `Run ended after interrupt (${params.agent}). Launch a fresh subagent for any follow-up.`,
+				},
 			],
 			details,
 		};

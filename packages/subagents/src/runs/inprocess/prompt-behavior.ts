@@ -11,7 +11,7 @@ export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent with explicit fanout responsibility for this assigned task.",
 	"The parent session owns final orchestration, completion decisions, and follow-up implementation launches.",
-	"Delegation is one level deep: the `subagent` tool refuses every launch, resume, and interrupt from inside a subagent.",
+	"Delegation is one level deep: the `subagent` tool refuses every launch and interrupt from inside a subagent.",
 	"Do the assigned fanout work yourself and report what you found; do not plan around delegating it.",
 	"If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");

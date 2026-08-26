@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ATOMIC_AI_AGENT } from "../utils/agent-attribution.ts";
+import { stripBom } from "../utils/text.ts";
 import { INTERNAL_INTERCOM_BROKER_ARG, importInternalIntercomBroker } from "./internal-intercom-broker.ts";
 
 const APP_NAME = "atomic";
@@ -16,7 +17,7 @@ const args = process.argv.slice(2);
 function readVersion(): string {
 	try {
 		const packageJsonPath = join(dirname(process.execPath), "package.json");
-		const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
+		const pkg = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf8"))) as { version?: unknown };
 		return typeof pkg.version === "string" ? pkg.version : "0.0.0";
 	} catch {
 		return "0.0.0";

@@ -16,7 +16,7 @@ import type {
 	WorkflowFailureKind,
 	WorkflowFailureRecoverability,
 } from "../shared/store-types.js";
-import type { WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
+import type { WorkflowArtifact, WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
@@ -248,6 +248,12 @@ export interface DurableStageCheckpoint {
 	readonly fastMode?: boolean;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
+	/** Schema-backed task value; independent of assistant text. */
+	readonly structured?: WorkflowSerializableValue;
+	/** Worktree or output artifacts collected for a completed task. */
+	readonly artifacts?: readonly WorkflowArtifact[];
+	/** Model-fallback warnings recorded for the completed stage/task. */
+	readonly warnings?: readonly string[];
 }
 
 export type UiPromptKind = "input" | "confirm" | "select" | "editor" | "custom";

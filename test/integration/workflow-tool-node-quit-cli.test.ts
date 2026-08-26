@@ -275,6 +275,7 @@ interface Evidence {
 	readonly afterResume: RunDetailView;
 	readonly renderedAfterQuit: string;
 	readonly quitNotifications: readonly string[];
+	readonly stateAfterReload: FixtureState;
 	readonly stateWhenQuitReturned: FixtureState;
 	readonly finalState: FixtureState;
 }
@@ -349,6 +350,12 @@ async function runScenario(): Promise<Evidence> {
 		const runId = dispatched?.details.runId;
 		if (runId === undefined) throw new Error("the CLI did not render a dispatched run id");
 
+		// A supported full session reload must hand the live callback and its
+		// durable node to the replacement extension generation before control
+		// continues. The fixture state makes callback replacement/loss observable.
+		await cli.prompt("reload", "/reload");
+		const stateAfterReload = readState();
+
 		// 2. The run as the user sees it: tool-only, nothing pausable in it.
 		const whileRunning = runDetail(await statusSurface(cli, "status-running", runId));
 
@@ -375,6 +382,7 @@ async function runScenario(): Promise<Evidence> {
 		const afterResume = runDetail(await statusSurface(cli, "status-resumed", runId));
 
 		return {
+			stateAfterReload,
 			runId,
 			whileRunning,
 			afterQuit,
@@ -404,6 +412,15 @@ describe("issue #2078 — quitting an in-flight ctx.tool through the real CLI", 
 		assert.equal(toolNode(evidence.whileRunning, "sibling-tool").status, "completed");
 		// The abort surface never turns a tool node into a chat target.
 		assert.equal(toolNode(evidence.whileRunning, "hang-tool").attachable, false);
+	});
+
+	test("full /reload preserves the live durable tool callback and node", () => {
+		assert.equal(evidence.stateAfterReload.siblingExecutions, 1);
+		assert.equal(evidence.stateAfterReload.hangExecutions, 1);
+		assert.equal(evidence.stateAfterReload.hangRunning, true);
+		assert.equal(evidence.stateAfterReload.hangObservedAbort, false);
+		assert.equal(evidence.whileRunning.status, "running");
+		assert.equal(toolNode(evidence.whileRunning, "hang-tool").status, "running");
 	});
 
 	test("quit pauses a tool-only run as resumable instead of reporting no controllable stages", () => {

@@ -87,7 +87,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 	const hasRunning =
 		d.progress?.some((p) => p.status === "running") || d.results.some((r) => r.progress?.status === "running");
 	const failed = d.results.some((r) => r.status === "error" && r.progress?.status !== "running");
-	const paused = d.results.some(
+	const interruptedOrDetached = d.results.some(
 		(r) =>
 			(r.interrupted ||
 				r.detached ||
@@ -117,7 +117,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 		? theme.fg("accent", pulseGlyph(pulseFrame))
 		: failed
 			? theme.fg("error", "✗")
-			: paused
+			: interruptedOrDetached
 				? theme.fg("warning", "■")
 				: theme.fg("success", "✓");
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";

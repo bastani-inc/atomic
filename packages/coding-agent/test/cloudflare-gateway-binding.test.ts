@@ -142,7 +142,7 @@ describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 					),
 			});
 
-			const model = modelRuntime.getModel("cloudflare-ai-gateway", "claude-sonnet-4-5");
+			const model = modelRuntime.getModel("cloudflare-ai-gateway", "claude-sonnet-4.5");
 			assert.ok(model);
 
 			const resolution = await modelRuntime.getAuth(model);
@@ -168,7 +168,7 @@ describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 			assert.equal(run.gatewayId, GATEWAY_ID);
 			assert.equal(run.data.provider, "anthropic");
 			assert.equal(run.data.endpoint, "v1/messages");
-			assert.equal(run.data.query.model, "claude-sonnet-4-5");
+			assert.equal(run.data.query.model, "claude-sonnet-4.5");
 			assert.equal(run.data.query.stream, true);
 			assert.equal(Object.hasOwn(run.data.headers, "cf-aig-authorization"), false);
 			assert.equal(Object.hasOwn(run.data.headers, "authorization"), false);

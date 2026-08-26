@@ -33,6 +33,7 @@ function harness(withRouter = true) {
 		async _enqueueInterruptCustomMessage() {},
 		async _runAgentPrompt() {},
 		agent: { state: { streamingMessage: undefined, messages: [] }, async waitForIdle() {} },
+		_pendingCustomMessages: [],
 		_agentEventQueue: Promise.resolve(),
 	};
 	const send = (content: string, key: string) =>
@@ -147,6 +148,7 @@ describe("AgentSession workflow-stage admission", () => {
 				if (typeof message.content === "string") processed.push(message.content);
 			},
 			agent: { async waitForIdle() {} },
+			_pendingCustomMessages: [],
 			_agentEventQueue: Promise.resolve(),
 		};
 
@@ -211,8 +213,10 @@ describe("AgentSession workflow-stage admission", () => {
 			timestamp: 1,
 		};
 		const restored: object[] = [];
+		const carried = { customType: "carried", content: "carried" };
 		const target = {
 			_pendingNextTurnMessages: [] as object[],
+			_pendingCustomMessages: [] as object[],
 			_queuedMessagesPaused: false,
 			_activeInterruptQueueHold: undefined,
 			_steeringMessages: [] as string[],
@@ -227,6 +231,7 @@ describe("AgentSession workflow-stage admission", () => {
 		const source = {
 			_activeInterruptQueueHold: undefined,
 			_pendingNextTurnMessages: [notification],
+			_pendingCustomMessages: [carried] as object[],
 			_queuedMessagesPaused: false,
 			_steeringMessages: [] as string[],
 			_followUpMessages: [] as string[],
@@ -237,5 +242,8 @@ describe("AgentSession workflow-stage admission", () => {
 		transferWorkflowStageDeliveriesTo.call(source as never, target);
 		assert.deepEqual(restored, [notification]);
 		assert.deepEqual(target._pendingNextTurnMessages, [notification]);
+		// Context-only custom messages move with the rest of the delivery state.
+		assert.deepEqual(target._pendingCustomMessages, [carried]);
+		assert.deepEqual(source._pendingCustomMessages, []);
 	});
 });

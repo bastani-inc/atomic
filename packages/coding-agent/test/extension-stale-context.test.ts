@@ -28,7 +28,7 @@ function extension(): Extension {
 
 test("exported predicate recognizes a real stale extension API error", () => {
 	const runtime = createExtensionRuntime();
-	const pi = createExtensionAPI(extension(), runtime, "/tmp", createEventBus());
+	const { api: pi } = createExtensionAPI(extension(), runtime, "/tmp", createEventBus());
 
 	pi.registerMarkdownTransformer((markdown) => markdown);
 	runtime.invalidate();

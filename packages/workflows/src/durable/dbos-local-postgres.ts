@@ -7,11 +7,16 @@
  *
  *   1. `DBOS_SYSTEM_DATABASE_URL` — the user's explicit database.
  *   2. Atomic's embedded Postgres (npm-distributed binaries, no Docker).
- *   3. DBOS's reusable `dbos-db` Docker container, only when the embedded
- *      binaries are unavailable for this platform and Docker exists.
+ *   3. DBOS's reusable `dbos-db` Docker container, only after embedded
+ *      provisioning fails without leaving retained-process cleanup pending.
  */
 
-import { EMBEDDED_DBOS_SYSTEM_DATABASE_URL, ensureEmbeddedDbosPostgres } from "./dbos-embedded-postgres.js";
+import {
+	EMBEDDED_DBOS_SYSTEM_DATABASE_URL,
+	EmbeddedPostgresCleanupPendingError,
+	ensureEmbeddedDbosPostgres,
+	shutdownEmbeddedDbosPostgres,
+} from "./dbos-embedded-postgres.js";
 import { commandFailureDetail, delay, runLocalCommand, tcpReachable } from "./local-command.js";
 
 const DOCKER_CONTAINER = "dbos-db";
@@ -20,11 +25,14 @@ const DOCKER_READY_ATTEMPTS = 60;
 const DOCKER_READY_DELAY_MS = 500;
 
 type LocalDbosProvider = () => Promise<void>;
+type LocalDbosShutdowner = () => Promise<void>;
 
 let resolution: Promise<string | undefined> | undefined;
 let resolvedProvider: LocalDbosProvider | undefined;
 let embeddedProvider: LocalDbosProvider = ensureEmbeddedDbosPostgres;
 let dockerProvider: LocalDbosProvider = ensureDockerDbosPostgres;
+let shutdownEmbeddedProvider: LocalDbosShutdowner = shutdownEmbeddedDbosPostgres;
+let embeddedShutdown: Promise<void> | undefined;
 
 /**
  * Resolve the system database URL for this process and make its database
@@ -44,6 +52,22 @@ export async function provisionResolvedLocalDbos(): Promise<void> {
 	await (resolvedProvider ?? embeddedProvider)();
 }
 
+/** Stop the local database only when the resolved provider was embedded. */
+export function shutdownResolvedLocalDbos(): Promise<void> {
+	if (resolvedProvider !== embeddedProvider) return Promise.resolve();
+	embeddedShutdown ??= shutdownEmbeddedProvider().then(
+		() => {
+			resolvedProvider = undefined;
+			embeddedShutdown = undefined;
+		},
+		(error: unknown) => {
+			embeddedShutdown = undefined;
+			throw error;
+		},
+	);
+	return embeddedShutdown;
+}
+
 export function shouldProvisionLocalDbos(error: unknown): boolean {
 	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return false;
 	const message = error instanceof Error ? `${error.message}\n${error.cause ?? ""}` : String(error);
@@ -61,6 +85,12 @@ async function resolve(): Promise<string | undefined> {
 		resolvedProvider = embeddedProvider;
 		return EMBEDDED_DBOS_SYSTEM_DATABASE_URL;
 	} catch (embeddedError) {
+		if (embeddedError instanceof EmbeddedPostgresCleanupPendingError) {
+			// A second database must not hide the exact child lease whose startup
+			// rollback timed out. Keep teardown routed to that embedded owner.
+			resolvedProvider = embeddedProvider;
+			throw embeddedError;
+		}
 		try {
 			await dockerProvider();
 			resolvedProvider = dockerProvider;
@@ -125,9 +155,12 @@ async function requireDockerSuccess(action: string, args: string[]): Promise<voi
 export function resetLocalDbosProvisioningForTests(
 	embedded: LocalDbosProvider = ensureEmbeddedDbosPostgres,
 	docker: LocalDbosProvider = ensureDockerDbosPostgres,
+	shutdownEmbedded: LocalDbosShutdowner = shutdownEmbeddedDbosPostgres,
 ): void {
 	resolution = undefined;
 	resolvedProvider = undefined;
+	embeddedShutdown = undefined;
 	embeddedProvider = embedded;
 	dockerProvider = docker;
+	shutdownEmbeddedProvider = shutdownEmbedded;
 }

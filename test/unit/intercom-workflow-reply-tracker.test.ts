@@ -58,3 +58,58 @@ test("model-fallback sessions share Intercom reply correlation for the stage gen
 	boundary.seal();
 	assert.equal(preserveWorkflowReplyTracker(context), false);
 });
+
+test("replyTo selects an exact ask when one sender has concurrent pending questions", () => {
+	const tracker = new ReplyTracker();
+	tracker.recordIncomingMessage(sender, message);
+	tracker.recordIncomingMessage(sender, { ...message, id: "message-2" });
+
+	assert.equal(tracker.resolveReplyTarget({ replyTo: "message-2" }).message.id, "message-2");
+	assert.equal(tracker.resolveReplyTarget({ to: "reviewer", replyTo: "message-1" }).message.id, "message-1");
+	assert.throws(() => tracker.resolveReplyTarget({ to: "another-session", replyTo: "message-1" }), /not from/);
+});
+
+test("a non-pending replyTo falls back to the active turn context", () => {
+	const tracker = new ReplyTracker();
+	const context = tracker.recordIncomingMessage(sender, { ...message, id: "plain", expectsReply: false });
+	tracker.queueTurnContext(context);
+	tracker.beginTurn();
+	assert.equal(tracker.resolveReplyTarget({ replyTo: "stale-thread" }), context);
+});
+
+test("parallel children keep every parent-targeted ask independently addressable", () => {
+	const tracker = new ReplyTracker();
+	const childA = { ...sender, id: "child-a", name: "child-a" };
+	const childB = { ...sender, id: "child-b", name: "child-b" };
+	tracker.recordIncomingMessage(childA, { ...message, id: "a-1" }, 1);
+	tracker.recordIncomingMessage(childB, { ...message, id: "b-1" }, 2);
+	tracker.recordIncomingMessage(childA, { ...message, id: "a-2" }, 3);
+
+	assert.deepEqual(
+		tracker.listPending(3).map((context) => context.message.id),
+		["a-1", "b-1", "a-2"],
+	);
+	assert.equal(tracker.resolveReplyTarget({ to: "child-b" }, 3).message.id, "b-1");
+	assert.throws(() => tracker.resolveReplyTarget({ to: "child-a" }, 3), /Multiple pending asks/);
+	assert.equal(tracker.resolveReplyTarget({ replyTo: "a-2" }, 3).message.id, "a-2");
+	tracker.markReplied("a-2");
+	assert.deepEqual(
+		tracker.listPending(3).map((context) => context.message.id),
+		["a-1", "b-1"],
+	);
+});
+
+test("markReplied removes an exact ask from queued turn contexts", () => {
+	const tracker = new ReplyTracker();
+	const first = tracker.recordIncomingMessage(sender, message, 1);
+	const second = tracker.recordIncomingMessage(sender, { ...message, id: "message-2" }, 2);
+	tracker.queueTurnContext(first);
+	tracker.queueTurnContext(second);
+	tracker.markReplied("message-2");
+	tracker.beginTurn(2);
+	assert.equal(tracker.resolveReplyTarget({}, 2), first);
+	tracker.markReplied("message-1");
+	tracker.endTurn();
+	tracker.beginTurn(2);
+	assert.throws(() => tracker.resolveReplyTarget({}, 2), /No active intercom context/);
+});

@@ -230,22 +230,28 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		return promise;
 	}
   let typedContactSupervisorRegistered = hasSubagentIntercomEnv();
+  const activateTypedContactSupervisor = (): void => {
+    const activeTools = pi.getActiveTools();
+    if (!activeTools.includes("contact_supervisor")) pi.setActiveTools([...activeTools, "contact_supervisor"]);
+  };
   const registerTypedContactSupervisor = (): void => {
-    if (typedContactSupervisorRegistered) return;
-    typedContactSupervisorRegistered = true;
-    pi.registerTool({
-      name: "contact_supervisor",
-      label: "Contact Supervisor",
-      description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
-      promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
-      parameters: Type.Object({
-        reason: Type.String({ enum: ["need_decision", "progress_update", "interview_request"] }),
-        message: Type.Optional(Type.String()),
-        interview: Type.Optional(Type.Unknown()),
-      }),
-      execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
-      renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
-    });
+    if (!typedContactSupervisorRegistered) {
+      typedContactSupervisorRegistered = true;
+      pi.registerTool({
+        name: "contact_supervisor",
+        label: "Contact Supervisor",
+        description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
+        promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
+        parameters: Type.Object({
+          reason: Type.String({ enum: ["need_decision", "progress_update", "interview_request"] }),
+          message: Type.Optional(Type.String()),
+          interview: Type.Optional(Type.Unknown()),
+        }),
+        execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
+        renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
+      });
+    }
+    activateTypedContactSupervisor();
   };
   pi.on("session_start", async (event, ctx) => {
     const typedIdentity = ctx.subagentPolicy?.intercom;
@@ -416,7 +422,7 @@ Usage:
   intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
-  intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
+  intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status and your group
 
@@ -432,7 +438,7 @@ Usage:
 				content: Type.String(),
 				language: Type.Optional(Type.String()),
 			}))),
-			replyTo: Type.Optional(Type.String({ description: "Message ID to reply to (for threading or responding to an 'ask')" })),
+			replyTo: Type.Optional(Type.String({ description: "Exact pending-ask message ID; disambiguates concurrent asks, including asks from one sender" })),
 			group: Type.Optional(Type.String({ description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group." })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "intercom", args),

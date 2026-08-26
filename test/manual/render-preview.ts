@@ -204,6 +204,7 @@ const store: Store = {
 	clearStageInputRequest: () => false,
 	recordRunEnd: () => false,
 	recordRunBlocked: () => false,
+	restoreActiveBlockedRun: () => false,
 	removeRun: () => false,
 	recordNotice: () => {},
 	ackNotice: () => false,

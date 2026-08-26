@@ -425,6 +425,8 @@ export class InteractiveModeBase {
 
 	hostCustomUiStateListeners = new Set<HostCustomUiStateListener>();
 
+	widgetReleaseListeners = new Map<string, Set<() => void>>();
+
 	transcriptOverlayReserve: TranscriptOverlayReserve | undefined = undefined;
 
 	themeController: InteractiveThemeController;

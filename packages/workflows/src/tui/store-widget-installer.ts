@@ -62,6 +62,8 @@ export type WidgetRenderState = ReactiveWidgetRenderState;
 interface UiSlice {
 	setWidget?: (key: string, factory: WidgetFactory | undefined, opts?: { placement?: string }) => void;
 	requestRender?: () => void;
+	onWidgetRelease?: (key: string, listener: () => void) => () => void;
+	notify?: (message: string, type?: "info" | "warning" | "error") => void;
 }
 
 interface TimerApi extends ReactiveWidgetTimerApi {}
@@ -82,6 +84,15 @@ export interface LiveWidgetAPI {
 
 const WIDGET_KEY = "workflow.run";
 
+function reportWidgetFailure(ui: UiSlice | undefined, message: string): void {
+	if (ui?.notify) {
+		ui.notify.call(ui, message, "warning");
+		return;
+	}
+	console.error(message);
+	return;
+}
+
 function liveWidgetSnapshot(storeInstance: Store): StoreSnapshot {
 	return {
 		runs: storeInstance.runs(),
@@ -100,13 +111,22 @@ export function installStoreWidget(
 	timers: TimerApi = defaultTimerApi,
 ): () => void {
 	const ui = pi.ui;
-	if (!ui?.setWidget) return () => {};
+	if (!ui?.setWidget) {
+		// An absent ui slice is normal during extension load: factories run
+		// before the host binds ctx.ui, and session_start re-installs against
+		// the real UI. Only a present-but-widget-less ui names a degraded host.
+		if (ui) reportWidgetFailure(ui, "Workflow progress widget is unavailable in this host.");
+		return () => {};
+	}
+	const setWidget = ui.setWidget;
 
 	const requestRender = ui.requestRender;
+	const onWidgetRelease = ui.onWidgetRelease;
 	const controller = installReactiveWidget<StoreSnapshot, unknown>({
 		ui: {
-			setWidget: (key, factory, opts) => ui.setWidget?.(key, factory, opts),
+			setWidget: (key, factory, opts) => setWidget.call(ui, key, factory, opts),
 			...(requestRender ? { requestRender: () => requestRender.call(ui) } : {}),
+			...(onWidgetRelease ? { onWidgetRelease: (key, listener) => onWidgetRelease.call(ui, key, listener) } : {}),
 		},
 		key: WIDGET_KEY,
 		placement: "belowEditor",
@@ -121,6 +141,9 @@ export function installStoreWidget(
 		// writes that fight native main-chat scrollback).
 		requestRenderOnStateNoop: false,
 		isStaleError: isStaleExtensionContextError,
+		onMountError: (error) => {
+			reportWidgetFailure(ui, `Workflow progress widget could not mount: ${error.message}`);
+		},
 	});
 
 	return () => controller.dispose();

@@ -8,12 +8,22 @@ export interface LocalCommandResult {
 	readonly exitCode: number;
 	readonly stdout: string;
 	readonly stderr: string;
+	/** True when bounded capture discarded the beginning of stdout. */
+	readonly stdoutTruncated?: true;
+	/** True when bounded capture discarded the beginning of stderr. */
+	readonly stderrTruncated?: true;
 }
 
 const OUTPUT_LIMIT_BYTES = 16_384;
 
 export interface LocalCommandOptions {
 	readonly env?: Readonly<Record<string, string>>;
+	/**
+	 * For daemon launchers whose successful descendants inherit stdio, settle
+	 * from a successful direct-child exit. Nonzero exits still drain through
+	 * `close`, preserving bounded failure diagnostics.
+	 */
+	readonly completion?: "successful-exit";
 	/** POSIX drop-privilege identity for the spawned process (root only). */
 	readonly uid?: number;
 	readonly gid?: number;
@@ -34,16 +44,62 @@ export function runLocalCommand(
 		});
 		let stdout = "";
 		let stderr = "";
+		let stdoutTruncated = false;
+		let stderrTruncated = false;
+		let settled = false;
+		let exitFallback: NodeJS.Immediate | undefined;
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (chunk: string) => {
-			stdout = boundedAppend(stdout, chunk);
-		});
-		child.stderr.on("data", (chunk: string) => {
-			stderr = boundedAppend(stderr, chunk);
-		});
-		child.once("error", reject);
-		child.once("close", (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+		const onStdout = (chunk: string): void => {
+			const appended = boundedAppend(stdout, chunk);
+			stdout = appended.value;
+			stdoutTruncated ||= appended.truncated;
+		};
+		const onStderr = (chunk: string): void => {
+			const appended = boundedAppend(stderr, chunk);
+			stderr = appended.value;
+			stderrTruncated ||= appended.truncated;
+		};
+		const cleanup = (): void => {
+			if (exitFallback !== undefined) clearImmediate(exitFallback);
+			child.off("error", onError);
+			child.off("exit", onExit);
+			child.off("close", onClose);
+			child.stdout.off("data", onStdout);
+			child.stderr.off("data", onStderr);
+			child.stdout.destroy();
+			child.stderr.destroy();
+		};
+		const finish = (code: number | null): void => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			resolve({
+				exitCode: code ?? 1,
+				stdout,
+				stderr,
+				...(stdoutTruncated ? { stdoutTruncated: true as const } : {}),
+				...(stderrTruncated ? { stderrTruncated: true as const } : {}),
+			});
+		};
+		const onError = (error: Error): void => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			reject(error);
+		};
+		const onExit = (code: number | null): void => {
+			if (code !== 0) return;
+			// pg_ctl redirects server output with `-l`; only its successful child
+			// exit needs early settlement because Postgres can retain inherited EOF.
+			exitFallback = setImmediate(() => finish(code));
+		};
+		const onClose = (code: number | null): void => finish(code);
+		child.stdout.on("data", onStdout);
+		child.stderr.on("data", onStderr);
+		child.once("error", onError);
+		if (options?.completion === "successful-exit") child.once("exit", onExit);
+		child.once("close", onClose);
 	});
 }
 
@@ -71,7 +127,9 @@ export function tcpReachable(host: string, port: number, timeoutMs = 1_000): Pro
 	});
 }
 
-function boundedAppend(current: string, chunk: string): string {
+function boundedAppend(current: string, chunk: string): { readonly value: string; readonly truncated: boolean } {
 	const next = current + chunk;
-	return next.length <= OUTPUT_LIMIT_BYTES ? next : next.slice(-OUTPUT_LIMIT_BYTES);
+	return next.length <= OUTPUT_LIMIT_BYTES
+		? { value: next, truncated: false }
+		: { value: next.slice(-OUTPUT_LIMIT_BYTES), truncated: true };
 }

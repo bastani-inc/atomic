@@ -1,10 +1,10 @@
 # README feature wall
 
-The root `README.md` splits 39 capability rows into a six-row **Atomic Verifiable Runtime**
-showcase directly after the user metrics and a 33-row table after the complete **Get started**
+The root `README.md` splits 38 capability rows into a six-row **Atomic Verifiable Runtime**
+showcase directly after the user metrics and a 32-row table after the complete **Get started**
 section. Together they cover all 27 core lessons from the
 [Atomic crash course](https://github.com/bastani-inc/atomic-crash-course), three distinct
-workflow-use paths, and nine remaining Extras from A.1 through A.10. One manifest owns the exact 6+33
+workflow-use paths, and eight remaining Extras between A.1 and A.10. One manifest owns the exact 6+32
 order, and every row has its own real recording.
 
 Nothing here is mocked. Every frame is the installed `atomic` binary driven by real
@@ -16,7 +16,7 @@ or model response is fabricated.
 
 | Path | What it is |
 |---|---|
-| `manifest.json` | The single source of truth: exact six-feature and 33-remaining order, 39 exact lesson labels, optional visible `display_title`, public Atomic docs and crash-course links, capture-source paths, copy, interactions, media paths, render windows, and privacy notes |
+| `manifest.json` | The single source of truth: exact six-feature and 32-remaining order, 38 exact lesson labels, optional visible `display_title`, public Atomic docs and crash-course links, capture-source paths, copy, interactions, media paths, render windows, and privacy notes |
 | `tapes/<id>.tape` | The visible beats for one row, in VHS tape syntax |
 | `tapes/<id>.prepare.sh` | Optional off-camera setup for one row; it may seed lesson files but never visible output |
 | `lib/theme.tape` | Shared terminal size, font, and colours |
@@ -24,7 +24,7 @@ or model response is fabricated.
 | `capture.sh` | Records one or more rows |
 | `render.sh` | Raw capture to shipped GIF and JPG poster; optional ordered segments can cut dead time from one real recording |
 | `contact-sheet.sh` | 3x3 review grids that honor GIF frame delays, plus a longest-held-frame report |
-| `visual-review.md` | Fresh 39/39 sampled-frame review for feature relevance, crop, readability, and privacy |
+| `visual-review.md` | Sampled-frame review for feature relevance, crop, readability, and privacy |
 | `build-readme.mjs` | Generates both marked README regions from the manifest; `--check` fails when either is stale |
 | `validate.mjs` | The independent gate for the exact split, placement, hierarchy, links, unique coverage, local 19 + 28 + 15 badge contract, SVG shape, and all media and privacy rules |
 
@@ -51,7 +51,7 @@ The featured region links to `#more-atomic-capabilities`. The second generated r
 the complete `## Get started` section and contains every other row in this exact order:
 
 ```text
-W.1 → A.10 → W.3 → 5.2 → 5.4 → A.9 → A.5 → 5.5 → 5.1
+W.1 → A.10 → W.3 → 5.2 → 5.4 → A.9 → 5.5 → 5.1
 → 6.3 → 6.1 → W.2 → 2.2 → 1.2 → 1.3 → A.2 → 3.2 → 3.3 → 4.3
 → 3.1 → 3.4 → 4.2 → 4.1 → 2.1 → 2.3 → 1.1 → 1.4 → 5.6 → A.7
 → A.4 → A.3 → A.1 → 3.5
@@ -62,7 +62,7 @@ The stable markers are `feature-wall:featured:start/end` and
 owns a course-bound `lesson`, `title`, `docs.label`, and full `docs.url`; only a declared
 `display_title` can change the visible `<h4>`. `build-readme.mjs` renders the public link as
 `Atomic docs · <label>` above the unchanged crash-course lesson link. `validate.mjs` keeps
-proves all 39 records and all 78 media paths appear once across the two tables.
+proves all 38 records and all 76 media paths appear once across the two tables.
 
 ## Running it
 

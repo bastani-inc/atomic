@@ -1,3 +1,5 @@
+import { clampThinkingLevel } from "@bastani/pi-ai/compat";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -8,10 +10,45 @@ import {
 	ModelSelectorComponent,
 	resolveModelScopeFromModels,
 	ScopedModelsSelectorComponent,
+	ThinkingSelectorComponent,
 	UserMessageSelectorComponent,
 } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
+
+export function resolveThinkingSelectorDefault(
+	rawDefault: ThinkingLevel | undefined,
+	availableLevels: readonly ThinkingLevel[],
+	model: Model<Api> | undefined,
+): ThinkingLevel | undefined {
+	if (rawDefault === undefined) return undefined;
+	if (availableLevels.includes(rawDefault)) return rawDefault;
+	if (!model) return availableLevels.includes("off") ? "off" : availableLevels[0];
+	const clamped = clampThinkingLevel(model, rawDefault) as ThinkingLevel;
+	if (availableLevels.includes(clamped)) return clamped;
+	return availableLevels.includes("off") ? "off" : availableLevels[0];
+}
+
+/**
+ * The saved level the active session would start from, in the precedence
+ * `findInitialModel` uses: a scoped `--models "id:level"` entry wins over a
+ * persisted per-model override, which wins over the global default. Matching
+ * it keeps the selector badge from advertising a level the session never used.
+ */
+export function resolveSessionThinkingDefault(
+	model: Model<Api> | undefined,
+	scopedModels: ReadonlyArray<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>,
+	settings: {
+		getModelThinkingLevel(provider: string, modelId: string): ThinkingLevel | undefined;
+		getDefaultThinkingLevel(): ThinkingLevel | undefined;
+	},
+): ThinkingLevel | undefined {
+	if (model === undefined) return settings.getDefaultThinkingLevel();
+	const scopedLevel = scopedModels.find(
+		(scoped) => scoped.model.provider === model.provider && scoped.model.id === model.id,
+	)?.thinkingLevel;
+	return scopedLevel ?? settings.getModelThinkingLevel(model.provider, model.id) ?? settings.getDefaultThinkingLevel();
+}
 
 InteractiveModeBase.prototype.handleModelCommand = async function (
 	this: InteractiveModeBase,
@@ -134,9 +171,10 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			this.settingsManager,
 			this.session.modelRuntime,
 			this.session.scopedModels,
-			async (model) => {
+			async (model, persist) => {
 				try {
-					await this.session.setModel(model);
+					await this.session.setModel(model, { persist });
+					await this.updateAvailableProviderCount();
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
 					done();
@@ -334,5 +372,52 @@ InteractiveModeBase.prototype.showUserMessageSelector = async function (this: In
 			initialSelectedId,
 		);
 		return { component: selector, focus: selector.getMessageList() };
+	});
+};
+
+InteractiveModeBase.prototype.handleThinkingCommand = function (this: InteractiveModeBase, searchTerm?: string): void {
+	if (!searchTerm) {
+		this.showThinkingSelector();
+		return;
+	}
+	const levels = this.session.getAvailableThinkingLevels();
+	const normalized = searchTerm.trim().toLowerCase();
+	const level = levels.find((candidate) => candidate === normalized);
+	if (!level) {
+		this.showError(`Unknown thinking level "${searchTerm}". Available levels: ${levels.join(", ")}.`);
+		return;
+	}
+	this.selectThinkingLevel(level, false);
+};
+
+InteractiveModeBase.prototype.selectThinkingLevel = function (
+	this: InteractiveModeBase,
+	level: ThinkingLevel,
+	persist: boolean,
+): void {
+	this.session.setThinkingLevel(level, { persist });
+	this.footer.invalidate();
+	this.updateEditorBorderColor();
+	this.showStatus(persist ? `Default thinking level: ${level}` : `Thinking level: ${level}`);
+};
+
+InteractiveModeBase.prototype.showThinkingSelector = function (this: InteractiveModeBase): void {
+	this.showSelector((done) => {
+		const select = (level: ThinkingLevel, persist: boolean) => {
+			this.selectThinkingLevel(level, persist);
+			done();
+		};
+		const model = this.session.model;
+		const availableLevels = this.session.getAvailableThinkingLevels();
+		const rawDefault = resolveSessionThinkingDefault(model, this.session.scopedModels, this.settingsManager);
+		const selector = new ThinkingSelectorComponent(
+			this.session.thinkingLevel,
+			availableLevels,
+			(level) => select(level, false),
+			() => done(),
+			(level) => select(level, true),
+			resolveThinkingSelectorDefault(rawDefault, availableLevels, model),
+		);
+		return { component: selector, focus: selector };
 	});
 };

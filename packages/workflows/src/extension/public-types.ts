@@ -5,7 +5,7 @@ import type { SessionManager } from "../shared/persistence-restore.js";
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
 import type { WorkflowBudget, WorkflowInputValues } from "../shared/types.js";
 import type { WidgetFactory } from "../tui/store-widget-installer.js";
-import type { RenderResultOpts, WorkflowToolResult } from "./render-result.js";
+import type { RenderResultOpts, WorkflowRegisteredToolResult } from "./render-result.js";
 import type { PiUISurface } from "./wiring.js";
 
 export type PiTheme = Record<string, string>;
@@ -136,6 +136,8 @@ type StageLateMessageRouter = NonNullable<
 >;
 
 export interface ExtensionAPI {
+	/** Present only when this extension instance belongs to an admitted in-process subagent child. */
+	readonly subagentPolicy?: CreateAgentSessionOptions["subagentPolicy"];
 	registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
 	registerCommand?: (name: string, options: PiCommandOptions) => void;
 	registerMessageRenderer?: (event: string, renderer: PiMessageRenderer) => void;
@@ -231,4 +233,4 @@ export interface WorkflowToolArgs {
 	reason?: string;
 }
 
-export type WorkflowExecuteToolResult = PiAgentToolResult<WorkflowToolResult>;
+export type WorkflowExecuteToolResult = PiAgentToolResult<WorkflowRegisteredToolResult>;

@@ -211,6 +211,21 @@ export interface BashToolOptions {
 	 */
 	sessionTempDir?: string | (() => string | undefined);
 }
+/**
+ * Presentation identity for a shell-backed built-in tool. Atomic runs PowerShell
+ * through the same execution pipeline as bash, so the transcript prompt and the
+ * overflow temp-file prefix are the only shell-specific display values.
+ */
+export interface ShellToolPresentation {
+	/** Transcript prompt prefix: `$` for bash, `PS>` for PowerShell. */
+	prompt: string;
+	/** Prefix for the temp file that holds truncated output. */
+	tempFilePrefix: string;
+}
+export const BASH_SHELL_PRESENTATION: ShellToolPresentation = {
+	prompt: "$",
+	tempFilePrefix: `${APP_NAME}-bash`,
+};
 const BASH_PREVIEW_LINES = 5,
 	BASH_UPDATE_THROTTLE_MS = 100;
 function bashResultToToolResult(result: BashResult): {
@@ -254,12 +269,12 @@ function formatDuration(ms: number): string {
 	if (minutes > 0) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 	return `${seconds}s`;
 }
-function formatBashCall(args: { command?: string; timeout?: number } | undefined): string {
+function formatBashCall(args: { command?: string; timeout?: number } | undefined, prompt: string): string {
 	const command = str(args?.command);
 	const timeout = args?.timeout as number | undefined;
 	const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
-	return theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix;
+	return theme.fg("toolTitle", theme.bold(`${prompt} ${commandDisplay}`)) + timeoutSuffix;
 }
 function rebuildBashResultRenderComponent(
 	component: BashResultRenderComponent,
@@ -340,6 +355,7 @@ function rebuildBashResultRenderComponent(
 export function createBashToolDefinition(
 	cwd: string,
 	options?: BashToolOptions,
+	presentation: ShellToolPresentation = BASH_SHELL_PRESENTATION,
 ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined, BashRenderState> {
 	const defaultOps = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
 	const commandPrefix = options?.commandPrefix,
@@ -426,7 +442,7 @@ export function createBashToolDefinition(
 			const ops = intercepted?.operations ?? defaultOps;
 			const executionContext = primaryInterception ? spawnContext : (strippedCdContext ?? spawnContext);
 			const output = new OutputAccumulator({
-				tempFilePrefix: `${APP_NAME}-bash`,
+				tempFilePrefix: presentation.tempFilePrefix,
 				tempDir: resolveSessionTempDir(),
 			});
 			let acceptingOutput = true;
@@ -568,7 +584,7 @@ export function createBashToolDefinition(
 				state.endedAt = undefined;
 			}
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatBashCall(args));
+			text.setText(formatBashCall(args, presentation.prompt));
 			return text;
 		},
 		renderResult(result, options, _theme, context) {

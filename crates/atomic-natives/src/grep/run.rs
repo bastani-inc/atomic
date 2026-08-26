@@ -366,12 +366,14 @@ pub(super) fn grep_sync(
 	})
 }
 
-#[cfg(test)]
+// The suite drives real grep runs against fifos and unix paths, so it is
+// unix-only end to end.
+#[cfg(all(test, unix))]
 mod tests {
-	#[cfg(unix)]
-	use std::{ffi::CString, os::unix::ffi::OsStrExt};
 	use std::{
+		ffi::CString,
 		fs,
+		os::unix::ffi::OsStrExt,
 		path::{Path, PathBuf},
 		sync::atomic::{AtomicU64, Ordering},
 		time::{Duration, SystemTime, UNIX_EPOCH},

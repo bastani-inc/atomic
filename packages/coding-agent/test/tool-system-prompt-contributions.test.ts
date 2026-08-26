@@ -11,6 +11,10 @@ import { bashToolSystemPromptContribution, createBashToolDefinition } from "../s
 import { createEditToolDefinition, editToolSystemPromptContribution } from "../src/core/tools/edit.ts";
 import { createFindToolDefinition, findToolSystemPromptContribution } from "../src/core/tools/find.ts";
 import { createLsToolDefinition, lsToolSystemPromptContribution } from "../src/core/tools/ls.ts";
+import {
+	createPowerShellToolDefinition,
+	powershellToolSystemPromptContribution,
+} from "../src/core/tools/powershell.ts";
 import { createReadToolDefinition, readToolSystemPromptContribution } from "../src/core/tools/read.ts";
 import { createSearchToolDefinition, searchToolSystemPromptContribution } from "../src/core/tools/search.ts";
 import { createTodoToolDefinition, todoToolSystemPromptContribution } from "../src/core/tools/todos.ts";
@@ -29,7 +33,7 @@ vi.mock("../src/core/tools/ask-user-question/config.ts", async (importOriginal) 
 	return { ...actual, loadConfig: () => askUserQuestionConfig };
 });
 
-/** Prompt-contribution surface shared by all nine built-in tool modules. */
+/** Prompt-contribution surface shared by all ten built-in tool modules. */
 interface ToolPromptContribution {
 	readonly snippet?: string;
 	readonly guidelines: readonly string[];
@@ -46,6 +50,7 @@ type DefinitionFactory = () => DefinitionWithPromptText;
 const cases: ReadonlyArray<readonly [string, ToolPromptContribution, DefinitionFactory]> = [
 	["read", readToolSystemPromptContribution, () => createReadToolDefinition("/workspace")],
 	["bash", bashToolSystemPromptContribution, () => createBashToolDefinition("/workspace")],
+	["powershell", powershellToolSystemPromptContribution, () => createPowerShellToolDefinition("/workspace")],
 	["edit", editToolSystemPromptContribution, () => createEditToolDefinition("/workspace")],
 	["write", writeToolSystemPromptContribution, () => createWriteToolDefinition("/workspace")],
 	["find", findToolSystemPromptContribution, () => createFindToolDefinition("/workspace")],
@@ -97,8 +102,11 @@ describe("built-in tool system prompt contributions", () => {
 		},
 	);
 
-	test("keeps bash session-environment guidance conditional", () => {
-		const definition = createBashToolDefinition("/workspace", { exposeSessionEnvironment: false });
+	test.each([
+		["bash", createBashToolDefinition],
+		["powershell", createPowerShellToolDefinition],
+	] as const)("keeps %s session-environment guidance conditional", (_name, createDefinition) => {
+		const definition = createDefinition("/workspace", { exposeSessionEnvironment: false });
 
 		expect(definition.promptGuidelines).toBeUndefined();
 	});

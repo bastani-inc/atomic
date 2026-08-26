@@ -1,3 +1,5 @@
+import { isParentCancellation } from "./cancellation-recovery.js";
+
 export async function mapConcurrent<T, R>(
 	items: T[],
 	limit: number,
@@ -24,6 +26,7 @@ export interface ParallelTaskResult {
 	output: string;
 	status: import("../../shared/types.js").SubagentAttemptStatus;
 	error?: string;
+	cause?: string;
 	model?: string;
 	fastMode?: boolean;
 	attemptedModels?: string[];
@@ -46,17 +49,27 @@ export function aggregateParallelOutputs(
 						? "CONTINUED"
 						: r.status === "error"
 							? `FAILED${r.error ? `: ${r.error}` : ""}`
-							: r.error
-								? `WARNING: ${r.error}`
-								: !hasOutput && r.outputTargetPath && r.outputTargetExists === false
-									? `EMPTY OUTPUT (expected output file missing: ${r.outputTargetPath})`
-									: !hasOutput && !r.outputTargetPath
-										? "EMPTY OUTPUT (no textual response returned)"
-										: "";
+							: r.status === "interrupted" && isParentCancellation(r.cause)
+								? "CANCELLED"
+								: r.error
+									? `WARNING: ${r.error}`
+									: !hasOutput && r.outputTargetPath && r.outputTargetExists === false
+										? `EMPTY OUTPUT (expected output file missing: ${r.outputTargetPath})`
+										: !hasOutput && !r.outputTargetPath
+											? "EMPTY OUTPUT (no textual response returned)"
+											: "";
 			const body = status ? (hasOutput ? `${status}\n${r.output}` : status) : r.output;
 			return `${header}\n${body}`;
 		})
 		.join("\n\n");
+}
+
+export function formatParallelResultContent(
+	results: ParallelTaskResult[],
+	headerFormat: (index: number, agent: string) => string,
+): string {
+	const ok = results.filter((result) => result.status === "ok").length;
+	return `${ok}/${results.length} succeeded\n\n${aggregateParallelOutputs(results, headerFormat)}`;
 }
 
 export const MAX_PARALLEL_CONCURRENCY = 4;

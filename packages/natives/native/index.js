@@ -701,6 +701,7 @@ if (!nativeBinding) {
 
 module.exports = nativeBinding
 module.exports.PtySession = nativeBinding.PtySession
+module.exports.RetainedPostgres = nativeBinding.RetainedPostgres
 module.exports.SubagentControl = nativeBinding.SubagentControl
 module.exports.NapiSubagentControl = nativeBinding.NapiSubagentControl
 module.exports.AdmissionRefusalKind = nativeBinding.AdmissionRefusalKind
@@ -713,4 +714,5 @@ module.exports.GrepOutputMode = nativeBinding.GrepOutputMode
 module.exports.hasMatch = nativeBinding.hasMatch
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.search = nativeBinding.search
+module.exports.spawnRetainedPostgres = nativeBinding.spawnRetainedPostgres
 module.exports.TerminationCause = nativeBinding.TerminationCause

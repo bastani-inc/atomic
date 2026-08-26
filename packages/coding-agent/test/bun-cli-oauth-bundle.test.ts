@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 const entrypoint = realpathSync(fileURLToPath(new URL("../src/bun/cli.ts", import.meta.url)));
+const packageJsonPath = realpathSync(fileURLToPath(new URL("../package.json", import.meta.url)));
 const output = join(tmpdir(), `atomic-cli-oauth-${process.pid}.cjs`);
 
 afterEach(() => rmSync(output, { force: true }));
@@ -27,5 +28,12 @@ describe("standalone Bun OAuth registration", () => {
 		const startupAt = source.indexOf('import("./register-bedrock.ts")');
 		expect(registerAt).toBeGreaterThanOrEqual(0);
 		expect(startupAt).toBeGreaterThan(registerAt);
+	});
+
+	it("uses the OAuth-registering entrypoint for the development bundle", () => {
+		const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+			scripts: Record<string, string>;
+		};
+		expect(packageJson.scripts["bundle:dev"]).toContain("bun build src/bun/cli.ts ");
 	});
 });

@@ -263,12 +263,18 @@ export function createRunBudgetController(input: {
 		};
 	};
 	const deliverWrapUp = (frontierStage: string): Promise<never> => {
+		if (handlers.length === 0 && root === undefined) {
+			throw finishWrapUp(frontierStage, undefined, undefined, false);
+		}
 		if (wrapUpPromise !== undefined) return wrapUpPromise;
 		if (rootWrapUpPending && root !== undefined) return root.deliverWrapUp(frontierStage);
 		if (state?.systemOwnedStop === true && state.wrapUpCompleted !== true)
 			throw finishWrapUp(frontierStage, undefined, undefined, false);
 		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage) ?? handlers.at(-1);
-		if (registration === undefined) throw finishWrapUp(frontierStage, undefined, undefined, false);
+		if (registration === undefined) {
+			if (root !== undefined) return root.deliverWrapUp(frontierStage);
+			throw finishWrapUp(frontierStage, undefined, undefined, false);
+		}
 		wrapUpPromise = registration.handler();
 		return wrapUpPromise;
 	};
@@ -278,7 +284,6 @@ export function createRunBudgetController(input: {
 		if (check.kind === "continue" || check.kind === "warn") return;
 		if (check.kind === "wrap_up") {
 			await deliverWrapUp(frontierStage ?? "workflow frontier");
-			return;
 		}
 		throw finishWrapUp(frontierStage, state?.wrapUpSummary, state?.wrapUpUsage, state?.wrapUpCompleted === true);
 	};

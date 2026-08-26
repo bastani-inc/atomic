@@ -18,6 +18,7 @@ import type {
 	ExtensionBindings,
 	InterruptQueueHold,
 	ModelCycleResult,
+	ModelMutationOptions,
 	PromptOptions,
 	SessionStats,
 	ToolDefinitionEntry,
@@ -63,6 +64,8 @@ export interface VerbatimCompactionApplyOptions {
 	preserve_recent?: number;
 	query?: string;
 	reason: "manual" | "threshold" | "overflow";
+	/** Reports when a session_before_compact override becomes the active compaction source. */
+	onCompactionSource?: (fromExtension: boolean) => void;
 	/** Only `load_bearing` may reach the context-destroying fresh rung. */
 	urgency: CompactionUrgency;
 	/**
@@ -191,6 +194,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_commitAdmittedCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_commitAdmittedCustomMessages<T>(messages: CustomMessage<T>[], options?: SendMessagesOptions): Promise<void>;
 	_appendCustomMessage<T>(message: CustomMessage<T>): void;
+	_flushPendingCustomMessages(): void;
 	_enqueueInterruptCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_sendInterruptCustomMessageNow<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_ensureActiveInterruptQueueHold(): InterruptQueueHold;
@@ -215,15 +219,24 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		previousModel: Model<Api> | undefined,
 		source: "set" | "cycle" | "restore" | "fallback",
 	): Promise<void>;
-	setModel(model: Model<Api>): Promise<void>;
-	cycleModel(direction?: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
-	_cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
-	_cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
-	setThinkingLevel(level: ThinkingLevel): void;
-	cycleThinkingLevel(): ThinkingLevel | undefined;
+	setModel(model: Model<Api>, options?: ModelMutationOptions): Promise<void>;
+	cycleModel(
+		direction?: "forward" | "backward",
+		options?: ModelMutationOptions,
+	): Promise<ModelCycleResult | undefined>;
+	_cycleScopedModel(
+		direction: "forward" | "backward",
+		options: ModelMutationOptions,
+	): Promise<ModelCycleResult | undefined>;
+	_cycleAvailableModel(
+		direction: "forward" | "backward",
+		options: ModelMutationOptions,
+	): Promise<ModelCycleResult | undefined>;
+	setThinkingLevel(level: ThinkingLevel, options?: ModelMutationOptions): void;
+	cycleThinkingLevel(options?: ModelMutationOptions): ThinkingLevel | undefined;
 	getAvailableThinkingLevels(): ThinkingLevel[];
 	supportsThinking(): boolean;
-	_getThinkingLevelForModelSwitch(explicitLevel?: ThinkingLevel): ThinkingLevel;
+	_getThinkingLevelForModelSwitch(targetModel?: Model<Api>, explicitLevel?: ThinkingLevel): ThinkingLevel;
 	_clampThinkingLevel(level: ThinkingLevel, availableLevels: ThinkingLevel[]): ThinkingLevel;
 
 	_applyVerbatimCompaction(options: VerbatimCompactionApplyOptions): Promise<VerbatimCompactionResult | undefined>;
@@ -267,7 +280,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_trySwitchToFallbackModel(message: AssistantMessage): Promise<boolean>;
 	_beginFallbackModelScope(): void;
 	_clearFallbackModelScope(): void;
-	_restoreFallbackModel(): Promise<boolean>;
+	_settleFallbackModelScope(): Promise<boolean>;
 	abortRetry(): void;
 	waitForRetry(): Promise<void>;
 	setAutoRetryEnabled(enabled: boolean): void;
@@ -303,7 +316,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getSessionStats(): SessionStats;
 	getContextUsage(): ContextUsage | undefined;
 	exportToHtml(outputPath?: string, options?: { themeName?: string }): Promise<string>;
-	exportToJsonl(outputPath?: string): string;
+	exportToJsonl(outputPath?: string, options?: { includeShareContext?: boolean }): string;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;
 	sealWorkflowStageGeneration(): void;
@@ -430,6 +443,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined;
 	_activeInterruptAbortMessage: string | undefined;
 	_pendingNextTurnMessages: CustomMessage[];
+	_pendingCustomMessages: CustomMessage[];
 	_protectedStreamingCustomMessages: Array<{
 		message: CustomMessage;
 		delivery: "steer" | "followUp";

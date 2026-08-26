@@ -9,9 +9,7 @@ Atomic is the loop engine for all engineering work: a terminal coding-agent runt
 
 ## Quick start
 
-Install Atomic globally with npm, pnpm, or Bun:
-
-With npm:
+Install the published package globally with npm:
 
 ```bash
 npm install -g @bastani/atomic
@@ -29,19 +27,23 @@ With Bun:
 bun add -g @bastani/atomic
 ```
 
-Atomic does not require package install scripts. If you want to disable dependency lifecycle scripts during the Atomic install, you can add `--ignore-scripts` to the install command.
+Package installation requires Node.js. Atomic does not require package install scripts; add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
 
-Or download an `atomic-*` archive from the Atomic GitHub Release for your platform.
+Alternatively, install the self-contained release archive, which needs no Node.js or package manager.
 
-### Alpine and musl Linux archives
-
-Alpine Linux x64 and arm64 users can download `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. These archives include native search and PTY bindings. Install the required runtime libraries before running an archive:
+On macOS or Linux:
 
 ```bash
-apk add --no-cache libgcc libstdc++
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
 ```
 
-The musl archives deliberately omit a clipboard native binding because `@mariozechner/clipboard` 0.3.9 publishes metadata-only musl stubs without a `.node` payload; Atomic uses Linux clipboard commands and OSC52 fallback instead. They also omit `@embedded-postgres/*` binary packages because those packages are glibc-linked. Durable workflows on Alpine therefore require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker; without a durable backend, Atomic uses a loud non-durable in-memory fallback.
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+```
+
+The archive installer verifies the GitHub Release checksum and installs the full payload under a versioned root. See the [Quickstart](/quickstart#release-archive) for its parameters (`ATOMIC_VERSION`, `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `GITHUB_TOKEN`/`GH_TOKEN`), default paths, and PATH guidance.
 
 Then run it in a project directory:
 

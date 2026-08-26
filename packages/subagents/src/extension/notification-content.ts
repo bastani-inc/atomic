@@ -1,6 +1,6 @@
 import type { SubagentNotifyDetails } from "../runs/foreground/notify.js";
 
-const HEADER_STATUSES = ["completed", "failed", "paused"] as const;
+const HEADER_STATUSES = ["completed", "failed", "interrupted"] as const;
 
 function isHeaderLineTerminator(character: string): boolean {
 	return character === "\r" || character === "\u2028" || character === "\u2029";

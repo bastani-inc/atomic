@@ -35,8 +35,8 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 | `defaultModel` | string | - | Default model ID |
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; the active model must support the selected level |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
-| `thinkingBudgets` | object | - | Custom token budgets per thinking level |
-| `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses and their attributed wasted tokens |
+| `thinkingBudgets` | object | - | Custom token budgets per thinking level. Anthropic, Google, and Bedrock use these natively. OpenAI-compatible models use them when `compat.thinkingTokenBudgetField` (or `supportsThinkingTokenBudget`) is set. |
+| `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses and billed compaction or branch-summary usage |
 | `fallbackModels` | string[] | - | Ordered fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max`. Used by main-chat turns and, since compaction fallback rungs, borrowed for compaction planner requests |
 
 `defaultProvider` and `defaultModel` form one exact saved selection when both are present. Atomic waits for built-in, configured, and extension provider registration before classifying that provider. If it remains unsupported, Atomic does not silently switch providers: interactive mode stays live with a generic configuration warning; print and JSON modes write the warning to stderr and exit nonzero before prompting (with JSON stdout remaining JSONL-clean); and RPC rejects `prompt` until a successful explicit `set_model` selects an available model or an explicit model cycle returns a different available model. A null or unchanged cycle does not clear the condition. If the provider is supported but its saved model is unknown or lacks configured authentication, normal automatic selection of an available authenticated model remains enabled; the same is true when either field is omitted. Valid extension-provider defaults can resolve after deferred extension loading. Update an unsupported pair or choose a model with `/model`.
@@ -56,13 +56,13 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 
 #### fallbackModels
 
-`fallbackModels` gives ordinary main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model. If that model exhausts the normal same-model auto-retry loop for a retryable provider/model failure — including rate limits and quota/usage-limit exhaustion such as a provider reporting `The usage limit has been reached` — Atomic switches to the next configured fallback model and continues the same turn. If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger model fallback. After a successful or exhausted fallback turn, Atomic restores the user-selected primary before the next user turn; an explicit `/model` choice during fallback cancels that restore.
+`fallbackModels` gives ordinary main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model. If that model exhausts the normal same-model auto-retry loop for a retryable provider/model failure — including rate limits and quota/usage-limit exhaustion such as a provider reporting `The usage limit has been reached` — Atomic switches to the next configured fallback model and continues the same turn. If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger model fallback. Once Atomic selects a fallback candidate, that model and its thinking level remain active for later turns in the same main-chat session until you explicitly choose another model with `/model` or model cycle.
 
 A failure that another request to the same model cannot repair — a rejected credential, an unavailable model, a request that model cannot serve — takes that model out of the chain for the rest of the turn at **every** reasoning level, so a candidate that differs only by its `:low`/`:high` suffix is skipped rather than spent. Transient rate-limit and transport failures keep those reasoning variants, because retrying them can succeed.
 
 Context overflow keeps its normal recovery order: compaction runs first, and a compactable overflow costs no fallback candidate. Only once compaction is disabled, fails, or reports the overflow unresolved does Atomic advance to the next configured candidate, which is how a larger-context model gets a chance at the turn.
 
-Changing the reasoning level during a fallback turn is not a model choice, so it does not cancel the restore: the next turn still starts on the user-selected primary, carrying the reasoning level you picked. Only an explicit `/model` selection or model cycle cancels it.
+Changing the reasoning level after fallback is not a model choice, so the fallback model stays active with the reasoning level you selected. Only an explicit `/model` selection or model cycle changes the session model.
 
 The same list is also **borrowed by compaction**. When the compaction range planner cannot produce a usable plan on the current model — a rate limit, quota exhaustion, provider error, context overflow, or an empty plan — Atomic runs one planner request against the next configured candidate, using that candidate's own credentials. **A configured fallback model may therefore receive the compaction transcript.** Borrowing is planner-only: it never changes the session model, thinking level, or model history, it appends no model-change entry, and it emits no fallback status. See [Compaction](/compaction#planning-rungs-and-failure-behavior).
 
@@ -267,6 +267,7 @@ The `/settings` picker offers these presets:
 | `transport` | string | `"auto"` | Preferred transport for providers that support multiple transports: `"sse"`, `"websocket"`, `"websocket-cached"`, or `"auto"` |
 | `httpIdleTimeoutMs` | number or string | `600000` | HTTP idle timeout in milliseconds, a duration string, or `"disabled"`; also used by providers with explicit stream idle timeouts. |
 | `websocketConnectTimeoutMs` | number or string | `15000` | WebSocket connect/open handshake timeout; accepts milliseconds, a duration string, or `"disabled"`/`0` to disable. |
+| `streamDeadlineMs` | number or string | `300000` | Maximum idle gap between two provider stream events, enforced below the HTTP layer; accepts milliseconds, duration strings such as `30s`, `5m`, or `1h`, or `"disabled"`/`0` to disable. A stream that stalls without an error — for example a response body that fails to decompress — is cut at this deadline and retried or failed over instead of hanging the request. |
 
 Older settings with a boolean `websockets` value are migrated to `transport`: `true` becomes `"websocket"` and `false` becomes `"sse"` when `transport` is not already set.
 
@@ -326,11 +327,19 @@ On Windows, JSON paths must use forward slashes or escaped backslashes:
 |---------|------|---------|-------------|
 | `defaultTools` | string[] | - | Built-in tools enabled at startup. When omitted, Atomic uses its standard defaults |
 
-`defaultTools` selects the built-in tools a session starts with. Extension and SDK custom tools stay enabled regardless:
+`defaultTools` selects the built-in tools a session starts with. Extension and SDK custom tools stay enabled regardless. Available built-ins are `read`, `bash`, `powershell`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, and `ls`:
 
 ```json
 {
   "defaultTools": ["bash", "edit", "write"]
+}
+```
+
+On Windows, select `powershell` instead of `bash`, or include both:
+
+```json
+{
+  "defaultTools": ["read", "powershell", "edit", "write"]
 }
 ```
 
@@ -373,7 +382,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 
 Mermaid code blocks render as themed Unicode diagrams in interactive transcripts when they fit the available width. `"off"` keeps the Markdown fence, `"final"` renders only finalized responses, and `"streaming"` also renders partial assistant responses. Invalid or too-wide diagrams remain as code, and rendering is display-only: stored messages and model context keep the original Markdown. LaTeX rendering is also display-only and converts supported expressions to terminal-friendly Unicode math; set `markdown.latex` to `false` to keep the source form.
 
-The installed pi-tui 0.84.2 LaTeX renderer also handles whitespace and matrix layouts correctly.
+The installed pi-tui 0.84.3 LaTeX renderer also handles whitespace and matrix layouts correctly.
 
 ### Resources
 

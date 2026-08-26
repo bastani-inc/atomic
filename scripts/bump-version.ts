@@ -222,7 +222,9 @@ function shieldBadgeVersion(version: string): string {
 }
 
 function shouldBumpFirstPartyDependency(name: string): boolean {
-	return name === "@bastani/atomic-natives" || name.startsWith("@bastani/atomic-natives-");
+	return (
+		name === "@bastani/pi-ai" || name === "@bastani/atomic-natives" || name.startsWith("@bastani/atomic-natives-")
+	);
 }
 
 function bumpFirstPartyDependencyRanges(content: PackageJson, version: string): number {

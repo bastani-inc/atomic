@@ -26,6 +26,7 @@ type RunStoreMethods = Pick<
 	| "reconcileRunParentStage"
 	| "recordRunEnd"
 	| "recordRunBlocked"
+	| "restoreActiveBlockedRun"
 	| "removeRun"
 	| "recordNotice"
 	| "ackNotice"
@@ -152,6 +153,35 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (metadata.retryAfterMs !== undefined) run.retryAfterMs = metadata.retryAfterMs;
 			if (metadata.result !== undefined) run.result = metadata.result;
 			if (metadata.budgetState !== undefined) run.budgetState = metadata.budgetState;
+			context.bumpAndNotify();
+			return true;
+		},
+
+		restoreActiveBlockedRun(source: RunSnapshot, error: string, metadata: RunBlockedMetadata): boolean {
+			const restored: RunSnapshot = {
+				...source,
+				status: "running",
+				error,
+				resumable: metadata.resumable,
+				failureRecoverability: metadata.failureRecoverability,
+				failureDisposition: metadata.failureDisposition,
+				blockedAt: metadata.blockedAt ?? Date.now(),
+				stages: source.stages.map((stage) => ({ ...stage })),
+				toolNodes: source.toolNodes?.map((node) => ({ ...node })),
+			};
+			delete restored.endedAt;
+			delete restored.durationMs;
+			restored.failureKind = metadata.failureKind;
+			restored.failureCode = metadata.failureCode;
+			restored.failureMessage = metadata.failureMessage;
+			if (metadata.failedStageId === undefined) delete restored.failedStageId;
+			else restored.failedStageId = metadata.failedStageId;
+			if (metadata.retryAfterMs !== undefined) restored.retryAfterMs = metadata.retryAfterMs;
+			if (metadata.result !== undefined) restored.result = metadata.result;
+			if (metadata.budgetState !== undefined) restored.budgetState = metadata.budgetState;
+			const index = state.runs.findIndex((candidate) => candidate.id === source.id);
+			if (index < 0) state.runs.push(restored);
+			else state.runs[index] = restored;
 			context.bumpAndNotify();
 			return true;
 		},

@@ -74,6 +74,7 @@ function createFixtureRoot(): string {
 		name: "@fixture/alpha",
 		version: "0.1.0",
 		private: true,
+		dependencies: { "@bastani/pi-ai": "0.1.0" },
 		optionalDependencies: { "@bastani/atomic-natives-linux-x64-musl": "0.1.0" },
 	});
 	writeJson(join(root, "packages", "beta", "package.json"), {
@@ -127,7 +128,7 @@ if (bindingPackageVersion !== '0.1.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHE
 			"packages/alpha": {
 				name: "@fixture/alpha",
 				version: "0.1.0",
-				dependencies: { "@bastani/atomic-natives": "0.1.0", "third-party": "9.9.9" },
+				dependencies: { "@bastani/atomic-natives": "0.1.0", "@bastani/pi-ai": "0.1.0", "third-party": "9.9.9" },
 				optionalDependencies: {
 					"@bastani/atomic-natives-linux-x64-gnu": "0.1.0",
 					"@bastani/atomic-natives-linux-x64-musl": "0.1.0",
@@ -175,6 +176,7 @@ describe("scripts/bump-version.ts", () => {
 			assert.equal(rootPackageJson.dependencies?.["@bastani/atomic-natives"], "1.2.3-alpha.1");
 			const alphaPackageJson = readJson(join(root, "packages", "alpha", "package.json"));
 			assert.equal(alphaPackageJson.version, "1.2.3-alpha.1");
+			assert.equal(alphaPackageJson.dependencies?.["@bastani/pi-ai"], "1.2.3-alpha.1");
 			assert.equal(
 				alphaPackageJson.optionalDependencies?.["@bastani/atomic-natives-linux-x64-musl"],
 				"1.2.3-alpha.1",
@@ -211,6 +213,7 @@ describe("scripts/bump-version.ts", () => {
 				"1.2.3-alpha.1",
 			);
 			assert.equal(lock.packages["packages/alpha"]?.dependencies?.["@bastani/atomic-natives"], "1.2.3-alpha.1");
+			assert.equal(lock.packages["packages/alpha"]?.dependencies?.["@bastani/pi-ai"], "1.2.3-alpha.1");
 			assert.equal(
 				lock.packages["packages/alpha"]?.optionalDependencies?.["@bastani/atomic-natives-linux-x64-gnu"],
 				"1.2.3-alpha.1",

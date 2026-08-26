@@ -93,13 +93,13 @@ test("detached foreground completion notices render like background notification
 	initTheme("dark");
 	setKeybindings(new KeybindingsManager());
 	try {
-		for (const status of ["completed", "failed", "paused"] as const) {
+		for (const status of ["completed", "failed", "interrupted"] as const) {
 			const harness = createHarness();
 			const unregister = registerSubagentNotify(harness.pi as never);
 			const result =
 				status === "failed"
 					? makeResult({ status: "error", error: "boom" })
-					: status === "paused"
+					: status === "interrupted"
 						? makeResult({ status: "interrupted", interrupted: true })
 						: makeResult();
 			const summary = status === "failed" ? `boom\n\nOutput:\n${result.finalOutput}` : result.finalOutput!;
@@ -118,7 +118,7 @@ test("detached foreground completion notices render like background notification
 				agent: result.agent,
 				status: result.status,
 				summary,
-				...(status === "paused" ? { state: "paused" } : {}),
+				...(status === "interrupted" ? { state: "interrupted" } : {}),
 				timestamp: Date.now(),
 				durationMs: result.progressSummary?.durationMs,
 				sessionFile: result.sessionFile,
@@ -135,7 +135,7 @@ test("detached foreground completion notices render like background notification
 				detached.content,
 				`${status} detached output is not the raw notification body`,
 			);
-			assert.match(detachedRendered, /[✓✗■] codebase-analyzer (completed|failed|paused)/);
+			assert.match(detachedRendered, /[✓✗■] codebase-analyzer (completed|failed|interrupted)/);
 			assert.match(detachedRendered, /⎿ {2}(Findings report content|boom)/);
 			assert.match(detachedRendered, /ctrl\+o full notification/);
 			assert.doesNotMatch(detachedRendered, /Additional detail/);
@@ -166,7 +166,7 @@ test("detached foreground completion notices dedupe per run and child index", ()
 	unregister();
 });
 
-test("failed and interrupted detached children report failed/paused status", () => {
+test("failed and interrupted detached children report terminal statuses", () => {
 	const harness = createHarness();
 	const unregister = registerSubagentNotify(harness.pi as never);
 
@@ -187,7 +187,7 @@ test("failed and interrupted detached children report failed/paused status", () 
 		index: 0,
 		result: makeResult({ status: "interrupted", interrupted: true }),
 	});
-	assert.match(harness.sent[1]!.content, /^Detached subagent task paused: \*\*codebase-analyzer\*\*/);
+	assert.match(harness.sent[1]!.content, /^Detached subagent task interrupted: \*\*codebase-analyzer\*\*/);
 	unregister();
 });
 

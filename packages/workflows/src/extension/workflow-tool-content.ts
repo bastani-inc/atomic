@@ -4,12 +4,12 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { fmtDuration, statusIcon } from "../tui/status-helpers.js";
 import type { WorkflowToolArgs } from "./public-types.js";
-import type { WorkflowToolResult } from "./render-result.js";
+import type { WorkflowRegisteredToolResult, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowRunStatusSummary, WorkflowStatusAwaitingInput } from "./workflow-status-summary.js";
 import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 
-function stringifyWorkflowToolResult(result: WorkflowToolResult): string {
+function stringifyWorkflowToolResult(result: WorkflowRegisteredToolResult): string {
 	return JSON.stringify(result, null, 2);
 }
 
@@ -212,8 +212,9 @@ function renderStageToolContent(result: Extract<WorkflowToolResult, { action: "s
 	return lines.join("\n");
 }
 
-export function renderWorkflowToolContent(result: WorkflowToolResult, args: WorkflowToolArgs): string {
+export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, args: WorkflowToolArgs): string {
 	if (args.format === "json") return stringifyWorkflowToolResult(result);
+	if ("code" in result && result.code === "WORKFLOW_TIMEOUT") return stringifyWorkflowToolResult(result);
 	switch (result.action) {
 		case "transcript":
 			return renderTranscriptToolContent(result);

@@ -1,3 +1,4 @@
+import { toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
@@ -159,7 +160,7 @@ async function workflowSlashHandler(
 				emitChatSurface(pi, { kind: "detail", detail: durable.detail });
 				return;
 			}
-			const inspected = inspectRun(resolved.runId);
+			const inspected = inspectRun(resolved.runId, { toolControlRegistry });
 			if (!inspected.ok) return fail(`Run not found: ${target}`);
 			emitChatSurface(pi, { kind: "detail", detail: inspected.detail });
 			return;

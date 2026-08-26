@@ -461,6 +461,11 @@ const singleton = createSessionScopedSingleton(SESSION_KEY, createStageControlRe
 
 export const stageControlRegistry: StageControlRegistry = singleton.facade;
 
-export function adoptStageControlRegistry(scope: object): StageControlRegistry {
-	return singleton.adopt(scope);
+export function adoptStageControlRegistry(
+	scope: object,
+	preserveCurrentWhenTargetExists = false,
+): StageControlRegistry {
+	return singleton.adopt(scope, {
+		preserveCurrentWhenTargetExists: preserveCurrentWhenTargetExists ? () => true : undefined,
+	});
 }

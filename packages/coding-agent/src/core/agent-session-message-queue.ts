@@ -204,6 +204,14 @@ export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessa
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
 }
+
+/** Append context-only custom messages once the current turn's tool results are in history. */
+export function _flushPendingCustomMessages(this: AgentSession): void {
+	if (this._pendingCustomMessages.length === 0) return;
+	const pending = this._pendingCustomMessages;
+	this._pendingCustomMessages = [];
+	for (const message of pending) this._appendCustomMessage(message);
+}
 export function _enqueueInterruptCustomMessage<T>(
 	this: AgentSession,
 	message: CustomMessage<T>,
@@ -441,6 +449,7 @@ export const agentSessionMessageQueueMethods = {
 	sendCustomMessages,
 	closeWorkflowStageGeneration,
 	_appendCustomMessage,
+	_flushPendingCustomMessages,
 	_enqueueInterruptCustomMessage,
 	_sendInterruptCustomMessageNow,
 	_ensureActiveInterruptQueueHold,

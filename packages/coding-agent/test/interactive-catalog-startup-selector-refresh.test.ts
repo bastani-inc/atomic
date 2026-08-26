@@ -79,7 +79,11 @@ function openSelector(modelRuntime: ModelRuntime): ModelSelectorComponent {
 	return new ModelSelectorComponent(
 		{ requestRender: () => {} } as unknown as TUI,
 		model,
-		{ setDefaultModelAndProvider: () => {} } as unknown as SettingsManager,
+		{
+			setDefaultModelAndProvider: () => {},
+			getDefaultProvider: () => undefined,
+			getDefaultModel: () => undefined,
+		} as unknown as SettingsManager,
 		modelRuntime,
 		[],
 		() => {},

@@ -4,14 +4,20 @@
  */
 
 import assert from "node:assert/strict";
+import type { RetainedPostgres } from "@bastani/atomic-natives";
 import { afterEach, describe, test } from "vitest";
 import { effectiveSystemDatabaseUrl } from "../../packages/workflows/src/durable/dbos-backend.js";
-import { EMBEDDED_DBOS_SYSTEM_DATABASE_URL } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
+import {
+	EMBEDDED_DBOS_SYSTEM_DATABASE_URL,
+	embeddedPostgresTestHooks,
+	shutdownEmbeddedDbosPostgres,
+} from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import {
 	provisionResolvedLocalDbos,
 	resetLocalDbosProvisioningForTests,
 	resolveDbosSystemDatabaseUrl,
 	shouldProvisionLocalDbos,
+	shutdownResolvedLocalDbos,
 } from "../../packages/workflows/src/durable/dbos-local-postgres.js";
 
 const originalUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
@@ -58,7 +64,7 @@ describe("resolveDbosSystemDatabaseUrl", () => {
 		assert.equal(embeddedCalls, 1);
 	});
 
-	test.sequential("falls back to Docker only when embedded binaries are unavailable", async () => {
+	test.sequential("falls back to Docker after an embedded provisioning failure with no retained lease", async () => {
 		delete process.env.DBOS_SYSTEM_DATABASE_URL;
 		let dockerCalls = 0;
 		resetLocalDbosProvisioningForTests(
@@ -92,6 +98,53 @@ describe("resolveDbosSystemDatabaseUrl", () => {
 		assert.equal(attempts, 2, "a failed resolution must not be memoized");
 	});
 
+	test.sequential("does not replace a failed-cleanup embedded lease with the Docker fallback", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let cleanupAttempts = 0;
+		let releaseCalls = 0;
+		let dockerCalls = 0;
+		const lease = {
+			pid: 4242,
+			interruptAndWait: async () => {
+				cleanupAttempts += 1;
+				if (cleanupAttempts === 1) throw new Error("rollback timed out");
+				return { exited: true, signaled: false };
+			},
+			wait: async () => ({ exited: true, signaled: false }),
+			release: () => {
+				releaseCalls += 1;
+			},
+		} satisfies RetainedPostgres;
+		embeddedPostgresTestHooks.setEnsureOperation(async () => {
+			const cluster = embeddedPostgresTestHooks.setActiveCluster(lease);
+			await embeddedPostgresTestHooks.waitForClusterReadiness(
+				"/postgres.log",
+				cluster,
+				async () => false,
+				1,
+				async () => {},
+			);
+		});
+		resetLocalDbosProvisioningForTests(
+			embeddedPostgresTestHooks.ensure,
+			async () => {
+				dockerCalls += 1;
+			},
+			shutdownEmbeddedDbosPostgres,
+		);
+		try {
+			await assert.rejects(resolveDbosSystemDatabaseUrl(), /retained process could not be stopped/i);
+			assert.equal(dockerCalls, 0, "a second database must not hide ownership of the failed-cleanup child");
+
+			await shutdownResolvedLocalDbos();
+			assert.equal(cleanupAttempts, 2, "local shutdown retries the same native lease");
+			assert.equal(releaseCalls, 1);
+		} finally {
+			embeddedPostgresTestHooks.setEnsureOperation(undefined);
+			embeddedPostgresTestHooks.setActiveCluster(undefined);
+		}
+	});
+
 	test.sequential("launch-retry reprovisions the provider that was actually resolved", async () => {
 		delete process.env.DBOS_SYSTEM_DATABASE_URL;
 		const calls: string[] = [];
@@ -109,6 +162,65 @@ describe("resolveDbosSystemDatabaseUrl", () => {
 		await provisionResolvedLocalDbos();
 
 		assert.deepEqual(calls, ["embedded", "docker", "docker"]);
+	});
+
+	test.sequential("shuts down exactly the embedded provider that was resolved", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let shutdownCalls = 0;
+		resetLocalDbosProvisioningForTests(
+			async () => {},
+			async () => {
+				throw new Error("docker must not run");
+			},
+			async () => {
+				shutdownCalls += 1;
+			},
+		);
+
+		await resolveDbosSystemDatabaseUrl();
+		await Promise.all([shutdownResolvedLocalDbos(), shutdownResolvedLocalDbos()]);
+
+		assert.equal(shutdownCalls, 1);
+	});
+
+	test.sequential("a failed embedded shutdown retains provider ownership for retry", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let shutdownCalls = 0;
+		resetLocalDbosProvisioningForTests(
+			async () => {},
+			async () => {
+				throw new Error("docker must not run");
+			},
+			async () => {
+				shutdownCalls += 1;
+				if (shutdownCalls === 1) throw new Error("retained lease timed out");
+			},
+		);
+
+		await resolveDbosSystemDatabaseUrl();
+		await assert.rejects(shutdownResolvedLocalDbos(), /retained lease timed out/);
+		await shutdownResolvedLocalDbos();
+
+		assert.equal(shutdownCalls, 2);
+	});
+
+	test.sequential("does not route Docker provider shutdown through embedded teardown", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let shutdownCalls = 0;
+		resetLocalDbosProvisioningForTests(
+			async () => {
+				throw new Error("embedded unavailable");
+			},
+			async () => {},
+			async () => {
+				shutdownCalls += 1;
+			},
+		);
+
+		await resolveDbosSystemDatabaseUrl();
+		await shutdownResolvedLocalDbos();
+
+		assert.equal(shutdownCalls, 0);
 	});
 });
 

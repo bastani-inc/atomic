@@ -19,4 +19,8 @@ writeFileSync(
 );
 
 if (process.argv.includes("--fail")) process.exit(1);
-writeFileSync(filePath, process.argv.includes("--empty") ? "" : "edited\n", "utf-8");
+writeFileSync(
+	filePath,
+	process.argv.includes("--empty") ? "" : process.argv.includes("--bom") ? "\uFEFFedited\n" : "edited\n",
+	"utf-8",
+);

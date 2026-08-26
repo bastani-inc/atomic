@@ -335,6 +335,8 @@ const singleton = createSessionScopedSingleton(SESSION_KEY, () => new StageUiBro
 
 export const stageUiBroker = singleton.facade;
 
-export function adoptStageUiBroker(scope: object): StageUiBroker {
-	return singleton.adopt(scope);
+export function adoptStageUiBroker(scope: object, preserveCurrentWhenTargetExists = false): StageUiBroker {
+	return singleton.adopt(scope, {
+		preserveCurrentWhenTargetExists: preserveCurrentWhenTargetExists ? () => true : undefined,
+	});
 }

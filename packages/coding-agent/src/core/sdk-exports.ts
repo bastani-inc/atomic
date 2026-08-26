@@ -1,3 +1,4 @@
+export { getPowerShellConfig } from "../utils/shell.ts";
 export * from "./agent-session-runtime.ts";
 export type {
 	AgentSettledEvent,
@@ -12,6 +13,7 @@ export type {
 	MessageEndEvent,
 	MessageStartEvent,
 	MessageUpdateEvent,
+	PowerShellToolCallEvent,
 	SlashCommandInfo,
 	SlashCommandSource,
 	ToolDefinition,
@@ -19,25 +21,36 @@ export type {
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
 } from "./extensions/index.ts";
+export { isPowerShellToolResult } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
 export type {
 	JsonObject,
 	JsonPrimitive,
 	JsonValue,
+	PowerShellOperations,
+	PowerShellSpawnContext,
+	PowerShellSpawnHook,
+	PowerShellToolDetails,
+	PowerShellToolInput,
+	PowerShellToolOptions,
+	ShellToolPresentation,
 	StructuredOutputCapture,
 	StructuredOutputFileCapture,
 	StructuredOutputToolOptions,
 	Tool,
 } from "./tools/index.ts";
-
 export {
+	BASH_SHELL_PRESENTATION,
 	createBashTool,
 	// Tool factories (for custom cwd)
 	createCodingTools,
 	createEditTool,
 	createFindTool,
+	createLocalPowerShellOperations,
 	createLsTool,
+	createPowerShellTool,
+	createPowerShellToolDefinition,
 	createReadOnlyTools,
 	createReadTool,
 	createSearchTool,

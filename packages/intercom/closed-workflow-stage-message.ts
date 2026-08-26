@@ -17,7 +17,7 @@ export function routeClosedWorkflowStageMessage(
   entry: InboundMessageEntry,
   admission: InboundMessageAdmission,
   tracker: ReplyTracker,
-  waiter: ReplyWaiterRecord | null,
+  waiter: ReplyWaiterRecord | Iterable<ReplyWaiterRecord> | null,
   deliver: () => Promise<void>,
   currentClient: () => IntercomClient | null,
   isCurrent: () => boolean,

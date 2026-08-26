@@ -38,6 +38,9 @@ export async function mapParallelSteps<T>(
 		readonly beforeDequeue?: () => void;
 		readonly beforeMap?: () => void;
 		readonly isControlSignal?: (error: unknown) => boolean;
+		readonly selectSettledFailure?: (
+			failures: readonly { readonly index: number; readonly error: unknown }[],
+		) => unknown;
 	},
 ): Promise<T[]> {
 	const limit = positiveConcurrency(concurrency) ?? steps.length;
@@ -109,6 +112,10 @@ export async function mapParallelSteps<T>(
 
 	if (controlSignal !== undefined) throw controlSignal;
 	if (failures.length > 0) {
+		if (!failFastEnabled) {
+			const selectedFailure = control?.selectSettledFailure?.(failures);
+			if (selectedFailure !== undefined) throw selectedFailure;
+		}
 		throw new AggregateError(
 			failures.map((failure) => failure.error),
 			`atomic-workflows: ${failures.length} parallel ${failures.length === 1 ? "step" : "steps"} failed`,

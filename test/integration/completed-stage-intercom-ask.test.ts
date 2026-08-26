@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { test } from "vitest";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { registerCompletedStageIntercomAskRouter } from "../../packages/workflows/src/extension/completed-stage-intercom-ask.js";
@@ -88,7 +88,7 @@ test("parallel workflow revives completed A for B's exact correlated ask and ter
 	const registry = createStageControlRegistry();
 	const events = new EventEmitter();
 	const targetTracker = new ReplyTracker();
-	const callerWaiter = new ReplyWaiterSlot();
+	const callerWaiter = new ReplyWaiterRegistry();
 	const wrongReplyAttempts: boolean[] = [];
 	const postMortemPrompts: string[] = [];
 	const target: SessionInfo = {
@@ -122,7 +122,7 @@ test("parallel workflow revives completed A for B's exact correlated ask and ter
 						postMortemPrompts.push(text);
 						targetTracker.beginTurn();
 						const pending = targetTracker.resolveReplyTarget({});
-						const waiter = callerWaiter.current();
+						const waiter = callerWaiter.pending();
 						assert.ok(waiter);
 						wrongReplyAttempts.push(
 							routeIncomingReply(

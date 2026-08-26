@@ -1,0 +1,110 @@
+914cf1472e715297caa30db4b9535d534a9eb718	2026-08-14	David Brailovsky	Release v0.84.2
+0e0021fbbe83d67338b910aca8820bd99126793d	2026-08-14	David Brailovsky	Add [Unreleased] section for next cycle
+c36552212e898221cc9435cc78f4e1c443ecbbca	2026-08-14	Armin Ronacher	agents: Adjust rules for changelog entries
+e429d90b800f9a37c8a5812f4c9c10a8cdcc85a7	2026-08-14	Mario Zechner	fix(coding-agent): update Z.AI Coding Plan defaults
+b1efcf7d7c5d7394fbb12ede0174e04d39ee7004	2026-08-14	github-actions[bot]	chore: approve contributors from issue #8124
+d5278eaac3446a65e41d5f1392b2c79571858393	2026-08-15	Vegard Stikbakke	fix(ai): enable Copilot model policies sequentially during login
+086c32e74530564922d011ade23ff582c9d63116	2026-08-15	Vegard Stikbakke	fix(ai): retry Copilot GET /models once on 429 during login
+70e878d4cf8f643067c8fc73ea27b74133dca0ab	2026-08-16	Milosz Jankiewicz	feat(ai): route xAI models through Responses and default to Grok 4.6 (#8124)
+d3ab2af969d64997338253c9151190aa1bc33580	2026-08-16	Cristina Poncela Cubeiro	fix: track kimi cached tokens (#8119)
+47bf47f11f1379b142574dfeacf762981989add4	2026-08-17	Vegard Stikbakke	docs(coding-agent): clarify compaction paths
+58302d34e703e0453ea13bdd10c7e423589ce177	2026-08-17	Vegard Stikbakke	feat(coding-agent): support compaction routing sessions
+ca21c1686157bf29696c9252f623fc094447ddf2	2026-08-17	Cristina Poncela Cubeiro	fix: single edit input (#8011)
+8c2529daebe0eac5aecb54424b607b4c88d55e15	2026-08-17	Cristina Poncela Cubeiro	fix: dont load root mds as skills in settings (#8012)
+f47faf459f1a88ead70c3033b70931217251b4f3	2026-08-17	Cristina Poncela Cubeiro	fix: register flag type mismatch (#8123)
+86d001d36b898283ef7d63b1df31709e9730c452	2026-08-17	Poison	fix(ai): expose low thinking level for DeepSeek V4 Flash on opencode/opencode-go (#8181)
+c7c763f5c48736fa00cdcf0bcbfcae5cbc585e7c	2026-08-17	Vegard Stikbakke	fix(coding-agent): clarify truncated recovery failure
+955a543b31a5672ecae52f7919cf5d0a87959656	2026-08-17	Cristina Poncela Cubeiro	fix: expose sleeping llama.cpp models (#8235)
+374e56e553daccf730c2c8dcb0b6e161980b43c1	2026-08-17	Armin Ronacher	fix(tui): avoid duplicate VS Code right-click paste
+a1bc0ec79010887210cc7de28714d72c78577dab	2026-08-17	Cristina Poncela Cubeiro	fix: llama.cpp guidance as no default (#8236)
+d3e3bbc0117751bdb7ff284feaac8082dbe9551c	2026-08-17	Cristina Poncela Cubeiro	fix: llama.cpp allow network for model discovery (#8238)
+080932e53cb6f82076b111efc424845e4d5c1902	2026-08-17	Cristina Poncela Cubeiro	fix(package-manager): use semver.gt for version comparison (#8239)
+df018b6020181d4245575fba006361ab69a1408b	2026-08-17	Armin Ronacher	fix(coding-agent): retry hung model catalog requests
+a6b1dbceb1af5bf8a21da0b437ef756ce9fe85e6	2026-08-17	Cristina Poncela Cubeiro	fix(extensions): emit compaction failed for extensions (#8241)
+1d08508ef6e4951b74190db17814ee73a6a33edc	2026-08-17	Cristina Poncela Cubeiro	fix(extension-examples): use agent_settled instead of end (#8242)
+af2c352238cffd12d404d5a4cd35a21f93a78fe0	2026-08-17	Vegard Stikbakke	fix(ai): honor Google thinking level maps
+10acee6045e9025a22dff7e5220ed0d7538f12aa	2026-08-17	Cristina Poncela Cubeiro	fix(ai): bedrock response to include smithy headers (#8243)
+0e4d49541477c4fc6e404f845ad40ed47d157f24	2026-08-17	Vegard Stikbakke	fix(ai,coding-agent): remove deprecated Xiaomi models
+87205484bf749c2140fef5d1bea68995d57e739c	2026-08-17	David Brailovsky	fix(ai): use Chinese ZAI Coding Plan catalog
+6db110e6fab3a18e0e54a6e1aa5a479c1e282924	2026-08-17	David Brailovsky	fix(ai): add Qwen Token Plan Individual DeepSeek V4 Pro 0813
+1c28f3032e6a39566c95aa709a0b1cefcf81c5db	2026-08-17	Cristina Poncela Cubeiro	fix(ai): update cloudflare gateway sonnet test id (#8260)
+5e11f65865865cbfae662acd69d90e701bf082dd	2026-08-17	Cristina Poncela Cubeiro	fix(coding-agent): load nested markdown skills (#8255)
+eb1f87fa9a29e27e0c63dcb40dbed9a3624c82b1	2026-08-17	Cristina Poncela Cubeiro	fix(coding-agent/ai): anthropic refusal error and fallbacks (#8258)
+54d22b74b3b538836f997ad0903fd44eaac45c93	2026-08-17	Armin Ronacher	fix(coding-agent): reduce redundant git update tests
+b82a374c7d4a08cdd00a4087b31351f39682a320	2026-08-17	Armin Ronacher	fix(coding-agent): reduce redundant slow tests
+209bc7b9a89b01c8fd05861cf5bbdda3e300037a	2026-08-17	Armin Ronacher	fix(ai): remove unused opentelemetry dependency
+9117326b4c9c4657d2ff5e41d229f52c8273e8fc	2026-08-17	Vegard Stikbakke	fix(ai): forward Azure Responses tool choice
+ad58801ce793ca4ca2f6fb64b307e9eaffd2c471	2026-08-18	Vegard Stikbakke	fix(ai): update Baseten GLM input modalities
+e5dde9a76bfec3c4eff764d1b6db3b60e5dd0b30	2026-08-18	Vegard Stikbakke	feat(ai): add simple tool choice option
+90305d90a049d3f7784f15821d117fc6932248e7	2026-08-17	Vegard Stikbakke	fix(coding-agent): disable tools during summarization
+8af7690c4f0c41fad274620829c75a3243d07aa3	2026-08-18	Vegard Stikbakke	fix(coding-agent): skip trusted subagent prompts
+2509b5c037d366979f2febfce4174b88aeaadc6a	2026-08-17	Vegard Stikbakke	feat(agent): expose provider context construction
+836aee6d38f60428ab6bd2679f93dce43a55dab3	2026-08-18	Vegard Stikbakke	feat(coding-agent): show compaction usage notices
+ef8dc7385b1ed41c40cd0a4bbf612326ec18bd23	2026-08-18	Vegard Stikbakke	feat(coding-agent): centralize compaction summary requests
+cff1cf52c6c73ef873dcb6148238ed68f69e1ead	2026-08-18	Vegard Stikbakke	feat(coding-agent): add cache-friendly compaction primitives
+a6c6f801802a7083609541dbd49eec203804d8fc	2026-08-18	Cristina Poncela Cubeiro	fix(ai): anthropic fallback usage (#8308)
+b237412699fa33773921d295d2af14bf3031315e	2026-08-18	Ben	feat(ai): generalize openai-completions thinking token budget fields (#8275)
+c0613289814c54a28c649add556f509d9c79714a	2026-08-18	Mario Zechner	fix(coding-agent): load extensions in Node SEA hosts, closes #8237
+f0c5d86d20f85bbeee957b0e9b06ee085ea40c80	2026-08-18	Mario Zechner	fix(tui): fit text padding to narrow widths, closes #8252
+59a71b235dadb4ad0d67557a8abb0aaa093e68b4	2026-08-18	Cristina Poncela Cubeiro	Revert "fix(ai): anthropic fallback usage (#8308)" (#8313)
+4809c2abcaa86257337aa9a44801f4af91144dbc	2026-08-19	Cristina Poncela Cubeiro	fix(ai): anthropic fallback usage (#8319)
+55b0db4d3e9075345b6509a5b488250d79e026d8	2026-08-19	Ramiz Wachtler	fix(ai): prevent copilot policy login rate limits (#8254)
+8dab70281bc03ad70407afc87da4818353d94707	2026-08-19	Vegard Stikbakke	Revert "feat(coding-agent): add cache-friendly compaction primitives"
+3a0b9a3eeee280f750edb3b0fc8a1b9093e88137	2026-08-19	Vegard Stikbakke	Revert "feat(agent): expose provider context construction"
+ed867e90947910c907d7d4b9d1b7a8586448f648	2026-08-19	Cristina Poncela Cubeiro	fix(ai): fallback cost not via stream options (#8352)
+d711bd5f0a5fca7f10f8a681763b5ed5e63d9400	2026-08-19	David Brailovsky	fix(coding-agent): preserve branch summary source leaf
+830a0a59e975ed3a4e551be18dc60d45479f5118	2026-08-19	Christian Klotz	fix(coding-agent): expose tool metadata at stream start (#7953)
+d57e531f5dc57974e2f9ce7a618730e5358a45db	2026-08-19	Seiji Toyama	fix(ai): round-trip Bedrock redacted reasoning (#8314)
+1e1a6e27be36aa6e4e607137a648bb342a9a2477	2026-08-19	Vegard Stikbakke	feat(coding-agent): include paths in settings errors
+913bcf3391be680a41fd6cb9acfe5d0fbfb3f7d9	2026-08-19	Vegard Stikbakke	fix(coding-agent): report settings diagnostic paths
+678f0af30d63650052fb3ed16e9b779af1a8f9e8	2026-08-19	Vegard Stikbakke	fix(coding-agent): show startup diagnostics in TUI
+3de00332f71a9a472d26cd9bca9dfc1961061e2b	2026-08-19	David Brailovsky	fix(ai): derive Z.AI reasoning effort metadata
+4495469a5e8466eb67e3f26969922d3e7b208de2	2026-08-19	Vegard Stikbakke	fix(coding-agent): compact without provider usage
+1355cd36e0b10a3e71c6c78f713b7b36458db27f	2026-08-19	Armin Ronacher	fix(coding-agent): normalize UTF-8 BOMs in text inputs
+87af49dec23f5aee132071ef33d4b2441f551e4b	2026-08-19	David Brailovsky	Add pi user-agent to most api adapters (#8361)
+4ca636c5e07eb1e0fbc6be6c11c720d1a8856daa	2026-08-19	Cristina Poncela Cubeiro	feat(ai): opeani completions reasoning details (#8246)
+2ff8ba62238e61642fe80985175774b163f77cfa	2026-08-19	Cristina Poncela Cubeiro	fix(coding-agent): keep model and thinking level changes session scoped (#8356)
+98767a25d24494ea0b6acc10af4b91fc68c4cf7e	2026-08-19	Cristina Poncela Cubeiro	fix(settings-selector): remove token estimates
+ee29aa118bdeb7d8c4fdafa81130e0c61f8e0423	2026-08-19	Cristina Poncela Cubeiro	feat(settings-selector): make default model and thinking level searchable
+a669db3c33851c7236315f7f5e0d028494c071f5	2026-08-19	Cristina Poncela Cubeiro	fix(settings-selector): show modelid [provider] like /model
+f0a2880f291a0f13d6fee1fa0032dd6c61518c45	2026-08-19	Cristina Poncela Cubeiro	fix(settings-selector): revert token estimate removal
+9c8070fbe4ef7c18feee8ab47c22c5dc1572fcd9	2026-08-19	Cristina Poncela Cubeiro	feat(settings-selector): ctrl + s persists /model
+496185f6e4267b979e3663c45f7eb70b0c6a97b4	2026-08-19	Cristina Poncela Cubeiro	feat(coding-agent): /thinking command
+b7bb00b936dbe21b8e160b3e89efdec361846699	2026-08-19	Armin Ronacher	fix(ai): retain reasoning details in thinking signature
+5133c9284fe023436f4251fac2a6e8fb00a883b4	2026-08-20	Cristina Poncela Cubeiro	chore(settings-selector): get rid of --default and global model
+5b3caaf4cb45d1e0315fbe46ebf26fc68f1dd065	2026-08-20	Cristina Poncela Cubeiro	chore(settings-selector): get rid of default thinking in settings, ctrl + S is enough
+1d3503fb9b422f3b5262f369c1b718230ca76df8	2026-08-20	Cristina Poncela Cubeiro	feat(settings-selector): show default, make default searchable for model and thinking (#8399)
+768184923ab8f90f049244c2741b051c877a5c2e	2026-08-20	Cristina Poncela Cubeiro	fix(settings-selector): nit spacing
+cffe4d776c8fad2b36b4fe6062ebb72c428e0f0f	2026-08-20	Cristina Poncela Cubeiro	fix(settings-selector): nit ordering in default t.l. per model
+8f2ae3faddb9f4eea565bbb67190ea126fac0691	2026-08-20	Ramiz Wachtler	fix(tui): prevent wrapped table link color leaks (#8363)
+5cd93f688aaab89dbb6dfa4aca535f21796ae185	2026-08-20	Armin Ronacher	feat(coding-agent): add development pi wrapper
+686f3487f5ef3ce290432e22f8b3296e1694d9dd	2026-08-21	Cristina Poncela Cubeiro	feat(interactive-mode): share via radius artifacts under experimental (#8443)
+a2f369d63a3e412a68a2570583dd60cadb7d63a5	2026-08-21	Cristina Poncela Cubeiro	fix(slash-commands): order tree above thinking
+77f2d1235ee2992c6072b9dcb6e99439a70c6f45	2026-08-21	Cristina Poncela Cubeiro	chore(interactive-mode): get rid of theme, only share via radius if logged in
+f4585b8bec581d005cbb1edfc07edfcce723d0ae	2026-08-21	Armin Ronacher	fix(coding-agent): simplify session sharing links
+c49906ec77788625aacbdc53ebca6fbe65bd20f5	2026-08-22	Armin Ronacher	fix(coding-agent): preserve managed state file permissions
+7d4c0e05dd31545de2b1043142a89d90ce1ae736	2026-08-22	Armin Ronacher	feat(coding-agent): bundle Node runtime (#8474)
+39d869f02a331717df2f800d29f9fed19596494e	2026-08-22	Armin Ronacher	fix: publish installer artifacts
+cec3a91c029e453c4bebdd02d84335a0f52503d7	2026-08-22	Armin Ronacher	feat(coding-agent): defer uncommon syntax grammars
+74786a748f5314cc2127ebbcfa2d732e9b8433f5	2026-08-22	Armin Ronacher	fix(coding-agent): support -- end-of-options, closes #7269
+62bcbf6be0206cc4fd2ca0e35dd5eb879ca6c8e7	2026-08-23	Armin Ronacher	docs(coding-agent): document -- end-of-options delimiter
+faecac2ca85fa18e039d4c36d24e98023b652db7	2026-08-23	Armin Ronacher	feat(coding-agent): reduce bundled startup work
+77c540704d6872d8491fefdfb4829529635bcf09	2026-08-23	Armin Ronacher	meta(changelog): Add missing changelog entry
+a1f955e9f47fd3379b44f4aace65ab916c80519a	2026-08-23	Armin Ronacher	fix(coding-agent): remove redundant development dependencies
+f8f03460a011c47100bad47bd21c9457fb0f70f0	2026-08-23	Armin Ronacher	fix: reduce workspace dependency tree
+309b524f4fc10ad7005c8ff41d834203b8d37121	2026-08-23	Armin Ronacher	fix(coding-agent): avoid duplicate clipboard binaries
+c1279a65b3ef6b0b19950ed1771d5933241c240f	2026-08-23	Armin Ronacher	feat(coding-agent): defer jiti until extension loading
+bcad846f938e8f3afcfb6881f1e5a09bd731907f	2026-08-23	Armin Ronacher	fix(coding-agent): update end-of-options CLI test
+a69bef789bc95abf0acee16f7b4660b70b650bb9	2026-08-23	yaogangqiang	fix(coding-agent): discard failed extension factory state (#8424)
+460191cfcf27d60ff81fc0178812f4ff09e8df06	2026-08-23	Armin Ronacher	feat(coding-agent): include context in Radius session shares
+27b7a626de0e36845feb0c21d6da77352dd4834a	2026-08-23	Armin Ronacher	fix(coding-agent): use Windows-friendly keybinding defaults
+81152d88bb4cc25364f34cbd2d480f4a09529742	2026-08-23	Petr Houška	docs(coding-agent): clarify custom footer usage APIs (#8482)
+a470b121bf683b4c2b9fc0b3a7c807de7e0cfe9c	2026-08-23	Petr Houška	fix(coding-agent): expose finish reason compatibility override (#8487)
+4af9d21d3b4d664e4a29fcabfec85171077248e3	2026-08-24	Armin Ronacher	feat(coding-agent): update managed installations in place
+80e62761f7251a104f1b21d9c73920c720f0ec00	2026-08-24	Armin Ronacher	feat(coding-agent): add optional PowerShell tool (#8512)
+7623e8a0f1728aec54b84374c525856fb9471f26	2026-08-24	Armin Ronacher	docs: audit unreleased changelogs
+4e58f324fae8ebfa98a3d45181fb248072a2afac	2026-08-24	Armin Ronacher	Release v0.84.3
+31d4ed586092309b8835edf22e79cb993fb82091	2026-08-24	Armin Ronacher	Add [Unreleased] section for next cycle
+bfb004d4418ff05c6f909eaaab856cbe75c1fde0	2026-08-24	Armin Ronacher	fix: extract Windows release ZIPs in CI
+97fa14e39cfce78c273a36b2d9e8509cd5bc6b72	2026-08-24	Vegard Stikbakke	fix(coding-agent): reject truncated compaction summaries closes #7048
+dcd461925db2edf69a43c8135db1180d418afd54	2026-08-24	Cristina Poncela Cubeiro	feat: show llama presets if autoload enabled (#8558)

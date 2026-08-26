@@ -4,7 +4,7 @@ import type { ToolDefinitionEntry } from "./agent-session-types.ts";
 import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
-import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
+import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.ts";
 import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
@@ -127,7 +127,7 @@ export function _buildRuntime(
 		if (this._excludedToolNames?.has(name)) return false;
 		return true;
 	};
-	const activeBuiltinTools = (options.activeToolNames ?? [...defaultToolNames]).filter(isAllowedBuiltinTool);
+	const activeBuiltinTools = (options.activeToolNames ?? [...getDefaultToolNames()]).filter(isAllowedBuiltinTool);
 	const baseToolDefinitions = this._baseToolsOverride
 		? Object.fromEntries(
 				Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -191,7 +191,7 @@ export function _buildRuntime(
 
 	const defaultActiveToolNames = this._baseToolsOverride
 		? Object.keys(this._baseToolsOverride)
-		: [...defaultToolNames];
+		: [...getDefaultToolNames()];
 	const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 	this._refreshToolRegistry({
 		activeToolNames: baseActiveToolNames,

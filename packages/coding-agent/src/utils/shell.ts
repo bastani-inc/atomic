@@ -23,11 +23,11 @@ function getBashShellConfig(shell: string): ShellConfig {
 /**
  * Find bash executable on PATH (cross-platform)
  */
-function findBashOnPath(): string | null {
+function findExecutableOnPath(executable: string): string | null {
 	if (process.platform === "win32") {
 		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
 		try {
-			const result = spawnSync("where", ["bash.exe"], {
+			const result = spawnSync("where", [executable], {
 				encoding: "utf-8",
 				timeout: 5000,
 				env: createChildProcessEnvironment(),
@@ -46,7 +46,7 @@ function findBashOnPath(): string | null {
 
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)
 	try {
-		const result = spawnSync("which", ["bash"], {
+		const result = spawnSync("which", [executable], {
 			encoding: "utf-8",
 			timeout: 5000,
 			env: createChildProcessEnvironment(),
@@ -98,7 +98,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		}
 
 		// 3. Fallback: search bash.exe on PATH (Cygwin, MSYS2, WSL, etc.)
-		const bashOnPath = findBashOnPath();
+		const bashOnPath = findExecutableOnPath("bash.exe");
 		if (bashOnPath) {
 			return getBashShellConfig(bashOnPath);
 		}
@@ -117,12 +117,30 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		return getBashShellConfig("/bin/bash");
 	}
 
-	const bashOnPath = findBashOnPath();
+	const bashOnPath = findExecutableOnPath("bash");
 	if (bashOnPath) {
 		return getBashShellConfig(bashOnPath);
 	}
 
 	return { shell: "sh", args: ["-c"] };
+}
+
+export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"] as const;
+
+export function getPowerShellConfig(): ShellConfig {
+	if (process.platform !== "win32") throw new Error("The powershell tool is only available on Windows.");
+	const shell = findExecutableOnPath("pwsh.exe") ?? findExecutableOnPath("powershell.exe");
+	if (!shell) throw new Error("No PowerShell executable found. Install PowerShell or add it to PATH.");
+	return { shell, args: [...POWERSHELL_ARGS] };
+}
+
+export function isPowerShellAvailable(): boolean {
+	try {
+		getPowerShellConfig();
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export function getShellEnv(): NodeJS.ProcessEnv {

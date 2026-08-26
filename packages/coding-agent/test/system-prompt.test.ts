@@ -1,13 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 
-const DEFAULT_COMMUNICATION_GUIDELINES = `- Never use a familiar printed metaphor, simile, or figure of speech.
-- Never use a long word where a short one will do.
-- Cut every word that can be cut.
-- Use active rather than passive voice where possible.
-- Prefer everyday English to foreign phrases, scientific terms, and jargon.
-- Break any rule rather than say anything outright barbarous.`;
-
 describe("buildSystemPrompt", () => {
 	describe("empty tools", () => {
 		test("shows (none) for empty tools list", () => {
@@ -59,6 +52,33 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("- search:");
 			expect(prompt).toContain("- ask_user_question:");
 			expect(prompt).toContain("- todo:");
+		});
+	});
+
+	describe("shell-only file operations", () => {
+		test.each([
+			{
+				tools: ["bash"],
+				expected: "Use bash for file operations like ls, rg, find",
+			},
+			{
+				tools: ["powershell"],
+				expected: "Use PowerShell for file operations like listing, searching, and finding files",
+			},
+			{
+				tools: ["bash", "powershell"],
+				expected: "Use bash or PowerShell for file operations like listing, searching, and finding files",
+			},
+		])("adds guidance for $tools", ({ tools, expected }) => {
+			const prompt = buildSystemPrompt({
+				selectedTools: tools,
+				toolSnippets: { bash: "Execute bash commands", powershell: "Execute PowerShell commands" },
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain(expected);
 		});
 	});
 
@@ -156,18 +176,21 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
-	test("includes all six core communication rules without promptGuidelines", () => {
+	test("renders exactly the default guidelines and nothing else", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: [],
 			contextFiles: [],
 			skills: [],
 			cwd: process.cwd(),
 		});
+		const guidelines = prompt.slice(prompt.indexOf("Guidelines:\n"), prompt.indexOf("\n\nAtomic documentation"));
 
-		expect(prompt).toContain(`Guidelines:\n${DEFAULT_COMMUNICATION_GUIDELINES}`);
+		expect(guidelines).toBe(`Guidelines:
+- Be concise in your responses
+- Show file paths clearly when working with files`);
 	});
 
-	test("keeps core communication rules when tool promptGuidelines are present", () => {
+	test("renders custom guidelines before the exact default guidelines", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: [],
 			promptGuidelines: ["**Workflows**: Workflow-specific sentinel."],
@@ -177,8 +200,10 @@ describe("buildSystemPrompt", () => {
 		});
 		const guidelines = prompt.slice(prompt.indexOf("Guidelines:\n"), prompt.indexOf("\n\nAtomic documentation"));
 
-		expect(guidelines).toContain("- **Workflows**: Workflow-specific sentinel.");
-		expect(guidelines).toContain(DEFAULT_COMMUNICATION_GUIDELINES);
+		expect(guidelines).toBe(`Guidelines:
+- **Workflows**: Workflow-specific sentinel.
+- Be concise in your responses
+- Show file paths clearly when working with files`);
 	});
 
 	describe("workflow guidance", () => {

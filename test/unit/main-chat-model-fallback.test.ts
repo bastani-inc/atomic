@@ -16,7 +16,7 @@ import {
 	_handleRetryableError,
 	_isFallbackableError,
 	_isRetryableError,
-	_restoreFallbackModel,
+	_settleFallbackModelScope,
 	_trySwitchToFallbackModel,
 } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import type { CreateAgentSessionFromServicesOptions } from "../../packages/coding-agent/src/core/agent-session-services.js";
@@ -167,7 +167,7 @@ test("main-chat fallback switches models after same-model retry exhaustion", asy
 	assert.ok(events.some((event) => event.type === "session_model" && event.provider === "anthropic"));
 });
 
-test("main-chat fallback restores the primary model at the next turn boundary", async () => {
+test("main-chat fallback remains the session model after its lifecycle settles", async () => {
 	const primary = model("openai-codex", "gpt-5.5");
 	const fallback = model("anthropic", "claude-opus-4-8");
 	const events: Array<{ type: string; [key: string]: unknown }> = [];
@@ -208,12 +208,15 @@ test("main-chat fallback restores the primary model at the next turn boundary", 
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.equal(session.agent.state.model, fallback);
 
-	assert.equal(await _restoreFallbackModel.call(session as never), true);
-	assert.equal(session.agent.state.model, primary);
+	assert.equal(await _settleFallbackModelScope.call(session as never), true);
+	assert.equal(session.agent.state.model, fallback);
 	assert.equal(session.agent.state.thinkingLevel, "high");
-	assert.ok(events.some((event) => event.type === "model_changed" && event.source === "restore"));
+	assert.equal(
+		events.some((event) => event.type === "model_changed" && event.source === "restore"),
+		false,
+	);
 	assert.ok(events.some((event) => event.type === "model_fallback_end" && event.success === true));
-	assert.equal(await _restoreFallbackModel.call(session as never), false);
+	assert.equal(await _settleFallbackModelScope.call(session as never), false);
 });
 
 test("a transient failure can still change reasoning on the same provider/model", async () => {
@@ -399,6 +402,7 @@ test("main-chat fallback rejection settles the retry wait", async () => {
 
 	assert.equal(waitState, "resolved");
 	assert.equal(session._retryPromise, undefined);
+	assert.equal(session.agent.state.model, fallback, "a rejected continuation must leave the selected fallback active");
 	assert.ok(
 		events.some(
 			(event) =>
@@ -520,7 +524,7 @@ test("a rejected codex credential advances to the next candidate without re-requ
 	assert.equal(continued, 1);
 });
 
-test("an explicit /model choice during a fallback is not overwritten by the restore", async () => {
+test("an explicit /model choice during a fallback remains selected after settlement", async () => {
 	const primary = model("openai-codex", "gpt-5.5");
 	const fallback = model("anthropic", "claude-opus-4-8");
 	const chosen = model("openai", "gpt-5-mini");
@@ -562,12 +566,12 @@ test("an explicit /model choice during a fallback is not overwritten by the rest
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.equal(session.agent.state.model, fallback);
 
-	// setModel()/cycleModel() cancel the pending restore before applying the
-	// user's explicit choice.
+	// setModel()/cycleModel() finish the lifecycle before applying the user's
+	// explicit choice.
 	_clearFallbackModelScope.call(session as never);
 	session.agent.state.model = chosen;
 
-	assert.equal(await _restoreFallbackModel.call(session as never), false);
+	assert.equal(await _settleFallbackModelScope.call(session as never), false);
 	assert.equal(session.agent.state.model, chosen, "the explicit choice must survive the turn boundary");
 	assert.equal(
 		events.some((event) => event.type === "model_changed" && event.source === "restore"),
@@ -617,7 +621,7 @@ function overflowTurnSession(checkCompaction: (session: Record<string, unknown>)
 			switched.push(message);
 			return true;
 		},
-		_restoreFallbackModel: async () => {
+		_settleFallbackModelScope: async () => {
 			counters.restored += 1;
 			return false;
 		},
@@ -757,7 +761,7 @@ test("a failed overflow compaction advances the real fallback chain end to end",
 		_isEmptyCompletion: () => false,
 		_isSafetyRefusal: () => false,
 		_handleRetryableError: async () => false,
-		_restoreFallbackModel: async () => false,
+		_settleFallbackModelScope: async () => false,
 		// Production compaction and fallback implementations.
 		_checkCompaction,
 		_runAutoCompaction,
@@ -826,7 +830,7 @@ function thinkingLevelFallbackSession(
 	};
 }
 
-test("a reasoning-level change during a fallback still restores the primary model", async () => {
+test("a reasoning-level change during fallback keeps the fallback model", async () => {
 	const primary = model("openai-codex", "gpt-5.5");
 	const fallback = model("anthropic", "claude-opus-4-8");
 	const events: Array<{ type: string; [key: string]: unknown }> = [];
@@ -837,15 +841,14 @@ test("a reasoning-level change during a fallback still restores the primary mode
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.equal(state.model, fallback);
 
-	// A reasoning choice is not a model choice and must not cancel the restore.
 	setThinkingLevel.call(session as never, "low" as ThinkingLevel);
 
-	assert.equal(await _restoreFallbackModel.call(session as never), true);
-	assert.equal(state.model, primary, "a reasoning change must not strand the session on the fallback");
-	assert.equal(state.thinkingLevel, "low", "the explicit reasoning choice must survive the restore");
+	assert.equal(await _settleFallbackModelScope.call(session as never), true);
+	assert.equal(state.model, fallback, "a reasoning choice is not a request to change the fallback model");
+	assert.equal(state.thinkingLevel, "low", "the explicit reasoning choice must survive settlement");
 });
 
-test("a registry refresh re-applying the current level leaves the pending restore intact", async () => {
+test("a registry refresh re-applying the current level leaves the fallback selected", async () => {
 	const primary = model("openai-codex", "gpt-5.5");
 	const fallback = model("anthropic", "claude-opus-4-8");
 	const events: Array<{ type: string; [key: string]: unknown }> = [];
@@ -859,8 +862,8 @@ test("a registry refresh re-applying the current level leaves the pending restor
 	// refresh, which must be a no-op for the fallback scope.
 	setThinkingLevel.call(session as never, state.thinkingLevel);
 
-	assert.equal(await _restoreFallbackModel.call(session as never), true);
-	assert.equal(state.model, primary);
+	assert.equal(await _settleFallbackModelScope.call(session as never), true);
+	assert.equal(state.model, fallback);
 	assert.equal(state.thinkingLevel, "high");
 });
 

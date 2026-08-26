@@ -1,6 +1,7 @@
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ import { type CreateAgentSessionOptions, createAgentSession } from "../../packag
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { type PackageSource, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { discoverAgentsAll } from "../../packages/subagents/src/agents/agents.js";
+import type { Details } from "../../packages/subagents/src/shared/types.js";
 import {
 	type PiCodingAgentSdk,
 	type PiSdkResourceLoader,
@@ -110,6 +112,7 @@ async function createWorkflowStageSession(options: {
 		workflowRunId: "run-test",
 		workflowStageId: "stage-test",
 		workflowStageName: "Stage Test",
+		intercomGroup: `workflow-test:${randomUUID()}`,
 		constraints: {
 			disableWorkflowTool: true,
 		},
@@ -319,6 +322,7 @@ describe("workflow stage bundled resources", () => {
 		try {
 			const { session } = await createWorkflowStageSession({ cwd, agentDir });
 			try {
+				await session.bindExtensions({});
 				const tool = session.getToolDefinition("subagent");
 				assert.ok(tool, "workflow stages must register the subagent tool");
 				const result = await tool.execute(
@@ -328,8 +332,9 @@ describe("workflow stage bundled resources", () => {
 					undefined,
 					session.extensionRunner.createContext(),
 				);
+				const details = result.details as Details;
 				assert.ok(
-					result.content.some((part) => part.type === "text" && part.text.includes("done")),
+					details.results.some((child) => child.envelope?.includes("done") === true),
 					"the stage tool must return the in-process child result",
 				);
 			} finally {

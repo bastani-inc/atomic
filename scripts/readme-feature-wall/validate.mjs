@@ -9,9 +9,9 @@
 //
 // Checks, in order:
 //   1  required feature set, count, fixed product-impact order, lesson/display binding, and docs mapping
-//   2  README hierarchy and table shape: 6 featured + 33 remaining, exact placement, links, media, alt
+//   2  README hierarchy and table shape: 6 featured + 32 remaining, exact placement, links, media, alt
 //   3  exact 19 + 28 + 15 badge manifest and README groups; local SVG XML, icon/text shape, and source records
-//   4  feature media exist for all 78 files named by the manifest
+//   4  feature media exist for all 76 files named by the manifest
 //   5  dimensions: every GIF and poster is exactly 960x540 (16:9)
 //   6  GIF duration bounds, declared frame rate bounds, and maximum held-frame duration
 //   7  file-size caps, per GIF, aggregate, and per poster
@@ -34,7 +34,7 @@ const BADGE_MANIFEST_PATH = join(REPO, "scripts", "readme-badges", "manifest.jso
 const BADGE_MANIFEST = JSON.parse(readFileSync(BADGE_MANIFEST_PATH, "utf8"));
 const README = readFileSync(join(REPO, "README.md"), "utf8");
 
-// The exact 6+33 contract, written out rather than derived from the manifest
+// The exact 6+32 contract, written out rather than derived from the manifest
 // so the manifest cannot quietly redefine the required split or coverage.
 const FEATURED_REQUIRED = [
 	["A.8", "Natural-language workflow authoring", "Workflows", "/workflows"],
@@ -51,7 +51,6 @@ const REMAINING_REQUIRED = [
 	["5.2", "Worktree-isolated parallel work", "Subagents", "/subagents"],
 	["5.4", "Escalating to a human supervisor", "Intercom", "/intercom"],
 	["A.9", "Nesting builtin workflows", "Workflows", "/workflows"],
-	["A.5", "Parallel review composition", "Subagents", "/subagents"],
 	["5.5", "Intercom context handoff", "Intercom", "/intercom"],
 	["5.1", "Delegating to bundled specialists", "Subagents", "/subagents"],
 	["6.3", "Writing your own workflow", "Workflows", "/workflows"],
@@ -331,7 +330,7 @@ const has = (bin) => {
 // ---------------------------------------------------------------- 1. lessons
 {
 	const lessons = MANIFEST.lessons ?? [];
-	if (lessons.length !== 39) fail("lessons", `expected 39 lessons, manifest has ${lessons.length}`);
+	if (lessons.length !== 38) fail("lessons", `expected 38 lessons, manifest has ${lessons.length}`);
 	const ids = new Set();
 	const orders = new Set();
 	const sources = new Set();
@@ -436,9 +435,9 @@ const has = (bin) => {
 		}
 	});
 	if (!failures.some((f) => f.startsWith("lessons")))
-		ok("lessons", "39 rows in the exact 6+33 order, with unique capture and media mappings");
+		ok("lessons", "38 rows in the exact 6+32 order, with unique capture and media mappings");
 	if (!failures.some((f) => f.startsWith("docs")))
-		ok("docs", "all 39 rows carry the exact public Atomic docs label and URL mapping");
+		ok("docs", "all 38 rows carry the exact public Atomic docs label and URL mapping");
 	if (!failures.some((f) => f.startsWith("interactions")))
 		ok("interactions", "every command the manifest claims for a lesson appears in that lesson's capture script");
 }
@@ -556,8 +555,8 @@ const has = (bin) => {
 			fail("readme", "expected exactly one More Atomic capabilities heading");
 		if (occurrences(README, MORE_ANCHOR_LINK) !== 1)
 			fail("readme", "the featured table must contain one link to #more-atomic-capabilities");
-		if (!featuredRegion.includes(`${MORE_ANCHOR_LINK}<strong>Explore 33 more Atomic capabilities ↓</strong></a>`))
-			fail("readme", "the featured-to-more link must state that 33 more capabilities follow");
+		if (!featuredRegion.includes(`${MORE_ANCHOR_LINK}<strong>Explore 32 more Atomic capabilities ↓</strong></a>`))
+			fail("readme", "the featured-to-more link must state that 32 more capabilities follow");
 		if ((README.match(/<table>/gi) ?? []).length !== 2)
 			fail("readme", "README must contain exactly the two generated feature tables");
 		if ((featuredRegion.match(/<table>/gi) ?? []).length !== 1 || (moreRegion.match(/<table>/gi) ?? []).length !== 1)
@@ -579,7 +578,7 @@ const has = (bin) => {
 		if (featuredRows.length !== FEATURED_REQUIRED.length)
 			fail("readme", `expected 6 featured rows, found ${featuredRows.length}`);
 		if (moreRows.length !== REMAINING_REQUIRED.length)
-			fail("readme", `expected 33 remaining rows, found ${moreRows.length}`);
+			fail("readme", `expected 32 remaining rows, found ${moreRows.length}`);
 
 		const seen = [];
 		const validateRows = (rows, expected, regionName) => {
@@ -637,13 +636,13 @@ const has = (bin) => {
 		if (seen.length !== REQUIRED.length || new Set(seen).size !== REQUIRED.length)
 			fail(
 				"readme",
-				`the two tables must cover all 39 records once; duplicate ids: ${duplicateIds.join(", ") || "none"}`,
+				`the two tables must cover all 38 records once; duplicate ids: ${duplicateIds.join(", ") || "none"}`,
 			);
 
 		if (!failures.some((failure) => failure.startsWith("readme"))) {
 			ok(
 				"readme",
-				"6 featured + 33 remaining rows once each; exact runtime/Get started hierarchy, cross-link, and docs-first links",
+				"6 featured + 32 remaining rows once each; exact runtime/Get started hierarchy, cross-link, and docs-first links",
 			);
 		}
 	}
@@ -982,7 +981,7 @@ const gifPaths = [];
 	if (!failures.some((f) => /^(media|size|dimensions|decode|duration|fps|animation)/.test(f))) {
 		ok(
 			"media",
-			`78 files present; all 960x540; every GIF 7-16s, animated above the ${R.min_encoded_fps} fps floor, with no frame held over ${R.max_frame_hold_s}s; aggregate ${(totalGif / 1048576).toFixed(1)} MiB`,
+			`76 files present; all 960x540; every GIF 7-16s, animated above the ${R.min_encoded_fps} fps floor, with no frame held over ${R.max_frame_hold_s}s; aggregate ${(totalGif / 1048576).toFixed(1)} MiB`,
 		);
 	}
 }

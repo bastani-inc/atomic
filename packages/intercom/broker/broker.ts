@@ -12,6 +12,7 @@ import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { normalizeGroup } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
+import { PendingQuestionIndex } from "./pending-question-index.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -60,6 +61,7 @@ class IntercomBroker {
   private shutdownTimer: NodeJS.Timeout | null = null;
   private deliveredMessages = new DeliveredMessageCache();
   private supervisorChannel = new SupervisorChannelCache();
+  private pendingQuestions = new PendingQuestionIndex();
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
@@ -97,10 +99,7 @@ class IntercomBroker {
 
     socket.on("close", () => {
       if (sessionId) {
-        const leavingGroup = this.sessions.get(sessionId)?.info.group;
-        this.sessions.delete(sessionId);
-        this.broadcastToGroup({ type: "session_left", sessionId }, leavingGroup, sessionId);
-
+        this.disconnectSession(sessionId);
         this.scheduleShutdownCheck();
       }
     });
@@ -195,9 +194,7 @@ class IntercomBroker {
       }
 
       case "unregister": {
-        const leavingGroup = this.sessions.get(currentId)?.info.group;
-        this.sessions.delete(currentId);
-        this.broadcastToGroup({ type: "session_left", sessionId: currentId }, leavingGroup, currentId);
+        this.disconnectSession(currentId);
         setId(null);
         this.scheduleShutdownCheck();
         break;
@@ -248,7 +245,16 @@ class IntercomBroker {
 
       case "send":
       case "supervisor_send": {
-        handleBrokerSend(socket, clientMessage, currentId, this.sessions, this.deliveredMessages, writeMessage, this.supervisorChannel);
+        handleBrokerSend(
+          socket,
+          clientMessage,
+          currentId,
+          this.sessions,
+          this.deliveredMessages,
+          writeMessage,
+          this.supervisorChannel,
+          this.pendingQuestions,
+        );
         break;
       }
 
@@ -266,6 +272,26 @@ class IntercomBroker {
       default:
         throw new Error(`Unknown client message type: ${clientMessage.type}`);
     }
+  }
+
+  private disconnectSession(sessionId: string): void {
+    const departed = this.sessions.get(sessionId);
+    if (!departed) return;
+
+    this.pendingQuestions.pruneSender(sessionId);
+    for (const question of this.pendingQuestions.takeForTarget(sessionId)) {
+      const asker = this.sessions.get(question.senderSessionId);
+      if (!asker) continue;
+      writeMessage(asker.socket, {
+        type: "peer_disconnected",
+        replyTo: question.messageId,
+        peerSessionId: departed.info.id,
+        ...(departed.info.name !== undefined ? { peerName: departed.info.name } : {}),
+      });
+    }
+
+    this.sessions.delete(sessionId);
+    this.broadcastToGroup({ type: "session_left", sessionId }, departed.info.group, sessionId);
   }
 
   /** Deliver a broadcast only to sessions in the given (normalized) group. */

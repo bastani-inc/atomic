@@ -115,7 +115,7 @@ export function reportedTestCount(json: string): number {
 	return (report.testResults ?? []).reduce((total, result) => total + (result.assertionResults?.length ?? 0), 0);
 }
 
-const DECLARATION_HEAD = "(?:\\.(?:only|skip|todo|failing|serial|concurrent))*\\s*\\(";
+const DECLARATION_HEAD = "(?:\\.(?:only|skip|todo|failing|serial|concurrent|sequential))*\\s*\\(";
 const DESCRIBE = /^(\s*)describe(?:\.(?:only|skip|todo|each|if))*\s*\(/u;
 const CLOSER = /^(\s*)\},\s*([0-9][0-9_]*|[A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*;?\s*$/u;
 const TRAILING_VALUE = /^\s*([0-9][0-9_]*|[A-Za-z_$][A-Za-z0-9_$]*)\s*,?\s*$/u;

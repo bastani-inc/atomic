@@ -205,4 +205,113 @@ describe("createStageContext — controlled pause", () => {
 		controller.abort(new Error("workflow killed"));
 		await rejection;
 	});
+	test("confirmed pause survives controller disposal and resumes normally", async () => {
+		const { session, state } = makeMockSession();
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return session;
+			},
+		};
+		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+
+		const promptPromise = ctx.prompt("ask");
+		await flushMicrotasks();
+		await ctx.__requestPause();
+		assert.equal(ctx.__isPaused(), true);
+
+		let settled = false;
+		void promptPromise.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		await ctx.__dispose();
+		await flushMicrotasks();
+		assert.equal(ctx.__isPaused(), true);
+		assert.equal(settled, false);
+
+		const resumeResult = await ctx.__resume("continue");
+		assert.deepEqual(resumeResult, { releasedQueuedMessages: false, runnerOwnedDeliveryPending: false });
+		await flushMicrotasks();
+		assert.equal(state.promptCalls, 2);
+		state.resolvers.at(-1)?.();
+		assert.equal(await promptPromise, "ok");
+	});
+
+	test("disposing concurrently with a confirmed pause preserves the parked waiter", async () => {
+		const { session, state } = makeMockSession();
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return session;
+			},
+		};
+		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+
+		const promptPromise = ctx.prompt("ask");
+		await flushMicrotasks();
+		await ctx.__requestPause();
+		let rejection: Error | undefined;
+		void promptPromise.catch((error: Error) => {
+			rejection = error;
+		});
+
+		const disposePromise = ctx.__dispose();
+		const resumePromise = ctx.__resume("race resume");
+		await Promise.all([disposePromise, resumePromise]);
+		await flushMicrotasks();
+		assert.equal(ctx.__isPaused(), false);
+		assert.equal(rejection, undefined);
+		assert.equal(state.promptCalls, 2);
+		state.resolvers.at(-1)?.();
+		assert.equal(await promptPromise, "ok");
+	});
+
+	test("disposal without a confirmed pause remains visible", async () => {
+		const { session } = makeMockSession();
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return session;
+			},
+		};
+		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+
+		await ctx.__ensureSession();
+		await ctx.__dispose();
+		await assert.rejects(ctx.__ensureSession(), /session has been disposed/);
+	});
+
+	test("a disposal deferred by a confirmed pause still tears down when the run is killed", async () => {
+		const { session, state } = makeMockSession();
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return session;
+			},
+		};
+		const controller = new AbortController();
+		const ctx = createStageContext(
+			makeOpts({ adapters: { agentSession }, signal: controller.signal }),
+		) as InternalStageContext;
+
+		const promptPromise = ctx.prompt("ask");
+		await flushMicrotasks();
+		await ctx.__requestPause();
+		assert.equal(state.abortCalls, 1);
+
+		// Disposal lands while the confirmed pause is parked, so it is deferred.
+		await ctx.__dispose();
+		await flushMicrotasks();
+		assert.equal(ctx.__isPaused(), true);
+
+		// A kill must still reject the parked waiter visibly...
+		const rejection = assert.rejects(promptPromise, /workflow killed/);
+		controller.abort(new Error("workflow killed"));
+		await rejection;
+
+		// ...and the deferred disposal must then complete rather than leak.
+		await flushMicrotasks();
+		await assert.rejects(ctx.__ensureSession(), /session has been disposed/);
+	});
 });

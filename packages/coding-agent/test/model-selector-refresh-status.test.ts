@@ -39,7 +39,11 @@ function createSelector(refresh: ModelRuntime["refresh"]): ModelSelectorComponen
 	return new ModelSelectorComponent(
 		{ requestRender: () => {} } as unknown as TUI,
 		model,
-		{ setDefaultModelAndProvider: () => {} } as unknown as SettingsManager,
+		{
+			setDefaultModelAndProvider: () => {},
+			getDefaultProvider: () => undefined,
+			getDefaultModel: () => undefined,
+		} as unknown as SettingsManager,
 		runtime,
 		[],
 		() => {},
@@ -67,6 +71,14 @@ describe("model selector catalog refresh status", () => {
 		refresh.resolve({ aborted: false, errors: new Map() });
 		const refreshed = await renderedAfterWork(selector);
 		expect(refreshed).toContain("Model catalogs refreshed.");
+	});
+
+	it("explains session selection and default persistence", async () => {
+		const selector = createSelector(async () => ({ aborted: false, errors: new Map() }));
+		const rendered = await renderedAfterWork(selector);
+		expect(rendered).toContain("select");
+		expect(rendered).toContain("set as default");
+		expect(rendered).toContain("cancel");
 	});
 
 	it("keeps cached models and identifies a partial provider failure", async () => {

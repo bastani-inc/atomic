@@ -7,7 +7,7 @@ import intercom from "../../packages/intercom/index.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type CompletedStageHandleResolver,
@@ -349,7 +349,7 @@ test("the ask tool receives the production-composed correlated revival failure w
 	const composition = productionComposition("workflow-first", () => undefined);
 	const targetAdmission = new InboundMessageAdmission();
 	const targetTracker = new ReplyTracker();
-	const callerWaiter = new ReplyWaiterSlot();
+	const callerWaiter = new ReplyWaiterRegistry();
 	const caller: SessionInfo = {
 		id: "stage-b-intercom",
 		name: "B",
@@ -371,7 +371,7 @@ test("the ask tool receives the production-composed correlated revival failure w
 	const targetClient = {
 		isConnected: () => true,
 		async send(_to: string, options: { text: string; replyTo?: string; replyError?: string }) {
-			const routed = routeIncomingReply(callerWaiter.current(), target, {
+			const routed = routeIncomingReply(callerWaiter.pending(), target, {
 				id: "correlated-failure",
 				timestamp: Date.now(),
 				replyTo: options.replyTo,
@@ -451,7 +451,6 @@ test("the ask tool receives the production-composed correlated revival failure w
 			beginReplyWait(from: string, replyTo: string, signal?: AbortSignal) {
 				return callerWaiter.begin(from, replyTo, signal);
 			},
-			hasReplyWaiter: () => callerWaiter.has(),
 			confirmSend: false,
 			replyTracker: new ReplyTracker(),
 		} as never,

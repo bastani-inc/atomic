@@ -38,7 +38,6 @@ import {
 } from "../slash/slash-live-state.js";
 import {
 	advanceResultPulseFrame,
-	renderLiveSubagentResult,
 	renderSubagentResult,
 	type SubagentResultRenderState,
 	stopResultAnimations,
@@ -48,6 +47,7 @@ import { parseSubagentNotifyContent } from "./notification-content.js";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.js";
 import { SubagentParams } from "./schemas.js";
 import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
+import { renderSubagentToolCall, renderSubagentToolResult } from "./tool-rendering.js";
 
 export {
 	PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT,
@@ -150,14 +150,14 @@ export function renderSubagentNotification(
 	message: { content: unknown; details?: unknown },
 	options: { expanded: boolean },
 	theme: ExtensionContext["ui"]["theme"],
-): Text {
+): Component {
 	const content = typeof message.content === "string" ? message.content : "";
 	const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
 	if (!details) return new Text(content, 0, 0);
 	const icon =
 		details.status === "completed"
 			? theme.fg("success", "✓")
-			: details.status === "paused"
+			: details.status === "interrupted"
 				? theme.fg("warning", "■")
 				: theme.fg("error", "✗");
 	const parts: string[] = [];
@@ -180,7 +180,15 @@ export function renderSubagentNotification(
 	if (details.sessionLabel && details.sessionValue) {
 		text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
 	}
-	return new Text(text, 0, 0);
+	const container = new Container();
+	container.addChild(new Spacer(1));
+	// Interrupted is the neutral terminal state, so it uses the pending background rather than success or error.
+	const boxTheme =
+		details.status === "completed" ? "toolSuccessBg" : details.status === "failed" ? "toolErrorBg" : "toolPendingBg";
+	const box = new Box(1, 1, (line: string) => theme.bg(boxTheme, line));
+	box.addChild(new Text(text, 0, 0));
+	container.addChild(box);
+	return container;
 }
 class SubagentControlNoticeComponent implements Component {
 	constructor(
@@ -218,7 +226,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			baseCwd: "",
 			currentSessionId: null,
 			subagentInProgress: false,
-			foregroundRuns: new Map(),
 			foregroundControls: new Map(),
 			lastForegroundControlId: null,
 			pendingForegroundControlNotices: new Map(),
@@ -326,14 +333,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			promptTemplateBridge.cancelAll();
 			promptTemplateBridge.dispose();
 		});
-		function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefined): number {
-			if (!tasks || tasks.length === 0) return 0;
-			return tasks.reduce((total, task) => {
-				const count =
-					typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
-				return total + count;
-			}, 0);
-		}
 		const tool: ToolDefinition<typeof SubagentParams, Details, SubagentToolRenderState> = {
 			name: "subagent",
 			label: "Subagent",
@@ -344,27 +343,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				const executionSignal = signal ?? ctx.signal ?? new AbortController().signal;
 				return executeSubagentCollapsed(id, params as SubagentParamsLike, executionSignal, onUpdate, ctx);
 			},
-			renderCall(args, theme) {
-				if (args.action) {
-					const target = args.agent || "";
-					return new Text(
-						`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg("accent", target)}` : ""}`,
-						0,
-						0,
-					);
-				}
-				const isParallel = (args.tasks?.length ?? 0) > 0;
-				const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
-				return new Text(
-					isParallel
-						? `${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})`
-						: `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent || "?")}`,
-					0,
-					0,
-				);
+			renderCall(args, theme, context) {
+				return renderSubagentToolCall(args as SubagentParamsLike, theme, context);
 			},
 			renderResult(result, options, theme, context) {
-				return renderLiveSubagentResult(result, options, theme, context);
+				return renderSubagentToolResult(result, options, theme, context);
 			},
 		};
 		pi.registerTool(tool);

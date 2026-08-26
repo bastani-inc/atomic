@@ -1,5 +1,5 @@
 import type { RetryCallbacks, RetryPolicy } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
 import type {
@@ -56,12 +56,35 @@ export type CompactionRungResult = CompactedTranscript & {
 	plannerModel?: CompactionPlannerModel;
 	/** False only when the fresh rung had to drop the protected tail. */
 	keptTail: boolean;
+	/** Aggregate usage across every planner request and retry in this run. */
+	usage?: Usage;
 };
 
 /** Runner-internal fresh-window build: the transcript plus the tail decision. */
 interface FreshWindowBuild {
 	transcript: CompactedTranscript;
 	keptTail: boolean;
+}
+
+function addUsage(total: Usage | undefined, usage: Usage): Usage {
+	const cacheWrite1h = (total?.cacheWrite1h ?? 0) + (usage.cacheWrite1h ?? 0);
+	const reasoning = (total?.reasoning ?? 0) + (usage.reasoning ?? 0);
+	return {
+		input: (total?.input ?? 0) + usage.input,
+		output: (total?.output ?? 0) + usage.output,
+		cacheRead: (total?.cacheRead ?? 0) + usage.cacheRead,
+		cacheWrite: (total?.cacheWrite ?? 0) + usage.cacheWrite,
+		...(total?.cacheWrite1h !== undefined || usage.cacheWrite1h !== undefined ? { cacheWrite1h } : {}),
+		...(total?.reasoning !== undefined || usage.reasoning !== undefined ? { reasoning } : {}),
+		totalTokens: (total?.totalTokens ?? 0) + usage.totalTokens,
+		cost: {
+			input: (total?.cost.input ?? 0) + usage.cost.input,
+			output: (total?.cost.output ?? 0) + usage.cost.output,
+			cacheRead: (total?.cost.cacheRead ?? 0) + usage.cost.cacheRead,
+			cacheWrite: (total?.cost.cacheWrite ?? 0) + usage.cost.cacheWrite,
+			total: (total?.cost.total ?? 0) + usage.cost.total,
+		},
+	};
 }
 
 /**
@@ -151,6 +174,7 @@ function plannedResult(
 	preparation: VerbatimCompactionPreparation,
 	ranges: RawLineRange[],
 	plannerModel: CompactionPlannerModel | undefined,
+	usage: Usage | undefined,
 ): CompactionRungResult {
 	const reconstructed = reconstructCompactedTranscript(
 		preparation.region,
@@ -161,6 +185,7 @@ function plannedResult(
 		rung: "planned",
 		...(plannerModel ? { plannerModel } : {}),
 		keptTail: true,
+		...(usage ? { usage } : {}),
 	};
 }
 
@@ -266,12 +291,17 @@ async function resolvePlannerAuth(
 	}
 }
 
-function freshResult(preparation: VerbatimCompactionPreparation, hardInputLimit: number): CompactionRungResult {
+function freshResult(
+	preparation: VerbatimCompactionPreparation,
+	hardInputLimit: number,
+	usage?: Usage,
+): CompactionRungResult {
 	const fresh = buildFreshContextWindow(preparation, hardInputLimit);
 	return {
 		...withWholeContextStats(fresh.transcript, preparation, fresh.keptTail),
 		rung: "fresh",
 		keptTail: fresh.keptTail,
+		...(usage ? { usage } : {}),
 	};
 }
 
@@ -294,12 +324,16 @@ export async function runVerbatimCompaction(
 ): Promise<CompactionRungResult> {
 	const signal = request.signal;
 	if (signal?.aborted) throw new Error("Compaction cancelled");
+	let plannerUsage: Usage | undefined;
 	const plannerOptions = {
 		streamFn: request.streamFn,
 		sessionFilePath: request.sessionFilePath,
 		retry: request.retry,
 		callbacks: request.callbacks,
 		signal,
+		onUsage: (usage: Usage) => {
+			plannerUsage = addUsage(plannerUsage, usage);
+		},
 	};
 	const hardInputLimit = hardInputLimitFor(model);
 
@@ -347,7 +381,7 @@ export async function runVerbatimCompaction(
 					...(plannerModel.thinkingLevel === undefined ? {} : { thinkingLevel: plannerModel.thinkingLevel }),
 				});
 			}
-			return plannedResult(preparation, attempt.ranges, plannerModel);
+			return plannedResult(preparation, attempt.ranges, plannerModel, plannerUsage);
 		}
 		lastTerminal = attempt.outcome;
 		attempted.add(plannerAttemptKey(planner));
@@ -357,5 +391,5 @@ export async function runVerbatimCompaction(
 	}
 
 	if (request.urgency !== "load_bearing") throw terminalError(lastTerminal);
-	return freshResult(preparation, hardInputLimit);
+	return freshResult(preparation, hardInputLimit, plannerUsage);
 }

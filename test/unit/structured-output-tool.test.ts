@@ -10,7 +10,7 @@ import {
 	createAllToolDefinitions,
 	createAllTools,
 	createStructuredOutputTool,
-	defaultToolNames,
+	getDefaultToolNames,
 	STRUCTURED_OUTPUT_TOOL_NAME,
 	type StructuredOutputCapture,
 } from "../../packages/coding-agent/src/core/tools/index.js";
@@ -251,7 +251,7 @@ describe("structured_output factory tool", () => {
 
 	test("is exported as an opt-in factory but not registered as a builtin", () => {
 		assert.equal(allToolNames.has("structured_output" as never), false);
-		assert.equal(defaultToolNames.includes("structured_output" as never), false);
+		assert.equal(getDefaultToolNames().includes("structured_output" as never), false);
 		assert.equal(typeof createStructuredOutputToolFromEntrypoint, "function");
 		assert.equal(STRUCTURED_OUTPUT_TOOL_NAME_FROM_ENTRYPOINT, STRUCTURED_OUTPUT_TOOL_NAME);
 

@@ -10,12 +10,19 @@ import {
 	handleForegroundInboundDelivery,
 } from "../../packages/intercom/foreground-detach-handoff.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
+import {
+	PARENT_ASK_HANDOFF_REQUEST_EVENT,
+	type ParentAskHandoffRequest,
+	requestParentAskHandoff,
+} from "../../packages/intercom/parent-ask-handoff.js";
+import { routePeerDisconnect } from "../../packages/intercom/peer-disconnect-routing.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
-import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
+import type { Attachment, Message, SessionInfo } from "../../packages/intercom/types.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { registerExecutionParentAskHandoff } from "../../packages/subagents/src/runs/foreground/execution-parent-ask-handoff.js";
 import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -52,43 +59,90 @@ type Tool = {
 	): Promise<{ content: Array<{ text: string }>; isError: boolean }>;
 };
 
-function fixture(kind: "intercom" | "supervisor") {
+interface FixtureOptions {
+	resolveSessionTarget?: (_client: object, target: string) => Promise<string | null>;
+}
+
+function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) {
 	let tool: Tool | undefined;
 	const sent: Array<{
 		to: string;
 		supervisor: boolean;
-		message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string };
+		message: {
+			messageId?: string;
+			text: string;
+			attachments?: Attachment[];
+			expectsReply?: boolean;
+			replyTo?: string;
+		};
 	}> = [];
 	const waiterCalls: Array<{ from: string; replyTo: string }> = [];
-	const slot = new ReplyWaiterSlot();
+	const emitter = new EventEmitter();
+	let connectCalls = 0;
+	let resolverCalls = 0;
+	const slot = new ReplyWaiterRegistry();
 	const client = {
 		sessionId: "child-id",
 		supervisorSessionId: "parent-id",
 		async listSessions() {
 			return [];
 		},
-		async send(to: string, message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string }) {
+		async send(
+			to: string,
+			message: {
+				messageId?: string;
+				text: string;
+				attachments?: Attachment[];
+				expectsReply?: boolean;
+				replyTo?: string;
+			},
+		) {
 			sent.push({ to, message, supervisor: false });
 			return { id: message.messageId ?? "sent", delivered: true };
 		},
 		async sendToSupervisor(
 			to: string,
-			message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string },
+			message: {
+				messageId?: string;
+				text: string;
+				attachments?: Attachment[];
+				expectsReply?: boolean;
+				replyTo?: string;
+			},
 		) {
 			sent.push({ to, message, supervisor: true });
 			return { id: message.messageId ?? "sent", delivered: true };
 		},
 	};
 	const pi = {
+		events: {
+			on(channel: string, handler: (payload: unknown) => void) {
+				emitter.on(channel, handler);
+				return () => emitter.off(channel, handler);
+			},
+			emit(channel: string, payload: unknown) {
+				emitter.emit(channel, payload);
+			},
+		},
 		registerTool(value: Tool) {
 			tool = value;
 		},
 		appendEntry() {},
 	};
 	const common = {
-		ensureConnected: async () => client,
+		ensureConnected: async () => {
+			connectCalls += 1;
+			return client;
+		},
 		syncPresenceIdentity() {},
-		resolveSessionTarget: async (_client: object, target: string) => (target === "parent" ? "parent-id" : target),
+		resolveSessionTarget: async (_client: object, target: string) => {
+			resolverCalls += 1;
+			return options.resolveSessionTarget
+				? options.resolveSessionTarget(_client, target)
+				: target === "parent"
+					? "parent-id"
+					: target;
+		},
 		beginReplyWait(from: string, replyTo: string, signal?: AbortSignal) {
 			waiterCalls.push({ from, replyTo });
 			return slot.begin(from, replyTo, signal);
@@ -96,7 +150,21 @@ function fixture(kind: "intercom" | "supervisor") {
 		hasReplyWaiter: () => slot.has(),
 	};
 	if (kind === "intercom") {
-		registerIntercomTool(pi as never, { ...common, confirmSend: false, replyTracker: new ReplyTracker() } as never);
+		registerIntercomTool(
+			pi as never,
+			{
+				...common,
+				confirmSend: false,
+				replyTracker: new ReplyTracker(),
+				childOrchestratorMetadata: {
+					orchestratorTarget: "parent",
+					runId: "run",
+					agent: "worker",
+					index: 2,
+					sessionName: "subagent-worker-run-3",
+				},
+			} as never,
+		);
 	} else {
 		registerContactSupervisorTool(
 			pi as never,
@@ -107,23 +175,31 @@ function fixture(kind: "intercom" | "supervisor") {
 					runId: "run",
 					agent: "worker",
 					index: 2,
+					sessionName: "subagent-worker-run-3",
 					supervisor: { capability: "capability", supervisorSessionId: "stale-parent-id" },
 				},
 			} as never,
 		);
 	}
 	return {
+		events: pi.events,
+		get connectCalls() {
+			return connectCalls;
+		},
+		get resolverCalls() {
+			return resolverCalls;
+		},
 		sent,
 		waiterCalls,
 		get waiter() {
-			return slot.current() ?? undefined;
+			return slot.pending()[0];
 		},
 		get tool() {
 			assert.ok(tool);
 			return tool;
 		},
 		reply(text: string, replyError?: string) {
-			const current = slot.current();
+			const current = slot.pending()[0];
 			assert.ok(current);
 			current.resolve({
 				id: "reply",
@@ -133,12 +209,299 @@ function fixture(kind: "intercom" | "supervisor") {
 				content: { text },
 			});
 		},
+		disconnect(peerName: string) {
+			const current = slot.pending()[0];
+			assert.ok(current);
+			return routePeerDisconnect(current, {
+				replyTo: current.replyTo,
+				peerSessionId: current.from,
+				peerName,
+			});
+		},
 	};
 }
 
 const context = { sessionManager: { getSessionId: () => "child-session" }, hasUI: false };
 
 describe("registered blocking intercom tools", () => {
+	test("contact_supervisor need_decision yields to a claimed parent ask before broker connection", async () => {
+		const current = fixture("supervisor");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ reason: "need_decision", message: "Choose verbatim" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.connectCalls, 0);
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+		assert.equal(captured?.kind, "decision");
+		assert.equal(captured?.question, "Choose verbatim");
+		assert.equal(captured?.runId, "run");
+		assert.equal(captured?.index, 2);
+		assert.equal(captured?.agent, "worker");
+	});
+	test("contact_supervisor need_decision preserves an omitted message as an empty parent question", async () => {
+		const current = fixture("supervisor");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute("call", { reason: "need_decision" }, undefined, undefined, context);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.connectCalls, 0);
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+		assert.equal(captured?.question, "");
+	});
+	test("contact_supervisor interview_request preserves validated question order in the terminal fresh-start handoff", async () => {
+		const current = fixture("supervisor");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{
+				reason: "interview_request",
+				message: "Answer both",
+				interview: {
+					title: "Choices",
+					questions: [
+						{ id: "first", type: "single", question: "Pick", options: ["A", "B"] },
+						{ id: "second", type: "text", question: "Why?" },
+					],
+				},
+			},
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.connectCalls, 0);
+		assert.equal(captured?.kind, "interview");
+		assert.equal(captured?.question, "Answer both");
+		assert.deepEqual(
+			captured?.interview?.questions.map((question) => question.id),
+			["first", "second"],
+		);
+		assert.deepEqual(captured?.interview?.questions[0]?.options, ["A", "B"]);
+	});
+	test("intercom ask yields when its target resolves to the launching parent", async () => {
+		const current = fixture("intercom");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "parent", message: "Keep  spacing\nraw" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.connectCalls, 1);
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+		assert.equal(captured?.kind, "intercom");
+		assert.equal(captured?.question, "Keep  spacing\nraw");
+		assert.equal(captured?.resolvedTargetId, "parent-id");
+	});
+	test("parent-targeted intercom ask preserves an empty message as an empty parent question", async () => {
+		const current = fixture("intercom");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "parent", message: "" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(captured?.question, "");
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+	});
+	test("empty ask reaches a parent resolved from a trimmed case-insensitive alias", async () => {
+		const current = fixture("intercom", {
+			resolveSessionTarget: async (_client, target) =>
+				target.trim().toLowerCase() === "parent-alias" ? "parent-id" : target,
+		});
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "  PARENT-ALIAS  ", message: "" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.resolverCalls, 1);
+		assert.equal(captured?.resolvedTargetId, "parent-id");
+		assert.equal(captured?.question, "");
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+	});
+
+	test("intercom ask claims the exact typed parent before an empty-list resolver miss", async () => {
+		const current = fixture("intercom", {
+			resolveSessionTarget: async () => null,
+		});
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "parent", message: "Resolver cannot list you" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.resolverCalls, 0, "typed parent identity must win before ordinary group resolution");
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+		assert.equal(captured?.resolvedTargetId, "parent-id");
+		assert.equal(captured?.question, "Resolver cannot list you");
+	});
+	test("parent-targeted intercom ask preserves ordered attachments", async () => {
+		const current = fixture("intercom");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+		const attachments: Attachment[] = [
+			{ type: "file", name: "first.txt", content: "first  content" },
+			{ type: "snippet", name: "duplicate", content: "const x = 1;", language: "ts" },
+			{ type: "context", name: "duplicate", content: "last\ncontext" },
+		];
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "parent", message: "Review attachments", attachments },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(result.isError, false);
+		assert.equal(captured?.attachments, attachments);
+		assert.deepEqual(captured?.attachments, attachments);
+		assert.equal(current.sent.length, 0);
+	});
+	test("intercom ask also yields for the exact launching-parent session ID", async () => {
+		const current = fixture("intercom");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "parent-id", message: "Exact parent ID" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(result.isError, false);
+		assert.equal(captured?.resolvedTargetId, "parent-id");
+		assert.equal(current.waiterCalls.length, 0);
+	});
+
+	test("intercom ask to a non-parent peer keeps the normal waiter and send path", async () => {
+		const current = fixture("intercom");
+		let parentAskEvents = 0;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, () => {
+			parentAskEvents += 1;
+		});
+		const execution = current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "Peer question" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		assert.equal(parentAskEvents, 0);
+		assert.equal(current.sent[0]?.to, "sibling");
+		assert.equal(current.waiterCalls.length, 1);
+		current.reply("Peer answer");
+		assert.equal((await execution).isError, false);
+	});
+	test("non-parent intercom ask still rejects an empty message", async () => {
+		const current = fixture("intercom");
+		let parentAskEvents = 0;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, () => {
+			parentAskEvents += 1;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]?.text, "Missing 'to' or 'message' parameter");
+		assert.equal(parentAskEvents, 0);
+		assert.equal(current.resolverCalls, 2);
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+	});
+	test("non-parent intercom ask sends attachments unchanged", async () => {
+		const current = fixture("intercom");
+		const attachments: Attachment[] = [
+			{ type: "snippet", name: "same", content: "one", language: "txt" },
+			{ type: "context", name: "same", content: "two" },
+		];
+		const execution = current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "Peer attachments", attachments },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		assert.equal(current.sent[0]?.message.attachments, attachments);
+		current.reply("Received");
+		assert.equal((await execution).isError, false);
+	});
 	test("intercom ask waits for an exact threaded reply and resumes", async () => {
 		const current = fixture("intercom");
 		const execution = current.tool.execute(
@@ -207,8 +570,46 @@ describe("registered blocking intercom tools", () => {
 		assert.match(result.content[0]?.text ?? "", /Use option B/);
 	});
 
+	test("intercom ask fails on peer disconnect while its ten-minute timeout remains armed", async () => {
+		const current = fixture("intercom");
+		const execution = current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "Peer question" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		assert.equal(current.disconnect("sibling"), true);
+
+		const result = await execution;
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]?.text, 'Failed: Session "sibling" disconnected before replying');
+	});
+
+	test("contact_supervisor blocking waits receive the same peer disconnect release", async () => {
+		const current = fixture("supervisor");
+		const execution = current.tool.execute(
+			"call",
+			{ reason: "need_decision", message: "Choose" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		assert.equal(current.disconnect("parent"), true);
+
+		const result = await execution;
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]?.text, 'Failed: Session "parent" disconnected before replying');
+	});
+
 	test("send and progress_update return without creating a reply waiter", async () => {
 		const send = fixture("intercom");
+		let parentAskEvents = 0;
+		send.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, () => {
+			parentAskEvents += 1;
+		});
 		const sent = await send.tool.execute(
 			"call",
 			{ action: "send", to: "parent", message: "Update" },
@@ -219,8 +620,12 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(sent.isError, false);
 		assert.equal(send.sent[0]?.message.expectsReply, undefined);
 		assert.equal(send.waiterCalls.length, 0);
+		assert.equal(parentAskEvents, 0);
 
 		const progress = fixture("supervisor");
+		progress.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, () => {
+			parentAskEvents += 1;
+		});
 		const updated = await progress.tool.execute(
 			"call",
 			{ reason: "progress_update", message: "Halfway" },
@@ -232,6 +637,7 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(progress.sent[0]?.message.expectsReply, undefined);
 		assert.equal(progress.sent[0]?.supervisor, true);
 		assert.equal(progress.waiterCalls.length, 0);
+		assert.equal(parentAskEvents, 0);
 	});
 });
 
@@ -249,6 +655,169 @@ function joinedBus(emitter: EventEmitter, order: string[]) {
 		},
 	};
 }
+
+test("a child-scoped event bus claims the exact live parent execution through the process channel", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-parent-ask-claim-"));
+	const gate = deferred();
+	const emitter = new EventEmitter();
+	const listenerReady = Promise.withResolvers<void>();
+	const interruptController = new AbortController();
+	let captured: ParentAskHandoffRequest | undefined;
+	const bus = {
+		on(channel: string, handler: (payload: unknown) => void) {
+			emitter.on(channel, handler);
+			if (channel === PARENT_ASK_HANDOFF_REQUEST_EVENT) listenerReady.resolve();
+			return () => emitter.off(channel, handler);
+		},
+		emit(channel: string, payload: unknown) {
+			emitter.emit(channel, payload);
+		},
+	};
+	const childEmitter = new EventEmitter();
+	const childBus = {
+		on(channel: string, handler: (payload: unknown) => void) {
+			childEmitter.on(channel, handler);
+			return () => childEmitter.off(channel, handler);
+		},
+		emit(channel: string, payload: unknown) {
+			childEmitter.emit(channel, payload);
+		},
+	};
+	try {
+		const foreground = runSync(dir, [agentConfig()], "fake-worker", "task", {
+			cwd: dir,
+			runId: "exact-run",
+			index: 0,
+			intercomSessionName: "subagent-fake-worker-exact-run-1",
+			orchestratorIntercomTarget: "parent-id",
+			intercomEvents: bus,
+			interruptSignal: interruptController.signal,
+			onParentAskHandoff: (request) => {
+				captured = request;
+				interruptController.abort();
+			},
+			testSession: { output: "must not complete", promptGate: gate.promise, abortResolvesPrompt: true },
+		});
+		const registered = await Promise.race([listenerReady.promise.then(() => true), sleep(100).then(() => false)]);
+		if (!registered) {
+			interruptController.abort();
+			await foreground;
+			assert.fail("parent-ask listener was not registered");
+		}
+		const claimed = requestParentAskHandoff(
+			childBus as never,
+			{
+				runId: "exact-run",
+				index: "0",
+				agent: "fake-worker",
+				sessionName: "subagent-fake-worker-exact-run-1",
+				orchestratorTarget: "parent-id",
+			},
+			{ kind: "decision", question: "Which option?" },
+		);
+		const result = await foreground;
+
+		assert.equal(claimed, true);
+		assert.equal(captured?.question, "Which option?");
+		assert.equal(result.status, "interrupted");
+		assert.equal(result.interrupted, true);
+		assert.notEqual(result.finalOutput, "must not complete");
+		assert.equal(
+			requestParentAskHandoff(
+				childBus as never,
+				{
+					runId: "exact-run",
+					index: "0",
+					agent: "fake-worker",
+					sessionName: "subagent-fake-worker-exact-run-1",
+					orchestratorTarget: "parent-id",
+				},
+				{ kind: "decision", question: "After cleanup" },
+			),
+			false,
+		);
+	} finally {
+		gate.release();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a parent ask request can be claimed only once", () => {
+	const emitter = new EventEmitter();
+	const events = {
+		on(channel: string, handler: (payload: unknown) => void) {
+			emitter.on(channel, handler);
+			return () => emitter.off(channel, handler);
+		},
+		emit(channel: string, payload: unknown) {
+			emitter.emit(channel, payload);
+		},
+	};
+	let claims = 0;
+	for (let listener = 0; listener < 2; listener++) {
+		registerExecutionParentAskHandoff(
+			{
+				runId: "same-run",
+				index: 0,
+				intercomSessionName: "same-child",
+				orchestratorIntercomTarget: "same-parent",
+				intercomEvents: events,
+				onParentAskHandoff: () => {
+					claims += 1;
+				},
+			},
+			{ agent: "worker", isUnavailable: () => false },
+		);
+	}
+	const unmatched: ParentAskHandoffRequest[] = [
+		{
+			runId: "other-run",
+			index: 0,
+			agent: "worker",
+			childIntercomTarget: "same-child",
+			orchestratorTarget: "same-parent",
+			kind: "decision",
+			question: "wrong run",
+			claimed: false,
+		},
+		{
+			runId: "same-run",
+			index: 1,
+			agent: "worker",
+			childIntercomTarget: "same-child",
+			orchestratorTarget: "same-parent",
+			kind: "decision",
+			question: "wrong index",
+			claimed: false,
+		},
+		{
+			runId: "same-run",
+			index: 0,
+			agent: "worker",
+			childIntercomTarget: "other-child",
+			orchestratorTarget: "same-parent",
+			kind: "decision",
+			question: "wrong child",
+			claimed: false,
+		},
+	];
+	for (const candidate of unmatched) events.emit(PARENT_ASK_HANDOFF_REQUEST_EVENT, candidate);
+	assert.ok(unmatched.every((candidate) => !candidate.claimed));
+	assert.equal(claims, 0);
+	const request: ParentAskHandoffRequest = {
+		runId: "same-run",
+		index: 0,
+		agent: "worker",
+		childIntercomTarget: "same-child",
+		orchestratorTarget: "same-parent",
+		kind: "decision",
+		question: "one owner",
+		claimed: false,
+	};
+	events.emit(PARENT_ASK_HANDOFF_REQUEST_EVENT, request);
+	assert.equal(request.claimed, true);
+	assert.equal(claims, 1);
+});
 
 for (const kind of ["intercom", "supervisor"] as const) {
 	test(`joined production inbound handoff resumes ${kind === "intercom" ? "generic ask" : "contact_supervisor need_decision"}`, async () => {
@@ -283,7 +852,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
 			);
 
 			let registered: Tool | undefined;
-			const slot = new ReplyWaiterSlot();
+			const slot = new ReplyWaiterRegistry();
 			const surfaced: Message[] = [];
 			const handoff = new ForegroundDetachHandoff(piForHandoff as never, 1000);
 			const from: SessionInfo = {
@@ -391,10 +960,10 @@ for (const kind of ["intercom", "supervisor"] as const) {
 			assert.equal(detached.detached, true);
 			assert.equal(surfaced.length, 1);
 			assert.deepEqual(order.slice(0, 3), ["probe", "commit", "surface"]);
-			assert.equal(slot.current()?.replyTo, surfaced[0]?.id);
+			assert.equal(slot.pending()[0]?.replyTo, surfaced[0]?.id);
 			order.push("reply");
 			const routed = routeIncomingReply(
-				slot.current(),
+				slot.pending(),
 				{
 					id: "parent-id",
 					name: "parent",

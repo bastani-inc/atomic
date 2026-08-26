@@ -103,6 +103,35 @@ InteractiveModeBase.prototype.onHostCustomUiStateChange = function (
 	};
 };
 
+InteractiveModeBase.prototype.onExtensionWidgetRelease = function (
+	this: InteractiveModeBase,
+	key: string,
+	listener: () => void,
+): () => void {
+	let widgetReleaseListeners = this.widgetReleaseListeners;
+	if (!widgetReleaseListeners) {
+		widgetReleaseListeners = new Map();
+		this.widgetReleaseListeners = widgetReleaseListeners;
+	}
+	const listeners = widgetReleaseListeners.get(key) ?? new Set<() => void>();
+	listeners.add(listener);
+	widgetReleaseListeners.set(key, listeners);
+	return () => {
+		listeners.delete(listener);
+		if (listeners.size === 0) widgetReleaseListeners.delete(key);
+	};
+};
+
+InteractiveModeBase.prototype.notifyExtensionWidgetRelease = function (this: InteractiveModeBase, key: string): void {
+	for (const listener of this.widgetReleaseListeners?.get(key) ?? []) {
+		try {
+			listener();
+		} catch {
+			/* ignore observer errors */
+		}
+	}
+};
+
 InteractiveModeBase.prototype.createProjectTrustContext = function (
 	this: InteractiveModeBase,
 	cwd: string,
@@ -144,6 +173,7 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 		setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
 		setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
 		setFooter: (factory) => this.setExtensionFooter(factory),
+		onWidgetRelease: (key, listener) => this.onExtensionWidgetRelease(key, listener),
 		setHeader: (factory) => this.setExtensionHeader(factory),
 		setTitle: (title) => this.ui.terminal.setTitle(title),
 		custom: (factory, options) => this.showExtensionCustom(factory, options),

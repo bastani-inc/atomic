@@ -67,6 +67,22 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"websocket.?closed",
 	"websocket.?error",
 
+	// Response-body decompression failures. Node/Bun zlib rejects a body whose
+	// Content-Encoding lied or whose compressed bytes were corrupted, and the
+	// fetch/WebSocket layer wraps it with a "Library error:" prefix. GitHub
+	// Copilot on the default `transport: "auto"` reports this as
+	// "Library error: zlib error: incorrect header check" (#2553). The transfer
+	// is already unusable, and a fresh attempt normally succeeds, so treat every
+	// variant as a transient transport failure rather than a deterministic error.
+	"zlib",
+	"incorrect header check",
+	"decompress",
+	"library error",
+
+	// Idle-stream deadline enforced below the HTTP layer by `withStreamDeadline`
+	// so a stream that never settles cannot hang an attempt forever (#2553).
+	"stream deadline exceeded",
+
 	// Premature stream endings from SDKs and transports. Anthropic can throw
 	// "stream ended without ..." and "Anthropic stream ended before message_stop"
 	// (#4433); Bedrock/Smithy can throw an HTTP/2 no-response error (#3594).

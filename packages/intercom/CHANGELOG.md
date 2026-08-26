@@ -4,6 +4,31 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.16-alpha.5] - 2026-08-26
+
+### Added
+
+- Concurrent blocking asks now use a correlation-keyed waiter registry, with configurable `maxPendingAsks` capacity, exact out-of-order reply and selective-disconnect settlement, and a structured refusal when full. Blocking supervisor decisions remain exclusive per child while coexisting with ordinary peer asks ([#2628](https://github.com/bastani-inc/atomic/issues/2628)).
+
+### Changed
+
+- Session teardown rejects every pending reply waiter while preserving per-waiter reply, timeout, abort, cancel, and peer-disconnect settlement.
+
+### Fixed
+
+- Blocking `ask` and `contact_supervisor` waits now fail promptly with the departed session's name when their target disconnects after delivery, instead of hanging until the 10-minute timeout ([#2627](https://github.com/bastani-inc/atomic/issues/2627)).
+- Replying to an exact pending ask now removes its queued turn context, preventing the same ask from resurfacing and being answered twice ([#2628](https://github.com/bastani-inc/atomic/issues/2628)).
+
+## [0.9.16-alpha.1] - 2026-08-23
+
+### Breaking Changes
+
+- Parent-targeted blocking asks no longer pause a child for `subagent` resume. They end the child and return a fresh-subagent `[TASK_CONTEXT]` handoff; migrate supervisors to launch a new child with the answer ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
+
+### Changed
+
+- `contact_supervisor` decisions/interviews and child-to-parent `intercom.ask` now preserve the original question, ordered duplicate attachments, and agent identity in the fresh-start handoff before broker send or reply-waiter admission ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
+
 ## [0.9.13] - 2026-08-13
 
 Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.3` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

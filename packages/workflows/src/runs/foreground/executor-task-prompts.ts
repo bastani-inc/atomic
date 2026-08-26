@@ -113,7 +113,6 @@ export function taskStageOptions(options: WorkflowTaskExecutionOptions): StageOp
 		worktree: _worktree,
 		gitWorktreeDir: _gitWorktreeDir,
 		baseBranch: _baseBranch,
-		maxOutput: _maxOutput,
 		artifacts: _artifacts,
 		...stageOptions
 	} = options;

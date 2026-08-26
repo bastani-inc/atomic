@@ -14,12 +14,14 @@ function parallelChild(
 	extra: {
 		interrupted?: boolean;
 		detached?: boolean;
+		cause?: string;
 		model?: string;
 		thinking?: string;
 		fastMode?: boolean;
+		progressIndex?: number;
 	} = {},
 ): Details["results"][number] {
-	return {
+	const result = {
 		agent,
 		task: `task for ${agent}`,
 		status,
@@ -27,14 +29,38 @@ function parallelChild(
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		...extra,
 	} as Details["results"][number];
+	if (extra.progressIndex !== undefined) {
+		result.progress = {
+			index: extra.progressIndex,
+			agent,
+			status: "completed",
+			task: result.task,
+			durationMs: 1,
+			toolCount: 0,
+			tokens: 0,
+			recentTools: [],
+			recentOutput: [],
+		};
+	}
+	return result;
 }
 
-function renderParallel(results: Details["results"]): string {
+function renderParallel(
+	results: Details["results"],
+	options: { parentAskYielded?: boolean; expanded?: boolean; content?: string } = {},
+): string {
 	const result: AgentToolResult<Details> = {
-		content: [{ type: "text", text: "done" }],
-		details: { mode: "parallel", results, totalSteps: results.length },
+		content: [{ type: "text", text: options.content ?? "done" }],
+		details: {
+			mode: "parallel",
+			results,
+			totalSteps: results.length,
+			parentAskYielded: options.parentAskYielded,
+		},
 	};
-	return renderSubagentResult(result, { expanded: true }, theme).render(120).join("\n");
+	return renderSubagentResult(result, { expanded: options.expanded ?? true }, theme)
+		.render(120)
+		.join("\n");
 }
 
 describe("top-level parallel status reduction", () => {
@@ -53,6 +79,16 @@ describe("top-level parallel status reduction", () => {
 		assert.doesNotMatch(rendered, /paused parallel/);
 	});
 
+	test("a parent-cancelled child reads cancelled, never failed", () => {
+		const rendered = renderParallel([
+			parallelChild("alpha", "ok"),
+			parallelChild("beta", "interrupted", { interrupted: true, cause: "abort" }),
+		]);
+		assert.match(rendered, /cancelled/);
+		assert.doesNotMatch(rendered, /failed/);
+		assert.doesNotMatch(rendered, /✓/);
+	});
+
 	test("a detached child reads failed, never paused", () => {
 		const rendered = renderParallel([
 			parallelChild("alpha", "ok"),
@@ -62,9 +98,44 @@ describe("top-level parallel status reduction", () => {
 		assert.doesNotMatch(rendered, /paused parallel/);
 	});
 
+	test("a parent-ask interruption reads yielded and shows the fresh-start handoff", () => {
+		const content = [
+			"Subagent yielded for parent input (beta, child 2).",
+			"Previous run (terminal): exact-run",
+			"Question:",
+			"Keep  this question verbatim?",
+			"Start a fresh subagent with a new run identity:",
+			'subagent({ "agent": "beta", "task": "[TASK_CONTEXT] Continue with this supervisor answer: <SUPERVISOR_ANSWER>" })',
+		].join("\n");
+		const children = [
+			parallelChild("alpha", "interrupted", { interrupted: true }),
+			parallelChild("beta", "interrupted", { interrupted: true }),
+			parallelChild("queued", "skipped"),
+		];
+		for (const expanded of [false, true]) {
+			const rendered = renderParallel(children, { parentAskYielded: true, expanded, content });
+			assert.match(rendered, expanded ? /yielded parallel/ : /■ parallel/);
+			assert.match(rendered, /Keep {2}this question verbatim\?/);
+			assert.match(rendered, /Start a fresh subagent/);
+			assert.doesNotMatch(rendered, /action.*resume/i);
+			assert.doesNotMatch(rendered, /failed parallel/);
+		}
+	});
+
 	test("every child ok still reads ok", () => {
 		const rendered = renderParallel([parallelChild("alpha", "ok"), parallelChild("beta", "ok")]);
 		assert.match(rendered, /ok parallel · 2\/2 done/);
+	});
+
+	test("children with canonical indexes render 2/2 and distinct rows", () => {
+		const rendered = renderParallel([
+			parallelChild("alpha", "ok", { progressIndex: 0 }),
+			parallelChild("beta", "ok", { progressIndex: 1 }),
+		]);
+		assert.match(rendered, /ok parallel · 2\/2 done/);
+		assert.match(rendered, /Agent 1\/2: alpha/);
+		assert.match(rendered, /Agent 2\/2: beta/);
+		assert.equal(rendered.match(/Agent 1\/2:/g)?.length, 1);
 	});
 });
 

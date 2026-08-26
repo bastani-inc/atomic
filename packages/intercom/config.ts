@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "fs";
 import { getAgentConfigPaths } from "@bastani/atomic";
+import { DEFAULT_MAX_PENDING_REPLY_WAITS } from "./reply-waiter.ts";
 
 export interface IntercomConfig {
   /** Broker command used to spawn the broker process (e.g. "npx", "bun", or "node") */
@@ -10,6 +11,9 @@ export interface IntercomConfig {
 
   /** Require confirmation before non-reply sends from interactive sessions */
   confirmSend: boolean;
+
+  /** Maximum concurrent blocking asks for this session. */
+  maxPendingAsks: number;
 
   /** Optional custom status suffix shown after automatic lifecycle status */
   status?: string;
@@ -34,6 +38,7 @@ const defaults: IntercomConfig = {
   brokerCommand: DEFAULT_BROKER_COMMAND,
   brokerArgs: [...DEFAULT_BROKER_ARGS],
   confirmSend: false,
+  maxPendingAsks: DEFAULT_MAX_PENDING_REPLY_WAITS,
   enabled: true,
   replyHint: true,
 };
@@ -83,6 +88,13 @@ export function loadConfig(): IntercomConfig {
         throw new Error(`"confirmSend" must be a boolean`);
       }
       config.confirmSend = parsedConfig.confirmSend;
+    }
+
+    if (Object.hasOwn(parsedConfig, "maxPendingAsks")) {
+      if (!Number.isInteger(parsedConfig.maxPendingAsks) || Number(parsedConfig.maxPendingAsks) < 1) {
+        throw new Error(`"maxPendingAsks" must be an integer greater than or equal to 1`);
+      }
+      config.maxPendingAsks = Number(parsedConfig.maxPendingAsks);
     }
 
     if (Object.hasOwn(parsedConfig, "enabled")) {

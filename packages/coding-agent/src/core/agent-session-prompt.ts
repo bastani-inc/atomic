@@ -124,11 +124,12 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			return;
 		}
 
-		// A fallback model is scoped to the failing turn. Restore the user-selected
-		// model before validating credentials for the next idle prompt.
-		if (typeof this._restoreFallbackModel === "function") await this._restoreFallbackModel();
-		// Flush any pending bash messages before the new prompt
+		// Close the completed fallback lifecycle before validating credentials for
+		// the next idle prompt. The selected fallback remains the session model.
+		if (typeof this._settleFallbackModelScope === "function") await this._settleFallbackModelScope();
+		// Flush context-only messages deferred until the previous turn's tool results were appended.
 		this._flushPendingBashMessages();
+		this._flushPendingCustomMessages();
 
 		// Validate model
 		if (!this.model) {
@@ -253,6 +254,7 @@ export async function _runAgentPrompt(
 	} finally {
 		this._systemPromptOverride = undefined;
 		await this._agentEventQueue;
+		this._flushPendingCustomMessages();
 		if (typeof this._extensionRunner?.emit === "function") {
 			await this._extensionRunner.emit({ type: "agent_settled" });
 		}

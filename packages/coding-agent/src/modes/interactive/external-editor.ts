@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME } from "../../config.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { stripBom } from "../../utils/text.ts";
 
 export interface ExternalEditorRequest {
 	command: string;
@@ -122,7 +123,7 @@ export async function editInExternalEditor(request: ExternalEditorRequest): Prom
 		if (exitCode !== 0) return { status: "failed" };
 		return {
 			status: "complete",
-			content: readFileSync(filePath, "utf-8").replace(/\n$/, ""),
+			content: stripBom(readFileSync(filePath, "utf-8")).replace(/\n$/, ""),
 		};
 	} finally {
 		try {

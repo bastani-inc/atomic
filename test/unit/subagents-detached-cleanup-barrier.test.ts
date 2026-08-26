@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { createDetachedCleanupBarrier } from "../../packages/subagents/src/runs/foreground/detached-cleanup-barrier.js";
 
-test("detached resource cleanup waits for every retained child and runs once", () => {
+test("detached resource cleanup waits for every detached child and runs once", () => {
 	let cleanups = 0;
 	const barrier = createDetachedCleanupBarrier(() => {
 		cleanups += 1;

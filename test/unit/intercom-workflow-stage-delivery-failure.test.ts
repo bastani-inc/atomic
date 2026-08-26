@@ -3,7 +3,7 @@ import { test } from "vitest";
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	createWorkflowStageDeliveryFailureHandler,
@@ -33,7 +33,7 @@ const ask: Message = {
 };
 
 test("a destination-side running-stage admission failure rejects the exact ask without its long timeout", async () => {
-	const waiter = new ReplyWaiterSlot();
+	const waiter = new ReplyWaiterRegistry();
 	const admission = waiter.begin(target.id, ask.id);
 	assert.equal(admission.ok, true);
 	if (!admission.ok) throw new Error("reply waiter admission failed");
@@ -50,7 +50,7 @@ test("a destination-side running-stage admission failure rejects the exact ask w
 				isConnected: () => true,
 				async send(to: string, options: { text: string; replyTo?: string; replyError?: string }) {
 					assert.equal(to, asker.id);
-					const routed = routeIncomingReply(waiter.current(), target, {
+					const routed = routeIncomingReply(waiter.pending(), target, {
 						id: "delivery-failure",
 						timestamp: Date.now(),
 						replyTo: options.replyTo,

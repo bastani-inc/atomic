@@ -44,13 +44,15 @@ const runSyncMock = vi.fn(
 		options: MinimalRunSyncOptions,
 	) => {
 		runSyncCalls.push({ agentName, options });
+		const interrupted = task === "initial task";
 		return {
 			agent: agentName,
 			task,
-			status: "ok" as const,
+			status: interrupted ? ("interrupted" as const) : ("ok" as const),
 			messages: [],
 			usage: emptyUsage,
 			finalOutput: `${agentName} output`,
+			...(interrupted ? { interrupted: true } : {}),
 		};
 	},
 );
@@ -72,7 +74,6 @@ function makeState() {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
@@ -204,34 +205,5 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		);
 		assertNoErrorFlag(result);
 		assertGuardedRunSyncCalls(["alpha"]);
-	});
-
-	test("a retained foreground resume still carries the workflow-stage guard", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-retained-resume-guard-"));
-		const executor = makeExecutor([makeAgent("alpha")]);
-
-		const initial = await executor.execute(
-			"subagent",
-			{ agent: "alpha", task: "initial task" },
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-		assertNoErrorFlag(initial);
-		const runId = initial.details.runId;
-		assert.ok(runId, "the initial delegation must retain a run id");
-
-		// No live in-process control exists for this run, so resume falls back to the
-		// retained foreground record, which is the path under test.
-		const resumed = await executor.execute(
-			"subagent",
-			{ action: "resume", id: runId, message: "keep going" },
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-
-		assertNoErrorFlag(resumed);
-		assertGuardedRunSyncCalls(["alpha", "alpha"]);
 	});
 });

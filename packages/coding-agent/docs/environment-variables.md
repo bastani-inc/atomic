@@ -27,9 +27,9 @@ Atomic accepts environment variables for configuration, provider credentials, an
 
 Provider keys include `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `GEMINI_API_KEY`, AWS/Bedrock credentials, and the variables listed in [Providers](/providers#environment-variables-or-auth-file). `ANTHROPIC_AUTH_TOKEN` is a distinct header-only bearer credential for Anthropic-compatible gateways: Atomic sends `Authorization: Bearer …` without requiring or inventing an API key, including normal turns, isolated execution, branch summaries, and Verbatim Compaction. Custom headers remain independent.
 
-## Bash session environment
+## Bash and PowerShell session environment
 
-Every built-in, factory-created, direct, workflow-stage, and isolated bash execution receives one execution-time snapshot:
+Every built-in, factory-created, direct, workflow-stage, and isolated bash or PowerShell execution receives one execution-time snapshot:
 
 | Atomic variable | Exact Pi alias | Value |
 |---|---|---|
@@ -39,6 +39,6 @@ Every built-in, factory-created, direct, workflow-stage, and isolated bash execu
 | `ATOMIC_MODEL` | `PI_MODEL` | Active model ID; omitted when no model is selected |
 | `ATOMIC_REASONING_LEVEL` | `PI_REASONING_LEVEL` | Active reasoning level |
 
-Atomic clears these ten reserved names before overlaying the current snapshot, preventing stale metadata from another session or workflow stage. Unrelated inherited/caller variables remain intact. The snapshot is taken when execution begins, so a resumed session or later model change is reflected. SDK `createBashTool()` exposes it by default; set `exposeSessionEnvironment: false` to opt out.
+Atomic clears these ten reserved names before overlaying the current snapshot, preventing stale metadata from another session or workflow stage. Unrelated inherited/caller variables remain intact. The snapshot is taken when execution begins, so a resumed session or later model change is reflected. SDK `createBashTool()` and `createPowerShellTool()` expose it by default; set `exposeSessionEnvironment: false` to opt out.
 
 See [Using Atomic](/usage#environment-variables) and [RPC direct bash](/rpc#bash) for execution and streaming behavior.

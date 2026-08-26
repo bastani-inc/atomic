@@ -165,6 +165,8 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	const settle = (ok: boolean, result: RunResult | undefined, error: unknown | undefined): void => {
 		try {
 			onRawSettled?.(ok, result, error);
+		} catch {
+			// Settlement observers must not become unhandled rejections.
 		} finally {
 			registry.unregister(runId, controller);
 			tracker.unregister(runId, jobEntry);

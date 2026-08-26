@@ -5,8 +5,8 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false
 tools: read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo
-model: openai-codex/gpt-5.6-luna:max
-fallbackModels: github-copilot/gpt-5.6-luna:max, openai/gpt-5.6-luna:max, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.6:xhigh, github-copilot/grok-4.6:xhigh, zai/glm-5.3:high, zai-coding-cn/glm-5.3:high, openrouter/openai/gpt-5.6-luna:max, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.6
+model: openai-codex/gpt-5.6-sol:medium
+fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.6:xhigh, github-copilot/grok-4.6:xhigh, zai/glm-5.3:high, zai-coding-cn/glm-5.3:high, openrouter/openai/gpt-5.6-sol:medium, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.6
 skills: tdd, playwright-cli, tmux
 defaultContext: fork
 defaultProgress: true
@@ -20,9 +20,9 @@ Treat an approved handoff or execution plan as the contract. Inspect inherited c
 
 ## Decision and escalation contract
 
-Do not silently make a new product, architecture, or scope decision. When implementation reveals an unapproved decision required to continue safely, pause and use the live coordination route supplied at runtime. Use `contact_supervisor` with `reason: "need_decision"` and stay alive for the reply. Use `reason: "progress_update"` only for a concise, non-blocking update when helpful or explicitly requested. Fall back to `intercom` only when `contact_supervisor` is unavailable.
+Do not silently make a new product, architecture, or scope decision. When implementation reveals an unapproved decision required to continue safely, use the live coordination route supplied at runtime. Use `contact_supervisor` with `reason: "need_decision"`; a claimed request ends this child and gives the supervisor a fresh-subagent handoff, so do not wait for a reply in this run. Use `reason: "progress_update"` only for a concise, non-blocking update when helpful or explicitly requested. Fall back to `intercom` only when `contact_supervisor` is unavailable.
 
-Do not end with a question requiring the supervisor to choose before work can continue. Do not send routine completion handoffs; return the normal task result when coordination is unnecessary. If you sent a blocked or progress update through `contact_supervisor`, keep it short and still provide the full structured result.
+Do not end with a question requiring the supervisor to choose before work can continue. Do not send routine completion handoffs; return the normal task result when coordination is unnecessary. If you sent a progress update through `contact_supervisor`, keep it short and still provide the full structured result.
 
 ## Work and validation
 

@@ -34,7 +34,6 @@ interface CapturedAttempt {
 
 const harness = vi.hoisted(() => ({
 	attempts: [] as { spec: unknown; candidate: unknown }[],
-	nested: [] as unknown[],
 }));
 
 /**
@@ -77,9 +76,7 @@ vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () =>
 				promise: Promise.resolve(outcome as AttemptOutcome),
 			};
 		},
-		registerAttempt: (_runId: string, _running: unknown, candidate: unknown) => {
-			harness.nested.push(candidate);
-		},
+		registerAttempt: (_runId: string, _running: unknown) => undefined,
 		continueDetached: () => undefined,
 		deliverChildResult: async () => undefined,
 		getDeliveredResult: () => undefined,
@@ -146,7 +143,6 @@ async function runAndCapture(options: {
 	resolve?: boolean;
 }): Promise<CapturedAttempt> {
 	harness.attempts.length = 0;
-	harness.nested.length = 0;
 	const cwd = makeCwd();
 	await runSingleInProcess(cwd, options.agent, "do the thing", {
 		cwd,
@@ -207,13 +203,6 @@ describe("fork-context subagent model selection", () => {
 
 		assert.deepEqual(candidate.model, configuredModel);
 		assert.deepEqual(spec.model, configuredModel);
-	});
-
-	test("the nested-resume candidate carries the same resolved model", async () => {
-		await runAndCapture({ agent: agentConfig({ model: CONFIGURED_MODEL_ID }) });
-
-		assert.equal(harness.nested.length, 1);
-		assert.deepEqual((harness.nested[0] as ModelCandidate).model, configuredModel);
 	});
 
 	test("an unresolvable candidate leaves the model unset rather than failing the run", async () => {

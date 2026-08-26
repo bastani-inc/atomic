@@ -12,6 +12,7 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
+	type ForegroundParentAskHandoff,
 	isWorkflowStageOrchestrationContext,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
@@ -20,20 +21,21 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
 import { resolveModelCandidate } from "../shared/model-fallback.js";
-import { aggregateParallelOutputs } from "../shared/parallel-utils.js";
+import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
 import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.js";
 import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.js";
+import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
+import { markParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
-	rememberForegroundRun,
-	replaceForegroundRunChild,
 } from "./subagent-executor-status.js";
 import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.js";
 import {
@@ -82,17 +84,19 @@ export async function runParallelPath(
 			details: { mode: "parallel" as const, results: [] },
 		};
 
-	const agentConfigs: AgentConfig[] = [];
-	for (const t of tasks) {
-		const config = agents.find((a) => a.name === t.agent);
-		if (!config) {
-			return {
-				content: [{ type: "text", text: `Unknown agent: ${t.agent}` }],
-				isError: true,
-				details: { mode: "parallel" as const, results: [] },
-			};
+	const agentConfigs: AgentConfig[] = data.parallelAgentConfigs ? [...data.parallelAgentConfigs] : [];
+	if (!data.parallelAgentConfigs) {
+		for (const task of tasks) {
+			const config = agents.find((agent) => agent.name === task.agent);
+			if (!config) {
+				return {
+					content: [{ type: "text", text: `Unknown agent: ${task.agent}` }],
+					isError: true,
+					details: { mode: "parallel" as const, results: [] },
+				};
+			}
+			agentConfigs.push(config);
 		}
-		agentConfigs.push(config);
 	}
 
 	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
@@ -143,6 +147,7 @@ export async function runParallelPath(
 		cleanupWorktrees(worktreeSetup);
 	});
 	if (errorResult) return errorResult;
+	let parentAsk: ForegroundParentAskHandoff | undefined;
 
 	try {
 		const duplicateOutputError = findDuplicateParallelOutputPath({
@@ -176,7 +181,6 @@ export async function runParallelPath(
 		const results = await runForegroundParallelTasks({
 			onDetachedExit: (index, result) => {
 				try {
-					replaceForegroundRunChild(deps.state, runId, index, result);
 					notifyDetachedForegroundChildExit({
 						pi: deps.pi,
 						runId,
@@ -189,9 +193,13 @@ export async function runParallelPath(
 					detachedCleanup.recover(index);
 				}
 			},
+			onParentAskHandoff: (handoff) => {
+				if (!parentAsk) parentAsk = handoff;
+			},
 			tasks,
 			taskTexts,
 			agents,
+			...(data.parallelAgentConfigs ? { agentConfigs } : {}),
 			ctx,
 			intercomEvents: deps.pi.events,
 			signal,
@@ -237,26 +245,36 @@ export async function runParallelPath(
 			if (result.artifactPaths) allArtifactPaths.push(result.artifactPaths);
 		}
 
-		const interrupted = results.find((result) => result.interrupted);
+		const interrupted = results.find((result) => result.interrupted && !isParentCancellation(result.cause));
 		const details = compactForegroundDetails({
 			mode: "parallel",
 			runId,
 			results,
+			parentAskYielded: parentAsk !== undefined,
 			progress: params.includeProgress ? allProgress : undefined,
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
-		rememberForegroundRun(deps.state, {
-			runId,
-			mode: "parallel",
-			cwd: effectiveCwd,
-			results: details.results,
-		});
-		if (interrupted) {
+		if (parentAsk) {
+			const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
+			const handoffText = formatParentAskHandoffOutput(parentAsk);
+			const yieldedResult: SubagentToolResult = {
+				content: [{ type: "text", text: worktreeSuffix ? `${handoffText}\n\n${worktreeSuffix}` : handoffText }],
+				details,
+			};
+			markParentAskHandoff(yieldedResult, parentAsk);
+			return yieldedResult;
+		}
+		if (
+			interrupted &&
+			!results.some(
+				(result) => isParentCancellation(result.cause) && (result.interrupted || result.status === "interrupted"),
+			)
+		) {
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`,
+						text: `Parallel run ended after interrupt (${interrupted.agent}). Launch fresh subagents for any follow-up.`,
 					},
 				],
 				details,
@@ -272,7 +290,7 @@ export async function runParallelPath(
 				content: [
 					{
 						type: "text",
-						text: `Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`,
+						text: `Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, launch fresh follow-up work if needed.`,
 					},
 				],
 				details,
@@ -294,21 +312,17 @@ export async function runParallelPath(
 		}
 
 		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
-		const ok = results.filter((result) => result.status === "ok").length;
-		const aggregatedOutput = aggregateParallelOutputs(
+		const childContent = formatParallelResultContent(
 			results.map((result) => ({
 				agent: result.agent,
 				output: result.truncation?.text || getSingleResultOutput(result),
 				status: result.status,
 				error: result.error,
+				...(result.cause ? { cause: result.cause } : {}),
 			})),
 			(i, agent) => `=== Task ${i + 1}: ${agent} ===`,
 		);
-
-		const summary = `${ok}/${results.length} succeeded`;
-		const fullContent = worktreeSuffix
-			? `${summary}\n\n${aggregatedOutput}\n\n${worktreeSuffix}`
-			: `${summary}\n\n${aggregatedOutput}`;
+		const fullContent = worktreeSuffix ? `${childContent}\n\n${worktreeSuffix}` : childContent;
 
 		return {
 			content: [{ type: "text", text: fullContent }],

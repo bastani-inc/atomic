@@ -116,9 +116,9 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 				? await this._preflightPostToolContext(previousContext.messages, signal)
 				: previousContext.messages;
 
-		// Restore before queued follow-up messages are polled, but keep the
-		// fallback for deceptive completions that event processing must retry on
-		// the same model (safety refusal, empty completion, or length truncation).
+		// Settle before queued follow-up messages are polled, but keep the fallback
+		// lifecycle open for deceptive completions that event processing must retry
+		// on the same model (safety refusal, empty completion, or length truncation).
 		const preserveFallbackForFailure =
 			turn.message.role === "assistant" &&
 			!this.agent.hasQueuedMessages() &&
@@ -127,7 +127,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 				this._isSafetyRefusal?.(turn.message) === true);
 		if (!preserveFallbackForFailure && (turn.toolResults.length === 0 || terminatingBatch)) {
 			await this._agentEventQueue;
-			await this._restoreFallbackModel();
+			await this._settleFallbackModelScope();
 		}
 
 		return {

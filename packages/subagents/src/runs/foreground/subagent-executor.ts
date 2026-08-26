@@ -1,55 +1,16 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { handleManagementAction } from "../../agents/agent-management.js";
-import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.js";
-import { buildDoctorReport } from "../../extension/doctor.js";
-import {
-	INTERCOM_BRIDGE_MARKER,
-	resolveIntercomBridge,
-	resolveIntercomSessionTarget,
-	resolveSubagentIntercomTarget,
-} from "../../intercom/intercom-bridge.js";
-import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
-import { getArtifactsDir } from "../../shared/artifacts.js";
-import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
-import { createCandidateModelResolver } from "../../shared/model-resolution.js";
-import {
-	injectSingleProgressInstruction,
-	resolveSingleProgress,
-	writeInitialProgressFile,
-} from "../../shared/settings.js";
-import {
-	DEFAULT_ARTIFACT_CONFIG,
-	getCurrentSubagentDepth,
-	isWorkflowStageOrchestrationContext,
-	type SingleResult,
-	SUBAGENT_ACTIONS,
-	type SubagentToolResult,
-	workflowSessionMetadataFromContext,
-} from "../../shared/types.js";
-import {
-	inspectInProcessChildStatus,
-	interruptInProcessChild,
-	resumeInProcessChild,
-} from "../inprocess/control-status.js";
-import { inheritedIntercomGroup } from "../shared/intercom-group.js";
-import { currentModelFullId } from "../shared/model-fallback.js";
-import { resolveControlConfig } from "../shared/subagent-control.js";
+import { SUBAGENT_ACTIONS, type SubagentToolResult } from "../../shared/types.js";
+import { inspectInProcessChildStatus, interruptInProcessChild } from "../inprocess/control-status.js";
+import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
+import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
 import { runParallelPath } from "./subagent-executor-parallel.js";
-import { resolveRequestedCwd } from "./subagent-executor-resume.js";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
-import { createForwardSingleUpdate, runSinglePath } from "./subagent-executor-single.js";
-import {
-	foregroundStatusResult,
-	getForegroundControl,
-	notifyDetachedForegroundChildExit,
-	replaceForegroundRunChild,
-	retainedForegroundStatusResult,
-} from "./subagent-executor-status.js";
+import { runSinglePath } from "./subagent-executor-single.js";
+import { foregroundStatusResult, getForegroundControl } from "./subagent-executor-status.js";
 import {
 	type ExecutorDeps,
 	isManagementActionsRestricted,
@@ -57,130 +18,9 @@ import {
 	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
 
-async function resumeRetainedForegroundChild(
-	params: SubagentParamsLike,
-	message: string,
-	ctx: ExtensionContext,
-	deps: ResolvedExecutorDeps,
-	onUpdate: ((r: SubagentToolResult) => void) | undefined,
-): Promise<SubagentToolResult | undefined> {
-	const requested = params.id ?? params.runId;
-	if (!requested) return undefined;
-	const run = deps.state.foregroundRuns?.get(requested);
-	if (!run) return undefined;
-	const child = run.children[params.index ?? 0];
-	if (!child) return undefined;
-	const agents = deps.discoverAgents(run.cwd, resolveExecutionAgentScope(params.agentScope)).agents;
-	const agentConfig = agents.find((agent) => agent.name === child.agent);
-	if (!agentConfig) {
-		return {
-			content: [{ type: "text", text: `Unknown agent for resume: ${child.agent}` }],
-			isError: true,
-			details: { mode: "single", results: [] },
-		};
-	}
-	const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
-	const sessionName = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
-	const intercomBridge = resolveIntercomBridge({
-		config: deps.config.intercomBridge,
-		context: params.context,
-		orchestratorTarget: sessionName,
-		cwd: run.cwd,
-	});
-	const supervisedTarget = intercomBridge.active
-		? resolveSubagentIntercomTarget(run.runId, child.agent, child.index)
-		: undefined;
-	const supervisorAuthorization = await requestSupervisorAuthorization(deps.pi.events, supervisedTarget);
-	const artifactConfig = { ...DEFAULT_ARTIFACT_CONFIG, enabled: params.artifacts !== false };
-	const artifactsDir = getArtifactsDir(parentSessionFile);
-	const progressDir = resolveSingleProgress(agentConfig, params.progress, message)
-		? path.join(artifactsDir, "progress", run.runId)
-		: undefined;
-	if (progressDir) {
-		writeInitialProgressFile(progressDir);
-		message = injectSingleProgressInstruction(message, progressDir);
-	}
-	const cleanupProgress = (): void => {
-		if (!progressDir || artifactConfig.enabled) return;
-		try {
-			fs.rmSync(progressDir, { recursive: true, force: true });
-		} catch {
-			// Scratch cleanup must never replace the child run's result or original error.
-		}
-	};
-	const forwardSingleUpdate = createForwardSingleUpdate(
-		onUpdate,
-		getForegroundControl(deps.state, run.runId),
-		child.agent,
-		child.index,
-	);
-	let result: SingleResult;
-	try {
-		result = await deps.runtime.runSync(run.cwd, agents, child.agent, message, {
-			cwd: run.cwd,
-			signal: ctx.signal,
-			interruptSignal: ctx.signal,
-			allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-			intercomEvents: deps.pi.events,
-			runId: run.runId,
-			index: child.index,
-			sessionDir: child.sessionFile ? path.dirname(child.sessionFile) : undefined,
-			sessionFile: child.sessionFile,
-			share: params.share === true,
-			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-			artifactConfig,
-			maxOutput: params.maxOutput,
-			parentDepth: getCurrentSubagentDepth(ctx),
-			workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
-			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
-			controlConfig: resolveControlConfig(deps.config.control, params.control),
-			intercomSessionName: intercomBridge.active
-				? resolveSubagentIntercomTarget(run.runId, child.agent, child.index)
-				: undefined,
-			orchestratorIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
-			intercomGroup: inheritedIntercomGroup(ctx),
-			supervisorAuthorization,
-			modelOverride: params.model,
-			availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
-			knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),
-			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
-			preferredModelProvider: ctx.model?.provider,
-			currentModel: currentModelFullId(ctx.model),
-			currentThinkingLevel: ctx.thinkingLevel,
-			onUpdate: forwardSingleUpdate,
-			onDetachedExit: (detachedResult) => {
-				cleanupProgress();
-				if (detachedResult) {
-					replaceForegroundRunChild(deps.state, run.runId, child.index, detachedResult);
-					notifyDetachedForegroundChildExit({
-						pi: deps.pi,
-						runId: run.runId,
-						mode: "single",
-						index: child.index,
-						result: detachedResult,
-					});
-				}
-			},
-		});
-	} catch (error) {
-		cleanupProgress();
-		throw error;
-	}
-	if (!result.detached) cleanupProgress();
-	replaceForegroundRunChild(deps.state, run.runId, child.index, result, { onlyWhenDetached: false });
-	return {
-		content: [{ type: "text", text: result.finalOutput ?? result.envelope ?? result.error ?? "" }],
-		details: { mode: "single", runId: run.runId, results: [result] },
-		...(result.status === "error" ? { isError: true } : {}),
-	};
-}
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
-/**
- * Management actions that only observe. Every other action either mutates agent
- * definitions or starts/continues agent execution, so a child without fanout
- * authorization is refused all of them.
- */
-const READ_ONLY_MANAGEMENT_ACTIONS = new Set(["list", "get", "status", "doctor"]);
+/** Observing management actions do not start or mutate child execution. */
+const READ_ONLY_MANAGEMENT_ACTIONS = new Set(["list", "get", "status"]);
 const FANOUT_REFUSAL_MESSAGE = "Subagent fanout is not authorized for this child.";
 
 export type { SubagentExecutorRuntimeDeps, SubagentParamsLike } from "./subagent-executor-types.js";
@@ -191,9 +31,8 @@ async function handleManagementRequest(input: {
 	requestCwd: string;
 	ctx: ExtensionContext;
 	deps: ResolvedExecutorDeps;
-	onUpdate?: (r: SubagentToolResult) => void;
 }): Promise<SubagentToolResult> {
-	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps, onUpdate } = input;
+	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps } = input;
 	const action = params.action;
 	if (!action) {
 		return {
@@ -216,9 +55,8 @@ async function handleManagementRequest(input: {
 			details: { mode: "management" as const, results: [] },
 		};
 	}
-	// `resume` revives a child and `interrupt` is privileged control over a
-	// running one; both continue agent execution, so only the observing actions
-	// reach their handlers for a child without fanout authorization.
+	// `interrupt` is privileged control over a running child, so only the
+	// observing actions reach handlers for a child without fanout authorization.
 	if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized && !READ_ONLY_MANAGEMENT_ACTIONS.has(action)) {
 		return {
 			content: [{ type: "text", text: FANOUT_REFUSAL_MESSAGE }],
@@ -226,46 +64,10 @@ async function handleManagementRequest(input: {
 			details: { mode: "management" as const, results: [] },
 		};
 	}
-	// Delegation is one level deep: a session admitted as a subagent child may
-	// never start or continue another agent, whatever else it is authorized for.
+	// Delegation is one level deep: a child may never control another child.
 	if (!READ_ONLY_MANAGEMENT_ACTIONS.has(action)) {
 		const childRefusal = refuseSubagentChildDelegation(ctx, "management");
 		if (childRefusal) return childRefusal;
-	}
-	if (action === "doctor") {
-		let currentSessionFile: string | null = null;
-		let currentSessionId = deps.state.currentSessionId;
-		let sessionError: string | undefined;
-		try {
-			currentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
-			currentSessionId = ctx.sessionManager.getSessionId();
-		} catch (error) {
-			sessionError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-		}
-		let orchestratorTarget: string | undefined;
-		try {
-			orchestratorTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
-		} catch {}
-		return {
-			content: [
-				{
-					type: "text",
-					text: buildDoctorReport({
-						cwd: requestCwd,
-						config: deps.config,
-						state: deps.state,
-						context: paramsWithResolvedCwd.context,
-						requestedSessionDir: paramsWithResolvedCwd.sessionDir,
-						currentSessionFile,
-						currentSessionId,
-						orchestratorTarget,
-						sessionError,
-						expandTilde: deps.expandTilde,
-					}),
-				},
-			],
-			details: { mode: "management", results: [] },
-		};
 	}
 	if (action === "status") {
 		const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
@@ -273,10 +75,6 @@ async function handleManagementRequest(input: {
 		if (inProcess) return inProcess;
 		const foreground = getForegroundControl(deps.state, targetRunId);
 		if (foreground) return foregroundStatusResult(foreground);
-		if (targetRunId) {
-			const retained = retainedForegroundStatusResult(deps.state, targetRunId);
-			if (retained) return retained;
-		}
 		return {
 			content: [
 				{
@@ -284,26 +82,6 @@ async function handleManagementRequest(input: {
 					text: targetRunId ? `No in-process child found for '${targetRunId}'.` : "No in-process subagent found.",
 				},
 			],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
-	}
-	if (action === "resume") {
-		const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
-		const message = paramsWithResolvedCwd.message ?? paramsWithResolvedCwd.task;
-		if (!targetRunId || !message) {
-			return {
-				content: [{ type: "text", text: "action='resume' requires id/runId and message." }],
-				isError: true,
-				details: { mode: "management", results: [] },
-			};
-		}
-		const inProcess = await resumeInProcessChild(targetRunId, message, { model: ctx.model });
-		if (inProcess) return inProcess;
-		const retained = await resumeRetainedForegroundChild(paramsWithResolvedCwd, message, ctx, deps, onUpdate);
-		if (retained) return retained;
-		return {
-			content: [{ type: "text", text: `No in-process child found for '${targetRunId}'.` }],
 			isError: true,
 			details: { mode: "management", results: [] },
 		};
@@ -366,18 +144,16 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		ctx: ExtensionContext,
 	): Promise<SubagentToolResult> => {
 		deps.state.baseCwd = ctx.cwd;
-		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();
 		deps.state.lastForegroundControlId ??= null;
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
-			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps, onUpdate });
+			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps });
 		}
-		// Fanout authorization gates delegation and every management action that can
-		// start or continue agent execution. Only `list`, `get`, `status`, and
-		// `doctor` stay available to an unauthorized child; `resume`, `interrupt`,
-		// and mutating management are refused inside handleManagementRequest.
+		// Fanout authorization gates delegation and privileged control. Only `list`,
+		// `get`, and `status` stay available to an unauthorized child; `interrupt`
+		// and mutating management are refused by handleManagementRequest.
 		if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized) {
 			return {
 				content: [{ type: "text", text: FANOUT_REFUSAL_MESSAGE }],
@@ -423,22 +199,19 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		);
 	};
 
-	const executeWithSingleDispatchGuard = async (
-		id: string,
-		params: SubagentParamsLike,
-		signal: AbortSignal,
-		onUpdate: ((r: SubagentToolResult) => void) | undefined,
-		ctx: ExtensionContext,
-	): Promise<SubagentToolResult> => {
-		if (params.action) return execute(id, params, signal, onUpdate, ctx);
-		if (deps.state.subagentInProgress === true) return duplicateSubagentCallResult(params);
-		deps.state.subagentInProgress = true;
-		try {
-			return await execute(id, params, signal, onUpdate, ctx);
-		} finally {
-			deps.state.subagentInProgress = false;
-		}
-	};
+	const executeWithBurstCollection = createExecutionBurstDispatcher({
+		execute,
+		isActive: () => deps.state.subagentInProgress === true,
+		setActive: (active) => {
+			deps.state.subagentInProgress = active;
+		},
+		duplicateResult: duplicateSubagentCallResult,
+	});
 
-	return { execute: executeWithSingleDispatchGuard };
+	return {
+		execute: (id, params, signal, onUpdate, ctx) =>
+			params.action
+				? execute(id, params, signal, onUpdate, ctx)
+				: executeWithBurstCollection(id, params, signal, onUpdate, ctx),
+	};
 }

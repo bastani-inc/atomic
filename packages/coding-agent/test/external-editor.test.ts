@@ -36,7 +36,7 @@ function quote(value: string): string {
 }
 
 async function runEditor(
-	flag?: "--fail" | "--empty",
+	flag?: "--fail" | "--empty" | "--bom",
 	prefix = `${APP_NAME}-external-editor-test-`,
 ): Promise<{ result: ExternalEditorResult; capture: EditorCapture }> {
 	const captureDirectory = mkdtempSync(join(tmpdir(), prefix));
@@ -82,6 +82,11 @@ describe("editInExternalEditor", () => {
 		const { result, capture } = await runEditor("--empty");
 		expect(result).toEqual({ status: "complete", content: "" });
 		expect(existsSync(dirname(capture.filePath))).toBe(false);
+	});
+
+	it("strips a UTF-8 BOM written by the editor", async () => {
+		const { result } = await runEditor("--bom");
+		expect(result).toEqual({ status: "complete", content: "edited" });
 	});
 
 	it("parses quoted commands and arguments containing spaces", async () => {

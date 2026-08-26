@@ -1,6 +1,6 @@
 # @bastani/pi-ai
 
-Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi) at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`).
+Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); upstream Pi AI fixes are synced through [`dcd461925db2edf69a43c8135db1180d418afd54`](https://github.com/earendil-works/pi/commit/dcd461925db2edf69a43c8135db1180d418afd54), the latest Pi `main` commit at the sync point. `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
 
 The public API is a drop-in replacement: install `@bastani/pi-ai` and import from `@bastani/pi-ai` instead of `@earendil-works/pi-ai`. See [NOTICE.md](NOTICE.md). This package lives in the Atomic monorepo and publishes from `.github/workflows/publish.yml`. The first npm version must be published by hand so trusted publishing can be attached.
 
@@ -798,7 +798,7 @@ Many models support thinking/reasoning capabilities where they can show their in
 const model = models.getModel('anthropic', 'claude-sonnet-4-5')!;
 // or models.getModel('openai', 'gpt-5-mini');
 // or models.getModel('google', 'gemini-2.5-flash');
-// or models.getModel('xai', 'grok-4.5');
+// or models.getModel('xai', 'grok-4.6');
 
 // Check if model supports reasoning
 if (model.reasoning) {
@@ -1187,8 +1187,10 @@ interface OpenAICompletionsCompat {
   requiresThinkingAsText?: boolean;  // Whether thinking blocks must be converted to text (default: false)
   requiresReasoningContentOnAssistantMessages?: boolean; // Whether all replayed assistant messages must include empty reasoning_content when reasoning is enabled (default: auto-detected for DeepSeek)
   thinkingFormat?: 'openai' | 'openrouter' | 'deepseek' | 'together' | 'baseten' | 'zai' | 'qwen' | 'chat-template' | 'qwen-chat-template' | 'string-thinking' | 'ant-ling'; // Format for reasoning param: 'openai' uses reasoning_effort, 'openrouter' uses reasoning: { effort }, 'deepseek' uses thinking: { type } plus reasoning_effort when supported, 'together' uses reasoning: { enabled } plus reasoning_effort when supported, 'baseten' uses configurable chat_template_args plus reasoning_effort when supported, 'zai' uses thinking: { type }, 'qwen' uses enable_thinking, 'chat-template' uses configurable chat_template_kwargs, 'qwen-chat-template' uses chat_template_kwargs.enable_thinking and preserve_thinking, 'string-thinking' uses top-level thinking, 'ant-ling' uses reasoning: { effort } only for mapped efforts (default: openai)
-  chatTemplateKwargs?: Record<string, string | number | boolean | null | { '$var': 'thinking.enabled' | 'thinking.effort'; omitWhenOff?: boolean }>; // chat_template_kwargs values; use $var for pi-controlled thinking values
-  chatTemplateArgs?: Record<string, string | number | boolean | null | { '$var': 'thinking.enabled' | 'thinking.effort'; omitWhenOff?: boolean }>; // chat_template_args values for thinkingFormat: 'baseten'; use $var for pi-controlled thinking values
+  chatTemplateKwargs?: Record<string, string | number | boolean | null | { '$var': 'thinking.enabled' | 'thinking.effort' | 'thinking.budget'; omitWhenOff?: boolean }>; // chat_template_kwargs values; use $var for pi-controlled thinking values
+  chatTemplateArgs?: Record<string, string | number | boolean | null | { '$var': 'thinking.enabled' | 'thinking.effort' | 'thinking.budget'; omitWhenOff?: boolean }>; // chat_template_args values for thinkingFormat: 'baseten'; use $var for pi-controlled thinking values
+  thinkingTokenBudgetField?: 'thinking_token_budget' | 'thinking_budget' | 'thinking_budget_tokens'; // Top-level field that caps reasoning tokens from thinkingBudgets (vLLM / Qwen / llama.cpp). Off by default.
+  supportsThinkingTokenBudget?: boolean; // Alias for thinkingTokenBudgetField: 'thinking_token_budget' (vLLM). Prefer thinkingTokenBudgetField. Default: false.
   cacheControlFormat?: 'anthropic';  // Anthropic-style cache_control on system prompt, last tool, and last user/assistant text content
   openRouterRouting?: OpenRouterRouting; // OpenRouter routing preferences (default: {})
   vercelGatewayRouting?: VercelGatewayRouting; // Vercel AI Gateway routing preferences (default: {})

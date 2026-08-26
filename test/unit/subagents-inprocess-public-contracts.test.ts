@@ -60,7 +60,6 @@ function state(cwd: string): SubagentState {
 		baseCwd: cwd,
 		currentSessionId: "parent-session",
 		subagentInProgress: false,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
@@ -256,7 +255,7 @@ test("public parallel worktree mode gives each task an isolated checkout", async
 		.filter((line) => line.startsWith("worktree "));
 	assert.equal(remainingWorktrees.length, 1);
 });
-test("public interrupt and resume actions accept both bare run ids and canonical child paths", async () => {
+test("public interrupt accepts both bare run ids and canonical child paths", async () => {
 	for (const form of ["bare", "canonical"] as const) {
 		const cwd = makeRoot();
 		const gate = Promise.withResolvers<void>();
@@ -266,7 +265,7 @@ test("public interrupt and resume actions accept both bare run ids and canonical
 				runSync(parentCwd, agents, agentName, task, {
 					...options,
 					testSession: {
-						output: "resumed ok",
+						output: "interrupted output",
 						promptGate: gate.promise,
 						promptLogPath,
 						abortResolvesPrompt: true,
@@ -310,18 +309,8 @@ test("public interrupt and resume actions accept both bare run ids and canonical
 		);
 		assert.equal(interrupted.isError, undefined, text(interrupted));
 		assert.match(text(interrupted), /Interrupt requested/);
-		const paused = await running;
-		assert.match(text(paused), /Run paused after interrupt/);
-
+		const terminal = await running;
+		assert.match(text(terminal), /Run ended after interrupt/);
 		gate.resolve();
-		const resumed = await execute.execute(
-			`resume-${form}`,
-			{ action: "resume", id, message: `continue ${form}` },
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
-		assert.equal(resumed.isError, undefined, text(resumed));
-		assert.match(text(resumed), /resumed ok/);
 	}
 });

@@ -68,7 +68,10 @@ function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width:
 				entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
 			latestCacheHitRate =
 				latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
-		} else if ((entry.type === "branch_summary" || entry.type === "session_summary") && entry.usage) {
+		} else if (
+			(entry.type === "branch_summary" || entry.type === "session_summary" || entry.type === "compaction") &&
+			entry.usage
+		) {
 			addUsageToTotals(totals, entry.usage);
 		} else if (
 			entry.type === "message" &&

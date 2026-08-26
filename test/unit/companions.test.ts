@@ -114,15 +114,6 @@ describe("detectCompanions — path hints (preferred)", () => {
 });
 
 describe("detectCompanions — command-name hints (fallback)", () => {
-	test("pi-subagents is detected via /subagents-doctor when no path hint is present", () => {
-		const probe = makeProbe({
-			commands: [{ name: "subagents-doctor", sourceInfo: { path: "/elsewhere/pkg/index.ts" } }],
-		});
-		const sub = statusFor("pi-subagents", detectCompanions(probe));
-		assert.equal(sub.installed, true);
-		assert.equal(sub.evidence, "command /subagents-doctor");
-	});
-
 	test("pi-mcp-adapter is detected via /mcp command-name hint", () => {
 		const probe = makeProbe({ commands: [{ name: "mcp" }] });
 		const mcp = statusFor("pi-mcp-adapter", detectCompanions(probe));
@@ -155,7 +146,7 @@ describe("detectCompanions — tool-name hints (fallback)", () => {
 describe("detectCompanions — output ordering", () => {
 	test("preserves the COMPANIONS catalogue order regardless of registry order", () => {
 		const probe = makeProbe({
-			commands: [{ name: "subagents-doctor" }, { name: "mcp" }],
+			commands: [{ name: "mcp" }],
 			tools: [{ name: "contact_supervisor" }],
 		});
 		const statuses = detectCompanions(probe);

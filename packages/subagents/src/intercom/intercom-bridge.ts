@@ -37,7 +37,7 @@ const DEFAULT_INTERCOM_BRIDGE_TEMPLATE = `The inherited thread is reference-only
 
 Use contact_supervisor first. It resolves the supervisor session "{orchestratorTarget}" and run metadata automatically.
 - Need a decision, blocked, approval, or product/API/scope ambiguity: contact_supervisor({ reason: "need_decision", message: "<question>" })
-- After contact_supervisor with reason "need_decision", stay alive and continue only after the reply arrives. Do not finish your final response with a choose-one question.
+- A claimed decision or interview ends this child. Do not wait for or expect a reply in this run; the supervisor receives a dynamic [TASK_CONTEXT] handoff and may launch a fresh subagent with a new run identity and the answer.
 - Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions. Review-only/no-edit wins; leave files unchanged and mention the conflict in your final result only if it matters.
 - Meaningful progress or unexpected discoveries that change the plan: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
 - Generic intercom is lower-level plumbing/fallback only: intercom({ action: "ask", to: "{orchestratorTarget}", message: "<question>" })
@@ -50,19 +50,6 @@ export interface IntercomBridgeState {
 	orchestratorTarget?: string;
 	extensionDir: string;
 	instruction: string;
-}
-
-export interface IntercomBridgeDiagnostic {
-	active: boolean;
-	mode: IntercomBridgeMode;
-	wantsIntercom: boolean;
-	piIntercomAvailable: boolean;
-	extensionDir: string;
-	configPath?: string;
-	orchestratorTarget?: string;
-	reason?: string;
-	intercomConfigEnabled?: boolean;
-	intercomConfigError?: string;
 }
 
 interface ResolveIntercomBridgeInput {
@@ -315,46 +302,6 @@ function buildIntercomBridgeInstruction(orchestratorTarget: string, template: st
 	if (instruction.startsWith(INTERCOM_BRIDGE_MARKER)) return instruction;
 	return `${INTERCOM_BRIDGE_MARKER}
 ${instruction}`;
-}
-
-export function diagnoseIntercomBridge(input: ResolveIntercomBridgeInput): IntercomBridgeDiagnostic {
-	const config = resolveIntercomBridgeConfig(input.config);
-	const mode = config.mode;
-	const agentDir = path.resolve(input.agentDir ?? defaultAgentDir());
-	const extensionDir = resolveIntercomExtensionDir(input, agentDir);
-	const orchestratorTarget = input.orchestratorTarget?.trim();
-	const configPath = path.resolve(input.configPath ?? defaultIntercomConfigPath(agentDir));
-	const wantsIntercom = mode !== "off" && !(mode === "fork-only" && input.context !== "fork");
-	const piIntercomAvailable = fs.existsSync(extensionDir);
-	let configStatus: ReturnType<typeof intercomConfigStatus> | undefined;
-	let reason: string | undefined;
-	if (mode === "off") reason = "bridge mode is off";
-	else if (mode === "fork-only" && input.context !== "fork")
-		reason = "bridge mode is fork-only and context is not fork";
-	else if (!orchestratorTarget) reason = "orchestrator target is not available";
-	else if (!piIntercomAvailable) reason = "pi-intercom extension was not found";
-	else {
-		configStatus = intercomConfigStatus(configPath);
-		if (!configStatus.enabled) reason = "intercom config is disabled";
-	}
-	let intercomConfigError: string | undefined;
-	if (configStatus?.error) {
-		const error = configStatus.error;
-		intercomConfigError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-	}
-
-	return {
-		active: reason === undefined,
-		mode,
-		wantsIntercom,
-		piIntercomAvailable,
-		extensionDir,
-		configPath,
-		...(orchestratorTarget ? { orchestratorTarget } : {}),
-		...(reason ? { reason } : {}),
-		...(configStatus ? { intercomConfigEnabled: configStatus.enabled } : {}),
-		...(intercomConfigError ? { intercomConfigError } : {}),
-	};
 }
 
 export function resolveIntercomBridge(input: ResolveIntercomBridgeInput): IntercomBridgeState {

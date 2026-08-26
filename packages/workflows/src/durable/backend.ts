@@ -59,7 +59,7 @@ export interface DurableWorkflowBackend {
 	recordCheckpoint(checkpoint: DurableCheckpoint): void;
 
 	/** Persist a checkpoint before exposing its side effect. */
-	recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void>;
+	recordCheckpointAsync(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void>;
 
 	/**
 	 * Persist additive replay metadata without turning a rejected storage write
@@ -291,7 +291,14 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		};
 	}
 
-	async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+	async recordCheckpointAsync(
+		checkpoint: DurableCheckpoint,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<void> {
+		if (options?.signal?.aborted) {
+			const reason = options.signal.reason;
+			throw reason instanceof Error ? reason : new Error("atomic-workflows: workflow cancelled");
+		}
 		this.recordCheckpoint(checkpoint);
 	}
 

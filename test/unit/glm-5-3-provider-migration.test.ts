@@ -126,10 +126,18 @@ test("direct Z.AI GLM-5.3 resolves through ModelRuntime with the catalog-support
 	assert.ok(model);
 	assert.equal(model.id, "glm-5.3");
 	assert.equal(model.provider, "zai");
-	assert.equal(model.thinkingLevelMap, undefined);
+	assert.deepEqual(model.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: null,
+		high: "high",
+		xhigh: null,
+		max: "max",
+	});
 	assert.equal(
 		model.compat && "supportsReasoningEffort" in model.compat ? model.compat.supportsReasoningEffort : undefined,
-		false,
+		true,
 	);
 	assert.ok(getSupportedThinkingLevels(model).includes("high"));
 
@@ -139,12 +147,20 @@ test("direct Z.AI GLM-5.3 resolves through ModelRuntime with the catalog-support
 	const codingCnModel = runtime.getModel("zai-coding-cn", "glm-5.3");
 	assert.ok(codingCnModel);
 	assert.equal(codingCnModel.id, "glm-5.3");
-	assert.equal(codingCnModel.thinkingLevelMap, undefined);
+	assert.deepEqual(codingCnModel.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: null,
+		high: "high",
+		xhigh: null,
+		max: "max",
+	});
 	assert.equal(
 		codingCnModel.compat && "supportsReasoningEffort" in codingCnModel.compat
 			? codingCnModel.compat.supportsReasoningEffort
 			: undefined,
-		false,
+		true,
 	);
 	assert.ok(getSupportedThinkingLevels(codingCnModel).includes("high"));
 	assert.equal(resolved.thinkingLevel, "high");

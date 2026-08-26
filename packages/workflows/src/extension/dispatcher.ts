@@ -29,6 +29,7 @@ import {
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import type { WorkflowToolArgs } from "./index.js";
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
+import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 
 type WorkflowRunResult = Extract<WorkflowToolResult, { action: "run" }>;
 
@@ -90,6 +91,10 @@ export interface DispatcherOpts {
 	cwd?: string;
 	/** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
 	defaultSessionDir?: string;
+	/** Cancels only startup admission waiting; the detached run keeps its own lifecycle. */
+	signal?: AbortSignal;
+	/** Reports the exact detached identity before startup admission is awaited. */
+	onRunAccepted?: (runId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +203,8 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				return failedRunResult(def.name, runId, error instanceof Error ? error.message : String(error));
 			}
 			const { accepted } = launch;
-			const admission = await launch.wait;
+			opts.onRunAccepted?.(accepted.runId);
+			const admission = await raceWorkflowRequestAbort(launch.wait, opts.signal);
 			if (!admission.started) {
 				const activeStore = opts.store ?? defaultStore;
 				const snapshot = activeStore.runs().find((run) => run.id === accepted.runId);

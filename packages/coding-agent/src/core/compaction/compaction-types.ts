@@ -1,5 +1,5 @@
 import type { ProviderHeaders } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionSettings } from "./compaction.ts";
 
@@ -149,5 +149,7 @@ export interface VerbatimCompactionResult {
 	rung: CompactionRung;
 	/** Present only when a borrowed fallback model ranked the lines. */
 	plannerModel?: CompactionPlannerModel;
+	/** Aggregate usage across every planner request and retry in this compaction. */
+	usage?: Usage;
 	backupPath?: string;
 }

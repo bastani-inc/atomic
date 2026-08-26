@@ -1,6 +1,6 @@
 import type { ActivityState } from "./types.js";
 
-type StepStatus = "pending" | "running" | "complete" | "completed" | "failed" | "paused";
+type StepStatus = "pending" | "running" | "complete" | "completed" | "failed" | "interrupted";
 type StepStatusLike = { status: StepStatus };
 
 function formatActivityAge(ms: number): string {
@@ -41,10 +41,10 @@ export function formatParallelOutcome(
 	const running = steps.filter((step) => step.status === "running").length;
 	const done = steps.filter((step) => isCompletedStepStatus(step.status)).length;
 	const failed = steps.filter((step) => step.status === "failed").length;
-	const paused = steps.filter((step) => step.status === "paused").length;
+	const interrupted = steps.filter((step) => step.status === "interrupted").length;
 	const parts = [`${done}/${total} done`];
 	if (options.showRunning !== false && running > 0) parts.unshift(formatAgentRunningLabel(running));
 	if (failed > 0) parts.push(`${failed} failed`);
-	if (paused > 0) parts.push(`${paused} paused`);
+	if (interrupted > 0) parts.push(`${interrupted} interrupted`);
 	return parts.join(" · ");
 }

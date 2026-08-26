@@ -2,6 +2,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isLegacyEnvVarNameConfigValue } from "./core/resolve-config-value.ts";
 import { stripJsonComments } from "./utils/json.ts";
+import { stripBom } from "./utils/text.ts";
 
 interface ConfigValueMigration {
 	location: string;
@@ -48,7 +49,7 @@ export function migrateAuthJsonConfigValues(agentDir: string): ConfigValueMigrat
 	if (!existsSync(authPath)) return [];
 
 	try {
-		const parsed = JSON.parse(readFileSync(authPath, "utf-8")) as unknown;
+		const parsed = JSON.parse(stripBom(readFileSync(authPath, "utf-8"))) as unknown;
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
 		const authData = parsed as Record<string, unknown>;
 

@@ -4,15 +4,15 @@ This page gets you from install to a useful first Atomic session. Atomic is the 
 
 ## Prerequisites
 
-- **Node.js 24 LTS or newer** — Atomic requires the latest Node LTS runtime. Check with `node --version`.
-- **A package manager** — use npm (included with Node), pnpm, Yarn, or Bun. Bun installs need Bun 1.4.0+.
-- **Model-provider access** — Use `/login` after startup. Supports provider subscriptions and APIs.
+- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.0+ for Bun installs or workflow-authoring examples.
+- **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`; Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
+- **Model-provider access** — use a supported subscription login or API key. Run `/login` after startup.
 
 ## Install
 
-Install the published package globally with npm, pnpm, or Bun:
+### Package managers
 
-With npm:
+Install with npm:
 
 ```bash
 npm install -g @bastani/atomic
@@ -30,7 +30,59 @@ With Bun:
 bun add -g @bastani/atomic
 ```
 
-Atomic does not require package install scripts. If you want to disable dependency lifecycle scripts during the Atomic install, you can add `--ignore-scripts` to the install command.
+Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
+
+### Release archive
+
+Alternatively, install the self-contained release archive, which needs no Node.js or package manager.
+
+On macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+```
+
+The installer downloads only the matching GitHub Release archive and `SHA256SUMS`, verifies the checksum, and keeps the complete payload in a versioned directory.
+
+On macOS or Linux, the default paths are `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The installer prints a paste-safe `export PATH=...` command if needed.
+
+On Windows, the defaults are `%LOCALAPPDATA%\atomic` for payloads and `%LOCALAPPDATA%\atomic\bin\atomic.cmd` for the launcher. The installer updates the User PATH and current process, then asks you to restart the terminal.
+
+The installer accepts these environment variables:
+
+#### ATOMIC_VERSION
+
+Pin an exact release tag instead of the latest release, or pass a flag that overrides it. On macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh -s -- --ref 0.9.11
+```
+
+On Windows PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1))) -Ref 0.9.11
+```
+
+Pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` release tag form and are honored literally: if GitHub answers with a different release tag, the installer stops before downloading anything rather than installing a version you did not ask for.
+
+#### ATOMIC_INSTALL_DIR
+
+Override the install root that holds the versioned payloads (default `~/.local/share/atomic` on macOS/Linux, `%LOCALAPPDATA%\atomic` on Windows). On macOS/Linux, a relative value resolves against the physical directory where the installer starts and is used exactly as given, including any trailing whitespace or newline. The install root cannot equal or sit inside the launcher path (`ATOMIC_BIN_DIR/atomic`); impossible layouts fail before any download or filesystem change.
+
+#### ATOMIC_BIN_DIR
+
+Override the launcher directory (default `~/.local/bin` on macOS/Linux, `%LOCALAPPDATA%\atomic\bin` on Windows). Relative values resolve the same way as `ATOMIC_INSTALL_DIR`. It cannot sit inside the install root's `current` or `versions` directories, which the installer replaces on every install. A Unix value containing `:` cannot be one PATH entry, so the installer prints direct-run guidance instead of editing PATH.
+
+#### GITHUB_TOKEN / GH_TOKEN
+
+Optional; raises GitHub API limits on shared networks. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
 
 ### Which runtime runs your workflows
 
@@ -38,7 +90,12 @@ How you install Atomic decides which runtime hosts it: a package-manager install
 
 ### Alpine and musl Linux archives
 
-For Alpine Linux, use `atomic-linux-x64-musl.tar.gz` on x64 or `atomic-linux-arm64-musl.tar.gz` on arm64. These archives provide native search and PTY bindings. Install their runtime libraries with `apk add --no-cache libgcc libstdc++`, then see the [Alpine and musl Linux archive notes](/index#alpine-and-musl-linux-archives) for the clipboard fallback and external Postgres or Docker requirement for durable workflows.
+The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. Each archive includes its matching native search and PTY bindings plus payload-local `libgcc` and `libstdc++` runtimes, so stock Alpine needs no runtime package install.
+
+Two features work differently on musl:
+
+- **Clipboard:** the musl archives omit a clipboard native binding because `@mariozechner/clipboard` 0.3.9 publishes metadata-only musl stubs without a `.node` payload; Atomic uses Linux clipboard commands and OSC52 fallback instead.
+- **Durable workflows:** the archives omit the glibc-linked `@embedded-postgres/*` binary packages, so durable workflows on Alpine require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker. Without a durable backend, Atomic uses a loud non-durable in-memory fallback.
 
 Then start Atomic in the project directory you want it to work on:
 
@@ -49,15 +106,29 @@ atomic
 
 ## Uninstall
 
-Remove the global package with the same package manager you used to install it:
+On macOS or Linux, for a default archive install, remove `~/.local/share/atomic` and the `~/.local/bin/atomic` link.
+
+On Windows, remove `%LOCALAPPDATA%\atomic`. If you set `ATOMIC_BIN_DIR`, also remove `atomic.cmd` and the `atomic-current` junction from that directory, then remove the directory from your User PATH.
+
+For a package install, remove the global package with the same package manager. With npm:
 
 ```bash
 npm uninstall -g @bastani/atomic
+```
+
+With pnpm:
+
+```bash
 pnpm remove -g @bastani/atomic
+```
+
+With Bun:
+
+```bash
 bun remove -g @bastani/atomic
 ```
 
-This removes the CLI package only. User configuration, auth, sessions, and packages remain under `~/.atomic/agent/` unless you delete that directory yourself.
+These commands remove the CLI only. User configuration, auth, sessions, and packages remain under `~/.atomic/agent/` unless you delete that directory yourself.
 
 ## Authenticate
 

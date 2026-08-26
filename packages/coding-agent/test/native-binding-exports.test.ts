@@ -7,6 +7,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"FileType",
 	"GrepOutputMode",
 	"NapiSubagentControl",
+	"RetainedPostgres",
 	"PtySession",
 	"SubagentControl",
 	"TerminationCause",
@@ -16,6 +17,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"hasMatch",
 	"invalidateFsScanCache",
 	"search",
+	"spawnRetainedPostgres",
 ] as const;
 
 const requireNativeBinding = process.env.ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE === "1";

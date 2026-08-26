@@ -12,7 +12,7 @@ import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
+import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
@@ -67,12 +67,12 @@ function makeExecutor(
 	runtime: Partial<SubagentExecutorRuntimeDeps>,
 	defaultProgress?: boolean,
 	authorizeSupervisor?: (childName: string) => { capability: string; supervisorSessionId: string; childName: string },
+	intercomBridgeMode?: "off",
 ): ReturnType<typeof createSubagentExecutor> {
 	const state: ExecutorDeps["state"] = {
 		baseCwd: "",
 		currentSessionId: null,
 		subagentInProgress: false,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
@@ -91,7 +91,10 @@ function makeExecutor(
 			getSessionName: () => "parent",
 		} as unknown as ExecutorDeps["pi"],
 		state,
-		config: { parallel: { concurrency: 4, maxTasks: 50 } },
+		config: {
+			parallel: { concurrency: 4, maxTasks: 50 },
+			...(intercomBridgeMode ? { intercomBridge: { mode: intercomBridgeMode } } : {}),
+		},
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
@@ -188,6 +191,67 @@ test("single progress false overrides default and omission inherits it", async (
 		const progressPath = join(cwd, "subagent-artifacts", "progress", runId, "progress.md");
 		assert.ok((tasks[1] ?? "").includes(`Create and maintain progress at: ${progressPath}`));
 		assert.match(readFileSync(progressPath, "utf8"), /# Progress/);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("fresh single follow-ups use new progress identities and forward live updates", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-fresh-progress-"));
+	try {
+		const progressPaths: string[] = [];
+		const executor = makeExecutor(cwd, {
+			runSync: async (_cwd, _agents, agentName, task, options) => {
+				const progressPath = extractProgressPath(task);
+				progressPaths.push(progressPath);
+				const child = makeResult(task);
+				const update: SubagentToolResult = {
+					content: [{ type: "text", text: `live:${agentName}` }],
+					details: {
+						mode: "single",
+						runId: options.runId,
+						results: [child],
+						progress: [
+							{
+								index: 0,
+								agent: agentName,
+								status: "running",
+								task,
+								recentTools: [],
+								recentOutput: [],
+								toolCount: 1,
+								tokens: 2,
+								durationMs: 3,
+							},
+						],
+					},
+				};
+				options.onUpdate?.(update);
+				return child;
+			},
+		});
+		const updates: SubagentToolResult[][] = [[], []];
+		const results = [];
+		for (const [index, task] of ["initial work", "fresh follow-up"].entries()) {
+			results.push(
+				await executor.execute(
+					`fresh-${index}`,
+					{ agent: "worker", task, progress: true, artifacts: false },
+					new AbortController().signal,
+					(update) => updates[index]!.push(update),
+					makeContext(cwd),
+				),
+			);
+		}
+
+		assert.notEqual(results[0]?.details?.runId, results[1]?.details?.runId);
+		assert.equal(new Set(progressPaths).size, 2);
+		for (const [index, updateList] of updates.entries()) {
+			assert.equal(updateList.length, 1);
+			assert.equal(updateList[0]?.details?.runId, results[index]?.details?.runId);
+			assert.equal(updateList[0]?.details?.progress?.[0]?.status, "running");
+			assert.equal(existsSync(progressPaths[index]!), false, "fresh transient progress storage is cleaned");
+		}
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
@@ -390,176 +454,37 @@ test("foreground read-only task suppresses inherited defaultProgress", async () 
 	}
 });
 
-test("resume inherits single-agent defaultProgress", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-progress-"));
+test("inactive bridge requests no initial supervisor authorization", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-no-supervisor-"));
 	try {
-		const sessionFile = join(cwd, "worker.jsonl");
-		writeFileSync(sessionFile, "");
-		let resumedTask = "";
-		const executor = makeExecutor(
-			cwd,
-			{
-				runSync: async (_cwd, _agents, _agent, task) => {
-					resumedTask = task;
-					return { ...makeResult(task), sessionFile };
-				},
-			},
-			true,
-		);
-		const context = makeContext(cwd);
-		const initial = await executor.execute(
-			"initial",
-			{ agent: "worker", task: "implement" },
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-		assert.ok(initial.details?.runId);
-
-		const resumed = await executor.execute(
-			"resume",
-			{ action: "resume", id: initial.details.runId, message: "continue implementation" },
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-
-		assert.equal(resumed.isError, undefined);
-		assert.match(resumedTask, /Create and maintain progress/);
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
-test("resume requests and forwards a fresh supervisor authorization", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-supervisor-"));
-	try {
-		const sessionFile = join(cwd, "worker.jsonl");
-		writeFileSync(sessionFile, "");
 		const authorizedChildren: string[] = [];
-		let capturedAuthorization: { capability: string; supervisorSessionId: string; childName: string } | undefined;
+		let capturedAuthorization: Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]["supervisorAuthorization"];
 		const executor = makeExecutor(
 			cwd,
 			{
 				runSync: async (_cwd, _agents, _agent, task, options) => {
 					capturedAuthorization = options.supervisorAuthorization;
-					return { ...makeResult(task), sessionFile };
+					return makeResult(task);
 				},
 			},
-			true,
+			false,
 			(childName) => {
 				authorizedChildren.push(childName);
-				return { capability: `cap-${childName}`, supervisorSessionId: "supervisor-id", childName };
+				return { capability: "unexpected", supervisorSessionId: "supervisor-id", childName };
 			},
+			"off",
 		);
-		const context = makeContext(cwd);
-		const initial = await executor.execute(
-			"initial",
-			{ agent: "worker", task: "implement" },
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-		assert.ok(initial.details?.runId);
-
-		const resumed = await executor.execute(
-			"resume",
-			{ action: "resume", id: initial.details.runId, message: "continue implementation" },
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-
-		assert.equal(resumed.isError, undefined);
-		assert.equal(authorizedChildren.length, 1);
-		assert.equal(capturedAuthorization?.childName, authorizedChildren[0]);
-		assert.equal(capturedAuthorization?.capability, `cap-${authorizedChildren[0]}`);
-		assert.equal(capturedAuthorization?.supervisorSessionId, "supervisor-id");
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
-test("resume suppresses inherited defaultProgress for a read-only follow-up", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-readonly-"));
-	try {
-		const sessionFile = join(cwd, "worker.jsonl");
-		writeFileSync(sessionFile, "");
-		let resumedTask = "";
-		const executor = makeExecutor(
-			cwd,
-			{
-				runSync: async (_cwd, _agents, _agent, task) => {
-					resumedTask = task;
-					return { ...makeResult(task), sessionFile };
-				},
-			},
-			true,
-		);
-		const context = makeContext(cwd);
-		const initial = await executor.execute(
-			"initial",
-			{ agent: "worker", task: "implement" },
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-		assert.ok(initial.details?.runId);
 
 		await executor.execute(
-			"resume",
-			{ action: "resume", id: initial.details.runId, message: "Review only; do not edit files." },
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-
-		assert.doesNotMatch(resumedTask, /Create and maintain progress/);
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
-test("resume explicit progress overrides read-only suppression", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-explicit-"));
-	try {
-		const sessionFile = join(cwd, "worker.jsonl");
-		writeFileSync(sessionFile, "");
-		let resumedTask = "";
-		const executor = makeExecutor(
-			cwd,
-			{
-				runSync: async (_cwd, _agents, _agent, task) => {
-					resumedTask = task;
-					return { ...makeResult(task), sessionFile };
-				},
-			},
-			true,
-		);
-		const context = makeContext(cwd);
-		const initial = await executor.execute(
 			"initial",
 			{ agent: "worker", task: "implement" },
 			new AbortController().signal,
 			undefined,
-			context,
-		);
-		assert.ok(initial.details?.runId);
-
-		await executor.execute(
-			"resume",
-			{
-				action: "resume",
-				id: initial.details.runId,
-				message: "Review only; do not edit files.",
-				progress: true,
-			},
-			new AbortController().signal,
-			undefined,
-			context,
+			makeContext(cwd),
 		);
 
-		assert.match(resumedTask, /Create and maintain progress/);
+		assert.deepEqual(authorizedChildren, []);
+		assert.equal(capturedAuthorization, undefined);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

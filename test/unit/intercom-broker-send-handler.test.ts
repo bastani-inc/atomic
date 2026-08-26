@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import type net from "node:net";
 import { test } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
+import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
+import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 
 function session(id: string, name: string, socket: net.Socket): BrokerConnectedSession {
@@ -269,4 +271,43 @@ test("broker rejects an 8-character self ID prefix as not found", () => {
 	const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
 	assert.equal(failure?.type, "delivery_failed");
 	assert.match(failure?.reason ?? "", /Session not found/);
+});
+
+test("broker records delivered questions and clears them only after routing the exact reply", () => {
+	const asker = {} as net.Socket;
+	const target = {} as net.Socket;
+	const sessions = new Map<string, BrokerConnectedSession>([
+		["asker-exact", session("asker-exact", "asker", asker)],
+		["target-exact", session("target-exact", "target", target)],
+	]);
+	const pending = new PendingQuestionIndex();
+	const cache = new DeliveredMessageCache();
+	const write = () => {};
+
+	handleBrokerSend(
+		asker,
+		{ type: "send", to: "target-exact", message: { ...message("question-exact"), expectsReply: true } },
+		"asker-exact",
+		sessions,
+		cache,
+		write,
+		new SupervisorChannelCache(),
+		pending,
+	);
+	assert.deepEqual(pending.takeForTarget("target-exact"), [
+		{ senderSessionId: "asker-exact", targetSessionId: "target-exact", messageId: "question-exact" },
+	]);
+
+	pending.record("asker-exact", "target-exact", "question-exact");
+	handleBrokerSend(
+		target,
+		{ type: "send", to: "asker-exact", message: { ...message("reply-exact"), replyTo: "question-exact" } },
+		"target-exact",
+		sessions,
+		cache,
+		write,
+		new SupervisorChannelCache(),
+		pending,
+	);
+	assert.deepEqual(pending.takeForTarget("target-exact"), []);
 });

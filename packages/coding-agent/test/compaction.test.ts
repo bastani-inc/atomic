@@ -2,7 +2,7 @@ import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CompactionSettings,
 	calculateContextTokens,
@@ -310,15 +310,26 @@ describe("estimateContextTokens", () => {
 	});
 
 	it("preserves the API discriminator for normalized cached usage", () => {
-		const usage = createMockUsage(7_907, 7, 7_936, 0);
-		const message = {
-			...createAssistantMessage("response", usage),
-			api: "openai-codex-responses" as const,
-			provider: "openai-codex",
-		};
-		const result = estimateContextTokens([createUserMessage("hello"), message]);
-		expect(result.tokens).toBe(15_850);
-		expect(shouldCompact(result.tokens, 20_000, { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 5_000 })).toBe(true);
+		const now = vi.spyOn(Date, "now");
+		try {
+			now.mockReturnValueOnce(1_000).mockReturnValueOnce(2_000);
+			// Keep construction order aligned with transcript order even when the clock ticks
+			// between messages; a newer prefix intentionally invalidates older usage.
+			const userMessage = createUserMessage("hello");
+			const usage = createMockUsage(7_907, 7, 7_936, 0);
+			const message = {
+				...createAssistantMessage("response", usage),
+				api: "openai-codex-responses" as const,
+				provider: "openai-codex",
+			};
+			const result = estimateContextTokens([userMessage, message]);
+			expect(result.tokens).toBe(15_850);
+			expect(shouldCompact(result.tokens, 20_000, { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 5_000 })).toBe(
+				true,
+			);
+		} finally {
+			now.mockRestore();
+		}
 	});
 
 	it("should return zero tokens for empty messages", () => {

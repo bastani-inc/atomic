@@ -23,7 +23,6 @@ function makeState(): ExecutorDeps["state"] {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),

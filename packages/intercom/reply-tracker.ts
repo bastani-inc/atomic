@@ -49,9 +49,18 @@ export class ReplyTracker {
     this.currentTurnContext = null;
   }
 
-  resolveReplyTarget(options: { to?: string }, now = Date.now()): IntercomContext {
-    this.pruneExpired(now);
-
+	resolveReplyTarget(options: { to?: string; replyTo?: string }, now = Date.now()): IntercomContext {
+		this.pruneExpired(now);
+		if (options.replyTo) {
+			const exact = this.pendingAsks.get(options.replyTo);
+			if (exact) {
+				if (options.to) {
+					const resolution = resolveSessionTarget([exact.from], options.to);
+					if (resolution.kind !== "resolved") throw new Error(`Pending ask "${options.replyTo}" is not from "${options.to}"`);
+				}
+				return exact;
+			}
+		}
     if (this.currentTurnContext) {
       return this.currentTurnContext;
     }
@@ -90,6 +99,9 @@ export class ReplyTracker {
 
   markReplied(replyTo: string): void {
     this.pendingAsks.delete(replyTo);
+    for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
+      if (this.pendingTurnContexts[index]?.message.id === replyTo) this.pendingTurnContexts.splice(index, 1);
+    }
     if (this.currentTurnContext?.message.id === replyTo) {
       this.currentTurnContext = null;
     }

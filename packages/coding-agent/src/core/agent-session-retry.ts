@@ -237,7 +237,7 @@ function finishFallbackModelScope(
 	return true;
 }
 
-/** Cancel a pending fallback restore after an explicit model/effort choice. */
+/** Finish an active fallback lifecycle before an explicit model choice. */
 export function _clearFallbackModelScope(this: AgentSession): void {
 	const currentModel = this.agent.state.model ?? this.model;
 	const finalError = this._fallbackRestoreError;
@@ -253,8 +253,8 @@ export function _clearFallbackModelScope(this: AgentSession): void {
 	clearFallbackModelScopeState.call(this);
 }
 
-/** Restore the model that was active before this turn spent a fallback. */
-export async function _restoreFallbackModel(this: AgentSession): Promise<boolean> {
+/** Finish an active fallback lifecycle without changing the selected fallback model. */
+export async function _settleFallbackModelScope(this: AgentSession): Promise<boolean> {
 	const originModel = this._fallbackOriginModel;
 	const originGeneration = this._fallbackOriginGeneration;
 	const finalError = this._fallbackRestoreError;
@@ -262,43 +262,12 @@ export async function _restoreFallbackModel(this: AgentSession): Promise<boolean
 		clearFallbackModelScopeState.call(this);
 		return false;
 	}
+	if (this._fallbackOriginGeneration !== originGeneration || this._fallbackOriginModel !== originModel) return false;
 
-	const previousModel = this.agent.state.model ?? this.model;
-	const previousThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
-	const originThinkingLevel = clampThinkingLevel(
-		originModel,
-		this._fallbackOriginThinkingLevel ?? DEFAULT_THINKING_LEVEL,
-	) as ThinkingLevel;
-	const modelChanged = !modelsAreEqual(previousModel, originModel);
-	const thinkingChanged = previousThinkingLevel !== originThinkingLevel;
-	if (!modelChanged && !thinkingChanged) {
-		return finishFallbackModelScope.call(this, {
-			success: finalError === undefined,
-			from: modelLabel(previousModel),
-			to: modelLabel(originModel),
-			...(finalError === undefined ? {} : { finalError }),
-		});
-	}
-
-	const stillOwnsRestore = (): boolean =>
-		this._fallbackOriginGeneration === originGeneration &&
-		this._fallbackOriginModel === originModel &&
-		modelsAreEqual(this.agent.state.model ?? this.model, originModel) &&
-		(this.agent.state.thinkingLevel ?? this.thinkingLevel) === originThinkingLevel;
-
-	this.agent.state.model = originModel;
-	if (modelChanged) this.sessionManager.appendModelChange(originModel.provider, originModel.id);
-	applyFallbackThinkingLevel.call(this, originThinkingLevel);
-	this._refreshBaseSystemPromptFromActiveTools();
-	this._emitModelChanged(originModel, previousModel, "restore");
-	if (!stillOwnsRestore()) return false;
-	await this._emitModelSelect(originModel, previousModel, "restore");
-	if (!stillOwnsRestore()) return false;
-
+	const currentModel = this.agent.state.model ?? this.model;
 	return finishFallbackModelScope.call(this, {
 		success: finalError === undefined,
-		from: modelLabel(previousModel),
-		to: modelLabel(originModel),
+		from: modelLabel(currentModel),
 		...(finalError === undefined ? {} : { finalError }),
 	});
 }
@@ -379,7 +348,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 				if (this._fallbackOriginGeneration === fallbackGeneration) {
 					this._fallbackRestoreError = finalError;
 					try {
-						await this._restoreFallbackModel();
+						await this._settleFallbackModelScope();
 					} catch {
 						if (this._fallbackOriginGeneration === fallbackGeneration) {
 							finishFallbackModelScope.call(this, {
@@ -555,7 +524,7 @@ export const agentSessionRetryMethods = {
 	_trySwitchToFallbackModel,
 	_beginFallbackModelScope,
 	_clearFallbackModelScope,
-	_restoreFallbackModel,
+	_settleFallbackModelScope,
 	abortRetry,
 	waitForRetry,
 	setAutoRetryEnabled,

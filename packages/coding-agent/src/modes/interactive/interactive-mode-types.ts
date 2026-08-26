@@ -1,4 +1,5 @@
 import type { Terminal } from "@earendil-works/pi-tui";
+import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
 import type { EarlyInputCapture } from "../../main-early-input.ts";
 import type { ImageContent } from "./interactive-mode-deps.ts";
 
@@ -18,6 +19,8 @@ export type CompactionQueuedMessage = {
 export interface InteractiveModeOptions {
 	/** Providers that were migrated to auth.json (shows warning) */
 	migratedProviders?: string[];
+	/** Diagnostics collected before the interactive transcript was initialized. */
+	startupDiagnostics?: AgentSessionRuntimeDiagnostic[];
 	/** Warning message if session model couldn't be restored */
 	modelFallbackMessage?: string;
 	/** Cwd to persist as trusted after reload/shutdown if it gains trust inputs during an implicitly trusted session. */

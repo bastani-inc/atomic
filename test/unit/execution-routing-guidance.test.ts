@@ -59,23 +59,6 @@ describe("workflow-first execution routing", () => {
 		}
 	});
 
-	test("keeps all six core communication rules out of workflow promptGuidelines", () => {
-		const modelVisibleWorkflowGuidance = workflowGuidance.join("\n");
-		const coreCommunicationRules = [
-			"Never use a familiar printed metaphor, simile, or figure of speech.",
-			"Never use a long word where a short one will do.",
-			"Cut every word that can be cut.",
-			"Use active rather than passive voice where possible.",
-			"Prefer everyday English to foreign phrases, scientific terms, and jargon.",
-			"Break any rule rather than say anything outright barbarous.",
-		];
-
-		expect(modelVisibleWorkflowGuidance).not.toContain("**Communication**:");
-		for (const rule of coreCommunicationRules) {
-			expect(modelVisibleWorkflowGuidance).not.toContain(rule);
-		}
-	});
-
 	test("treats loop and stop-condition phrasing as a strong workflow signal", () => {
 		for (const phrase of [
 			"loop or stop-condition wording as a strong workflow signal",

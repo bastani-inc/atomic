@@ -259,7 +259,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write, find, search, ask_user_question, todo tools
 
 ${chalk.bold("Usage:")}
-  ${APP_NAME} [options] [@files...] [messages...]
+  ${APP_NAME} [options] [--] [@files...] [messages...]
 
 ${chalk.bold("Commands:")}
   ${APP_NAME} install <source> [-l]     Install extension source and add to settings
@@ -312,6 +312,7 @@ ${chalk.bold("Options:")}
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as ${ENV_OFFLINE}=1)
+  --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help
   --version, -v                  Show version number
 
@@ -338,6 +339,9 @@ ${chalk.bold("Examples:")}
 
   # Non-interactive mode (process and exit)
   ${APP_NAME} -p "List all .ts files in src/"
+
+  # Prompt beginning with a dash
+  ${APP_NAME} -p -- "- Summarize these points"
 
   # Multiple messages (interactive)
   ${APP_NAME} "Read package.json" "What dependencies do we have?"
@@ -430,6 +434,7 @@ ${chalk.bold("Environment Variables:")}
 ${chalk.bold("Built-in Tool Names:")}
   read              - Read path selectors (files, dirs, archives, URLs)
   bash              - Execute shell commands
+  powershell        - Execute PowerShell commands on Windows
   edit              - Apply hashline-anchored source edits
   write             - Create or overwrite writable path selectors
   find              - Find filesystem paths by glob pattern (default)

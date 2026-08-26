@@ -139,6 +139,12 @@ export interface Store {
 	 */
 	recordRunBlocked(runId: string, error: string, metadata: RunBlockedMetadata): boolean;
 	/**
+	 * Put a locally killed active-blocked source back to resumable blocked
+	 * without dropping live prompt answers, pending-prompt descriptors, or
+	 * notices for that run id.
+	 */
+	restoreActiveBlockedRun(source: RunSnapshot, error: string, metadata: RunBlockedMetadata): boolean;
+	/**
 	 * Remove a run from live workflow history/status. Any pending HIL prompt
 	 * waiter is rejected because the workflow will not resume through that path.
 	 * Returns `true` when a run was removed, `false` when the id is unknown.

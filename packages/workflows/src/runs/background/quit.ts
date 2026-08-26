@@ -1,6 +1,7 @@
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
 import { getDurableBackend } from "../../durable/factory.js";
 import { recordRunTimingCheckpoint } from "../../durable/run-timing.js";
+import { TASK_RESULT_CHECKPOINT_CONTROL_PREFIX } from "../../durable/stage-primitive.js";
 import {
 	getLoadableDurableWorkflow,
 	transitionDurableWorkflowStatus,
@@ -28,7 +29,7 @@ import {
 	type StageControlRegistry,
 } from "../foreground/stage-control-registry.js";
 import { jobTracker as defaultJobTracker, type JobTracker } from "./job-tracker.js";
-import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
+import { aggregateWorkflowRootRunId, expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
 
 export type QuitRunResult =
 	| {
@@ -108,7 +109,15 @@ export async function quitRun(
 	const run = activeStore.runs().find((candidate) => candidate.id === runId);
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
-
+	const aggregateRootRunId = aggregateWorkflowRootRunId(activeStore, runId);
+	if (aggregateRootRunId !== runId) {
+		const hasTaskTail = expandedControlRunIds(activeStore, runId).some((controlRunId) =>
+			toolControls
+				.active(controlRunId)
+				.some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX)),
+		);
+		if (hasTaskTail) return await quitRun(aggregateRootRunId, opts);
+	}
 	const graph = expandWorkflowGraph(readGraphStoreSnapshot(activeStore), runId);
 	const handles = controllableHandles(activeStore, registry, runId);
 	const admissionBoundaries = controllableAdmissionBoundaries(activeStore, toolControls, runId);

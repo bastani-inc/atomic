@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import {
 	createWorkflowHeartbeatDelivery,
+	WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS,
+	WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS,
 	type WorkflowHeartbeatTimerApi,
 	type WorkflowHeartbeatTimerHandle,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-delivery.js";
@@ -18,6 +20,7 @@ import { testRunId } from "../helpers/run-id.js";
 interface FakeTimer {
 	readonly id: number;
 	readonly handler: () => void;
+	readonly delayMs: number;
 }
 
 interface FakeTimerHandle extends WorkflowHeartbeatTimerHandle {
@@ -25,14 +28,25 @@ interface FakeTimerHandle extends WorkflowHeartbeatTimerHandle {
 }
 
 /** Timers fire only when a test asks them to; nothing here waits on real time. */
-function fakeTimers(): WorkflowHeartbeatTimerApi & { live(): FakeTimer[]; fireAll(): void } {
+function fakeTimers(): WorkflowHeartbeatTimerApi & {
+	live(): FakeTimer[];
+	liveDelays(): number[];
+	fireAll(): void;
+	unrefCount(): number;
+} {
 	const timers = new Map<number, FakeTimer>();
 	let nextId = 1;
+	let unrefs = 0;
 	return {
-		setTimeout(handler: () => void): FakeTimerHandle {
+		setTimeout(handler: () => void, delayMs: number): FakeTimerHandle {
 			const id = nextId++;
-			timers.set(id, { id, handler });
-			return { id };
+			timers.set(id, { id, handler, delayMs });
+			return {
+				id,
+				unref: () => {
+					unrefs += 1;
+				},
+			};
 		},
 		clearTimeout(handle: WorkflowHeartbeatTimerHandle): void {
 			timers.delete((handle as FakeTimerHandle).id);
@@ -40,11 +54,22 @@ function fakeTimers(): WorkflowHeartbeatTimerApi & { live(): FakeTimer[]; fireAl
 		live() {
 			return [...timers.values()];
 		},
+		/**
+		 * Delay of every live timer. A bare count cannot tell a watchdog from a
+		 * backoff retry, and several tests here exist precisely to forbid one of
+		 * the two, so they assert on delays instead.
+		 */
+		liveDelays() {
+			return [...timers.values()].map((timer) => timer.delayMs);
+		},
 		fireAll() {
 			for (const timer of [...timers.values()]) {
 				timers.delete(timer.id);
 				timer.handler();
 			}
+		},
+		unrefCount() {
+			return unrefs;
 		},
 	};
 }
@@ -88,6 +113,227 @@ describe("workflow heartbeat delivery discard", () => {
 		assert.deepEqual(attempted, [keptId], "and it is never attempted once the head settles");
 		assert.deepEqual(settled, [keptId]);
 		delivery.dispose();
+	});
+
+	test("a watchdog abandons an unresolved head and starts the next identity", async () => {
+		const firstId = testRunId("watchdog-unresolved-first");
+		const nextId = testRunId("watchdog-unresolved-next");
+		const timers = fakeTimers();
+		const attempted: string[] = [];
+		const settled: { runId: string; delivered: boolean }[] = [];
+		let resolveFirst: ((delivered: boolean) => void) | undefined;
+		const first = new Promise<boolean>((resolve) => {
+			resolveFirst = resolve;
+		});
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				return payload.runId === firstId ? first : true;
+			},
+			onSettled: (payload, delivered) => settled.push({ runId: payload.runId, delivered }),
+		});
+
+		delivery.deliver(details(firstId, 60_000));
+		delivery.deliver(details(nextId, 60_000));
+		assert.deepEqual(attempted, [firstId], "the unresolved head holds the next identity");
+		assert.equal(timers.live().length, 1, "the in-flight head owns a watchdog");
+
+		timers.fireAll();
+		assert.deepEqual(attempted, [firstId, nextId], "the next identity starts after the watchdog");
+		assert.deepEqual(settled, [
+			{ runId: firstId, delivered: false },
+			{ runId: nextId, delivered: true },
+		]);
+
+		// The underlying host promise remains unresolved until this point. Its late
+		// result must not settle the identity a second time.
+		resolveFirst?.(true);
+		await flushMicrotasks();
+		assert.deepEqual(settled, [
+			{ runId: firstId, delivered: false },
+			{ runId: nextId, delivered: true },
+		]);
+		delivery.dispose();
+	});
+
+	test("a late resolution from an abandoned attempt leaves the next head active", async () => {
+		const firstId = testRunId("watchdog-late-resolution-first");
+		const nextId = testRunId("watchdog-late-resolution-next");
+		const timers = fakeTimers();
+		const attempted: string[] = [];
+		const settled: { runId: string; delivered: boolean }[] = [];
+		let resolveFirst: ((delivered: boolean) => void) | undefined;
+		let resolveNext: ((delivered: boolean) => void) | undefined;
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				return new Promise<boolean>((resolve) => {
+					if (payload.runId === firstId) resolveFirst = resolve;
+					else resolveNext = resolve;
+				});
+			},
+			onSettled: (payload, delivered) => settled.push({ runId: payload.runId, delivered }),
+		});
+
+		delivery.deliver(details(firstId, 60_000));
+		delivery.deliver(details(nextId, 60_000));
+		timers.fireAll();
+		assert.deepEqual(attempted, [firstId, nextId]);
+		assert.deepEqual(settled, [{ runId: firstId, delivered: false }]);
+		assert.equal(timers.live().length, 1, "the next head keeps its watchdog");
+
+		resolveFirst?.(true);
+		await flushMicrotasks();
+		assert.deepEqual(settled, [{ runId: firstId, delivered: false }], "late resolution does not settle twice");
+		assert.equal(timers.live().length, 1, "late resolution does not clear the next head's watchdog");
+
+		resolveNext?.(true);
+		await flushMicrotasks();
+		assert.deepEqual(settled, [
+			{ runId: firstId, delivered: false },
+			{ runId: nextId, delivered: true },
+		]);
+		delivery.dispose();
+	});
+
+	test("a late rejection from an abandoned attempt leaves the next head active", async () => {
+		const firstId = testRunId("watchdog-late-rejection-first");
+		const nextId = testRunId("watchdog-late-rejection-next");
+		const timers = fakeTimers();
+		const attempted: string[] = [];
+		const settled: { runId: string; delivered: boolean }[] = [];
+		let rejectFirst: ((reason?: Error) => void) | undefined;
+		let resolveNext: ((delivered: boolean) => void) | undefined;
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				return new Promise<boolean>((resolve, reject) => {
+					if (payload.runId === firstId) rejectFirst = reject;
+					else resolveNext = resolve;
+				});
+			},
+			onSettled: (payload, delivered) => settled.push({ runId: payload.runId, delivered }),
+		});
+
+		delivery.deliver(details(firstId, 60_000));
+		delivery.deliver(details(nextId, 60_000));
+		timers.fireAll();
+		assert.deepEqual(attempted, [firstId, nextId]);
+		assert.deepEqual(settled, [{ runId: firstId, delivered: false }]);
+		assert.equal(timers.live().length, 1, "the next head keeps its watchdog");
+
+		rejectFirst?.(new Error("late host rejection"));
+		await flushMicrotasks();
+		assert.deepEqual(settled, [{ runId: firstId, delivered: false }], "late rejection does not settle twice");
+		assert.equal(timers.live().length, 1, "late rejection does not arm a retry or clear the next watchdog");
+
+		resolveNext?.(true);
+		await flushMicrotasks();
+		assert.deepEqual(settled, [
+			{ runId: firstId, delivered: false },
+			{ runId: nextId, delivered: true },
+		]);
+		delivery.dispose();
+	});
+
+	test("a directly rejecting emitter retries and then settles before the next identity", async () => {
+		const firstId = testRunId("direct-rejection-first");
+		const nextId = testRunId("direct-rejection-next");
+		const timers = fakeTimers();
+		const attempted: string[] = [];
+		const settled: { runId: string; delivered: boolean }[] = [];
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				return payload.runId === firstId ? Promise.reject(new Error("host rejected")) : true;
+			},
+			onSettled: (payload, delivered) => settled.push({ runId: payload.runId, delivered }),
+		});
+
+		delivery.deliver(details(firstId, 60_000));
+		delivery.deliver(details(nextId, 60_000));
+		await flushMicrotasks();
+		assert.deepEqual(attempted, [firstId], "the rejected head is still the queue head");
+		assert.equal(timers.live().length, 1, "rejection enters normal backoff");
+
+		for (
+			let completedAttempts = 1;
+			completedAttempts < WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS;
+			completedAttempts += 1
+		) {
+			timers.fireAll();
+			await flushMicrotasks();
+		}
+
+		assert.deepEqual(
+			attempted,
+			[...Array(WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS).fill(firstId), nextId],
+			"the rejecting emitter uses the existing attempt budget before handover",
+		);
+		assert.deepEqual(settled, [
+			{ runId: firstId, delivered: false },
+			{ runId: nextId, delivered: true },
+		]);
+		assert.equal(timers.live().length, 0);
+		delivery.dispose();
+	});
+
+	test("a synchronously throwing emitter retries and then hands over to the next identity", () => {
+		const firstId = testRunId("direct-throw-first");
+		const nextId = testRunId("direct-throw-next");
+		const timers = fakeTimers();
+		const attempted: string[] = [];
+		const settled: { runId: string; delivered: boolean }[] = [];
+		let firstAttempts = 0;
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				if (payload.runId !== firstId) return true;
+				firstAttempts += 1;
+				if (firstAttempts === 1) throw new Error("host threw before returning");
+				return true;
+			},
+			onSettled: (payload, delivered) => settled.push({ runId: payload.runId, delivered }),
+		});
+
+		assert.doesNotThrow(() => delivery.deliver(details(firstId, 60_000)));
+		delivery.deliver(details(nextId, 60_000));
+		assert.deepEqual(attempted, [firstId], "the synchronous failure leaves the head waiting for its retry");
+		assert.deepEqual(timers.liveDelays(), [20], "the synchronous failure enters normal backoff");
+
+		timers.fireAll();
+		assert.deepEqual(attempted, [firstId, firstId, nextId], "the retried head settles before handing over");
+		assert.deepEqual(settled, [
+			{ runId: firstId, delivered: true },
+			{ runId: nextId, delivered: true },
+		]);
+		assert.equal(timers.live().length, 0);
+		delivery.dispose();
+	});
+
+	test("an async send arms a bounded watchdog at the declared deadline and unrefs it", () => {
+		const timers = fakeTimers();
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: () => new Promise<boolean>(() => {}),
+			onSettled: () => {},
+		});
+
+		delivery.deliver(details(testRunId("watchdog-deadline"), 60_000));
+		assert.deepEqual(
+			timers.liveDelays(),
+			[WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS],
+			"the only armed timer is the watchdog, at the exported deadline",
+		);
+		assert.equal(timers.unrefCount(), 1, "the watchdog is unrefed so it cannot hold the process open");
+
+		delivery.dispose();
+		assert.deepEqual(timers.liveDelays(), [], "dispose clears the watchdog with the retry timers");
 	});
 
 	test("a head waiting to retry is dropped with its backoff timer, and the next identity starts", () => {
@@ -209,7 +455,14 @@ describe("workflow heartbeat delivery discard", () => {
 		delivery.deliver(details(runId, 60_000));
 		terminal = true;
 		assert.equal(delivery.discard(runId), false, "the in-flight send is still spared");
-		assert.equal(timers.live().length, 0, "and cleanup left no timer behind");
+		// The spared in-flight head keeps its watchdog — after cleanup that timer
+		// is the only thing that can ever release the shared queue. A retry timer
+		// is still forbidden, which a bare count would not distinguish.
+		assert.deepEqual(
+			timers.liveDelays(),
+			[WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS],
+			"cleanup leaves the spared head's watchdog and no retry timer",
+		);
 
 		// The host rejects the send *after* the run was discarded. Retrying it
 		// would arm a backoff timer owned by a run whose cleanup already finished,
@@ -281,7 +534,11 @@ describe("workflow heartbeat delivery discard", () => {
 		reject?.(false);
 		await flushMicrotasks();
 		assert.deepEqual(attempted, [discardedId, laterId], "the next identity started");
-		assert.equal(timers.live().length, 0, "no timer from the discarded head");
+		assert.deepEqual(
+			timers.liveDelays(),
+			[WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS],
+			"no timer from the discarded head; the fresh head owns only its watchdog",
+		);
 
 		reject?.(false);
 		await flushMicrotasks();

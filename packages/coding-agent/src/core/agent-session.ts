@@ -113,6 +113,8 @@ class AgentSessionBase {
 	protected _workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined = undefined;
 	protected _activeInterruptAbortMessage: string | undefined = undefined;
 	protected _pendingNextTurnMessages: CustomMessage[] = [];
+	/** Context-only custom messages queued during a run, flushed after the current turn's tool results. */
+	protected _pendingCustomMessages: CustomMessage[] = [];
 	protected _protectedStreamingCustomMessages: Array<{
 		message: CustomMessage;
 		delivery: "steer" | "followUp";

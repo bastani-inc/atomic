@@ -218,24 +218,12 @@ impl SubagentControl {
 		Ok(child)
 	}
 
-	pub fn reload_cold_child(
-		&self,
-		path: impl AsRef<str>,
-		_message: &str,
-	) -> Result<AdmittedChild, AdmissionRefusal> {
-		let _dispatch = self.enter_dispatch()?;
-		let path = ChildPath::new(path).map_err(AdmissionRefusal::InvalidCwd)?;
-		let child = self.state.registry.get(&path).ok_or(AdmissionRefusal::UnknownAgent)?;
-		self.state.residency.reload_cold_child(&path).map_err(|error| match error {
-			ResidencyError::CapacityExhausted => AdmissionRefusal::CapacityExhausted,
-			other => AdmissionRefusal::InvalidCwd(other.to_string()),
-		})?;
-		Ok(child)
-	}
-
 	pub fn begin_child_attempt(&self, child: &AdmittedChild) -> Result<u64, AdmissionRefusal> {
+		if child.status_watch().current().is_terminal() {
+			return Err(AdmissionRefusal::TerminalChild);
+		}
 		let guard = self.state.limiter.try_acquire()?;
-		self.state.residency.reload_cold_child(child.path()).map_err(|error| match error {
+		self.state.residency.ensure_child_loaded(child.path()).map_err(|error| match error {
 			ResidencyError::CapacityExhausted => AdmissionRefusal::CapacityExhausted,
 			other => AdmissionRefusal::InvalidCwd(other.to_string()),
 		})?;
@@ -244,7 +232,14 @@ impl SubagentControl {
 			.residency
 			.set_active_turn(child.path(), true)
 			.map_err(|error| AdmissionRefusal::InvalidCwd(error.to_string()))?;
-		child.status_watch().publish(AgentStatus::Running);
+		if !child.status_watch().publish(AgentStatus::Running) {
+			self
+				.state
+				.residency
+				.set_active_turn(child.path(), false)
+				.map_err(|error| AdmissionRefusal::InvalidCwd(error.to_string()))?;
+			return Err(AdmissionRefusal::TerminalChild);
+		}
 		self.notify_status(child.path(), AgentStatus::Running);
 		let id = self.state.next_attempt_id.fetch_add(1, Ordering::Relaxed);
 		let attempt = Arc::new(AttemptControl {
@@ -492,6 +487,7 @@ pub(crate) fn refusal_kind(refusal: &AdmissionRefusal) -> super::AdmissionRefusa
 		AdmissionRefusal::DispatchGuardBusy => super::AdmissionRefusalKind::DispatchGuardBusy,
 		AdmissionRefusal::InvalidCwd(_) => super::AdmissionRefusalKind::InvalidCwd,
 		AdmissionRefusal::UnknownAgent => super::AdmissionRefusalKind::UnknownAgent,
+		AdmissionRefusal::TerminalChild => super::AdmissionRefusalKind::TerminalChild,
 	}
 }
 #[cfg(test)]
@@ -588,7 +584,7 @@ mod tests {
 	}
 
 	#[test]
-	fn residency_evicts_lru_and_protects_reload_slot() {
+	fn residency_evicts_lru_and_protects_load_slot() {
 		let residency = Residency::new(2);
 		let first = path("parent/analysis_1");
 		let second = path("parent/analysis_2");
@@ -603,9 +599,9 @@ mod tests {
 		assert_eq!(residency.evict_lru(), Some(first.clone()));
 		assert!(!residency.is_loaded(&first).expect("first state"));
 
-		residency.reload_cold_child(&first).expect("reload first");
-		assert!(residency.is_loaded(&first).expect("first reloaded"));
-		let protected = residency.protect_for_reload(&cold).expect("protect cold slot");
+		residency.ensure_child_loaded(&first).expect("load first");
+		assert!(residency.is_loaded(&first).expect("first loaded"));
+		let protected = residency.protect_for_load(&cold).expect("protect cold slot");
 		assert_eq!(residency.evict_lru(), Some(second));
 		drop(protected);
 	}
@@ -639,6 +635,46 @@ mod tests {
 		control.finish_child_attempt(attempt, AgentStatus::Ok).expect("finish attempt");
 		assert_eq!(control.limiter().active(), 0);
 		assert_eq!(child.status_watch().current(), AgentStatus::Ok);
+	}
+
+	#[test]
+	fn ok_and_error_children_refuse_new_attempts_and_keep_their_terminal_status() {
+		for terminal_status in [AgentStatus::Ok, AgentStatus::Error] {
+			let control = SubagentControl::new("parent").expect("control");
+			let parent = ParentContext::new("parent", 0).expect("parent");
+			let child = control
+				.admit_child_session(
+					ChildSpec::new(format!("task-{}", terminal_status.as_str())),
+					parent,
+				)
+				.expect("admit child");
+			let attempt = control.begin_child_attempt(&child).expect("begin attempt");
+			control.finish_child_attempt(attempt, terminal_status).expect("finish attempt");
+
+			assert_eq!(control.begin_child_attempt(&child), Err(AdmissionRefusal::TerminalChild));
+			control
+				.publish_status(child.path().as_str(), AgentStatus::Running)
+				.expect("publish ignored");
+			assert_eq!(child.status_watch().current(), terminal_status);
+		}
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn interrupted_child_refuses_a_new_attempt_and_stays_interrupted() {
+		let control = SubagentControl::new("parent").expect("control");
+		let parent = ParentContext::new("parent", 0).expect("parent");
+		let child =
+			control.admit_child_session(ChildSpec::new("analysis"), parent).expect("admit child");
+		let attempt = control.begin_child_attempt(&child).expect("begin attempt");
+		control
+			.terminate_child_attempt(attempt, TerminationCause::Interrupt)
+			.await
+			.expect("interrupt attempt");
+
+		assert_eq!(control.begin_child_attempt(&child), Err(AdmissionRefusal::TerminalChild));
+		control.publish_status(child.path().as_str(), AgentStatus::Running).expect("publish ignored");
+		assert_eq!(child.status_watch().current(), AgentStatus::Interrupted);
+		assert_eq!(child.status_watch().current_cause(), Some(TerminationCause::Interrupt));
 	}
 
 	#[tokio::test(flavor = "current_thread")]

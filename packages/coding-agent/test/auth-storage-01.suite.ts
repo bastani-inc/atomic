@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
@@ -203,9 +203,20 @@ describe("AuthStorage file backend regressions", () => {
 	});
 
 	const posixTest = process.platform === "win32" ? test.skip : test;
-	posixTest("atomic writes preserve 0600 file permissions", async () => {
+	// Upstream c49906ec77 applies the owner-only mode on creation only, so an
+	// administrator-managed mode or ACL survives a rewrite. Atomic replaces the
+	// inode atomically, so it must copy the mode across rather than reset it.
+	posixTest("newly created auth files are owner-only", async () => {
+		rmSync(authPath, { force: true });
 		const storage = AuthStorage.create(authPath);
 		await storage.modify("openai", async () => ({ type: "api_key", key: "openai-key" }));
 		expect(statSync(authPath).mode & 0o777).toBe(0o600);
+	});
+
+	posixTest("atomic writes preserve an existing managed file mode", async () => {
+		chmodSync(authPath, 0o660);
+		const storage = AuthStorage.create(authPath);
+		await storage.modify("openai", async () => ({ type: "api_key", key: "openai-key" }));
+		expect(statSync(authPath).mode & 0o777).toBe(0o660);
 	});
 });

@@ -82,7 +82,6 @@ function state(): ExecutorDeps["state"] {
 	return {
 		baseCwd: "",
 		currentSessionId: "parent",
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),

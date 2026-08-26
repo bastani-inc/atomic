@@ -1,4 +1,4 @@
-import type { Transport } from "@bastani/pi-ai/compat";
+import type { Api, Model, Transport } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import type {
@@ -27,6 +27,8 @@ export interface SettingsConfig {
 	bashInterceptorEnabled: boolean;
 	thinkingLevel: ThinkingLevel;
 	availableThinkingLevels: ThinkingLevel[];
+	availableDefaultModels?: Model<Api>[];
+	modelThinkingLevels?: Record<string, ThinkingLevel>;
 	currentTheme: string;
 	terminalTheme: TerminalTheme;
 	availableThemes: string[];
@@ -64,6 +66,8 @@ export interface SettingsCallbacks {
 	onHttpIdleTimeoutChange: (timeoutMs: number) => void;
 	onBashInterceptorEnabledChange: (enabled: boolean) => void;
 	onThinkingLevelChange: (level: ThinkingLevel) => void;
+	onModelThinkingLevelChange?: (provider: string, modelId: string, level: ThinkingLevel) => void;
+	onModelThinkingLevelRemove?: (provider: string, modelId: string) => void;
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
 	onHideThinkingBlockChange: (hidden: boolean) => void;

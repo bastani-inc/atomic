@@ -124,23 +124,11 @@ export const SubagentParams = Type.Object(
 				description: "Management/control action. Omit for execution mode.",
 			}),
 		),
-		id: Type.Optional(
-			Type.String({
-				description: "Run id or prefix for action='status', action='interrupt', or action='resume'.",
-			}),
-		),
+		id: Type.Optional(Type.String({ description: "Run id or prefix for action='status' or action='interrupt'." })),
 		runId: Type.Optional(
 			Type.String({
 				description:
-					"Target run ID for action='interrupt' or action='resume'. Defaults to the most recently active controllable run for interrupt. Prefer id for new calls.",
-			}),
-		),
-		index: Type.Optional(
-			Type.Integer({ minimum: 0, description: "Zero-based child index for actions that target a specific child." }),
-		),
-		message: Type.Optional(
-			Type.String({
-				description: "Follow-up message for action='resume'. Use index to choose a child from multi-child runs.",
+					"Target run ID for action='interrupt'. Defaults to the most recently active controllable run. Prefer id for new calls.",
 			}),
 		),
 		config: Type.Optional(

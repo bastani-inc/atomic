@@ -9,7 +9,10 @@ import {
 	WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
 } from "../../packages/workflows/src/durable/workflow-heartbeat-anchor.js";
 import { createDurableStageSessionRecorder } from "../../packages/workflows/src/engine/run-durable-stage-session.js";
-import { WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS } from "../../packages/workflows/src/extension/workflow-heartbeat-delivery.js";
+import {
+	WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS,
+	WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS,
+} from "../../packages/workflows/src/extension/workflow-heartbeat-delivery.js";
 import {
 	createWorkflowHeartbeatSchedulerState,
 	installWorkflowHeartbeatScheduler,
@@ -407,14 +410,57 @@ describe("workflow heartbeat cadence", () => {
 		const runId = testRunId("heartbeat-one-pending");
 		const store = createStore();
 		startRun(store, runId);
-		// A send that never settles keeps the run's single pending slot occupied.
+		// A send that never settles keeps the run's single pending slot occupied
+		// until its watchdog deadline.
 		const harness = installHarness({ store, defaultInterval: 1, send: () => new Promise<void>(() => {}) });
+		const firstBoundary = STARTED_AT + MINUTE_MS;
+		const watchdogDeadline = firstBoundary + WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS;
 
-		harness.clock.advanceTo(STARTED_AT + 3 * MINUTE_MS);
-		assert.equal(harness.sent.length, 1, "a busy pending slot blocks later boundaries");
+		harness.clock.advanceTo(firstBoundary);
+		harness.clock.advanceWithoutFiring(watchdogDeadline - 1);
+		assert.equal(harness.sent.length, 1, "a busy pending slot blocks later boundaries before timeout");
 		assert.equal(harness.state.pending.size, 1);
-		assert.deepEqual(harness.state.pending.get(runId), { runId, scheduledAt: STARTED_AT + MINUTE_MS });
+		assert.deepEqual(harness.state.pending.get(runId), { runId, scheduledAt: firstBoundary });
 		assert.equal(harness.state.scheduled.size, 0, "no second schedule record while one is pending");
+
+		harness.clock.advanceTo(watchdogDeadline);
+		assert.equal(harness.sent.length, 1, "timeout releases the first identity without replaying it");
+		assert.equal(harness.state.pending.size, 0, "the failed in-flight identity releases its slot");
+		assert.equal(harness.state.scheduled.size, 1, "the next future boundary is re-armed after timeout");
+
+		harness.clock.advanceTo(watchdogDeadline + MINUTE_MS + 1);
+		assert.equal(harness.sent.length, 2, "a later boundary delivers after timeout");
+		assert.equal(harness.state.pending.size, 1);
+		assert.ok((harness.sent[1]?.details.scheduledAt ?? 0) > watchdogDeadline);
+		harness.scheduler.dispose();
+	});
+
+	test("terminal cleanup does not release an in-flight head before its watchdog", () => {
+		const candidateA = testRunId("heartbeat-watchdog-terminal-a");
+		const candidateB = testRunId("heartbeat-watchdog-terminal-b");
+		const firstRunId = candidateA < candidateB ? candidateA : candidateB;
+		const secondRunId = candidateA < candidateB ? candidateB : candidateA;
+		const store = createStore();
+		startRun(store, firstRunId);
+		startRun(store, secondRunId);
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			parentAvailabilityReported: false,
+			send: (details) => (details.runId === firstRunId ? new Promise<void>(() => {}) : undefined),
+		});
+		const firstBoundary = STARTED_AT + MINUTE_MS;
+		const watchdogDeadline = firstBoundary + WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS;
+
+		harness.clock.advanceTo(firstBoundary);
+		assert.deepEqual(runIds(harness.sent), [firstRunId], "the first run owns the in-flight head");
+
+		store.recordRunEnd(firstRunId, "completed");
+		assert.deepEqual(runIds(harness.sent), [firstRunId], "terminal cleanup alone does not start the queued run");
+
+		harness.clock.advanceTo(watchdogDeadline);
+		assert.deepEqual(runIds(harness.sent), [firstRunId, secondRunId], "the queued run starts after the watchdog");
+		assert.equal(harness.state.pending.size, 0, "the successful second send settles immediately on this host");
 		harness.scheduler.dispose();
 	});
 
@@ -2170,7 +2216,14 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 
 		store.recordRunEnd(runId, "killed");
 		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
-		assert.equal(harness.clock.live().length, 0, "cleanup left no timer behind");
+		// Cleanup spares an in-flight send, and the watchdog is now the only thing
+		// that can ever release it — so that one timer must survive. What must not
+		// survive is a retry timer, which is what this test has always been about.
+		assert.deepEqual(
+			harness.clock.live().map((timer) => timer.delayMs),
+			[WORKFLOW_HEARTBEAT_DELIVERY_TIMEOUT_MS],
+			"cleanup leaves the spared head's watchdog and no retry timer",
+		);
 
 		failSend?.();
 		await flushMicrotasks();

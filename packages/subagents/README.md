@@ -127,11 +127,12 @@ There is no generic `reviewer` or `planner` agent; pick the specialist whose ang
 
 Builtin agents inherit your current Pi default model by default. This keeps new installs from depending on a provider you may not have configured. If you want a role to use a specific model, set an override instead of copying the bundled agent file.
 
-For one run, put the override in the command:
+For one run, pass `model` on the `subagent` call:
 
-```text
-/run codebase-analyzer[model=anthropic/claude-sonnet-4:high] "Review this diff"
+```typescript
+subagent({ agent: "codebase-analyzer", task: "Review this diff", model: "anthropic/claude-sonnet-4:high" })
 ```
+
 
 For a persistent override, edit settings. This example pins the codebase-analyzer everywhere, adds a backup model for provider failures, and keeps the other builtins on your normal default model:
 
@@ -161,24 +162,12 @@ Workflow invocations receive a stable, non-`default` Intercom group automaticall
 
 ## Where running subagents show up
 
-Foreground runs stream progress in the conversation while they run. Parallel calls keep their grouped task shape in progress and results, and status/control actions can inspect or interrupt retained foreground children.
+Foreground runs stream progress in the conversation while they run. Parallel calls keep their grouped task shape in progress and results, and status/control actions can inspect or interrupt live foreground children.
 
 You can ask naturally:
 
 ```text
 Show me the current subagent status.
-```
-
-If something feels misconfigured, run:
-
-```text
-/subagents-doctor
-```
-
-or ask:
-
-```text
-Check whether subagents and intercom are set up correctly.
 ```
 
 ## Recommended orchestration pattern (scaffolding)
@@ -189,27 +178,13 @@ Use orchestration as parent-agent guidance, not as a runtime workflow mode. For 
 clarify → gather context → worker → fresh reviewers → worker
 ```
 
-Use the optional prompt shortcuts below when you want the pattern to be repeatable.
+
 
 Packaged `worker` defaults to forked context when a launch omits `context`; every other builtin runs fresh. Pass `context: "fresh"` when you intentionally want a fresh `worker` run.
 
-Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate: launches, `resume`, and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
+Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, and `status`; delegation and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate or control another child: launches and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
 
-## Optional shortcuts
 
-The package includes reusable prompt templates for common workflows. You do not need them, but they are handy when you want the same shape every time:
-
-| Prompt | Use it for |
-|--------|------------|
-| `/parallel-review` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
-| `/review-loop` | Run parent-controlled write, review, and fix cycles until clean or capped. `debugger` writes fixes for bugs, `code-simplifier` for cleanup. |
-| `/parallel-research` | Combine `codebase-online-researcher` with local code specialists for external evidence, local context, and practical tradeoffs. |
-| `/parallel-context-build` | Run local code and research specialists in parallel to produce handoff context and meta-prompts. |
-| `/parallel-handoff-plan` | Combine external research with local context passes into an implementation handoff plan and meta-prompt. |
-| `/gather-context-and-clarify` | Locate and analyze first, then ask the user the clarification questions that matter. |
-| `/parallel-cleanup` | Run review-only cleanup passes after implementation. |
-
-Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
 
 ## Optional intercom companion
 
@@ -233,87 +208,28 @@ Ask codebase-analyzer to review this plan. If it sees a decision I need to make,
 
 The child can use one dedicated coordination tool:
 
-- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for blocking decisions or clarification, and `reason: "progress_update"` for short non-blocking updates when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
+- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for a blocking decision, `reason: "interview_request"` for structured questions, and `reason: "progress_update"` for a short non-blocking update when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
-Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side Atomic sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per detached child completion. Intercom-confirmed delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child intercom targets and full child summaries.
-When the companion is enabled and available, the bridge gives eligible children deterministic Intercom identities and coordination tools without connecting them automatically. Parent and child connections remain tool-driven: if a child may need live coordination, the parent model should invoke `intercom({ action: "status" })` before launch, and the child connects when it invokes `contact_supervisor` or `intercom`. Foreground launches and management-only actions do not force Intercom loading or broker startup.
+Child-side routine completion handoffs are still not expected. With the Intercom bridge active, a blocking decision or interview from the exact foreground child ends at the source before broker send or reply-waiter admission. The parent `subagent` call returns the verbatim question, ordered attachments with duplicates preserved, agent identity, terminal run ID, and a dynamic `[TASK_CONTEXT]` handoff. `intercom.ask` does the same only when its resolved target is the launching parent. The parent answers by launching a fresh child with a new run identity and the supervisor answer in its task.
 
-For foreground runs, Intercom uses a targeted probe/reservation before delivery: only the exact live child can claim its message. Atomic then commits detach for that child and waits for its acknowledgement before placing claimed asks, sends, decisions, interviews, and progress updates in the parent's model-visible steering queue, so cancellation between phases cannot surface an orphaned request. Blocking calls remain alive for an exact threaded reply and then resume; fire-and-forget calls create no waiter. The retained child later replaces its detached status and artifacts with the real result. Cancellation/replacement invalidates stale handshakes, duplicate delivery cannot recommit, and unmatched messages retain queued-until-idle behavior.
+For parallel runs, the claim interrupts every active sibling and prevents queued work from starting or requesting authorization. The sibling set, sessions, and worktrees are not retained for continuation. Any follow-up starts fresh SINGLE or PARALLEL children explicitly. `intercom.send`, progress updates, and asks to siblings or other peers retain the exact-child probe/commit detach and ordinary Intercom delivery paths.
+
+With the Intercom bridge active, the parent may load and connect its Intercom runtime before initial child execution to issue the exact child's broker capability. The child connection remains tool-driven. A claimed `contact_supervisor` decision or interview still yields before child send or reply-waiter admission; `intercom.ask` connects the child to resolve both targets.
+
+Parent-side Atomic still sends grouped completion results through Intercom: one grouped message per foreground parent `subagent` run and one per detached child completion. Intercom-confirmed delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child Intercom targets and full child summaries.
 
 If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
 
-If messages do not show up, run:
-
-```text
-/subagents-doctor
-```
+If messages do not show up, check the bridge from the intercom side with `intercom({ action: "status" })`.
 
 For normal use, you do not need to configure anything. Advanced users can tune the bridge with `intercomBridge` in the configuration section below.
 
-At this point, you know enough to use the plugin. The rest of this README is reference material for exact command syntax, custom agents, worktrees, and configuration.
-
-## Direct commands
-
-Skip this section until you want exact syntax.
-
-| Command | Description |
-|---------|-------------|
-| `/run <agent> [task]` | Run one agent; omit the task for self-contained agents |
-| `/parallel agent1 "task1" -> agent2 "task2"` | Run agents in parallel |
-| `/subagents-doctor` | Show read-only setup diagnostics |
-
-Commands validate agent names locally, support tab completion, and send results back into the conversation.
-
-### Parallel tasks
-
-Use `->` to separate tasks and give each task its own prompt:
-
-```text
-/parallel codebase-pattern-finder "find security issues" -> codebase-analyzer "check code style"
-```
-
-Both double and single quotes work. You can also use `--` as a delimiter:
-
-```text
-/parallel codebase-locator codebase-analyzer -- check for security issues
-```
-
-Tasks without a prompt use the first available task as a fallback.
-
-### Inline per-step config
-
-Append `[key=value,...]` to an agent name to override defaults for that step:
-
-```text
-/run codebase-locator[model=anthropic/claude-sonnet-4] summarize this codebase
-/parallel codebase-analyzer[skills=code-review+security] "review backend" -> codebase-analyzer[model=openai/gpt-5-mini] "review frontend"
-```
-
-| Key | Example | Description |
-|-----|---------|-------------|
-| `output` | `output=context.md` | Write results to a file. For `/parallel`, relative paths resolve against the child working directory; for `/run`, relative paths resolve against cwd. |
-| `outputMode` | `outputMode=file-only` | Return only a concise file reference for saved output instead of the full saved content. Requires `output`; default is `inline`. |
-| `reads` | `reads=a.md+b.md` | Read files before executing. `+` separates multiple paths. `/run` forwards these through the same resolver as tool-based foreground launches, so relative paths use the effective child working directory. |
-| `model` | `model=anthropic/claude-sonnet-4` | Override model for this step. |
-| `skills` | `skills=planning+review` | Override injected skills. `+` separates multiple skills. |
-| `progress` | `progress` | Enable progress tracking. |
-
-Set `output=false`, `reads=false`, or `skills=false` to disable that behavior explicitly. Do not use `output=false` for file-only returns; use `outputMode=file-only` with an `output` path.
-
-### Forked runs
-
-Add `--fork` to start each child from a real branched session created from the parent’s current leaf:
-
-```text
-/run codebase-analyzer "review this diff" --fork
-/parallel codebase-locator "audit frontend" -> codebase-analyzer "audit backend" --fork
-```
-
-`worker` is designed for an explicit decision loop. A typical pattern is to ask a read-only specialist such as `codebase-analyzer` or `debugger` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
+At this point, you know enough to use the plugin. The rest of this README is reference material for custom agents, worktrees, and configuration.
 
 ## Non-interactive execution
 
-Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, prompt-template, and human-entered `/run` and `/parallel` execution. Gather any needed context and ask the user questions in the parent conversation before launching.
+Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, and prompt-template execution. Gather any needed context and ask the user questions in the parent conversation before launching.
+
 
 ## Agents
 
@@ -405,7 +321,7 @@ interactive: true
 Your system prompt goes here.
 ```
 
-Frontmatter is parsed with a real YAML parser, so it must be valid YAML: a file whose frontmatter does not parse (for example a colon-space inside an unquoted scalar like `description: Deploy: fast`, duplicate keys, or tab-indented block lists) is skipped during discovery. `subagent({ action: "doctor" })` lists every skipped file with the parser's message, so a bad file never disappears silently.
+Frontmatter is parsed with a real YAML parser, so it must be valid YAML: a file whose frontmatter does not parse (for example a colon-space inside an unquoted scalar like `description: Deploy: fast`, duplicate keys, or tab-indented block lists) is skipped during discovery. Discovery records the parser's message for every skipped file, so a bad file never disappears silently.
 
 Important fields:
 
@@ -496,11 +412,11 @@ The package bundles a `subagent` skill that is automatically available to the pa
 
 What the bundled skill covers:
 - **Delegation patterns**: when to launch which agent, whether to use single or parallel mode, and whether to use fresh or forked context
-- **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
+- **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel research, parallel context-build, and parallel cleanup
 - **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for researchers
 - **Safety boundaries**: child agents must not run subagents, must not invent intercom targets, and must escalate unapproved decisions
 - **Intercom conventions**: when to ask vs send, and how parent-side result delivery works with `pi-intercom`
-- **Control and diagnostics**: attention signals, soft interrupts, status, and the `doctor` action
+- **Control signals**: attention signals, soft interrupts, and status
 
 If you are writing an agent that orchestrates subagents, the bundled skill helps it behave correctly without guessing the patterns. If you are a human user, you do not need to read it directly; the README and prompt shortcuts encode the same workflows in user-facing form.
 
@@ -536,6 +452,16 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
   { agent: "worker", task: "Implement API" }
 ], worktree: true }
 ```
+
+### Sibling execution calls
+
+If one assistant response emits several sibling execution-mode `subagent` calls, Atomic collects the synchronous burst before any child starts and runs it through one indexed parallel set. Each original tool call receives only its own children in source order, and its live result, progress, control, and artifact updates are projected to that same route without sibling data. The TUI redraws the shared run as one aggregate parallel widget rather than retaining one widget per original call. A solitary call keeps its original mode, sequential awaited calls stay independent, and management actions bypass collection. A call that arrives after a child has started still gets the existing in-progress rejection. Prefer one explicit `{ tasks: [...] }` call when you intend parallel work; burst collection handles model-emitted sibling calls.
+
+In a collected burst, a call's top-level `agent` task comes first, followed by its `tasks` array. Duplicates and array order are preserved, and `count` expands in place. The task cap applies after all calls are flattened and counts are expanded, with the same hard maximum of 50. Each call-level `cwd` selects that call's agent-discovery scope and child base directory. A task-level `cwd` stays relative to that base and affects child execution, not agent discovery. This per-origin rule applies only to collected sibling calls; an ordinary explicit `{ tasks: [...] }` call keeps one discovery scope from its top-level `cwd`. Per-call and per-task `group` values also remain attached to their children, and a task-level group wins.
+
+For a collected `worktree: true` burst, every call-level `cwd` must resolve to the same path. That common path becomes the shared worktree root; differing origins reject the burst before launch, and any task-level `cwd` must still resolve to that root. Each projected caller result keeps shared worktree diff text and terminal control guidance while its child results and standard child-output sections remain route-local.
+
+One parallel run also needs one value for each run-wide option. Sibling calls must agree on `concurrency`, `worktree`, `context`, `share`, `control`, `sessionDir`, `maxOutput`, `artifacts`, `includeProgress`, and `agentScope`. If any value differs, Atomic rejects the full burst before launch and names the field instead of mixing settings.
 
 ### Management actions
 
@@ -580,7 +506,7 @@ Agent definitions are not loaded into context by default. Management actions let
 |-------|------|---------|-------------|
 | `agent` | string | - | Agent name for single mode, or target for management actions. |
 | `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `resume`, or `doctor`. |
+| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, or `interrupt`. |
 | `config` | object/string | - | Agent config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
@@ -611,12 +537,9 @@ Status and control actions:
 subagent({ action: "status" })
 subagent({ action: "status", id: "<run-id>" })
 subagent({ action: "interrupt", id: "<run-id>" })
-subagent({ action: "resume", id: "<run-id>", message: "follow-up question" })
-subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" })
-subagent({ action: "doctor" })
 ```
 
-`resume` sends the follow-up directly when a child is still reachable. After completion or eviction, it cold-reloads the same canonical child identity from the stored session file. Remembered foreground single or parallel runs can be revived by passing `index` to choose the child; no new OS process is created.
+Completed, interrupted, and parent-question children are terminal for continuation. A prior run ID cannot revive a child or parallel sibling set. Start a fresh subagent call with an explicit context handoff for follow-up work. Parent cancellation of a still-running foreground child uses that same interrupted/abort state: receipts, Intercom summaries, and progress present it as cancelled rather than failed, persisted metadata keeps interrupted/abort, pre-cancel fallback metadata is preserved, and bounded partial findings are recovered from `progress.md` or earlier assistant text when they exist.
 
 ## Worktree isolation
 
@@ -640,7 +563,7 @@ Requirements:
 - the main repository's Husky or populated `.git/hooks` directory is shared through `core.hooksPath`
 - gitignored files matched by `.worktreeinclude` are copied into the worktree
 
-After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Cleanup forcibly removes each worktree, waits briefly for Git's lock release, and deletes its `worktree-*` branch; the same cleanup runs after post-creation setup failures.
+After a worktree parallel step reaches any terminal result, per-agent diff stats are appended to the output and full patch files are written to artifacts. A parent-directed ask terminally ends the active set, captures its staged and unstaged changes in the same handoff result, and then cleans up every worktree and `worktree-*` branch after a brief Git lock-release wait. The same cleanup runs after post-creation setup failures.
 
 ## Configuration
 
@@ -724,7 +647,7 @@ Metadata records timing, usage, typed status, termination cause, final model, at
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
-Foreground completions notify the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications.
+Foreground completions notify the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications. These notifications use tool blocks with the same background treatment as regular subagent tool blocks: success when the child completed, error when it failed, and pending when it was interrupted. Each block keeps the status glyph, agent name, outcome, duration, result preview, `ctrl+o` expand hint, and session file path.
 
 Foreground runs persist their session and user-facing artifacts beside the parent session:
 
@@ -772,7 +695,7 @@ This is disabled by default. Session data may contain source code, paths, enviro
 
 ## Delegation boundary
 
-Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch, `resume`, and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, `status`, and `doctor` stay available to a child.
+Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, and `status` stay available to a child. Child sessions retain bundled workflow definitions as resources but do not load the workflows extension or expose its `workflow` tool; orchestration stays owned by the parent session.
 
 There is no configuration option, agent frontmatter field, or tool parameter for the delegation level. The rule is enforced twice: the subagent executor refuses a child before any run starts, and the Rust `SubagentControl` admission door refuses a child deeper than the single permitted level. Admitted depth is typed admission state and is not inherited through an environment variable.
 
@@ -829,13 +752,13 @@ The main runtime files are:
 |------|---------|
 | `src/extension/index.ts` | Extension registration, tool registration, message/render wiring. |
 | `src/agents/agents.ts` | Agent discovery and frontmatter parsing. |
-| `src/runs/foreground/subagent-executor.ts` | Main execution routing for single, parallel, management, status, interrupt, and doctor actions. |
+| `src/runs/foreground/subagent-executor.ts` | Main execution routing for single, parallel, management, status, and interrupt actions. |
 | `src/runs/foreground/execution.ts` | Core foreground `runSync` handling. |
 | `src/runs/foreground/notify.ts` | Completion-notification delivery for a detached Intercom child. |
 | `src/runs/foreground/completion-notification.ts` | Local completion acknowledgement and ordering barrier for detached children. |
 | `src/shared/settings.ts` | Shared task behavior, instructions, and config helpers. |
 | `src/runs/shared/worktree.ts` | Git worktree isolation. |
-| `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions and diagnostics. |
+| `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions. |
 | `src/extension/schemas.ts` / `src/shared/types.ts` | Tool schemas, shared types, and event constants. |
 | `test/unit/` / `test/integration/` | Unit and loader-based integration tests. |
 

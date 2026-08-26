@@ -288,6 +288,15 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 		};
 	}
 
+	const thinkingCommand = slashCommands.find((command) => command.name === "thinking");
+	if (thinkingCommand) {
+		thinkingCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+			const levels = fuzzyFilter(this.session.getAvailableThinkingLevels(), prefix, (level) => level);
+			if (levels.length === 0) return null;
+			return levels.map((level) => ({ value: level, label: level }));
+		};
+	}
+
 	const loginCommand = slashCommands.find((command) => command.name === "login");
 	if (loginCommand) {
 		loginCommand.getArgumentCompletions = (prefix: string) =>

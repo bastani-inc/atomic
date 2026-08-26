@@ -7,6 +7,7 @@
 
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "vitest";
+import { statusRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -80,6 +81,20 @@ function makeFakeTimers(): {
 	};
 }
 
+function captureConsoleErrors(run: () => void): string[] {
+	const originalConsoleError = console.error;
+	const messages: string[] = [];
+	console.error = (message: string): void => {
+		messages.push(message);
+	};
+	try {
+		run();
+	} finally {
+		console.error = originalConsoleError;
+	}
+	return messages;
+}
+
 function makeMockPi(): {
 	pi: {
 		ui: {
@@ -148,6 +163,46 @@ describe("installStoreWidget", () => {
 		const { pi, widgetCalls } = makeMockPi();
 		installStoreWidget(pi, storeInstance);
 		assert.equal(widgetCalls.length, 0);
+	});
+
+	test("late durability hydration mounts a zero-stage tool-only run and invalidates its live node update", async () => {
+		const { pi, widgetCalls, renderRequests } = makeMockPi();
+		installStoreWidget(pi, storeInstance);
+		const hydrated: RunSnapshot = {
+			...makeRun("hydrated-tool-run", "publish-release"),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:publish-watcher",
+					name: "publish-watcher",
+					argsHash: "publish-watcher-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					startedAt: Date.now(),
+					attachable: false,
+				},
+			],
+		};
+
+		storeInstance.recordRunStart(hydrated);
+		await Promise.resolve();
+		const mounted = widgetCalls.findLast((call) => call.factory !== undefined);
+		assert.ok(mounted?.factory);
+		assert.equal(mounted.opts?.placement, "belowEditor");
+		assert.match(mounted.factory(undefined, undefined).render(120).join("\n"), /publish-watcher · running/);
+		const rendersAfterHydration = renderRequests.count;
+
+		assert.equal(
+			storeInstance.recordToolNodeEnd("hydrated-tool-run", "tool:publish-watcher", {
+				status: "completed",
+				endedAt: Date.now(),
+			}),
+			true,
+		);
+		await Promise.resolve();
+		assert.ok(renderRequests.count > rendersAfterHydration);
+		assert.doesNotMatch(mounted.factory(undefined, undefined).render(120).join("\n"), /publish-watcher · running/);
 	});
 
 	test("mounts the widget with a factory exactly once when a run starts", () => {
@@ -454,16 +509,121 @@ describe("installStoreWidget", () => {
 		assert.equal(last.factory, undefined);
 	});
 
-	test("no crash when pi.ui is absent", () => {
+	test("stays silent when pi.ui is absent (pre-session factory install)", () => {
 		const piNoUI: { ui?: undefined; events?: undefined } = {};
 		const storeNoUI = createStore();
-		assert.doesNotThrow(() => installStoreWidget(piNoUI, storeNoUI));
+		let dispose: (() => void) | undefined;
+		const messages = captureConsoleErrors(() => {
+			assert.doesNotThrow(() => {
+				dispose = installStoreWidget(piNoUI, storeNoUI);
+			});
+		});
+		assert.equal(typeof dispose, "function");
+		assert.deepEqual(messages, []);
 	});
 
-	test("no crash when pi.ui.setWidget is absent", () => {
+	test("logs an unavailable host without throwing when notify is absent", () => {
 		const piNoSetWidget = { ui: {} };
 		const storeNoWidget = createStore();
-		assert.doesNotThrow(() => installStoreWidget(piNoSetWidget, storeNoWidget));
+		let dispose: (() => void) | undefined;
+		const messages = captureConsoleErrors(() => {
+			assert.doesNotThrow(() => {
+				dispose = installStoreWidget(piNoSetWidget, storeNoWidget);
+			});
+		});
+		assert.equal(typeof dispose, "function");
+		assert.deepEqual(messages, ["Workflow progress widget is unavailable in this host."]);
+	});
+
+	test("captures the original setWidget method for the first visible mount", () => {
+		let mountCalls = 0;
+		const ui = {
+			setWidget(_key: string, factory: SetWidgetCall["factory"], _opts?: { placement?: string }): void {
+				assert.equal(this, ui);
+				if (factory !== undefined) mountCalls++;
+			},
+			requestRender(): void {},
+		};
+		const workflowStore = createStore();
+		installStoreWidget({ ui }, workflowStore);
+		ui.setWidget = () => {
+			throw new Error("replacement setWidget must not be called");
+		};
+		workflowStore.recordRunStart(makeRun("r1", "my-wf"));
+		assert.equal(mountCalls, 1);
+	});
+
+	test("reports an unavailable widget host through the UI notification channel", () => {
+		const notifications: Array<{ message: string; type: string | undefined }> = [];
+		const piNoSetWidget = {
+			ui: {
+				notify(message: string, type?: "info" | "warning" | "error"): void {
+					notifications.push({ message, type });
+				},
+			},
+		};
+		const messages = captureConsoleErrors(() => installStoreWidget(piNoSetWidget, createStore()));
+		assert.deepEqual(notifications, [
+			{ message: "Workflow progress widget is unavailable in this host.", type: "warning" },
+		]);
+		assert.deepEqual(messages, []);
+	});
+
+	test("reports a stale initial mount failure through the UI notification channel", () => {
+		const notifications: string[] = [];
+		const piStaleWidget = {
+			ui: {
+				setWidget(): void {
+					throw new Error("extension ctx is stale");
+				},
+				notify(message: string): void {
+					notifications.push(message);
+				},
+			},
+		};
+		const workflowStore = createStore();
+		const messages = captureConsoleErrors(() => {
+			assert.doesNotThrow(() => installStoreWidget(piStaleWidget, workflowStore));
+			workflowStore.recordRunStart(makeRun("r1", "my-wf"));
+		});
+		assert.deepEqual(notifications, ["Workflow progress widget could not mount: extension ctx is stale"]);
+		assert.deepEqual(messages, []);
+	});
+
+	test("logs a stale mount failure once when notify is absent", () => {
+		const piStaleWidget = {
+			ui: {
+				setWidget(): void {
+					throw new Error("extension ctx is stale");
+				},
+			},
+		};
+		const workflowStore = createStore();
+		const messages = captureConsoleErrors(() => {
+			installStoreWidget(piStaleWidget, workflowStore);
+			workflowStore.recordRunStart(makeRun("r1", "my-wf"));
+			workflowStore.recordStageStart("r1", makeStage("s1", "stage-1"));
+		});
+		assert.deepEqual(messages, ["Workflow progress widget could not mount: extension ctx is stale"]);
+	});
+
+	test("reports a generic initial mount failure once when the store swallows it", () => {
+		const notifications: string[] = [];
+		const piGenericFailure = {
+			ui: {
+				setWidget(): void {
+					throw new Error("renderer init failed");
+				},
+				notify(message: string): void {
+					notifications.push(message);
+				},
+			},
+		};
+		const workflowStore = createStore();
+		installStoreWidget(piGenericFailure, workflowStore);
+		workflowStore.recordRunStart(makeRun("r1", "my-wf"));
+		workflowStore.recordStageStart("r1", makeStage("s1", "stage-1"));
+		assert.deepEqual(notifications, ["Workflow progress widget could not mount: renderer init failed"]);
 	});
 
 	test("transitions from active cadence to one-shot ended expiry", () => {
@@ -493,5 +653,81 @@ describe("installStoreWidget", () => {
 		} finally {
 			Date.now = originalNow;
 		}
+	});
+
+	test("remounts the live widget after the host release while status stays in sync", async () => {
+		const widgets = new Map<string, SetWidgetCall["factory"]>();
+		const releaseListeners = new Map<string, Set<() => void>>();
+		const hostUi = {
+			setWidget(key: string, factory: SetWidgetCall["factory"]): void {
+				if (factory === undefined) widgets.delete(key);
+				else widgets.set(key, factory);
+			},
+			requestRender(): void {},
+			onWidgetRelease(key: string, listener: () => void): () => void {
+				const listeners = releaseListeners.get(key) ?? new Set<() => void>();
+				listeners.add(listener);
+				releaseListeners.set(key, listeners);
+				return () => listeners.delete(listener);
+			},
+		};
+		const workflowStore = createStore();
+		installStoreWidget({ ui: hostUi }, workflowStore);
+		workflowStore.recordRunStart(makeRun("r1", "my-wf"));
+
+		assert.equal(statusRuns({ store: workflowStore })[0]?.runId, "r1");
+		assert.equal(widgets.has("workflow.run"), true);
+		const mountCount = widgets.size;
+		widgets.clear();
+		for (const listener of releaseListeners.get("workflow.run") ?? []) listener();
+
+		workflowStore.recordStageStart("r1", makeStage("s1", "stage-1"));
+		await Promise.resolve();
+		assert.equal(statusRuns({ store: workflowStore })[0]?.runId, "r1");
+		assert.equal(widgets.has("workflow.run"), true);
+		assert.equal(widgets.size, mountCount, "host release should replace one widget, not duplicate it");
+	});
+
+	test("a session boundary leaves no pending remount from the disposed controller", async () => {
+		const widgets = new Map<string, SetWidgetCall["factory"]>();
+		const mountCalls: string[] = [];
+		const releaseListeners = new Map<string, Set<() => void>>();
+		const hostUi = {
+			setWidget(key: string, factory: SetWidgetCall["factory"]): void {
+				if (factory === undefined) widgets.delete(key);
+				else {
+					widgets.set(key, factory);
+					mountCalls.push(key);
+				}
+			},
+			onWidgetRelease(key: string, listener: () => void): () => void {
+				const listeners = releaseListeners.get(key) ?? new Set<() => void>();
+				listeners.add(listener);
+				releaseListeners.set(key, listeners);
+				return () => listeners.delete(listener);
+			},
+		};
+		const workflowStore = createStore();
+		const disposeOld = installStoreWidget({ ui: hostUi }, workflowStore);
+		workflowStore.recordRunStart(makeRun("r1", "my-wf"));
+		assert.deepEqual(mountCalls, ["workflow.run"]);
+		assert.equal(
+			releaseListeners.get("workflow.run")?.size,
+			1,
+			"the live controller must register for host releases",
+		);
+
+		widgets.clear();
+		for (const listener of releaseListeners.get("workflow.run") ?? []) listener();
+		disposeOld();
+		installStoreWidget({ ui: hostUi }, workflowStore);
+		await Promise.resolve();
+
+		assert.deepEqual(
+			mountCalls,
+			["workflow.run", "workflow.run"],
+			"the boundary should install exactly one replacement",
+		);
+		assert.equal(widgets.has("workflow.run"), true);
 	});
 });

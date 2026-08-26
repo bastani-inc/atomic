@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import {
 	createWorkflowArtifactDirectory,
@@ -13,6 +14,7 @@ import {
 	resolveWorkflowArtifactRunState,
 	WORKFLOW_ARTIFACT_RETENTION_MS,
 	workflowArtifactRunsRoot,
+	workflowRunArtifactsIntact,
 	workflowRunHasArtifactReference,
 } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 
@@ -297,30 +299,248 @@ test("state-aware pruning never leaves a resumable durable entry without its art
 	}
 });
 
-// Regression: this ran green on macOS and failed every Windows job. `JSON.stringify`
-// escapes each separator, so a Windows artifact path serialises as `…\\runs\\<id>\\…`
-// and a single backslash-to-slash pass leaves `//runs//<id>//`, which the probe never
-// matched. Every Windows artifact reference was therefore invisible and no run was
-// ever reported as having lost its artifacts. Both separator styles are asserted here
-// so the platform that runs the suite cannot hide the other one's behaviour.
-test("artifact references are detected with either path separator", () => {
-	const runId = "sep-run";
-	for (const separator of ["/", "\\"] as const) {
-		const artifact = ["C:", "Users", "x", "workflows", "runs", runId, "artifact-1", "report.md"].join(separator);
-		assert.equal(
-			workflowRunHasArtifactReference({
-				id: runId,
-				result: { research_path: artifact },
-				stages: [],
-			}),
-			true,
-			`a ${separator === "/" ? "posix" : "windows"} artifact path must be recognised`,
-		);
-	}
+test("a live continuation transitively protects the original artifact owner", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-continuation-retention-"));
+	const now = Date.now();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const originId = "origin-failed";
+	const middleId = "middle-failed";
+	const continuationId = "continuation-running";
+	try {
+		for (const [id, status] of [
+			[originId, "failed"],
+			[middleId, "failed"],
+			[continuationId, "running"],
+		] as const) {
+			backend.registerWorkflow({ workflowId: id, name: "goal", inputs: {}, createdAt: 1, status, resumable: true });
+		}
+		store.recordRunStart({
+			id: originId,
+			name: "goal",
+			inputs: {},
+			status: "failed",
+			stages: [],
+			startedAt: 1,
+			resumable: true,
+		});
+		store.recordRunStart({
+			id: middleId,
+			name: "goal",
+			inputs: {},
+			status: "failed",
+			stages: [],
+			startedAt: 2,
+			resumable: true,
+			resumedFromRunId: originId,
+		});
+		store.recordRunStart({
+			id: continuationId,
+			name: "goal",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 3,
+			resumable: true,
+			resumedFromRunId: middleId,
+		});
+		const originDirectory = join(root, originId);
+		await mkdir(originDirectory, { recursive: true });
+		const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
+		await utimes(originDirectory, staleTime, staleTime);
 
-	assert.equal(
-		workflowRunHasArtifactReference({ id: runId, result: { note: "no artifact here" }, stages: [] }),
-		false,
-		"unrelated content must not be read as an artifact reference",
-	);
+		await pruneWorkflowArtifactRuns(root, now, resolveWorkflowArtifactRunState);
+
+		await stat(originDirectory);
+		assert.notEqual(backend.getLoadableWorkflow(originId), undefined);
+	} finally {
+		store.removeRun(originId);
+		store.removeRun(middleId);
+		store.removeRun(continuationId);
+		setDurableBackend(undefined);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a live run mentioning an unrelated terminal artifact owner does not prevent pruning", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-mentioned-terminal-"));
+	const now = Date.now();
+	const terminalId = "mentioned-terminal";
+	const liveId = "unrelated-live";
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			backend.registerWorkflow({
+				workflowId: terminalId,
+				name: "goal",
+				inputs: {},
+				createdAt: 1,
+				status: "completed",
+			});
+			store.recordRunStart({
+				id: terminalId,
+				name: "goal",
+				inputs: {},
+				status: "completed",
+				stages: [],
+				startedAt: 1,
+			});
+			store.recordRunStart({
+				id: liveId,
+				name: "goal",
+				inputs: {},
+				status: "running",
+				result: { note: join(root, "runs", terminalId, "artifact-old", "receipt.md") },
+				stages: [],
+				startedAt: 2,
+			});
+			const terminalDirectory = join(root, "runs", terminalId);
+			await mkdir(terminalDirectory, { recursive: true });
+			const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
+			await utimes(terminalDirectory, staleTime, staleTime);
+
+			assert.equal(resolveWorkflowArtifactRunState(terminalId), "terminal");
+			await pruneWorkflowArtifactRuns(join(root, "runs"), now, resolveWorkflowArtifactRunState);
+			await assert.rejects(stat(terminalDirectory), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
+		});
+	} finally {
+		store.removeRun(terminalId);
+		store.removeRun(liveId);
+		setDurableBackend(undefined);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a foreign in-root artifact quote does not make a healthy paused run non-resumable", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-foreign-owner-"));
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			const run = {
+				id: "healthy-run",
+				status: "paused" as const,
+				resumable: true,
+				result: { objective: join(root, "runs", "pruned-foreign", "artifact-old", "receipt.md") },
+				stages: [],
+			};
+			await mkdir(join(root, "runs", run.id), { recursive: true });
+			assert.equal(workflowRunHasArtifactReference(run), false);
+			const artifactsIntact = workflowRunArtifactsIntact(run);
+			assert.equal(artifactsIntact, undefined);
+			assert.equal(isWorkflowRunResumable({ ...run, artifactsIntact }), true);
+		});
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("unrelated runs paths are not treated as workflow artifact references", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-unrelated-runs-"));
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			for (const text of [
+				"https://github.com/o/r/actions/runs/12345/job/9",
+				"see packages/foo/runs/nightly/report.txt",
+			]) {
+				const run = { id: "healthy-run", result: { text }, stages: [] };
+				assert.equal(workflowRunHasArtifactReference(run), false);
+				assert.equal(workflowRunArtifactsIntact(run), undefined);
+			}
+		});
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("continuations check their origin artifact owner instead of assuming their own run id", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-reference-owner-"));
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			const originId = "origin-owner";
+			const continuation: {
+				id: string;
+				resumedFromRunId: string;
+				result: Record<string, string>;
+				stages: never[];
+			} = {
+				id: "continuation-id",
+				resumedFromRunId: originId,
+				result: { receipt: join(root, "runs", originId, "artifact-1", "receipt.md") },
+				stages: [],
+			};
+			assert.equal(workflowRunHasArtifactReference(continuation), true);
+			assert.equal(workflowRunArtifactsIntact(continuation), false);
+			await mkdir(join(root, "runs", originId), { recursive: true });
+			assert.equal(workflowRunArtifactsIntact(continuation), true);
+			continuation.result = {
+				receipt: join(root, "runs", originId, "artifact-1", "receipt.md"),
+				foreign: join(root, "runs", "other-owner", "artifact-2", "review.json"),
+			};
+			assert.equal(workflowRunArtifactsIntact(continuation), true);
+		});
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("multi-hop continuations detect and check their original artifact owner", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-multihop-owner-"));
+	const originId = "origin-owner";
+	const middleId = "middle-owner";
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			store.recordRunStart({ id: originId, name: "goal", inputs: {}, status: "failed", stages: [], startedAt: 1 });
+			store.recordRunStart({
+				id: middleId,
+				name: "goal",
+				inputs: {},
+				status: "failed",
+				stages: [],
+				startedAt: 2,
+				resumedFromRunId: originId,
+			});
+			const continuation = {
+				id: "latest-owner",
+				resumedFromRunId: middleId,
+				result: { receipt: join(root, "runs", originId, "artifact-1", "receipt.md") },
+				stages: [],
+			};
+			assert.equal(workflowRunHasArtifactReference(continuation), true);
+			assert.equal(workflowRunArtifactsIntact(continuation), false);
+			await mkdir(join(root, "runs", originId), { recursive: true });
+			assert.equal(workflowRunArtifactsIntact(continuation), true);
+		});
+	} finally {
+		store.removeRun(originId);
+		store.removeRun(middleId);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+// Regression: `JSON.stringify` escapes each Windows separator, so a single
+// backslash-to-slash pass can leave doubled slashes. Normalize both the configured
+// root and serialized snapshot identically, or Windows artifact references disappear.
+test("configured-root artifact references are detected with either path separator", async () => {
+	const configuredRoot = "C:\\Users\\x\\atomic-workflow-artifacts";
+	await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: configuredRoot }, async () => {
+		const runId = "sep-run";
+		for (const separator of ["/", "\\"] as const) {
+			const artifact = [configuredRoot, "runs", runId, "artifact-1", "report.md"].join(separator);
+			assert.equal(
+				workflowRunHasArtifactReference({
+					id: runId,
+					result: { research_path: artifact },
+					stages: [],
+				}),
+				true,
+				`a ${separator === "/" ? "posix" : "windows"} artifact path must be recognised`,
+			);
+		}
+
+		assert.equal(
+			workflowRunHasArtifactReference({ id: runId, result: { note: "no artifact here" }, stages: [] }),
+			false,
+			"unrelated content must not be read as an artifact reference",
+		);
+	});
 });

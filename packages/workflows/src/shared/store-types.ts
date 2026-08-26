@@ -285,6 +285,12 @@ export interface StageSnapshot {
 	attemptedModels?: readonly string[];
 	/** Per-model fallback attempt outcomes. */
 	modelAttempts?: readonly import("./types.js").WorkflowModelAttempt[];
+	/** Schema-backed task/stage value, when distinct from assistant text. */
+	structured?: WorkflowSerializableValue;
+	/** Worktree or output artifacts collected after a completed task. */
+	artifacts?: readonly import("./types.js").WorkflowArtifact[];
+	/** Model-fallback warnings recorded on this stage. */
+	warnings?: readonly string[];
 	/**
 	 * True while the stage is still part of the live workflow-control set.
 	 * Completion clears this even if an already-open chat pane keeps a detached

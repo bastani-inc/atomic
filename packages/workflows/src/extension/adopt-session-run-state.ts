@@ -3,7 +3,7 @@ import { adoptCancellationRegistry } from "../runs/background/cancellation-regis
 import { adoptJobTracker } from "../runs/background/job-tracker.js";
 import { adoptStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { adoptStageUiBroker } from "../shared/stage-ui-broker.js";
-import { adoptStore } from "../shared/store-factory.js";
+import { adoptWorkflowHostStore } from "../shared/store-factory.js";
 
 /**
  * Re-bind every run-scoped singleton to host session state for `scope`.
@@ -11,10 +11,10 @@ import { adoptStore } from "../shared/store-factory.js";
  */
 export function adoptWorkflowSessionRunState(scope: object | undefined): void {
 	if (scope === undefined) return;
-	adoptStore(scope);
-	adoptStageControlRegistry(scope);
-	adoptCancellationRegistry(scope);
-	adoptToolControlRegistry(scope);
-	adoptJobTracker(scope);
-	adoptStageUiBroker(scope);
+	const { recoveredCurrent } = adoptWorkflowHostStore(scope);
+	adoptStageControlRegistry(scope, recoveredCurrent);
+	adoptCancellationRegistry(scope, recoveredCurrent);
+	adoptToolControlRegistry(scope, recoveredCurrent);
+	adoptJobTracker(scope, recoveredCurrent);
+	adoptStageUiBroker(scope, recoveredCurrent);
 }

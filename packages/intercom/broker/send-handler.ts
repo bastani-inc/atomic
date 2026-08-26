@@ -6,6 +6,7 @@ import { buildMessageSendSignature } from "./send-signature.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { isVerticalBypass, sameGroup } from "./group-isolation.js";
 import { normalizeGroup } from "../group.js";
+import { PendingQuestionIndex } from "./pending-question-index.js";
 
 export interface BrokerConnectedSession {
   socket: net.Socket;
@@ -49,6 +50,7 @@ export function handleBrokerSend(
   deliveredMessages: DeliveredMessageCache,
   write: (target: net.Socket, message: BrokerMessage) => void,
   supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
+  pendingQuestions: PendingQuestionIndex = new PendingQuestionIndex(),
 ): void {
   const message = clientMessage.message;
   const messageId = isMessage(message) ? message.id : "unknown";
@@ -147,6 +149,12 @@ export function handleBrokerSend(
       ? { type: "message", from: fromSession.info, message, channel: "supervisor" }
       : { type: "message", from: fromSession.info, message });
     deliveredMessages.record(message.id, signature);
+    if (message.expectsReply === true) {
+      pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+    }
+    if (message.replyTo !== undefined) {
+      pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo);
+    }
     if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
     write(socket, { type: "delivered", messageId: message.id, attemptId });
     return;

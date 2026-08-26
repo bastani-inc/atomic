@@ -54,6 +54,33 @@ test("adopt isolates two scopes and does not alias cancellation across them", ()
 	assert.equal(singleton.facade.cancelled, false);
 });
 
+test("recovery can reclaim current state only when returning to an existing scope", () => {
+	const singleton = createSessionScopedSingleton("workflows:reload-recovery-probe:v1", createCancellable);
+	const parentScope = createEventBus();
+	const childScope = createEventBus();
+	const unseenScope = createEventBus();
+
+	const parentState = singleton.adopt(parentScope);
+	const childState = singleton.adopt(childScope);
+	childState.cancel();
+
+	const unseen = singleton.adoptWithResult(unseenScope, {
+		preserveCurrentWhenTargetExists: () => true,
+	});
+	assert.equal(unseen.preservedCurrent, false, "a new session must never inherit the prior session state");
+	assert.notEqual(unseen.instance, childState);
+
+	const reboundChild = singleton.adopt(childScope);
+	assert.equal(reboundChild, childState);
+	const recovered = singleton.adoptWithResult(parentScope, {
+		preserveCurrentWhenTargetExists: (current, target) => current.cancelled && !target.cancelled,
+	});
+	assert.equal(recovered.preservedCurrent, true);
+	assert.equal(recovered.instance, childState);
+	assert.notEqual(recovered.instance, parentState);
+	assert.equal(singleton.facade.cancelled, true);
+});
+
 test("duplicate module copies adopt the populated pre-adoption state for one key", async () => {
 	const source = new URL("../../packages/workflows/src/shared/session-scoped-singleton.ts", import.meta.url).href;
 	const copyA = (await import(

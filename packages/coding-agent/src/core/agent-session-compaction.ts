@@ -1,3 +1,4 @@
+import type { Usage } from "@bastani/pi-ai/compat";
 import type {
 	AgentSessionInternalSurface as AgentSession,
 	VerbatimCompactionApplyOptions,
@@ -19,7 +20,12 @@ import {
 	type VerbatimCompactionResult,
 	type VerbatimCompactionStats,
 } from "./compaction/index.ts";
-import type { SessionBeforeCompactEvent, SessionBeforeCompactResult, SessionCompactEvent } from "./extensions/index.ts";
+import type {
+	SessionBeforeCompactEvent,
+	SessionBeforeCompactResult,
+	SessionCompactEvent,
+	SessionCompactFailedEvent,
+} from "./extensions/index.ts";
 import type { CompactionEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
@@ -119,6 +125,7 @@ export async function _applyVerbatimCompaction(
 				rung: CompactionRung;
 				plannerModel?: CompactionPlannerModel;
 				keptTail: boolean;
+				usage?: Usage;
 		  }
 		| undefined;
 
@@ -149,6 +156,7 @@ export async function _applyVerbatimCompaction(
 				keptTail: true,
 			};
 			fromExtension = true;
+			options.onCompactionSource?.(true);
 		}
 	}
 
@@ -175,6 +183,7 @@ export async function _applyVerbatimCompaction(
 			stats: run.stats,
 			rung: run.rung,
 			...(run.plannerModel ? { plannerModel: run.plannerModel } : {}),
+			...(run.usage ? { usage: run.usage } : {}),
 			keptTail: run.keptTail,
 		};
 	}
@@ -197,6 +206,7 @@ export async function _applyVerbatimCompaction(
 		firstKeptEntryId,
 		preparation.tokensBefore,
 		details,
+		compacted.usage,
 	);
 	this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 	const result: VerbatimCompactionResult = {
@@ -208,6 +218,7 @@ export async function _applyVerbatimCompaction(
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
 		rung: compacted.rung,
 		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
+		...(compacted.usage ? { usage: compacted.usage } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const compactionEntry = this.sessionManager.getEntry(entryId) as CompactionEntry<VerbatimCompactionDetails>;
@@ -231,6 +242,15 @@ export async function _applyVerbatimCompaction(
 	return result;
 }
 
+export async function emitSessionCompactFailed(
+	session: AgentSession,
+	event: Omit<SessionCompactFailedEvent, "type">,
+): Promise<void> {
+	if (session._extensionRunner?.hasHandlers("session_compact_failed")) {
+		await session._extensionRunner.emit({ type: "session_compact_failed", ...event });
+	}
+}
+
 function clearOwnedManualCompactionState(this: AgentSession, controller: AbortController): void {
 	if (this._compactionAbortController !== controller) return;
 	this._compactionAbortController = undefined;
@@ -240,9 +260,15 @@ function clearOwnedManualCompactionState(this: AgentSession, controller: AbortCo
 	this._manualCompactionPromise = undefined;
 }
 
-function emitManualCompactionFailure(this: AgentSession, controller: AbortController, error: unknown): void {
+async function emitManualCompactionFailure(
+	this: AgentSession,
+	controller: AbortController,
+	error: unknown,
+	fromExtension: boolean,
+): Promise<void> {
 	const message = error instanceof Error ? error.message : String(error);
 	const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
+	const errorMessage = aborted ? undefined : `Compaction failed: ${message}`;
 	clearOwnedManualCompactionState.call(this, controller);
 	this._emit({
 		type: "compaction_end",
@@ -250,7 +276,14 @@ function emitManualCompactionFailure(this: AgentSession, controller: AbortContro
 		result: undefined,
 		aborted,
 		willRetry: false,
-		errorMessage: aborted ? undefined : `Compaction failed: ${message}`,
+		errorMessage,
+	});
+	await emitSessionCompactFailed(this, {
+		reason: "manual",
+		errorMessage,
+		aborted,
+		willRetry: false,
+		fromExtension,
 	});
 }
 
@@ -260,6 +293,7 @@ async function runOwnedManualCompaction(
 	options: Partial<VerbatimCompactionParameters>,
 ): Promise<VerbatimCompactionResult> {
 	this._emit({ type: "compaction_start", reason: "manual" });
+	let fromExtension = false;
 	try {
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
 		const result = await this._applyVerbatimCompaction({
@@ -275,6 +309,9 @@ async function runOwnedManualCompaction(
 			backupLabel: "compact",
 			reason: "manual",
 			urgency: "recoverable",
+			onCompactionSource: (value) => {
+				fromExtension = value;
+			},
 		});
 		if (!result) throw new Error("Nothing to compact (session too small)");
 		// compaction_end listeners synchronously flush queued prompts, so they must
@@ -283,7 +320,7 @@ async function runOwnedManualCompaction(
 		this._emit({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
 		return result;
 	} catch (error) {
-		emitManualCompactionFailure.call(this, controller, error);
+		await emitManualCompactionFailure.call(this, controller, error, fromExtension);
 		throw error;
 	}
 }
@@ -331,7 +368,7 @@ export function compact(
 			} catch (error) {
 				// The abort drain can fail before the planner starts. Finish the
 				// manual lifecycle so event consumers can release queued input.
-				emitManualCompactionFailure.call(this, controller, error);
+				await emitManualCompactionFailure.call(this, controller, error, false);
 				throw error;
 			}
 			return runOwnedManualCompaction.call(this, controller, options);

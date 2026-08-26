@@ -122,15 +122,6 @@ Use context files for project conventions, commands, safety rules, and preferenc
 
 ### System Prompt Files
 
-Atomic's default `Guidelines` section applies Orwell's six writing rules to every standard session:
-
-1. Never use a familiar printed metaphor, simile, or figure of speech.
-2. Never use a long word where a short one will do.
-3. Cut every word that can be cut.
-4. Use active rather than passive voice where possible.
-5. Prefer everyday English to foreign phrases, scientific terms, and jargon.
-6. Break any rule rather than say anything outright barbarous.
-
 Replace the default system prompt with:
 
 - `.atomic/SYSTEM.md` for a project
@@ -282,7 +273,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`. The `defaultTools` setting selects which built-in tools a session starts with — including none, with an empty array — while extension and custom tools stay enabled; see [Settings](/settings#tools).
+Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`. The `defaultTools` setting selects which built-in tools a session starts with; `--tools` replaces that default with a strict allowlist over built-in, custom, and extension tools; `--no-builtin-tools` removes only built-ins; `--no-tools` removes all tools. `ls` remains available as an SDK compatibility tool but is not enabled by default.
 
 ### Project Trust Options
 

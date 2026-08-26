@@ -210,15 +210,19 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 };
 
 InteractiveModeBase.prototype.clearExtensionWidgets = function (this: InteractiveModeBase): void {
-	for (const widget of this.extensionWidgetsAbove.values()) {
+	const releasedKeys = new Set<string>();
+	for (const [key, widget] of this.extensionWidgetsAbove) {
 		widget.dispose?.();
+		releasedKeys.add(key);
 	}
-	for (const widget of this.extensionWidgetsBelow.values()) {
+	for (const [key, widget] of this.extensionWidgetsBelow) {
 		widget.dispose?.();
+		releasedKeys.add(key);
 	}
 	this.extensionWidgetsAbove.clear();
 	this.extensionWidgetsBelow.clear();
 	this.renderWidgets();
+	for (const key of releasedKeys) this.notifyExtensionWidgetRelease(key);
 };
 
 InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveModeBase): void {

@@ -120,6 +120,8 @@ const singleton = createSessionScopedSingleton(SESSION_KEY, createJobTracker);
 
 export const jobTracker: JobTracker = singleton.facade;
 
-export function adoptJobTracker(scope: object): JobTracker {
-	return singleton.adopt(scope);
+export function adoptJobTracker(scope: object, preserveCurrentWhenTargetExists = false): JobTracker {
+	return singleton.adopt(scope, {
+		preserveCurrentWhenTargetExists: preserveCurrentWhenTargetExists ? () => true : undefined,
+	});
 }

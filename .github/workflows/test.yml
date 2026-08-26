@@ -300,15 +300,15 @@ jobs:
           bun run scripts/assert-builtin-set.ts "$smoke_dir/atomic/builtin"
           for required_path in \
             builtin/workflows/package.json \
-            builtin/workflows/src/extension/index.ts \
+            builtin/workflows/src/extension/index.bundle.mjs \
             builtin/subagents/package.json \
-            builtin/subagents/src/extension/index.ts \
+            builtin/subagents/src/extension/index.bundle.mjs \
             builtin/mcp/package.json \
-            builtin/mcp/index.ts \
+            builtin/mcp/index.bundle.mjs \
             builtin/web-access/package.json \
-            builtin/web-access/index.ts \
+            builtin/web-access/index.bundle.mjs \
             builtin/intercom/package.json \
-            builtin/intercom/index.ts \
+            builtin/intercom/index.bundle.mjs \
             node_modules/@bastani/atomic-natives/package.json \
             node_modules/@bastani/atomic-natives/native/index.js \
             node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
@@ -352,15 +352,15 @@ jobs:
           bun run scripts/assert-builtin-set.ts (Join-Path $smokeDir "builtin")
           foreach ($requiredPath in @(
             "builtin/workflows/package.json",
-            "builtin/workflows/src/extension/index.ts",
+            "builtin/workflows/src/extension/index.bundle.mjs",
             "builtin/subagents/package.json",
-            "builtin/subagents/src/extension/index.ts",
+            "builtin/subagents/src/extension/index.bundle.mjs",
             "builtin/mcp/package.json",
-            "builtin/mcp/index.ts",
+            "builtin/mcp/index.bundle.mjs",
             "builtin/web-access/package.json",
-            "builtin/web-access/index.ts",
+            "builtin/web-access/index.bundle.mjs",
             "builtin/intercom/package.json",
-            "builtin/intercom/index.ts",
+            "builtin/intercom/index.bundle.mjs",
             "node_modules/@bastani/atomic-natives/package.json",
             "node_modules/@bastani/atomic-natives/native/index.js",
             "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
@@ -443,6 +443,8 @@ jobs:
       # own runner rather than through the workspace suites.
       - name: Script tests
         run: npm run test:scripts
+      - name: POSIX installer smoke tests in Alpine and Debian slim
+        run: ./scripts/test-installers-containers.sh
       - name: Deterministic CI and release contracts
         run: npm run test:ci-contracts
 

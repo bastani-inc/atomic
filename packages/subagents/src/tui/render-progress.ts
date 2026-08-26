@@ -1,3 +1,4 @@
+import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatAgentRunningLabel } from "../shared/status-format.js";
 import type { Details } from "../shared/types.js";
 
@@ -27,7 +28,7 @@ export function buildMultiProgressLabel(
 
 	if (details.mode === "parallel") {
 		const statuses = new Array(totalCount).fill("pending") as Array<
-			"pending" | "running" | "completed" | "failed" | "paused" | "detached"
+			"pending" | "running" | "completed" | "failed" | "interrupted" | "detached"
 		>;
 		for (const progress of details.progress ?? []) {
 			if (progress.index >= 0 && progress.index < totalCount) statuses[progress.index] = progress.status;
@@ -42,7 +43,7 @@ export function buildMultiProgressLabel(
 			const status =
 				result.progress?.status ??
 				(result.interrupted || result.status === "interrupted"
-					? "paused"
+					? "interrupted"
 					: result.detached || result.status === "continued"
 						? "detached"
 						: result.status === "ok"
@@ -52,9 +53,14 @@ export function buildMultiProgressLabel(
 		}
 		const running = statuses.filter((status) => status === "running").length;
 		const done = statuses.filter((status) => status === "completed").length;
+		const cancelled = details.results.filter(
+			(result) => isParentCancellation(result.cause) && (result.interrupted || result.status === "interrupted"),
+		).length;
 		const headerLabel = hasRunning
 			? `${formatAgentRunningLabel(running)} · ${done}/${totalCount} done`
-			: `${done}/${totalCount} done`;
+			: cancelled > 0
+				? `${done}/${totalCount} done · ${cancelled} cancelled`
+				: `${done}/${totalCount} done`;
 		return {
 			headerLabel,
 			itemTitle,

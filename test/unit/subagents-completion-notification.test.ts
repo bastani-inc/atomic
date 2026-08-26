@@ -139,8 +139,8 @@ test("queued child messages drain before a direct terminal notification", () => 
 		runId: "ordering-run",
 		agent: "worker",
 		success: false,
-		state: "paused",
-		summary: "Paused after interrupt.",
+		state: "interrupted",
+		summary: "Interrupted.",
 		timestamp: 2,
 		results: [{ agent: "worker", intercomTarget: "subagent-worker-ordering-run-1" }],
 	});

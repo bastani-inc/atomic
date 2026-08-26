@@ -68,6 +68,8 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	firstKeptEntryId: string | null;
 	tokensBefore: number;
 	details?: T;
+	/** Aggregate usage from model calls that produced this boundary. */
+	usage?: Usage;
 	/** True when the compacted text was supplied by an extension hook. */
 	fromHook?: boolean;
 }

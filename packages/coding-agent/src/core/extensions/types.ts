@@ -34,6 +34,7 @@ export {
 	isEditToolResult,
 	isFindToolResult,
 	isLsToolResult,
+	isPowerShellToolResult,
 	isReadToolResult,
 	isSearchToolResult,
 	isToolCallEventType,

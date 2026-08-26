@@ -109,7 +109,7 @@ Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`
 ## When compaction runs
 
 - **Manual:** `/compact`, `ctx.compact()`, `session.compact()`, or RPC `{ "type": "compact" }`.
-- **Threshold:** automatic compaction starts when estimated context usage exceeds the effective input budget minus `reserveTokens`. Atomic checks both completed responses and the prospective next-turn context after tool results have been appended. A post-tool crossing is compacted before the active Pi tool loop sends its follow-up provider request.
+- **Threshold:** automatic compaction starts when estimated context usage exceeds the effective input budget minus `reserveTokens`. Atomic checks both completed responses and the prospective next-turn context after tool results have been appended. When a provider reports all-zero usage, Atomic estimates the visible message size instead of skipping the check. A post-tool crossing is compacted before the active Pi tool loop sends its follow-up provider request.
 - **Overflow:** an actual provider context overflow compacts and then retries the interrupted turn.
 - **Truncated response:** a `length` stop before the original requested output cap gets one compact-and-retry attempt, independent of reported context-window metadata. If no compactable region exists, Atomic makes at most one direct continuation under that same recovery budget; a later actual context overflow remains eligible for load-bearing recovery. A response that reached the cap keeps Atomic's bounded direct-continuation behavior.
 
@@ -293,6 +293,19 @@ pi.on("session_compact", async (event) => {
 
 Observer errors are isolated and cannot roll back the already-persisted boundary.
 
+### `session_compact_failed`
+
+A failed or cancelled manual, threshold, or overflow compaction emits an observe-only failure event:
+
+```typescript
+pi.on("session_compact_failed", async (event) => {
+  console.log(event.reason, event.errorMessage);
+  console.log(event.aborted, event.willRetry, event.fromExtension);
+});
+```
+
+`errorMessage` is absent for cancellation. `fromExtension` identifies failures after a `session_before_compact` handler supplied replacement text; no compaction boundary is persisted.
+
 ## Branch Summarization
 
 ### When It Triggers
@@ -306,7 +319,7 @@ Branch summarization is a separate mechanism from context compaction. It generat
 1. **Find common ancestor**: Deepest node shared by old and new positions
 2. **Collect entries**: Walk from old leaf back to common ancestor
 3. **Prepare with budget**: Include messages up to token budget (newest first)
-4. **Generate summary**: Call LLM with structured format
+4. **Generate summary**: Call the LLM with tools disabled; reject tool calls and token-cap-truncated prose
 5. **Append entry**: Save `BranchSummaryEntry` at navigation point
 
 ```mermaid
@@ -467,7 +480,7 @@ See `SessionBeforeTreeEvent` and `TreePreparation` in the types file.
 
 ## Summary request isolation
 
-Verbatim planning and branch summarization are standalone provider requests. Each receives a fresh routing session ID instead of reusing the chat's provider-affinity ID, and sets cache retention to `none` so it cannot write summary/planner prompts into the main prompt cache. Neither sends a `max_tokens` of its own. Existing API-key, header-only `ANTHROPIC_AUTH_TOKEN`, custom-header, abort, and bounded retry behavior still applies. These controls affect provider request routing/cache writes only; successful results are persisted through the normal Atomic session lifecycle.
+Verbatim planning and branch summarization are standalone provider requests. Each receives a fresh routing session ID instead of reusing the chat's provider-affinity ID, and sets cache retention to `none` so it cannot write summary/planner prompts into the main prompt cache. All three explicitly set `toolChoice: "none"` and reject returned tool calls. Prose branch/session summaries reject `length` stops rather than persisting partial text; the deletion planner alone may recover complete records from a truncated response, and every recovered range still passes the normal validation airlock. Neither sends a `max_tokens` of its own. Existing API-key, header-only `ANTHROPIC_AUTH_TOKEN`, custom-header, abort, and bounded retry behavior still applies. These controls affect provider request routing/cache writes only; successful results are persisted through the normal Atomic session lifecycle.
 
 **Isolation is per model, not per session.** When compaction borrows a fallback model, that request is built with the borrowed candidate's own API key, headers, and base URL; the session model's credentials are never sent to another provider. The corollary is a real data-flow change: **a model listed in `settings.fallbackModels` may receive the compaction transcript.** The list is user-authored, so the set of providers that can see it is yours to control — remove an entry if you do not want it to see transcript content.
 

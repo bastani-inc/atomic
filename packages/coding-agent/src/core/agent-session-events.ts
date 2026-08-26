@@ -178,6 +178,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			retryConsumedProtectedStreamingCustomMessages(this);
 		}
 	}
+	if (event.type === "turn_end") this._flushPendingCustomMessages();
 
 	// Handle session persistence
 	if (event.type === "message_end") {
@@ -279,7 +280,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			!emptyCompletion &&
 			this._isSafetyRefusal(msg);
 		const modelFailure = retryableError || fallbackableError || emptyCompletion || safetyRefusal;
-		let restoreAfterTurn = !modelFailure;
+		let settleAfterTurn = !modelFailure;
 		if (modelFailure) {
 			if (emptyCompletion && !msg.errorMessage) {
 				// Surface a clear reason in the retry banner; empty completions carry no
@@ -290,7 +291,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			}
 			const didRetry = await this._handleRetryableError(msg);
 			if (didRetry) return; // Retry was initiated, don't proceed to compaction
-			restoreAfterTurn = true;
+			settleAfterTurn = true;
 		}
 
 		this._resolveRetry();
@@ -304,18 +305,16 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			this._contextOverflowUnresolved = false;
 			if (typeof this._trySwitchToFallbackModel === "function" && (await this._trySwitchToFallbackModel(msg)))
 				return;
-			restoreAfterTurn = true;
+			settleAfterTurn = true;
 		}
-		// Keep a fallback active across the compact-and-continue probe that belongs
-		// to this same user turn. The probe restores it before a queued next turn,
-		// or after a continuation settles.
-		if (restoreAfterTurn && this._pendingPostCompactionContinuation === undefined) {
-			if (typeof this._restoreFallbackModel === "function") await this._restoreFallbackModel();
+		// Keep a fallback lifecycle open across the compact-and-continue probe that
+		// belongs to this user turn, then settle it without changing the active model.
+		if (settleAfterTurn && this._pendingPostCompactionContinuation === undefined) {
+			if (typeof this._settleFallbackModelScope === "function") await this._settleFallbackModelScope();
 		}
-		// Launched last so the fallback lifecycle wins: a switch above returns before this line, and
-		// the restore has already put `this.model` back to the user's selection, which the launch
-		// reads synchronously before it parks on waitForIdle(). Guarded like the fallback methods
-		// above because the fallback suites drive this function on a synthetic session.
+		// Launched last so the fallback lifecycle wins: a switch above returns before
+		// this line. Guarded like the fallback methods above because fallback suites
+		// drive this function on a synthetic session.
 		if (event.type === "agent_end" && typeof this._maybeGenerateSessionSummary === "function")
 			void this._maybeGenerateSessionSummary();
 	}

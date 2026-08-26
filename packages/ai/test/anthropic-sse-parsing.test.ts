@@ -401,6 +401,41 @@ describe("Anthropic raw SSE parsing", () => {
 		expect(result.usage.totalTokens).toBe(12);
 	});
 
+	it("cancels a stalled SSE body when the stream deadline aborts", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const context: Context = {
+			messages: [{ role: "user", content: "Say hello.", timestamp: Date.now() }],
+		};
+		let cancelled = false;
+		const initialEvent = `event: message_start\ndata: ${JSON.stringify({
+			type: "message_start",
+			message: {
+				id: "msg_stalled",
+				usage: { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+			},
+		})}\n\n`;
+		const response = new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode(initialEvent));
+				},
+				cancel() {
+					cancelled = true;
+				},
+			}),
+			{ status: 200, headers: { "content-type": "text/event-stream" } },
+		);
+
+		const result = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(response),
+			streamDeadlineMs: 25,
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("stream deadline exceeded");
+		expect(cancelled).toBe(true);
+	});
+
 	it("ignores unknown SSE events after message_stop", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const context: Context = {

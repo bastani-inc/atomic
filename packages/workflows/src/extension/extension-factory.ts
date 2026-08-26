@@ -69,6 +69,9 @@ function registerIntercomControl(pi: ExtensionAPI, intercomControlRef: { current
 }
 
 function factory(pi: ExtensionAPI): void {
+	// A child AgentSession is not a workflow owner. Loading this lifecycle there
+	// would rebind process-shared run state away from the parent host session.
+	if (pi.subagentPolicy !== undefined) return;
 	adoptWorkflowSessionRunState(pi.events);
 
 	const adapters = buildRuntimeAdapters(pi);
@@ -89,8 +92,8 @@ function factory(pi: ExtensionAPI): void {
 		runtimeState.ensureWorkflowResourcesLoaded,
 		{ resolvePostMortemDeps: (runId) => postMortemDepsForRun(runId, postMortemResolverDeps) },
 	);
-	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx) => {
-		const result = await executeWorkflowTool(args, ctx);
+	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
+		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);
 		if (
 			workflowPolicyFromContext(ctx).mode === "interactive" &&
 			typeof args.workflow === "string" &&

@@ -476,6 +476,45 @@ describe("tool graph inspection", () => {
 		assert.match(longHint, /\x1b\[38;2;127;132;156mctrl\+o/, "expand key uses dim");
 	});
 
+	test("running tool headers omit the status marker without changing other status markers", () => {
+		const plain = renderToolDetail(
+			tool({ name: "push-propagated-2657", args: undefined, status: "running", endedAt: undefined }),
+			{ width: 80, now: 2_000 },
+		);
+		const plainRows = plain.split("\n");
+		const plainHeader = plainRows.find((row) => row.includes("$"));
+		assert.equal(plainHeader?.trimEnd(), " $ push-propagated-2657");
+		assert.doesNotMatch(plain, /●/);
+		assert.match(plain, /Elapsed 1s/);
+
+		const withArgs = renderToolDetail(
+			tool({ name: "push", args: { branch: "main" }, status: "running", endedAt: undefined }),
+			{ width: 80, now: 2_000 },
+		);
+		const argsHeader = withArgs.split("\n").find((row) => row.includes("$"));
+		assert.equal(argsHeader?.trimEnd(), ' $ push {"branch":"main"}');
+
+		const themedRows = renderToolDetail(
+			tool({ name: "push", args: undefined, status: "running", endedAt: undefined }),
+			{ width: 80, theme: defaultTheme, now: 2_000 },
+		).split("\n");
+		const themedHeader = themedRows.find((row) => visibleText([row]).includes("$"));
+		assert.equal(themedHeader === undefined ? undefined : stripFrameEscapes(themedHeader).trimEnd(), " $ push");
+		assert.doesNotMatch(visibleText(themedRows), /●/);
+		assertFullyPainted(themedRows, 80, "running themed detail");
+
+		for (const [status, marker] of [
+			["failed", "✗"],
+			["cached", "↻"],
+			["cancelled", "⊘"],
+			["pending", "○"],
+		] as const) {
+			const rendered = renderToolDetail(tool({ status, args: undefined }), { width: 80 });
+			const header = rendered.split("\n").find((row) => row.includes("$"));
+			assert.equal(header?.trimEnd(), ` $ inspect-api ${marker}`);
+		}
+	});
+
 	test("collapsed previews use the full bounded body and exact visual tail count", () => {
 		const longLines = Array.from({ length: 24 }, (_, index) => `report-line-${index}-abcdefghijklmnopqrstuvwxyz`);
 		const wideRows = renderToolDetail(tool({ args: undefined, result: { ok: true, lines: longLines } }), {

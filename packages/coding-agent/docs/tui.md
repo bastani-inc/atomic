@@ -876,6 +876,9 @@ ctx.ui.setWidget("my-widget", (_tui, theme) => {
 ctx.ui.setWidget("my-widget", undefined);
 ```
 
+Hosts may clear extension widgets during a UI reset. A reactive extension that needs to keep a long-lived widget registration can observe `ctx.ui.onWidgetRelease(key, listener)` when available.
+The listener runs after the host removes that key, so the extension can reset local mount state and re-register on its next refresh. Ordinary content changes should continue to update the existing component with `requestRender()` rather than repeatedly calling `setWidget()`.
+
 **Examples:** [plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts)
 
 ### Pattern 6: Custom Footer

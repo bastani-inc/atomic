@@ -1,5 +1,6 @@
 export { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
 export {
+	BASH_SHELL_PRESENTATION,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -10,6 +11,7 @@ export {
 	createBashTool,
 	createBashToolDefinition,
 	createLocalBashOperations,
+	type ShellToolPresentation,
 } from "./bash.ts";
 export {
 	createEditTool,
@@ -39,6 +41,17 @@ export {
 	type LsToolOptions,
 	lsToolSystemPromptContribution,
 } from "./ls.ts";
+export {
+	createLocalPowerShellOperations,
+	createPowerShellTool,
+	createPowerShellToolDefinition,
+	type PowerShellOperations,
+	type PowerShellSpawnContext,
+	type PowerShellSpawnHook,
+	type PowerShellToolDetails,
+	type PowerShellToolInput,
+	type PowerShellToolOptions,
+} from "./powershell.ts";
 export {
 	createReadTool,
 	createReadToolDefinition,
@@ -89,6 +102,7 @@ export {
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
+import { isPowerShellAvailable } from "../../utils/shell.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
@@ -96,6 +110,7 @@ import { createEditTool, createEditToolDefinition, type EditToolOptions } from "
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createHashlineSnapshotStore, type HashlineSnapshotStore } from "./hashline.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
+import { createPowerShellTool, createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createSearchTool, createSearchToolDefinition, type SearchToolOptions } from "./search.ts";
 import { createTodoToolDefinition } from "./todos.ts";
@@ -104,10 +119,26 @@ import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } fro
 
 export type Tool = AgentTool<TSchema, unknown>;
 export type ToolDef = ToolDefinition<TSchema, unknown>;
-export type ToolName = "read" | "bash" | "edit" | "write" | "find" | "search" | "ls" | "ask_user_question" | "todo";
+export type ToolName =
+	| "read"
+	| "bash"
+	| "powershell"
+	| "edit"
+	| "write"
+	| "find"
+	| "search"
+	| "ls"
+	| "ask_user_question"
+	| "todo";
+export type BuiltinToolMap<T> = Omit<Record<ToolName, T>, "powershell"> & { powershell?: T };
+// The universe of built-in tool names, matching the `ToolName` union exactly.
+// Availability is decided per platform in `getDefaultToolNames()` and
+// `createAllToolDefinitions()`; this set stays static so a name is never
+// "unknown" merely because the host cannot run it.
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
+	"powershell",
 	"edit",
 	"write",
 	"find",
@@ -117,20 +148,33 @@ export const allToolNames: Set<ToolName> = new Set([
 	"todo",
 ]);
 
-export const defaultToolNames: readonly ToolName[] = [
-	"read",
-	"bash",
-	"edit",
-	"write",
-	"find",
-	"search",
-	"ask_user_question",
-	"todo",
-];
+/**
+ * Built-in tools enabled at startup.
+ *
+ * `powershell` is conditional: it is Windows-only and additionally needs a
+ * resolvable `pwsh.exe`/`powershell.exe`. That probe reads PATH, so it runs per
+ * call rather than at module load, and callers can decide it explicitly through
+ * `powerShellAvailable` instead of depending on the host running the process.
+ */
+export function getDefaultToolNames(options?: { powerShellAvailable?: boolean }): readonly ToolName[] {
+	const powerShell = options?.powerShellAvailable ?? isPowerShellAvailable();
+	return [
+		"read",
+		"bash",
+		...(powerShell ? (["powershell"] as const satisfies readonly ToolName[]) : []),
+		"edit",
+		"write",
+		"find",
+		"search",
+		"ask_user_question",
+		"todo",
+	];
+}
 
 export interface ToolsOptions {
 	read?: ReadToolOptions;
 	bash?: BashToolOptions;
+	powershell?: PowerShellToolOptions;
 	write?: WriteToolOptions;
 	edit?: EditToolOptions;
 	find?: FindToolOptions;
@@ -148,6 +192,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createReadToolDefinition(cwd, { ...options?.read, hashlineStore });
 		case "bash":
 			return createBashToolDefinition(cwd, options?.bash);
+		case "powershell":
+			return createPowerShellToolDefinition(cwd, options?.powershell);
 		case "edit":
 			return createEditToolDefinition(cwd, { ...options?.edit, hashlineStore });
 		case "write":
@@ -174,6 +220,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createReadTool(cwd, { ...options?.read, hashlineStore });
 		case "bash":
 			return createBashTool(cwd, options?.bash);
+		case "powershell":
+			return createPowerShellTool(cwd, options?.powershell);
 		case "edit":
 			return createEditTool(cwd, { ...options?.edit, hashlineStore });
 		case "write":
@@ -215,9 +263,9 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 	];
 }
 
-export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
+export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): BuiltinToolMap<ToolDef> {
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	return {
+	const definitions: BuiltinToolMap<ToolDef> = {
 		read: createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
 		bash: createBashToolDefinition(cwd, options?.bash),
 		edit: createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
@@ -228,6 +276,10 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		ask_user_question: createAskUserQuestionToolDefinition(),
 		todo: createTodoToolDefinition(cwd),
 	};
+	if (isPowerShellAvailable()) {
+		definitions.powershell = createPowerShellToolDefinition(cwd, options?.powershell);
+	}
+	return definitions;
 }
 
 export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
@@ -252,9 +304,9 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 	];
 }
 
-export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
+export function createAllTools(cwd: string, options?: ToolsOptions): BuiltinToolMap<Tool> {
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	return {
+	const tools: BuiltinToolMap<Tool> = {
 		read: createReadTool(cwd, { ...options?.read, hashlineStore }),
 		bash: createBashTool(cwd, options?.bash),
 		edit: createEditTool(cwd, { ...options?.edit, hashlineStore }),
@@ -265,4 +317,8 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		ask_user_question: wrapToolDefinition(createAskUserQuestionToolDefinition()),
 		todo: wrapToolDefinition(createTodoToolDefinition(cwd)),
 	};
+	if (isPowerShellAvailable()) {
+		tools.powershell = createPowerShellTool(cwd, options?.powershell);
+	}
+	return tools;
 }

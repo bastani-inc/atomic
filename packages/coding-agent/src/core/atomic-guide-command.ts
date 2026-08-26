@@ -28,7 +28,7 @@ Atomic turns non-trivial work into executable, inspectable workflows. Default to
 | On-call / broken behavior | Use a focused workflow to reproduce, diagnose, repair, and validate; direct debugger/subagent calls remain useful as stages or for tiny deterministic diagnosis |
 | Research → spec → implementation | Use \`/skill:research-codebase\`, then \`/skill:create-spec\`, then a named or custom implementation workflow with explicit validation and review |
 | Testing / regression hardening | Use a workflow for test/fix loops so retries, evidence, and the passing stop condition are tracked |
-| Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns"\`, or use repository-focused \`fan-out-and-synthesize\` branches plus a synthesis barrier |
+| Large repo discovery | Use repository-focused \`fan-out-and-synthesize\` branches plus a synthesis barrier, or launch locator/analyzer/pattern-finder children with the \`subagent\` tool |
 | UI / product polish | Run \`/skill:impeccable\` for interface critique and refinement, or \`/workflow open-claude-design\` for one generated preview plus a live review session and export |
 
 ## Built-in workflows
@@ -55,7 +55,7 @@ Use \`/workflow list\` to see what is available and \`/workflow inputs <name>\` 
 | \`create-spec\` | turn research into an implementation-ready plan | \`/skill:create-spec from research/docs/<date>-<topic>.md\` |
 | \`tdd\` | do test-first feature or bug work | \`/skill:tdd\` |
 | \`prompt-engineer\` | tighten a vague prompt before a long run | \`/skill:prompt-engineer Draft a sharper implementation prompt for ...\` |
-| \`subagent\` | learn delegation patterns and exact \`/run\` and \`/parallel\` usage | \`/skill:subagent\` |
+| \`subagent\` | learn when and how to delegate with the \`subagent\` tool | \`/skill:subagent\` |
 | \`impeccable\` | critique or refine frontend and product UI | \`/skill:impeccable\` |
 | \`show-me\` | explain a topic visually with concise diagrams, code-shape sketches, or focused HTML artifacts (HumanLayer, MIT) | \`/skill:show-me\` |
 
@@ -70,9 +70,6 @@ Subagents are focused child Atomic sessions you can point at one job inside the 
 | \`codebase-pattern-finder\` | find existing code to model after |
 | \`debugger\` | reproduce, diagnose, and fix broken behavior |
 
-How the direct commands map to repo work:
-- \`/run\` = one specialist on one job, for example \`/run codebase-locator "Map the webhook retry flow"\`
-- \`/parallel\` = several independent specialists at once, for example \`/parallel codebase-locator "map retry files" -> codebase-pattern-finder "find existing retry/backoff patterns" -> codebase-online-researcher "research current retry guidance"\`
 
 ─────────────────────────────────────────────────────────────────
 
@@ -119,11 +116,7 @@ Loop or stop-condition phrasing is a key workflow signal. Encode \`do X until Y\
 
 Use the workflow's deterministic evidence, verifier decision, remaining-work report, and bound-exhaustion state to decide whether to ship, repair, unblock, or clarify. Keep PR/MR creation, deployment, and publication as separately authorized post-approval actions.
 
-If you implemented directly instead of using a workflow, you can still run:
-
-\`/parallel-review current diff\`
-
-Atomic will synthesize reviewer feedback and ask before applying fixes.
+If you implemented directly instead of using a workflow, launch a fresh-context cleanup pass with the \`subagent\` tool and apply only the synthesized fixes you accept.
 
 ─────────────────────────────────────────────────────────────────
 

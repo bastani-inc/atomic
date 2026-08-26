@@ -84,3 +84,26 @@ test("x64 release binaries target Bun's baseline CPU runtime", () => {
 
 	assertBuildScriptSyntax();
 });
+
+test("tagged payload builds do not fetch unpublished natives and re-alias pi-ai after restore", () => {
+	const buildScript = readFileSync(buildScriptPath, "utf8");
+
+	assert.match(
+		buildScript,
+		/Skipping registry install of @bastani\/atomic-natives-\*: local native artifacts are already staged/u,
+	);
+	assert.match(buildScript, /packages\/natives\/native\/\*\.node/u);
+	assert.match(
+		buildScript,
+		/^alias_pi_ai\(\) \{\n\s+echo "==> Aliasing @earendil-works\/pi-ai onto packages\/ai\.\.\."\n\s+node scripts\/alias-pi-ai\.mjs\n\}$/mu,
+	);
+
+	const restoreStart = buildScript.indexOf("Cross-platform bindings unavailable; restoring the dependency tree");
+	assert.notEqual(restoreStart, -1, "failed registry install must restore node_modules");
+	const restoreBlock = buildScript.slice(restoreStart, restoreStart + 400);
+	assert.match(restoreBlock, /npm ci --ignore-scripts/u);
+	assert.match(restoreBlock, /alias_pi_ai/u);
+	assert.match(restoreBlock, /build_pi_ai/u);
+
+	assertBuildScriptSyntax();
+});

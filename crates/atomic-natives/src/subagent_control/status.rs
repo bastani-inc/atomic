@@ -69,24 +69,32 @@ impl StatusWatch {
 		self.sender.subscribe()
 	}
 
-	/// Publish a status without changing an already-recorded terminal cause.
-	/// Non-terminal transitions clear a previous cause when a child is reused.
-	pub fn publish(&self, status: super::AgentStatus) {
+	/// Publish a lifecycle status unless the child has already reached a terminal
+	/// status. Returns whether the transition was accepted.
+	pub fn publish(&self, status: super::AgentStatus) -> bool {
 		let cause = if status.is_terminal() { self.current_cause() } else { None };
-		self.publish_with_cause(status, cause);
+		self.publish_with_cause(status, cause)
 	}
 
 	pub fn publish_with_cause(
 		&self,
 		status: super::AgentStatus,
 		cause: Option<super::TerminationCause>,
-	) {
-		self.sender.send_replace(StatusUpdate { status, cause });
+	) -> bool {
+		let mut accepted = false;
+		self.sender.send_if_modified(|current| {
+			if current.status.is_terminal() {
+				return false;
+			}
+			*current = StatusUpdate { status, cause };
+			accepted = true;
+			true
+		});
+		accepted
 	}
 
 	pub fn reduce(&self, event: LifecycleEvent) -> super::AgentStatus {
-		let status = super::AgentStatus::from(event);
-		self.publish(status);
-		status
+		self.publish(super::AgentStatus::from(event));
+		self.current()
 	}
 }

@@ -41,7 +41,6 @@ function makeState(): SubagentState {
 		baseCwd: "",
 		currentSessionId: null,
 		subagentInProgress: false,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),

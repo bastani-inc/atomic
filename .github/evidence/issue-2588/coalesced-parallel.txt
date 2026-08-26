@@ -1,0 +1,50 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (issue2588) issue-2588-model
+     ██████▙              ▟██████░░    /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/issue-2588-evidence-MR1XZC/project
+      ██████▙            ▟██████░░
+       ████████████████████████░░      We question,
+        ██████▛░░░░░░░░▜██████░░       we break away from what is accepted.
+         ██████▛      ▜██████░░        Engineering matters.
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 12 skills · 14 prompts
+
+
+
+ ISSUE-2588-PARENT-BURST
+
+
+
+ subagent parallel (2)
+ ✓ parallel · 2/2 done · 0s
+   ✓ Agent 1/2: issue-2588-a (issue2588/issue-2588-model · thinking off) · 0s
+     output: /var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/atomic-subagents-uid-501/artifacts/bc2361ab_issue-2588…
+   ✓ Agent 2/2: issue-2588-b (issue2588/issue-2588-model · thinking off) · 0s
+     output: /var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/atomic-subagents-uid-501/artifacts/bc2361ab_issue-2588…
+   artifacts: /var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/atomic-subagents-uid-501/artifacts
+
+
+
+ ISSUE-2588-PARENT-DONE
+ COALESCED PARALLEL RUN: 2 children
+ - issue-2588-a -> ISSUE-2588-RESULT-A
+ - issue-2588-b -> ISSUE-2588-RESULT-B
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                                     0.0%/16k (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+issue-2588-model • /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/issue-2588-evidence-MR1XZC/project

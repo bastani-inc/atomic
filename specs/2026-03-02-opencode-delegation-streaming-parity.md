@@ -26,7 +26,7 @@ The impact is improved cross-provider parity (OpenCode/Claude/Copilot), fewer dr
 
 ### 2.2 The Problem
 
-- **Parity gap in task/subtask contract:** No single provider-agnostic `task_id` equivalent exists across adapters, making resume/reconciliation behavior fragmented by provider-specific IDs. (Ref: `research/docs/2026-03-01-opencode-delegation-streaming-parity.md:51`)
+- **Parity gap in task/subtask contract:** No single provider-agnostic `task_id` equivalent exists across adapters, making follow-up correlation and reconciliation fragmented by provider-specific IDs. (Ref: `research/docs/2026-03-01-opencode-delegation-streaming-parity.md:51`)
 - **Parity gap in parent-loop semantics:** Continuation is mostly guard/status-driven in UI logic, not explicitly finish-reason (`tool-calls`) driven with canonical tool-result rehydration semantics. (Ref: `research/docs/2026-03-01-opencode-delegation-streaming-parity.md:64`, `src/ui/utils/stream-continuation.ts:9`)
 - **Event completeness gap:** Some emitted lifecycle/workflow events do not consistently map into part state, causing silent drops and inconsistent transcript fidelity. (Ref: `research/docs/2026-03-01-opencode-delegation-streaming-parity.md:68`, `research/docs/2026-02-28-workflow-gaps-architecture.md:320`)
 - **Architectural coupling risk:** Task/subtask semantics are currently split between adapters and UI merge code, making behavior harder to test deterministically at runtime-core boundaries.
@@ -102,7 +102,7 @@ flowchart LR
 
 | Component | Responsibility | Technology Stack | Justification |
 | --- | --- | --- | --- |
-| Task Identity Service | Resolve canonical `task_id` from provider-specific identifiers | TypeScript (`src/events/consumers` or new `src/runtime/task`) | Eliminates provider-fragmented correlation and enables resumable contract parity. |
+| Task Identity Service | Resolve canonical `task_id` from provider-specific identifiers | TypeScript (`src/events/consumers` or new `src/runtime/task`) | Eliminates provider-fragmented correlation while keeping terminal children immutable. |
 | TaskResult Envelope Builder | Produce normalized task result payload (`task_id` + `<task_result>` equivalent) and attach to message/tool history | TypeScript + existing part model | Matches OpenCode parent ingestion semantics while preserving local architecture. |
 | Session Loop Controller | Decide continuation based on finish reason + pending tool/task state | TypeScript runtime service invoked from chat/session orchestration | Replaces brittle UI-only continuation heuristics with explicit semantics and aligns to OpenCode `SessionPrompt` loop behavior. |
 | Event Coverage Policy + Mapper | Map all relevant stream/workflow/session events to part events or explicit non-rendered policy | `stream-pipeline-consumer.ts`, `bus-events.ts`, reducer types | Prevents silent event loss and improves transcript fidelity and debuggability. |
@@ -113,7 +113,7 @@ The following behaviors are treated as source-of-truth parity targets and should
 
 1. **Task tool contract parity**
    - Input shape: `description`, `prompt`, `subagent_type`, optional `task_id`, optional `command`.
-   - Resume behavior: if `task_id` exists and resolves, continue existing child session; else create a new child session.
+   - Atomic divergence: `task_id` remains a correlation key, but a follow-up creates a fresh child session and identity instead of resuming a terminal child.
    - Reference: `/home/alilavaee/Documents/projects/opencode/packages/opencode/src/tool/task.ts:14`.
 
 2. **Child session linkage parity**
@@ -190,7 +190,7 @@ export interface SessionLoopContinuationSignal {
 Proposed canonical text envelope format in persisted history (OpenCode parity shape):
 
 ```xml
-task_id: <task_id> (for resuming to continue this task if needed)
+task_id: <task_id> (for correlating this completed task with any fresh follow-up)
 
 <task_result>
 ...normalized task output...
@@ -226,10 +226,10 @@ interface TaskRuntimeState {
 
 ### 5.3 Algorithms and State Management
 
-- **Task/subtask lifecycle state machine:** `detected -> started -> child_streaming -> child_completed|child_error -> envelope_persisted -> parent_resumed -> settled`.
+- **Task/subtask lifecycle state machine:** `detected -> started -> child_streaming -> child_completed|child_error -> envelope_persisted -> parent_continued -> settled`.
 - **Tool-part status state machine parity:** `pending -> running -> completed|error` for task tool results used in prompt reconstruction.
 - **Identity resolution algorithm:**
-  - Generate canonical `task_id` on first task invocation unless an explicit resumable `task_id` already exists.
+  - Generate canonical `task_id` on first task invocation; treat any supplied prior `task_id` as a correlation alias for a fresh follow-up, never as a child-revival key.
   - Prefer explicit provider tool ID as correlation alias, not canonical identity.
   - Bind child session ID to canonical `task_id` on first confident correlation event.
   - Backfill unresolved edges when later events provide missing IDs.
@@ -248,7 +248,7 @@ interface TaskRuntimeState {
 The implementation is accepted only when all criteria below are met:
 
 - A task/subtask run produces canonical envelope text compatible with OpenCode shape (`task_id` line + `<task_result>` block).
-- A follow-up task invocation with `task_id` resumes the same child runtime session semantics.
+- A follow-up task invocation with a prior `task_id` starts a fresh child identity while preserving explicit correlation to the completed task.
 - Parent continuation gates respect finish-reason parity (`tool-calls`/`unknown` continue; terminal reasons stop).
 - Task input/output schema is compatible with OpenCode `task` tool contract, including metadata with child `sessionId`.
 - Persisted tool/task parts are used for model-history reconstruction (no UI-only source of truth).
@@ -327,7 +327,7 @@ The implementation is accepted only when all criteria below are met:
 - **Integration Tests:**
   - End-to-end adapter -> bus -> consumer -> reducer flow across OpenCode/Claude/Copilot task dispatches.
   - Workflow step/task events map into parts with no silent drops.
-  - Cross-session child-parent correlation and resume consistency.
+  - Cross-session child-parent correlation and fresh-follow-up identity consistency.
 - **End-to-End Tests:**
   - Multi-turn task-driven workflow where parent continuation relies on canonical envelope.
   - Parallel/background sub-agents with final transcript parity checks.

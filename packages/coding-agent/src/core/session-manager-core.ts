@@ -252,6 +252,7 @@ export class SessionManager {
 		firstKeptEntryId: string | null,
 		tokensBefore: number,
 		details: VerbatimCompactionDetails,
+		usage?: Usage,
 	): string {
 		if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId))
 			throw new Error(`Entry ${firstKeptEntryId} not found`);
@@ -260,6 +261,7 @@ export class SessionManager {
 			firstKeptEntryId,
 			tokensBefore,
 			details,
+			usage,
 			this.byId,
 			this.leafId,
 		);
@@ -425,6 +427,7 @@ export class SessionManager {
 		details?: unknown,
 		fromHook?: boolean,
 		usage?: import("@bastani/pi-ai/compat").Usage,
+		fromId: string = this.leafId ?? "root",
 	): string {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
@@ -432,6 +435,7 @@ export class SessionManager {
 		this.leafId = branchFromId;
 		const entry: BranchSummaryEntry = createBranchSummaryEntry(
 			branchFromId,
+			fromId,
 			summary,
 			details,
 			usage,

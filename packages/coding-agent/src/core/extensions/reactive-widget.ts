@@ -11,6 +11,7 @@ export type ReactiveWidgetFactory<TTheme> = (tui: unknown, theme: TTheme) => Rea
 export interface ReactiveWidgetUi<TTheme> {
 	setWidget(key: string, factory: ReactiveWidgetFactory<TTheme> | undefined, options?: ExtensionWidgetOptions): void;
 	requestRender?: () => void;
+	onWidgetRelease?: (key: string, listener: () => void) => () => void;
 }
 
 export interface ReactiveWidgetTimerHandle {
@@ -46,6 +47,11 @@ export interface ReactiveWidgetController {
 	isMounted(): boolean;
 }
 
+export interface ReactiveWidgetMountError {
+	readonly cause: Error;
+	readonly message: string;
+}
+
 export interface InstallReactiveWidgetOptions<TSnapshot, TTheme> {
 	ui: ReactiveWidgetUi<TTheme>;
 	key: string;
@@ -63,6 +69,7 @@ export interface InstallReactiveWidgetOptions<TSnapshot, TTheme> {
 	requestRenderOnUnmount?: boolean;
 	requestRenderOnStateNoop?: boolean;
 	isStaleError?: (error: unknown) => boolean;
+	onMountError?: (error: ReactiveWidgetMountError) => void;
 }
 
 const defaultTimerApi: ReactiveWidgetTimerApi = {
@@ -73,6 +80,15 @@ const defaultTimerApi: ReactiveWidgetTimerApi = {
 const defaultScheduler: ReactiveWidgetScheduler = {
 	queueMicrotask: (handler) => queueMicrotask(handler),
 };
+
+class ReactiveWidgetMountReporterError extends Error {
+	readonly reporterError: Error;
+
+	constructor(reporterError: Error) {
+		super(reporterError.message);
+		this.reporterError = reporterError;
+	}
+}
 
 function getRequestRenderFromHost(host: unknown): (() => void) | undefined {
 	if (typeof host !== "object" || host === null) return undefined;
@@ -118,6 +134,9 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 	let currentSnap = options.getSnapshot();
 	let currentNow = now();
 	let lastLines: readonly string[] = [];
+	let unsubscribe: (() => void) | undefined;
+	let unsubscribeWidgetRelease: (() => void) | undefined;
+	let mountFailureReported = false;
 
 	const clearRefreshTimer = (): void => {
 		if (refreshTimer === undefined) return;
@@ -126,6 +145,7 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 	};
 
 	const handleError = (error: unknown): void => {
+		if (error instanceof ReactiveWidgetMountReporterError) throw error.reporterError;
 		if (options.isStaleError?.(error)) return;
 		throw error;
 	};
@@ -175,6 +195,17 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 		refreshTimer.unref?.();
 	};
 
+	const handleWidgetRelease = (): void => {
+		if (disposed || !mounted) return;
+		mounted = false;
+		lastLines = [];
+		mountedRequestRender = undefined;
+		clearRefreshTimer();
+		scheduler.queueMicrotask(() => {
+			if (!disposed) controller.refresh("manual");
+		});
+	};
+
 	const widgetFactory: ReactiveWidgetFactory<TTheme> = (tui, theme) => {
 		const fallbackRequestRender = getRequestRenderFromHost(tui);
 		if (fallbackRequestRender) mountedRequestRender = fallbackRequestRender;
@@ -202,13 +233,31 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 
 				switch (action) {
 					case "mount":
-						options.ui.setWidget(
-							options.key,
-							widgetFactory,
-							options.placement ? { placement: options.placement } : undefined,
-						);
-						mounted = true;
-						if (requestRenderOnMount) requestRender();
+						try {
+							options.ui.setWidget(
+								options.key,
+								widgetFactory,
+								options.placement ? { placement: options.placement } : undefined,
+							);
+							mounted = true;
+							mountFailureReported = false;
+							if (requestRenderOnMount) requestRender();
+						} catch (error) {
+							const cause = error instanceof Error ? error : new Error(String(error));
+							if (!mountFailureReported) {
+								mountFailureReported = true;
+								try {
+									options.onMountError?.({ cause, message: cause.message });
+								} catch (reporterError) {
+									throw new ReactiveWidgetMountReporterError(
+										reporterError instanceof Error ? reporterError : new Error(String(reporterError)),
+									);
+								}
+							}
+							if (options.isStaleError?.(error)) return;
+							handleError(error);
+							return;
+						}
 						break;
 					case "unmount":
 						options.ui.setWidget(options.key, undefined);
@@ -233,6 +282,8 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 			if (disposed) return;
 			disposed = true;
 			clearRefreshTimer();
+			unsubscribeWidgetRelease?.();
+			unsubscribeWidgetRelease = undefined;
 			unsubscribe?.();
 			try {
 				options.ui.setWidget(options.key, undefined);
@@ -247,8 +298,18 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 		},
 	};
 
-	const unsubscribe = options.subscribe?.(() => controller.refresh("state"));
-	controller.refresh("initial");
+	try {
+		unsubscribe = options.subscribe?.(() => controller.refresh("state"));
+		unsubscribeWidgetRelease = options.ui.onWidgetRelease?.(options.key, handleWidgetRelease);
+		controller.refresh("initial");
+	} catch (error) {
+		try {
+			controller.dispose();
+		} catch {
+			// Preserve the original installation failure after rolling back subscriptions.
+		}
+		throw error;
+	}
 
 	return controller;
 }

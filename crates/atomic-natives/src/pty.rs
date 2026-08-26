@@ -431,7 +431,7 @@ fn emit_utf8_chunks(
 fn terminate_pty_processes(
 	child: &mut Box<dyn Child + Send + Sync>,
 	_child_pid: Option<i32>,
-	process_group_id: Option<i32>,
+	#[cfg_attr(not(unix), allow(unused_variables))] process_group_id: Option<i32>,
 ) {
 	#[cfg(unix)]
 	if let Some(pgid) = process_group_id {

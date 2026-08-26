@@ -50,7 +50,7 @@ a *toolchain* goal, not a CI-topology goal.
 ### Commands
 
 - `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
-- `npm run build` — one-time per checkout (and after pulling changes to `packages/ai`, `crates/`, or `packages/natives/`): builds `@bastani/pi-ai`, aliases `@earendil-works/pi-ai` onto it, and builds the native N-API module. `npm ci --ignore-scripts` skips the `prepare` hook, so nothing else runs these
+- `npm run build` — one-time per checkout (and after pulling changes to `packages/ai`, `crates/`, or `packages/natives/`): builds `@bastani/pi-ai` (fetches models.dev and writes `src/providers/data/`, then compiles), aliases `@earendil-works/pi-ai` onto it, and builds the native N-API module. `npm ci --ignore-scripts` skips the `prepare` hook, so nothing else runs these
 - `npm install <pkg>` — add a dependency; `.npmrc` applies `save-exact`. There is no release-age gate: `min-release-age=0`
 - `npm run check` — `tsc --noEmit`, then the coding-agent package typecheck (`tsgo -p tsconfig.build.json --noEmit`), plus the published-shrinkwrap check. `npm run typecheck` runs both typecheck passes alone
 - `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
@@ -223,11 +223,11 @@ If a user asks to publish a release or prerelease, route the request through the
 2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid. Use the requested `base_ref`, defaulting to the short branch name `main` when omitted.
 3. For non-main bases, require the branch to be protected with the repository's required CI checks before using it as the selected release base.
 4. Launch one `publish-release` workflow run with `target_version`, `release_kind`, and `base_ref`. Do not duplicate its Git, PR, tag, or publishing actions inline.
-5. The workflow creates `[release|prerelease]/<version>` from the selected base, updates relevant changelogs without bumping package versions, validates and commits the changes, pushes the branch, and opens the PR.
-6. It watches required CI until every required check reaches a terminal state, treating an admin merge of the PR as approval to proceed; check failures or an expired watch window stop the run with evidence.
-7. After checks pass, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
+5. A durable preflight first requires a clean worktree, then either proves that no release branch or PR exists and allows changelog preparation, or reuses one exact changelog-only commit and matching open PR. Commit inspection exhausts every GitHub file page and checks both sides of renamed paths. Conflicting worktree, base, files, commit, branch, local/remote SHA, or PR identity stops the run; the workflow never resets or force-pushes reuse state.
+6. The workflow discovers exact required contexts and app identities from branch protection and active rulesets. Only the classic unprotected-branch status-check lookup may be absent; ruleset lookup errors fail closed. Configured checks that have not materialized remain pending. An empty configured set, identity drift, failed check, GitHub/auth error, abort, or the 45-minute bound stops the run; only all exact checks passing or the exact PR being admin-merged proceeds.
+7. After the gate passes, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
 8. It runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit and pushes the tag. That tag push automatically starts `publish.yml`; the workflow does not manually dispatch normal publication.
-9. It watches the matching `Publish <version>` action until it completes. Failure or an expired watch window stops the run with evidence; success returns a concise release summary.
+9. A durable gate polls for the exact `bastani-inc/atomic` push run at `.github/workflows/publish.yml`, matching tag and release SHA. A delayed run stays pending; identity drift, command/auth failure, a non-success conclusion, abort, or the 60-minute bound stops the run.
 
 ## Docs
 

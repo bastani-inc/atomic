@@ -27,8 +27,9 @@ npm run build
 
 `npm run build` is a required one-time step (and again after pulling changes to
 `packages/ai`, `crates/`, or `packages/natives/`). It builds the vendored
-`@bastani/pi-ai` package, aliases `node_modules/@earendil-works/pi-ai` onto that
-workspace copy, and builds the native N-API module. `npm ci --ignore-scripts`
+`@bastani/pi-ai` package (including a models.dev catalog refresh), aliases
+`node_modules/@earendil-works/pi-ai` onto that workspace copy, and builds the
+native N-API module. `npm ci --ignore-scripts`
 deliberately skips lifecycle scripts (including the `prepare` hook that would
 run the alias), and the workspace packages have no install hooks anyway — only
 published releases ship prebuilt artifacts. Without the pi-ai build, running the
@@ -250,7 +251,7 @@ Run these from the workspace root:
 | Command                    | Description                                                      |
 | -------------------------- | ---------------------------------------------------------------- |
 | `npm ci --ignore-scripts`   | Install from `package-lock.json`                                 |
-| `npm run build`             | Build `@bastani/pi-ai`, alias `@earendil-works/pi-ai` onto it, build the native N-API module (requires cargo) |
+| `npm run build`             | Refresh the `@bastani/pi-ai` models.dev catalog, compile it, alias `@earendil-works/pi-ai` onto it, build the native N-API module (requires cargo and network) |
 | `npm run build --workspace=@bastani/atomic-natives` | Build only the native N-API module              |
 | `npm run check`             | Typecheck plus the published-shrinkwrap check                    |
 | `npm run typecheck`         | Type-check the workspace                                         |

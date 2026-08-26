@@ -7,15 +7,6 @@ import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 const DEFAULT_PROMPT_TOOLS = ["read", "bash", "edit", "write", "find", "search", "ask_user_question", "todo"] as const;
 
-const DEFAULT_COMMUNICATION_GUIDELINES = [
-	"Never use a familiar printed metaphor, simile, or figure of speech.",
-	"Never use a long word where a short one will do.",
-	"Cut every word that can be cut.",
-	"Use active rather than passive voice where possible.",
-	"Prefer everyday English to foreign phrases, scientific terms, and jargon.",
-	"Break any rule rather than say anything outright barbarous.",
-] as const;
-
 export interface SystemPromptModel {
 	/** Provider identifier for the selected model. */
 	provider: string;
@@ -138,6 +129,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	};
 
 	const hasBash = tools.includes("bash");
+	const hasPowerShell = tools.includes("powershell");
 	const hasFind = tools.includes("find");
 	const hasLs = tools.includes("ls");
 	const hasRead = tools.includes("read");
@@ -148,8 +140,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		!explicitlyExcludedTools.has("ask_user_question");
 
 	// File exploration guidelines
-	if (hasBash && !hasFind && !hasLs) {
-		addGuideline("Use bash for file operations like ls, rg, find");
+	if ((hasBash || hasPowerShell) && !hasFind && !hasLs) {
+		if (hasBash && hasPowerShell) {
+			addGuideline("Use bash or PowerShell for file operations like listing, searching, and finding files");
+		} else if (hasPowerShell) {
+			addGuideline("Use PowerShell for file operations like listing, searching, and finding files");
+		} else {
+			addGuideline("Use bash for file operations like ls, rg, find");
+		}
 	}
 	if (shouldIncludeAskUserFallbackGuidance) {
 		addGuideline("Clarify ambiguous requirements using the ask_user_question tool if available.");
@@ -160,11 +158,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		if (normalized.length > 0) {
 			addGuideline(normalized);
 		}
-	}
-
-	// Always include these
-	for (const guideline of DEFAULT_COMMUNICATION_GUIDELINES) {
-		addGuideline(guideline);
 	}
 
 	addGuideline("Be concise in your responses");

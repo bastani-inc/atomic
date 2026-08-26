@@ -86,7 +86,6 @@ function makeExecutor(cwd: string, agents: AgentConfig[], runtime: Partial<Subag
 		baseCwd: "",
 		currentSessionId: null,
 		subagentInProgress: false,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
@@ -310,7 +309,7 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("parent registration exposes the non-interactive tool and preserves slash commands", async () => {
+	test("parent registration exposes the non-interactive tool and does not register slash commands", async () => {
 		let registered: ToolDefinition | undefined;
 		const commands: string[] = [];
 		const handlers = new Map<string, Array<() => void>>();
@@ -349,7 +348,10 @@ describe("programmatic subagent tool boundary", () => {
 		assert.equal(customCalls, 0);
 		assert.equal((result as { details?: { mode?: string } }).details?.mode, "parallel");
 
-		assert.deepEqual(commands.filter((name) => ["run", "parallel"].includes(name)).sort(), ["parallel", "run"]);
+		assert.deepEqual(
+			commands.filter((name) => ["run", "parallel"].includes(name)),
+			[],
+		);
 
 		const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
 		for (const args of [{ agent: "worker" }, { tasks: [{ agent: "worker", task: "one" }] }]) {

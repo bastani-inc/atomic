@@ -37,6 +37,7 @@ import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import {
@@ -172,12 +173,21 @@ export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AnthropicThinkingDisplay = "summarized" | "omitted";
 
+type MessageCreateParamsStreamingWithFallbacks = MessageCreateParamsStreaming & {
+	fallbacks?: readonly { model: string }[];
+};
+
 const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+const SERVER_SIDE_FALLBACK_BETA = "server-side-fallback-2026-07-01";
+
+function shouldUseServerSideFallbackBeta(model: Model<"anthropic-messages">): boolean {
+	return (model.compat?.allowedFallbackModels?.length ?? 0) > 0;
+}
 
 function getAnthropicCompat(
 	model: Model<"anthropic-messages">,
-): Required<Omit<AnthropicMessagesCompat, "forceAdaptiveThinking">> {
+): Required<Omit<AnthropicMessagesCompat, "forceAdaptiveThinking" | "allowedFallbackModels">> {
 	return {
 		supportsEagerToolInputStreaming: model.compat?.supportsEagerToolInputStreaming ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
@@ -276,18 +286,8 @@ function mergeHeaders(...headerSources: (ProviderHeaders | undefined)[]): Provid
 	return merged;
 }
 
-function mergeClientHeaders(
-	model: Model<"anthropic-messages">,
-	...headerSources: (ProviderHeaders | undefined)[]
-): ProviderHeaders {
-	const merged = mergeHeaders(...headerSources);
-	if (model.provider === "kimi-coding") {
-		for (const name of Object.keys(merged)) {
-			if (name.toLowerCase() === "user-agent") delete merged[name];
-		}
-		merged["User-Agent"] = getPiUserAgent();
-	}
-	return merged;
+function mergeClientHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
+	return mergeHeaders({ "User-Agent": getPiUserAgent() }, ...headerSources);
 }
 
 function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
@@ -411,6 +411,10 @@ async function* iterateSseMessages(
 	const decoder = new TextDecoder();
 	const state: SseDecoderState = { event: null, data: [], raw: [] };
 	let buffer = "";
+	const onAbort = () => {
+		void reader.cancel().catch(() => {});
+	};
+	signal?.addEventListener("abort", onAbort, { once: true });
 
 	try {
 		while (true) {
@@ -458,6 +462,10 @@ async function* iterateSseMessages(
 			yield trailingEvent;
 		}
 	} finally {
+		signal?.removeEventListener("abort", onAbort);
+		try {
+			await reader.cancel();
+		} catch {}
 		reader.releaseLock();
 	}
 }
@@ -529,9 +537,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			timestamp: Date.now(),
 		};
 
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+
 		try {
 			let client: Anthropic;
 			let isOAuth: boolean;
+			let usageModel = model;
 
 			if (options?.client) {
 				client = options.client;
@@ -561,6 +572,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					apiKey,
 					options?.interleavedThinking ?? true,
 					shouldUseFineGrainedToolStreamingBeta(model, context),
+					shouldUseServerSideFallbackBeta(model),
 					options?.headers,
 					options?.fetch,
 					copilotDynamicHeaders,
@@ -575,7 +587,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				params = nextParams as MessageCreateParamsStreaming;
 			}
 			const requestOptions = {
-				...(options?.signal ? { signal: options.signal } : {}),
+				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
@@ -584,7 +596,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
+					signal: streamDeadline.signal,
 				},
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -593,9 +605,21 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
 
-			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
+			for await (const event of withStreamDeadline(
+				iterateAnthropicEvents(response, streamDeadline.signal),
+				streamDeadline.deadlineMs,
+				streamDeadline.abort,
+			)) {
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
+					output.model = event.message.model;
+					const fallbackCost =
+						output.model === model.id
+							? undefined
+							: model.compat?.allowedFallbackModels?.find(
+									(fallback) => fallback.provider === model.provider && fallback.model === output.model,
+								)?.cost;
+					usageModel = fallbackCost ? { ...model, id: output.model, cost: fallbackCost } : model;
 					// Capture initial token usage from message_start event
 					// This ensures we have input token counts even if the stream is aborted early
 					output.usage.input = event.message.usage.input_tokens || 0;
@@ -606,7 +630,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					// Anthropic doesn't provide total_tokens, compute from components
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-					calculateCost(model, output.usage);
+					calculateCost(usageModel, output.usage);
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
 						const block: Block = {
@@ -763,7 +787,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					// Anthropic doesn't provide total_tokens, compute from components
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-					calculateCost(model, output.usage);
+					calculateCost(usageModel, output.usage);
 				}
 			}
 
@@ -790,6 +814,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 
@@ -828,9 +854,15 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 ): AssistantMessageEventStream => {
 	assertRequestAuth(model.provider, options?.apiKey, options?.headers);
 
-	const base = buildBaseOptions(model, context, options, options?.apiKey);
+	const base = {
+		...buildBaseOptions(model, context, options, options?.apiKey),
+		toolChoice: options?.toolChoice,
+	} satisfies AnthropicOptions;
 	if (!options?.reasoning) {
-		return stream(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
+		return stream(model, context, {
+			...base,
+			thinkingEnabled: false,
+		} satisfies AnthropicOptions);
 	}
 
 	// For models with adaptive thinking: use an effort level.
@@ -872,6 +904,7 @@ function createClient(
 	apiKey: string | undefined,
 	interleavedThinking: boolean,
 	useFineGrainedToolStreamingBeta: boolean,
+	useServerSideFallbackBeta: boolean,
 	optionsHeaders?: ProviderHeaders,
 	fetch?: typeof globalThis.fetch,
 	dynamicHeaders?: Record<string, string>,
@@ -886,6 +919,9 @@ function createClient(
 	if (needsInterleavedBeta) {
 		betaFeatures.push(INTERLEAVED_THINKING_BETA);
 	}
+	if (useServerSideFallbackBeta) {
+		betaFeatures.push(SERVER_SIDE_FALLBACK_BETA);
+	}
 
 	// Copilot: Bearer auth, selective betas.
 	if (model.provider === "github-copilot") {
@@ -896,7 +932,6 @@ function createClient(
 			dangerouslyAllowBrowser: true,
 			fetch,
 			defaultHeaders: mergeClientHeaders(
-				model,
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
@@ -920,7 +955,6 @@ function createClient(
 			dangerouslyAllowBrowser: true,
 			fetch,
 			defaultHeaders: mergeClientHeaders(
-				model,
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
@@ -940,7 +974,6 @@ function createClient(
 	const sessionAffinityHeaders: ProviderHeaders =
 		sessionId && getAnthropicCompat(model).sendSessionAffinityHeaders ? { "x-session-affinity": sessionId } : {};
 	const defaultHeaders = mergeClientHeaders(
-		model,
 		{
 			accept: "application/json",
 			"anthropic-dangerous-direct-browser-access": "true",
@@ -967,7 +1000,7 @@ function buildParams(
 	context: Context,
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
-): MessageCreateParamsStreaming {
+): MessageCreateParamsStreamingWithFallbacks {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
@@ -984,7 +1017,7 @@ function buildParams(
 		deferredTools = [];
 	}
 	const deferredToolNames = new Set(deferredTools.map((tool) => normalizeToolName(tool.name)));
-	const params: MessageCreateParamsStreaming = {
+	const params: MessageCreateParamsStreamingWithFallbacks = {
 		model: model.id,
 		messages: convertMessages(
 			transformedMessages,
@@ -1094,6 +1127,11 @@ function buildParams(
 		} else {
 			params.tool_choice = options.toolChoice;
 		}
+	}
+
+	const allowedFallbackModels = model.compat?.allowedFallbackModels;
+	if (allowedFallbackModels && allowedFallbackModels.length > 0) {
+		params.fallbacks = allowedFallbackModels.map((fallback) => ({ model: fallback.model }));
 	}
 
 	return params;

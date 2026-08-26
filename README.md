@@ -145,7 +145,7 @@ Every row is a real Atomic session recorded from the installed product. Open the
 </tr>
 </table>
 
-<p><a href="#more-atomic-capabilities"><strong>Explore 33 more Atomic capabilities ↓</strong></a></p>
+<p><a href="#more-atomic-capabilities"><strong>Explore 32 more Atomic capabilities ↓</strong></a></p>
 
 <!-- feature-wall:featured:end -->
 
@@ -251,13 +251,13 @@ The model-family badges are representative open families, not a closed allowlist
 
 ### Prerequisites
 
-- **Node.js 22.19 or newer** — check with `node --version`.
-- **A package manager** — use npm, pnpm, Yarn, or Bun. Use Bun 1.4.0+ for Bun installs or workflow-authoring examples.
+- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.0+ for Bun installs or workflow-authoring examples.
+- **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`. Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
 - **Model-provider access** — use a supported subscription login or API key.
 
 ### Install
 
-With npm:
+Install with npm:
 
 ```bash
 npm install -g @bastani/atomic
@@ -275,7 +275,29 @@ With Bun:
 bun add -g @bastani/atomic
 ```
 
-Atomic does not require package install scripts. Add `--ignore-scripts` to the install command if you want to disable dependency lifecycle scripts during installation.
+Atomic does not require package install scripts. Add `--ignore-scripts` to a package install command if you want to disable dependency lifecycle scripts.
+
+Alternatively, install the self-contained release archive, which needs no Node.js or package manager.
+
+On macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
+```
+
+On Windows, run this in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+```
+
+The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links its launcher from `~/.local/bin/atomic` on macOS/Linux or `%LOCALAPPDATA%\atomic\bin\atomic.cmd` on Windows, printing PATH guidance when needed. It accepts a few environment variables:
+
+- `ATOMIC_VERSION` — pin an exact release tag.
+- `ATOMIC_INSTALL_DIR` / `ATOMIC_BIN_DIR` — change the install and launcher locations. On macOS/Linux, relative directories resolve against the physical directory where the installer starts.
+- `GITHUB_TOKEN` / `GH_TOKEN` — optional; raises GitHub API limits on shared networks.
+
+The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step; Android and Termux remain unsupported. See the [Quickstart](https://docs.bastani.ai/quickstart) for path-resolution and Windows `PATHEXT` details.
 
 ### Authenticate and run
 
@@ -309,7 +331,7 @@ After authenticating, run `/atomic` for workflow guides, examples, and next step
 <details>
 <summary><b>Devcontainer, terminal, and SDK references</b></summary>
 
-Atomic runs in a standard devcontainer or VM with Node.js 22.19+ installed. Install it inside the container with a package manager and pass provider credentials through environment variables.
+Atomic runs in a standard devcontainer or VM. Use the release-archive installer for an image without Node.js or npm, or install Node.js 22.19+ and use a package manager. Pass provider credentials through environment variables.
 
 See [Terminal setup](./packages/coding-agent/docs/terminal-setup.md), [Security](./packages/coding-agent/docs/security.md), and [Programmatic Usage](./packages/coding-agent/README.md#programmatic-usage) for the SDK and RPC entry points.
 
@@ -432,22 +454,6 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <picture>
 <source srcset="assets/feature-wall/39-nesting-builtin-workflows.gif" type="image/gif">
 <img src="assets/feature-wall/39-nesting-builtin-workflows.jpg" alt="Atomic showing nested fan-out builtin stages flattened into the live research-and-verify parent workflow graph" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Parallel review composition</h4>
-<p>One command fans a real diff out to fresh-context specialists, with independent roles and live parallel tool progress.</p>
-<p><a href="https://docs.bastani.ai/subagents"><sub>Atomic docs · Subagents</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#a5-parallel-review-composition"><sub>Crash course · A.5 Parallel review composition</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#a5-parallel-review-composition">
-<picture>
-<source srcset="assets/feature-wall/35-parallel-review-composition.gif" type="image/gif">
-<img src="assets/feature-wall/35-parallel-review-composition.jpg" alt="Atomic composing three concurrent review specialists against a planted retry function diff with live independent progress" width="100%">
 </picture>
 </a>
 </td>

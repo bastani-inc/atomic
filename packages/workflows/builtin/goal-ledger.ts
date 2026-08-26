@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { LEDGER_FILENAME, type GoalLedger, type GoalLifecycleEvent } from "./goal-types.js";
+
+const LEDGER_STATE_FILENAME = "goal-ledger-state.json";
 
 type ModelVisibleGoalLedger = Omit<
   GoalLedger,
@@ -39,6 +40,10 @@ function modelVisibleLedger(ledger: GoalLedger): ModelVisibleGoalLedger {
   };
 }
 
+function goalLedgerStatePath(ledgerPath: string): string {
+  return join(dirname(ledgerPath), LEDGER_STATE_FILENAME);
+}
+
 export function appendLifecycleEvent(
   ledger: GoalLedger,
   event: GoalLifecycleEvent["event"],
@@ -54,13 +59,40 @@ export function appendLifecycleEvent(
   });
 }
 
+/**
+ * Restore only lossless authoritative state. A model-visible legacy ledger has
+ * no turn fields, so treating it as fresh is safer than fabricating reducer state.
+ *
+ * A sidecar that cannot be parsed is treated as absent for the same reason: the
+ * authoritative file is published by atomic rename below, so unparsable content
+ * means a torn write from before that guarantee (or a foreign file). Starting
+ * fresh loses recorded turns; throwing here would instead make the whole
+ * continuation unable to start.
+ */
+async function readExistingGoalLedger(ledgerPath: string): Promise<GoalLedger | undefined> {
+  let contents: string;
+  try {
+    contents = await readFile(goalLedgerStatePath(ledgerPath), "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+  try {
+    return JSON.parse(contents) as GoalLedger;
+  } catch {
+    return undefined;
+  }
+}
 export async function createGoalLedger(
   objective: string,
-  acceptanceCriteria = objective,
-  runId?: string,
+  acceptanceCriteria: string,
+  artifactDir: string,
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
+  const ledgerPath = join(artifactDir, LEDGER_FILENAME);
+  const existing = await readExistingGoalLedger(ledgerPath);
+  if (existing !== undefined) return { ledger: existing, ledgerPath, artifactDir };
+
   const goalId = randomUUID();
-  const artifactDir = await createWorkflowArtifactDirectory(runId);
   const now = new Date().toISOString();
   const ledger: GoalLedger = {
     goal_id: goalId,
@@ -79,7 +111,6 @@ export async function createGoalLedger(
     convergence: [],
   };
   appendLifecycleEvent(ledger, "created", "Goal created.", 0);
-  const ledgerPath = join(artifactDir, LEDGER_FILENAME);
   await writeGoalLedger(ledgerPath, ledger);
   return { ledger, ledgerPath, artifactDir };
 }
@@ -89,7 +120,20 @@ export async function writeGoalLedger(
   ledger: GoalLedger,
 ): Promise<void> {
   ledger.updated_at = new Date().toISOString();
-  await writeFile(ledgerPath, `${JSON.stringify(modelVisibleLedger(ledger), null, 2)}\n`, {
-    encoding: "utf8",
-  });
+  const visibleContents = `${JSON.stringify(modelVisibleLedger(ledger), null, 2)}\n`;
+  const stateContents = `${JSON.stringify(ledger, null, 2)}\n`;
+  const statePath = goalLedgerStatePath(ledgerPath);
+  // The sidecar is the authoritative resume state, so it is published by a
+  // complete same-directory write followed by an atomic rename. Overwriting it
+  // in place leaves a partial file readable when a write is interrupted, and
+  // the next continuation would then start from nothing.
+  const pendingStatePath = `${statePath}.${randomUUID()}.tmp`;
+  await writeFile(pendingStatePath, stateContents, { encoding: "utf8" });
+  try {
+    await rename(pendingStatePath, statePath);
+  } catch (error) {
+    await rm(pendingStatePath, { force: true });
+    throw error;
+  }
+  await writeFile(ledgerPath, visibleContents, { encoding: "utf8" });
 }

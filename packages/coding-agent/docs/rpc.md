@@ -138,6 +138,29 @@ Response:
 {"type": "response", "command": "abort", "success": true}
 ```
 
+#### clear_queue
+
+Remove queued steering and follow-up messages and return their text.
+
+```json
+{"type": "clear_queue"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "clear_queue",
+  "success": true,
+  "data": {
+    "steering": ["Change direction"],
+    "followUp": ["Summarize when finished"]
+  }
+}
+```
+
+To implement interactive Esc behavior, send `clear_queue` before `abort`, then restore the returned text in the client editor. `abort` continues queued messages when they remain in the session.
+
 #### new_session
 
 Start a fresh session. Can be cancelled by a `session_before_switch` extension event handler.
@@ -894,7 +917,7 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `message_start` | Message begins |
 | `message_update` | Streaming update (text/thinking/toolcall deltas) |
 | `message_end` | Message completes |
-| `tool_execution_start` | Tool begins execution |
+| `tool_execution_start` | Tool begins execution; includes `toolCallId`, `toolName`, and initial arguments |
 | `tool_execution_update` | Tool execution progress (streaming output) |
 | `tool_execution_end` | Tool completes |
 | `bash_execution_update` | Correlated direct-bash stdout/stderr delta |

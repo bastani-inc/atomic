@@ -3,6 +3,7 @@ import { basename, dirname, join, sep } from "node:path";
 import chalk from "chalk";
 import { getAgentDir, getAgentDirs } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { stripBom } from "../utils/text.ts";
 import { findGitPaths } from "./footer-data-provider.ts";
 
 export function resolvePromptInput(input: string | undefined, description: string): string | undefined {
@@ -12,7 +13,7 @@ export function resolvePromptInput(input: string | undefined, description: strin
 
 	if (existsSync(input)) {
 		try {
-			return readFileSync(input, "utf-8");
+			return stripBom(readFileSync(input, "utf-8"));
 		} catch (error) {
 			console.error(chalk.yellow(`Warning: Could not read ${description} file ${input}: ${error}`));
 			return input;
@@ -45,7 +46,7 @@ function loadContextFileFromDir(dir: string): { path: string; content: string } 
 				if (!statSync(filePath).isFile()) continue;
 				return {
 					path: filePath,
-					content: readFileSync(filePath, "utf-8"),
+					content: stripBom(readFileSync(filePath, "utf-8")),
 				};
 			} catch (error) {
 				console.error(chalk.yellow(`Warning: Could not read ${filePath}: ${error}`));

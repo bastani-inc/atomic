@@ -111,6 +111,7 @@ export async function generateSessionSummary(
 		signal,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
+		toolChoice: "none",
 	};
 	const response = await (async () => {
 		try {
@@ -136,6 +137,12 @@ export async function generateSessionSummary(
 	}
 	if (response.stopReason === "error") {
 		return { error: response.errorMessage || "Session summarization failed" };
+	}
+	if (response.stopReason === "length") {
+		return { error: "Session summarization failed: generation hit the token cap and the summary is incomplete" };
+	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		return { error: "Session summarization attempted to call a tool" };
 	}
 
 	const summary = toSingleLine(

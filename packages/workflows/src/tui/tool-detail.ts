@@ -58,12 +58,12 @@ function statusColor(status: ToolNodeStatus, theme: GraphTheme): string {
 	}
 }
 
-function statusGlyph(status: ToolNodeStatus): string {
+/** Running and completed calls already read like `$ name`; other states retain a quiet status marker. */
+function statusGlyph(status: ToolNodeStatus): string | undefined {
 	switch (status) {
 		case "running":
-			return "●";
 		case "completed":
-			return "✓";
+			return undefined;
 		case "failed":
 			return "✗";
 		case "cached":
@@ -75,13 +75,9 @@ function statusGlyph(status: ToolNodeStatus): string {
 	}
 }
 
-/** Completed calls already read like `$ name`; other states retain a quiet status marker. */
-function headerGlyph(status: ToolNodeStatus): string | undefined {
-	return status === "completed" ? undefined : statusGlyph(status);
-}
-
 function styledStatus(status: ToolNodeStatus, theme: GraphTheme | undefined): string {
 	const glyph = statusGlyph(status);
+	if (glyph === undefined) return "";
 	return theme === undefined ? glyph : `${hexToAnsi(statusColor(status, theme))}${glyph}${RESET}`;
 }
 
@@ -272,7 +268,7 @@ function messageHeaderRows(
 ): string[] {
 	const { pad, inner } = boxMetrics(width);
 	const name = sanitizeToolTitleText(tool.name);
-	const glyph = headerGlyph(tool.status);
+	const glyph = statusGlyph(tool.status);
 	const glyphSuffix = glyph === undefined ? "" : ` ${glyph}`;
 	const args =
 		tool.args === undefined

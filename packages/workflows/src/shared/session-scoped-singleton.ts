@@ -53,9 +53,23 @@ export function resetSessionScopedSingletonPreAdoptionForTests(): void {
  * Local state seeds at most one unseen scope; later unseen scopes start fresh.
  * After the first adopt, every module copy for the same key reads one instance.
  */
+export interface SessionScopedAdoptOptions<T extends object> {
+	/**
+	 * Keep the currently bound instance when returning to an existing scope.
+	 * Never applies to a scope being seen for the first time.
+	 */
+	readonly preserveCurrentWhenTargetExists?: (current: T, target: T) => boolean;
+}
+
+export interface SessionScopedAdoptResult<T extends object> {
+	readonly instance: T;
+	readonly preservedCurrent: boolean;
+}
+
 export interface SessionScopedSingleton<T extends object> {
 	readonly facade: T;
-	readonly adopt: (scope: object) => T;
+	readonly adopt: (scope: object, options?: SessionScopedAdoptOptions<T>) => T;
+	readonly adoptWithResult: (scope: object, options?: SessionScopedAdoptOptions<T>) => SessionScopedAdoptResult<T>;
 	readonly current: () => T;
 }
 
@@ -71,15 +85,23 @@ export function createSessionScopedSingleton<T extends object>(
 
 	const current = (): T => live();
 
-	const adopt = (scope: object): T => {
-		shared.instance = sessionScopedExtensionState(scope, key, () => {
+	const adoptWithResult = (scope: object, options?: SessionScopedAdoptOptions<T>): SessionScopedAdoptResult<T> => {
+		const current = live();
+		let targetCreated = false;
+		const target = sessionScopedExtensionState(scope, key, () => {
+			targetCreated = true;
 			if (shared.localClaimed) return createLocal();
 			shared.localClaimed = true;
 			return shared.local;
 		});
+		const preservedCurrent =
+			!targetCreated && target !== current && options?.preserveCurrentWhenTargetExists?.(current, target) === true;
+		shared.instance = preservedCurrent ? current : target;
 		instance = shared.instance;
-		return shared.instance;
+		return { instance: shared.instance, preservedCurrent };
 	};
+
+	const adopt = (scope: object, options?: SessionScopedAdoptOptions<T>): T => adoptWithResult(scope, options).instance;
 
 	const facade = new Proxy(local, {
 		get(_target, prop) {
@@ -94,5 +116,5 @@ export function createSessionScopedSingleton<T extends object>(
 		},
 	});
 
-	return { facade, adopt, current };
+	return { facade, adopt, adoptWithResult, current };
 }

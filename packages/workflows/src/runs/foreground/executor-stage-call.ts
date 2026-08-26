@@ -1,6 +1,11 @@
 import { BUDGET_WRAP_UP_PROMPT, WorkflowBudgetExceededError } from "../../engine/run-budget.js";
 import { rebasedStageStartedAt } from "../../shared/timing.js";
-import type { StageOptions, WorkflowModelUsage } from "../../shared/types.js";
+import type {
+	StageOptions,
+	WorkflowMaxOutput,
+	WorkflowModelUsage,
+	WorkflowSerializableValue,
+} from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import { raceAbort } from "./executor-abort.js";
 import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
@@ -13,6 +18,7 @@ import {
 import { applyFailureToStage } from "./executor-lifecycle.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
+import { structuredTaskOutputText, truncateTaskOutput } from "./executor-task-prompts.js";
 import type { StageAdapters } from "./stage-runner.js";
 
 export interface TrackedStageCallOptions {
@@ -321,9 +327,18 @@ export function createTrackedStageCaller(input: {
 					? (stageResultBeforeBudget ?? runtime.innerCtx.__getLastAssistantText())
 					: runtime.innerCtx.__getLastAssistantText();
 				terminalStateIsSuccess = true;
+				const structuredOutput = typeof result === "string" ? undefined : (result as WorkflowSerializableValue);
+				const maxOutput = (input.options as { readonly maxOutput?: WorkflowMaxOutput } | undefined)?.maxOutput;
+				const rawText =
+					typeof result === "string"
+						? result
+						: (assistantText ??
+							(structuredOutput === undefined ? undefined : structuredTaskOutputText(structuredOutput)));
+				const text = rawText === undefined ? undefined : truncateTaskOutput(rawText, maxOutput);
 				applyTerminalStageState = () => {
 					runtime.stageSnapshot.status = "completed";
-					if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
+					if (text !== undefined) runtime.stageSnapshot.result = text;
+					if (typeof result !== "string") runtime.stageSnapshot.structured = structuredOutput;
 				};
 			}
 			return result;

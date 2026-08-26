@@ -14,6 +14,24 @@ const RPC_OUTPUT_WAIT_TIMEOUT_MS = 10_000,
 	RPC_OUTPUT_POLL_INTERVAL_MS = 5;
 
 /**
+ * Real-shell headroom between the prefix these cancellation tests wait for and
+ * the tail they assert never arrives. Cancellation terminates the process, so
+ * this bound is never waited out on the success path; it only has to exceed the
+ * scheduling delay between `waitForOutput` returning and the abort landing. At
+ * one second a loaded runner could let the tail through and fail spuriously.
+ * Kept below the 30 s per-test budget so a genuinely broken abort fails on an
+ * assertion rather than by timing the test out: the shell runs to completion,
+ * so the awaited result fails `cancelled: true` first, and the no-tail output
+ * assertion would fail after it.
+ */
+const RPC_BASH_CANCEL_HEADROOM_SECONDS = 10;
+
+/** `printf <prefix>`, a cancellable gap, then a tail no assertion may observe. */
+function cancellableShellCommand(prefix: string, tail: string): string {
+	return `printf ${prefix}; sleep ${RPC_BASH_CANCEL_HEADROOM_SECONDS}; printf ${tail}`;
+}
+
+/**
  * Holds a bash command in flight until the test releases it.
  *
  * These tests must issue the session replacement *while* the execution is still
@@ -126,7 +144,7 @@ describe("RPC bash ownership across session replacement", () => {
 		const execution = context.handle({
 			id: "old-target",
 			type: "bash",
-			command: "printf old-start; sleep 1; printf old-end",
+			command: cancellableShellCommand("old-start", "old-end"),
 		});
 		await waitForOutput(context.output, "old-target", "old-start");
 		await context.handle({ id: "replace", type: "new_session" });
@@ -163,14 +181,14 @@ describe("RPC bash ownership across session replacement", () => {
 		const oldExecution = context.handle({
 			id: "old-all",
 			type: "bash",
-			command: "printf old-start; sleep 1; printf old-end",
+			command: cancellableShellCommand("old-start", "old-end"),
 		});
 		await waitForOutput(context.output, "old-all", "old-start");
 		await context.handle({ id: "replace", type: "new_session" });
 		const newExecution = context.handle({
 			id: "new-all",
 			type: "bash",
-			command: "printf new-start; sleep 1; printf new-end",
+			command: cancellableShellCommand("new-start", "new-end"),
 		});
 		await waitForOutput(context.output, "new-all", "new-start");
 		await context.handle({ id: "cancel-all", type: "abort_bash" });
@@ -371,7 +389,7 @@ describe("RPC bash ownership across session replacement", () => {
 			rebindSession: async () => {},
 			output: (event) => output.push(event),
 		});
-		const execution = handle({ id: "shutdown-bash", type: "bash", command: "printf start; sleep 1; printf end" });
+		const execution = handle({ id: "shutdown-bash", type: "bash", command: cancellableShellCommand("start", "end") });
 		await waitForOutput(output, "shutdown-bash", "start");
 		await handle.disposeActiveBash();
 		await expect(execution).resolves.toMatchObject({ success: true, data: { cancelled: true } });

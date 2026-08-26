@@ -1,3 +1,4 @@
+import type { Usage } from "@bastani/pi-ai/compat";
 import { CACHE_TTL_MS, collectCacheMisses } from "../../core/cache-stats.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
@@ -187,6 +188,21 @@ InteractiveModeBase.prototype.addCompactionBoundaryToChat = function (
 	const component = new CompactionBoundaryMessageComponent(result);
 	component.setExpanded(this.toolOutputExpanded);
 	this.chatContainer.addChild(component);
+};
+
+InteractiveModeBase.prototype.addCompactionCostNotice = function (
+	this: InteractiveModeBase,
+	kind: "compaction" | "branch_summary",
+	usage: Usage,
+): void {
+	if (!this.settingsManager.getShowCacheMissNotices()) return;
+	const tokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	const cost = usage.cost.total >= 0.01 ? ` (~$${usage.cost.total.toFixed(2)})` : "";
+	const label = kind === "compaction" ? "Compaction" : "Branch summary";
+	this.chatContainer.addChild(new Spacer(1));
+	this.chatContainer.addChild(
+		new Text(theme.fg("warning", `${label}: ${tokens.toLocaleString()} tokens billed${cost}`), 1, 0),
+	);
 };
 
 InteractiveModeBase.prototype.addCustomEntryToChat = function (this: InteractiveModeBase, entry: CustomEntry): void {
@@ -396,6 +412,15 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 			this.addCustomEntryToChat(entry);
 		} else {
 			messageBuffer.push(...sessionEntryToContextMessages(entry));
+			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
+				flushMessages();
+				const suppressedLiveBoundary =
+					entry.type === "compaction" &&
+					options.suppressCompactionBoundary !== undefined &&
+					entry.summary === options.suppressCompactionBoundary.compactedText &&
+					entry.tokensBefore === options.suppressCompactionBoundary.tokensBefore;
+				if (!suppressedLiveBoundary) this.addCompactionCostNotice(entry.type, entry.usage);
+			}
 		}
 	}
 	flushMessages();

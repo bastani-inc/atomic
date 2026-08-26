@@ -166,6 +166,7 @@ export function createRpcExtensionUIContext({
 				blockingInlineCustomUiActive: false,
 			},
 		onHostCustomUiStateChange: (listener) => customUi?.onHostCustomUiStateChange(listener) ?? (() => {}),
+		onWidgetRelease: (key, listener) => customUi?.onWidgetRelease(key, listener) ?? (() => {}),
 		focusHostInlineCustomUi: () => customUi?.focusHostInlineCustomUi() ?? false,
 
 		onTerminalInput(): () => void {
@@ -218,7 +219,8 @@ export function createRpcExtensionUIContext({
 				});
 				return;
 			}
-			if (customUi && typeof content === "function") {
+			if (typeof content === "function") {
+				if (!customUi) throw new Error("Component-factory widgets are unavailable in this RPC host.");
 				customUi.setWidget(
 					key,
 					content as (tui: TUI, theme: Theme) => Component & { dispose?(): void },

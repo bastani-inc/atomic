@@ -1,6 +1,7 @@
 import { access, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { glob } from "glob";
+import { stripBom } from "../utils/text.ts";
 import {
 	conventionDirsForResource,
 	getManifestFromPackageJson,
@@ -36,7 +37,7 @@ async function exists(path: string): Promise<boolean> {
 async function readPiManifest(packageRoot: string): Promise<ReturnType<typeof getManifestFromPackageJson> | null> {
 	try {
 		const content = await readFile(resolve(packageRoot, "package.json"), "utf-8");
-		return getManifestFromPackageJson(JSON.parse(content));
+		return getManifestFromPackageJson(JSON.parse(stripBom(content)));
 	} catch {
 		return null;
 	}

@@ -32,6 +32,17 @@ interface SettingsManagerBasicAccessors {
 	setShowCacheMissNotices(enabled: boolean): void;
 	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
 	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"): void;
+	getModelThinkingLevel(
+		provider: string,
+		modelId: string,
+	): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
+	getAllModelThinkingLevels(): Record<string, "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">;
+	setModelThinkingLevel(
+		provider: string,
+		modelId: string,
+		level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+	): void;
+	removeModelThinkingLevel(provider: string, modelId: string): void;
 	getDefaultTools(): string[] | undefined;
 	getFallbackModels(): string[];
 	getTransport(): TransportSetting;
@@ -60,6 +71,7 @@ interface SettingsManagerBasicAccessors {
 	getHttpIdleTimeoutMs(): number;
 	setHttpIdleTimeoutMs(timeoutMs: number): void;
 	getWebSocketConnectTimeoutMs(): number | undefined;
+	getStreamDeadlineMs(): number | undefined;
 	getProviderRetrySettings(): { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs: number };
 }
 
@@ -218,6 +230,32 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.save();
 	},
 
+	getModelThinkingLevel(provider, modelId) {
+		return settingsInternals(this).settings.modelThinkingLevels?.[`${provider}/${modelId}`];
+	},
+
+	getAllModelThinkingLevels() {
+		return { ...(settingsInternals(this).settings.modelThinkingLevels ?? {}) };
+	},
+
+	setModelThinkingLevel(provider, modelId, level) {
+		const state = settingsInternals(this);
+		state.globalSettings.modelThinkingLevels ??= {};
+		state.globalSettings.modelThinkingLevels[`${provider}/${modelId}`] = level;
+		state.markModified("modelThinkingLevels");
+		state.save();
+	},
+
+	removeModelThinkingLevel(provider, modelId) {
+		const state = settingsInternals(this);
+		if (!state.globalSettings.modelThinkingLevels) return;
+		delete state.globalSettings.modelThinkingLevels[`${provider}/${modelId}`];
+		if (Object.keys(state.globalSettings.modelThinkingLevels).length === 0)
+			delete state.globalSettings.modelThinkingLevels;
+		state.markModified("modelThinkingLevels");
+		state.save();
+	},
+
 	getDefaultTools() {
 		// Settings load unvalidated from disk, so guard the shape here the same
 		// way getFallbackModels() does: a non-array (or null) reads as unset,
@@ -370,6 +408,18 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		}
 		if (value !== undefined) {
 			throw new Error(`Invalid websocketConnectTimeoutMs setting: ${String(value)}`);
+		}
+		return undefined;
+	},
+
+	getStreamDeadlineMs() {
+		const value = settingsInternals(this).settings.streamDeadlineMs;
+		const deadlineMs = parseHttpIdleTimeoutMs(value);
+		if (deadlineMs !== undefined) {
+			return deadlineMs;
+		}
+		if (value !== undefined) {
+			throw new Error(`Invalid streamDeadlineMs setting: ${String(value)}`);
 		}
 		return undefined;
 	},

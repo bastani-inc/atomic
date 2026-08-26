@@ -107,6 +107,7 @@ export interface Settings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	modelThinkingLevels?: Record<string, "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">;
 	fallbackModels?: string[]; // Ordered main-chat fallback models, optionally suffixed with :thinkingLevel
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
@@ -157,6 +158,7 @@ export interface Settings {
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY; global setting only
 	httpIdleTimeoutMs?: number | string; // HTTP idle timeout; 0 or "disabled" disables it
 	websocketConnectTimeoutMs?: number | string; // WebSocket connect timeout; 0 or "disabled" disables it
+	streamDeadlineMs?: number | string; // Max idle gap between provider stream events; 0 or "disabled" disables it
 }
 
 export type SettingsScope = "global" | "project";
@@ -174,5 +176,6 @@ export interface SettingsStorage {
 
 export interface SettingsError {
 	scope: SettingsScope;
+	path?: string;
 	error: Error;
 }

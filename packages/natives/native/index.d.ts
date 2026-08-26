@@ -9,6 +9,21 @@ export declare class PtySession {
 }
 
 /**
+ * Opaque ownership lease for the exact Postgres process spawned by Atomic.
+ *
+ * Keeping the native child object prevents PID reuse until the process has
+ * been observed and reaped. Dropping/releasing the lease deliberately does
+ * not terminate the server, preserving abrupt-exit persistence.
+ */
+export declare class RetainedPostgres {
+  get pid(): number | null
+  interruptAndWait(timeoutMs: number): Promise<RetainedPostgresWaitResult>
+  wait(timeoutMs: number): Promise<RetainedPostgresWaitResult>
+  /** Relinquish ownership without signaling or waiting for Postgres. */
+  release(): void
+}
+
+/**
  * N-API wrapper around the root-scoped Rust control plane. The host marker is
  * intentionally held by the wrapper while the cloneable core stores only a
  * weak reference to it.
@@ -27,7 +42,6 @@ export declare class SubagentControl {
   beginChildAttempt(path: string): NativeExecutionGuardResult
   finishChildAttempt(token: number, status: AgentStatus): void
   terminateChildAttempt(token: number, cause: TerminationCause): Promise<NativeTerminationResult>
-  reloadColdChild(path: string, message: string): NativeAdmissionResult
 }
 export type NapiSubagentControl = SubagentControl
 
@@ -35,7 +49,8 @@ export type AdmissionRefusalKind =  'depthExceeded'|
 'capacityExhausted'|
 'dispatchGuardBusy'|
 'invalidCwd'|
-'unknownAgent';
+'unknownAgent'|
+'terminalChild';
 
 /** The only statuses emitted by a child status watch. */
 export type AgentStatus =  'pending'|
@@ -373,6 +388,21 @@ export interface PtyStartOptions {
   closeStdinAfterCommand?: boolean
 }
 
+export interface RetainedPostgresSpawnOptions {
+  executable: string
+  args: Array<string>
+  cwd: string
+  logFile: string
+  env?: Record<string, string>
+  uid?: number
+  gid?: number
+}
+
+export interface RetainedPostgresWaitResult {
+  exited: boolean
+  signaled: boolean
+}
+
 /**
  * Search content for a pattern (one-shot, compiles pattern each time).
  * For repeated searches with the same pattern, use [`grep`] with file filters.
@@ -421,6 +451,8 @@ export interface SearchResult {
   /** Error message, if any. */
   error?: string
 }
+
+export declare function spawnRetainedPostgres(options: RetainedPostgresSpawnOptions): RetainedPostgres
 
 /**
  * Explicit termination causes. Timer/idle/wall-clock causes are intentionally

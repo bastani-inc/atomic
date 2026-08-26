@@ -3,8 +3,12 @@ import { describe, test } from "vitest";
 import {
 	decideReactiveWidgetAction,
 	installReactiveWidget,
+	type ReactiveWidgetFactory,
+	type ReactiveWidgetMountError,
 	type ReactiveWidgetTimerHandle,
+	type ReactiveWidgetUi,
 } from "../../packages/coding-agent/src/core/extensions/reactive-widget.js";
+import type { ExtensionWidgetOptions } from "../../packages/coding-agent/src/core/extensions/ui-types.js";
 
 interface FakeTimerHandle extends ReactiveWidgetTimerHandle {
 	id: number;
@@ -126,6 +130,230 @@ describe("installReactiveWidget", () => {
 		assert.equal(widgetCalls[1]?.factory, undefined);
 		scheduler.flush();
 		assert.equal(renderRequests(), 3);
+	});
+
+	test("remounts once after the host releases a live widget", () => {
+		const scheduler = makeScheduler();
+		const widgetCalls: Array<{
+			key: string;
+			factory: ReactiveWidgetFactory<object> | undefined;
+			options: ExtensionWidgetOptions | undefined;
+		}> = [];
+		const releaseListeners = new Map<string, Set<() => void>>();
+		const ui: ReactiveWidgetUi<object> = {
+			setWidget(
+				key: string,
+				factory: ReactiveWidgetFactory<object> | undefined,
+				options?: ExtensionWidgetOptions,
+			): void {
+				widgetCalls.push({ key, factory, options });
+			},
+			requestRender(): void {},
+			onWidgetRelease(key: string, listener: () => void): () => void {
+				const listeners = releaseListeners.get(key) ?? new Set<() => void>();
+				listeners.add(listener);
+				releaseListeners.set(key, listeners);
+				return () => listeners.delete(listener);
+			},
+		};
+		const snapshot = { visible: true, label: "run" };
+		const controller = installReactiveWidget({
+			ui,
+			key: "test.widget",
+			scheduler,
+			getSnapshot: () => snapshot,
+			getPreviewLines: (snap) => (snap.visible ? [snap.label] : []),
+			render: (snap) => [snap.label],
+		});
+
+		assert.equal(widgetCalls.length, 1);
+		for (const listener of releaseListeners.get("test.widget") ?? []) listener();
+		assert.equal(controller.isMounted(), false);
+		scheduler.flush();
+		assert.equal(widgetCalls.length, 2, "release should schedule exactly one fresh mount");
+
+		controller.refresh("state");
+		assert.equal(widgetCalls.length, 2, "ordinary updates after remount must stay in place");
+	});
+
+	test("reports a stale mount failure once without rearming clock refresh", () => {
+		const scheduler = makeScheduler();
+		const timers = makeTimers();
+		let snapshot = { visible: true };
+		let shouldThrow = true;
+		let mountAttempts = 0;
+		let mountErrors = 0;
+		const ui = {
+			setWidget(_key: string, factory: ReactiveWidgetFactory<object> | undefined): void {
+				if (factory === undefined) return;
+				mountAttempts++;
+				if (shouldThrow) throw new Error("This extension ctx is stale after session replacement");
+			},
+			requestRender(): void {},
+		};
+		let mountError: ReactiveWidgetMountError | undefined;
+		const controller = installReactiveWidget({
+			ui,
+			key: "test.widget",
+			scheduler,
+			timers,
+			getSnapshot: () => snapshot,
+			getPreviewLines: (current) => (current.visible ? ["run"] : []),
+			render: () => ["run"],
+			getNextRefreshDelayMs: (current) => (current.visible ? 100 : undefined),
+			isStaleError: (error) => error instanceof Error && error.message.includes("ctx is stale"),
+			onMountError: (error) => {
+				mountError = error;
+				mountErrors++;
+			},
+		});
+
+		assert.equal(mountAttempts, 1, "initial visible state should attempt one mount");
+		assert.equal(mountErrors, 1, "initial stale mount failure should be observable once");
+		assert.ok(mountError);
+		assert.equal(mountError.message, "This extension ctx is stale after session replacement");
+		assert.ok(mountError.cause instanceof Error);
+		assert.equal(mountError.cause.message, mountError.message);
+		const pendingTimers = timers.scheduled.filter((timer) => !timer.cleared);
+		assert.equal(pendingTimers.length, 0, "a failed mount must not arm a clock refresh");
+		for (const timer of pendingTimers) timer.handler();
+		assert.equal(mountAttempts, 1, "without a timer, clock refresh must not retry the mount");
+		assert.equal(mountErrors, 1, "without a timer, clock refresh must not repeat the warning");
+
+		controller.refresh("state");
+		assert.equal(mountAttempts, 2, "a later state refresh may retry the failed mount");
+		assert.equal(mountErrors, 1, "repeated stale failures must not repeat the warning");
+		assert.equal(timers.scheduled.filter((timer) => !timer.cleared).length, 0);
+
+		shouldThrow = false;
+		controller.refresh("state");
+		assert.equal(mountAttempts, 3, "a later successful state refresh should mount");
+		snapshot = { visible: false };
+		controller.refresh("state");
+		shouldThrow = true;
+		snapshot = { visible: true };
+		controller.refresh("state");
+		assert.equal(mountErrors, 2, "a successful mount should reset stale-failure reporting");
+		assert.equal(timers.scheduled.filter((timer) => !timer.cleared).length, 0);
+		controller.dispose();
+	});
+
+	test("reports and rethrows generic mount failures once before retry", () => {
+		const timers = makeTimers();
+		let snapshot = { visible: false };
+		let mountAttempts = 0;
+		let mountError: ReactiveWidgetMountError | undefined;
+		const originalError = new Error("renderer init failed");
+		const ui: ReactiveWidgetUi<object> = {
+			setWidget(_key, factory): void {
+				if (factory === undefined) return;
+				mountAttempts++;
+				throw originalError;
+			},
+			requestRender(): void {},
+		};
+		const controller = installReactiveWidget({
+			ui,
+			key: "test.widget",
+			timers,
+			getSnapshot: () => snapshot,
+			getPreviewLines: (current) => (current.visible ? ["run"] : []),
+			render: () => ["run"],
+			getNextRefreshDelayMs: () => 100,
+			isStaleError: () => false,
+			onMountError: (error) => {
+				mountError = error;
+			},
+		});
+
+		snapshot = { visible: true };
+		assert.throws(
+			() => controller.refresh("state"),
+			(error) => error === originalError,
+		);
+		assert.equal(mountAttempts, 1);
+		assert.ok(mountError);
+		assert.equal(mountError.message, "renderer init failed");
+		assert.equal(mountError.cause, originalError);
+		assert.equal(timers.scheduled.filter((timer) => !timer.cleared).length, 0);
+
+		assert.throws(
+			() => controller.refresh("state"),
+			(error) => error === originalError,
+		);
+		assert.equal(mountAttempts, 2);
+		assert.equal(mountError.message, "renderer init failed");
+		assert.equal(timers.scheduled.filter((timer) => !timer.cleared).length, 0);
+		controller.dispose();
+	});
+
+	test("rolls back subscriptions when the initial mount fails", () => {
+		const originalError = new Error("renderer init failed during installation");
+		const releaseListeners = new Set<() => void>();
+		const subscriptions = new Set<() => void>();
+		let mountAttempts = 0;
+		const ui: ReactiveWidgetUi<object> = {
+			setWidget(_key, factory): void {
+				if (factory === undefined) return;
+				mountAttempts++;
+				throw originalError;
+			},
+			onWidgetRelease(_key, listener): () => void {
+				releaseListeners.add(listener);
+				return () => releaseListeners.delete(listener);
+			},
+		};
+
+		const install = (): void => {
+			assert.throws(
+				() =>
+					installReactiveWidget({
+						ui,
+						key: "test.widget",
+						subscribe: () => {
+							const subscription = (): void => {};
+							subscriptions.add(subscription);
+							return () => subscriptions.delete(subscription);
+						},
+						getSnapshot: () => ({ visible: true }),
+						getPreviewLines: () => ["run"],
+						render: () => ["run"],
+					}),
+				(error) => error === originalError,
+			);
+			assert.equal(releaseListeners.size, 0, "failed installation must remove the host release listener");
+			assert.equal(subscriptions.size, 0, "failed installation must remove the store subscription");
+		};
+
+		install();
+		install();
+		assert.equal(mountAttempts, 2);
+		assert.equal(releaseListeners.size, 0, "repeated failed installations must not accumulate listeners");
+	});
+
+	test("propagates stale-looking mount reporter failures", () => {
+		const reporterError = new Error("Reporting failed because extension ctx is stale");
+		const ui = {
+			setWidget(): void {
+				throw new Error("This extension ctx is stale after session replacement");
+			},
+		};
+
+		assert.throws(
+			() =>
+				installReactiveWidget({
+					ui,
+					key: "test.widget",
+					getSnapshot: () => ({ visible: true }),
+					getPreviewLines: () => ["run"],
+					render: () => ["run"],
+					isStaleError: (error) => error instanceof Error && error.message.includes("ctx is stale"),
+					onMountError: () => {
+						throw reporterError;
+					},
+				}),
+			(error) => error === reporterError,
+		);
 	});
 
 	test("state no-op refresh still requests paint, clock no-op does not", () => {

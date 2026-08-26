@@ -7,29 +7,21 @@
  */
 
 import type { ExtensionContext } from "@bastani/atomic";
-import type { ActivityState, SingleResult, SubagentResultStatus, SubagentRunMode } from "./types-results.js";
+import type { ParentAskHandoffRequest } from "./types-config.js";
 
-export interface ForegroundResumeChild {
-	agent: string;
-	index: number;
-	sessionFile?: string;
-	status: SubagentResultStatus;
-	result?: SingleResult;
+export interface ForegroundParentAskHandoff {
+	askingChildIndex: number;
+	releasedChildIndices: number[];
+	unlaunchedChildIndices: number[];
+	request: ParentAskHandoffRequest;
 }
 
-export interface ForegroundResumeRun {
-	runId: string;
-	mode: SubagentRunMode;
-	cwd: string;
-	updatedAt: number;
-	children: ForegroundResumeChild[];
-}
+import type { ActivityState, SubagentRunMode } from "./types-results.js";
 
 export interface SubagentState {
 	baseCwd: string;
 	currentSessionId: string | null;
 	subagentInProgress?: boolean;
-	foregroundRuns?: Map<string, ForegroundResumeRun>;
 	foregroundControls: Map<
 		string,
 		{

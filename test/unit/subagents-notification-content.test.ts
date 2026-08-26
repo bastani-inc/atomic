@@ -27,7 +27,7 @@ describe("subagent notification content parsing", () => {
 	});
 
 	test("preserves every status and accepted delimiter text verbatim", () => {
-		for (const status of ["completed", "failed", "paused"] as const) {
+		for (const status of ["completed", "failed", "interrupted"] as const) {
 			assert.deepEqual(
 				parseSubagentNotifyContent(`Subagent task ${status}: **alpha**beta**\t(foo**bar)\n\nresult`),
 				{
@@ -41,9 +41,9 @@ describe("subagent notification content parsing", () => {
 	});
 
 	test("omits optional fields for a header without task or output", () => {
-		assert.deepEqual(parseSubagentNotifyContent("Subagent task paused: **worker**\n\n"), {
+		assert.deepEqual(parseSubagentNotifyContent("Subagent task interrupted: **worker**\n\n"), {
 			agent: "worker",
-			status: "paused",
+			status: "interrupted",
 			resultPreview: "(no output)",
 		});
 	});
@@ -75,9 +75,9 @@ describe("subagent notification content parsing", () => {
 			"Subagent task completed: **worker**(1/2)\n\nresult",
 			"Subagent task completed: **worker** (1/2))\n\nresult",
 			"Subagent task completed: **worker** trailing\n\nresult",
-			"Subagent task paused: **worker**\r\n\nresult",
-			"Subagent task paused: **worker**\u2028\n\nresult",
-			"Subagent task paused: **worker**\u2029\n\nresult",
+			"Subagent task interrupted: **worker**\r\n\nresult",
+			"Subagent task interrupted: **worker**\u2028\n\nresult",
+			"Subagent task interrupted: **worker**\u2029\n\nresult",
 		]) {
 			assert.equal(parseSubagentNotifyContent(content), undefined, content);
 		}

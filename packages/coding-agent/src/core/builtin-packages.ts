@@ -2,11 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getPackageDir } from "../config.ts";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
+import { stripBom } from "../utils/text.ts";
+import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin-install-layout.ts";
 
 interface BuiltinPackageDescriptor {
 	readonly packageName: string;
-	readonly distDirName: string;
-	readonly requiredEntry: string;
+	readonly distDirName: BuiltinPackageDirName;
+	readonly requiredEntries: readonly string[];
 	readonly sourceCandidates: (context: BuiltinPackageCandidateContext) => string[];
 }
 
@@ -18,49 +20,23 @@ interface BuiltinPackageCandidateContext {
 
 interface WorkspaceBuiltinSpec {
 	readonly packageName: string;
-	readonly workspaceDirName: string;
-	readonly distDirName: string;
-	readonly requiredEntry: string;
+	readonly workspaceDirName: BuiltinPackageDirName;
+	readonly distDirName: BuiltinPackageDirName;
 }
 
 const WORKSPACE_BUILTINS: readonly WorkspaceBuiltinSpec[] = [
-	{
-		packageName: "@bastani/workflows",
-		workspaceDirName: "workflows",
-		distDirName: "workflows",
-		requiredEntry: join("src", "extension", "index.ts"),
-	},
-	{
-		packageName: "@bastani/subagents",
-		workspaceDirName: "subagents",
-		distDirName: "subagents",
-		requiredEntry: join("src", "extension", "index.ts"),
-	},
-	{
-		packageName: "@bastani/mcp",
-		workspaceDirName: "mcp",
-		distDirName: "mcp",
-		requiredEntry: "index.ts",
-	},
-	{
-		packageName: "@bastani/web-access",
-		workspaceDirName: "web-access",
-		distDirName: "web-access",
-		requiredEntry: "index.ts",
-	},
-	{
-		packageName: "@bastani/intercom",
-		workspaceDirName: "intercom",
-		distDirName: "intercom",
-		requiredEntry: "index.ts",
-	},
+	{ packageName: "@bastani/workflows", workspaceDirName: "workflows", distDirName: "workflows" },
+	{ packageName: "@bastani/subagents", workspaceDirName: "subagents", distDirName: "subagents" },
+	{ packageName: "@bastani/mcp", workspaceDirName: "mcp", distDirName: "mcp" },
+	{ packageName: "@bastani/web-access", workspaceDirName: "web-access", distDirName: "web-access" },
+	{ packageName: "@bastani/intercom", workspaceDirName: "intercom", distDirName: "intercom" },
 ];
 
 const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS.map(
 	(spec): BuiltinPackageDescriptor => ({
 		packageName: spec.packageName,
 		distDirName: spec.distDirName,
-		requiredEntry: spec.requiredEntry,
+		requiredEntries: requiredEntriesForBuiltin(spec.distDirName),
 		sourceCandidates: ({ here, packageDir, isSourceCheckout }) =>
 			isSourceCheckout
 				? [join(packageDir, "..", spec.workspaceDirName), join(here, "..", "..", "..", spec.workspaceDirName)]
@@ -70,7 +46,7 @@ const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS
 
 function readPackageName(packageJsonPath: string): string | undefined {
 	try {
-		const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { name?: string };
+		const pkg = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as { name?: string };
 		return pkg.name;
 	} catch {
 		return undefined;
@@ -79,7 +55,7 @@ function readPackageName(packageJsonPath: string): string | undefined {
 
 function isPackageDir(dir: string, descriptor: BuiltinPackageDescriptor): boolean {
 	return (
-		existsSync(join(dir, descriptor.requiredEntry)) &&
+		descriptor.requiredEntries.some((entry) => existsSync(join(dir, entry))) &&
 		readPackageName(join(dir, "package.json")) === descriptor.packageName
 	);
 }

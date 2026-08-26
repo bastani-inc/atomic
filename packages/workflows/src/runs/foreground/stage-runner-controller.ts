@@ -229,6 +229,8 @@ export class StageSessionController {
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
 	private disposed = false;
+	private pendingDisposal = false;
+	private disposalPromise: Promise<void> | undefined;
 	private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
 	private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
 	private readonly listenerUnsubscribes = new Map<(event: StageSessionEvent) => void, () => void>();
@@ -530,6 +532,17 @@ export class StageSessionController {
 	}
 
 	async disposeAll(): Promise<void> {
+		if (this.disposalPromise !== undefined) return this.disposalPromise;
+		if (this.pauseControl.isConfirmedPaused()) {
+			this.pendingDisposal = true;
+			return;
+		}
+		this.pendingDisposal = false;
+		this.disposalPromise = this.finishDisposeAll();
+		return this.disposalPromise;
+	}
+
+	private async finishDisposeAll(): Promise<void> {
 		this.disposed = true;
 		const reason = new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
 		this.markAbort(reason);
@@ -546,11 +559,25 @@ export class StageSessionController {
 		await disposeStageSession(this.session);
 	}
 
+	/**
+	 * A disposal deferred by a confirmed pause still has to happen once that
+	 * pause is gone. Abort/kill rejects the parked waiter, so the session and its
+	 * listeners must be torn down here rather than leaked.
+	 */
+	private async drainPendingDisposal(): Promise<void> {
+		if (!this.pendingDisposal) return;
+		await this.disposeAll();
+	}
+
 	async abort(): Promise<void> {
 		const reason = new DOMException("stage aborted", "AbortError");
 		this.markAbort(reason);
 		this.pauseControl.reject(reason);
-		await this.session?.abort();
+		try {
+			await this.session?.abort();
+		} finally {
+			await this.drainPendingDisposal();
+		}
 	}
 	requestPause(): Promise<void> {
 		const pause = this.pauseControl.requestPause();
@@ -572,7 +599,12 @@ export class StageSessionController {
 		beforeResolve?: (result: StageSessionPauseResumeResult) => void,
 		beforeRelease?: () => void,
 	): Promise<StageSessionPauseResumeResult> {
-		return this.pauseControl.resume(message, beforeResolve, beforeRelease);
+		return this.pauseControl.resume(message, beforeResolve, beforeRelease).then((result) => {
+			// Ownership has returned to live execution, but a handle released while
+			// paused may already be gone from the registry. Keep the deferred-disposal
+			// marker so terminal teardown can drain it for this ownerless execution.
+			return result;
+		});
 	}
 	isPaused(): boolean {
 		return this.pauseControl.isPaused();
@@ -600,6 +632,7 @@ export class StageSessionController {
 			this.markAbort(reason);
 			void this.session?.abort().catch(() => {});
 			this.pauseControl.reject(reason);
+			void this.drainPendingDisposal().catch(() => {});
 		};
 		if (signal.aborted) onAbort();
 		else signal.addEventListener("abort", onAbort, { once: true });

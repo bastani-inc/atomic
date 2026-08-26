@@ -77,7 +77,7 @@ atomic
 /login  # Then select provider
 ```
 
-Then just talk to Atomic. By default, Atomic gives the model six coding tools: `read`, `write`, `edit`, `bash`, `find`, and `search`. The model uses these to fulfill your requests. `read`, `search`, `write`, and successful `edit` calls emit session-scoped hashline anchors (`[path#TAG]` plus `LINE:text`) so the model can make stale-safe line edits; see [docs/tools.md](docs/tools.md). Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Atomic packages](#atomic-packages).
+Then just talk to Atomic. By default, Atomic gives the model six coding tools: `read`, `write`, `edit`, `bash`, `find`, and `search`. On native Windows, Atomic also enables `powershell` when `pwsh.exe` or `powershell.exe` is available. The model uses these to fulfill your requests. `read`, `search`, `write`, and successful `edit` calls emit session-scoped hashline anchors (`[path#TAG]` plus `LINE:text`) so the model can make stale-safe line edits; see [docs/tools.md](docs/tools.md). Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Atomic packages](#atomic-packages).
 
 **Platform notes:** [Windows](docs/windows.md) | [Alpine/musl Linux](docs/index.md#alpine-and-musl-linux-archives) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
@@ -492,7 +492,7 @@ Upstream Pi's minimal-core rationale is documented in the [original blog post](h
 ## CLI Reference
 
 ```bash
-atomic [options] [@files...] [messages...]
+atomic [options] [--] [@files...] [messages...]
 ```
 
 ### Package Commands
@@ -561,7 +561,7 @@ cat README.md | atomic -p "Summarize this text"
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools by default |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. `read`/`search`/`write`/`edit` share session-scoped hashline snapshot tags for stale-safe line edits; copied hashline output is stripped by `write` only when it matches a known current-session snapshot. Archive selectors are Bun-native, and internal-resource selectors use the session router when available. Use `--exclude-tools` to disable one or more tools while leaving the rest available.
+Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. `read`/`search`/`write`/`edit` share session-scoped hashline snapshot tags for stale-safe line edits; copied hashline output is stripped by `write` only when it matches a known current-session snapshot. Archive selectors are Bun-native, and internal-resource selectors use the session router when available. Use `--exclude-tools` to disable one or more tools while leaving the rest available.
 
 ### Project Trust Options
 
@@ -596,6 +596,7 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 | `--append-system-prompt <text>` | Append to system prompt |
 | `--offline` | Disable startup network operations, including update checks, package updates, and telemetry |
 | `--verbose` | Force verbose startup |
+| `--` | Stop option parsing; remaining arguments are prompts or `@file` inputs |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
 
@@ -617,6 +618,9 @@ atomic "List all .ts files in src/"
 
 # Non-interactive
 atomic -p "Summarize this codebase"
+
+# Prompt beginning with a dash
+atomic -p -- "- Summarize these points"
 
 # Non-interactive with piped stdin
 cat README.md | atomic -p "Summarize this text"
@@ -657,7 +661,7 @@ atomic --thinking high "Solve this complex problem"
 | `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported. This is not an `ATOMIC_*` alias and has no Atomic-prefixed equivalent. |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
 
-Bash commands also receive an execution-time session snapshot through `ATOMIC_SESSION_ID`, `ATOMIC_SESSION_FILE` (omitted for unsaved sessions), `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL`. The exact `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL` aliases carry identical values. Unrelated inherited or caller-supplied environment variables are preserved.
+Bash and PowerShell commands also receive an execution-time session snapshot through `ATOMIC_SESSION_ID`, `ATOMIC_SESSION_FILE` (omitted for unsaved sessions), `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL`. The exact `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL` aliases carry identical values. Unrelated inherited or caller-supplied environment variables are preserved.
 
 ---
 

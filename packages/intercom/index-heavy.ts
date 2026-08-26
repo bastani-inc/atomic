@@ -6,7 +6,7 @@ import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message } from "./types.js";
 import { ReplyTracker } from "./reply-tracker.js";
-import { ReplyWaiterSlot } from "./reply-waiter.ts";
+import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
 import { registerIntercomTool } from "./intercom-tool.js";
 import { registerIntercomOverlay } from "./overlay.js";
@@ -14,6 +14,7 @@ import { registerIntercomLifecycle } from "./lifecycle.js";
 import { registerSubagentRelay } from "./subagent-relay.js";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./foreground-detach-handoff.js";
 import { routeIncomingReply } from "./reply-routing.js";
+import { routePeerDisconnect, type PeerDisconnectNotice } from "./peer-disconnect-routing.js";
 import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
 import { readSubagentMessageSource } from "./source-ownership.js";
 import { buildIncomingCustomMessage, createIncomingMessageSender } from "./incoming-message-delivery.js";
@@ -71,13 +72,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let joinedGroup: string | null = null;
   const activeTools = new Map<string, string>();
   let replyTracker = new ReplyTracker();
-  const replyWaiters = new ReplyWaiterSlot();
+  const replyWaiters = new ReplyWaiterRegistry(DEFAULT_REPLY_TIMEOUT_MS, config.maxPendingAsks);
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages = new InboundIdleQueue();
   const inboundDeliveries = new InboundMessageAdmission();
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   let inboundFlushTimer: NodeJS.Timeout | null = null;
-  function rejectReplyWaiter(error: Error): void { replyWaiters.rejectCurrent(error); }
+  function rejectReplyWaiter(error: Error): void { replyWaiters.rejectAll(error); }
   function clearReconnectTimer(): void { if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; }
   function clearInboundFlushTimer(): void { if (inboundFlushTimer) clearTimeout(inboundFlushTimer); inboundFlushTimer = null; }
   function getLiveContext(ctx: ExtensionContext | null = runtimeContext, generation = runtimeGeneration): ExtensionContext | null {
@@ -250,7 +251,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       && liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
     if (stageClosed) {
       routeClosedWorkflowStageMessage(
-        entry, inboundDeliveries, replyTracker, replyWaiters.current(),
+        entry, inboundDeliveries, replyTracker, replyWaiters.pending(),
         () => sendIncomingMessage(entry, "trigger", messageGeneration, false),
         () => client,
         () => Boolean(getLiveContext(liveContext, messageGeneration)),
@@ -260,7 +261,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const admission = inboundDeliveries.admit(from, message);
     if (admission.kind !== "reserved") return;
     const reservation = admission.reservation;
-    if (routeIncomingReply(replyWaiters.current(), from, message)) {
+    if (routeIncomingReply(replyWaiters.pending(), from, message)) {
       inboundDeliveries.commit(reservation);
       return;
     }
@@ -357,6 +358,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         return;
       }
       handleIncomingMessage(liveContext, from, message, channel);
+    });
+    nextClient.on("peer_disconnected", (notice: PeerDisconnectNotice) => {
+      if (client !== nextClient) {
+        return;
+      }
+      routePeerDisconnect(replyWaiters.pending(), notice);
     });
     nextClient.on("disconnected", (error: Error) => {
       if (client !== nextClient) {
@@ -515,9 +522,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     syncPresenceIdentity,
     resolveSessionTarget: resolveSessionTargetId,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
-    hasReplyWaiter: () => replyWaiters.has(),
   });
   registerIntercomTool(pi, {
+    childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
@@ -526,7 +533,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     setJoinedGroup,
     clearJoinedGroup,
     replyTracker: () => replyTracker,
-    hasReplyWaiter: () => replyWaiters.has(),
   });
   registerIntercomOverlay(pi, {
     runtimeGeneration: () => runtimeGeneration,

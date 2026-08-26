@@ -1,3 +1,4 @@
+import { REPLAY_TOPOLOGY_MISMATCH_MESSAGE } from "../../shared/replay-topology-failure.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { RunContinuationOpts } from "./executor-types.js";
 
@@ -51,7 +52,10 @@ function sortedIdentity(values: readonly string[]): string {
 	return [...values].sort().join("\u0000");
 }
 
-export function createContinuationReplayIndex(continuation: RunContinuationOpts | undefined): ContinuationReplayIndex {
+export function createContinuationReplayIndex(
+	continuation: RunContinuationOpts | undefined,
+	sourceToContinuationNodeIds: Map<string, string>,
+): ContinuationReplayIndex {
 	if (continuation === undefined) {
 		return {
 			decide: (input) => ({
@@ -82,6 +86,9 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 			`atomic-workflows: insufficient_state: resume stage ${continuation.resumeFromStageId} was not found in source run ${continuation.source.id}`,
 		);
 	}
+	// Tool parents enter this map when the continuation admits the node
+	// (`onNodeStart`), not from the source snapshot. Eager snapshot seeding
+	// would translate a parent that never materializes on the new graph.
 
 	const stagesByReplayIdentity = new Map<string, StageSnapshot[]>();
 	const stagesByDisplayName = new Map<string, StageSnapshot[]>();
@@ -104,19 +111,23 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 	}
 
 	const consumedSourceStageIds = new Set<string>();
-	const continuationStageIdBySourceStageId = new Map<string, string>();
+	// Stages and ToolNodeSnapshot nodes share one source-to-continuation identity map.
 	const replayablePromptContinuationStageIds = new Set<string>();
 
 	const failTopology = (displayName: string, replayKey: string, reason: "mismatch" | "ambiguous"): never => {
+		const message =
+			reason === "mismatch"
+				? REPLAY_TOPOLOGY_MISMATCH_MESSAGE
+				: "atomic-workflows: insufficient_state: replay topology ambiguous";
 		throw new Error(
-			`atomic-workflows: insufficient_state: replay topology ${reason} for stage "${displayName}" (replayKey "${replayKey}") in source run ${continuation.source.id}`,
+			`${message} for stage "${displayName}" (replayKey "${replayKey}") in source run ${continuation.source.id}`,
 		);
 	};
 
 	const translateSourceParents = (source: StageSnapshot): string[] | undefined => {
 		const parentIds: string[] = [];
 		for (const sourceParentId of source.parentIds) {
-			const continuationParentId = continuationStageIdBySourceStageId.get(sourceParentId);
+			const continuationParentId = sourceToContinuationNodeIds.get(sourceParentId);
 			if (continuationParentId === undefined) return undefined;
 			parentIds.push(continuationParentId);
 		}
@@ -197,7 +208,7 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 					? "allowed"
 					: "unavailable";
 			consumedSourceStageIds.add(selected.source.id);
-			continuationStageIdBySourceStageId.set(selected.source.id, stageId);
+			sourceToContinuationNodeIds.set(selected.source.id, stageId);
 			if (selected.source.status === "completed" && answerReplay === "allowed") {
 				return { kind: "replay", source: selected.source, parentIds: selected.parentIds, answerReplay };
 			}

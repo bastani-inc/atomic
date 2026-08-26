@@ -122,6 +122,12 @@ describe("subagent acceptance removal", () => {
 		});
 		assert.doesNotMatch(serializedLegacyAgent, removedNoMutationPattern);
 	});
+	test("subagent schema rejects removed resume action and resume-only inputs", () => {
+		const properties = (SubagentParams as { properties: Record<string, unknown> }).properties;
+		assert.equal("index" in properties, false);
+		assert.equal("message" in properties, false);
+		assert.equal(Value.Check(SubagentParams, { action: "resume", id: "old-run", message: "continue" }), false);
+	});
 	test("subagent schema omits sequential execution and dynamic fan-out", () => {
 		const properties = (SubagentParams as { properties: Record<string, unknown> }).properties;
 		const removedExecutionField = "chain";

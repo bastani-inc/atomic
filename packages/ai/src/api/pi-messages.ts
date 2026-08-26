@@ -27,6 +27,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
@@ -263,14 +264,23 @@ function createEventConverter(model: Model<"pi-messages">) {
 	};
 }
 
-async function* readPiMessagesEvents(stream: ReadableStream<Uint8Array>): AsyncGenerator<PiMessagesEvent> {
+async function* readPiMessagesEvents(
+	stream: ReadableStream<Uint8Array>,
+	signal?: AbortSignal,
+): AsyncGenerator<PiMessagesEvent> {
 	const decoder = new TextDecoder();
 	const reader = stream.getReader();
 	let buffer = "";
+	const onAbort = () => {
+		void reader.cancel().catch(() => {});
+	};
+	signal?.addEventListener("abort", onAbort, { once: true });
 
 	try {
 		while (true) {
+			if (signal?.aborted) throw signal.reason ?? new Error("Request was aborted");
 			const { done, value } = await reader.read();
+			if (signal?.aborted) throw signal.reason ?? new Error("Request was aborted");
 			buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
 			buffer = buffer.replace(/\r\n/g, "\n");
 
@@ -296,6 +306,10 @@ async function* readPiMessagesEvents(stream: ReadableStream<Uint8Array>): AsyncG
 			}
 		}
 	} finally {
+		signal?.removeEventListener("abort", onAbort);
+		try {
+			await reader.cancel();
+		} catch {}
 		reader.releaseLock();
 	}
 }
@@ -351,6 +365,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 	const convertEvent = createEventConverter(model);
 
 	void (async () => {
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 		try {
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
@@ -388,7 +403,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 					...providerHeadersToRecord({ ...model.headers, ...options?.headers }),
 				},
 				body: JSON.stringify(payload),
-				signal: options?.signal,
+				signal: streamDeadline.signal,
 			});
 
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -401,7 +416,11 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 				throw new Error(`${model.provider} response has no body`);
 			}
 
-			for await (const piEvent of readPiMessagesEvents(response.body)) {
+			for await (const piEvent of withStreamDeadline(
+				readPiMessagesEvents(response.body, streamDeadline.signal),
+				streamDeadline.deadlineMs,
+				streamDeadline.abort,
+			)) {
 				const event = convertEvent(piEvent);
 				eventStream.push(event);
 				if (event.type === "done" || event.type === "error") {
@@ -412,6 +431,8 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 			throw new Error(`${model.provider} stream ended without a terminal event`);
 		} catch (error) {
 			eventStream.push(createErrorEvent(model, error, options?.signal?.aborted ?? false));
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 
@@ -427,7 +448,7 @@ export const streamSimple: StreamFunction<"pi-messages", SimpleStreamOptions> = 
 	return stream(model, context, {
 		...options,
 		reasoning: options?.reasoning,
-		toolChoice: extra?.toolChoice,
+		toolChoice: options?.toolChoice,
 		debug: extra?.debug,
 	});
 };

@@ -3,6 +3,7 @@ import {
 	type GenerateContentParameters,
 	GoogleGenAI,
 	type ThinkingConfig,
+	ThinkingLevel,
 } from "@google/genai";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import type {
@@ -17,20 +18,21 @@ import type {
 	TextContent,
 	ThinkingBudgets,
 	ThinkingContent,
-	ThinkingLevel,
 	ToolCall,
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
+import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import type { GoogleThinkingLevel } from "./google-shared.ts";
+import type { GoogleApiThinkingLevel, ResolvedGoogleThinkingLevel } from "./google-shared.ts";
 import {
 	convertMessages,
 	convertTools,
 	isThinkingPart,
 	mapStopReason,
 	resolveGoogleFunctionCallingMode,
+	resolveGoogleThinkingLevel,
 	retainThoughtSignature,
 	retryGoogleRequest,
 	supportsGoogleStrictToolSampling,
@@ -42,9 +44,17 @@ export interface GoogleOptions extends StreamOptions {
 	thinking?: {
 		enabled: boolean;
 		budgetTokens?: number; // -1 for dynamic, 0 to disable
-		level?: GoogleThinkingLevel;
+		level?: GoogleApiThinkingLevel;
 	};
 }
+
+const THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, ThinkingLevel> = {
+	THINKING_LEVEL_UNSPECIFIED: ThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
+	MINIMAL: ThinkingLevel.MINIMAL,
+	LOW: ThinkingLevel.LOW,
+	MEDIUM: ThinkingLevel.MEDIUM,
+	HIGH: ThinkingLevel.HIGH,
+};
 
 // Counter for generating unique tool call IDs
 let toolCallCounter = 0;
@@ -303,13 +313,16 @@ export const streamSimple: StreamFunction<"google-generative-ai", SimpleStreamOp
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}
 
-	const base = buildBaseOptions(model, context, options, apiKey);
+	const base = {
+		...buildBaseOptions(model, context, options, apiKey),
+		toolChoice: options?.toolChoice,
+	} satisfies GoogleOptions;
 	if (!options?.reasoning) {
 		return stream(model, context, { ...base, thinking: { enabled: false } } satisfies GoogleOptions);
 	}
 
 	const clampedReasoning = clampThinkingLevel(model, options.reasoning);
-	const effort = (clampedReasoning === "off" ? "high" : clampedReasoning) as ClampedThinkingLevel;
+	const resolvedLevel = resolveGoogleThinkingLevel(model, clampedReasoning);
 	const googleModel = model as Model<"google-generative-ai">;
 
 	if (isGemini3ProModel(googleModel) || isGemini3FlashModel(googleModel) || isGemma4Model(googleModel)) {
@@ -317,7 +330,7 @@ export const streamSimple: StreamFunction<"google-generative-ai", SimpleStreamOp
 			...base,
 			thinking: {
 				enabled: true,
-				level: getThinkingLevel(effort, googleModel),
+				level: getThinkingLevel(resolvedLevel, googleModel),
 			},
 		} satisfies GoogleOptions);
 	}
@@ -326,7 +339,7 @@ export const streamSimple: StreamFunction<"google-generative-ai", SimpleStreamOp
 		...base,
 		thinking: {
 			enabled: true,
-			budgetTokens: getGoogleBudget(googleModel, effort, options.thinkingBudgets),
+			budgetTokens: getGoogleBudget(googleModel, resolvedLevel, options.thinkingBudgets),
 		},
 	} satisfies GoogleOptions);
 };
@@ -341,7 +354,7 @@ function createClient(
 		httpOptions.baseUrl = model.baseUrl;
 		httpOptions.apiVersion = ""; // baseUrl already includes version path, don't append
 	}
-	const headers = providerHeadersToRecord({ ...model.headers, ...optionsHeaders });
+	const headers = providerHeadersToRecord({ "User-Agent": getPiUserAgent(), ...model.headers, ...optionsHeaders });
 	if (headers) {
 		httpOptions.headers = headers;
 	}
@@ -386,8 +399,7 @@ function buildParams(
 	if (options.thinking?.enabled && model.reasoning) {
 		const thinkingConfig: ThinkingConfig = { includeThoughts: true };
 		if (options.thinking.level !== undefined) {
-			// Cast to any since our GoogleThinkingLevel mirrors Google's ThinkingLevel enum values
-			thinkingConfig.thinkingLevel = options.thinking.level as any;
+			thinkingConfig.thinkingLevel = THINKING_LEVEL_MAP[options.thinking.level];
 		} else if (options.thinking.budgetTokens !== undefined) {
 			thinkingConfig.thinkingBudget = options.thinking.budgetTokens;
 		}
@@ -412,8 +424,6 @@ function buildParams(
 	return params;
 }
 
-type ClampedThinkingLevel = Exclude<ThinkingLevel, "xhigh" | "max">;
-
 function isGemma4Model(model: Model<"google-generative-ai">): boolean {
 	return /gemma-?4/.test(model.id.toLowerCase());
 }
@@ -432,20 +442,23 @@ function getDisabledThinkingConfig(model: Model<"google-generative-ai">): Thinki
 	// do not support full thinking-off either. For Gemini 3 models, use the lowest supported
 	// thinkingLevel without includeThoughts so hidden thinking remains invisible to pi.
 	if (isGemini3ProModel(model)) {
-		return { thinkingLevel: "LOW" as any };
+		return { thinkingLevel: ThinkingLevel.LOW };
 	}
 	if (isGemini3FlashModel(model)) {
-		return { thinkingLevel: "MINIMAL" as any };
+		return { thinkingLevel: ThinkingLevel.MINIMAL };
 	}
 	if (isGemma4Model(model)) {
-		return { thinkingLevel: "MINIMAL" as any };
+		return { thinkingLevel: ThinkingLevel.MINIMAL };
 	}
 
 	// Gemini 2.x supports disabling via thinkingBudget = 0.
 	return { thinkingBudget: 0 };
 }
 
-function getThinkingLevel(effort: ClampedThinkingLevel, model: Model<"google-generative-ai">): GoogleThinkingLevel {
+function getThinkingLevel(
+	effort: ResolvedGoogleThinkingLevel,
+	model: Model<"google-generative-ai">,
+): GoogleApiThinkingLevel {
 	if (isGemini3ProModel(model)) {
 		switch (effort) {
 			case "minimal":
@@ -480,41 +493,41 @@ function getThinkingLevel(effort: ClampedThinkingLevel, model: Model<"google-gen
 
 function getGoogleBudget(
 	model: Model<"google-generative-ai">,
-	effort: ClampedThinkingLevel,
+	level: ResolvedGoogleThinkingLevel,
 	customBudgets?: ThinkingBudgets,
 ): number {
-	if (customBudgets?.[effort] !== undefined) {
-		return customBudgets[effort]!;
+	if (customBudgets?.[level] !== undefined) {
+		return customBudgets[level]!;
 	}
 
 	if (model.id.includes("2.5-pro")) {
-		const budgets: Record<ClampedThinkingLevel, number> = {
+		const budgets: Record<ResolvedGoogleThinkingLevel, number> = {
 			minimal: 128,
 			low: 2048,
 			medium: 8192,
 			high: 32768,
 		};
-		return budgets[effort];
+		return budgets[level];
 	}
 
 	if (model.id.includes("2.5-flash-lite")) {
-		const budgets: Record<ClampedThinkingLevel, number> = {
+		const budgets: Record<ResolvedGoogleThinkingLevel, number> = {
 			minimal: 512,
 			low: 2048,
 			medium: 8192,
 			high: 24576,
 		};
-		return budgets[effort];
+		return budgets[level];
 	}
 
 	if (model.id.includes("2.5-flash")) {
-		const budgets: Record<ClampedThinkingLevel, number> = {
+		const budgets: Record<ResolvedGoogleThinkingLevel, number> = {
 			minimal: 128,
 			low: 2048,
 			medium: 8192,
 			high: 24576,
 		};
-		return budgets[effort];
+		return budgets[level];
 	}
 
 	return -1;

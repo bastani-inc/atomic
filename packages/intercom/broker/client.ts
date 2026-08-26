@@ -365,6 +365,19 @@ export class IntercomClient extends EventEmitter {
         pending.reject(new Error(brokerMessage.reason));
         break;
       }
+      case "peer_disconnected": {
+        const { replyTo, peerSessionId, peerName } = brokerMessage;
+        if (typeof replyTo !== "string" || typeof peerSessionId !== "string"
+          || (peerName !== undefined && typeof peerName !== "string")) {
+          throw new Error("Invalid peer_disconnected message");
+        }
+        this.emit("peer_disconnected", {
+          replyTo,
+          peerSessionId,
+          ...(peerName !== undefined ? { peerName } : {}),
+        });
+        break;
+      }
       case "error": {
         if (typeof brokerMessage.error !== "string") {
           throw new Error("Invalid error message");

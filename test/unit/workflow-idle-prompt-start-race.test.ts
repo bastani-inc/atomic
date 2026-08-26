@@ -64,6 +64,8 @@ test("production prompt wiring holds idle admission until the first agent turn s
 			emitBeforeAgentStart: async () => undefined,
 		},
 		_flushPendingBashMessages() {},
+		_pendingCustomMessages: [],
+		_flushPendingCustomMessages() {},
 		model: { provider: "test", id: "test" },
 		_modelRuntime: { hasConfiguredAuth: () => true },
 		_findLastAssistantMessage: () => undefined,

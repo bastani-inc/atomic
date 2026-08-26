@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /** Remaining registry Pi packages (`pi-agent-core`, `pi-tui`, …) stay on this version. */
-export const expectedPiVersion = "0.84.2";
+export const expectedPiVersion = "0.84.3";
 export const expectedPiAiPackage = "@bastani/pi-ai";
 const requiredPiAiFiles = [
 	"package.json",
@@ -17,6 +17,17 @@ const requiredPiAiFiles = [
 	"dist/auth/oauth/openrouter.js",
 	"dist/bun-oauth.js",
 ] as const;
+const requiredPiTuiFiles = [
+	"package.json",
+	"dist/index.js",
+	"dist/native-modifiers.js",
+	"dist/native-module-path.js",
+	"native/win32/prebuilds/win32-x64/win32-console-mode.node",
+	"native/win32/prebuilds/win32-arm64/win32-console-mode.node",
+] as const;
+const frozenNativeModifiersMarker = "@earendil-works/pi-tui/dist/native-modifiers.js";
+const barePiTuiRequirePattern = /require\((["'])@earendil-works\/pi-tui\1\)/u;
+const externalNativeModifiersPattern = /require\((["'])\.\/native-modifiers\.js\1\)/u;
 const requiredAppMarkers = [
 	"global.anthropic.claude-opus-5",
 	"https://openrouter.ai/auth",
@@ -37,8 +48,11 @@ function requireFile(path: string): void {
 }
 
 export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
-	const piAiRoot = packagePath(resolve(options.nodeModulesRoot), "@bastani/pi-ai");
+	const nodeModulesRoot = resolve(options.nodeModulesRoot);
+	const piAiRoot = packagePath(nodeModulesRoot, "@bastani/pi-ai");
 	for (const relativePath of requiredPiAiFiles) requireFile(join(piAiRoot, relativePath));
+	const piTuiRoot = packagePath(nodeModulesRoot, "@earendil-works/pi-tui");
+	for (const relativePath of requiredPiTuiFiles) requireFile(join(piTuiRoot, relativePath));
 
 	const packageJson = JSON.parse(readFileSync(join(piAiRoot, "package.json"), "utf-8")) as {
 		name?: string;
@@ -51,9 +65,22 @@ export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
 	if (options.appBundlePath) {
 		const appBundlePath = resolve(options.appBundlePath);
 		requireFile(appBundlePath);
+		requireFile(join(dirname(appBundlePath), "native-modifiers.js"));
+		requireFile(join(dirname(appBundlePath), "native-module-path.js"));
 		const appBundle = readFileSync(appBundlePath, "utf-8");
 		for (const marker of requiredAppMarkers) {
 			if (!appBundle.includes(marker)) throw new Error(`Pi runtime marker is absent from ${appBundlePath}: ${marker}`);
+		}
+		if (!externalNativeModifiersPattern.test(appBundle)) {
+			throw new Error(`pi-tui's runtime native modifier loader is absent from ${appBundlePath}`);
+		}
+		if (barePiTuiRequirePattern.test(appBundle)) {
+			throw new Error(`pi-tui must be bundled into ${appBundlePath}; compiled split launchers cannot resolve it`);
+		}
+		if (appBundle.includes(frozenNativeModifiersMarker)) {
+			throw new Error(
+				`pi-tui native modifiers must stay external to ${appBundlePath}; bundling freezes the build host's import.meta.url`,
+			);
 		}
 	}
 }
@@ -81,5 +108,5 @@ if (import.meta.main) {
 		throw new Error(`Unknown argument: ${arg}`);
 	}
 	assertPiRuntimeAssets({ nodeModulesRoot, appBundlePath });
-	console.log(`Pi ${expectedPiVersion} model-data and OAuth runtime assets verified.`);
+	console.log(`Pi ${expectedPiVersion} model-data, OAuth, and external TUI runtime assets verified.`);
 }
