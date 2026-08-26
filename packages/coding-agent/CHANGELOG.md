@@ -2,18 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed compaction range planning and branch/session summaries forcing `toolChoice: "none"`, which sent `tool_choice` with no tools and could be rejected by gateways ([#8649](https://github.com/earendil-works/pi/issues/8649), [#8638](https://github.com/earendil-works/pi/issues/8638)).
-- Fixed Windows shell aborts crashing Atomic when `taskkill.exe` is not on `PATH`. Both `killProcessTree` and the detached-child guardian worker now spawn the System32 executable and consume the asynchronous spawn error ([#6596](https://github.com/earendil-works/pi/issues/6596)).
-- Fixed Windows `taskkill` spawning without `windowsHide`. Because the spawn is `detached`, Windows allocated and briefly flashed a console window on every process-tree kill.
-- Fixed session files whose final record has no trailing newline not being repaired on load, so a later append no longer concatenates onto that record.
-- Fixed toggling thinking-block visibility discarding partial Bash output. Rendered assistant messages are updated in place instead of rebuilding the chat and its live tool components ([#8611](https://github.com/earendil-works/pi/issues/8611)).
-
-### Changed
-
-- Documented `/thinking`, the Ctrl+S startup-default shortcut in the model and thinking pickers, and the `modelThinkingLevels` setting.
-
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Added
@@ -35,6 +23,7 @@
 - Deferred uncommon syntax grammars until after first render to reduce interactive startup work while keeping common languages available immediately.
 - Extension examples whose intent is final settlement now listen for `agent_settled`; JSON mode exposes tool-call ID and tool name at stream start; session-share links use canonical terminal hyperlinks and perform GitHub authentication preflight before export ([#8242](https://github.com/earendil-works/pi/issues/8242), [#7953](https://github.com/earendil-works/pi/issues/7953)).
 - Compaction now reports truthful aggregate planner usage notices, including multi-attempt Verbatim planning, when cache-miss notices are enabled.
+- Documented `/thinking`, the Ctrl+S startup-default shortcut in the model and thinking pickers, and the `modelThinkingLevels` setting.
 
 ### Fixed
 
@@ -62,6 +51,11 @@
 - Fixed atomic managed-state rewrites resetting existing file permissions. `auth.json` and `models-store.json` are created owner-only (`0600`) but keep an administrator-managed mode across later rewrites instead of having it reset by the atomic replacement.
 - Fixed explicitly persisted default models disappearing from non-empty model scopes; persisted defaults are now added to both the active and saved scope.
 - Fixed extension messages sent with `triggerTurn: false` while the agent is running being inserted between a tool call and its result; they are now appended after the turn's tool results ([#8537](https://github.com/earendil-works/pi/issues/8537)).
+- Fixed compaction range planning and branch/session summaries forcing `toolChoice: "none"`, which sent `tool_choice` with no tools and could be rejected by gateways ([#8649](https://github.com/earendil-works/pi/issues/8649), [#8638](https://github.com/earendil-works/pi/issues/8638)).
+- Fixed Windows shell aborts crashing Atomic when `taskkill.exe` is not on `PATH`. Both `killProcessTree` and the detached-child guardian worker now spawn the System32 executable and consume the asynchronous spawn error ([#6596](https://github.com/earendil-works/pi/issues/6596)).
+- Fixed Windows `taskkill` spawning without `windowsHide`. Because the spawn is `detached`, Windows allocated and briefly flashed a console window on every process-tree kill.
+- Fixed session files whose final record has no trailing newline not being repaired on load, so a later append no longer concatenates onto that record.
+- Fixed toggling thinking-block visibility discarding partial Bash output. Rendered assistant messages are updated in place instead of rebuilding the chat and its live tool components ([#8611](https://github.com/earendil-works/pi/issues/8611)).
 
 ## [0.9.16-alpha.4] - 2026-08-23
 
