@@ -3702,6 +3702,10 @@ Runtime config defaults:
 | `environment.idleMinutes` | `240` when configured | Idle-stop duration copied into a resolved environment binding. |
 | `environment.retentionHours` | `12` when configured | Retention duration copied into a resolved environment binding. |
 
+Coder workspace acquisition resolves the configured organization name to its deployment ID, or uses the current user's first organization when `organization` is omitted. Atomic then resolves the template's active version, expands every rich parameter explicitly from template defaults, preset values, and configured overrides, and resolves the preset ID by its deployment-owned name. Workspace creation therefore never enters Coder's interactive parameter picker. Start, stop, and delete are workspace-build transitions, and startup is complete only after the authenticated `agent-connection-watch` stream reports the agent lifecycle as `ready`; the wait has a bounded timeout.
+
+Atomic does not assume that `coder` is installed on `PATH`. It reads the deployment's build information, downloads that deployment's own CLI binary for the control machine's operating system and architecture, validates the binary's reported version, and caches it by deployment ID, exact deployment version, OS, and architecture. A different deployment or deployment upgrade gets a different pinned binary.
+
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.
 
 ## Settings
