@@ -151,7 +151,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	}
 	if (shouldIncludeAskUserFallbackGuidance) {
 		addGuideline(
-			"Clarify ambiguous requirements using the ask_user_question tool if available. When it is unavailable and no human input channel exists, do not stall on a question: choose the interpretation best supported by the repository and the stated objective, state the assumption in your response, and continue fully autonomously on best judgment.",
+			"Clarify ambiguous requirements using the ask_user_question tool if available. When it is unavailable and no human input channel exists, do not stall on a question: choose the interpretation best supported by the repository and the stated objective — mine git history, commits, PRs, issues, and the user's own comments to infer how they would decide — state the assumption in your response, and continue fully autonomously on best judgment.",
 		);
 	}
 	if (hasBash || hasPowerShell) {

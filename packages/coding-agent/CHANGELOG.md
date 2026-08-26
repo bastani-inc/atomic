@@ -5,7 +5,7 @@
 ### Changed
 
 - The default system prompt now teaches repository-intent inference when a shell tool is available: review recent commits, open and merged PRs, issues and their comments, and project/board status to learn maintainer conventions, and identify the requesting user (`git config user.name`/`user.email`, `gh api user`) to interpret ambiguous requests through their own patterns.
-- The ask_user_question fallback guideline now instructs the agent, when no human input channel exists, to choose the interpretation best supported by the repository and stated objective, state the assumption, and continue fully autonomously instead of stalling.
+- The ask_user_question fallback guideline now instructs the agent, when no human input channel exists, to choose the interpretation best supported by the repository and stated objective — mining git history, commits, PRs, issues, and the user's own comments to infer how they would decide — state the assumption, and continue fully autonomously instead of stalling.
 
 ## [0.9.16-alpha.5] - 2026-08-26
 
