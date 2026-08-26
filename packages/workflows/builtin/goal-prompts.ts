@@ -7,6 +7,7 @@ import {
   FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
   REGRESSION_EVIDENCE_CONTRACT,
+  REPO_INTENT_MINING_GUIDANCE,
   REVIEW_CODE_DELTA_CONTRACT,
   REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT,
   REVIEWER_INTERCOM_COORDINATION_PROTOCOL,
@@ -139,6 +140,7 @@ export function renderGoalContinuationPrompt(
     ["pr_handoff_policy", INTERMEDIATE_PR_HANDOFF_GUARDRAIL],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
+    ["repository_intent", REPO_INTENT_MINING_GUIDANCE],
     ["goal_guidelines", GOAL_CONTINUATION_REFERENCE],
     ["objective", ["Continue working toward the active goal using the ledger as authoritative state for status, receipts, reviews, blockers, reducer decisions, and lifecycle events.", `The same blocker must repeat for at least ${blockerThreshold} controller observations before blocked status is available.`, "Reviewer quorum plus the reducer decides completion from reviewers' authoritative stop_review_loop signals."].join("\n")],
   ]);
@@ -173,6 +175,7 @@ export function renderReviewerPrompt(args: {
     ["auditability", RECEIPT_EXPECTATIONS],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
+    ["repository_intent", REPO_INTENT_MINING_GUIDANCE],
     ["final_action_policy", args.createPr ? "PR/MR/review creation is an authorized post-approval final action. If implementation and validation are proven and only that action remains, set goal_oracle_satisfied=true and stop_review_loop=true with no blocking findings, and record it as the remaining final action." : "PR/MR/review creation is not enabled; do not require or attempt it during review."],
     ["project_guidance", [
       "Apply AGENTS.md/CLAUDE.md and nearby code, test, script, config, generated-artifact, and CI conventions; specific project guidance overrides general guidance.",

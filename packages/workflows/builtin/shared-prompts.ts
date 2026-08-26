@@ -80,6 +80,20 @@ export const CODE_QUALITY_VERIFICATION_GUIDANCE = [
   "Repository-defined checks in AGENTS.md/CLAUDE.md, package scripts, and CI stay authoritative; qlty supplements them rather than replacing them, and its findings count as evidence only with the command and observed output recorded.",
 ].join("\n");
 
+/**
+ * Repositories carry behavioral norms written docs never state — commit
+ * signing, message style, changelog discipline, review etiquette — and they
+ * are inferable from history. Included at the same goal/ralph call sites as
+ * the E2E and code-quality guidance so implementers match inferred
+ * conventions and reviewers check delivered work against them.
+ */
+export const REPO_INTENT_MINING_GUIDANCE = [
+  "Infer maintainer and requesting-user intent from repository behavior, not only written docs: mine git history (`git log`, `git log --show-signature`), merged PRs, issues and their comments, review comments, commit subjects and trailers, and CI/branch-protection config for unwritten conventions.",
+  "Read for commit-signing habits, commit-message style and issue linking, changelog discipline, PR size and stacking norms, review etiquette, formatting and lint norms, and branch naming. Prefer the dominant, recent, intentional pattern over accidental drift; when signals conflict, the requesting user's own commits, PRs, and comments weigh highest — different users of one repository keep different preferences.",
+  "Match inferred conventions in delivered work (for example, sign commits when the surrounding history is signed rather than skipping signing because no doc required it); in review, report deviations as convention findings backed by the mined evidence.",
+  "Behavioral evidence fills gaps where the contract is silent; it never overrides the literal objective, acceptance criteria, or explicit AGENTS.md/CLAUDE.md guidance, and it does not license new contract requirements.",
+].join("\n");
+
 export function renderE2eQaVideoReviewGuidance(
   knownVideoPath?: string,
 ): string {

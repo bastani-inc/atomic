@@ -5,6 +5,7 @@ import {
   EVIDENCE_CLOSURE_POLICY,
   LITERAL_OBJECTIVE_CONTRACT,
   REGRESSION_EVIDENCE_CONTRACT,
+  REPO_INTENT_MINING_GUIDANCE,
   REVIEW_CODE_DELTA_CONTRACT,
   REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT,
   REVIEWER_INTERCOM_COORDINATION_PROTOCOL,
@@ -51,6 +52,7 @@ export function renderRalphReviewerPrompt(args: {
     ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
+    ["repository_intent", REPO_INTENT_MINING_GUIDANCE],
     ["qa_e2e_video_review", renderE2eQaVideoReviewGuidance(args.qaVideoPath)],
     ["evidence_closure", EVIDENCE_CLOSURE_POLICY],
     [

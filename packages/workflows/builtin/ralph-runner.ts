@@ -15,6 +15,7 @@ import {
   FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
   REGRESSION_EVIDENCE_CONTRACT,
+  REPO_INTENT_MINING_GUIDANCE,
   SCOPE_DISCIPLINE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
   WORKTREE_DISCIPLINE_CONTRACT,
@@ -150,6 +151,7 @@ export async function runRalphWorkflow(
         ["worktree_discipline", WORKTREE_DISCIPLINE_CONTRACT],
         ["qa_e2e_video", renderQaE2eVideoGuidance(qaVideoPath)],
         ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
+        ["repository_intent", REPO_INTENT_MINING_GUIDANCE],
         [
           "delegation",
           [
