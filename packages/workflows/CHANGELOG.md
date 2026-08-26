@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added a live needs-input affordance to the wide `BACKGROUND` panel for a visible run tree with exactly one displayable human-in-the-loop prompt. The card keeps the full workflow identity, shows a bounded question and exact `/workflow connect <run-id>` action, adds `F2 answer` only when F2 targets that run, and repaints back to the ordinary row when the prompt clears; promptless, multi-question, or ambiguous trees retain the status-only presentation without parent-chat or model-context content ([#2529](https://github.com/bastani-inc/atomic/issues/2529)).
+
 ### Changed
 
 - Workflow-stage orchestration context no longer carries a subagent delegation-depth constraint. Stage delegation itself is unchanged: a stage is a top-level session and still launches subagents once. What changed is that the children it launches can no longer delegate further, and nothing configures that.

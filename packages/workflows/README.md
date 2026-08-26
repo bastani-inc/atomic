@@ -710,7 +710,7 @@ Raw stage-chat prompt answer replay is live-memory only. `StageSnapshot.promptAn
 
 ### F2 keyboard shortcut
 
-Press **F2** while a workflow is running to open the DAG overlay for the active run.
+Press **F2** while a workflow is running to open the DAG overlay for the active run. In the wide `BACKGROUND` panel, a run tree with exactly one displayable HIL prompt shows the bounded question and exact `/workflow connect <run-id>` action (plus `F2 answer` only when F2 targets that run); promptless, multi-question, or ambiguous trees retain the status-only card and clear the affordance in place when the prompt is resolved.
 
 ### Execution model
 
