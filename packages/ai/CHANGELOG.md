@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.16-alpha.5] - 2026-08-26
+
 ### Added
 
 - Added the DeepSeek V4 Flash Vision experimental model to generated catalogs.
@@ -14,6 +16,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed OpenAI-compatible Chat Completions reasoning streams to concatenate incremental reasoning deltas instead of replacing earlier content ([#8605](https://github.com/earendil-works/pi/pull/8605)).
 - Fixed OpenRouter reasoning controls by deriving `off` support and available effort levels from model metadata, preventing reasoning-mandatory models from receiving `effort: "none"` ([#8454](https://github.com/earendil-works/pi/issues/8454)).
 - Fixed OpenAI-compatible Chat Completions requests sending `tool_choice` without tools, which gateways can reject during compaction ([#8607](https://github.com/earendil-works/pi/issues/8607)).
+
 ## [0.9.15] - 2026-08-21
 
 Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

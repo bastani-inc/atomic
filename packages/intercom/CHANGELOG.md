@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.16-alpha.5] - 2026-08-26
+
 ### Added
 
 - Concurrent blocking asks now use a correlation-keyed waiter registry, with configurable `maxPendingAsks` capacity, exact out-of-order reply and selective-disconnect settlement, and a structured refusal when full. Blocking supervisor decisions remain exclusive per child while coexisting with ordinary peer asks ([#2628](https://github.com/bastani-inc/atomic/issues/2628)).

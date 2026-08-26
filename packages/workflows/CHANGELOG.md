@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.16-alpha.5] - 2026-08-26
+
 ### Changed
 
 - Raised the public `workflow` tool request deadline from 30 seconds to two minutes. Timed-out requests still return `WORKFLOW_TIMEOUT` with `timeoutMs: 120000`, abort cancellable work, discard late settlement, and never retry. Mutating actions keep the unknown-outcome warning that tells callers to inspect workflow status before retrying ([#2654](https://github.com/bastani-inc/atomic/issues/2654)).
