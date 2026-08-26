@@ -1,7 +1,7 @@
 """Shared eval-sandbox provisioning for the Atomic adapters.
 
 The shell-string builders that provision an eval sandbox (Atomic, tmux,
-playwright-cli), and the provider credential map both adapters forward.
+playwright-cli, qlty), and the provider credential map both adapters forward.
 """
 
 from __future__ import annotations
@@ -10,7 +10,12 @@ import re
 
 
 def root_install_command(*, harbor: bool = False) -> str:
-    """Install Atomic runtime tools plus tmux and Playwright browser libraries."""
+    """Install Atomic runtime tools plus tmux, Playwright browser libraries, and xz.
+
+    ``xz`` is required by the qlty installer that runs in the agent step: it
+    unpacks a ``.tar.xz`` archive and hard-fails without it. None of the base
+    images (Debian, Ubuntu, Alpine) ship it, so every branch installs it here.
+    """
     # Playwright-managed Chromium is reliable on Debian/Ubuntu, unlike Ubuntu's
     # snap-backed distro Chromium. The t64 names are needed by newer Ubuntu
     # images; apt-cache selects them without breaking older Debian images.
@@ -23,7 +28,7 @@ def root_install_command(*, harbor: bool = False) -> str:
         "cups=$(if apt-cache show libcups2t64 >/dev/null 2>&1; then "
         "echo libcups2t64; else echo libcups2; fi) && "
         "apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git "
-        "ripgrep tmux fonts-liberation \"$asound\" \"$atk\" libatk-bridge2.0-0 "
+        "ripgrep tmux xz-utils fonts-liberation \"$asound\" \"$atk\" libatk-bridge2.0-0 "
         "libatspi2.0-0 libcairo2 \"$cups\" libdbus-1-3 libdrm2 libfontconfig1 "
         "libfreetype6 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 "
         "libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 "
@@ -34,11 +39,11 @@ def root_install_command(*, harbor: bool = False) -> str:
         return "set -euo pipefail; " + apt
     apk = (
         "apk add --no-cache bash ca-certificates curl fd git nodejs npm "
-        "ripgrep tmux chromium"
+        "ripgrep tmux xz chromium"
     )
     # Fedora provides these directly; RHEL-compatible images need EPEL.
     yum = (
-        "yum install -y bash ca-certificates git tmux && "
+        "yum install -y bash ca-certificates git tmux xz && "
         "(command -v curl >/dev/null 2>&1 || yum install -y curl) && "
         "(yum install -y chromium fd-find ripgrep || "
         "(yum install -y epel-release && yum install -y chromium fd-find ripgrep))"
@@ -92,8 +97,41 @@ def _node_setup_command() -> str:
     )
 
 
+def _qlty_install_command() -> str:
+    """Install the qlty CLI into ``$HOME/.local/bin``.
+
+    Benchmark runs have no internet, so the CLI has to be fetched during this
+    install phase. Two installer behaviours shape this command:
+
+    * The installer POSTs anonymous telemetry as its last step and runs under
+      ``set -eu``, so it exits non-zero *after* a fully successful install
+      whenever that endpoint is unreachable — precisely the restricted-egress
+      case. The installed artifact, not the exit status, is therefore the
+      success signal; the recorded status is reported when it is missing, so a
+      real failure is still loud rather than swallowed.
+    * Its own PATH persistence appends to interactive shell rc files, which
+      eval runtime shells never read. ``QLTY_INSTALL_BIN_PATH`` instead places
+      the binary in the directory ``runtime_environment_command`` and
+      ``atomic_runtime_environment_command`` already prepend to ``PATH``, and
+      ``QLTY_NO_MODIFY_PATH`` suppresses the useless rc edits.
+
+    The installer detects musl and rewrites its target triple accordingly, so
+    Alpine images are supported and need no degradation branch. It unpacks a
+    ``.tar.xz``; ``root_install_command`` installs ``xz`` for that.
+    """
+    return (
+        "qlty_status=0; "
+        "curl -fsSL https://qlty.sh | "
+        'env QLTY_NO_MODIFY_PATH=1 QLTY_INSTALL_BIN_PATH="$HOME/.local/bin" sh '
+        "|| qlty_status=$?; "
+        'test -x "$HOME/.local/bin/qlty" || '
+        '{ echo "Error: qlty install failed (installer exit $qlty_status)" >&2; exit 1; }; '
+        '"$HOME/.local/bin/qlty" --version >/dev/null'
+    )
+
+
 def agent_install_command(version_spec: str) -> str:
-    """Install Atomic and playwright-cli, then configure Chromium."""
+    """Install Atomic, playwright-cli, and the qlty CLI, then configure Chromium."""
     _validate_version_spec(version_spec)
     node_setup = _node_setup_command()
     browser_setup = (
@@ -118,6 +156,7 @@ def agent_install_command(version_spec: str) -> str:
         f"{node_setup}; "
         'export PATH="$HOME/.local/bin:$PATH"; '
         f"npm install -g @bastani/atomic{version_spec} @playwright/cli; "
+        f"{_qlty_install_command()}; "
         f"{browser_setup}"
     )
 

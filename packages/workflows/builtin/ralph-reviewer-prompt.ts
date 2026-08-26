@@ -1,5 +1,6 @@
 import {
   ACCEPTANCE_MATRIX_CONTRACT,
+  CODE_QUALITY_VERIFICATION_GUIDANCE,
   E2E_VERIFICATION_GUIDANCE,
   EVIDENCE_CLOSURE_POLICY,
   LITERAL_OBJECTIVE_CONTRACT,
@@ -49,6 +50,7 @@ export function renderRalphReviewerPrompt(args: {
     ["reviewer_coordination", REVIEWER_INTERCOM_COORDINATION_PROTOCOL],
     ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
+    ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
     ["qa_e2e_video_review", renderE2eQaVideoReviewGuidance(args.qaVideoPath)],
     ["evidence_closure", EVIDENCE_CLOSURE_POLICY],
     [

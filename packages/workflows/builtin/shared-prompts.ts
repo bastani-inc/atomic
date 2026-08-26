@@ -69,6 +69,17 @@ export const E2E_VERIFICATION_GUIDANCE = [
   "If E2E remains impractical, record the commands attempted, observed failure output, smallest missing prerequisite, and narrower validation run; an unattempted assumption is never valid grounds to skip.",
 ].join("\n");
 
+/**
+ * Code-quality verification is the lint/format/metrics/smells counterpart to
+ * E2E_VERIFICATION_GUIDANCE, and is included at the same call sites so goal and
+ * ralph stages — implementation, orchestrator, and reviewer alike — receive it.
+ */
+export const CODE_QUALITY_VERIFICATION_GUIDANCE = [
+  "For code-quality verification — linting, auto-formatting, complexity and duplication metrics, and code smells — use the qlty skill or delegate with `skill: \"qlty\"`; it drives one CLI across the repository's languages instead of ad-hoc per-tool linter invocations.",
+  "Weight this higher when the objective asks for verifiers or high code quality: enable the qlty plugins that fit this codebase, then run the check/format/metrics/smells loop and act on what it reports.",
+  "Repository-defined checks in AGENTS.md/CLAUDE.md, package scripts, and CI stay authoritative; qlty supplements them rather than replacing them, and its findings count as evidence only with the command and observed output recorded.",
+].join("\n");
+
 export function renderE2eQaVideoReviewGuidance(
   knownVideoPath?: string,
 ): string {

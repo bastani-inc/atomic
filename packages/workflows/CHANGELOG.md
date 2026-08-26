@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Builtin `goal` and `ralph` stage prompts now carry a shared `code_quality_verification` section pointing stages at the `qlty` skill (or `skill: "qlty"` delegation) for linting, auto-formatting, complexity and duplication metrics, and code smells — weighted higher when the objective asks for verifiers or high code quality. It reaches the goal controller, goal orchestrator, goal reviewer, ralph orchestrator, and both ralph reviewers, alongside the existing end-to-end verification guidance. Repository-defined checks in AGENTS.md/CLAUDE.md, package scripts, and CI remain authoritative.
+
 ## [0.9.16-alpha.6] - 2026-08-26
 
 ### Changed

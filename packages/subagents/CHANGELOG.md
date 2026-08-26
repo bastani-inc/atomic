@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- New bundled `qlty` skill for code-quality verification through the [qlty](https://qlty.sh) CLI: linting (`qlty check`), auto-formatting (`qlty fmt`), maintainability metrics (`qlty metrics`), and code smells such as duplication and deep nesting (`qlty smells`). The skill triggers on requests for verifiers or high code quality, directs the agent to `https://docs.qlty.sh/llms.txt` as the authoritative documentation index, instructs it to enable the qlty plugins and linter extensions that fit the codebase rather than invoking per-tool linters ad hoc, and ships source-attributed reference excerpts under `skills/qlty/references/`.
+
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Changed

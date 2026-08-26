@@ -304,6 +304,7 @@ describe("coding-agent builtin resources", () => {
 				"liteparse",
 				"playwright-cli",
 				"prompt-engineer",
+				"qlty",
 				"research-codebase",
 				"show-me",
 				"skill-creator",

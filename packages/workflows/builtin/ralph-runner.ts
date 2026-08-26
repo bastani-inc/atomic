@@ -10,6 +10,7 @@ import {
 import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import {
   ACCEPTANCE_MATRIX_CONTRACT,
+  CODE_QUALITY_VERIFICATION_GUIDANCE,
   CONTRACT_FIDELITY_AUDIT,
   FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
@@ -148,6 +149,7 @@ export async function runRalphWorkflow(
         ["project_setup", WORKER_PREFLIGHT_CONTRACT],
         ["worktree_discipline", WORKTREE_DISCIPLINE_CONTRACT],
         ["qa_e2e_video", renderQaE2eVideoGuidance(qaVideoPath)],
+        ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
         [
           "delegation",
           [
