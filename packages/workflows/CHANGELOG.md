@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The `workflow` tool description, agent routing guidance, and workflow docs now treat a blocked run as continuable by default: resume resumable blocks, answer pending prompts, steer past the obstacle, or start a follow-up workflow past a terminal block, escalating to the user only when the blocked result is so ambiguous that human input or steering must settle it. When `ask_user_question` or human input is unavailable, the agent is instructed to continue fully autonomously on the interpretation best supported by the objective and repository evidence and to record the assumption.
+
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Changed

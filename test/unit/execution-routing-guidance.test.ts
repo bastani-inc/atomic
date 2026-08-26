@@ -606,6 +606,37 @@ describe("workflow-first execution routing", () => {
 		}
 	});
 
+	test("continues through blocked status unless human input must settle ambiguity", () => {
+		for (const phrase of [
+			"Treat a blocked run as continuable by default",
+			"A blocked run is a changed condition, not a stop order",
+			"keep the work moving by default",
+			"resume a resumable block",
+			"carries the remaining tracked work past a terminal block",
+			"so ambiguous that competing interpretations lead to materially different outcomes",
+			"When human input is unavailable",
+			"do not stall on a question",
+			"record the assumption and rationale",
+			"continue fully autonomously on best judgment",
+		]) {
+			expect(modelVisibleRouting).toContain(phrase);
+		}
+	});
+
+	test("mirrors blocked-continuation guidance in workflow docs", async () => {
+		for (const path of ["packages/coding-agent/docs/workflows.md", "packages/workflows/README.md"]) {
+			const documentation = await readRepositoryFile(path);
+			for (const phrase of [
+				"Treat a blocked run as continuable by default",
+				"resume a resumable block",
+				"continue fully autonomously",
+				"record the assumption",
+			]) {
+				expect(documentation, path).toContain(phrase);
+			}
+		}
+	});
+
 	test("documents that named workflow launches run in the background", () => {
 		for (const phrase of [
 			"In interactive chat, named workflow launches run in the background",
