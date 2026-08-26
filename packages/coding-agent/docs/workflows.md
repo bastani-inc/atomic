@@ -1948,6 +1948,8 @@ readonly heartbeatIntervalMinutes?: number;
 
 The heartbeat cadence for the workflow, in minutes, measured from the run's persisted start time. Omission resolves to the `15`-minute default and `0` explicitly disables heartbeats; negative and non-finite values are rejected with a `TypeError` when the definition is authored. Every compiled definition carries the resolved value, so consumers read a number rather than re-deriving the default.
 
+Cadence is likewise operator-selected. Atomic's agent guidance assumes the `15`-minute default and does not shorten, lengthen, or disable it unless you ask, so a heartbeat you did not configure arrives on that interval. A heartbeat is an alignment checkpoint rather than a failure signal: the agent re-reads the objective, judges whether the run is still on goal, and then continues, steers, replaces, or asks — it is not a cue to intervene in a run that is progressing.
+
 ```ts
 export default workflow({
   name: "audit-auth",
@@ -3547,6 +3549,8 @@ A successful rescan may still contain per-resource diagnostics. Both reload surf
 ## Run budgets
 
 Set an optional `budget` on workflow extension config, an authored `workflow({...})` definition, a `workflow({ action: "run" })` tool call, or a `workflow({ action: "resume" })` continuation to raise or narrow the ceiling. Each field resolves independently: run override, then definition, then config default. An omitted field falls through; a present `0` disables that dimension.
+
+Budgets are operator-selected. Atomic's agent guidance treats "no budget" as the correct default: the agent passes a `budget` on a `run` or `resume` call only when you asked for a limit, and otherwise omits the field so the definition and config resolve normally. A cap the agent invented would stop an otherwise healthy run at a duration, token, or cost boundary you never chose, and the stop reads as a workflow failure rather than as an added override. When you do state a limit, only the fields you named are passed; the rest keep falling through.
 
 ```ts
 export default workflow({

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Agent guidance now treats "no budget" as the default for workflow runs. A `budget` is passed on `run`/`resume` only when the operator asked for a limit, and only the fields they named; otherwise the field is omitted so the workflow declaration and config resolve normally.
+- Agent guidance now assumes the existing 15-minute heartbeat cadence and does not shorten, lengthen, or disable it unless the operator asks. Heartbeats are documented as periodic alignment checks rather than failure signals, so a progressing run is not interrupted, re-capped, or polled in response to one.
+
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Changed

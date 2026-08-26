@@ -787,4 +787,33 @@ describe("workflow-first execution routing", () => {
 			}
 		}
 	});
+
+	/**
+	 * A budget the user never asked for truncates a healthy run at a boundary they
+	 * did not choose, and the stop reads as a workflow failure rather than as an
+	 * override the agent added. Heartbeats have the mirrored failure: a periodic
+	 * alignment check gets read as an alarm, and the agent intervenes in, re-caps,
+	 * or polls a run that was progressing.
+	 */
+	test("assumes no budget and a 15-minute heartbeat unless the user asks", () => {
+		for (const phrase of [
+			"Do not pass a `budget` unless the user asked for a limit",
+			"omitting `budget` inherits the workflow declaration and config",
+			"assuming no budget is always the correct default",
+			"pass only the fields they named",
+			"Pass budget only when the user asked for a limit",
+			"Heartbeat cadence is 15 minutes by default",
+			"do not configure, shorten, or lengthen it unless the user explicitly asks",
+			"periodic alignment check rather than a failure",
+		]) {
+			expect(modelVisibleRouting).toContain(phrase);
+		}
+	});
+
+	test("keeps the runtime heartbeat default aligned with the guidance", async () => {
+		const contract = await readRepositoryFile("packages/workflows/src/shared/workflow-heartbeat-contract.ts");
+		// The guidance tells the model to assume 15 minutes; if the runtime default
+		// ever moves, the assumption becomes wrong rather than merely stale.
+		expect(contract).toContain("DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES = 15");
+	});
 });
