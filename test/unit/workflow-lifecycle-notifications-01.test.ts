@@ -138,6 +138,64 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.doesNotMatch(sent[0]?.content ?? "", /✓/u);
 	});
 
+	test("blocked notices instruct continuation instead of stopping", () => {
+		const { store, sent } = install();
+		startRun(store, "run-blocked-guidance", "release");
+
+		assert.equal(
+			store.recordRunEnd(
+				"run-blocked-guidance",
+				"blocked",
+				{ status: "blocked", summary: "checks are still pending" },
+				"checks are still pending",
+			),
+			true,
+		);
+
+		const content = sent[0]?.content ?? "";
+		assert.equal(sent[0]?.details?.kind, "blocked");
+		assert.equal(sent[0]?.details?.budgetExceeded, undefined);
+		assert.match(content, /Do not treat this as a stopping point/u);
+		assert.match(content, /follow-up workflow/u);
+		assert.match(content, /inline only if what remains is minimal/u);
+		assert.match(content, /mine git history, commits, PRs, issues/u);
+	});
+
+	test("budget-exceeded blocked notices ask the user before proceeding", () => {
+		const { store, sent } = install();
+		store.recordRunStart({
+			id: "run-budget",
+			name: "release",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+			budget: { maxDurationMs: 200 },
+			budgetState: { systemOwnedStop: true },
+		});
+
+		assert.equal(
+			store.recordRunEnd(
+				"run-budget",
+				"blocked",
+				{ status: "budget_exceeded", dimension: "duration", reading: 210, ceiling: 200, percent: 105 },
+				"duration budget exhausted",
+			),
+			true,
+		);
+
+		const content = sent[0]?.content ?? "";
+		assert.equal(sent[0]?.details?.kind, "blocked");
+		assert.equal(sent[0]?.details?.budgetExceeded, true);
+		assert.equal(sent[0]?.details?.budgetDimension, "duration");
+		assert.match(content, /stopped at its duration budget limit/u);
+		assert.match(content, /estimated next steps/u);
+		assert.match(content, /ask the user whether to proceed/u);
+		assert.match(content, /ask_user_question/u);
+		assert.match(content, /workflow\(\{ action: "resume", runId: "run-budget", budget: \{ \.\.\. \} \}\)/u);
+		assert.doesNotMatch(content, /Do not treat this as a stopping point/u);
+	});
+
 	test("uses blocked lifecycle notices for legacy completed runs whose returned status needs human", () => {
 		const { store, sent } = install();
 		startRun(store, "run-needs-human", "adversarial-verification");

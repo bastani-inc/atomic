@@ -613,11 +613,26 @@ describe("workflow-first execution routing", () => {
 			"keep the work moving by default",
 			"resume a resumable block",
 			"carries the remaining tracked work past a terminal block",
+			"continue inline only if the remaining work is minimal",
 			"so ambiguous that competing interpretations lead to materially different outcomes",
 			"When human input is unavailable",
 			"do not stall on a question",
+			"mine git history, commits, PRs, issues",
 			"record the assumption and rationale",
 			"continue fully autonomously on best judgment",
+		]) {
+			expect(modelVisibleRouting).toContain(phrase);
+		}
+	});
+
+	test("asks the user before proceeding past an exhausted budget", () => {
+		for (const phrase of [
+			"A budget-exceeded stop (the resumable `budget_exceeded` blocked rail) is the exception",
+			"do not raise it silently",
+			"Summarize progress and the estimated next steps",
+			"ask the user whether to proceed",
+			"prefer the `ask_user_question` tool when it is available",
+			"resume with a raised `budget` only after approval",
 		]) {
 			expect(modelVisibleRouting).toContain(phrase);
 		}
@@ -629,8 +644,13 @@ describe("workflow-first execution routing", () => {
 			for (const phrase of [
 				"Treat a blocked run as continuable by default",
 				"resume a resumable block",
+				"continue inline only if the remaining work is minimal",
+				"mine git history, commits, PRs, issues",
 				"continue fully autonomously",
 				"record the assumption",
+				"estimated next steps",
+				"ask the user whether to proceed",
+				"resume with a raised `budget` only after approval",
 			]) {
 				expect(documentation, path).toContain(phrase);
 			}

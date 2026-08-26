@@ -33,11 +33,19 @@ function compactRunResult(
 	const summary = compactResultField(result.summary);
 	const remainingWork = compactResultField(result.remaining_work);
 	const resultText = compactResultField(result.result);
+	// The engine-owned budget stop carries its exceeded dimension in the result;
+	// keep it so notices can name the exhausted budget without the full report.
+	const budgetDimension =
+		status === "budget_exceeded" &&
+		(result.dimension === "duration" || result.dimension === "tokens" || result.dimension === "cost")
+			? result.dimension
+			: undefined;
 	const compact: WorkflowOutputValues = {
 		...(status !== undefined ? { status } : {}),
 		...(summary !== undefined ? { summary } : {}),
 		...(remainingWork !== undefined ? { remaining_work: remainingWork } : {}),
 		...(resultText !== undefined ? { result: resultText } : {}),
+		...(budgetDimension !== undefined ? { dimension: budgetDimension } : {}),
 	};
 	if (!preserveExitedOutputs) return Object.keys(compact).length === 0 ? undefined : compact;
 	return compactExitedOutputs(result, compact);
