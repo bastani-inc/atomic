@@ -7,9 +7,28 @@ import { loadConfigFile } from "../../packages/workflows/src/extension/config-fi
 import { loadWorkflowConfig, withWorkflowDefaults } from "../../packages/workflows/src/extension/config-loader.js";
 
 describe("workflow environment config", () => {
-	test("preserves a configured template binding without enabling environments by default", () => {
+	test("applies environment duration defaults only when an environment is configured", () => {
 		assert.equal(withWorkflowDefaults({}).environment, undefined);
 
+		assert.deepEqual(
+			withWorkflowDefaults({
+				environment: {
+					deployment: "https://coder.example.com",
+					templates: { "dev-large": { preset: "standard" } },
+					defaultTemplate: "dev-large",
+				},
+			}).environment,
+			{
+				deployment: "https://coder.example.com",
+				templates: { "dev-large": { preset: "standard" } },
+				defaultTemplate: "dev-large",
+				idleMinutes: 240,
+				retentionHours: 12,
+			},
+		);
+	});
+
+	test("preserves configured environment duration overrides", () => {
 		const environment = {
 			deployment: "https://coder.example.com",
 			organization: "default",
@@ -25,8 +44,7 @@ describe("workflow environment config", () => {
 			retentionHours: 8,
 		};
 
-		const effective = withWorkflowDefaults({ environment });
-		assert.deepEqual(effective.environment, environment);
+		assert.deepEqual(withWorkflowDefaults({ environment }).environment, environment);
 	});
 
 	test("treats a project environment binding as one deployment-scoped override", async () => {
@@ -79,6 +97,32 @@ describe("workflow environment config", () => {
 						deployment: "https://coder.example.com",
 						templates: { "dev-large": {} },
 						defaultTemplate: "missing",
+					},
+				}),
+			);
+
+			const outcome = await loadConfigFile(filePath);
+			assert.equal(outcome.kind, "error");
+			if (outcome.kind === "error") {
+				assert.match(outcome.diagnostic.message, /environment\.defaultTemplate/);
+				assert.match(outcome.diagnostic.message, /configured template/);
+			}
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects an inherited Object prototype name as the default template", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "workflow-environment-config-"));
+		const filePath = join(directory, "config.json");
+		try {
+			await writeFile(
+				filePath,
+				JSON.stringify({
+					environment: {
+						deployment: "https://coder.example.com",
+						templates: { "dev-large": {} },
+						defaultTemplate: "toString",
 					},
 				}),
 			);

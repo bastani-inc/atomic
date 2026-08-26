@@ -80,7 +80,7 @@ function validateEnvironmentConfig(value: unknown): string | null {
 				}
 			}
 		}
-		if (!(value.defaultTemplate in value.templates)) {
+		if (!Object.hasOwn(value.templates, value.defaultTemplate)) {
 			return `"environment.defaultTemplate" must name a configured template`;
 		}
 	}

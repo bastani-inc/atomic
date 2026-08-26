@@ -218,6 +218,10 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
 	worktree: {
 		symlinkDirectories: ["node_modules"] as readonly string[],
 	},
+	environment: {
+		idleMinutes: 240,
+		retentionHours: 12,
+	},
 } as const;
 
 /**
@@ -265,7 +269,16 @@ export function withWorkflowDefaults(config: WorkflowExtensionConfig): WorkflowE
 				config.worktree?.symlinkDirectories ?? WORKFLOW_CONFIG_DEFAULTS.worktree.symlinkDirectories,
 		},
 		...(config.workflows !== undefined ? { workflows: config.workflows } : {}),
-		...(config.environment !== undefined ? { environment: config.environment } : {}),
+		...(config.environment !== undefined
+			? {
+					environment: {
+						...config.environment,
+						idleMinutes: config.environment.idleMinutes ?? WORKFLOW_CONFIG_DEFAULTS.environment.idleMinutes,
+						retentionHours:
+							config.environment.retentionHours ?? WORKFLOW_CONFIG_DEFAULTS.environment.retentionHours,
+					},
+				}
+			: {}),
 	};
 }
 

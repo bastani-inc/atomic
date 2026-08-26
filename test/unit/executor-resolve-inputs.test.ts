@@ -104,6 +104,22 @@ describe("resolveInputEnvironmentBinding", () => {
 		);
 	});
 
+	test("rejects an inherited Object prototype name as an unconfigured template", () => {
+		assert.throws(
+			() =>
+				resolveInputEnvironmentBinding(
+					{ inputBindings: { environment: { template: "template" } } },
+					{ template: "toString" },
+					{
+						deployment: "https://coder.example.com",
+						templates: { "dev-large": { preset: "standard" } },
+						defaultTemplate: "dev-large",
+					},
+				),
+			{ message: 'atomic-workflows: environment template "toString" is not configured' },
+		);
+	});
+
 	test("rejects a run override outside a single-template shorthand binding", () => {
 		assert.throws(
 			() =>

@@ -1,5 +1,6 @@
 import { type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
+import { WORKFLOW_CONFIG_DEFAULTS } from "../../extension/config-loader.js";
 import { schemaFieldKind, schemaIsRequired } from "../../shared/schema-introspection.js";
 import type {
 	EnvironmentBinding,
@@ -53,9 +54,6 @@ export function resolveInputConcurrency(
 	return Math.floor(value);
 }
 
-const DEFAULT_ENVIRONMENT_IDLE_MINUTES = 240;
-const DEFAULT_ENVIRONMENT_RETENTION_HOURS = 12;
-
 export function resolveInputEnvironmentBinding(
 	def: Pick<WorkflowDefinition, "inputBindings">,
 	resolvedInputs: ResolvedInputs,
@@ -73,7 +71,10 @@ export function resolveInputEnvironmentBinding(
 		throw new TypeError("atomic-workflows: environment config has no default template");
 	}
 
-	const templateConfig = environment.templates?.[selectedTemplate];
+	const templateConfig =
+		environment.templates !== undefined && Object.hasOwn(environment.templates, selectedTemplate)
+			? environment.templates[selectedTemplate]
+			: undefined;
 	const shorthandMismatch = environment.template !== undefined && selectedTemplate !== environment.template;
 	if (templateConfig === undefined && (environment.templates !== undefined || shorthandMismatch)) {
 		throw new TypeError(`atomic-workflows: environment template "${selectedTemplate}" is not configured`);
@@ -85,8 +86,8 @@ export function resolveInputEnvironmentBinding(
 		template: selectedTemplate,
 		...(templateConfig?.preset === undefined ? {} : { preset: templateConfig.preset }),
 		parameters: { ...(templateConfig?.parameters ?? {}) },
-		idleMinutes: environment.idleMinutes ?? DEFAULT_ENVIRONMENT_IDLE_MINUTES,
-		retentionHours: environment.retentionHours ?? DEFAULT_ENVIRONMENT_RETENTION_HOURS,
+		idleMinutes: environment.idleMinutes ?? WORKFLOW_CONFIG_DEFAULTS.environment.idleMinutes,
+		retentionHours: environment.retentionHours ?? WORKFLOW_CONFIG_DEFAULTS.environment.retentionHours,
 	};
 }
 
