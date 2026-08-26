@@ -974,6 +974,7 @@ Authoring basics:
 - `heartbeatIntervalMinutes` declares the workflow's heartbeat cadence in minutes. Omission uses the `15`-minute default; `0` disables heartbeats for the workflow. Negative and non-finite values are rejected when the definition is authored. While a run is active, each boundary at `startedAt + n × interval` delivers a heartbeat card to the main chat as a queued steer that never interrupts an in-flight response. See [`heartbeatIntervalMinutes`](#heartbeatintervalminutes).
 - `inputs` declares typed user inputs.
 - `worktreeFromInputs` optionally maps input names to workflow-wide reusable Git worktree defaults.
+- `environmentFromInputs` optionally maps a workflow input to one configured Coder template name for per-run environment selection.
 - `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
 - `run: async (ctx) => { ... }` defines the workflow body.
 
@@ -2058,6 +2059,34 @@ export default workflow({
 });
 ```
 
+### `environmentFromInputs`
+
+```typescript
+readonly environmentFromInputs?: {
+  readonly template: string;
+};
+```
+
+The value names a workflow input. After Atomic applies input defaults, a non-empty string from that input selects a template key from the configured `environment.templates` map. If the workflow does not bind an input, Atomic uses `environment.defaultTemplate`, or `environment.template` for the single-template shorthand. Selecting a template that is not configured fails instead of falling back to another template.
+
+```ts
+export default workflow({
+  name: "platform-check",
+  description: "Run checks on a selected environment template.",
+  inputs: {
+    template: Type.String({ default: "dev-large" }),
+  },
+  outputs: {},
+  environmentFromInputs: { template: "template" },
+  run: async (ctx) => {
+    await ctx.task("check", { prompt: "Run the repository checks." });
+    return {};
+  },
+});
+```
+
+This binding only selects among templates already named in workflow extension config. It does not accept a deployment URL, credentials, or provider settings from workflow inputs. When the `environment` config block is absent, the resolver returns no binding and local workflow behavior is unchanged.
+
 ### `run(ctx)`
 
 ```typescript
@@ -2086,7 +2115,10 @@ interface WorkflowDefinition<
   readonly budget?: WorkflowBudget;
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
-  readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };
+  readonly inputBindings?: {
+    readonly worktree?: WorkflowWorktreeInputBinding;
+    readonly environment?: WorkflowEnvironmentInputBinding;
+  };
   run(ctx: WorkflowRunContext<TInputs, TOutputs>): Promise<TOutputs> | TOutputs;
 }
 ```
@@ -3628,6 +3660,20 @@ Example config:
   "persistRuns": true,
   "statusFile": false,
   "resumeInFlight": "ask",
+  "environment": {
+    "deployment": "https://coder.example.com",
+    "organization": "default",
+    "templates": {
+      "dev-large": { "preset": "standard" },
+      "dev-windows": {
+        "preset": "standard",
+        "parameters": { "instance_type": "Standard_D4s_v5" }
+      }
+    },
+    "defaultTemplate": "dev-large",
+    "idleMinutes": 240,
+    "retentionHours": 12
+  },
   "workflowNotifications": {
     "enabled": true,
     "notifyOn": ["started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", "resumed"]
@@ -3651,6 +3697,10 @@ Runtime config defaults:
 | `workflowNotifications.enabled` | `true` | Emit workflow lifecycle notices into the active main chat |
 | `workflowNotifications.notifyOn` | `["started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", "resumed"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes, active recoverable blocks, duration budget warnings, and the user-initiated `started`/`paused`/`quit`/`resumed` control actions on a top-level run create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
 | `worktree.symlinkDirectories` | `["node_modules"]` | Main-root directories symlinked into each runner-managed temporary worktree during post-creation setup |
+| `environment` | absent | Optional Coder deployment and template bindings. Template-map keys are the deployment's own template names. Project config replaces the complete global block rather than merging deployments. |
+| `environment.template` | none | Single-template shorthand. It cannot be combined with `templates` or `defaultTemplate`. |
+| `environment.idleMinutes` | `240` when configured | Idle-stop duration copied into a resolved environment binding. |
+| `environment.retentionHours` | `12` when configured | Retention duration copied into a resolved environment binding. |
 
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.
 

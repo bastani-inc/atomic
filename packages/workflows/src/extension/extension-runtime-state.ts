@@ -358,6 +358,7 @@ export function createWorkflowExtensionRuntimeState(
 			resumeInFlight: effectiveConfig.resumeInFlight,
 			budget: effectiveConfig.budget,
 			worktree: effectiveConfig.worktree,
+			...(effectiveConfig.environment === undefined ? {} : { environment: effectiveConfig.environment }),
 		};
 		lifecycleNotificationConfigRef.current = effectiveConfig.workflowNotifications;
 		reinstallLifecycleNotifications();

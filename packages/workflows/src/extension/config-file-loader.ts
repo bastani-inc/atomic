@@ -27,6 +27,75 @@ function isWorkflowLifecycleNoticeKind(value: unknown): value is WorkflowLifecyc
 	return typeof value === "string" && WORKFLOW_LIFECYCLE_NOTICE_KIND_SET.has(value);
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function validateEnvironmentConfig(value: unknown): string | null {
+	if (!isJsonObject(value)) {
+		return `"environment" must be a JSON object, got ${JSON.stringify(typeof value)}`;
+	}
+	if (!isNonEmptyString(value.deployment)) {
+		return `"environment.deployment" must be a non-empty string, got ${JSON.stringify(value.deployment)}`;
+	}
+	if ("organization" in value && !isNonEmptyString(value.organization)) {
+		return `"environment.organization" must be a non-empty string, got ${JSON.stringify(value.organization)}`;
+	}
+
+	const hasShorthand = "template" in value;
+	const hasTemplates = "templates" in value;
+	const hasDefault = "defaultTemplate" in value;
+	if (hasShorthand) {
+		if (!isNonEmptyString(value.template)) {
+			return `"environment.template" must be a non-empty string, got ${JSON.stringify(value.template)}`;
+		}
+		if (hasTemplates || hasDefault) {
+			return `"environment.template" cannot be combined with "templates" or "defaultTemplate"`;
+		}
+	} else {
+		if (!hasTemplates || !isJsonObject(value.templates) || Object.keys(value.templates).length === 0) {
+			return `"environment.templates" must be a non-empty JSON object`;
+		}
+		if (!isNonEmptyString(value.defaultTemplate)) {
+			return `"environment.defaultTemplate" must be a non-empty string`;
+		}
+		for (const [name, templateValue] of Object.entries(value.templates)) {
+			if (name.trim().length === 0) return `"environment.templates" keys must be non-empty strings`;
+			if (!isJsonObject(templateValue)) {
+				return `"environment.templates.${name}" must be a JSON object`;
+			}
+			if ("preset" in templateValue && !isNonEmptyString(templateValue.preset)) {
+				return `"environment.templates.${name}.preset" must be a non-empty string`;
+			}
+			if ("parameters" in templateValue) {
+				if (!isJsonObject(templateValue.parameters)) {
+					return `"environment.templates.${name}.parameters" must be a JSON object`;
+				}
+				if (Object.values(templateValue.parameters).some((parameter) => typeof parameter !== "string")) {
+					return `"environment.templates.${name}.parameters" values must be strings`;
+				}
+			}
+		}
+		if (!(value.defaultTemplate in value.templates)) {
+			return `"environment.defaultTemplate" must name a configured template`;
+		}
+	}
+
+	for (const field of ["idleMinutes", "retentionHours"] as const) {
+		if (field in value) {
+			const duration = value[field];
+			if (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0) {
+				return `"environment.${field}" must be a positive finite number, got ${JSON.stringify(duration)}`;
+			}
+		}
+	}
+	return null;
+}
+
 function validateConfig(value: unknown): string | null {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) {
 		return "config must be a JSON object";
@@ -105,6 +174,11 @@ function validateConfig(value: unknown): string | null {
 				return `"worktree.symlinkDirectories" must be an array of strings`;
 			}
 		}
+	}
+
+	if ("environment" in c) {
+		const reason = validateEnvironmentConfig(c.environment);
+		if (reason !== null) return reason;
 	}
 
 	if ("workflows" in c) {

@@ -210,6 +210,32 @@ export type WorkflowRunFn<
 	TDefinitionBrand extends object = Record<never, never>,
 > = (ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>) => Promise<TOutputs> | TOutputs;
 
+export interface EnvironmentTemplateConfig {
+	readonly preset?: string;
+	readonly parameters?: Readonly<Record<string, string>>;
+}
+
+export interface EnvironmentConfig {
+	readonly deployment: string;
+	readonly organization?: string;
+	/** Single-template shorthand. Mutually exclusive with templates and defaultTemplate. */
+	readonly template?: string;
+	readonly templates?: Readonly<Record<string, EnvironmentTemplateConfig>>;
+	readonly defaultTemplate?: string;
+	readonly idleMinutes?: number;
+	readonly retentionHours?: number;
+}
+
+export interface EnvironmentBinding {
+	readonly deployment: string;
+	readonly organization?: string;
+	readonly template: string;
+	readonly preset?: string;
+	readonly parameters: Readonly<Record<string, string>>;
+	readonly idleMinutes: number;
+	readonly retentionHours: number;
+}
+
 export interface WorkflowRuntimeConfig {
 	readonly maxDepth: number;
 	readonly defaultConcurrency: number;
@@ -222,6 +248,7 @@ export interface WorkflowRuntimeConfig {
 	readonly worktree?: {
 		readonly symlinkDirectories: readonly string[];
 	};
+	readonly environment?: EnvironmentConfig;
 }
 
 export interface WorkflowWorktreeInputBinding {
@@ -229,8 +256,14 @@ export interface WorkflowWorktreeInputBinding {
 	readonly baseBranch?: string;
 }
 
+export interface WorkflowEnvironmentInputBinding {
+	/** Workflow input whose value selects one configured Coder template by name. */
+	readonly template: string;
+}
+
 export interface WorkflowInputBindings {
 	readonly worktree?: WorkflowWorktreeInputBinding;
+	readonly environment?: WorkflowEnvironmentInputBinding;
 }
 
 export interface WorkflowDefinition<

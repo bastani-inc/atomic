@@ -2,6 +2,8 @@ import { type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { schemaFieldKind, schemaIsRequired } from "../../shared/schema-introspection.js";
 import type {
+	EnvironmentBinding,
+	EnvironmentConfig,
 	StageOptions,
 	WorkflowDefinition,
 	WorkflowInputSchema,
@@ -49,6 +51,43 @@ export function resolveInputConcurrency(
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return undefined;
 
 	return Math.floor(value);
+}
+
+const DEFAULT_ENVIRONMENT_IDLE_MINUTES = 240;
+const DEFAULT_ENVIRONMENT_RETENTION_HOURS = 12;
+
+export function resolveInputEnvironmentBinding(
+	def: Pick<WorkflowDefinition, "inputBindings">,
+	resolvedInputs: ResolvedInputs,
+	environment: EnvironmentConfig | undefined,
+): EnvironmentBinding | undefined {
+	if (environment === undefined) return undefined;
+
+	const templateInput = def.inputBindings?.environment?.template;
+	const selectedInput = templateInput === undefined ? undefined : resolvedInputs[templateInput];
+	const selectedTemplate =
+		typeof selectedInput === "string" && selectedInput.trim().length > 0
+			? selectedInput
+			: (environment.defaultTemplate ?? environment.template);
+	if (selectedTemplate === undefined) {
+		throw new TypeError("atomic-workflows: environment config has no default template");
+	}
+
+	const templateConfig = environment.templates?.[selectedTemplate];
+	const shorthandMismatch = environment.template !== undefined && selectedTemplate !== environment.template;
+	if (templateConfig === undefined && (environment.templates !== undefined || shorthandMismatch)) {
+		throw new TypeError(`atomic-workflows: environment template "${selectedTemplate}" is not configured`);
+	}
+
+	return {
+		deployment: environment.deployment,
+		...(environment.organization === undefined ? {} : { organization: environment.organization }),
+		template: selectedTemplate,
+		...(templateConfig?.preset === undefined ? {} : { preset: templateConfig.preset }),
+		parameters: { ...(templateConfig?.parameters ?? {}) },
+		idleMinutes: environment.idleMinutes ?? DEFAULT_ENVIRONMENT_IDLE_MINUTES,
+		retentionHours: environment.retentionHours ?? DEFAULT_ENVIRONMENT_RETENTION_HOURS,
+	};
 }
 
 export function resolveInputRuntimeDefaults(

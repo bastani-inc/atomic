@@ -293,6 +293,23 @@ describe("workflow authoring door", () => {
 		assert.equal(Object.isFrozen(def.inputBindings?.worktree), true);
 	});
 
+	test("environmentFromInputs stores an immutable template input binding", () => {
+		const def = workflow({
+			name: "environment-inputs",
+			description: "",
+			inputs: {
+				template: Type.String({ default: "dev-large" }),
+			},
+			outputs: {},
+			environmentFromInputs: { template: "template" },
+			run: async () => ({}),
+		});
+
+		assert.deepEqual(def.inputBindings?.environment, { template: "template" });
+		assert.equal(Object.isFrozen(def.inputBindings?.environment), true);
+		assert.equal(Object.isFrozen(def.inputBindings), true);
+	});
+
 	test("input() records immutable workflow input metadata", () => {
 		const def = workflow({
 			name: "child",

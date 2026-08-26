@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { assertWorkflowBudget, type WorkflowBudget } from "../shared/budget.js";
 import type {
 	WorkflowDefinition,
+	WorkflowEnvironmentInputBinding,
 	WorkflowInputBindings,
 	WorkflowInputSchemaMap,
 	WorkflowInputValues,
@@ -127,10 +128,14 @@ function resolveWorkflowName(name: string | undefined): string {
 	return resolved;
 }
 
-function freezeInputBindings(binding: WorkflowWorktreeInputBinding | undefined): WorkflowInputBindings | undefined {
-	if (binding === undefined) return undefined;
+function freezeInputBindings(
+	worktree: WorkflowWorktreeInputBinding | undefined,
+	environment: WorkflowEnvironmentInputBinding | undefined,
+): WorkflowInputBindings | undefined {
+	if (worktree === undefined && environment === undefined) return undefined;
 	return Object.freeze({
-		worktree: Object.freeze({ ...binding }),
+		...(worktree === undefined ? {} : { worktree: Object.freeze({ ...worktree }) }),
+		...(environment === undefined ? {} : { environment: Object.freeze({ ...environment }) }),
 	});
 }
 
@@ -178,7 +183,7 @@ export function workflow<
 	requireNonEmptyString(normalizedName, "normalized name");
 	const frozenInputs = freezeSchemaMap(spec.inputs ?? ({} as TInputs));
 	const frozenOutputs = freezeSchemaMap(spec.outputs);
-	const inputBindings = freezeInputBindings(spec.worktreeFromInputs);
+	const inputBindings = freezeInputBindings(spec.worktreeFromInputs, spec.environmentFromInputs);
 	const budget = freezeBudget(spec.budget);
 	const run: WorkflowRunFn<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>> = async (ctx) =>
 		specRun(ctx);

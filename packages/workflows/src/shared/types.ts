@@ -493,6 +493,9 @@ export interface WorkflowCancelledToolNode extends WorkflowToolNodeIdentity {
  * statusFile writer. This type is the port — values flow through but are not
  * acted on until those tasks land.
  */
+export type EnvironmentBinding = AuthoringContract.EnvironmentBinding;
+export type EnvironmentConfig = AuthoringContract.EnvironmentConfig;
+export type EnvironmentTemplateConfig = AuthoringContract.EnvironmentTemplateConfig;
 export type WorkflowRuntimeConfig = AuthoringContract.WorkflowRuntimeConfig;
 
 // ---------------------------------------------------------------------------
@@ -508,6 +511,7 @@ export type WorkflowRunFn<
 // Compiled workflow definition
 // ---------------------------------------------------------------------------
 
+export type WorkflowEnvironmentInputBinding = AuthoringContract.WorkflowEnvironmentInputBinding;
 export type WorkflowWorktreeInputBinding = AuthoringContract.WorkflowWorktreeInputBinding;
 export type WorkflowInputBindings = AuthoringContract.WorkflowInputBindings;
 declare const workflowDefinitionBrand: unique symbol;

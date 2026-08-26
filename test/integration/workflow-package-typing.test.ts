@@ -89,7 +89,8 @@ import type {
   AgentSessionAdapter,
   StageAdapters,
   StageOptions, StageSendUserMessageOptions, StageSessionEvent, StageStatus, StageUserMessageContent,
-  WorkflowDefinition, WorkflowExecutionPolicy, WorkflowInputBindings, WorkflowInputSchemaMap,
+  EnvironmentBinding, EnvironmentConfig, EnvironmentTemplateConfig,
+  WorkflowDefinition, WorkflowEnvironmentInputBinding, WorkflowExecutionPolicy, WorkflowInputBindings, WorkflowInputSchemaMap,
   WorkflowMcpPort, WorkflowModelCatalogPort, WorkflowOutputSchemaMap, WorkflowPersistencePort, WorkflowRunOutput,
   WorkflowRuntimeConfig, WorkflowTaskSessionOptions, WorkflowToolError, WorkflowToolOutcome, WorkflowUIAdapter,
   WorkflowCustomUiComponent, WorkflowCustomUiFactory, WorkflowCustomUiKeybindings, WorkflowCustomUiOptions,
@@ -127,11 +128,13 @@ const authoredWorkflow = workflow({
     finiteLabels: Type.Record(Type.Union([Type.Literal("foo"), Type.Literal("bar")]), Type.Number(), { default: { foo: 1, bar: 2 } }),
     tuple: Type.Tuple([Type.String(), Type.Number()], { default: ["x", 1] }),
     nothing: Type.Null({ default: null }),
+    environmentTemplate: Type.String({ default: "dev-large" }),
   },
   outputs: {
     summary: Type.String(),
     maybe: Type.Optional(Type.String()),
   },
+  environmentFromInputs: { template: "environmentTemplate" },
   run: async (ctx) => {
     const message: string = ctx.inputs.message;
     const mode: "fast" = ctx.inputs.mode;
@@ -425,7 +428,25 @@ const adapters: StageAdapters = { agentSession: adapter };
 const policy: WorkflowExecutionPolicy = { mode: "interactive", allowHumanInput: true, awaitTerminalRun: false, allowInputPicker: true };
 const interactivePolicy: WorkflowExecutionPolicy = INTERACTIVE_WORKFLOW_POLICY;
 const nonInteractivePolicyMode: WorkflowExecutionPolicy["mode"] = NON_INTERACTIVE_WORKFLOW_POLICY.mode;
-const inputBindings: WorkflowInputBindings = { worktree: { gitWorktreeDir: ".worktrees", baseBranch: "main" } };
+const environmentInputBinding: WorkflowEnvironmentInputBinding = { template: "environmentTemplate" };
+const inputBindings: WorkflowInputBindings = {
+  worktree: { gitWorktreeDir: ".worktrees", baseBranch: "main" },
+  environment: environmentInputBinding,
+};
+const environmentTemplate: EnvironmentTemplateConfig = { preset: "standard", parameters: { size: "large" } };
+const environmentConfig: EnvironmentConfig = {
+  deployment: "https://coder.example.com",
+  templates: { "dev-large": environmentTemplate },
+  defaultTemplate: "dev-large",
+};
+const environmentBinding: EnvironmentBinding = {
+  deployment: environmentConfig.deployment,
+  template: "dev-large",
+  preset: "standard",
+  parameters: { size: "large" },
+  idleMinutes: 240,
+  retentionHours: 12,
+};
 const inputSchemas: WorkflowInputSchemaMap = { message: Type.String() };
 const outputSchemas: WorkflowOutputSchemaMap = { summary: Type.String() };
 const runOutput: WorkflowRunOutput = { summary: "ok" };
@@ -460,6 +481,10 @@ void policy;
 void interactivePolicy;
 void nonInteractivePolicyMode;
 void inputBindings;
+void environmentInputBinding;
+void environmentTemplate;
+void environmentConfig;
+void environmentBinding;
 void inputSchemas;
 void outputSchemas;
 void runOutput;

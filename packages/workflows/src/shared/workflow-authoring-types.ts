@@ -1,6 +1,7 @@
 import type { Static, TOptional, TSchema } from "typebox";
 import type {} from "../authoring/typebox-defaults.js";
 import type {
+	WorkflowEnvironmentInputBinding,
 	WorkflowInputSchemaMap,
 	WorkflowInputValues,
 	WorkflowOutputSchemaMap,
@@ -105,6 +106,7 @@ export interface AuthoredWorkflowSpec<
 	readonly inputs?: TInputs;
 	readonly outputs: TOutputs;
 	readonly worktreeFromInputs?: WorkflowWorktreeInputBinding;
+	readonly environmentFromInputs?: WorkflowEnvironmentInputBinding;
 	readonly run: (
 		ctx: TRunContext,
 	) => Promise<WorkflowRunOutputResult<TOutputs, TActualOutputs>> | WorkflowRunOutputResult<TOutputs, TActualOutputs>;

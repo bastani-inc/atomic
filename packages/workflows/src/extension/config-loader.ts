@@ -19,6 +19,7 @@
 import { isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getAgentDir, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
 import { type EffectiveBudget, resolve_budget, type WorkflowBudget } from "../shared/budget.js";
+import type { EnvironmentConfig } from "../shared/types.js";
 import { loadConfigFile } from "./config-file-loader.js";
 import type { WorkflowLifecycleNoticeKind } from "./lifecycle-notifications.js";
 
@@ -66,6 +67,8 @@ export interface WorkflowExtensionConfig {
 	readonly workflowNotifications?: WorkflowNotificationsConfig;
 	/** Temporary-worktree post-creation settings. */
 	readonly worktree?: WorkflowWorktreeConfig;
+	/** Optional Coder deployment and template bindings for per-run environments. */
+	readonly environment?: EnvironmentConfig;
 }
 
 /** Severity of a config diagnostic. */
@@ -167,6 +170,9 @@ function mergeConfigs(base: WorkflowExtensionConfig, override: WorkflowExtension
 		...(base.worktree !== undefined || override.worktree !== undefined
 			? { worktree: { ...(base.worktree ?? {}), ...(override.worktree ?? {}) } }
 			: {}),
+		...(base.environment !== undefined || override.environment !== undefined
+			? { environment: override.environment ?? base.environment }
+			: {}),
 		...(budget !== undefined ? { budget } : {}),
 		...(workflows !== undefined ? { workflows } : {}),
 	};
@@ -233,6 +239,7 @@ export interface WorkflowEffectiveConfig {
 		readonly symlinkDirectories: readonly string[];
 	};
 	readonly workflows?: Readonly<Record<string, WorkflowConfigEntry>>;
+	readonly environment?: EnvironmentConfig;
 }
 
 /**
@@ -258,6 +265,7 @@ export function withWorkflowDefaults(config: WorkflowExtensionConfig): WorkflowE
 				config.worktree?.symlinkDirectories ?? WORKFLOW_CONFIG_DEFAULTS.worktree.symlinkDirectories,
 		},
 		...(config.workflows !== undefined ? { workflows: config.workflows } : {}),
+		...(config.environment !== undefined ? { environment: config.environment } : {}),
 	};
 }
 

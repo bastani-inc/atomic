@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added the optional workflow `environment` config block for Coder deployment and template bindings, including the single-template shorthand, per-template preset and string parameters, idle and retention settings, and project-level replacement semantics. Authored workflows can map a template-name input through `environmentFromInputs`; Atomic freezes that declaration and resolves it to a typed run binding while leaving unconfigured workflows local and unchanged.
+
 ### Fixed
 
 - Fixed Git-installed workflow discovery when production-only package installs omit local TypeBox by resolving `typebox/compile`, `typebox/value`, and supported legacy `@sinclair/typebox` aliases through the host loader for workflow files and their helpers.
