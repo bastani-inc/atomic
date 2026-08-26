@@ -375,7 +375,6 @@ export async function generateBranchSummary(
 		signal,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
-		toolChoice: "none",
 		...(budget.reasoning && budget.reasoning !== "off" ? { reasoning: budget.reasoning } : {}),
 	};
 	const response = await (async () => {

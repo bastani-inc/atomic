@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { delimiter } from "node:path";
+import { delimiter, join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
@@ -209,6 +209,7 @@ const PARENT_GUARDIAN_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { spawn } = require("node:child_process");
 const { existsSync } = require("node:fs");
+const { join } = require("node:path");
 const tracked = new Set();
 parentPort.on("message", ({ action, pid }) => {
   if (action === "track") tracked.add(pid);
@@ -216,7 +217,13 @@ parentPort.on("message", ({ action, pid }) => {
 });
 function killTree(pid) {
   if (process.platform === "win32") {
-    try { spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } }); } catch {}
+    // Same System32 hardening as killProcessTree: PATH is not trusted here, and an
+    // unconsumed async "error" from a failed spawn would take the guardian thread
+    // down and leak every detached child it exists to reap.
+    try {
+      const child = spawn(join(process.env.SystemRoot || "C:\\\\Windows", "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
+      child.once("error", () => {});
+    } catch {}
     return;
   }
   try { process.kill(-pid, "SIGKILL"); }
@@ -277,15 +284,25 @@ export function killTrackedDetachedChildren(): void {
  */
 export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
-		// Use taskkill on Windows to kill process tree
+		// Use the trusted System32 executable so cleanup does not depend on PATH.
 		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-				stdio: "ignore",
-				detached: true,
-				env: createChildProcessEnvironment(),
-			});
+			const child = spawn(
+				join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+				["/F", "/T", "/PID", String(pid)],
+				{
+					stdio: "ignore",
+					detached: true,
+					// `detached` gives the child its own console on Windows unless this is
+					// set, so omitting it both flashes a window and pays for a console
+					// allocation on every tree kill. Every other spawn in the fork sets it.
+					windowsHide: true,
+					env: createChildProcessEnvironment(),
+				},
+			);
+			// A failed spawn emits "error" asynchronously; consume it to avoid crashing Node.
+			child.once("error", () => {});
 		} catch {
-			// Ignore errors if taskkill fails
+			// Ignore errors if taskkill fails.
 		}
 	} else {
 		// Use SIGKILL on Unix/Linux/Mac

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed compaction range planning and branch/session summaries forcing `toolChoice: "none"`, which sent `tool_choice` with no tools and could be rejected by gateways ([#8649](https://github.com/earendil-works/pi/issues/8649), [#8638](https://github.com/earendil-works/pi/issues/8638)).
+- Fixed Windows shell aborts crashing Atomic when `taskkill.exe` is not on `PATH`. Both `killProcessTree` and the detached-child guardian worker now spawn the System32 executable and consume the asynchronous spawn error ([#6596](https://github.com/earendil-works/pi/issues/6596)).
+- Fixed Windows `taskkill` spawning without `windowsHide`. Because the spawn is `detached`, Windows allocated and briefly flashed a console window on every process-tree kill.
+- Fixed session files whose final record has no trailing newline not being repaired on load, so a later append no longer concatenates onto that record.
+- Fixed toggling thinking-block visibility discarding partial Bash output. Rendered assistant messages are updated in place instead of rebuilding the chat and its live tool components ([#8611](https://github.com/earendil-works/pi/issues/8611)).
+
+### Changed
+
+- Documented `/thinking`, the Ctrl+S startup-default shortcut in the model and thinking pickers, and the `modelThinkingLevels` setting.
+
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Added

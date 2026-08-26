@@ -301,6 +301,7 @@ declare module "./interactive-mode-base.ts" {
 		toggleToolOutputExpansion(): void;
 		setToolsExpanded(expanded: boolean): void;
 		toggleThinkingBlockVisibility(): void;
+		updateThinkingBlockVisibility(): void;
 		openExternalEditor(): Promise<void>;
 		clearEditor(): void;
 		showError(errorMessage: string): void;

@@ -134,7 +134,7 @@ describe("safe prose summarization", () => {
 	it.each([
 		["branch", generateBranchSummary],
 		["session", generateSessionSummary],
-	] as const)("disables tools for %s summaries", async (_label, summarize) => {
+	] as const)("does not override tool choice for %s summaries", async (_label, summarize) => {
 		resetIds();
 		let requestOptions: import("@bastani/pi-ai/compat").SimpleStreamOptions | undefined;
 		await summarize([entry(user("summarize safely"))], {
@@ -147,7 +147,7 @@ describe("safe prose summarization", () => {
 				return stream;
 			},
 		});
-		expect(requestOptions?.toolChoice).toBe("none");
+		expect(requestOptions?.toolChoice).toBeUndefined();
 	});
 
 	it.each([
