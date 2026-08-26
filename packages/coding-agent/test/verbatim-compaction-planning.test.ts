@@ -299,7 +299,9 @@ describe("one-pass range planner", () => {
 		expect(calls[0].request.reasoning).toBe("medium");
 		expect("maxTokens" in calls[0].request).toBe(false);
 		expect(calls[0].request.cacheRetention).toBe("none");
-		expect(calls[0].request.toolChoice).toBe("none");
+		// The planner defines no tools, so it no longer forces `toolChoice: "none"`:
+		// sending tool_choice with no tools is what gateways reject (pi #8649/#8638).
+		expect(calls[0].request.toolChoice).toBeUndefined();
 		expect(calls[0].request.sessionId).toEqual(expect.any(String));
 		const firstSessionId = calls[0].request.sessionId;
 		await planDeletedLineRanges(prep.region, prep.parameters, planner(reasoningModel, "off", { apiKey: "key" }), 10, {
