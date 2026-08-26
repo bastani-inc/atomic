@@ -558,7 +558,11 @@ test("cut-release still creates the detached version-stamped tag", async () => {
 	const script = await readText(join(root, "scripts/cut-release.ts"));
 	assert.match(script, /canonicalReleaseBaseRef\(baseBranch\)/);
 	assert.match(script, /Release-base-ref: \$\{baseRef\}\\nRelease-base-sha: \$\{baseSha\}/);
-	assert.match(script, /git -C \$\{ROOT\} push origin \$\{version\}/);
+	// Fully-qualified on both sides. A bare `push origin ${version}` resolves
+	// against every ref namespace, so a same-named branch would push heads and
+	// tags in one command and start two publishers on one npm version.
+	assert.match(script, /push origin \$\{`refs\/tags\/\$\{version\}:refs\/tags\/\$\{version\}`\}/u);
+	assert.doesNotMatch(script, /push origin \$\{version\}/u);
 	assert.doesNotMatch(script, /Bun\.sleep|setTimeout/);
 });
 
@@ -579,11 +583,26 @@ test("native-artifacts bounds every dependency acquisition step", async () => {
 		assert.ok(bound, `unbounded acquisition step: ${needle}`);
 		return Number(bound[1]);
 	};
-	assert.equal(budget("uses: dtolnay/rust-toolchain@"), 4);
 	assert.equal(budget("tool: cargo-zigbuild@"), 3);
 	assert.equal(budget("tool: cargo-xwin@"), 3);
 	assert.equal(budget("apt-get install"), 5);
 	assert.equal(budget("cargo-xwin xwin cache xwin"), 8);
+
+	// The rustup fetch that killed both 0.9.16-alpha.5 publish runs overran this
+	// same 4-minute cap. The curl inside the action already retries, so a second
+	// attempt on a fresh step clock is the only thing that helps — and it has to
+	// stay bounded, or the retry reintroduces the stall the cap exists to stop.
+	const rustSteps = steps.filter((step) => step.includes("uses: dtolnay/rust-toolchain@"));
+	assert.equal(rustSteps.length, 2, "the Rust toolchain acquisition must keep exactly one bounded retry");
+	const [rust, rustRetry] = rustSteps as [string, string];
+	assert.match(
+		rust,
+		/id: rust\n\s+uses: dtolnay\/rust-toolchain@\w{40} # v1\n\s+continue-on-error: true\n\s+timeout-minutes: 4\n/u,
+	);
+	assert.match(
+		rustRetry,
+		/if: steps\.rust\.outcome == 'failure'\n\s+uses: dtolnay\/rust-toolchain@\w{40} # v1\n\s+timeout-minutes: 4\n/u,
+	);
 
 	const zigSteps = steps.filter((step) => step.includes("mlugg/setup-zig@"));
 	assert.equal(zigSteps.length, 2, "the Zig acquisition must keep exactly one bounded retry");

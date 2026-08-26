@@ -350,11 +350,19 @@ async function main(): Promise<void> {
 
 	if (push) {
 		console.log(`Pushing tag ${version}...`);
-		await $`git -C ${ROOT} push origin ${version}`;
-		console.log("Tag pushed. GitHub Actions will run the inert tag signal, then the protected-main publisher.");
+		// Fully-qualified on both sides. `git push origin <version>` resolves the
+		// bare name against every ref namespace, so a branch sharing the version's
+		// name would push refs/heads and refs/tags together — one command, two ref
+		// updates, two publish.yml runs racing the same npm version. Naming the tag
+		// ref explicitly makes that impossible regardless of what else is named.
+		await $`git -C ${ROOT} push origin ${`refs/tags/${version}:refs/tags/${version}`}`;
+		console.log(`Tag pushed. This is the publication signal: publish.yml is now running for ${version}.`);
+		console.log(
+			"Do not push this tag again — a second push re-triggers the publisher against a version that is already being published.",
+		);
 	} else {
-		console.log("Next: push the tag to trigger the signal and protected publisher:");
-		console.log(`  git push origin ${version}`);
+		console.log("Next: push the tag to trigger the publisher:");
+		console.log(`  git push origin refs/tags/${version}:refs/tags/${version}`);
 	}
 }
 
