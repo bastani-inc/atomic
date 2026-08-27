@@ -2056,6 +2056,7 @@ The workflow body may be synchronous or asynchronous. Return exactly the declare
 interface WorkflowDefinition<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
+  TRunInputs extends WorkflowInputValues = TInputs,
 > {
   readonly name: string;
   readonly normalizedName: string;
@@ -2069,6 +2070,8 @@ interface WorkflowDefinition<
   run(ctx: WorkflowRunContext<TInputs, TOutputs>): Promise<TOutputs> | TOutputs;
 }
 ```
+
+`TRunInputs` describes the validated inputs accepted by `run(...)` and `ctx.workflow(...)`; it defaults to the workflow's resolved input values.
 
 `workflow({...})` returns a `WorkflowDefinition` with the resolved name, normalized lookup name, description, runtime defaults, optional budget, schema maps, optional worktree input binding, and `run` function. Authors provide the fields documented above, and Atomic fills the normalized and defaulted values.
 
