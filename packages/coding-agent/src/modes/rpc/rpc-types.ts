@@ -261,7 +261,9 @@ export type RpcResponse =
 			data: RpcLogoutProviderResult;
 	  }
 
-	// Thinking
+	// Thinking — data-less success remains valid for older clients; isolated persist
+	// reads the optional ACK when present.
+	| { id?: string; type: "response"; command: "set_thinking_level"; success: true }
 	| {
 			id?: string;
 			type: "response";

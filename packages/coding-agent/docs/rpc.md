@@ -364,12 +364,17 @@ Levels: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`.
 
 `xhigh` and `max` are available only when the active model's capability mapping supports them; unsupported levels are clamped by the session model controls.
 
-Response includes the effective level after capability clamping and, when a model is active, the provider/model the engine persisted against:
+Response may omit `data` for compatibility with older clients:
+```json
+{"type": "response", "command": "set_thinking_level", "success": true}
+```
+
+Current engines include the effective level after capability clamping and, when a model is active, the provider/model the engine persisted against:
 ```json
 {"type": "response", "command": "set_thinking_level", "success": true, "data": {"level": "high", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}}
 ```
 
-Isolated interactive hosts must apply a persisted thinking default using that ACK target, not the host session model at callback time. A later `model_changed` event must not re-key the saved override.
+Isolated interactive hosts must apply a persisted thinking default using that ACK target, not the host session model at callback time. A later `model_changed` event must not re-key the saved override. `RpcClient.setThinkingLevel(level)` stays one-argument `Promise<void>`; isolated persist reads the ACK through an internal client path.
 
 #### cycle_thinking_level
 

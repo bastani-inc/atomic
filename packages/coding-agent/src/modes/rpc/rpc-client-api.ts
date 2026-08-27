@@ -117,17 +117,30 @@ export abstract class RpcClientApi {
 	): Promise<RpcModelRefreshResult> {
 		return this.data(await this.request({ type: "refresh_models", ...options }));
 	}
-	async setThinkingLevel(
+	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
+		await this.request({ type: "set_thinking_level", level });
+	}
+	/**
+	 * Isolated persist path: forwards `persist` and returns the engine's effective
+	 * level plus the provider/model the engine persisted against. Public callers
+	 * must keep using one-argument {@link setThinkingLevel}.
+	 */
+	async setThinkingLevelAck(
 		level: ThinkingLevel,
 		options?: { persist?: boolean },
 	): Promise<{ level: ThinkingLevel; provider?: string; modelId?: string }> {
-		return this.data(
-			await this.request({
-				type: "set_thinking_level",
-				level,
-				...(options?.persist === true ? { persist: true } : {}),
-			}),
-		);
+		const response = await this.request({
+			type: "set_thinking_level",
+			level,
+			...(options?.persist === true ? { persist: true } : {}),
+		});
+		if (!response.success) {
+			return this.data(response);
+		}
+		if (response.command === "set_thinking_level" && "data" in response && response.data) {
+			return response.data;
+		}
+		return { level };
 	}
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		return this.data(await this.request({ type: "cycle_thinking_level" }));

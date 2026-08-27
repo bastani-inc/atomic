@@ -105,7 +105,10 @@ function engineBridgeClient(handle: ReturnType<typeof createRpcCommandHandler>) 
 			assertRpcSuccess(response, "cycle_model");
 			return response.data;
 		},
-		async setThinkingLevel(
+		async setThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") {
+			await this.setThinkingLevelAck(level);
+		},
+		async setThinkingLevelAck(
 			level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
 			options?: { persist?: boolean },
 		) {
@@ -116,7 +119,7 @@ function engineBridgeClient(handle: ReturnType<typeof createRpcCommandHandler>) 
 				...(options?.persist === true ? { persist: true } : {}),
 			});
 			assertRpcSuccess(response, "set_thinking_level");
-			return response.data;
+			return "data" in response ? response.data : { level };
 		},
 	} as unknown as RpcClient;
 }
@@ -273,17 +276,36 @@ describe("RPC persist boundary", () => {
 		await client.setModel("anthropic", "claude-opus-4-8");
 		await client.cycleModel("forward", { persist: true });
 		await client.cycleModel("backward");
-		await client.setThinkingLevel("high", { persist: true });
-		await client.setThinkingLevel("low");
+		const publicThinking = await client.setThinkingLevel("low");
+		await client.setThinkingLevelAck("high", { persist: true });
+		await client.setThinkingLevelAck("low");
 
+		assert.equal(publicThinking, undefined);
 		assert.deepEqual(client.commands, [
 			{ type: "set_model", provider: "anthropic", modelId: "claude-sonnet-4-5", persist: true },
 			{ type: "set_model", provider: "anthropic", modelId: "claude-opus-4-8" },
 			{ type: "cycle_model", direction: "forward", persist: true },
 			{ type: "cycle_model", direction: "backward" },
+			{ type: "set_thinking_level", level: "low" },
 			{ type: "set_thinking_level", level: "high", persist: true },
 			{ type: "set_thinking_level", level: "low" },
 		]);
+	});
+
+	it("treats a data-less set_thinking_level success as compatible ACK fallback", async () => {
+		class DataLessThinkingClient extends RpcClientApi {
+			protected async request(command: RpcCommandBody): Promise<RpcResponse> {
+				if (command.type !== "set_thinking_level") throw new Error(`unexpected command ${command.type}`);
+				return { type: "response", command: "set_thinking_level", success: true };
+			}
+			protected data<T>(response: RpcResponse): T {
+				if (!response.success) throw new Error(response.error);
+				return "data" in response ? (response.data as T) : (undefined as T);
+			}
+		}
+		const client = new DataLessThinkingClient();
+		const result = await client.setThinkingLevelAck("high", { persist: true });
+		assert.deepEqual(result, { level: "high" });
 	});
 
 	it("saves settings defaults when the isolated engine proxy setModel persist flag reaches the handler", async () => {
@@ -399,7 +421,7 @@ describe("RPC persist boundary", () => {
 				return () => {};
 			},
 			onGenerationEnded: () => () => {},
-			setThinkingLevel: () => ack,
+			setThinkingLevelAck: () => ack,
 		} as unknown as RpcClient;
 		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
 		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);

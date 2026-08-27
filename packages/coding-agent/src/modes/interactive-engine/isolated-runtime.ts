@@ -517,7 +517,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				value: (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
 					this.dispatchBestEffort(
 						"set thinking level",
-						this.client.setThinkingLevel(level, options).then((result) => {
+						this.client.setThinkingLevelAck(level, options).then((result) => {
 							session.agent.state.thinkingLevel = result.level;
 							if (options?.persist === true) {
 								applyPersistedThinkingDefault(session, result.level, thinkingPersistTarget(result));
@@ -549,7 +549,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					const level = levels[(current + 1) % levels.length]!;
 					this.dispatchBestEffort(
 						"cycle thinking level",
-						this.client.setThinkingLevel(level, options).then((result) => {
+						this.client.setThinkingLevelAck(level, options).then((result) => {
 							session.agent.state.thinkingLevel = result.level;
 							if (options?.persist === true) {
 								applyPersistedThinkingDefault(session, result.level, thinkingPersistTarget(result));
