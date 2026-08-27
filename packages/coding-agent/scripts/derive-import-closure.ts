@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parse } from "@babel/parser";
 import type { BuiltinPackageDirName } from "../src/core/builtin-install-layout.js";
 
 // Only packages whose kept raw TypeScript runs directly from the filesystem participate. The intercom broker is
@@ -8,7 +9,6 @@ import type { BuiltinPackageDirName } from "../src/core/builtin-install-layout.j
 export const INSTALLED_IMPORT_CLOSURE_ROOTS: Partial<Record<BuiltinPackageDirName, readonly string[]>> = {
 	intercom: ["broker/"],
 };
-import { parse } from "@babel/parser";
 
 const SKIPPED_ENTRY_NAMES = new Set([
 	"node_modules",
@@ -105,7 +105,7 @@ function pathIsSkipped(packageRoot: string, path: string): boolean {
 
 /**
  * Derive every source file transitively reached by relative imports from raw TypeScript files beneath the roots.
- * Imports that leave the package or resolve into excluded test/build directories are deliberately not copied.
+ * Imports cannot escape the package, and excluded test/build paths are never copied.
  */
 export function deriveImportClosure(packageRoot: string, roots: readonly string[]): ReadonlySet<string> {
 	const resolvedPackageRoot = resolve(packageRoot);
