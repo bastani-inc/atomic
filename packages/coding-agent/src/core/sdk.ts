@@ -305,10 +305,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				baseUrl: authResult?.auth.baseUrl,
 				env: authResult?.env,
 			};
-			const authenticatedRequestModel =
+			const requestModel =
 				auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
-			const fastModeEnabled = isCodexFastModeEnabled(model);
-			const requestModel = authenticatedRequestModel;
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
 			// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
@@ -330,6 +328,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const assembledHeaders = headerRunner?.hasHandlers("before_provider_headers")
 				? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {})
 				: mergedHeaders;
+			const fastModeEnabled = isCodexFastModeEnabled(model);
 			const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
 			const usesExtensionStream =
 				extensionProvider?.streamSimple !== undefined && requestModel.api === extensionProvider.api;
