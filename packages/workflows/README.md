@@ -5,7 +5,7 @@
   An open-source Atomic workflow extension: install it, author workflows in TypeScript, run them from chat.
 </p>
 
-Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective; reserve direct chat for tiny deterministic low-risk work. Workflow-first is not builtin-only or monolithic: Atomic can author custom TypeScript `workflow({...})` definitions inline, import reusable project/package workflows or builtins from `@bastani/workflows/builtin`, and nest them with `ctx.workflow(...)`. Imported children may nest further workflows within `maxDepth`, so compose proven research, implementation, design, verification, and approval graphs rather than copying them. Custom parents can also use runtime classification, dynamic fan-out and synthesis, adversarial verification, candidate tournaments, HIL gates, and bounded convergence.
+Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective; reserve direct chat for tiny deterministic low-risk work. Workflow-first is not builtin-only or monolithic: Atomic can author custom TypeScript `workflow({...})` definitions inline, import reusable project/package workflows or builtins from `@bastani/atomic/workflows/builtin`, and nest them with `ctx.workflow(...)`. Imported children may nest further workflows within `maxDepth`, so compose proven research, implementation, design, verification, and approval graphs rather than copying them. Custom parents can also use runtime classification, dynamic fan-out and synthesis, adversarial verification, candidate tournaments, HIL gates, and bounded convergence.
 
 Workflow stage sessions are created in process and receive a typed stage policy rather than inheriting subagent environment flags. Resource reload never mutates `process.env`; stage options carry the subagent management/fanout policy directly, so concurrent stage creation is race-free while existing tool allowlists and the one-level delegation rule remain authoritative. Legacy child environment keys are only a compatibility path for older hosts.
 
@@ -112,7 +112,7 @@ New tool checkpoints retain stable graph identity, invocation order, parents, an
 ### Example 1 — Single task
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -138,7 +138,7 @@ export default workflow({
 Use `ctx.parallel` for independent specialist work. The aggregator receives the specialist outputs through typed task results instead of manual stage/session plumbing. The runtime snapshots the parent graph frontier when the fan-out starts, so every branch shares the same parents even when limited `concurrency` queues later branches or an earlier sibling fails with `failFast: false`.
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -183,7 +183,7 @@ export default workflow({
 ### Example 3 — Human-in-the-loop (HIL)
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -227,9 +227,9 @@ Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.sele
 Prefer regular TypeScript module imports for reusable child workflows: import the workflow definition returned by `workflow({...})`, then pass it directly to `ctx.workflow(workflowDefinition, options)`.
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
-import { adversarialVerification, fanOutAndSynthesize } from "@bastani/workflows/builtin";
+import { adversarialVerification, fanOutAndSynthesize } from "@bastani/atomic/workflows/builtin";
 
 export default workflow({
   name: "research-and-verify",
@@ -274,7 +274,7 @@ For workflows intended to be called as children, declare an `outputs` entry for 
 A reusable child module can simply default-export a workflow definition:
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -308,11 +308,11 @@ import {
   openClaudeDesign,
   ralph,
   tournament,
-} from "@bastani/workflows/builtin";
-import fanOutAndSynthesizeWorkflow from "@bastani/workflows/builtin/fan-out-and-synthesize";
-import goalWorkflow from "@bastani/workflows/builtin/goal";
-import ralphWorkflow from "@bastani/workflows/builtin/ralph";
-import openClaudeDesignWorkflow from "@bastani/workflows/builtin/open-claude-design";
+} from "@bastani/atomic/workflows/builtin";
+import fanOutAndSynthesizeWorkflow from "@bastani/atomic/workflows/builtin/fan-out-and-synthesize";
+import goalWorkflow from "@bastani/atomic/workflows/builtin/goal";
+import ralphWorkflow from "@bastani/atomic/workflows/builtin/ralph";
+import openClaudeDesignWorkflow from "@bastani/atomic/workflows/builtin/open-claude-design";
 ```
 
 Only `workflow({...})` definitions can be passed to `ctx.workflow(...)`; registry names, strings, and path objects are intentionally not supported for child workflow calls. Missing or invalid module imports fail when the workflow file itself is loaded. A parent receives the child's declared `outputs` from the child `run()` return object. Missing required outputs, schema type mismatches, returning an undeclared output, and non-JSON-serializable returned child values fail the child call before the parent continues.
@@ -360,7 +360,7 @@ An author-initiated failed exit returns `{ exited: true, status: "failed" }` to 
 Use `gitWorktreeDir` when a workflow should run in a reusable Git worktree instead of the invoking checkout. The executor creates the worktree if it is missing, reuses it when it already exists as a same-repository worktree root, defaults workflow `ctx.cwd` to the matching path inside that worktree for `worktreeFromInputs`, and defaults stage/task `cwd` to that worktree path.
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -450,7 +450,7 @@ When an item configures both `schema` and `output`, its successful `structured_o
 Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current Atomic-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/usage-limit exhaustion (provider messages such as `The usage limit has been reached` and codes such as `usage_limit_reached`/`insufficient_quota` classify as retryable rate-limit failures so the chain advances to a candidate with remaining headroom), auth/provider outages, unavailable models, network timeouts, context-window overflows that Atomic's auto-compaction cannot resolve on the current model, and 5xx errors — ordinary tool, shell, validation, cancellation, and workflow-code failures are not retried.
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -491,7 +491,7 @@ When pi exposes its model registry, workflow runs validate user-specified `model
 ### `createRegistry` — grouping workflows
 
 ```typescript
-import { createRegistry, workflow } from "@bastani/workflows";
+import { createRegistry, workflow } from "@bastani/atomic/workflows";
 
 const alpha = workflow({ name: "alpha", description: "", outputs: {}, run: async () => ({}) });
 const beta = workflow({ name: "beta", description: "", outputs: {}, run: async () => ({}) });
@@ -509,12 +509,12 @@ registry.get("alpha"); // workflow definition | undefined
 
 ### Declaring inputs and outputs with TypeBox
 
-Inputs and outputs are declared with [TypeBox](https://github.com/sinclairzx81/typebox) schemas. Import `workflow` from `@bastani/workflows`, import `Type` from `typebox`, and put schemas in the `inputs` and `outputs` maps. `workflow({...})` infers precise static types for `ctx.inputs`, the `run()` return, and `child.outputs` from those schemas, and the runtime validates against them with TypeBox `Value`.
+Inputs and outputs are declared with [TypeBox](https://github.com/sinclairzx81/typebox) schemas. Import `workflow` from `@bastani/atomic/workflows`, import `Type` from `typebox`, and put schemas in the `inputs` and `outputs` maps. `workflow({...})` infers precise static types for `ctx.inputs`, the `run()` return, and `child.outputs` from those schemas, and the runtime validates against them with TypeBox `Value`.
 
 **Prefer precise schemas.** A precise schema (`Type.Object({ topic: Type.String(), score: Type.Number() })`, `Type.Array(Type.String())`) gives consumers a precise `Static<>` type and makes runtime validation enforce the real shape. Reserve `Type.Unknown()`, `Type.Any()`, `Type.Array(Type.Unknown())`, and `Type.Object({}, { additionalProperties: true })` for genuinely dynamic data whose shape you cannot know ahead of time.
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 workflow({
@@ -534,7 +534,7 @@ workflow({
 });
 ```
 
-`Static` and `TSchema` are also re-exported from `@bastani/workflows` for advanced typing.
+`Static` and `TSchema` are also re-exported from `@bastani/atomic/workflows` for advanced typing.
 
 ### Input schema reference
 
@@ -593,7 +593,7 @@ outputs: {
 When you already have a precise TypeScript type for a deeply-nested serializable value and don't want to hand-write the full TypeBox schema, wrap a permissive runtime schema with `Type.Unsafe<MyType>(...)`. The **static** type becomes exactly `MyType` (so `ctx.inputs`, the `run()` return, and `child.outputs` stay precise), while the **runtime** stays as lenient as the wrapped schema. Use a `type` alias rather than an `interface` for the wrapped type — an `interface` has no implicit index signature, so it does not satisfy the serializable-output constraint:
 
 ```typescript
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 type ResearchPacket = {
@@ -631,7 +631,7 @@ Tradeoff: `Type.Unsafe<T>()` does not deeply validate at runtime — it trusts t
 - The `run()` return is checked against declared outputs at compile time (missing-required, wrong-type, and undeclared-output keys are TypeScript errors for object-form `workflow({...})`) and at runtime via TypeBox `Value` (undeclared keys rejected, declared shape enforced recursively).
 - `ctx.workflow(child).outputs` is typed from the child's declared `outputs` contract, so a parent reads precisely-typed child outputs without casting.
 
-`Static` and `TSchema` are re-exported from `@bastani/workflows`; use `Static<typeof schema>` when you need a schema's inferred TypeScript type directly.
+`Static` and `TSchema` are re-exported from `@bastani/atomic/workflows`; use `Static<typeof schema>` when you need a schema's inferred TypeScript type directly.
 
 ---
 
@@ -679,7 +679,7 @@ Raw stage-chat prompt answer replay is live-memory only. `StageSnapshot.promptAn
 ```json
 {
   "name": "workflow",
-  "description": "Run named builtin, project, user, or package workflows; custom definitions may import reusable project/package workflows or builtin definitions from @bastani/workflows/builtin and nest them with ctx.workflow(...), including deeper composition within the configured maxDepth; when workflow execution fits but another shape would better achieve the task, author a custom TypeScript workflow({...}) inline with normal coding tools, reload it, and run it; after successfully creating and reloading a newly authored custom workflow, report the folder containing its generated code as 'Custom workflow created. You can inspect its code at: <workflow-folder-path>'; do this only for newly created custom workflows, never builtin or pre-existing workflows; discover with list/get/inputs/models, list session runs with status (no runId; statusFilter narrows the list), inspect status/stages/stage details, send prompt answers or steering only while the root workflow is nonterminal, pause/resume/interrupt/quit runs, and reload workflow resources. Treat a blocked run as continuable by default: resume resumable blocks, answer pending prompts, steer past the obstacle, or start a follow-up workflow past a terminal block, and escalate to the user only when the blocked result is so ambiguous that human input or steering must settle it; when ask_user_question or human input is unavailable, continue fully autonomously on the interpretation best supported by the objective and repository evidence, and record the assumption. For action 'run' and 'resume', budget accepts per-field duration, token, cost, and warning overrides; fields resolve over the workflow declaration and config, and 0 disables a field. Pass budget only when the user asked for a limit; otherwise omit it entirely and inherit the declaration and config rather than inventing a cap. For primitive prompt answers, use booleans or the documented confirm labels, exact case-insensitive select labels or 1-based indexes, and text strings for input/editor; an invalid answer remains pending and returns guidance instead of choosing a default. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. Wrap critical parts of run inputs and steering messages in <keepContext>...</keepContext> so compaction preserves them verbatim in the stages that inherit them; tag role constraints, prohibitions, must-hold criteria, and identifiers, not background or bulk reference material. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview. Use action 'models' to inspect models in the configured catalog; the result is a configured-auth snapshot showing what's present in the registry with configured authentication, not proof of credentials, entitlements, OAuth freshness, or live provider access. When authoring a workflow that should dynamically select a model, first call workflow({ action: 'models' }) to inspect the configured catalog, then select from the returned provider/id entries considering the isCurrent marker and available thinking levels.",
+  "description": "Run named builtin, project, user, or package workflows; custom definitions may import reusable project/package workflows or builtin definitions from @bastani/atomic/workflows/builtin and nest them with ctx.workflow(...), including deeper composition within the configured maxDepth; when workflow execution fits but another shape would better achieve the task, author a custom TypeScript workflow({...}) inline with normal coding tools, reload it, and run it; after successfully creating and reloading a newly authored custom workflow, report the folder containing its generated code as 'Custom workflow created. You can inspect its code at: <workflow-folder-path>'; do this only for newly created custom workflows, never builtin or pre-existing workflows; discover with list/get/inputs/models, list session runs with status (no runId; statusFilter narrows the list), inspect status/stages/stage details, send prompt answers or steering only while the root workflow is nonterminal, pause/resume/interrupt/quit runs, and reload workflow resources. Treat a blocked run as continuable by default: resume resumable blocks, answer pending prompts, steer past the obstacle, or start a follow-up workflow past a terminal block, and escalate to the user only when the blocked result is so ambiguous that human input or steering must settle it; when ask_user_question or human input is unavailable, continue fully autonomously on the interpretation best supported by the objective and repository evidence, and record the assumption. For action 'run' and 'resume', budget accepts per-field duration, token, cost, and warning overrides; fields resolve over the workflow declaration and config, and 0 disables a field. Pass budget only when the user asked for a limit; otherwise omit it entirely and inherit the declaration and config rather than inventing a cap. For primitive prompt answers, use booleans or the documented confirm labels, exact case-insensitive select labels or 1-based indexes, and text strings for input/editor; an invalid answer remains pending and returns guidance instead of choosing a default. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. Wrap critical parts of run inputs and steering messages in <keepContext>...</keepContext> so compaction preserves them verbatim in the stages that inherit them; tag role constraints, prohibitions, must-hold criteria, and identifiers, not background or bulk reference material. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview. Use action 'models' to inspect models in the configured catalog; the result is a configured-auth snapshot showing what's present in the registry with configured authentication, not proof of credentials, entitlements, OAuth freshness, or live provider access. When authoring a workflow that should dynamically select a model, first call workflow({ action: 'models' }) to inspect the configured catalog, then select from the returned provider/id entries considering the isCurrent marker and available thinking levels.",
   "parameters": {
     "workflow": "string (optional) — workflow ID or normalized name",
     "inputs": "object (optional) — key/value map of workflow inputs",
@@ -716,13 +716,13 @@ Press **F2** while a workflow is running to open the DAG overlay for the active 
 
 ### Execution model
 
-`@bastani/workflows` follows Atomic's package/extension model: Atomic loads `src/extension/index.ts` from the package `atomic.extensions` manifest, with legacy `pi.extensions` still supported, then the extension registers the `workflow` tool, `/workflow` slash command, renderers, widget, and lifecycle hooks in-process.
+`@bastani/atomic/workflows` follows Atomic's package/extension model: Atomic loads `src/extension/index.ts` from the package `atomic.extensions` manifest, with legacy `pi.extensions` still supported, then the extension registers the `workflow` tool, `/workflow` slash command, renderers, widget, and lifecycle hooks in-process.
 
 For interactive use, run workflows through `/workflow <name> [key=value ...]` or let the LLM call the `workflow` tool. In non-interactive (`-p` / `--print` / `--mode json`) sessions, `/workflow <name> key=value` and LLM calls to the `workflow` tool remain available for deterministic workflows. The input picker and graph picker are disabled, top-level `ctx.ui.*` is unavailable, and stage child sessions exclude `ask_user_question`. Named workflow dispatch waits for the terminal run snapshot before returning.
 
 Because human input is runtime-only and workflows no longer carry a declaration-time HIL marker, headless dispatch does not reject a workflow just because its source contains `ctx.ui.*`. If you copy the HIL example above into a non-interactive session, it can pass dispatch and then fail when execution reaches the prompt with an error such as `atomic-workflows: interactive ctx.ui.confirm is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage` (the primitive name varies, including `ctx.ui.custom`). Run those workflows interactively, or guard/remove runtime `ctx.ui.*` calls before using headless mode.
 
-For library or package authoring, define reusable workflows with `workflow({...})` and export the returned definition. Hand-written objects with `__piWorkflow: true` are rejected by discovery and composition; `workflow({...})` is the public authoring surface. Standalone TypeScript workflow packages import `workflow` from `@bastani/workflows` and `Type` from `typebox` directly with no local `.d.ts` file or `declare module` shim. Migration from the removed builder API is mechanical: move `.description(...)` to `description`, `.input(key, schema)` calls into `inputs`, `.output(key, schema)` calls into `outputs`, `.worktreeFromInputs(...)` to `worktreeFromInputs`, and the `.run(fn)` callback to `run: fn`; delete `.compile()`. The former imperative `runWorkflow` object-form API is removed; use workflow definitions with the exported `run()` / registry helpers for programmatic execution.
+For library or package authoring, define reusable workflows with `workflow({...})` and export the returned definition. Hand-written objects with `__piWorkflow: true` are rejected by discovery and composition; `workflow({...})` is the public authoring surface. Standalone TypeScript workflow packages import `workflow` from `@bastani/atomic/workflows` and `Type` from `typebox` directly with no local `.d.ts` file or `declare module` shim. Migration from the removed builder API is mechanical: move `.description(...)` to `description`, `.input(key, schema)` calls into `inputs`, `.output(key, schema)` calls into `outputs`, `.worktreeFromInputs(...)` to `worktreeFromInputs`, and the `.run(fn)` callback to `run: fn`; delete `.compile()`. The former imperative `runWorkflow` object-form API is removed; use workflow definitions with the exported `run()` / registry helpers for programmatic execution.
 
 Set `heartbeatIntervalMinutes` to declare the workflow's heartbeat cadence in minutes. Omitting it uses the `15`-minute default; `0` explicitly disables heartbeats. Negative and non-finite values are rejected when the workflow definition is authored. The scheduler consumes this validated setting directly: while a top-level run is active it raises one heartbeat per `startedAt + n × interval` boundary, computed from the run's persisted start time rather than the previous delivery, so retries and restarts cannot shift the cadence. The example below heartbeats every 30 minutes, so a run started at 09:00 raises boundaries at 09:30, 10:00, 10:30, and so on.
 
@@ -733,7 +733,7 @@ When a run reaches any terminal status — completed, failed, blocked, skipped, 
 A recoverable provider or rate-limit block is not the terminal `blocked` status: the run remains stored as `running` and resumable. It raises no new heartbeat while blocked, but keeps its cadence state and any card already waiting with the parent; cleanup runs only once the run's own status becomes terminal.
 
 ```ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -780,12 +780,12 @@ The six common patterns ship as full builtins and are discoverable/runnable by n
 | `tournament` | independent attempts → seeded ring and pivot-round soft scoring with order-balanced pairwise judges → full ranking/comparisons reducer; derive a Bradley–Terry preference from graded score gaps and repeat with A/B slot swaps; `comparisons.json` preserves per-job score or invalid rows, pair aggregates, ranking, and planned/executed budget records | `prompt`; `num_attempts=4`, `max_concurrency=4`, `n_evaluations=2`, `pivots=1`, `seed=0`, optional `criteria` (markdown rubric, record, string list, or `CriterionInput` list)/`models` | result, winner, `attempt_artifact_paths`, `judge_artifact_paths`, `comparisons_path`, `ranking`, `seed` |
 | `loop-until-done` | durable ledger → iteration/evaluator loop → complete or inspectable exhaustion; each scored iteration records `progress` (`score`, `perRepeat`, `trend`, `window`) and the ledger emits `progress_curve`, `final_trend`, and `progress_disclaimer`; trend is advisory and never a kill switch | `prompt`; `max_iterations=5`, `progress_scoring=true`, `progress_repeats=1` | result/status, ledger, iteration/evaluation paths, remaining work, `progress_curve`, `final_trend`, `progress_disclaimer` |
 
-All six are exported from `@bastani/workflows/builtin` as definitions (`classifyAndAct`, `fanOutAndSynthesize`, `adversarialVerification`, `generateAndFilter`, `tournament`, and `loopUntilDone`). Import and nest them through `ctx.workflow(definition, { inputs, stageName })`; nested calls respect `maxDepth`. Prefer composition over copying their prompts or graphs: children contribute their stages, dedicated prompts, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph.
+All six are exported from `@bastani/atomic/workflows/builtin` as definitions (`classifyAndAct`, `fanOutAndSynthesize`, `adversarialVerification`, `generateAndFilter`, `tournament`, and `loopUntilDone`). Import and nest them through `ctx.workflow(definition, { inputs, stageName })`; nested calls respect `maxDepth`. Prefer composition over copying their prompts or graphs: children contribute their stages, dedicated prompts, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph.
 
 A migration parent can nest all three definitions: fan out the fix pass, independently verify the produced patch set, then run a bounded evidence loop until the repository tests pass:
 
 ```ts
-import { adversarialVerification, fanOutAndSynthesize, loopUntilDone } from "@bastani/workflows/builtin";
+import { adversarialVerification, fanOutAndSynthesize, loopUntilDone } from "@bastani/atomic/workflows/builtin";
 
 const fixes = await ctx.workflow(fanOutAndSynthesize, {
   inputs: { prompt: "Fix every migration call site", max_branches: 6 },
@@ -867,7 +867,7 @@ Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `
 
 ## Custom workflow discovery
 
-`@bastani/workflows` discovers workflow files from project-local paths, user-global paths, configured workflow paths, installed Atomic package resources, and bundled workflows:
+`@bastani/atomic/workflows` discovers workflow files from project-local paths, user-global paths, configured workflow paths, installed Atomic package resources, and bundled workflows:
 
 | Location                           | Scope      | Example path                                                                           |
 | ---------------------------------- | ---------- | -------------------------------------------------------------------------------------- |
@@ -875,7 +875,7 @@ Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `
 | `~/.atomic/agent/workflows/*.ts`   | User       | `~/.atomic/agent/workflows/my-workflow.ts`                                             |
 | `workflows.<name>.path` in config  | Configured | see config example below                                                               |
 | Installed Atomic package workflows | Package    | `atomic.workflows`, legacy `pi.workflows`, or `workflows/` / `workflow/` directories   |
-| Bundled workflows                  | Built-in   | shipped with `@bastani/workflows`                                                      |
+| Bundled workflows                  | Built-in   | shipped with `@bastani/atomic/workflows`                                                      |
 
 Config-based discovery (`~/.atomic/agent/extensions/workflow/config.json` or `.atomic/extensions/workflow/config.json`):
 

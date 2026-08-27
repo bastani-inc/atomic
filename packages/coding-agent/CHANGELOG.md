@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Workflow source that typechecks against the legacy bare `@bastani/workflows` specifier must migrate to `@bastani/atomic/workflows`; removing the broken ambient declaration bridge intentionally removes TypeScript resolution for the legacy name. Runtime loading remains backward compatible because Atomic continues to alias `@bastani/workflows` to the in-memory SDK. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
+
 ### Fixed
 
 - Fixed installed packages where the intercom broker failed to start on every launch, leaving both the `intercom` and `subagent` tools entirely non-functional.
