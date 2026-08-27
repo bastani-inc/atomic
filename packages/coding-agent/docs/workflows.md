@@ -54,7 +54,6 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Programmatic Usage](#programmatic-usage)
 - [Fast Inference for Workflow Stages](#fast-inference-for-workflow-stages)
 - [Context Engineering](#context-engineering)
-- [Migrating from the `defineWorkflow()` Builder API](#migrating-from-the-defineworkflow-builder-api)
 - [Design Checklist](#design-checklist)
 - [Common Mistakes](#common-mistakes)
 - [Workflow Best Practices](#workflow-best-practices)
@@ -958,7 +957,6 @@ Authoring basics:
 - `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
 - `run: async (ctx) => { ... }` defines the workflow body.
 
-To migrate an existing file from the removed `defineWorkflow(...).compile()` builder, see [Migrating from the `defineWorkflow()` Builder API](#migrating-from-the-defineworkflow-builder-api) for the full method-to-key mapping, a before/after walkthrough, and a conversion checklist.
 
 `prompt` and `task` are aliases for task text inside authored workflow primitives. Prefer `prompt` because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in `ctx.chain(...)` examples.
 
@@ -1908,7 +1906,7 @@ The parallel fan-out has one shared parent frontier and downstream persistence w
 
 ## The `workflow()` Definition
 
-`workflow(spec)` is the only supported authoring API. It validates the schema maps, normalizes or infers the name, and returns a frozen branded definition that discovery and `ctx.workflow(...)` accept.
+Use `workflow(spec)` to author a workflow. It validates the schema maps, normalizes or infers the name, and returns a frozen `WorkflowDefinition` for export, discovery, and `ctx.workflow(...)` composition.
 
 ```typescript
 function workflow<
@@ -2045,11 +2043,7 @@ The workflow body may be synchronous or asynchronous. Return exactly the declare
 interface WorkflowDefinition<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
-  TRunInputs extends WorkflowInputValues = TInputs,
-  TDefinitionBrand extends object = {},
 > {
-  readonly __piWorkflow: true;
-  readonly __runInputs?: TRunInputs;
   readonly name: string;
   readonly normalizedName: string;
   readonly description: string;
@@ -2058,13 +2052,11 @@ interface WorkflowDefinition<
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };
-  run(
-    ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>,
-  ): Promise<TOutputs> | TOutputs;
+  run(ctx: WorkflowRunContext<TInputs, TOutputs>): Promise<TOutputs> | TOutputs;
 }
 ```
 
-`workflow({...})` returns definitions that narrow `outputs` to required and carry an internal nominal brand. Do not construct `__piWorkflow` objects by hand: discovery and child composition accept only definitions minted by `workflow({...})`.
+`workflow({...})` returns a `WorkflowDefinition` with the resolved name, normalized lookup name, description, runtime defaults, schema maps, optional worktree input binding, and `run` function. Authors provide the fields documented above, and Atomic fills the normalized and defaulted values.
 
 ## WorkflowContext
 
@@ -2150,7 +2142,7 @@ ctx.workflow<
   TChildOutputs extends WorkflowOutputValues,
   TChildRunInputs extends WorkflowInputValues = TChildInputs,
 >(
-  definition: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs> & TDefinitionBrand,
+  definition: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
   ...args: WorkflowRunChildArgs<TChildRunInputs>
 ): Promise<WorkflowChildResult<TChildOutputs>>;
 
@@ -2180,7 +2172,7 @@ const child = await ctx.workflow(sharedResearch, {
 });
 ```
 
-The method accepts only branded definitions, not names, aliases, or path objects. See [Workflow Composition](#workflow-composition) for graph flattening, replay, failure, and parent-exit behavior, and [`WorkflowChildResult`](#workflowchildresult) for the discriminated result.
+Pass a definition returned by `workflow({...})`. See [Workflow Composition](#workflow-composition) for graph flattening, replay, failure, and parent-exit behavior, and [`WorkflowChildResult`](#workflowchildresult) for the discriminated result.
 
 ### `ctx.stage(name, options?)`
 
@@ -3720,17 +3712,9 @@ Workflow stage sessions inherit the same package and temporary `-e` resource dis
 
 ## Programmatic Usage
 
-`@bastani/atomic/workflows` is Atomic's published workflow SDK surface. The bundled workflows extension registers:
+`@bastani/atomic/workflows` is Atomic's published workflow SDK. Import `workflow` from that specifier, import `Type` from `typebox`, and export the definition returned by `workflow({...})`. Keep runtime helpers such as widget factories and shared utilities in a subdirectory outside the top-level discovery scan, such as `.atomic/workflows/lib/`; see [Workflow Locations](#workflow-locations).
 
-- `/workflow <name> key=value ...` for interactive named runs
-- `/workflow connect|attach|pause|interrupt|quit|resume|status|inputs|reload` for live control, inspection, and rediscovery
-- the `workflow` tool for named execution, discovery, inspection, messaging, run control, and reload
-
-The signatures in this reference follow the externally shipped standalone authoring declaration in `packages/workflows/src/authoring.ts`. Atomic's internal runtime types may specialize opaque SDK values or add executor-only integration fields; those are not ordinary workflow-package authoring API.
-
-Workflow definition files must export definitions produced by `workflow({...})`. Keep non-workflow runtime helpers (widget factories, shared utilities) in a subdirectory the discovery scan ignores, such as `.atomic/workflows/lib/` — see [Workflow Locations](#workflow-locations). The former imperative object-form runner is not part of the public SDK, and authored workflow files cannot use `runWorkflow` as a runner from `@bastani/atomic/workflows`.
-
-Standalone TypeScript workflow packages type-check the SDK import without a hand-authored `.d.ts`, `declare module` shim, `tsconfig` `types` entry, or `paths` alias. The compiled SDK and its declarations ship at a real `@bastani/atomic` subpath (plus a `typebox` peer):
+Package authors list both `@bastani/atomic` and `typebox` in `peerDependencies`. The `@bastani/atomic` package publishes compiled JavaScript and declarations for `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin`, and each `@bastani/atomic/workflows/builtin/*` module. TypeScript resolves those exports directly under `moduleResolution: NodeNext`. When Atomic executes a workflow file, its runtime loader resolves the same published specifiers to Atomic's in-memory SDK.
 
 ```ts
 import { workflow } from "@bastani/atomic/workflows";
@@ -3750,9 +3734,7 @@ export default workflow({
 });
 ```
 
-TypeScript resolves `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin`, and individual `@bastani/atomic/workflows/builtin/*` imports directly through the package's compiled `.js` and self-contained `.d.ts` exports under `moduleResolution: NodeNext`. List both `@bastani/atomic` and `typebox` (workflow files import `Type` from `typebox`) in `peerDependencies`.
-
-Atomic's runtime loader aliases those same published specifiers to the in-memory SDK when workflow files execute. It also retains runtime aliases for the legacy bare `@bastani/workflows` specifier and its builtin subpaths, so existing workflow files continue to load; new and typechecked workflow files should use the published `@bastani/atomic/workflows` specifier.
+Programmatic callers import `run` and call `run(definition, inputs)` with an exported definition and validated inputs. Use `createRegistry()` when an integration needs to register, merge, or look up several definitions before selecting one to run. The extension also registers the `/workflow` commands and the `workflow` tool for named execution, discovery, inspection, messaging, run control, and reload.
 
 
 ### `workflow(spec)`
@@ -3767,7 +3749,7 @@ function workflow<
 ): AuthoredWorkflowDefinition<TInputs, TOutputs>;
 ```
 
-Creates the frozen branded definition documented in [The `workflow()` Definition](#the-workflow-definition). Discovery accepts only definitions minted by this function.
+Creates the frozen definition documented in [The `workflow()` Definition](#the-workflow-definition). Export the returned definition or pass it to `ctx.workflow(...)`, `run(...)`, or a registry.
 
 ### `createRegistry(initial?)`
 
@@ -4009,16 +3991,8 @@ The factory creates an isolated registry; `cancellationRegistry` is the default 
 export type { Static, TSchema } from "typebox";
 ```
 
-These TypeBox types are re-exported for authoring helpers. The runtime `Type` builder is not re-exported; import it from `typebox`.
+These TypeBox types are re-exported for authoring helpers. Import the runtime `Type` builder from `typebox`.
 
-### `runWorkflow` (removed)
-
-```typescript
-/** @deprecated Always throws a migration error. */
-const runWorkflow: never;
-```
-
-This runtime migration stub exists only so old modules fail at the callsite with a clear error. Use `workflow({...})` for authoring and `run(...)` for programmatic execution.
 
 ### Builtin workflow exports
 
@@ -4225,120 +4199,6 @@ Before turning a process into a workflow, confirm that it suits automation:
 
 For complex workflows, structure the implementation as a pipeline: acquire context, prepare prompts/artifacts, process with LLM stages, parse or validate outputs, and render the final result.
 
-## Migrating from the `defineWorkflow()` Builder API
-
-[#1457](https://github.com/bastani-inc/atomic/pull/1457) removed the chained builder API — `defineWorkflow(name).description(...).input(...).output(...).worktreeFromInputs(...).run(...).compile()` — and made the single `workflow({ name?, description, inputs, outputs, run })` object form the only authoring API. There is no shim and no deprecation period: workflow files that still call `defineWorkflow(...).compile()` fail discovery with a module-load error until authors migrate them.
-
-Use this section for workflow files that use the previous API. If you are authoring a new workflow, skip it and start from [Writing a Workflow](#writing-a-workflow).
-
-### What changed
-
-- `import { defineWorkflow, Type } from "@bastani/atomic/workflows"` → `workflow` now comes from `@bastani/atomic/workflows`, and `Type` comes from the `typebox` package directly. `@bastani/atomic/workflows` no longer re-exports `Type`. The `Static` and `TSchema` *type* exports are still re-exported from `@bastani/atomic/workflows`, so `import type { Static } from "@bastani/atomic/workflows"` keeps working — only the runtime `Type` builder moved.
-- The fluent builder chain became one object literal passed to `workflow({ ... })`.
-- `name` moved from the `defineWorkflow(name)` argument into the object. It is now **optional** — omit it and discovery derives the name from the filename (the recommended style used by the builtins and most examples), or keep it when you want the name to differ from the file's basename.
-- `outputs` is now **required**. Workflows that declared no outputs before must now pass `outputs: {}`.
-- `.compile()` is gone. `workflow({ ... })` returns the frozen, branded definition directly; `export default` it.
-- The imperative object-form `runWorkflow(...)` runner is also removed (it is a `never` placeholder that throws on access). Programmatic execution uses the exported `run(def, inputs)` helper or a registry — see [Programmatic Usage](#programmatic-usage).
-
-### Builder method → object key
-
-| Removed builder API | New `workflow({ ... })` key |
-| --- | --- |
-| `defineWorkflow("name")` argument | `name: "name"` (optional; derived from the filename when omitted) |
-| `.description(text)` | `description: text` |
-| `.input(key, schema)` (repeatable) | `inputs: { key: schema, ... }` |
-| `.output(key, schema)` (repeatable) | `outputs: { key: schema, ... }` (required, even if `{}`) |
-| `.worktreeFromInputs(binding)` | `worktreeFromInputs: binding` (binding shape unchanged) |
-| `.run(fn)` callback | `run: fn` |
-| `.compile()` terminal | delete — `workflow({ ... })` returns the definition |
-
-`ctx` and every primitive (`ctx.task`, `ctx.chain`, `ctx.parallel`, `ctx.stage`, `ctx.workflow`, `ctx.exit`, `ctx.ui`) are unchanged, so **you do not need to rewrite workflow bodies** — only the authoring wrapper changes.
-
-### Full before / after
-
-Before (removed API):
-
-```ts
-import { defineWorkflow, Type } from "@bastani/atomic/workflows";
-
-export default defineWorkflow("review-changes")
-  .description("Run two reviewers in parallel and synthesize a decision.")
-  .input("target", Type.String({ description: "Path or change target to review." }))
-  .input("base_branch", Type.String({ default: "origin/main" }))
-  .output("decision", Type.String())
-  .output("concerns", Type.Optional(Type.Array(Type.String())))
-  .worktreeFromInputs({ baseBranch: "base_branch" })
-  .run(async (ctx) => {
-    const target = String(ctx.inputs.target);
-    const [quality, runtime] = await ctx.parallel(
-      [
-        { name: "quality", prompt: `Review quality of ${target}` },
-        { name: "runtime", prompt: `Review runtime behavior of ${target}` },
-      ],
-      { concurrency: 2 },
-    );
-    return { decision: `${quality.text}\n${runtime.text}`, concerns: [] };
-  })
-  .compile();
-```
-
-After (current API):
-
-```ts
-import { workflow } from "@bastani/atomic/workflows";
-import { Type } from "typebox";
-
-export default workflow({
-  name: "review-changes", // optional — omit to derive from filename
-  description: "Run two reviewers in parallel and synthesize a decision.",
-  inputs: {
-    target: Type.String({ description: "Path or change target to review." }),
-    base_branch: Type.String({ default: "origin/main" }),
-  },
-  outputs: {
-    decision: Type.String(),
-    concerns: Type.Optional(Type.Array(Type.String())),
-  },
-  worktreeFromInputs: { baseBranch: "base_branch" },
-  run: async (ctx) => {
-    const target = String(ctx.inputs.target);
-    const [quality, runtime] = await ctx.parallel(
-      [
-        { name: "quality", prompt: `Review quality of ${target}` },
-        { name: "runtime", prompt: `Review runtime behavior of ${target}` },
-      ],
-      { concurrency: 2 },
-    );
-    return { decision: `${quality.text}\n${runtime.text}`, concerns: [] };
-  },
-});
-```
-
-### Conversion checklist
-
-For each `.atomic/workflows/*.ts` (or workflow-package) file:
-
-1. Swap the import to `import { workflow } from "@bastani/atomic/workflows"` and add `import { Type } from "typebox"`. Drop `defineWorkflow` from the `@bastani/atomic/workflows` import. `import type { Static, TSchema }` can stay on the `@bastani/atomic/workflows` import if you use those types.
-2. Replace `defineWorkflow("<name>")` with `workflow({`. You may keep `name: "<name>"` or drop the key entirely to derive the name from the filename.
-3. Move `.description("<text>")` to a `description: "<text>",` property.
-4. Collect every `.input(key, schema)` into one `inputs: { key: schema, ... },` map.
-5. Collect every `.output(key, schema)` into one `outputs: { key: schema, ... },` map. If there were no `.output(...)` calls, add `outputs: {},` — it is now required.
-6. Move `.worktreeFromInputs(binding)` to a `worktreeFromInputs: binding,` property (same binding shape, unchanged).
-7. Move the `.run(fn)` callback to a `run: fn,` property; keep the body byte-for-byte identical.
-8. Delete the trailing `.compile()`, close the object with `})`, and keep `export default`.
-9. Run `/workflow reload` (or restart Atomic) and `/workflow list` to confirm the file loads. Because `ctx` and its primitives are unchanged, stage behavior, graph layout, resume/quit, and human-input prompts are unaffected.
-
-### Gotchas
-
-- **`outputs` is required.** The old `.output(...)` calls were optional, and a workflow without outputs compiled successfully. The new object form throws `workflow: outputs must be a schema map` when `outputs` is missing, so declare `outputs: {}` for outputless workflows.
-- **`Type` is no longer re-exported.** `import { Type } from "@bastani/atomic/workflows"` fails type-checking; import it from `typebox` instead. (`Static` and `TSchema` *types* are still re-exported from `@bastani/atomic/workflows`, so those imports do not need to change.)
-- **`.compile()` does not exist.** Leaving it produces a runtime `TypeError`; `workflow({ ... })` already returns the frozen, branded definition.
-- **`name` is derived from the filename when omitted.** Discovery derives the name from the filename: `review-changes.ts` becomes `review-changes`, so an explicit `name` is only needed when it should differ from the basename.
-- **Do not construct definitions manually.** Discovery rejects hand-built objects carrying `__piWorkflow: true`, and `ctx.workflow(...)` rejects them too. Both accept only definitions minted by `workflow({ ... })`.
-- **The imperative `runWorkflow` runner is gone.** It is now a `never` placeholder that throws on access; use the exported `run(def, inputs)` helper or a registry for programmatic execution.
-- **Keep `outputs` inline for the strictest type checking.** The old builder enforced no-extra-output keys through a `NoExtraOutputs` generic on `.run(fn)`; the object form re-creates that check for inline `outputs` maps, but cannot recover output keys when a schema map is widened or built up before being passed to `workflow({ ... })`. Keep the `outputs` literal inline so the declared-key check stays exact.
-
-Everything else — stage primitives, `ctx.inputs` typing, runtime validation, DAG inference, MCP scoping, resume/quit, worktree binding, model fallback, and the `/workflow` tool contract — is unchanged.
 
 ## Design Checklist
 
