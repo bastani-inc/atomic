@@ -47,7 +47,6 @@ const packagesRoot = resolve(packageRoot, "..");
 const workflowsDistDir = join(distBuiltinDir, "workflows");
 const workflowsAuthoringTsconfig = join(packageRoot, "tsconfig.workflows-types.json");
 const workflowsAmbientDts = join(workflowsDistDir, "ambient.d.ts");
-const workflowsAuthoringDeclaration = "src/authoring.d.ts";
 const workflowsAmbientReference = '/// <reference path="./builtin/workflows/ambient.d.ts" />';
 // Raw authoring-surface sources that are type-only at runtime (all importers use
 // `import type`), so deleting their `.ts` copies is behaviorally inert; only the
@@ -96,7 +95,7 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"ambient.d.ts",
 		INSTALLED_EXTENSION_ENTRIES.workflows,
 		WORKFLOWS_SDK_BUNDLE_ENTRY,
-		workflowsAuthoringDeclaration,
+		"src/authoring.d.ts",
 		"src/shared/authoring-contract.d.ts",
 		"builtin/",
 		"skills/",
@@ -310,7 +309,6 @@ function pointWorkflowsSdkAtBundle(pkg: Record<string, unknown>): void {
 		| undefined;
 	if (exportsField?.["."]) {
 		exportsField["."].default = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
-		exportsField["."].types = `./${workflowsAuthoringDeclaration}`;
 	}
 }
 

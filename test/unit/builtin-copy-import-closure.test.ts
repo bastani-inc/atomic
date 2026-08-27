@@ -4,6 +4,8 @@ import { test } from "vitest";
 import {
 	deriveImportClosure,
 	INSTALLED_IMPORT_CLOSURE_ROOTS,
+	relativeImportSpecifiers,
+	resolveRelativeImport,
 } from "../../packages/coding-agent/scripts/derive-import-closure.js";
 import {
 	fileExistsSync,
@@ -11,18 +13,9 @@ import {
 	makeTempDirectory,
 	moduleDir,
 	readDirectorySync,
-	readTextSync,
 	removeTempDirectory,
 	writeTextSync,
 } from "../helpers/runtime.js";
-
-interface WorkflowsManifest {
-	exports?: {
-		"."?: {
-			types?: string;
-		};
-	};
-}
 
 const root = join(moduleDir(import.meta.url), "../..");
 const distBuiltinRoot = join(root, "packages", "coding-agent", "dist", "builtin");
@@ -68,11 +61,22 @@ test("builtin copy derives transitive relative imports without copying excluded 
 	}
 });
 
-test("shipped raw TypeScript closure roots have no unresolved relative imports", () => {
-	for (const [packageName, roots] of Object.entries(INSTALLED_IMPORT_CLOSURE_ROOTS)) {
+test("every shipped raw TypeScript file has resolvable relative imports", () => {
+	for (const packageName of Object.keys(INSTALLED_IMPORT_CLOSURE_ROOTS)) {
 		const packageRoot = join(distBuiltinRoot, packageName);
 		requireBuiltPath(packageRoot);
-		assert.doesNotThrow(() => deriveImportClosure(packageRoot, roots));
+		const rawTypeScriptFiles = listFiles(packageRoot).filter(
+			(path) => path.endsWith(".ts") && !path.endsWith(".d.ts"),
+		);
+		for (const relativePath of rawTypeScriptFiles) {
+			const importer = join(packageRoot, relativePath);
+			for (const specifier of relativeImportSpecifiers(importer)) {
+				assert.ok(
+					resolveRelativeImport(importer, specifier),
+					`Unresolved relative import ${specifier} from ${packageName}/${relativePath}`,
+				);
+			}
+		}
 	}
 });
 
@@ -95,14 +99,4 @@ test("shipped intercom includes broker dependencies without excluded files", () 
 		files.some((path) => path.split("/").includes("node_modules")),
 		false,
 	);
-});
-
-test("shipped workflows manifest points its types condition at the emitted declaration", () => {
-	const workflowsRoot = join(distBuiltinRoot, "workflows");
-	const manifestPath = join(workflowsRoot, "package.json");
-	const declarationPath = join(workflowsRoot, "src", "authoring.d.ts");
-	requireBuiltPath(manifestPath);
-	const manifest = JSON.parse(readTextSync(manifestPath, "utf8")) as WorkflowsManifest;
-	assert.equal(manifest.exports?.["."]?.types, "./src/authoring.d.ts");
-	assert.ok(fileExistsSync(declarationPath), "The workflows authoring declaration must be shipped");
 });

@@ -47,7 +47,7 @@ function inside(parent: string, path: string): boolean {
 	return fromParent !== ".." && !fromParent.startsWith(`..${sep}`) && !isAbsolute(fromParent);
 }
 
-function relativeImports(path: string): string[] {
+export function relativeImportSpecifiers(path: string): string[] {
 	const imports = new Set<string>();
 	const visit = (value: SyntaxValue | undefined): void => {
 		if (Array.isArray(value)) {
@@ -83,7 +83,7 @@ function relativeImports(path: string): string[] {
 	return [...imports];
 }
 
-function resolveRelativeImport(importer: string, specifier: string): string | undefined {
+export function resolveRelativeImport(importer: string, specifier: string): string | undefined {
 	const emittedPath = resolve(dirname(importer), specifier);
 	const sourcePath = emittedPath
 		.replace(/\.mjs$/u, ".mts")
@@ -131,7 +131,7 @@ export function deriveImportClosure(packageRoot: string, roots: readonly string[
 		if (visited.has(relativePath)) continue;
 		visited.add(relativePath);
 		closure.add(relativePath);
-		for (const specifier of relativeImports(path)) {
+		for (const specifier of relativeImportSpecifiers(path)) {
 			const unresolvedPath = resolve(dirname(path), specifier);
 			if (!inside(resolvedPackageRoot, unresolvedPath)) {
 				throw new Error(`Relative import ${specifier} from ${relativePath} escapes the package root`);
