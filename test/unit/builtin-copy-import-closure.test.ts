@@ -40,9 +40,19 @@ test("builtin copy derives transitive relative imports without copying excluded 
 	try {
 		makeDirectorySync(join(fixture, "broker"), { recursive: true });
 		makeDirectorySync(join(fixture, "node_modules", "ignored"), { recursive: true });
-		writeTextSync(join(fixture, "broker", "entry.ts"), 'export { value } from "../new-dependency.js";\n');
+		writeTextSync(
+			join(fixture, "broker", "entry.ts"),
+			[
+				'export { value } from "../new-dependency.js";',
+				'type Imported = import("../type-target.js").Foo;',
+				'const required = require("../require-target.js");',
+				"export const loaded: Imported | typeof required = required;",
+			].join("\n"),
+		);
 		writeTextSync(join(fixture, "new-dependency.ts"), 'export { value } from "./nested.js";\n');
 		writeTextSync(join(fixture, "nested.ts"), "export const value = 1;\n");
+		writeTextSync(join(fixture, "type-target.ts"), "export interface Foo { value: number }\n");
+		writeTextSync(join(fixture, "require-target.ts"), "export const required = true;\n");
 		writeTextSync(join(fixture, "unrelated.ts"), "export const unrelated = true;\n");
 		writeTextSync(join(fixture, "unrelated.test.ts"), "throw new Error();\n");
 		writeTextSync(join(fixture, "unrelated.spec.ts"), "throw new Error();\n");
@@ -52,10 +62,43 @@ test("builtin copy derives transitive relative imports without copying excluded 
 			"broker/entry.ts",
 			"nested.ts",
 			"new-dependency.ts",
+			"require-target.ts",
+			"type-target.ts",
 		]);
 
 		writeTextSync(join(fixture, "broker", "entry.ts"), 'export { value } from "../../outside.js";\n');
 		assert.throws(() => deriveImportClosure(fixture, ["broker/"]), /escapes the package root/u);
+	} finally {
+		removeTempDirectory(fixture);
+	}
+});
+
+test("builtin copy fails closed on non-literal dynamic specifiers", () => {
+	const fixture = makeTempDirectory("atomic-builtin-dynamic-import-");
+	try {
+		makeDirectorySync(join(fixture, "broker"), { recursive: true });
+		const entry = join(fixture, "broker", "entry.ts");
+		writeTextSync(entry, "const target = './dynamic.js';\nvoid import(target);\n");
+		assert.throws(() => deriveImportClosure(fixture, ["broker/"]), /Non-literal import\(\) specifier/u);
+
+		writeTextSync(entry, "const target = './dynamic.js';\nrequire(target);\n");
+		assert.throws(() => deriveImportClosure(fixture, ["broker/"]), /Non-literal require\(\) specifier/u);
+	} finally {
+		removeTempDirectory(fixture);
+	}
+});
+
+test("builtin copy rejects a relative import that resolves beneath an excluded path", () => {
+	const fixture = makeTempDirectory("atomic-builtin-excluded-import-");
+	try {
+		makeDirectorySync(join(fixture, "broker"), { recursive: true });
+		makeDirectorySync(join(fixture, "test"), { recursive: true });
+		writeTextSync(join(fixture, "broker", "entry.ts"), 'export { helper } from "../test/helper.js";\n');
+		writeTextSync(join(fixture, "test", "helper.ts"), "export const helper = true;\n");
+		assert.throws(
+			() => deriveImportClosure(fixture, ["broker/"]),
+			/Relative import \.\.\/test\/helper\.js from broker\/entry\.ts resolves to excluded path test\/helper\.ts/u,
+		);
 	} finally {
 		removeTempDirectory(fixture);
 	}

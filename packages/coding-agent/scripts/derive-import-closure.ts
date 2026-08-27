@@ -3,6 +3,11 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "@babel/parser";
 import type { BuiltinPackageDirName } from "../src/core/builtin-install-layout.js";
 
+// This build-time walker intentionally remains separate from test/unit/module-graph-walker.ts. The latter models
+// the complete runtime loader graph for tests, while production packaging code must not import from the test tree.
+// This narrower walker follows relative filesystem edges only, but matches the test walker by failing closed when a
+// direct import or require specifier cannot be determined statically.
+
 // Only packages whose kept raw TypeScript runs directly from the filesystem participate. The intercom broker is
 // spawned as its own jiti process, so it has no host aliases or virtualModules fallback. Workflows is deliberately
 // excluded: its installed authoring surface prunes raw sources for issue #1208, and tracing it would resurrect them.
@@ -47,6 +52,32 @@ function inside(parent: string, path: string): boolean {
 	return fromParent !== ".." && !fromParent.startsWith(`..${sep}`) && !isAbsolute(fromParent);
 }
 
+function stringLiteralValue(value: SyntaxValue | undefined): string | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value) && typeof value.value === "string"
+		? value.value
+		: undefined;
+}
+
+function isIdentifier(value: SyntaxValue | undefined, name: string): boolean {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		!Array.isArray(value) &&
+		value.type === "Identifier" &&
+		value.name === name
+	);
+}
+
+function requireSpecifier(value: SyntaxNode, path: string): string | undefined {
+	if (value.type !== "CallExpression" || !isIdentifier(value.callee, "require")) return undefined;
+	const argument = Array.isArray(value.arguments) ? value.arguments[0] : undefined;
+	const specifier = stringLiteralValue(argument);
+	if (specifier === undefined) {
+		throw new Error(`Non-literal require() specifier in ${path}`);
+	}
+	return specifier;
+}
+
 export function relativeImportSpecifiers(path: string): string[] {
 	const imports = new Set<string>();
 	const visit = (value: SyntaxValue | undefined): void => {
@@ -55,26 +86,30 @@ export function relativeImportSpecifiers(path: string): string[] {
 			return;
 		}
 		if (value === null || typeof value !== "object") return;
+		let specifier: string | undefined;
 		if (
 			value.type === "ImportDeclaration" ||
 			value.type === "ExportNamedDeclaration" ||
 			value.type === "ExportAllDeclaration"
 		) {
-			const specifier = value.source;
-			if (typeof specifier === "object" && !Array.isArray(specifier) && specifier?.value?.startsWith(".")) {
-				imports.add(specifier.value);
-			}
+			specifier = stringLiteralValue(value.source);
 		} else if (value.type === "TSImportType") {
-			const specifier = value.argument;
-			if (typeof specifier === "object" && !Array.isArray(specifier) && specifier?.value?.startsWith(".")) {
-				imports.add(specifier.value);
-			}
+			// Babel 8 stores this on `source`; `argument` is the explicit fallback for older parser majors.
+			specifier = stringLiteralValue(value.source) ?? stringLiteralValue(value.argument);
 		} else if (value.type === "ImportExpression") {
-			const specifier = value.source;
-			if (typeof specifier === "object" && !Array.isArray(specifier) && specifier?.value?.startsWith(".")) {
-				imports.add(specifier.value);
+			specifier = stringLiteralValue(value.source);
+			if (specifier === undefined) {
+				// Packaging cannot prove a computed edge is safe. Fail closed instead of silently pruning its target.
+				throw new Error(`Non-literal import() specifier in ${path}`);
 			}
+		} else if (value.type === "CallExpression" && isIdentifier(value.callee, "Import")) {
+			const argument = Array.isArray(value.arguments) ? value.arguments[0] : undefined;
+			specifier = stringLiteralValue(argument);
+			if (specifier === undefined) throw new Error(`Non-literal import() specifier in ${path}`);
+		} else {
+			specifier = requireSpecifier(value, path);
 		}
+		if (specifier?.startsWith(".")) imports.add(specifier);
 		for (const [key, child] of Object.entries(value)) {
 			if (key !== "loc" && key !== "extra") visit(child);
 		}
@@ -140,11 +175,14 @@ export function deriveImportClosure(packageRoot: string, roots: readonly string[
 			if (dependency === undefined) {
 				throw new Error(`Unresolved relative import ${specifier} from ${relativePath}`);
 			}
-			if (!pathIsSkipped(resolvedPackageRoot, dependency)) {
-				const dependencyRelativePath = normalizedRelativePath(resolvedPackageRoot, dependency);
-				closure.add(dependencyRelativePath);
-				if (dependency.endsWith(".ts") && !visited.has(dependencyRelativePath)) pending.push(dependency);
+			const dependencyRelativePath = normalizedRelativePath(resolvedPackageRoot, dependency);
+			if (pathIsSkipped(resolvedPackageRoot, dependency)) {
+				throw new Error(
+					`Relative import ${specifier} from ${relativePath} resolves to excluded path ${dependencyRelativePath}`,
+				);
 			}
+			closure.add(dependencyRelativePath);
+			if (dependency.endsWith(".ts") && !visited.has(dependencyRelativePath)) pending.push(dependency);
 		}
 	}
 	return closure;
