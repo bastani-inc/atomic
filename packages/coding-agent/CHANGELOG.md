@@ -12,7 +12,7 @@
 
 ### Fixed
 
-- Fixed `/model` and `/thinking` Ctrl+S failing to persist startup defaults in isolated interactive mode. The engine RPC dropped the persist flag, so `settings.json` never received `defaultProvider`/`defaultModel` or the thinking default. `set_model`, `cycle_model`, and `set_thinking_level` now accept optional `persist`. ([#2727](https://github.com/bastani-inc/atomic/issues/2727))
+- Fixed `/model` and `/thinking` Ctrl+S failing to persist startup defaults in isolated interactive mode. The engine RPC dropped the persist flag, so `settings.json` never received `defaultProvider`/`defaultModel` or the thinking default. Isolated mode now also refreshes the host settings view after the engine acknowledges persist, so reopening `/model` or `/thinking` shows the new default. `set_model`, `cycle_model`, and `set_thinking_level` accept optional `persist`. ([#2727](https://github.com/bastani-inc/atomic/issues/2727))
 - Fixed installed packages where the intercom broker failed to start on every launch, leaving both the `intercom` and `subagent` tools entirely non-functional.
 - Fixed Bun-compiled binaries crashing when a transformed extension performed a second `proper-lockfile` operation. Compiled extension imports now reuse the host's lockfile module instead of transforming and proxy-wrapping its mutable internals.
 

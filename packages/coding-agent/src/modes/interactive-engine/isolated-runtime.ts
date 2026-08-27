@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.ts";
@@ -25,6 +25,26 @@ import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
 
 type QueueSnapshot = { steering: string[]; followUp: string[] };
+
+function applyPersistedModelDefault(session: AgentSession, model: Model<Api>): void {
+	session.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+	if (session.scopedModels.length === 0) return;
+	if (session.scopedModels.some((scoped) => modelsAreEqual(scoped.model, model))) return;
+	session.setScopedModels([...session.scopedModels, { model }]);
+	const enabledModels = session.settingsManager.getEnabledModels();
+	if (!enabledModels?.length) return;
+	const modelReference = `${model.provider}/${model.id}`;
+	if (enabledModels.some((pattern) => pattern.toLowerCase() === modelReference.toLowerCase())) return;
+	session.settingsManager.setEnabledModels([...enabledModels, modelReference]);
+}
+
+function applyPersistedThinkingDefault(session: AgentSession, level: AgentSession["thinkingLevel"]): void {
+	if (session.model) {
+		session.settingsManager.setModelThinkingLevel(session.model.provider, session.model.id, level);
+		return;
+	}
+	session.settingsManager.setDefaultThinkingLevel(level);
+}
 
 type PendingQueueClear = {
 	snapshot: QueueSnapshot;
@@ -476,15 +496,22 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: async (model: Model<Api>, options?: ModelMutationOptions) => {
 					const selected = await this.client.setModel(model.provider, model.id, options);
-					session.agent.state.model = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
+					const nextModel = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
+					session.agent.state.model = nextModel;
 					this.resolveModelFallback();
+					if (options?.persist === true) applyPersistedModelDefault(session, nextModel);
 				},
 			},
 			setThinkingLevel: {
 				configurable: true,
 				value: (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
 					session.agent.state.thinkingLevel = level;
-					this.dispatchBestEffort("set thinking level", this.client.setThinkingLevel(level, options));
+					this.dispatchBestEffort(
+						"set thinking level",
+						this.client.setThinkingLevel(level, options).then(() => {
+							if (options?.persist === true) applyPersistedThinkingDefault(session, level);
+						}),
+					);
 				},
 			},
 			cycleModel: {
@@ -497,6 +524,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					session.agent.state.model = model;
 					session.agent.state.thinkingLevel = result.thinkingLevel;
 					this.resolveModelFallbackAfterExplicitModelSelection(previousModel, model);
+					if (options?.persist === true) applyPersistedModelDefault(session, model);
 					return { ...result, model };
 				},
 			},
@@ -508,7 +536,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					const current = levels.indexOf(session.thinkingLevel);
 					const level = levels[(current + 1) % levels.length]!;
 					session.agent.state.thinkingLevel = level;
-					this.dispatchBestEffort("cycle thinking level", this.client.setThinkingLevel(level, options));
+					this.dispatchBestEffort(
+						"cycle thinking level",
+						this.client.setThinkingLevel(level, options).then(() => {
+							if (options?.persist === true) applyPersistedThinkingDefault(session, level);
+						}),
+					);
 					return level;
 				},
 			},

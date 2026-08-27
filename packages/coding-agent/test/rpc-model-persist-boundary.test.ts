@@ -252,11 +252,12 @@ describe("RPC persist boundary", () => {
 		expect(engine.session.model?.id).toBe("faux-2");
 		expect(engine.settingsManager.getDefaultProvider()).toBe(next.provider);
 		expect(engine.settingsManager.getDefaultModel()).toBe("faux-2");
-		expect(host.settingsManager.getDefaultModel()).toBe("faux-1");
+		expect(host.settingsManager.getDefaultProvider()).toBe(next.provider);
+		expect(host.settingsManager.getDefaultModel()).toBe("faux-2");
 	});
 
 	it("does not save settings defaults when the isolated engine proxy setModel omits persist", async () => {
-		const { engine, runtime } = await isolatedPair();
+		const { engine, host, runtime } = await isolatedPair();
 		const next = engine.getModel("faux-2");
 		if (!next) throw new Error("missing faux-2");
 
@@ -264,27 +265,48 @@ describe("RPC persist boundary", () => {
 
 		expect(engine.session.model?.id).toBe("faux-2");
 		expect(engine.settingsManager.getDefaultModel()).toBe("faux-1");
+		expect(host.settingsManager.getDefaultModel()).toBe("faux-1");
+	});
+
+	it("adds a persisted default to the host scoped-model settings after engine ACK", async () => {
+		const { engine, host, runtime } = await isolatedPair();
+		const current = engine.getModel("faux-1");
+		const next = engine.getModel("faux-2");
+		if (!current || !next) throw new Error("missing faux models");
+		const currentRef = `${current.provider}/${current.id}`;
+		host.session.setScopedModels([{ model: current }]);
+		host.settingsManager.setEnabledModels([currentRef]);
+
+		await runtime.session.setModel(next, { persist: true });
+
+		expect(host.settingsManager.getDefaultModel()).toBe("faux-2");
+		expect(host.settingsManager.getEnabledModels()).toEqual([currentRef, `${next.provider}/${next.id}`]);
+		expect(host.session.scopedModels.map((scoped) => scoped.model.id)).toEqual(["faux-1", "faux-2"]);
 	});
 
 	it("saves a thinking default when the isolated engine proxy setThinkingLevel persist flag reaches the handler", async () => {
-		const { engine, runtime } = await isolatedPair();
-		const current = engine.getModel();
+		const { engine, host, runtime } = await isolatedPair();
+		const engineModel = engine.getModel();
+		const hostModel = host.getModel();
 
 		runtime.session.setThinkingLevel("high", { persist: true });
 
 		await vi.waitFor(() => {
-			expect(engine.settingsManager.getModelThinkingLevel(current.provider, current.id)).toBe("high");
+			expect(engine.settingsManager.getModelThinkingLevel(engineModel.provider, engineModel.id)).toBe("high");
+			expect(host.settingsManager.getModelThinkingLevel(hostModel.provider, hostModel.id)).toBe("high");
 		});
 		expect(engine.session.thinkingLevel).toBe("high");
+		expect(host.session.thinkingLevel).toBe("high");
 	});
 
 	it("forwards cycleModel persist through the isolated engine proxy to settings defaults", async () => {
-		const { engine, runtime } = await isolatedPair();
+		const { engine, host, runtime } = await isolatedPair();
 
 		const result = await runtime.session.cycleModel("forward", { persist: true });
 
 		expect(result?.model.id).toBe("faux-2");
 		expect(engine.session.model?.id).toBe("faux-2");
 		expect(engine.settingsManager.getDefaultModel()).toBe("faux-2");
+		expect(host.settingsManager.getDefaultModel()).toBe("faux-2");
 	});
 });
