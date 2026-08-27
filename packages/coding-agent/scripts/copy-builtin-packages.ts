@@ -97,7 +97,6 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		WORKFLOWS_SDK_BUNDLE_ENTRY,
 		"src/authoring.d.ts",
 		"src/shared/authoring-contract.d.ts",
-		"builtin/",
 		"skills/",
 	],
 	subagents: [
@@ -191,12 +190,32 @@ function getCopyPlan(): BuiltinCopy[] {
 	});
 }
 
+// Public workflow builtin subpaths are declared here rather than inferred from documentation prose. Packaging is the
+// authority for this artifact boundary, and every declared entry is validated fail-closed below.
+const PUBLISHED_WORKFLOW_BUILTIN_NAMES = [
+	"adversarial-verification",
+	"classify-and-act",
+	"fan-out-and-synthesize",
+	"generate-and-filter",
+	"goal",
+	"loop-until-done",
+	"open-claude-design",
+	"ralph",
+	"steering-context",
+	"tournament",
+] as const;
+
 function listWorkflowBuiltinNames(): string[] {
 	const builtinDir = join(workflowsDistDir, "builtin");
-	return readdirSync(builtinDir)
-		.filter((name) => name.endsWith(".d.ts") && name !== "index.d.ts")
-		.map((name) => name.slice(0, -".d.ts".length))
-		.sort();
+	for (const name of PUBLISHED_WORKFLOW_BUILTIN_NAMES) {
+		for (const extension of [".ts", ".d.ts"] as const) {
+			const entry = join(builtinDir, `${name}${extension}`);
+			if (!existsSync(entry)) {
+				throw new Error(`Published workflow builtin ${name} is missing ${relative(workflowsDistDir, entry)}`);
+			}
+		}
+	}
+	return [...PUBLISHED_WORKFLOW_BUILTIN_NAMES];
 }
 
 // Emit the lean @bastani/workflows authoring surface (authoring.ts +
@@ -285,6 +304,32 @@ async function bundleEntrypoint(entry: string, outfile: string, label: string): 
 	console.log(`Bundled ${label} -> ${relative(distDir, outfile)}`);
 }
 
+async function bundleWorkflowBuiltins(): Promise<void> {
+	const builtinDir = join(workflowsDistDir, "builtin");
+	const names = ["index", ...listWorkflowBuiltinNames()];
+	const result = await Bun.build({
+		entrypoints: names.map((name) => join(builtinDir, `${name}.ts`)),
+		root: builtinDir,
+		target: "node",
+		format: "esm",
+		packages: "external",
+		external: HOST_PROVIDED_EXTERNALS,
+		splitting: true,
+	});
+	if (!result.success) {
+		throw new Error(`Failed to bundle @bastani/workflows builtins: ${result.logs.map((log) => log.message).join("\n")}`);
+	}
+	for (const output of result.outputs) {
+		const outfile = join(builtinDir, basename(output.path));
+		writeFileSync(outfile, await output.text(), "utf-8");
+	}
+	for (const name of names) {
+		const output = join(builtinDir, `${name}.js`);
+		if (!existsSync(output)) throw new Error(`Bundled workflow builtin ${name} did not emit ${relative(distDir, output)}`);
+	}
+	console.log(`Bundled ${names.length} @bastani/workflows builtin entries -> ${relative(distDir, builtinDir)}`);
+}
+
 function readManifest(packageJsonPath: string): Record<string, unknown> {
 	return JSON.parse(readFileSync(packageJsonPath, "utf-8")) as Record<string, unknown>;
 }
@@ -320,8 +365,13 @@ function shouldKeepInstalledPath(
 	const normalized = relativePath.split("\\").join("/");
 	const isEmittedWorkflowDeclaration =
 		dirName === "workflows" && normalized.startsWith("src/") && normalized.endsWith(".d.ts");
+	const isCompiledWorkflowBuiltin =
+		dirName === "workflows" &&
+		normalized.startsWith("builtin/") &&
+		(normalized.endsWith(".js") || normalized.endsWith(".d.ts"));
 	return (
 		isEmittedWorkflowDeclaration ||
+		isCompiledWorkflowBuiltin ||
 		importClosure.has(normalized) ||
 		INSTALLED_KEEP_PREFIXES[dirName].some((keep) => {
 			if (keep.endsWith("/")) {
@@ -386,6 +436,8 @@ await bundleEntrypoint(
 	join(workflowsDistDir, WORKFLOWS_SDK_BUNDLE_ENTRY),
 	"@bastani/workflows SDK",
 );
+
+await bundleWorkflowBuiltins();
 await bundleEntrypoint(
 	join(distBuiltinDir, "subagents", "src", "extension", "index.ts"),
 	join(distBuiltinDir, "subagents", INSTALLED_EXTENSION_ENTRIES.subagents),
