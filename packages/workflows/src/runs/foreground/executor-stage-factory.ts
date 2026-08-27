@@ -176,7 +176,7 @@ export function createWorkflowStageFactory(input: {
 			defaultSessionDir: input.opts.defaultSessionDir,
 			// Run-level remote placement, resolved once at launch and shared by all
 			// stage sessions of this run.
-			sessionAdapter: input.opts.sessionAdapter,
+			sessionAdapter: options?.sessionAdapter !== undefined ? options.sessionAdapter : input.opts.sessionAdapter,
 			onModelFallbackMetaChange(meta) {
 				applyModelFallbackMeta(meta);
 				if (stageSnapshot.status === "running") input.activeStore.recordStageStart(input.runId, stageSnapshot);
