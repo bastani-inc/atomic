@@ -31,6 +31,18 @@ interface ManifestExtensionBlock {
 	extensions?: string[];
 }
 
+interface ManifestExportTarget {
+	types?: string;
+	import?: string;
+	default?: string;
+}
+
+interface WorkflowsManifestExports {
+	"."?: ManifestExportTarget;
+	"./builtin"?: ManifestExportTarget;
+	"./builtin/*"?: ManifestExportTarget;
+}
+
 const packageRoot = resolve(import.meta.dir, "..");
 const distDir = join(packageRoot, "dist");
 const distBuiltinDir = join(distDir, "builtin");
@@ -46,6 +58,7 @@ const packagesRoot = resolve(packageRoot, "..");
 // authoring surface as `.d.ts` and prune the raw `.ts` copies below.
 const workflowsDistDir = join(distBuiltinDir, "workflows");
 const workflowsAuthoringTsconfig = join(packageRoot, "tsconfig.workflows-types.json");
+const workflowsAuthoringDeclaration = "src/authoring.d.ts";
 const workflowsAmbientDts = join(workflowsDistDir, "ambient.d.ts");
 const workflowsAmbientReference = '/// <reference path="./builtin/workflows/ambient.d.ts" />';
 // Raw authoring-surface sources that are type-only at runtime (all importers use
@@ -349,11 +362,23 @@ function setManifestExtensions(pkg: Record<string, unknown>, extensionPath: stri
 
 function pointWorkflowsSdkAtBundle(pkg: Record<string, unknown>): void {
 	pkg.main = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
-	const exportsField = pkg.exports as
-		| { "."?: { types?: string; default?: string } }
-		| undefined;
-	if (exportsField?.["."]) {
-		exportsField["."].default = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
+	pkg.types = `./${workflowsAuthoringDeclaration}`;
+	const exportsField = pkg.exports as WorkflowsManifestExports | undefined;
+	const root = exportsField?.["."];
+	if (root) {
+		root.default = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
+		root.import = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
+		root.types = `./${workflowsAuthoringDeclaration}`;
+	}
+	const builtin = exportsField?.["./builtin"];
+	if (builtin) {
+		builtin.default = "./builtin/index.js";
+		builtin.import = "./builtin/index.js";
+	}
+	const builtinWildcard = exportsField?.["./builtin/*"];
+	if (builtinWildcard) {
+		builtinWildcard.default = "./builtin/*.js";
+		builtinWildcard.import = "./builtin/*.js";
 	}
 }
 

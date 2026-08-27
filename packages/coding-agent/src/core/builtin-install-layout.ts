@@ -20,7 +20,7 @@ export const INSTALLED_EXTENSION_ENTRIES = {
 	intercom: "index.bundle.mjs",
 } as const satisfies Record<BuiltinPackageDirName, string>;
 
-export const WORKFLOWS_SDK_BUNDLE_ENTRY = "src/index.bundle.mjs";
+export const WORKFLOWS_SDK_BUNDLE_ENTRY = "src/index.js";
 export const INTERCOM_BROKER_BUNDLE_ENTRY = "broker/broker.bundle.mjs";
 
 export function requiredEntriesForBuiltin(dirName: BuiltinPackageDirName): readonly string[] {

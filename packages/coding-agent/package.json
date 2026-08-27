@@ -39,21 +39,21 @@
     },
     "./workflows": {
       "types": "./dist/builtin/workflows/src/authoring.d.ts",
-      "import": "./dist/builtin/workflows/src/index.ts",
-      "default": "./dist/builtin/workflows/src/index.ts"
+      "import": "./dist/builtin/workflows/src/index.js",
+      "default": "./dist/builtin/workflows/src/index.js"
     },
     "./workflows/ambient": {
       "types": "./dist/builtin/workflows/ambient.d.ts"
     },
     "./workflows/builtin": {
       "types": "./dist/builtin/workflows/builtin/index.d.ts",
-      "import": "./dist/builtin/workflows/builtin/index.ts",
-      "default": "./dist/builtin/workflows/builtin/index.ts"
+      "import": "./dist/builtin/workflows/builtin/index.js",
+      "default": "./dist/builtin/workflows/builtin/index.js"
     },
     "./workflows/builtin/*": {
       "types": "./dist/builtin/workflows/builtin/*.d.ts",
-      "import": "./dist/builtin/workflows/builtin/*.ts",
-      "default": "./dist/builtin/workflows/builtin/*.ts"
+      "import": "./dist/builtin/workflows/builtin/*.js",
+      "default": "./dist/builtin/workflows/builtin/*.js"
     }
   },
   "files": [
