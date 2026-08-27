@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { zstdDecompressSync } from "node:zlib";
 import {
 	type Api,
@@ -127,15 +126,13 @@ describe("codex fast mode helpers", () => {
 			fastModelIds: ["claude-opus-4.8-fast"],
 		};
 
-		assert.equal(isGitHubCopilotFastModeSupportedModel(model, entitledCredential), true);
-		assert.equal(hasSupportedCodexFastModeModel([model], entitledCredential), true);
-		assert.equal(
+		expect(isGitHubCopilotFastModeSupportedModel(model, entitledCredential)).toBe(true);
+		expect(hasSupportedCodexFastModeModel([model], entitledCredential)).toBe(true);
+		expect(
 			isGitHubCopilotFastModeSupportedModel(model, { ...entitledCredential, fastModelIds: ["other-fast"] }),
-			false,
-		);
-		assert.equal(isGitHubCopilotFastModeSupportedModel(model, undefined), false);
-		assert.equal(
-			isGitHubCopilotFastModeSupportedModel(fullModel({ provider: "anthropic" }), entitledCredential),
+		).toBe(false);
+		expect(isGitHubCopilotFastModeSupportedModel(model, undefined)).toBe(false);
+		expect(isGitHubCopilotFastModeSupportedModel(fullModel({ provider: "anthropic" }), entitledCredential)).toBe(
 			false,
 		);
 	});

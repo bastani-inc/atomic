@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -334,12 +333,12 @@ describe("createAgentSession codex fast mode", () => {
 			const fast = await captureRealCopilotTurn(api, true);
 			const normal = await captureRealCopilotTurn(api, false);
 
-			assert.equal(fast.body.model, "github-copilot-test-model-fast");
-			assert.equal(normal.body.model, "github-copilot-test-model");
-			assert.equal("service_tier" in fast.body, false);
-			assert.equal("speed" in fast.body, false);
-			assert.deepEqual(withoutRequestIdentity(fast.headers), withoutRequestIdentity(normal.headers));
-			assert.equal(fast.message.model, "github-copilot-test-model");
+			expect(fast.body.model).toBe("github-copilot-test-model-fast");
+			expect(normal.body.model).toBe("github-copilot-test-model");
+			expect("service_tier" in fast.body).toBe(false);
+			expect("speed" in fast.body).toBe(false);
+			expect(withoutRequestIdentity(fast.headers)).toEqual(withoutRequestIdentity(normal.headers));
+			expect(fast.message.model).toBe("github-copilot-test-model");
 		}
 	});
 
@@ -347,8 +346,8 @@ describe("createAgentSession codex fast mode", () => {
 		const modelId = "gpt-5.6-sol";
 		const captured = await captureRealCopilotTurn("openai-responses", true, modelId);
 
-		assert.equal(captured.message.provider, "github-copilot");
-		assert.equal(captured.message.model, modelId);
+		expect(captured.message.provider).toBe("github-copilot");
+		expect(captured.message.model).toBe(modelId);
 	});
 
 	it("persists and resumes the base Copilot model so disabling fast mode restores the base wire id", async () => {
@@ -368,7 +367,7 @@ describe("createAgentSession codex fast mode", () => {
 			allowModelNetwork: false,
 		});
 		const model = modelRuntime.getModel("github-copilot", modelId);
-		assert.ok(model);
+		if (!model) throw new Error(`Expected the model runtime to expose github-copilot/${modelId}`);
 		const sessionManager = SessionManager.inMemory(cwd);
 		const requestBodies: Record<string, unknown>[] = [];
 		vi.stubGlobal(
@@ -391,9 +390,9 @@ describe("createAgentSession codex fast mode", () => {
 		first.session.dispose();
 
 		const persisted = sessionManager.buildSessionContext();
-		assert.deepEqual(persisted.model, { provider: "github-copilot", modelId });
+		expect(persisted.model).toEqual({ provider: "github-copilot", modelId });
 		const persistedAssistant = persisted.messages.findLast((message) => message.role === "assistant");
-		assert.equal(persistedAssistant?.role === "assistant" ? persistedAssistant.model : undefined, modelId);
+		expect(persistedAssistant?.role === "assistant" ? persistedAssistant.model : undefined).toBe(modelId);
 
 		const resumed = await createAgentSession({
 			cwd,
@@ -404,12 +403,9 @@ describe("createAgentSession codex fast mode", () => {
 			sessionManager,
 		});
 		try {
-			assert.equal(resumed.session.model?.id, modelId);
+			expect(resumed.session.model?.id).toBe(modelId);
 			await resumed.session.prompt("second turn");
-			assert.deepEqual(
-				requestBodies.map((body) => body.model),
-				[`${modelId}-fast`, modelId],
-			);
+			expect(requestBodies.map((body) => body.model)).toEqual([`${modelId}-fast`, modelId]);
 		} finally {
 			resumed.session.dispose();
 		}
@@ -425,12 +421,12 @@ describe("createAgentSession codex fast mode", () => {
 			useBuiltInDispatch: true,
 		});
 
-		assert.equal(captured.model.id, "github-copilot-test-model");
-		assert.equal("serviceTier" in (captured.options ?? {}), false);
-		assert.equal(captured.options?.headers, undefined);
-		assert.deepEqual(captured.payload, { model: "github-copilot-test-model-fast", messages: [] });
-		assert.equal("service_tier" in (captured.payload as Record<string, unknown>), false);
-		assert.equal("speed" in (captured.payload as Record<string, unknown>), false);
+		expect(captured.model.id).toBe("github-copilot-test-model");
+		expect("serviceTier" in (captured.options ?? {})).toBe(false);
+		expect(captured.options?.headers).toBeUndefined();
+		expect(captured.payload).toEqual({ model: "github-copilot-test-model-fast", messages: [] });
+		expect("service_tier" in (captured.payload as Record<string, unknown>)).toBe(false);
+		expect("speed" in (captured.payload as Record<string, unknown>)).toBe(false);
 	});
 
 	it("preserves unentitled Copilot requests when fast mode is enabled", async () => {
@@ -443,8 +439,8 @@ describe("createAgentSession codex fast mode", () => {
 			payload,
 		});
 
-		assert.equal(captured.model.id, "github-copilot-test-model");
-		assert.strictEqual(captured.payload, payload);
+		expect(captured.model.id).toBe("github-copilot-test-model");
+		expect(captured.payload).toBe(payload);
 	});
 
 	it("preserves entitled Copilot requests when fast mode is disabled", async () => {
@@ -457,8 +453,8 @@ describe("createAgentSession codex fast mode", () => {
 			payload,
 		});
 
-		assert.equal(captured.model.id, "github-copilot-test-model");
-		assert.strictEqual(captured.payload, payload);
+		expect(captured.model.id).toBe("github-copilot-test-model");
+		expect(captured.payload).toBe(payload);
 	});
 
 	it("adds priority service tier for enabled chat requests", async () => {

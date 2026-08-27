@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import { githubCopilotOAuth } from "../src/auth/oauth/github-copilot.ts";
@@ -185,21 +184,20 @@ describe("GitHub Copilot OAuth device flow", () => {
 			},
 		]);
 
-		assert.deepEqual(credentials.availableModelIds, ["claude-opus-4.8"]);
-		assert.deepEqual(credentials.fastModelIds, ["claude-opus-4.8-fast"]);
+		expect(credentials.availableModelIds).toEqual(["claude-opus-4.8"]);
+		expect(credentials.fastModelIds).toEqual(["claude-opus-4.8-fast"]);
 
 		const provider = githubCopilotProvider();
 		const regularModel = provider.getModels()[0];
-		assert.ok(regularModel);
+		if (!regularModel) throw new Error("Expected the Copilot provider to expose a model");
 		const fastVariant = { ...regularModel, id: `${regularModel.id}-fast` };
-		assert.deepEqual(
+		expect(
 			provider.filterModels?.([regularModel, fastVariant], {
 				...credentials,
 				type: "oauth",
 				availableModelIds: [regularModel.id, fastVariant.id],
 			}),
-			[regularModel],
-		);
+		).toEqual([regularModel]);
 	});
 
 	it("falls back to explicitly enabled policy models when the picker catalog is empty", async () => {
@@ -235,8 +233,8 @@ describe("GitHub Copilot OAuth device flow", () => {
 			},
 		]);
 
-		assert.deepEqual(credentials.availableModelIds, ["gpt-4.1"]);
-		assert.deepEqual(credentials.fastModelIds, ["claude-opus-4.8-fast"]);
+		expect(credentials.availableModelIds).toEqual(["gpt-4.1"]);
+		expect(credentials.fastModelIds).toEqual(["claude-opus-4.8-fast"]);
 
 		const store = new InMemoryCredentialStore();
 		await store.modify("github-copilot", async () => ({ ...credentials, type: "oauth" }));

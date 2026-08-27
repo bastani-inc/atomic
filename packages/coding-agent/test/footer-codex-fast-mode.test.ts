@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
@@ -89,7 +88,7 @@ describe("FooterComponent Codex fast mode indicator", () => {
 			footerData,
 		);
 
-		assert.equal(plain(footer.render(120)[0] ?? "").includes("claude-opus-4.8 fast"), true);
+		expect(plain(footer.render(120)[0] ?? "").includes("claude-opus-4.8 fast")).toBe(true);
 	});
 
 	it("omits fast when chat fast mode is disabled", () => {
