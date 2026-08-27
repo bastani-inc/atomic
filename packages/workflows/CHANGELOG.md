@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added the optional workflow `environment` config block for Coder deployment and template bindings, including the single-template shorthand, per-template preset and string parameters, idle and retention settings, and project-level replacement semantics. Authored workflows can map a template-name input through `environmentFromInputs`; Atomic freezes that declaration and resolves it to a typed run binding while leaving unconfigured workflows local and unchanged.
 - Added the Coder workspace API client for organization, active-template-version, rich-parameter, and named-preset resolution; explicit non-interactive workspace creation; lifecycle builds; bounded agent-ready watching; and stop/delete transitions. Atomic can also acquire and validate the deployment's own matching Coder CLI into a deployment/version/platform-specific cache instead of relying on `coder` from `PATH`.
+- Added the run-environment execution transport and `ExecOutcome` sum type. It generates an isolated SSH configuration with the deployment-matched Coder CLI, holds one SSH control master per environment, multiplexes commands without falling back to a fresh Coder connection, streams stdout and stderr separately, and reports exits, timeouts, aborts, and transport loss as distinct outcomes.
 
 ### Fixed
 
