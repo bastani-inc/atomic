@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -231,7 +232,7 @@ describe("InteractiveMode /fast autocomplete", () => {
 		const model = createModel("github-copilot", "claude-opus-4.8");
 		const labels = await slashLabels(createProvider([model], [], { fastModelIds: ["claude-opus-4.8-fast"] }));
 
-		expect(labels.includes("fast")).toBe(true);
+		assert.equal(labels.includes("fast"), true);
 	});
 
 	test("hides /fast for unauthenticated scoped OpenAI models without falling back", async () => {

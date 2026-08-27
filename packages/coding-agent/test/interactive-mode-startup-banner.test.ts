@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
@@ -131,7 +132,7 @@ describe("InteractiveMode startup banner", () => {
 			fastModelIds: ["claude-opus-4.8-fast"],
 		});
 
-		expect(rendered.includes("(github-copilot) claude-opus-4.8 fast")).toBe(true);
+		assert.equal(rendered.includes("(github-copilot) claude-opus-4.8 fast"), true);
 	});
 
 	it("keeps the side-by-side layout when the terminal is wide enough", () => {
