@@ -10,6 +10,8 @@
 
 - Fixed installed packages where the intercom broker failed to start on every launch, leaving both the `intercom` and `subagent` tools entirely non-functional.
 
+- Fixed the published workflow SDK so importing `@bastani/atomic` no longer injects the workflows graph into every consumer's TypeScript program, consumers can typecheck against the package again, and workflow authoring types no longer silently collapse to `any`. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
+
 ## [0.9.16-alpha.6] - 2026-08-26
 
 ### Changed
