@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed installed packages where the intercom broker failed to start on every launch, leaving both the `intercom` and `subagent` tools entirely non-functional.
+- Fixed Bun-compiled binaries crashing when a transformed extension performed a second `proper-lockfile` operation. Compiled extension imports now reuse the host's lockfile module instead of transforming and proxy-wrapping its mutable internals.
 
 - Fixed the published workflow SDK so importing `@bastani/atomic` no longer injects the workflows graph into every consumer's TypeScript program, consumers can typecheck against the package again, and workflow authoring types no longer silently collapse to `any`. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
 
