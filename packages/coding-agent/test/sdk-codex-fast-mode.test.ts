@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 interface CapturedFastModeRequest {
+	model: Model<Api>;
 	options: SimpleStreamOptions | undefined;
 	payload: unknown;
 }
@@ -116,14 +118,26 @@ describe("createAgentSession codex fast mode", () => {
 
 	async function captureFastModeRequest(options: {
 		provider: string;
+		api?: Api;
 		settings: { chat: boolean; workflow: boolean };
 		orchestrationContext?: OrchestrationContext;
 		payload?: Record<string, unknown>;
+		fastModelIds?: string[];
 	}): Promise<CapturedFastModeRequest> {
-		const api = "openai-responses" as Api;
+		const api = options.api ?? ("openai-responses" as Api);
 		const model = createModel(options.provider, api);
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		await authStorage.modify(options.provider, async () => ({ type: "api_key", key: "test-api-key" }));
+		await authStorage.modify(options.provider, async () =>
+			options.fastModelIds
+				? {
+						type: "oauth",
+						access: "test-access-token",
+						refresh: "test-refresh-token",
+						expires: Number.MAX_SAFE_INTEGER,
+						fastModelIds: options.fastModelIds,
+					}
+				: { type: "api_key", key: "test-api-key" },
+		);
 		const modelRuntime = await ModelRuntime.create({
 			credentials: authStorage,
 			modelsPath: join(agentDir, "models.json"),
@@ -132,12 +146,14 @@ describe("createAgentSession codex fast mode", () => {
 		const settingsManager = SettingsManager.inMemory({ codexFastMode: options.settings });
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedOptions: SimpleStreamOptions | undefined;
+		let capturedModel: Model<Api> | undefined;
 
 		modelRuntime.registerProvider(options.provider, {
 			api,
-			streamSimple: (_model, _context, streamOptions) => {
+			streamSimple: (streamModel, _context, streamOptions) => {
+				capturedModel = streamModel;
 				capturedOptions = streamOptions;
-				return createDoneStream(model);
+				return createDoneStream(streamModel);
 			},
 		});
 		registeredProviders.push({ registry: modelRuntime, provider: options.provider });
@@ -157,7 +173,8 @@ describe("createAgentSession codex fast mode", () => {
 			const stream = await session.agent.streamFunction(model, { messages: [] }, { sessionId: session.sessionId });
 			await stream.result();
 			const payload = await session.agent.onPayload?.(options.payload ?? { model: model.id }, model);
-			return { options: capturedOptions, payload };
+			if (!capturedModel) throw new Error("Expected the provider stream to receive a model");
+			return { model: capturedModel, options: capturedOptions, payload };
 		} finally {
 			session.dispose();
 			modelRuntime.unregisterProvider(options.provider);
@@ -166,6 +183,52 @@ describe("createAgentSession codex fast mode", () => {
 			);
 		}
 	}
+
+	it("rewrites entitled Copilot requests across API paths without adding Codex request fields", async () => {
+		for (const api of ["anthropic-messages", "openai-responses", "openai-completions"] as const) {
+			const captured = await captureFastModeRequest({
+				provider: "github-copilot",
+				api,
+				settings: { chat: true, workflow: false },
+				fastModelIds: ["github-copilot-test-model-fast"],
+				payload: { model: "github-copilot-test-model", messages: [] },
+			});
+
+			assert.equal(captured.model.id, "github-copilot-test-model-fast");
+			assert.equal("serviceTier" in (captured.options ?? {}), false);
+			assert.deepEqual(captured.payload, { model: "github-copilot-test-model-fast", messages: [] });
+			assert.equal("service_tier" in (captured.payload as Record<string, unknown>), false);
+			assert.equal("speed" in (captured.payload as Record<string, unknown>), false);
+		}
+	});
+
+	it("preserves unentitled Copilot requests when fast mode is enabled", async () => {
+		const payload = { model: "github-copilot-test-model", messages: [] };
+		const captured = await captureFastModeRequest({
+			provider: "github-copilot",
+			api: "anthropic-messages",
+			settings: { chat: true, workflow: false },
+			fastModelIds: ["other-model-fast"],
+			payload,
+		});
+
+		assert.equal(captured.model.id, "github-copilot-test-model");
+		assert.strictEqual(captured.payload, payload);
+	});
+
+	it("preserves entitled Copilot requests when fast mode is disabled", async () => {
+		const payload = { model: "github-copilot-test-model", messages: [] };
+		const captured = await captureFastModeRequest({
+			provider: "github-copilot",
+			api: "anthropic-messages",
+			settings: { chat: false, workflow: false },
+			fastModelIds: ["github-copilot-test-model-fast"],
+			payload,
+		});
+
+		assert.equal(captured.model.id, "github-copilot-test-model");
+		assert.strictEqual(captured.payload, payload);
+	});
 
 	it("adds priority service tier for enabled chat requests", async () => {
 		const captured = await captureFastModeRequest({

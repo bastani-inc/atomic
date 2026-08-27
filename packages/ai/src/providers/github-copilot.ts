@@ -17,13 +17,14 @@ export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai
 		},
 		models: Object.values(GITHUB_COPILOT_MODELS),
 		filterModels: (models, credential) => {
-			if (credential?.type !== "oauth") return models;
+			const selectableModels = models.filter((model) => !model.id.endsWith("-fast"));
+			if (credential?.type !== "oauth") return selectableModels;
 			const availableModelIds = credential.availableModelIds;
 			if (!Array.isArray(availableModelIds) || !availableModelIds.every((id) => typeof id === "string")) {
-				return models;
+				return selectableModels;
 			}
 			const available = new Set(availableModelIds);
-			return models.filter((model) => available.has(model.id));
+			return selectableModels.filter((model) => available.has(model.id));
 		},
 		api: {
 			"anthropic-messages": anthropicMessagesApi(),

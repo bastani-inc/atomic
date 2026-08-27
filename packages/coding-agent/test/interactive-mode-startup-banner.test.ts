@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
@@ -57,12 +58,15 @@ function renderStartupIdentity(options: {
 	gap?: number;
 	manifestoPhase?: number;
 	raw?: boolean;
+	provider?: string;
+	modelId?: string;
+	fastModelIds?: string[];
 }): string {
 	const session = {
 		state: {
 			model: {
-				provider: "openai",
-				id: "gpt-5.1-codex",
+				provider: options.provider ?? "openai",
+				id: options.modelId ?? "gpt-5.1-codex",
 				reasoning: options.reasoning,
 			},
 			thinkingLevel: options.thinkingLevel,
@@ -73,6 +77,18 @@ function renderStartupIdentity(options: {
 				chat: options.chatFastMode,
 				workflow: false,
 			}),
+		},
+		modelRuntime: {
+			getCredentialSnapshot: () =>
+				options.fastModelIds
+					? {
+							type: "oauth",
+							access: "token",
+							refresh: "refresh",
+							expires: Number.MAX_SAFE_INTEGER,
+							fastModelIds: options.fastModelIds,
+						}
+					: undefined,
 		},
 		orchestrationContext: undefined,
 		sessionManager: {
@@ -103,6 +119,20 @@ describe("InteractiveMode startup banner", () => {
 
 		expect(rendered).toContain("(openai) gpt-5.1-codex medium fast");
 		expect(rendered).not.toContain("gpt-5.1-codex fast medium");
+	});
+
+	it("shows fast for an entitled Copilot startup model", () => {
+		initTheme("dark");
+		const rendered = renderStartupIdentity({
+			chatFastMode: true,
+			reasoning: false,
+			thinkingLevel: "off",
+			provider: "github-copilot",
+			modelId: "claude-opus-4.8",
+			fastModelIds: ["claude-opus-4.8-fast"],
+		});
+
+		assert.equal(rendered.includes("(github-copilot) claude-opus-4.8 fast"), true);
 	});
 
 	it("keeps the side-by-side layout when the terminal is wide enough", () => {

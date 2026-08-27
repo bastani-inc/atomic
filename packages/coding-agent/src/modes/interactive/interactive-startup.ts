@@ -547,6 +547,7 @@ InteractiveModeBase.prototype.getStartupModelLabel = function (this: Interactive
 		model,
 		this.session.settingsManager.getCodexFastModeSettings(),
 		this.session.orchestrationContext,
+		this.session.modelRuntime.getCredentialSnapshot?.("github-copilot"),
 	);
 	return formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
 };

@@ -20,6 +20,7 @@ import {
 	withChatGptCodexTransportRouting,
 	withCodexFastModePayload,
 	withCodexFastModeStreamOptions,
+	withGitHubCopilotFastModeModel,
 } from "./codex-fast-mode.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
@@ -277,7 +278,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 	const isCodexFastModeEnabled = (requestModel: Model<Api>): boolean =>
-		shouldApplyCodexFastMode(requestModel, settingsManager.getCodexFastModeSettings(), options.orchestrationContext);
+		shouldApplyCodexFastMode(
+			requestModel,
+			settingsManager.getCodexFastModeSettings(),
+			options.orchestrationContext,
+			modelRuntime.getCredentialSnapshot("github-copilot"),
+		);
 
 	agent = new Agent({
 		initialState: {
@@ -299,8 +305,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				baseUrl: authResult?.auth.baseUrl,
 				env: authResult?.env,
 			};
-			const requestModel =
+			const authenticatedRequestModel =
 				auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+			const fastModeEnabled = isCodexFastModeEnabled(model);
+			const requestModel = withGitHubCopilotFastModeModel(authenticatedRequestModel, fastModeEnabled);
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
 			// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
@@ -322,7 +330,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const assembledHeaders = headerRunner?.hasHandlers("before_provider_headers")
 				? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {})
 				: mergedHeaders;
-			const fastModeEnabled = isCodexFastModeEnabled(model);
 			const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
 			const usesExtensionStream =
 				extensionProvider?.streamSimple !== undefined && requestModel.api === extensionProvider.api;
@@ -361,7 +368,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		onPayload: async (payload, model) => {
 			const fastModeEnabled = isCodexFastModeEnabled(model);
-			const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled);
+			const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled, model);
 			const sourceMessages = lastConvertedLlmMessages;
 			const replayGuardedPayload = sourceMessages
 				? restoreAnthropicReplayThinkingBlocks(guardedPayload, sourceMessages, model)

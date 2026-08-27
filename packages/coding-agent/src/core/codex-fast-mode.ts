@@ -1,3 +1,4 @@
+import type { Credential } from "@bastani/pi-ai";
 import { closeOpenAICodexWebSocketSessions } from "@bastani/pi-ai/api/openai-codex-responses";
 import {
 	type Api,
@@ -59,7 +60,7 @@ const DEFAULT_CODEX_FAST_MODE_STREAMERS: CodexFastModeStreamers = {
 	streamOpenAICodexResponses,
 };
 
-type CodexFastModeModelIdentity = Pick<Model<Api>, "provider"> & Partial<Pick<Model<Api>, "api">>;
+type CodexFastModeModelIdentity = Pick<Model<Api>, "provider"> & Partial<Pick<Model<Api>, "api" | "id">>;
 
 const CODEX_WEBSOCKET_ROUTING_STATE_IDLE_MS = 6 * 60 * 1000;
 const codexWebSocketRoutingState = new Map<string, { signature: string; expiry: ReturnType<typeof setTimeout> }>();
@@ -73,12 +74,36 @@ export function isCodexFastModeCandidateModelId(modelId: string | undefined): bo
 	return provider !== undefined && isCodexFastModeSupportedProvider(provider);
 }
 
-export function isCodexFastModeSupportedModel(model: CodexFastModeModelIdentity): boolean {
-	return isCodexFastModeSupportedProvider(model.provider) || model.api === "openai-codex-responses";
+export function isGitHubCopilotFastModeSupportedModel(
+	model: Pick<Model<Api>, "id" | "provider">,
+	credential: Credential | undefined,
+): boolean {
+	if (model.provider !== "github-copilot" || credential?.type !== "oauth") return false;
+	const fastModelIds = credential.fastModelIds;
+	return (
+		Array.isArray(fastModelIds) &&
+		fastModelIds.every((modelId) => typeof modelId === "string") &&
+		fastModelIds.includes(`${model.id}-fast`)
+	);
 }
 
-export function hasSupportedCodexFastModeModel(models: readonly CodexFastModeModelIdentity[]): boolean {
-	return models.some(isCodexFastModeSupportedModel);
+export function isCodexFastModeSupportedModel(
+	model: CodexFastModeModelIdentity,
+	copilotCredential?: Credential,
+): boolean {
+	return (
+		isCodexFastModeSupportedProvider(model.provider) ||
+		model.api === "openai-codex-responses" ||
+		(model.id !== undefined &&
+			isGitHubCopilotFastModeSupportedModel({ provider: model.provider, id: model.id }, copilotCredential))
+	);
+}
+
+export function hasSupportedCodexFastModeModel(
+	models: readonly CodexFastModeModelIdentity[],
+	copilotCredential?: Credential,
+): boolean {
+	return models.some((model) => isCodexFastModeSupportedModel(model, copilotCredential));
 }
 
 export function isWorkflowStageOrchestrationContext(context: OrchestrationContext | undefined): boolean {
@@ -107,16 +132,18 @@ export function shouldApplyCodexFastModeForScope(
 	model: CodexFastModeModelIdentity,
 	settings: CodexFastModeResolvedSettings,
 	scope: CodexFastModeScope,
+	copilotCredential?: Credential,
 ): boolean {
-	return isCodexFastModeSupportedModel(model) && isCodexFastModeEnabledForScope(settings, scope);
+	return isCodexFastModeSupportedModel(model, copilotCredential) && isCodexFastModeEnabledForScope(settings, scope);
 }
 
 export function shouldApplyCodexFastMode(
 	model: CodexFastModeModelIdentity,
 	settings: CodexFastModeResolvedSettings,
 	context: OrchestrationContext | undefined,
+	copilotCredential?: Credential,
 ): boolean {
-	return shouldApplyCodexFastModeForScope(model, settings, getCodexFastModeScope(context));
+	return shouldApplyCodexFastModeForScope(model, settings, getCodexFastModeScope(context), copilotCredential);
 }
 
 /**
@@ -157,11 +184,11 @@ export function withCodexFastModeHeaders(
 }
 
 export function withCodexFastModeStreamOptions(
-	_model: Pick<Model<Api>, "baseUrl" | "id" | "provider">,
+	model: Pick<Model<Api>, "baseUrl" | "id" | "provider">,
 	options: SimpleStreamOptions | undefined,
 	enabled: boolean,
 ): CodexFastModeStreamOptions | undefined {
-	if (!enabled) {
+	if (!enabled || model.provider === "github-copilot") {
 		return options;
 	}
 
@@ -329,6 +356,11 @@ export function buildOpenAICodexResponsesCodexFastModeOptions(
 	};
 }
 
+export function withGitHubCopilotFastModeModel<TModel extends Model<Api>>(model: TModel, enabled: boolean): TModel {
+	if (!enabled || model.provider !== "github-copilot") return model;
+	return { ...model, id: `${model.id}-fast` };
+}
+
 export function streamWithCodexFastMode(
 	model: Model<Api>,
 	context: Context,
@@ -365,10 +397,16 @@ function isObjectPayload(payload: unknown): payload is Record<string, unknown> {
 	return typeof payload === "object" && payload !== null && !Array.isArray(payload);
 }
 
-export function withCodexFastModePayload(payload: unknown, enabled: boolean): unknown {
-	if (!enabled || !isObjectPayload(payload) || payload.service_tier !== undefined) {
-		return payload;
+export function withCodexFastModePayload(
+	payload: unknown,
+	enabled: boolean,
+	model?: Pick<Model<Api>, "id" | "provider">,
+): unknown {
+	if (!enabled || !isObjectPayload(payload)) return payload;
+	if (model?.provider === "github-copilot") {
+		return payload.model === model.id ? { ...payload, model: `${model.id}-fast` } : payload;
 	}
+	if (payload.service_tier !== undefined) return payload;
 
 	return {
 		...payload,

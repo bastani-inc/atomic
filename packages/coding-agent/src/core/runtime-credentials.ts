@@ -9,6 +9,15 @@ function getReloadableStore(store: CredentialStore): ReloadableCredentialStore |
 	return typeof reloadable.reload === "function" ? (reloadable as ReloadableCredentialStore) : undefined;
 }
 
+interface SnapshotCredentialStore {
+	peek(providerId: string): Credential | undefined;
+}
+
+function getSnapshotStore(store: CredentialStore): SnapshotCredentialStore | undefined {
+	const snapshotStore = store as CredentialStore & Partial<SnapshotCredentialStore>;
+	return typeof snapshotStore.peek === "function" ? (snapshotStore as SnapshotCredentialStore) : undefined;
+}
+
 /** Async credential store overlay for non-persistent runtime API keys. */
 export class RuntimeCredentials implements CredentialStore {
 	private readonly store: CredentialStore;
@@ -32,6 +41,11 @@ export class RuntimeCredentials implements CredentialStore {
 
 	async reload(): Promise<void> {
 		await getReloadableStore(this.store)?.reload();
+	}
+
+	peek(providerId: string): Credential | undefined {
+		const override = this.overrides.get(providerId);
+		return override ? { type: "api_key", key: override } : getSnapshotStore(this.store)?.peek(providerId);
 	}
 
 	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {

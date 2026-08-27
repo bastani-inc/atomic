@@ -195,7 +195,10 @@ InteractiveModeBase.prototype.getCodexFastModeCandidateModels = function (this: 
 };
 
 InteractiveModeBase.prototype.hasCodexFastModeSupportedModels = function (this: InteractiveModeBase): boolean {
-	return hasSupportedCodexFastModeModel(this.getCodexFastModeCandidateModels());
+	return hasSupportedCodexFastModeModel(
+		this.getCodexFastModeCandidateModels(),
+		this.session.modelRuntime.getCredentialSnapshot?.("github-copilot"),
+	);
 };
 
 InteractiveModeBase.prototype.buildRemoteSlashCommands = function (

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import { githubCopilotOAuth } from "../src/auth/oauth/github-copilot.ts";
@@ -163,6 +164,44 @@ describe("GitHub Copilot OAuth device flow", () => {
 		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual(["gpt-4.1"]);
 	});
 
+	it("stores entitled fast variants without exposing them in the model picker", async () => {
+		const credentials = await refreshGitHubCopilotModelsForTest([
+			{
+				id: "claude-opus-4.8",
+				model_picker_enabled: true,
+				capabilities: { supports: { tool_calls: true } },
+			},
+			{
+				id: "claude-opus-4.8-fast",
+				model_picker_enabled: false,
+				policy: { state: "enabled" },
+				capabilities: { supports: { tool_calls: true } },
+			},
+			{
+				id: "claude-opus-4.7-fast",
+				model_picker_enabled: false,
+				policy: { state: "disabled" },
+				capabilities: { supports: { tool_calls: true } },
+			},
+		]);
+
+		assert.deepEqual(credentials.availableModelIds, ["claude-opus-4.8"]);
+		assert.deepEqual(credentials.fastModelIds, ["claude-opus-4.8-fast"]);
+
+		const provider = githubCopilotProvider();
+		const regularModel = provider.getModels()[0];
+		assert.ok(regularModel);
+		const fastVariant = { ...regularModel, id: `${regularModel.id}-fast` };
+		assert.deepEqual(
+			provider.filterModels?.([regularModel, fastVariant], {
+				...credentials,
+				type: "oauth",
+				availableModelIds: [regularModel.id, fastVariant.id],
+			}),
+			[regularModel],
+		);
+	});
+
 	it("falls back to explicitly enabled policy models when the picker catalog is empty", async () => {
 		const credentials = await refreshGitHubCopilotModelsForTest([
 			{
@@ -183,6 +222,12 @@ describe("GitHub Copilot OAuth device flow", () => {
 				capabilities: { supports: { tool_calls: true } },
 			},
 			{
+				id: "claude-opus-4.8-fast",
+				model_picker_enabled: false,
+				policy: { state: "enabled" },
+				capabilities: { supports: { tool_calls: true } },
+			},
+			{
 				id: "gpt-4o",
 				model_picker_enabled: false,
 				policy: { state: "enabled" },
@@ -190,7 +235,8 @@ describe("GitHub Copilot OAuth device flow", () => {
 			},
 		]);
 
-		expect(credentials.availableModelIds).toEqual(["gpt-4.1"]);
+		assert.deepEqual(credentials.availableModelIds, ["gpt-4.1"]);
+		assert.deepEqual(credentials.fastModelIds, ["claude-opus-4.8-fast"]);
 
 		const store = new InMemoryCredentialStore();
 		await store.modify("github-copilot", async () => ({ ...credentials, type: "oauth" }));

@@ -231,7 +231,12 @@ export class FooterComponent implements Component {
 		const modelName = state.model?.id || "no-model";
 		const fastModeSettings = this.session.settingsManager.getCodexFastModeSettings();
 		const fastModeEnabled = state.model
-			? shouldApplyCodexFastMode(state.model, fastModeSettings, this.session.orchestrationContext)
+			? shouldApplyCodexFastMode(
+					state.model,
+					fastModeSettings,
+					this.session.orchestrationContext,
+					this.session.modelRuntime.getCredentialSnapshot?.("github-copilot"),
+				)
 			: false;
 		let modelLabel = modelName;
 		if (state.model?.reasoning) {
