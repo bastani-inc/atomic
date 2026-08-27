@@ -31,6 +31,12 @@ interface ScopedModelItem {
 
 type ModelScope = "all" | "scoped";
 
+function modelSelectorRowLabel(item: ModelItem): string {
+	const name = item.model.name?.trim();
+	if (name && name !== item.id) return `${item.id}  ${name}`;
+	return item.id;
+}
+
 /**
  * Component that renders a model selector with search
  */
@@ -276,18 +282,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 			const isDefault = `${item.provider}/${item.id}` === this.defaultModelKey;
 
+			const label = modelSelectorRowLabel(item);
+			const providerBadge = theme.fg("muted", `[${item.provider}]`);
+			const checkmark = isCurrent ? theme.fg("success", " ✓") : isDefault ? theme.fg("muted", " · default") : "";
 			let line = "";
 			if (isSelected) {
-				const prefix = theme.fg("accent", "→ ");
-				const modelText = `${item.id}`;
-				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : isDefault ? theme.fg("muted", " · default") : "";
-				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
+				line = `${theme.fg("accent", "→ ") + theme.fg("accent", label)} ${providerBadge}${checkmark}`;
 			} else {
-				const modelText = `  ${item.id}`;
-				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : isDefault ? theme.fg("muted", " · default") : "";
-				line = `${modelText} ${providerBadge}${checkmark}`;
+				line = `  ${label} ${providerBadge}${checkmark}`;
 			}
 
 			this.listContainer.addChild(new Text(line, 0, 0));
