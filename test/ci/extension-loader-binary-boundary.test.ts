@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import {
@@ -76,7 +76,7 @@ test(
 			const resolvedLockfile = extensionRequire.resolve("proper-lockfile");
 			const repositoryLockfileRoot = realpathSync(join(root, "node_modules", "proper-lockfile"));
 			assert.ok(
-				realpathSync(resolvedLockfile).startsWith(`${repositoryLockfileRoot}/`),
+				realpathSync(resolvedLockfile).startsWith(`${repositoryLockfileRoot}${sep}`),
 				`fixture resolved an external proper-lockfile: ${resolvedLockfile}`,
 			);
 
