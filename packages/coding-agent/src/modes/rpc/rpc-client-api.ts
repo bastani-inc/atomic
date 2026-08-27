@@ -117,12 +117,14 @@ export abstract class RpcClientApi {
 	): Promise<RpcModelRefreshResult> {
 		return this.data(await this.request({ type: "refresh_models", ...options }));
 	}
-	async setThinkingLevel(level: ThinkingLevel, options?: { persist?: boolean }): Promise<void> {
-		await this.request({
-			type: "set_thinking_level",
-			level,
-			...(options?.persist === true ? { persist: true } : {}),
-		});
+	async setThinkingLevel(level: ThinkingLevel, options?: { persist?: boolean }): Promise<{ level: ThinkingLevel }> {
+		return this.data(
+			await this.request({
+				type: "set_thinking_level",
+				level,
+				...(options?.persist === true ? { persist: true } : {}),
+			}),
+		);
 	}
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		return this.data(await this.request({ type: "cycle_thinking_level" }));

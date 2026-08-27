@@ -364,9 +364,9 @@ Levels: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`.
 
 `xhigh` and `max` are available only when the active model's capability mapping supports them; unsupported levels are clamped by the session model controls.
 
-Response:
+Response includes the effective level after capability clamping:
 ```json
-{"type": "response", "command": "set_thinking_level", "success": true}
+{"type": "response", "command": "set_thinking_level", "success": true, "data": {"level": "high"}}
 ```
 
 #### cycle_thinking_level

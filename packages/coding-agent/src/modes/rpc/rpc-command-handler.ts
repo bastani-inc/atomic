@@ -223,7 +223,7 @@ export function createRpcCommandHandler({
 
 			case "set_thinking_level": {
 				session.setThinkingLevel(command.level, command.persist === true ? { persist: true } : {});
-				return createRpcSuccessResponse(id, "set_thinking_level");
+				return createRpcSuccessResponse(id, "set_thinking_level", { level: session.thinkingLevel });
 			}
 
 			case "cycle_thinking_level": {
