@@ -333,6 +333,23 @@ describe("RPC persist boundary", () => {
 		);
 	});
 
+	it("does not rewrite wildcard or thinking-qualified enabledModels after persist", async () => {
+		const { engine, host, runtime } = await isolatedPair();
+		const current = engine.getModel("faux-1");
+		const next = engine.getModel("faux-2");
+		if (!current || !next) throw new Error("missing faux models");
+		const patterns = [`${next.provider}/*`, `${next.provider}/${next.id}:high`];
+		for (const pattern of patterns) {
+			engine.session.setScopedModels([{ model: current }, { model: next }]);
+			engine.settingsManager.setEnabledModels([pattern]);
+			host.settingsManager.setEnabledModels([pattern]);
+			await runtime.initializeFromEngine();
+			await runtime.session.setModel(next, { persist: true });
+			assert.deepEqual(engine.settingsManager.getEnabledModels(), [pattern]);
+			assert.deepEqual(host.settingsManager.getEnabledModels(), [pattern]);
+		}
+	});
+
 	it("saves a thinking default when the isolated engine proxy setThinkingLevel persist flag reaches the handler", async () => {
 		const { engine, host, runtime } = await isolatedPair();
 		const model = runtime.session.model;

@@ -26,9 +26,9 @@ import { RemoteQueuePause } from "./remote-queue-pause.js";
 
 type QueueSnapshot = { steering: string[]; followUp: string[] };
 
-function applyPersistedModelDefault(session: AgentSession, model: Model<Api>): void {
+function applyPersistedModelDefault(session: AgentSession, model: Model<Api>, alreadyInScope: boolean): void {
 	session.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
-	if (session.scopedModels.length === 0) return;
+	if (alreadyInScope || session.scopedModels.length === 0) return;
 	const enabledModels = session.settingsManager.getEnabledModels();
 	if (!enabledModels?.length) return;
 	const modelReference = `${model.provider}/${model.id}`;
@@ -640,9 +640,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	private async syncPersistedModelCatalog(session: AgentSession, model: Model<Api>): Promise<void> {
+		const alreadyInScope = session.scopedModels.some(
+			(scoped) => scoped.model.provider === model.provider && scoped.model.id === model.id,
+		);
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
 		this.remoteModelCatalog.apply(catalog);
-		applyPersistedModelDefault(session, model);
+		applyPersistedModelDefault(session, model, alreadyInScope);
 	}
 
 	private refreshSessionView(): void {
