@@ -5,7 +5,7 @@ import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isol
 import type { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { RpcClientApi, type RpcCommandBody } from "../src/modes/rpc/rpc-client-api.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
-import type { RpcResponse } from "../src/modes/rpc/rpc-types.ts";
+import type { RpcEvent, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness, type HarnessOptions } from "./suite/harness.ts";
 
 const unusedCreateRuntime = (async () => {
@@ -205,7 +205,7 @@ describe("RPC persist boundary", () => {
 			id: "persist-thinking",
 			command: "set_thinking_level",
 			success: true,
-			data: { level: "high" },
+			data: { level: "high", provider: current.provider, modelId: current.id },
 		});
 		assert.equal(harness.session.thinkingLevel, "high");
 		assert.equal(harness.settingsManager.getModelThinkingLevel(current.provider, current.id), "high");
@@ -245,7 +245,7 @@ describe("RPC persist boundary", () => {
 			id: "clamp-thinking",
 			command: "set_thinking_level",
 			success: true,
-			data: { level: "off" },
+			data: { level: "off", provider: current.provider, modelId: current.id },
 		});
 		assert.equal(harness.session.thinkingLevel, "off");
 		assert.equal(harness.settingsManager.getModelThinkingLevel(current.provider, current.id), "off");
@@ -380,6 +380,44 @@ describe("RPC persist boundary", () => {
 			assert.equal(engine.settingsManager.getModelThinkingLevel(model.provider, model.id), "off");
 			assert.equal(host.settingsManager.getModelThinkingLevel(model.provider, model.id), "off");
 		});
+	});
+
+	it("keeps a persisted thinking default on the engine model when model_changed arrives before ACK", async () => {
+		const host = await twoModelHarness();
+		const current = host.getModel("faux-1");
+		const next = host.getModel("faux-2");
+		if (!current || !next) throw new Error("missing faux models");
+
+		let emit: ((event: RpcEvent) => void) | undefined;
+		let releaseAck!: (value: { level: "high"; provider: string; modelId: string }) => void;
+		const ack = new Promise<{ level: "high"; provider: string; modelId: string }>((resolve) => {
+			releaseAck = resolve;
+		});
+		const client = {
+			onEvent(listener: (event: RpcEvent) => void) {
+				emit = listener;
+				return () => {};
+			},
+			onGenerationEnded: () => () => {},
+			setThinkingLevel: () => ack,
+		} as unknown as RpcClient;
+		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
+		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);
+
+		runtime.session.setThinkingLevel("high", { persist: true });
+		emit?.({
+			type: "model_changed",
+			model: next,
+			previousModel: current,
+			source: "set",
+		} as RpcEvent);
+		releaseAck({ level: "high", provider: current.provider, modelId: current.id });
+
+		await vi.waitFor(() => {
+			assert.equal(host.settingsManager.getModelThinkingLevel(current.provider, current.id), "high");
+		});
+		assert.equal(host.settingsManager.getModelThinkingLevel(next.provider, next.id), undefined);
+		assert.equal(runtime.session.model?.id, "faux-2");
 	});
 
 	it("forwards cycleModel persist through the isolated engine proxy to settings defaults", async () => {

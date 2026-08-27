@@ -223,7 +223,11 @@ export function createRpcCommandHandler({
 
 			case "set_thinking_level": {
 				session.setThinkingLevel(command.level, command.persist === true ? { persist: true } : {});
-				return createRpcSuccessResponse(id, "set_thinking_level", { level: session.thinkingLevel });
+				const model = session.model;
+				return createRpcSuccessResponse(id, "set_thinking_level", {
+					level: session.thinkingLevel,
+					...(model ? { provider: model.provider, modelId: model.id } : {}),
+				});
 			}
 
 			case "cycle_thinking_level": {

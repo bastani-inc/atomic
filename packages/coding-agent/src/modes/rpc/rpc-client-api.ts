@@ -117,7 +117,10 @@ export abstract class RpcClientApi {
 	): Promise<RpcModelRefreshResult> {
 		return this.data(await this.request({ type: "refresh_models", ...options }));
 	}
-	async setThinkingLevel(level: ThinkingLevel, options?: { persist?: boolean }): Promise<{ level: ThinkingLevel }> {
+	async setThinkingLevel(
+		level: ThinkingLevel,
+		options?: { persist?: boolean },
+	): Promise<{ level: ThinkingLevel; provider?: string; modelId?: string }> {
 		return this.data(
 			await this.request({
 				type: "set_thinking_level",

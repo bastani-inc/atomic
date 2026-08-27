@@ -262,7 +262,13 @@ export type RpcResponse =
 	  }
 
 	// Thinking
-	| { id?: string; type: "response"; command: "set_thinking_level"; success: true; data: { level: ThinkingLevel } }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_thinking_level";
+			success: true;
+			data: { level: ThinkingLevel; provider?: string; modelId?: string };
+	  }
 	| {
 			id?: string;
 			type: "response";

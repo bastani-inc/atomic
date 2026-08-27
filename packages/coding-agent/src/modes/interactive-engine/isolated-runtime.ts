@@ -36,9 +36,21 @@ function applyPersistedModelDefault(session: AgentSession, model: Model<Api>, al
 	session.settingsManager.setEnabledModels([...enabledModels, modelReference]);
 }
 
-function applyPersistedThinkingDefault(session: AgentSession, level: AgentSession["thinkingLevel"]): void {
-	if (session.model) {
-		session.settingsManager.setModelThinkingLevel(session.model.provider, session.model.id, level);
+function thinkingPersistTarget(result: {
+	provider?: string;
+	modelId?: string;
+}): { provider: string; modelId: string } | undefined {
+	if (!result.provider || !result.modelId) return undefined;
+	return { provider: result.provider, modelId: result.modelId };
+}
+
+function applyPersistedThinkingDefault(
+	session: AgentSession,
+	level: AgentSession["thinkingLevel"],
+	target?: { provider: string; modelId: string },
+): void {
+	if (target) {
+		session.settingsManager.setModelThinkingLevel(target.provider, target.modelId, level);
 		return;
 	}
 	session.settingsManager.setDefaultThinkingLevel(level);
@@ -507,7 +519,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						"set thinking level",
 						this.client.setThinkingLevel(level, options).then((result) => {
 							session.agent.state.thinkingLevel = result.level;
-							if (options?.persist === true) applyPersistedThinkingDefault(session, result.level);
+							if (options?.persist === true) {
+								applyPersistedThinkingDefault(session, result.level, thinkingPersistTarget(result));
+							}
 						}),
 					);
 				},
@@ -537,7 +551,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						"cycle thinking level",
 						this.client.setThinkingLevel(level, options).then((result) => {
 							session.agent.state.thinkingLevel = result.level;
-							if (options?.persist === true) applyPersistedThinkingDefault(session, result.level);
+							if (options?.persist === true) {
+								applyPersistedThinkingDefault(session, result.level, thinkingPersistTarget(result));
+							}
 						}),
 					);
 					return level;

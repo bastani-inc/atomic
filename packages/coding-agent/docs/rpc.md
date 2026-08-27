@@ -364,10 +364,12 @@ Levels: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`.
 
 `xhigh` and `max` are available only when the active model's capability mapping supports them; unsupported levels are clamped by the session model controls.
 
-Response includes the effective level after capability clamping:
+Response includes the effective level after capability clamping and, when a model is active, the provider/model the engine persisted against:
 ```json
-{"type": "response", "command": "set_thinking_level", "success": true, "data": {"level": "high"}}
+{"type": "response", "command": "set_thinking_level", "success": true, "data": {"level": "high", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}}
 ```
+
+Isolated interactive hosts must apply a persisted thinking default using that ACK target, not the host session model at callback time. A later `model_changed` event must not re-key the saved override.
 
 #### cycle_thinking_level
 
