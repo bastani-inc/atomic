@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.ts";
@@ -518,7 +518,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
 					const availableLevels = session.getAvailableThinkingLevels();
-					const effectiveLevel = availableLevels.includes(level) ? level : (availableLevels[0] ?? "off");
+					const effectiveLevel = availableLevels.includes(level)
+						? level
+						: session.model
+							? clampThinkingLevel(session.model, level)
+							: "off";
 					session.agent.state.thinkingLevel = effectiveLevel;
 					const epoch = ++this.thinkingEpoch;
 					this.dispatchBestEffort(

@@ -431,6 +431,29 @@ describe("RPC persist boundary", () => {
 		assert.equal(ackCount, 3);
 	});
 
+	it("synchronously clamps unsupported thinking to the nearest supported level, not off", async () => {
+		const host = await twoModelHarness({
+			models: [{ id: "faux-1", name: "One", reasoning: true }],
+		});
+		const model = host.session.model;
+		if (!model) throw new Error("missing model");
+		model.thinkingLevelMap = { minimal: null };
+		const client = {
+			onEvent: () => () => {},
+			onGenerationEnded: () => () => {},
+			setThinkingLevelAck: () => new Promise<{ level: "low" }>(() => {}),
+		} as unknown as RpcClient;
+		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
+		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);
+
+		const available = runtime.session.getAvailableThinkingLevels();
+		assert.equal(available.includes("minimal"), false);
+		assert.equal(available[0], "off");
+
+		runtime.session.setThinkingLevel("minimal");
+		assert.equal(runtime.session.thinkingLevel, "low");
+	});
+
 	it("keeps a persisted thinking default on the engine model when model_changed arrives before ACK", async () => {
 		const host = await twoModelHarness();
 		const current = host.getModel("faux-1");
