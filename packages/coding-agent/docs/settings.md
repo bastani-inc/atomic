@@ -85,14 +85,16 @@ Fallback attempts are visible as model changes in the session transcript and as 
 
 `enabledModels` is separate: it only controls the interactive Ctrl+P model cycle list and is not used as an implicit fallback chain.
 
-### Codex Fast Mode
+### Fast mode
 
-Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode to supported `openai/*` and `openai-codex/*` providers and to provider aliases that use the shared `openai-codex-responses` transport, not `github-copilot/*` or generic OpenAI-compatible providers. Chat and workflow-stage scopes are independent. Workflow stages, nested `ctx.workflow(...)` stages, and subagents launched by those stages use `codexFastMode.workflow`; normal-chat subagents use `codexFastMode.chat`. Fast mode is resolved again for each fallback model, so the marker and priority tier follow the effective provider. When fast mode is active for the current supported model, Atomic shows `fast` after the model name in the chat footer, workflow stage model labels, and subagent results. Enable the workflow scope deliberately for broad fan-outs because each eligible stage can consume priority-tier requests.
+Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode to supported `openai/*` and `openai-codex/*` providers, provider aliases that use the shared `openai-codex-responses` transport, and GitHub Copilot models whose OAuth account catalog advertises a fast variant. OpenAI requests use the priority service tier. GitHub Copilot requests use the account-supported fast variant without adding the OpenAI service-tier field. Fast mode does not apply to Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers.
+
+Chat and workflow-stage scopes are independent. Workflow stages, nested `ctx.workflow(...)` stages, and subagents launched by those stages use `codexFastMode.workflow`; normal-chat subagents use `codexFastMode.chat`. Atomic resolves eligibility again for each fallback model, so the marker and request behavior follow the effective provider and model. When fast mode is active, Atomic shows `fast` after the model name in the chat footer, workflow stage model labels, and subagent results. Enable the workflow scope deliberately for broad fan-outs because each eligible stage can consume fast provider requests. The `codexFastMode` setting name remains for compatibility.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `codexFastMode.chat` | boolean | `false` | Use OpenAI priority service tier for supported normal chat requests |
-| `codexFastMode.workflow` | boolean | `false` | Use OpenAI priority service tier for supported workflow-stage requests |
+| `codexFastMode.chat` | boolean | `false` | Enable fast mode for supported normal chat models |
+| `codexFastMode.workflow` | boolean | `false` | Enable fast mode for supported workflow-stage models |
 
 ```json
 {

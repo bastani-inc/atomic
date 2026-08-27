@@ -6,6 +6,10 @@
 
 - Workflow source that typechecks against the legacy bare `@bastani/workflows` specifier must migrate to `@bastani/atomic/workflows`; removing the broken ambient declaration bridge intentionally removes TypeScript resolution for the legacy name. Runtime loading remains backward compatible because Atomic continues to alias `@bastani/workflows` to the in-memory SDK. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
 
+### Added
+
+- Added fast-mode support for eligible GitHub Copilot models advertised by the signed-in account, alongside the existing OpenAI priority service tier. Chat and workflow scopes remain independently configurable with `/fast`.
+
 ### Fixed
 
 - Fixed installed packages where the intercom broker failed to start on every launch, leaving both the `intercom` and `subagent` tools entirely non-functional.
