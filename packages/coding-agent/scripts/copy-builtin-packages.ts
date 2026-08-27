@@ -318,7 +318,10 @@ function shouldKeepInstalledPath(
 	importClosure: ReadonlySet<string>,
 ): boolean {
 	const normalized = relativePath.split("\\").join("/");
+	const isEmittedWorkflowDeclaration =
+		dirName === "workflows" && normalized.startsWith("src/") && normalized.endsWith(".d.ts");
 	return (
+		isEmittedWorkflowDeclaration ||
 		importClosure.has(normalized) ||
 		INSTALLED_KEEP_PREFIXES[dirName].some((keep) => {
 			if (keep.endsWith("/")) {
