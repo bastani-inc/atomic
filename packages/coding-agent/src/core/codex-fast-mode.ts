@@ -74,11 +74,15 @@ export function isCodexFastModeCandidateModelId(modelId: string | undefined): bo
 	return provider !== undefined && isCodexFastModeSupportedProvider(provider);
 }
 
+export function isGitHubCopilotModel(model: Pick<Model<Api>, "provider">): boolean {
+	return model.provider === "github-copilot";
+}
+
 export function isGitHubCopilotFastModeSupportedModel(
 	model: Pick<Model<Api>, "id" | "provider">,
 	credential: Credential | undefined,
 ): boolean {
-	if (model.provider !== "github-copilot" || credential?.type !== "oauth") return false;
+	if (!isGitHubCopilotModel(model) || credential?.type !== "oauth") return false;
 	const fastModelIds = credential.fastModelIds;
 	return (
 		Array.isArray(fastModelIds) &&

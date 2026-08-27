@@ -123,6 +123,7 @@ describe("createAgentSession codex fast mode", () => {
 		orchestrationContext?: OrchestrationContext;
 		payload?: Record<string, unknown>;
 		fastModelIds?: string[];
+		useBuiltInDispatch?: boolean;
 	}): Promise<CapturedFastModeRequest> {
 		const api = options.api ?? ("openai-responses" as Api);
 		const model = createModel(options.provider, api);
@@ -148,15 +149,25 @@ describe("createAgentSession codex fast mode", () => {
 		let capturedOptions: SimpleStreamOptions | undefined;
 		let capturedModel: Model<Api> | undefined;
 
-		modelRuntime.registerProvider(options.provider, {
-			api,
-			streamSimple: (streamModel, _context, streamOptions) => {
-				capturedModel = streamModel;
-				capturedOptions = streamOptions;
-				return createDoneStream(streamModel);
-			},
-		});
-		registeredProviders.push({ registry: modelRuntime, provider: options.provider });
+		const captureProviderStream = (streamModel: Model<Api>, streamOptions: SimpleStreamOptions | undefined) => {
+			capturedModel = streamModel;
+			capturedOptions = streamOptions;
+			return createDoneStream(streamModel);
+		};
+		const builtInStreamSpy = options.useBuiltInDispatch
+			? vi
+					.spyOn(modelRuntime, "streamSimple")
+					.mockImplementation((streamModel, _context, streamOptions) =>
+						captureProviderStream(streamModel, streamOptions),
+					)
+			: undefined;
+		if (!options.useBuiltInDispatch) {
+			modelRuntime.registerProvider(options.provider, {
+				api,
+				streamSimple: (streamModel, _context, streamOptions) => captureProviderStream(streamModel, streamOptions),
+			});
+			registeredProviders.push({ registry: modelRuntime, provider: options.provider });
+		}
 
 		const { session } = await createAgentSession({
 			cwd,
@@ -171,16 +182,22 @@ describe("createAgentSession codex fast mode", () => {
 
 		try {
 			const stream = await session.agent.streamFunction(model, { messages: [] }, { sessionId: session.sessionId });
+			if (options.useBuiltInDispatch && !capturedModel) {
+				throw new Error("Expected modelRuntime.streamSimple to receive the request");
+			}
 			await stream.result();
-			const payload = await session.agent.onPayload?.(options.payload ?? { model: model.id }, model);
 			if (!capturedModel) throw new Error("Expected the provider stream to receive a model");
+			const payload = await session.agent.onPayload?.(options.payload ?? { model: model.id }, model);
 			return { model: capturedModel, options: capturedOptions, payload };
 		} finally {
 			session.dispose();
-			modelRuntime.unregisterProvider(options.provider);
-			registeredProviders = registeredProviders.filter(
-				(entry) => entry.registry !== modelRuntime || entry.provider !== options.provider,
-			);
+			builtInStreamSpy?.mockRestore();
+			if (!options.useBuiltInDispatch) {
+				modelRuntime.unregisterProvider(options.provider);
+				registeredProviders = registeredProviders.filter(
+					(entry) => entry.registry !== modelRuntime || entry.provider !== options.provider,
+				);
+			}
 		}
 	}
 
@@ -200,6 +217,24 @@ describe("createAgentSession codex fast mode", () => {
 			assert.equal("service_tier" in (captured.payload as Record<string, unknown>), false);
 			assert.equal("speed" in (captured.payload as Record<string, unknown>), false);
 		}
+	});
+
+	it("keeps entitled Copilot requests on the built-in model runtime dispatch path", async () => {
+		const captured = await captureFastModeRequest({
+			provider: "github-copilot",
+			api: "anthropic-messages",
+			settings: { chat: true, workflow: false },
+			fastModelIds: ["github-copilot-test-model-fast"],
+			payload: { model: "github-copilot-test-model", messages: [] },
+			useBuiltInDispatch: true,
+		});
+
+		assert.equal(captured.model.id, "github-copilot-test-model-fast");
+		assert.equal("serviceTier" in (captured.options ?? {}), false);
+		assert.equal(captured.options?.headers, undefined);
+		assert.deepEqual(captured.payload, { model: "github-copilot-test-model-fast", messages: [] });
+		assert.equal("service_tier" in (captured.payload as Record<string, unknown>), false);
+		assert.equal("speed" in (captured.payload as Record<string, unknown>), false);
 	});
 
 	it("preserves unentitled Copilot requests when fast mode is enabled", async () => {

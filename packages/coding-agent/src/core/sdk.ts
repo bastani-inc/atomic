@@ -14,6 +14,7 @@ import { AgentSession } from "./agent-session.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import {
+	isGitHubCopilotModel,
 	shouldApplyCodexFastMode,
 	streamWithCodexFastMode,
 	usesChatGptCodexTransport,
@@ -357,7 +358,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (usesExtensionStream) {
 				return modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
 			}
-			if (fastModeEnabled) {
+			if (fastModeEnabled && !isGitHubCopilotModel(requestModel)) {
 				return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
 			}
 			const transportOptions =
