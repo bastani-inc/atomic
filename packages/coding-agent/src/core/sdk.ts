@@ -21,7 +21,6 @@ import {
 	withChatGptCodexTransportRouting,
 	withCodexFastModePayload,
 	withCodexFastModeStreamOptions,
-	withGitHubCopilotFastModeModel,
 } from "./codex-fast-mode.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
@@ -309,7 +308,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const authenticatedRequestModel =
 				auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
 			const fastModeEnabled = isCodexFastModeEnabled(model);
-			const requestModel = withGitHubCopilotFastModeModel(authenticatedRequestModel, fastModeEnabled);
+			const requestModel = authenticatedRequestModel;
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
 			// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
@@ -337,7 +336,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const transportHeaders = usesExtensionStream
 				? assembledHeaders
 				: removeUnownedModelHeaders(assembledHeaders, model.headers, requestHeaders);
-			if (fastModeEnabled && !usesExtensionStream && !authResult) {
+			if (fastModeEnabled && !isGitHubCopilotModel(model) && !usesExtensionStream && !authResult) {
 				throw new Error(`No API key found for "${model.provider}"`);
 			}
 			const codexFastModeStreamOptions = withCodexFastModeStreamOptions(

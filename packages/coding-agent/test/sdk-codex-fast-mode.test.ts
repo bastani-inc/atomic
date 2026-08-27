@@ -50,6 +50,79 @@ async function bodyToText(body: BodyInit | null | undefined): Promise<string> {
 	return new Response(body).text();
 }
 
+function copilotResponse(api: Api, modelId: string): Response {
+	const headers = { "content-type": "text/event-stream" };
+	if (api === "anthropic-messages") {
+		return new Response(
+			`${[
+				`event: message_start\ndata: ${JSON.stringify({
+					type: "message_start",
+					message: { id: "msg_test", model: modelId, usage: { input_tokens: 1, output_tokens: 0 } },
+				})}`,
+				`event: message_delta\ndata: ${JSON.stringify({
+					type: "message_delta",
+					delta: { stop_reason: "end_turn" },
+					usage: { output_tokens: 1 },
+				})}`,
+				`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}`,
+			].join("\n\n")}\n\n`,
+			{ status: 200, headers },
+		);
+	}
+	if (api === "openai-completions") {
+		return new Response(
+			`${[
+				`data: ${JSON.stringify({
+					id: "chatcmpl_test",
+					object: "chat.completion.chunk",
+					created: 1,
+					model: modelId,
+					choices: [{ index: 0, delta: { content: "ok" }, finish_reason: null }],
+				})}`,
+				`data: ${JSON.stringify({
+					id: "chatcmpl_test",
+					object: "chat.completion.chunk",
+					created: 1,
+					model: modelId,
+					choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+					usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+				})}`,
+				"data: [DONE]",
+			].join("\n\n")}\n\n`,
+			{ status: 200, headers },
+		);
+	}
+	return new Response(
+		`data: ${JSON.stringify({
+			type: "response.completed",
+			response: {
+				id: "resp_test",
+				status: "completed",
+				usage: {
+					input_tokens: 1,
+					output_tokens: 1,
+					total_tokens: 2,
+					input_tokens_details: { cached_tokens: 0 },
+				},
+			},
+		})}\n\n`,
+		{ status: 200, headers },
+	);
+}
+
+interface CopilotTurnCapture {
+	body: Record<string, unknown>;
+	headers: Record<string, string>;
+	message: AssistantMessage;
+}
+
+function withoutRequestIdentity(headers: Record<string, string>): Record<string, string> {
+	const stableHeaders = { ...headers };
+	delete stableHeaders.session_id;
+	delete stableHeaders["x-client-request-id"];
+	return stableHeaders;
+}
+
 function createDoneStream(model: Model<Api>) {
 	const stream = createAssistantMessageEventStream();
 	const message: AssistantMessage = {
@@ -201,21 +274,144 @@ describe("createAgentSession codex fast mode", () => {
 		}
 	}
 
-	it("rewrites entitled Copilot requests across API paths without adding Codex request fields", async () => {
-		for (const api of ["anthropic-messages", "openai-responses", "openai-completions"] as const) {
-			const captured = await captureFastModeRequest({
-				provider: "github-copilot",
-				api,
-				settings: { chat: true, workflow: false },
-				fastModelIds: ["github-copilot-test-model-fast"],
-				payload: { model: "github-copilot-test-model", messages: [] },
-			});
+	async function captureRealCopilotTurn(
+		api: "anthropic-messages" | "openai-responses" | "openai-completions",
+		fastModeEnabled: boolean,
+		modelId = "github-copilot-test-model",
+	): Promise<CopilotTurnCapture> {
+		const model = { ...createModel("github-copilot", api), id: modelId };
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		await authStorage.modify("github-copilot", async () => ({
+			type: "oauth",
+			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			refresh: "test-refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+			availableModelIds: [model.id],
+			fastModelIds: [`${model.id}-fast`],
+		}));
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: join(agentDir, "models.json"),
+			allowModelNetwork: false,
+		});
+		const sessionManager = SessionManager.inMemory(cwd);
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({
+				codexFastMode: { chat: fastModeEnabled, workflow: false },
+			}),
+			sessionManager,
+		});
+		let body: Record<string, unknown> | undefined;
+		let headers: Record<string, string> | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				body = JSON.parse(await bodyToText(init?.body)) as Record<string, unknown>;
+				headers = Object.fromEntries(new Headers(init?.headers).entries());
+				return copilotResponse(api, model.id);
+			}),
+		);
 
-			assert.equal(captured.model.id, "github-copilot-test-model-fast");
-			assert.equal("serviceTier" in (captured.options ?? {}), false);
-			assert.deepEqual(captured.payload, { model: "github-copilot-test-model-fast", messages: [] });
-			assert.equal("service_tier" in (captured.payload as Record<string, unknown>), false);
-			assert.equal("speed" in (captured.payload as Record<string, unknown>), false);
+		try {
+			await session.prompt("hello");
+			if (!body || !headers) throw new Error("Expected Copilot fetch to capture a request");
+			const message = sessionManager
+				.buildSessionContext()
+				.messages.findLast((candidate): candidate is AssistantMessage => candidate.role === "assistant");
+			if (!message) throw new Error("Expected the Copilot turn to persist an assistant message");
+			return { body, headers, message };
+		} finally {
+			session.dispose();
+		}
+	}
+	it("rewrites actual Copilot request bodies across API paths without changing headers or message identity", async () => {
+		for (const api of ["anthropic-messages", "openai-responses", "openai-completions"] as const) {
+			const fast = await captureRealCopilotTurn(api, true);
+			const normal = await captureRealCopilotTurn(api, false);
+
+			assert.equal(fast.body.model, "github-copilot-test-model-fast");
+			assert.equal(normal.body.model, "github-copilot-test-model");
+			assert.equal("service_tier" in fast.body, false);
+			assert.equal("speed" in fast.body, false);
+			assert.deepEqual(withoutRequestIdentity(fast.headers), withoutRequestIdentity(normal.headers));
+			assert.equal(fast.message.model, "github-copilot-test-model");
+		}
+	});
+
+	it("keeps the base model identity for Copilot fast-mode compaction checks", async () => {
+		const modelId = "gpt-5.6-sol";
+		const captured = await captureRealCopilotTurn("openai-responses", true, modelId);
+
+		assert.equal(captured.message.provider, "github-copilot");
+		assert.equal(captured.message.model, modelId);
+	});
+
+	it("persists and resumes the base Copilot model so disabling fast mode restores the base wire id", async () => {
+		const modelId = "gpt-5.6-sol";
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		await authStorage.modify("github-copilot", async () => ({
+			type: "oauth",
+			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			refresh: "test-refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+			availableModelIds: [modelId],
+			fastModelIds: [`${modelId}-fast`],
+		}));
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: join(agentDir, "models.json"),
+			allowModelNetwork: false,
+		});
+		const model = modelRuntime.getModel("github-copilot", modelId);
+		assert.ok(model);
+		const sessionManager = SessionManager.inMemory(cwd);
+		const requestBodies: Record<string, unknown>[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				requestBodies.push(JSON.parse(await bodyToText(init?.body)) as Record<string, unknown>);
+				return copilotResponse("openai-responses", modelId);
+			}),
+		);
+		const first = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
+			sessionManager,
+		});
+		await first.session.prompt("first turn");
+		first.session.dispose();
+
+		const persisted = sessionManager.buildSessionContext();
+		assert.deepEqual(persisted.model, { provider: "github-copilot", modelId });
+		const persistedAssistant = persisted.messages.findLast((message) => message.role === "assistant");
+		assert.equal(persistedAssistant?.role === "assistant" ? persistedAssistant.model : undefined, modelId);
+
+		const resumed = await createAgentSession({
+			cwd,
+			agentDir,
+			authStorage,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: false, workflow: false } }),
+			sessionManager,
+		});
+		try {
+			assert.equal(resumed.session.model?.id, modelId);
+			await resumed.session.prompt("second turn");
+			assert.deepEqual(
+				requestBodies.map((body) => body.model),
+				[`${modelId}-fast`, modelId],
+			);
+		} finally {
+			resumed.session.dispose();
 		}
 	});
 
@@ -229,7 +425,7 @@ describe("createAgentSession codex fast mode", () => {
 			useBuiltInDispatch: true,
 		});
 
-		assert.equal(captured.model.id, "github-copilot-test-model-fast");
+		assert.equal(captured.model.id, "github-copilot-test-model");
 		assert.equal("serviceTier" in (captured.options ?? {}), false);
 		assert.equal(captured.options?.headers, undefined);
 		assert.deepEqual(captured.payload, { model: "github-copilot-test-model-fast", messages: [] });

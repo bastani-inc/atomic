@@ -360,11 +360,6 @@ export function buildOpenAICodexResponsesCodexFastModeOptions(
 	};
 }
 
-export function withGitHubCopilotFastModeModel<TModel extends Model<Api>>(model: TModel, enabled: boolean): TModel {
-	if (!enabled || model.provider !== "github-copilot") return model;
-	return { ...model, id: `${model.id}-fast` };
-}
-
 export function streamWithCodexFastMode(
 	model: Model<Api>,
 	context: Context,
