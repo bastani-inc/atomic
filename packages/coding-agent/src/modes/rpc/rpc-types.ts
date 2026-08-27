@@ -71,8 +71,8 @@ export type RpcCommand =
 	| { id?: string; type: "get_state" }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string }
-	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
+	| { id?: string; type: "set_model"; provider: string; modelId: string; persist?: boolean }
+	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward"; persist?: boolean }
 	| { id?: string; type: "get_available_models" }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
 	| { id?: string; type: "save_provider_credential"; provider: string; credential: Credential }
@@ -81,7 +81,7 @@ export type RpcCommand =
 	| { id?: string; type: "refresh_models"; timeoutMs?: number; force?: boolean; allowNetwork?: boolean }
 
 	// Thinking
-	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
+	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel; persist?: boolean }
 	| { id?: string; type: "cycle_thinking_level" }
 	| { id?: string; type: "get_available_thinking_levels" }
 

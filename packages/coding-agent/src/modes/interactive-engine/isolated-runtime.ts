@@ -1,7 +1,7 @@
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
-import type { PromptOptions } from "../../core/agent-session-types.ts";
+import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -474,24 +474,24 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			setModel: {
 				configurable: true,
-				value: async (model: Model<Api>) => {
-					const selected = await this.client.setModel(model.provider, model.id);
+				value: async (model: Model<Api>, options?: ModelMutationOptions) => {
+					const selected = await this.client.setModel(model.provider, model.id, options);
 					session.agent.state.model = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
 					this.resolveModelFallback();
 				},
 			},
 			setThinkingLevel: {
 				configurable: true,
-				value: (level: AgentSession["thinkingLevel"]) => {
+				value: (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
 					session.agent.state.thinkingLevel = level;
-					this.dispatchBestEffort("set thinking level", this.client.setThinkingLevel(level));
+					this.dispatchBestEffort("set thinking level", this.client.setThinkingLevel(level, options));
 				},
 			},
 			cycleModel: {
 				configurable: true,
-				value: async (direction?: "forward" | "backward") => {
+				value: async (direction?: "forward" | "backward", options?: ModelMutationOptions) => {
 					const previousModel = session.model;
-					const result = await this.client.cycleModel(direction);
+					const result = await this.client.cycleModel(direction, options);
 					if (!result) return undefined;
 					const model = session.modelRuntime.getModel(result.model.provider, result.model.id) ?? result.model;
 					session.agent.state.model = model;
@@ -502,13 +502,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			cycleThinkingLevel: {
 				configurable: true,
-				value: () => {
+				value: (options?: ModelMutationOptions) => {
 					const levels = session.getAvailableThinkingLevels();
 					if (levels.length <= 1) return undefined;
 					const current = levels.indexOf(session.thinkingLevel);
 					const level = levels[(current + 1) % levels.length]!;
 					session.agent.state.thinkingLevel = level;
-					this.dispatchBestEffort("cycle thinking level", this.client.setThinkingLevel(level));
+					this.dispatchBestEffort("cycle thinking level", this.client.setThinkingLevel(level, options));
 					return level;
 				},
 			},

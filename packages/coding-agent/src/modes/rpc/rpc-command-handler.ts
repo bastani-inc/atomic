@@ -137,13 +137,16 @@ export function createRpcCommandHandler({
 						`Model not found: ${command.provider}/${command.modelId}`,
 					);
 				}
-				await session.setModel(model);
+				await session.setModel(model, command.persist === true ? { persist: true } : {});
 				runtimeHost.resolveModelFallback();
 				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
 			}
 			case "cycle_model": {
 				const previousModel = session.model;
-				const result = await session.cycleModel(command.direction);
+				const result = await session.cycleModel(
+					command.direction,
+					command.persist === true ? { persist: true } : {},
+				);
 				runtimeHost.resolveModelFallbackAfterExplicitModelSelection(previousModel, result?.model);
 				return createRpcSuccessResponse(id, "cycle_model", result ?? null);
 			}
@@ -219,7 +222,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "set_thinking_level": {
-				session.setThinkingLevel(command.level);
+				session.setThinkingLevel(command.level, command.persist === true ? { persist: true } : {});
 				return createRpcSuccessResponse(id, "set_thinking_level");
 			}
 
