@@ -81,7 +81,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private followUpMessages: string[] = [];
 	/** Bumped by every authoritative queue_update. */
 	private queueUpdateGeneration = 0;
-	/** Bumped by every authoritative thinking_level_changed. */
+	/** Bumped by local thinking mutations and thinking_level_changed events. */
 	private thinkingEpoch = 0;
 	/** Clears started before the next queue_update share one rollback snapshot. */
 	private pendingQueueClear: PendingQueueClear | undefined;
@@ -517,7 +517,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			setThinkingLevel: {
 				configurable: true,
 				value: (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
-					const epoch = this.thinkingEpoch;
+					const availableLevels = session.getAvailableThinkingLevels();
+					const effectiveLevel = availableLevels.includes(level) ? level : (availableLevels[0] ?? "off");
+					session.agent.state.thinkingLevel = effectiveLevel;
+					const epoch = ++this.thinkingEpoch;
 					this.dispatchBestEffort(
 						"set thinking level",
 						this.client.setThinkingLevelAck(level, options).then((result) => {
@@ -547,7 +550,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					if (levels.length <= 1) return undefined;
 					const current = levels.indexOf(session.thinkingLevel);
 					const level = levels[(current + 1) % levels.length]!;
-					const epoch = this.thinkingEpoch;
+					session.agent.state.thinkingLevel = level;
+					const epoch = ++this.thinkingEpoch;
 					this.dispatchBestEffort(
 						"cycle thinking level",
 						this.client.setThinkingLevelAck(level, options).then((result) => {

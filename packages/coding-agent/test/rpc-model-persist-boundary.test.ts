@@ -404,6 +404,33 @@ describe("RPC persist boundary", () => {
 		});
 	});
 
+	it("applies isolated thinking mutations immediately and advances two cycles before ACK", async () => {
+		const host = await twoModelHarness();
+		let ackCount = 0;
+		const client = {
+			onEvent: () => () => {},
+			onGenerationEnded: () => () => {},
+			setThinkingLevelAck: () => {
+				ackCount += 1;
+				return new Promise<{ level: "high" }>(() => {});
+			},
+		} as unknown as RpcClient;
+		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
+		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);
+
+		runtime.session.setThinkingLevel("high");
+		assert.equal(runtime.session.thinkingLevel, "high");
+		assert.equal(ackCount, 1);
+
+		const first = runtime.session.cycleThinkingLevel();
+		const second = runtime.session.cycleThinkingLevel();
+		assert.ok(first);
+		assert.ok(second);
+		assert.notEqual(first, second);
+		assert.equal(runtime.session.thinkingLevel, second);
+		assert.equal(ackCount, 3);
+	});
+
 	it("keeps a persisted thinking default on the engine model when model_changed arrives before ACK", async () => {
 		const host = await twoModelHarness();
 		const current = host.getModel("faux-1");
