@@ -36,7 +36,7 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Built-in Workflows](#built-in-workflows)
 - [Writing a Workflow](#writing-a-workflow)
 - [Scope-Guard Starter Pattern](#scope-guard-starter-pattern)
-- [The `workflow()` Definition](#the-workflow-definition)
+- [The `workflow()` definition](#the-workflow-definition)
 - [WorkflowContext](#workflowcontext)
 - [Task and Stage Options](#task-and-stage-options)
 - [StageContext](#stagecontext)
@@ -51,7 +51,7 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Workflow Configuration](#workflow-configuration)
 - [Settings](#settings)
 - [Package Setup](#package-setup)
-- [Programmatic Usage](#programmatic-usage)
+- [Programmatic usage](#programmatic-usage)
 - [Fast Inference for Workflow Stages](#fast-inference-for-workflow-stages)
 - [Context Engineering](#context-engineering)
 - [Design Checklist](#design-checklist)
@@ -1059,7 +1059,7 @@ Protect a stage's role constraints, acceptance criteria, and prohibitions with `
 
 ### Inputs
 
-Inputs are declared with TypeBox `Type.*` schemas in the `inputs` object. Import `Type` from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so TypeBox schemas resolve under `tsc` — see [Programmatic Usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:
+Inputs are declared with TypeBox `Type.*` schemas in the `inputs` object. Import `Type` from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so TypeBox schemas resolve under `tsc` — see [Programmatic usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:
 
 | TypeBox schema | Picker kind | Accepted runtime value |
 |---|---|---|
@@ -1904,7 +1904,7 @@ export default workflow({
 
 The parallel fan-out has one shared parent frontier and downstream persistence waits for both branches. Blocking asks use the guard's retained conversation; the fresh persistence task turns the final transcript into the bounded artifact before correctness review. If Intercom is unavailable, `warn` runs that task as a boundary check, `block` requires `ctx.ui`, and `off` records that no guard approval exists.
 
-## The `workflow()` Definition
+## The `workflow()` definition
 
 Use `workflow(spec)` to author a workflow. It validates the schema maps, normalizes or infers the name, and returns a frozen `WorkflowDefinition` for export, discovery, and `ctx.workflow(...)` composition.
 
@@ -1975,6 +1975,19 @@ When a run reaches a terminal state — completed, failed, blocked, skipped, can
 A recoverable provider or rate-limit block is not the terminal `blocked` status: the run remains stored as `running` and resumable. It raises no new heartbeat while blocked, but keeps its cadence state and any card already waiting with the parent; cleanup runs only once the run's own status becomes terminal.
 
 A heartbeat the host has already accepted into the parent's queue is beyond that pass, because nothing withdraws a queued message. It is invalidated instead at the moment the parent reads it: the typed card's exact `runId + scheduledAt` identity must still be pending for a current nonterminal run. If the run has since reached a terminal state, this process no longer knows that run, or a durable resume has reused the run id with a later pending boundary, the old heartbeat is excluded from the model's context and cannot steer the parent. That covers all ways a stale card survives — one parked through a long turn while its run finished, one recovered from a previous process at startup, and one admitted before a same-ID durable resume. The card already rendered in your transcript is deliberately left alone: it is a true record that the heartbeat was raised, and rewriting scrollback after the fact would be worse than leaving it. Only the model-facing steer is invalidated.
+
+### `budget`
+
+```typescript
+readonly budget?: {
+  readonly maxDurationMs?: number;
+  readonly maxTokens?: number;
+  readonly maxCost?: number;
+  readonly warnAtPercent?: number;
+};
+```
+
+The optional budget sets duration, token, and cost limits for this workflow. Atomic freezes the declaration into the compiled definition and resolves each field over the extension default when the workflow runs. See [Run budgets](#run-budgets) for precedence and validation rules.
 
 ### `inputs`
 
@@ -2049,6 +2062,7 @@ interface WorkflowDefinition<
   readonly description: string;
   readonly autoAttach?: true;
   readonly heartbeatIntervalMinutes: number;
+  readonly budget?: WorkflowBudget;
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };
@@ -2056,7 +2070,7 @@ interface WorkflowDefinition<
 }
 ```
 
-`workflow({...})` returns a `WorkflowDefinition` with the resolved name, normalized lookup name, description, runtime defaults, schema maps, optional worktree input binding, and `run` function. Authors provide the fields documented above, and Atomic fills the normalized and defaulted values.
+`workflow({...})` returns a `WorkflowDefinition` with the resolved name, normalized lookup name, description, runtime defaults, optional budget, schema maps, optional worktree input binding, and `run` function. Authors provide the fields documented above, and Atomic fills the normalized and defaulted values.
 
 ## WorkflowContext
 
@@ -3710,7 +3724,7 @@ atomic -e ./local-workflow-package
 
 Workflow stage sessions inherit the same package and temporary `-e` resource discovery snapshot as the main chat. That means a workflow loaded from an external package or directory can start stages that see the package's extensions/tools, subagents and agent definitions, skills, prompt templates, themes, workflows, and trusted borrowed project-local resources without sharing the parent chat's resource-loader instance. Passing an explicit `resourceLoader` in stage options still opts that stage out of this inheritance.
 
-## Programmatic Usage
+## Programmatic usage
 
 `@bastani/atomic/workflows` is Atomic's published workflow SDK. Import `workflow` from that specifier, import `Type` from `typebox`, and export the definition returned by `workflow({...})`. Keep runtime helpers such as widget factories and shared utilities in a subdirectory outside the top-level discovery scan, such as `.atomic/workflows/lib/`; see [Workflow Locations](#workflow-locations).
 
@@ -3749,7 +3763,7 @@ function workflow<
 ): AuthoredWorkflowDefinition<TInputs, TOutputs>;
 ```
 
-Creates the frozen definition documented in [The `workflow()` Definition](#the-workflow-definition). Export the returned definition or pass it to `ctx.workflow(...)`, `run(...)`, or a registry.
+Creates the frozen definition documented in [The `workflow()` definition](#the-workflow-definition). Export the returned definition or pass it to `ctx.workflow(...)`, `run(...)`, or a registry.
 
 ### `createRegistry(initial?)`
 
