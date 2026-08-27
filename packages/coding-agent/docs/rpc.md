@@ -374,7 +374,7 @@ Current engines include the effective level after capability clamping and, when 
 {"type": "response", "command": "set_thinking_level", "success": true, "data": {"level": "high", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}}
 ```
 
-Isolated interactive hosts must apply a persisted thinking default using that ACK target, not the host session model at callback time. A later `model_changed` event must not re-key the saved override. `RpcClient.setThinkingLevel(level)` stays one-argument `Promise<void>`; isolated persist reads the ACK through an internal client path.
+Isolated interactive hosts must apply a persisted thinking default using that ACK target, not the host session model at callback time. A later `model_changed` event must not re-key the saved override. A later `thinking_level_changed` event must keep the host session's effective level even if an older ACK settles afterward. `RpcClient.setThinkingLevel(level)` stays one-argument `Promise<void>`; isolated persist reads the ACK through an internal client path.
 
 #### cycle_thinking_level
 

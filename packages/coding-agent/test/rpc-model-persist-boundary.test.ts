@@ -442,6 +442,37 @@ describe("RPC persist boundary", () => {
 		assert.equal(runtime.session.model?.id, "faux-2");
 	});
 
+	it("does not let an older thinking ACK replace a later thinking_level_changed", async () => {
+		const host = await twoModelHarness();
+		const current = host.getModel("faux-1");
+		if (!current) throw new Error("missing faux-1");
+
+		let emit: ((event: RpcEvent) => void) | undefined;
+		let releaseAck!: (value: { level: "high"; provider: string; modelId: string }) => void;
+		const ack = new Promise<{ level: "high"; provider: string; modelId: string }>((resolve) => {
+			releaseAck = resolve;
+		});
+		const client = {
+			onEvent(listener: (event: RpcEvent) => void) {
+				emit = listener;
+				return () => {};
+			},
+			onGenerationEnded: () => () => {},
+			setThinkingLevelAck: () => ack,
+		} as unknown as RpcClient;
+		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
+		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);
+
+		runtime.session.setThinkingLevel("high", { persist: true });
+		emit?.({ type: "thinking_level_changed", level: "off" });
+		releaseAck({ level: "high", provider: current.provider, modelId: current.id });
+
+		await vi.waitFor(() => {
+			assert.equal(host.settingsManager.getModelThinkingLevel(current.provider, current.id), "high");
+		});
+		assert.equal(runtime.session.thinkingLevel, "off");
+	});
+
 	it("forwards cycleModel persist through the isolated engine proxy to settings defaults", async () => {
 		const { engine, host, runtime } = await isolatedPair();
 

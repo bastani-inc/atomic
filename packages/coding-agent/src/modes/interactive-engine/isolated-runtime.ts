@@ -81,6 +81,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private followUpMessages: string[] = [];
 	/** Bumped by every authoritative queue_update. */
 	private queueUpdateGeneration = 0;
+	/** Bumped by every authoritative thinking_level_changed. */
+	private thinkingEpoch = 0;
 	/** Clears started before the next queue_update share one rollback snapshot. */
 	private pendingQueueClear: PendingQueueClear | undefined;
 	private engineCallbackActive = false;
@@ -515,13 +517,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			setThinkingLevel: {
 				configurable: true,
 				value: (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
+					const epoch = this.thinkingEpoch;
 					this.dispatchBestEffort(
 						"set thinking level",
 						this.client.setThinkingLevelAck(level, options).then((result) => {
-							session.agent.state.thinkingLevel = result.level;
-							if (options?.persist === true) {
-								applyPersistedThinkingDefault(session, result.level, thinkingPersistTarget(result));
-							}
+							this.applyThinkingAck(session, epoch, result, options?.persist === true);
 						}),
 					);
 				},
@@ -547,13 +547,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					if (levels.length <= 1) return undefined;
 					const current = levels.indexOf(session.thinkingLevel);
 					const level = levels[(current + 1) % levels.length]!;
+					const epoch = this.thinkingEpoch;
 					this.dispatchBestEffort(
 						"cycle thinking level",
 						this.client.setThinkingLevelAck(level, options).then((result) => {
-							session.agent.state.thinkingLevel = result.level;
-							if (options?.persist === true) {
-								applyPersistedThinkingDefault(session, result.level, thinkingPersistTarget(result));
-							}
+							this.applyThinkingAck(session, epoch, result, options?.persist === true);
 						}),
 					);
 					return level;
@@ -604,6 +602,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		} finally {
 			this.health.markCooperativeAbortSettled();
 			this.engineCallbackActive = false;
+		}
+	}
+
+	private applyThinkingAck(
+		session: AgentSession,
+		epoch: number,
+		result: { level: AgentSession["thinkingLevel"]; provider?: string; modelId?: string },
+		persist: boolean,
+	): void {
+		if (persist) {
+			applyPersistedThinkingDefault(session, result.level, thinkingPersistTarget(result));
+		}
+		if (epoch === this.thinkingEpoch) {
+			session.agent.state.thinkingLevel = result.level;
 		}
 	}
 
@@ -703,6 +715,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				session.agent.state.model = event.model;
 				break;
 			case "thinking_level_changed":
+				this.thinkingEpoch += 1;
 				session.agent.state.thinkingLevel = event.level;
 				break;
 			case "session_info_changed":
