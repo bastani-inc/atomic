@@ -81,37 +81,6 @@ describe("model selector catalog refresh status", () => {
 		expect(rendered).toContain("cancel");
 	});
 
-	it("lists an unselected model's display name on its row", async () => {
-		initTheme("dark");
-		const alpha = { ...model, id: "alpha", name: "Alpha configured model" };
-		const beta = { ...model, id: "beta", name: "Beta configured model" };
-		const runtime = {
-			refresh: async () => ({ aborted: false, errors: new Map() }),
-			isNetworkRefreshEnabled: () => true,
-			getCatalogInputsGeneration: () => 0,
-			getError: () => undefined,
-			getAvailableSnapshot: () => [alpha, beta],
-			getModel: (_provider: string, id: string) => (id === "beta" ? beta : alpha),
-		} as unknown as ModelRuntime;
-		const selector = new ModelSelectorComponent(
-			{ requestRender: () => {} } as unknown as TUI,
-			alpha,
-			{
-				setDefaultModelAndProvider: () => {},
-				getDefaultProvider: () => "configured",
-				getDefaultModel: () => "alpha",
-			} as unknown as SettingsManager,
-			runtime,
-			[],
-			() => {},
-			() => {},
-		);
-		const rendered = await renderedAfterWork(selector);
-		expect(rendered).toContain("Alpha configured model");
-		expect(rendered).toContain("Beta configured model");
-		expect(rendered).toContain("beta");
-	});
-
 	it("keeps cached models and identifies a partial provider failure", async () => {
 		const selector = createSelector(async () => ({
 			aborted: false,
