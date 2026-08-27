@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed installed packages where the intercom broker crashed at startup, leaving both the `intercom` and `subagent` tools entirely non-functional, and fixed the workflows SDK `types` condition pointing to a source file that is not shipped.
+
 ## [0.9.16-alpha.6] - 2026-08-26
 
 ### Changed
