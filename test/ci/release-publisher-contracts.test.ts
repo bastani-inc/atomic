@@ -139,3 +139,25 @@ test("publish pipeline prepares exact native package set and publishes in depend
 		/npm view "\$name@\$VERSION" version[\s\S]*already exists; skipping[\s\S]*npm publish "\$\{tarballs\[\$name\]\}" --provenance/u,
 	);
 });
+
+test("release notes merge every package changelog and never fall back to a contentless body", async () => {
+	const workflow = await readText(`${root}/.github/workflows/publish.yml`);
+	assert.match(
+		workflow,
+		/bun run scripts\/build-release-notes\.ts "\$VERSION" --out release-assets\/RELEASE_NOTES\.md/u,
+		"release notes must come from the merging builder, not a single package changelog",
+	);
+	// Reading one changelog silently dropped the five packages bundled into
+	// @bastani/atomic; the fallback then published the commit subject as the
+	// entire body (0.9.16-alpha.7).
+	assert.doesNotMatch(
+		workflow,
+		/RELEASE_NOTES\.md[\s\S]{0,80}\|\|[\s\S]{0,40}echo "Release \$VERSION"/u,
+		"an empty-notes fallback must not mask a missing changelog entry",
+	);
+	assert.doesNotMatch(
+		workflow,
+		/awk[^\n]*packages\/coding-agent\/CHANGELOG\.md/u,
+		"notes must not be extracted from packages/coding-agent/CHANGELOG.md alone",
+	);
+});

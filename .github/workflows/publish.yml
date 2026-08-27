@@ -508,8 +508,7 @@ jobs:
           rm -rf release-assets npm-packages
           mkdir release-assets npm-packages
           cp packages/coding-agent/binaries/atomic-*.tar.gz packages/coding-agent/binaries/atomic-*.zip release-assets/
-          awk -v ver="$VERSION" 'BEGIN { found=0 } /^## \[/ { if (found) exit; if ($0 ~ "^## \\[" ver "\\]") { found=1; next } } found { print }' packages/coding-agent/CHANGELOG.md > release-assets/RELEASE_NOTES.md
-          test -s release-assets/RELEASE_NOTES.md || echo "Release $VERSION" > release-assets/RELEASE_NOTES.md
+          bun run scripts/build-release-notes.ts "$VERSION" --out release-assets/RELEASE_NOTES.md
           (cd release-assets && sha256sum atomic-*.tar.gz atomic-*.zip > SHA256SUMS)
           bun run --cwd packages/ai build
           for dir in packages/natives/npm/* packages/natives packages/ai packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
