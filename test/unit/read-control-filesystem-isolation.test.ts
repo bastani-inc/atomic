@@ -1,40 +1,7 @@
 import assert from "node:assert/strict";
-import { test, vi } from "vitest";
-
-const controlFs = vi.hoisted(() => ({ armed: false, calls: [] as string[] }));
-
-function guardedFilesystemModule(module: Record<string, unknown>): Record<string, unknown> {
-	return Object.fromEntries(
-		Object.entries(module).map(([name, value]) => [
-			name,
-			typeof value === "function"
-				? (...args: unknown[]) => {
-						if (controlFs.armed) {
-							controlFs.calls.push(name);
-							throw new Error(`control filesystem call: ${name}`);
-						}
-						return Reflect.apply(value, module, args);
-					}
-				: value,
-		]),
-	);
-}
-
-vi.mock("node:fs", async (importOriginal) => guardedFilesystemModule(await importOriginal<Record<string, unknown>>()));
-vi.mock("node:fs/promises", async (importOriginal) =>
-	guardedFilesystemModule(await importOriginal<Record<string, unknown>>()),
-);
-vi.mock("fs", async (importOriginal) => guardedFilesystemModule(await importOriginal<Record<string, unknown>>()));
-vi.mock("fs/promises", async (importOriginal) =>
-	guardedFilesystemModule(await importOriginal<Record<string, unknown>>()),
-);
-
-import {
-	createReadToolDefinition,
-	type ReadOperations,
-	resolvePath,
-	UnsupportedReadSelectorError,
-} from "@bastani/atomic";
+import type { createReadToolDefinition, ReadOperations } from "@bastani/atomic";
+import { test } from "vitest";
+import { controlFilesystem } from "../helpers/control-filesystem.js";
 
 const signal = new AbortController().signal;
 
@@ -42,11 +9,13 @@ async function execute(tool: ReturnType<typeof createReadToolDefinition>, path: 
 	return tool.execute("call", { path }, signal, undefined, {} as never);
 }
 
-function remoteReadOperations(content: string, paths: string[]): ReadOperations {
+function remoteReadOperations(
+	content: string,
+	paths: string[],
+	resolveRemotePath: (path: string, cwd: string) => string,
+): ReadOperations {
 	return {
-		resolvePath(path, cwd) {
-			return resolvePath(path, cwd, { expandTilde: false, pathStyle: "posix" });
-		},
+		resolvePath: resolveRemotePath,
 		async access(path) {
 			paths.push(path);
 		},
@@ -57,11 +26,21 @@ function remoteReadOperations(content: string, paths: string[]): ReadOperations 
 }
 
 test("remote read paths and refusals never consult the control filesystem", async () => {
+	const { createReadToolDefinition, resolvePath, UnsupportedReadSelectorError } = await import("@bastani/atomic");
+	const controlFs = await import("node:fs");
+	const controlFsPromises = await import("node:fs/promises");
+	controlFilesystem.arm();
+	assert.throws(() => controlFs.realpathSync.native("/control-spy-probe"), /control filesystem call/u);
+	assert.throws(() => controlFsPromises.access("/control-spy-probe"), /control filesystem call/u);
+	const resolveRemotePath = (path: string, cwd: string) =>
+		resolvePath(path, cwd, { expandTilde: false, pathStyle: "posix" });
 	const paths: string[] = [];
-	const read = createReadToolDefinition("/work", { operations: remoteReadOperations("remote\n", paths) });
+	const read = createReadToolDefinition("/work", {
+		operations: remoteReadOperations("remote\n", paths, resolveRemotePath),
+	});
 	const failingRead = createReadToolDefinition("/work", {
 		operations: {
-			...remoteReadOperations("", paths),
+			...remoteReadOperations("", paths, resolveRemotePath),
 			async access(path) {
 				paths.push(path);
 				throw new Error("remote path missing");
@@ -69,15 +48,20 @@ test("remote read paths and refusals never consult the control filesystem", asyn
 		},
 	});
 
-	controlFs.armed = true;
+	controlFilesystem.arm();
 	try {
 		const result = await execute(read, "src/a.txt");
 		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /remote/u);
 		await assert.rejects(execute(failingRead, "missing.txt"), /remote path missing/u);
+		const document = await execute(read, "docs/remote.pdf");
+		assert.match(document.content[0]?.type === "text" ? document.content[0].text : "", /Cannot read .pdf file/u);
 		for (const [path, selectorKind] of [
 			["bundle.zip:src/a.txt", "archive"],
 			["state.sqlite:events", "sqlite"],
+			["state.sqlite?q=%", "sqlite"],
 			["analysis.ipynb", "notebook"],
+			["local://src/a.txt", "internal"],
+			["skill://tdd/SKILL.md", "internal"],
 		] as const) {
 			await assert.rejects(
 				execute(read, path),
@@ -89,9 +73,9 @@ test("remote read paths and refusals never consult the control filesystem", asyn
 			);
 		}
 	} finally {
-		controlFs.armed = false;
+		controlFilesystem.disarm();
 	}
 
-	assert.deepEqual(controlFs.calls, []);
-	assert.deepEqual(paths, ["/work/src/a.txt", "/work/missing.txt"]);
+	controlFilesystem.assertUntouched();
+	assert.deepEqual(paths, ["/work/src/a.txt", "/work/missing.txt", "/work/docs/remote.pdf"]);
 });

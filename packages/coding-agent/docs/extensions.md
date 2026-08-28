@@ -2321,7 +2321,7 @@ pi.registerTool({
 });
 ```
 
-`ReadOperations` may provide `resolvePath` to apply the target operating system's path syntax without probing the control filesystem. Select `pathStyle` from the target's reported operating system before calling `resolvePath`; do not infer it from the control machine. `ReadOperations` may also provide `stat` and `listDir` to keep directory-tree reads on the injected filesystem. A custom read backend that omits `resolvePath` retains local filename-variant probing. Archive, SQLite, and notebook inputs fail with `UnsupportedReadSelectorError` because those selectors require local helpers; custom backends must not silently read them from the control machine.
+`ReadOperations` may provide `resolvePath` to apply the target operating system's path syntax without probing the control filesystem. Select `pathStyle` from the target's reported operating system before calling `resolvePath`; do not infer it from the control machine. Explicit path syntax also controls `file://` URL decoding, including Windows drive and UNC paths. `ReadOperations` may provide `stat` and `listDir` to keep directory-tree reads on the injected filesystem. A custom read backend that omits `resolvePath` retains local filename-variant probing. Document conversion uses bytes returned by the custom backend and never substitutes a same-named control-machine file. Archive, SQLite, notebook, and internal-resource inputs fail with `UnsupportedReadSelectorError` because those selectors require local helpers; custom backends must not silently read them from the control machine.
 
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 

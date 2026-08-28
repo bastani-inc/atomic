@@ -4,7 +4,7 @@
 
 ### Added
 
-- Custom read backends can resolve paths with explicit POSIX or Windows syntax selected from the target operating system before normalization, preventing control-machine normalization from rewriting remote paths. Archive, SQLite, and notebook inputs now return a typed `UnsupportedReadSelectorError` before any control-filesystem access.
+- Custom read backends can resolve paths and `file://` URLs with explicit POSIX or Windows syntax selected from the target operating system before normalization, preventing control-machine normalization from rewriting remote paths. Remote document conversion always uses the backend's buffer, while archive, SQLite, notebook, and internal-resource inputs return a typed `UnsupportedReadSelectorError` before any control-filesystem access.
 
 ### Fixed
 

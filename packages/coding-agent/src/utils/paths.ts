@@ -90,6 +90,21 @@ function pathStyleForBase(baseDir: string, requested: PathStyle | undefined): Pa
 	return undefined;
 }
 
+function decodeFileUrlPath(value: string, style: PathStyle | undefined): string {
+	if (style === undefined) return fileURLToPath(value);
+	const url = new URL(value);
+	if (/%2f|%5c/iu.test(url.pathname)) throw new TypeError("File URL path must not include encoded path separators");
+	const pathname = decodeURIComponent(url.pathname);
+	const host = url.hostname === "localhost" ? "" : decodeURIComponent(url.hostname);
+	if (style === "posix") {
+		if (host) throw new TypeError("POSIX file URL host must be empty or localhost");
+		return pathname;
+	}
+	if (host) return `\\\\${host}${pathname.replaceAll("/", "\\")}`;
+	if (!/^\/[A-Za-z]:\//u.test(pathname)) throw new TypeError("Windows file URL path must include a drive letter");
+	return pathname.slice(1).replaceAll("/", "\\");
+}
+
 export function normalizePath(input: string, options: PathInputOptions = {}): string {
 	const paths = pathApi(options.pathStyle);
 	let normalized = options.trim ? input.trim() : input;
@@ -112,8 +127,7 @@ export function normalizePath(input: string, options: PathInputOptions = {}): st
 	}
 
 	if (/^file:\/\//.test(normalized)) {
-		decodeURI(normalized);
-		return fileURLToPath(normalized);
+		return decodeFileUrlPath(normalized, options.pathStyle);
 	}
 
 	return normalized;

@@ -100,7 +100,7 @@ interface CompactReadClassification {
 	label: string;
 }
 const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
-export type UnsupportedReadSelectorKind = "archive" | "notebook" | "sqlite";
+export type UnsupportedReadSelectorKind = "archive" | "internal" | "notebook" | "sqlite";
 
 /** Named refusal for selectors whose implementation would bypass a custom filesystem backend. */
 export class UnsupportedReadSelectorError extends Error {
@@ -116,9 +116,16 @@ export class UnsupportedReadSelectorError extends Error {
 }
 
 function unsupportedCustomReadSelector(path: string): UnsupportedReadSelectorKind | undefined {
-	if (parseArchiveSelector(path)) return "archive";
-	if (parseSqliteSelector(path)) return "sqlite";
+	if (/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//u.test(path))
+		return "internal";
 	if (/\.ipynb(?:$|:)/iu.test(path)) return "notebook";
+	if (parseArchiveSelector(path)) return "archive";
+	try {
+		if (parseSqliteSelector(path)) return "sqlite";
+	} catch (error) {
+		if (error instanceof URIError) return "sqlite";
+		throw error;
+	}
 	return undefined;
 }
 export interface ReadOperations {
@@ -345,7 +352,7 @@ export function createReadToolDefinition(
 		parameters: readSchema,
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?) {
-			if (ops.resolvePath) {
+			if (options?.operations) {
 				const unsupportedSelector = unsupportedCustomReadSelector(path);
 				if (unsupportedSelector) throw new UnsupportedReadSelectorError(unsupportedSelector, path);
 			}
@@ -617,7 +624,9 @@ export function createReadToolDefinition(
 							if (aborted) return;
 							if (isDocumentPath(absolutePath) && !rawOutput && !isNotebookPath(absolutePath)) {
 								const buffer = await ops.readFile(absolutePath);
-								const textContent = await extractDocumentMarkdown(buffer, absolutePath);
+								const textContent = await extractDocumentMarkdown(buffer, absolutePath, {
+									useSourceFile: !options?.operations,
+								});
 								const selection = applyReadLineSelection(
 									textContent.split("\n"),
 									effectiveRanges,

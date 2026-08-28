@@ -192,15 +192,22 @@ function documentExtension(source: string): string {
 	return `.${source.match(/\.(pdf|docx?|pptx?|xlsx?|rtf|epub)(?:$|[?#])/i)?.[1]?.toLowerCase() ?? "bin"}`;
 }
 
-async function extractMarkitDocument(buffer: Buffer, source: string): Promise<string> {
+async function extractMarkitDocument(buffer: Buffer, source: string, useSourceFile: boolean): Promise<string> {
 	const ext = documentExtension(source);
-	const result = existsSync(source) ? await convertFileWithMarkit(source) : await convertBufferWithMarkit(buffer, ext);
+	const result =
+		useSourceFile && existsSync(source)
+			? await convertFileWithMarkit(source)
+			: await convertBufferWithMarkit(buffer, ext);
 	return result.ok ? result.content : `[Cannot read ${ext} file: ${result.error || "conversion failed"}]`;
 }
 
-export async function extractDocumentMarkdown(buffer: Buffer, source: string): Promise<string> {
+export async function extractDocumentMarkdown(
+	buffer: Buffer,
+	source: string,
+	options: { useSourceFile?: boolean } = {},
+): Promise<string> {
 	if (/\.ipynb(?:$|[?#])/i.test(source)) return notebookMarkdown(buffer, source);
-	if (MARKIT_EXTENSIONS.test(source)) return extractMarkitDocument(buffer, source);
+	if (MARKIT_EXTENSIONS.test(source)) return extractMarkitDocument(buffer, source, options.useSourceFile ?? true);
 	return buffer.toString("utf8");
 }
 

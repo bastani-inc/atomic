@@ -113,6 +113,14 @@ describe("resolvePath", () => {
 		expect(resolvePath(pathToFileURL(filePath).href, join(dir, "base"))).toBe(resolve(filePath));
 	});
 
+	it("decodes file URLs with the explicitly selected target syntax", () => {
+		expect(resolvePath("file:///mnt/c/repo/a%20b.txt", "/work", { pathStyle: "posix" })).toBe("/mnt/c/repo/a b.txt");
+		expect(resolvePath("file:///C:/repo/a%20b.txt", "D:\\work", { pathStyle: "windows" })).toBe("C:\\repo\\a b.txt");
+		expect(resolvePath("file://server/share/a.txt", "D:\\work", { pathStyle: "windows" })).toBe(
+			"\\\\server\\share\\a.txt",
+		);
+	});
+
 	it("throws for invalid file URLs", () => {
 		expect(() => resolvePath("file:///%E0%A4%A")).toThrow();
 	});
