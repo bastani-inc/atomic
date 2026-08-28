@@ -516,6 +516,13 @@ export async function createRunEnvironmentExecTransport(
 	const masterLost = new Promise<void>((resolve) => {
 		resolveMasterLost = resolve;
 	});
+	let masterLostSignaled = false;
+	const signalMasterLost = (detail: string): void => {
+		if (masterLostSignaled) return;
+		masterLostSignaled = true;
+		masterLostDetail = detail;
+		resolveMasterLost();
+	};
 	const activeProcesses = new Set<RunEnvironmentProcess>();
 	let startingMaster: RunEnvironmentProcess | undefined;
 	let startingMasterFinished: Promise<RunEnvironmentProcessResult> | undefined;
@@ -570,9 +577,7 @@ export async function createRunEnvironmentExecTransport(
 			masterStderr = appendDiagnostic(masterStderr, chunk);
 		});
 		void masterFinished.then((result) => {
-			if (closing) return;
-			masterLostDetail = processFailureDetail("SSH control master exited", result, masterStderr);
-			resolveMasterLost();
+			signalMasterLost(processFailureDetail("SSH control master exited", result, masterStderr));
 		});
 
 		const readyTimeoutMs = options.masterReadyTimeoutMs ?? DEFAULT_MASTER_READY_TIMEOUT_MS;
@@ -728,6 +733,7 @@ export async function createRunEnvironmentExecTransport(
 				closePromise = (async () => {
 					if (closed) return;
 					closing = true;
+					signalMasterLost("SSH transport is closed");
 					try {
 						await Promise.all(
 							[...activeProcesses].map((process) => stopProcess(process, process.wait(), processStopTimeoutMs)),

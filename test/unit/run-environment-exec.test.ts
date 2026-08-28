@@ -700,7 +700,6 @@ describe("run-environment execute transport", () => {
 	LogLevel ERROR
 `);
 		const runtimeDirectory = join(directory, "r 50%$`");
-		const output: Array<{ readonly channel: string; readonly text: string }> = [];
 		let transport: Awaited<ReturnType<typeof createRunEnvironmentExecTransport>> | undefined;
 		try {
 			transport = await createRunEnvironmentExecTransport({
@@ -713,17 +712,85 @@ describe("run-environment execute transport", () => {
 				processRunner: runner,
 				masterReadyTimeoutMs: 10_000,
 			});
-			const forged = "atomic-exec-result-00000000-0000-0000-0000-000000000000:0;";
-			const script = [
-				"process.stdout.write('stdout-one\\nstdout-two\\n');",
-				`process.stderr.write(${JSON.stringify(`${forged}\nstderr-one\nstderr-two\n`)});`,
-				"process.exit(23);",
-			].join("");
-			const outcome = await transport.execute(
-				{ argv: [process.execPath, "-e", script] },
-				{ write: (chunk, channel) => output.push({ channel, text: chunk.toString() }) },
-				new AbortController().signal,
-			);
+			const releasePath = join(directory, "release-output");
+			const liveOutputTimeoutMs = 2_000;
+			const script = String.raw`
+				const { execFileSync } = require("node:child_process");
+				const { existsSync, readFileSync } = require("node:fs");
+				const readParentCommandLine = () => {
+					if (process.platform === "linux") {
+						return readFileSync("/proc/" + process.ppid + "/cmdline", "utf8").replaceAll("\0", " ");
+					}
+					if (process.platform === "darwin") {
+						return execFileSync("ps", ["-ww", "-o", "command=", "-p", String(process.ppid)], { encoding: "utf8" });
+					}
+					return execFileSync("powershell.exe", [
+						"-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+						"(Get-CimInstance Win32_Process -Filter 'ProcessId = " + process.ppid + "').CommandLine",
+					], { encoding: "utf8" });
+				};
+				let parentCommandLine = readParentCommandLine();
+				const encodedCommand = parentCommandLine.match(/-EncodedCommand\s+([^\s]+)/i)?.[1];
+				if (encodedCommand) parentCommandLine = Buffer.from(encodedCommand, "base64").toString("utf16le");
+				const markerPrefix = ["atomic", "exec", "result"].join("-");
+				const marker = parentCommandLine.match(new RegExp(markerPrefix + "-[0-9a-f-]+:"))?.[0];
+				const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+				(async () => {
+					process.stdout.write("stdout-one\n");
+					while (!existsSync(process.argv[1])) await wait(10);
+					await wait(40);
+					process.stderr.write((marker ? marker + "0;\n" : "") + "stderr-one\n");
+					await wait(40);
+					process.stdout.write("stdout-two\n");
+					await wait(40);
+					process.stderr.write("stderr-two\n");
+					await wait(40);
+					process.exit(23);
+				})();
+			`;
+			const observedLines: Array<{ readonly channel: string; readonly text: string }> = [];
+			const channelBuffers = { stdout: "", stderr: "" };
+			let resolveFirstLine!: () => void;
+			const firstLine = new Promise<void>((resolve) => {
+				resolveFirstLine = resolve;
+			});
+			let executionSettled = false;
+			const execution = transport
+				.execute(
+					{ argv: [process.execPath, "-e", script, releasePath], timeoutSeconds: 5 },
+					{
+						write(chunk, channel) {
+							channelBuffers[channel] += chunk.toString();
+							for (;;) {
+								const newline = channelBuffers[channel].indexOf("\n");
+								if (newline < 0) break;
+								observedLines.push({ channel, text: channelBuffers[channel].slice(0, newline) });
+								channelBuffers[channel] = channelBuffers[channel].slice(newline + 1);
+								resolveFirstLine();
+							}
+						},
+					},
+					new AbortController().signal,
+				)
+				.finally(() => {
+					executionSettled = true;
+				});
+			let liveOutputTimeout: NodeJS.Timeout | undefined;
+			const sawLiveOutput = await Promise.race([
+				firstLine.then(() => true),
+				new Promise<false>((resolve) => {
+					liveOutputTimeout = setTimeout(() => resolve(false), liveOutputTimeoutMs);
+				}),
+			]);
+			if (liveOutputTimeout !== undefined) clearTimeout(liveOutputTimeout);
+			if (!sawLiveOutput) {
+				await execution;
+				assert.fail(`no output streamed within ${liveOutputTimeoutMs}ms while the command was running`);
+			}
+			assert.equal(executionSettled, false, "the command must still be running when its first output is observed");
+			assert.deepEqual(observedLines, [{ channel: "stdout", text: "stdout-one" }]);
+			await writeFile(releasePath, "continue");
+			const outcome = await execution;
 			const exit255 = await transport.execute(
 				{ argv: [process.execPath, "-e", "process.exit(255)"] },
 				{ write() {} },
@@ -732,20 +799,13 @@ describe("run-environment execute transport", () => {
 
 			assert.deepEqual(outcome, { kind: "exited", code: 23 });
 			assert.deepEqual(exit255, { kind: "exited", code: 255 });
-			assert.equal(
-				output
-					.filter(({ channel }) => channel === "stdout")
-					.map(({ text }) => text)
-					.join(""),
-				"stdout-one\nstdout-two\n",
-			);
-			assert.equal(
-				output
-					.filter(({ channel }) => channel === "stderr")
-					.map(({ text }) => text)
-					.join(""),
-				`${forged}\nstderr-one\nstderr-two\n`,
-			);
+			assert.deepEqual(observedLines, [
+				{ channel: "stdout", text: "stdout-one" },
+				{ channel: "stderr", text: "stderr-one" },
+				{ channel: "stdout", text: "stdout-two" },
+				{ channel: "stderr", text: "stderr-two" },
+			]);
+			assert.deepEqual(channelBuffers, { stdout: "", stderr: "" });
 			assert.equal(commands.length, 2);
 			assert.equal(runner.processes.filter(({ args }) => args.includes("-M")).length, 1);
 			if (process.platform === "win32") {
@@ -1022,6 +1082,43 @@ describe("run-environment execute transport", () => {
 			await rm(directory, { recursive: true, force: true });
 		}
 	});
+
+	test.each(["linux", "windows"] as const)(
+		"close unblocks a wedged %s execution as TransportLost",
+		async (operatingSystem) => {
+			const runner = new ScriptedRunner();
+			runner.executeCompletes = false;
+			let executing: ScriptedProcess | undefined;
+			runner.executeStarted = (process) => {
+				process.settleOnKill = false;
+				executing = process;
+			};
+
+			await withTransport(
+				runner,
+				async (transport) => {
+					const pending = transport.execute(
+						{ argv: ["long-command"] },
+						{ write() {} },
+						new AbortController().signal,
+					);
+					await new Promise((resolve) => setImmediate(resolve));
+					await transport.close();
+					const outcome = await Promise.race([
+						pending,
+						new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
+					]);
+
+					if (outcome === "hung") assert.fail("execute remained blocked after close");
+					assert.equal(outcome.kind, "transport_lost");
+					if (outcome.kind === "transport_lost") assert.match(outcome.detail, /closed/u);
+					assert.equal(executing?.killed, true);
+				},
+				operatingSystem,
+				operatingSystem === "windows" ? "win32" : "linux",
+			);
+		},
+	);
 
 	test("keeps a completed SSH exit primary when the master drops afterward", async () => {
 		const runner = new ScriptedRunner();
