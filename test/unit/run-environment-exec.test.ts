@@ -17,6 +17,7 @@ import {
 	type RunEnvironmentProcessResult,
 	type RunEnvironmentProcessRunner,
 } from "../../packages/workflows/src/runs/shared/run-environment-exec.js";
+import { createRunEnvironmentWriteToolDefinition } from "../../packages/workflows/src/runs/shared/run-environment-tools.js";
 import { reportedCoderAgent } from "../helpers/coder-agent.js";
 import { spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -42,6 +43,7 @@ class ScriptedProcess implements RunEnvironmentProcess {
 	readonly killSignals: NodeJS.Signals[] = [];
 	stdin?: Buffer;
 	stdinEnded = false;
+	stdinError?: Error;
 	get finished(): boolean {
 		return this.settled;
 	}
@@ -67,9 +69,10 @@ class ScriptedProcess implements RunEnvironmentProcess {
 	writeStderr(value: string): void {
 		if (!this.settled) this.events.emit("stderr", Buffer.from(value));
 	}
-	endStdin(content?: Buffer): void {
+	async endStdin(content?: Buffer): Promise<void> {
 		this.stdin = content;
 		this.stdinEnded = true;
+		if (this.stdinError !== undefined) throw this.stdinError;
 	}
 
 	wait(): Promise<RunEnvironmentProcessResult> {
@@ -144,6 +147,7 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 	executeCompletes = true;
 	checkMaster?: (process: ScriptedProcess, checkNumber: number) => void;
 	exitMaster?: (process: ScriptedProcess) => void;
+	executionStdinError?: Error;
 	private masterStarted = false;
 	private checkCount = 0;
 
@@ -181,6 +185,7 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 				}
 			});
 		} else {
+			process.stdinError = this.executionStdinError;
 			const controlPathIndex = args.indexOf("-S");
 			const proxyOption = args.find((arg) => arg.startsWith("ProxyCommand="));
 			const proxyArgs =
@@ -282,7 +287,19 @@ class RealSshRunner implements RunEnvironmentProcessRunner {
 				child.stderr.on("data", listener);
 			},
 			endStdin(content) {
-				child.stdin.end(content);
+				return new Promise<void>((resolve, reject) => {
+					let settled = false;
+					child.stdin.on("error", (error) => {
+						if (settled) return;
+						settled = true;
+						reject(error);
+					});
+					child.stdin.end(content, () => {
+						if (settled) return;
+						settled = true;
+						resolve();
+					});
+				});
 			},
 			wait: () => result,
 			kill: () => {
@@ -351,7 +368,26 @@ function executionCalls(runner: ScriptedRunner): readonly RecordedProcess[] {
 	);
 }
 
+async function executeWriteTool(
+	tool: ReturnType<typeof createRunEnvironmentWriteToolDefinition>,
+	input: { readonly path: string; readonly content: string },
+): Promise<void> {
+	await tool.execute("call", input, new AbortController().signal, undefined, {} as never);
+}
+
 describe("run-environment execute transport", () => {
+	test("a remote write reports an early stdin close without crashing the control process", async () => {
+		const runner = new ScriptedRunner();
+		runner.executionStdinError = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+		await withTransport(runner, async (transport) => {
+			const write = createRunEnvironmentWriteToolDefinition("/workspace", { transport });
+
+			await assert.rejects(executeWriteTool(write, { path: "large.txt", content: "x".repeat(1_000_000) }), /EPIPE/u);
+
+			assert.equal(executionCalls(runner).length, 1);
+		});
+	});
+
 	test("configures Coder SSH once and multiplexes every command through one environment master", async () => {
 		const runner = new ScriptedRunner();
 		let execution = 0;

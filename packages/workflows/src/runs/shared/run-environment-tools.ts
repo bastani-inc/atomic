@@ -312,13 +312,47 @@ export function createRunEnvironmentLsOperations(options: RunEnvironmentToolOper
 		},
 	};
 }
-function patchWithSnapshotLineEndings(patch: string, snapshots: readonly Buffer[]): string {
+function restorePatchBom(section: string): string {
+	const lines = section.split("\n");
+	let oldLine: number | undefined;
+	let newLine: number | undefined;
+	const restored: string[] = [];
+	for (const line of lines) {
+		const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(line);
+		if (hunk !== null) {
+			oldLine = Number(hunk[1]);
+			newLine = Number(hunk[2]);
+			restored.push(line);
+			continue;
+		}
+		const marker = line[0];
+		if (oldLine === undefined || newLine === undefined || (marker !== " " && marker !== "+" && marker !== "-")) {
+			restored.push(line);
+			continue;
+		}
+		const body = line.slice(1);
+		const oldHasBom = marker !== "+" && oldLine === 1;
+		const newHasBom = marker !== "-" && newLine === 1;
+		if (marker === " " && oldHasBom !== newHasBom) {
+			restored.push(`-${oldHasBom ? "\uFEFF" : ""}${body}`, `+${newHasBom ? "\uFEFF" : ""}${body}`);
+		} else {
+			restored.push(`${marker}${oldHasBom || newHasBom ? "\uFEFF" : ""}${body}`);
+		}
+		if (marker !== "+") oldLine += 1;
+		if (marker !== "-") newLine += 1;
+	}
+	return restored.join("\n");
+}
+
+function patchWithSnapshotEncoding(patch: string, snapshots: readonly Buffer[]): string {
 	const starts = [...patch.matchAll(/^--- .*\n\+\+\+ .*$/gmu)].map((match) => match.index);
 	if (starts.length !== snapshots.length) return patch;
 	return starts
 		.map((start, index) => {
-			const section = patch.slice(start, starts[index + 1] ?? patch.length);
-			return snapshots[index]!.includes("\r\n") ? section.replace(/\n/gu, "\r\n") : section;
+			let section = patch.slice(start, starts[index + 1] ?? patch.length);
+			const snapshot = snapshots[index]!;
+			if (snapshot.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) section = restorePatchBom(section);
+			return snapshot.includes("\r\n") ? section.replace(/\n/gu, "\r\n") : section;
 		})
 		.join("");
 }
@@ -448,7 +482,7 @@ export function createRunEnvironmentEditToolDefinition(cwd: string, options: Run
 									"-",
 								],
 								cwd,
-								stdin: Buffer.from(patchWithSnapshotLineEndings(patch, snapshots)),
+								stdin: Buffer.from(patchWithSnapshotEncoding(patch, snapshots)),
 							};
 				const application = executeSuccessful(options, command, signal).then(() => undefined);
 				remoteApplications.set(result, application);

@@ -43,7 +43,7 @@ export interface RunEnvironmentProcessResult {
 export interface RunEnvironmentProcess {
 	onStdout(listener: (chunk: Buffer) => void): void;
 	onStderr(listener: (chunk: Buffer) => void): void;
-	endStdin(content?: Buffer): void;
+	endStdin(content?: Buffer): Promise<void>;
 	wait(): Promise<RunEnvironmentProcessResult>;
 	kill(signal?: NodeJS.Signals): void;
 }
@@ -174,7 +174,19 @@ function createNodeProcessRunner(): RunEnvironmentProcessRunner {
 					child.stderr.on("data", listener);
 				},
 				endStdin(content) {
-					child.stdin.end(content);
+					return new Promise<void>((resolve, reject) => {
+						let settled = false;
+						child.stdin.on("error", (error) => {
+							if (settled) return;
+							settled = true;
+							reject(error);
+						});
+						child.stdin.end(content, () => {
+							if (settled) return;
+							settled = true;
+							resolve();
+						});
+					});
 				},
 				wait: () => result,
 				kill: (signal = "SIGTERM") => {
@@ -665,7 +677,8 @@ export async function createRunEnvironmentExecTransport(
 				const exitStatusLog = join(runtimeDirectory, `exec-${randomUUID()}.log`);
 				const remoteCommand = renderRemoteCommand(command, options.agent.operatingSystem);
 				let stderr = "";
-				let process: RunEnvironmentProcess;
+				let process: RunEnvironmentProcess | undefined;
+				let acceptingOutput = true;
 				try {
 					process = runner.start(
 						sshPath,
@@ -680,23 +693,27 @@ export async function createRunEnvironmentExecTransport(
 						),
 						processOptions,
 					);
-					process.endStdin(command.stdin);
+					activeProcesses.add(process);
+					process.onStdout((chunk) => {
+						if (acceptingOutput) sink.write(chunk, "stdout");
+					});
+					process.onStderr((chunk) => {
+						if (!acceptingOutput) return;
+						stderr = appendDiagnostic(stderr, chunk);
+						sink.write(chunk, "stderr");
+					});
+					await process.endStdin(command.stdin);
 				} catch (error) {
+					acceptingOutput = false;
+					if (process !== undefined) {
+						activeProcesses.delete(process);
+						process.kill();
+					}
 					return {
 						kind: "transport_lost",
 						detail: error instanceof Error ? error.message : String(error),
 					};
 				}
-				activeProcesses.add(process);
-				let acceptingOutput = true;
-				process.onStdout((chunk) => {
-					if (acceptingOutput) sink.write(chunk, "stdout");
-				});
-				process.onStderr((chunk) => {
-					if (!acceptingOutput) return;
-					stderr = appendDiagnostic(stderr, chunk);
-					sink.write(chunk, "stderr");
-				});
 
 				let timeout: NodeJS.Timeout | undefined;
 				let onAbort: (() => void) | undefined;

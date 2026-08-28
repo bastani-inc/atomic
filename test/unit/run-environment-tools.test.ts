@@ -66,6 +66,33 @@ class LocalCommandTransport implements RunEnvironmentExecTransport {
 	async close(): Promise<void> {}
 }
 
+class WindowsEditTransport implements RunEnvironmentExecTransport {
+	readonly commands: RemoteCommand[] = [];
+	agent: CoderAgentMetadata = reportedAgents.windows;
+	private readCompleted = false;
+
+	constructor(
+		private readonly localCwd: string,
+		private readonly content: Buffer,
+	) {}
+
+	async execute(command: RemoteCommand, sink: OutputSink): Promise<ExecOutcome> {
+		this.commands.push(command);
+		if (!this.readCompleted) {
+			this.readCompleted = true;
+			sink.write(Buffer.concat([Buffer.from("F\0"), this.content]), "stdout");
+			return { kind: "exited", code: 0 };
+		}
+		const argv = command.argv[0] === "git.exe" ? ["git", ...command.argv.slice(1)] : command.argv;
+		const result = spawnSyncCollect(argv, { cwd: this.localCwd, stdin: command.stdin });
+		if (result.stdout.length > 0) sink.write(result.stdout, "stdout");
+		if (result.stderr.length > 0) sink.write(result.stderr, "stderr");
+		return { kind: "exited", code: result.exitCode };
+	}
+
+	async close(): Promise<void> {}
+}
+
 const reportedAgents = {
 	linux: await reportedCoderAgent("linux"),
 	darwin: await reportedCoderAgent("darwin"),
@@ -73,7 +100,7 @@ const reportedAgents = {
 };
 
 function options(
-	transport: ScriptedTransport | LocalCommandTransport,
+	transport: ScriptedTransport | LocalCommandTransport | WindowsEditTransport,
 	operatingSystem: keyof typeof reportedAgents = "linux",
 ): RunEnvironmentToolOperationsOptions {
 	transport.agent = reportedAgents[operatingSystem];
@@ -242,6 +269,30 @@ test("Windows agent metadata drives functional read, write, edit, and ls calls",
 	assert.equal(writeTransport.commands.length, 1);
 	assert.equal(editTransport.commands.length, 2);
 	assert.equal(lsTransport.commands.length, 1);
+});
+
+test("Windows edit preserves a UTF-8 BOM and CRLF through one remote command", async () => {
+	await withFixture(async (cwd) => {
+		makeDirectorySync(join(cwd, "src"));
+		const filePath = join(cwd, "src", "bom-crlf.txt");
+		const original = Buffer.from("\uFEFFbefore\r\nsecond\r\n", "utf8");
+		writeTextSync(filePath, original);
+		spawnSyncCollect(["git", "init", "-q"], { cwd });
+		spawnSyncCollect(["git", "config", "core.autocrlf", "false"], { cwd });
+		const transport = new WindowsEditTransport(cwd, original);
+		const toolOptions = options(transport, "windows");
+		const read = createRunEnvironmentReadToolDefinition("C:\\work", toolOptions);
+		const edit = createRunEnvironmentEditToolDefinition("C:\\work", toolOptions);
+		const readResult = await execute(read as never, { path: "src\\bom-crlf.txt" });
+		const header = /\[src\/bom-crlf\.txt#[0-9A-F]{4}\]/u.exec(readResult.content[0]?.text ?? "")?.[0];
+		assert.ok(header);
+		transport.commands.length = 0;
+
+		await execute(edit as never, { input: `${header}\nreplace 1..1:\n+after` });
+
+		assert.equal(transport.commands.length, 1);
+		assert.deepEqual(readTextSync(filePath), Buffer.from("\uFEFFafter\r\nsecond\r\n"));
+	});
 });
 
 windowsTest("Windows edit preserves a nested CRLF file with one remote command", async () => {
