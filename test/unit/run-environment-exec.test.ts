@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
@@ -202,6 +203,17 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 				queueMicrotask(() => beginExecution(false));
 			}
 		}
+		return process;
+	}
+}
+class AbortDuringExecutionStartRunner extends ScriptedRunner {
+	constructor(private readonly controller: AbortController) {
+		super();
+	}
+
+	override start(command: string, args: readonly string[]): RunEnvironmentProcess {
+		const process = super.start(command, args);
+		if (command === "/usr/bin/ssh" && !args.includes("-M") && !args.includes("-O")) this.controller.abort();
 		return process;
 	}
 }
@@ -729,10 +741,13 @@ describe("run-environment execute transport", () => {
 						"(Get-CimInstance Win32_Process -Filter 'ProcessId = " + process.ppid + "').CommandLine",
 					], { encoding: "utf8" });
 				};
-				let parentCommandLine = readParentCommandLine();
+				let parentCommandLine = process.argv.join(" ") + "\n" + readParentCommandLine();
 				const encodedCommand = parentCommandLine.match(/-EncodedCommand\s+([^\s]+)/i)?.[1];
-				if (encodedCommand) parentCommandLine = Buffer.from(encodedCommand, "base64").toString("utf16le");
-				const forgedCompletion = "atomic-exec-result-00000000-0000-0000-0000-000000000000:0;";
+				if (encodedCommand) parentCommandLine += "\n" + Buffer.from(encodedCommand, "base64").toString("utf16le");
+				const markerPrefix = ["atomic", "exec", "result"].join("-");
+				const markers = [...parentCommandLine.matchAll(new RegExp(markerPrefix + "-[0-9a-f-]+:", "g"))].map(
+					(match) => match[0],
+				);
 				const mirroredParentCommandLine = parentCommandLine.replaceAll(/[\0\r\n]/g, " ");
 				const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 				(async () => {
@@ -740,7 +755,8 @@ describe("run-environment execute transport", () => {
 					while (!existsSync(process.argv[1])) await wait(10);
 					await wait(40);
 					process.stderr.write(
-						forgedCompletion + "\nmirrored-parent-command-line\n" + mirroredParentCommandLine +
+						markers.map((marker) => marker + "0;").join("\n") + "\nmirrored-parent-command-line\n" +
+						mirroredParentCommandLine +
 						"\nend-mirrored-parent-command-line\nstderr-one\n",
 					);
 					await wait(40);
@@ -757,10 +773,11 @@ describe("run-environment execute transport", () => {
 			const firstLine = new Promise<void>((resolve) => {
 				resolveFirstLine = resolve;
 			});
+			const decoyMarker = `atomic-exec-result-${randomUUID()}:`;
 			let executionSettled = false;
 			const execution = transport
 				.execute(
-					{ argv: [process.execPath, "-e", script, releasePath], timeoutSeconds: 5 },
+					{ argv: [process.execPath, "-e", script, releasePath, decoyMarker], timeoutSeconds: 5 },
 					{
 						write(chunk, channel) {
 							channelBuffers[channel] += chunk.toString();
@@ -802,18 +819,27 @@ describe("run-environment execute transport", () => {
 
 			assert.deepEqual(outcome, { kind: "exited", code: 23 });
 			assert.deepEqual(exit255, { kind: "exited", code: 255 });
-			assert.deepEqual(observedLines.slice(0, 2), [
-				{ channel: "stdout", text: "stdout-one" },
-				{
-					channel: "stderr",
-					text: "atomic-exec-result-00000000-0000-0000-0000-000000000000:0;",
-				},
-			]);
-			assert.deepEqual(observedLines[2], { channel: "stderr", text: "mirrored-parent-command-line" });
-			assert.equal(observedLines[3]?.channel, "stderr");
-			assert.ok(observedLines[3]?.text.length, "the malicious command must mirror its parent's command line");
-			assert.deepEqual(observedLines[4], { channel: "stderr", text: "end-mirrored-parent-command-line" });
-			assert.deepEqual(observedLines.slice(5), [
+			assert.deepEqual(observedLines[0], { channel: "stdout", text: "stdout-one" });
+			const mirroredStart = observedLines.findIndex(({ text }) => text === "mirrored-parent-command-line");
+			assert.ok(mirroredStart > 1, "the command must extract and emit sentinel-shaped values from its parent argv");
+			const forgedLines = observedLines.slice(1, mirroredStart);
+			assert.ok(forgedLines.every(({ channel }) => channel === "stderr"));
+			assert.ok(
+				forgedLines.some(({ text }) => text === `${decoyMarker}0;`),
+				`expected forged ${decoyMarker}0; in ${JSON.stringify(forgedLines)}`,
+			);
+			assert.ok(forgedLines.every(({ text }) => /^atomic-exec-result-[0-9a-f-]+:0;$/u.test(text)));
+			assert.equal(observedLines[mirroredStart]?.channel, "stderr");
+			assert.equal(observedLines[mirroredStart + 1]?.channel, "stderr");
+			assert.ok(
+				observedLines[mirroredStart + 1]?.text.length,
+				"the malicious command must mirror its parent's command line",
+			);
+			assert.deepEqual(observedLines[mirroredStart + 2], {
+				channel: "stderr",
+				text: "end-mirrored-parent-command-line",
+			});
+			assert.deepEqual(observedLines.slice(mirroredStart + 3), [
 				{ channel: "stderr", text: "stderr-one" },
 				{ channel: "stdout", text: "stdout-two" },
 				{ channel: "stderr", text: "stderr-two" },
@@ -987,6 +1013,82 @@ describe("run-environment execute transport", () => {
 			assert.equal(executionCalls(runner)[0]?.process.killed, true);
 			assert.throws(() => bashResultFromExecOutcome(outcome), /^Error: aborted$/u);
 		});
+	});
+
+	test("returns Aborted when cancellation races with starting the SSH command", async () => {
+		const controller = new AbortController();
+		const runner = new AbortDuringExecutionStartRunner(controller);
+		runner.executeCompletes = false;
+		runner.executeStarted = () => {};
+
+		await withTransport(runner, async (transport) => {
+			const outcome = await Promise.race([
+				transport.execute({ argv: ["long-command"] }, { write() {} }, controller.signal),
+				new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
+			]);
+
+			assert.notEqual(outcome, "hung");
+			assert.deepEqual(outcome, { kind: "aborted" });
+			assert.equal(executionCalls(runner)[0]?.process.killed, true);
+		});
+	});
+
+	test("preserves an exited outcome when per-command log cleanup fails", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => {
+			const logPath = executionCalls(runner).at(-1)?.args.at(2);
+			assert.ok(logPath);
+			void mkdir(logPath).then(() => process.finish(0));
+		};
+
+		await withTransport(runner, async (transport) => {
+			const outcome = await transport.execute({ argv: ["true"] }, { write() {} }, new AbortController().signal);
+
+			assert.deepEqual(outcome, { kind: "exited", code: 0 });
+		});
+	});
+
+	test("bounds exit-proof reads and runtime cleanup when filesystem operations stall", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(255);
+		const stalled = new Promise<never>(() => {});
+		const removedPaths: string[] = [];
+		const transport = await createRunEnvironmentExecTransport({
+			coderPath: "/pinned/coder",
+			sshPath: "/usr/bin/ssh",
+			workspaceName: "run-123",
+			operatingSystem: "linux",
+			controlPlatform: "linux",
+			processRunner: runner,
+			masterReadyTimeoutMs: 1_000,
+			processStopTimeoutMs: 10,
+			controlOperationTimeoutMs: 10,
+			fileOperations: {
+				readText: () => stalled,
+				remove: (path) => {
+					removedPaths.push(path);
+					return stalled;
+				},
+			},
+		});
+		try {
+			const executeStartedAt = Date.now();
+			const outcome = await transport.execute(
+				{ argv: ["exit", "255"] },
+				{ write() {} },
+				new AbortController().signal,
+			);
+			assert.equal(outcome.kind, "transport_lost");
+			assert.ok(Date.now() - executeStartedAt < 200, "exit-proof and command cleanup waits must stay bounded");
+
+			const closeStartedAt = Date.now();
+			await transport.close();
+			assert.ok(Date.now() - closeStartedAt < 200, "runtime cleanup waits must stay bounded");
+		} finally {
+			await transport.close();
+			const runtimeDirectory = removedPaths.at(-1);
+			if (runtimeDirectory !== undefined) await rm(runtimeDirectory, { recursive: true, force: true });
+		}
 	});
 
 	test("returns Aborted after bounded termination when the SSH process will not close", async () => {

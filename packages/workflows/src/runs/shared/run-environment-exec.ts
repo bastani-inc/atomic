@@ -53,6 +53,10 @@ export interface RunEnvironmentProcessOptions {
 export interface RunEnvironmentProcessRunner {
 	start(command: string, args: readonly string[], options?: RunEnvironmentProcessOptions): RunEnvironmentProcess;
 }
+export interface RunEnvironmentExecFileOperations {
+	readText(path: string): Promise<string>;
+	remove(path: string, options: { readonly recursive: boolean; readonly force: true }): Promise<void>;
+}
 
 export interface CreateRunEnvironmentExecTransportOptions {
 	readonly coderPath: string;
@@ -63,6 +67,7 @@ export interface CreateRunEnvironmentExecTransportOptions {
 	readonly environment?: NodeJS.ProcessEnv;
 	readonly runtimeDirectory?: string;
 	readonly processRunner?: RunEnvironmentProcessRunner;
+	readonly fileOperations?: RunEnvironmentExecFileOperations;
 	readonly masterReadyTimeoutMs?: number;
 	readonly signal?: AbortSignal;
 	readonly processStopTimeoutMs?: number;
@@ -212,15 +217,36 @@ function sshLogPath(value: string, controlPlatform: NodeJS.Platform): string {
 	return controlPlatform === "win32" ? value.replaceAll("\\", "/") : value;
 }
 
-async function hasRemoteExit255Evidence(path: string): Promise<boolean> {
-	try {
-		const log = await readFile(path, "utf8");
-		return /^(?:debug1: Exit status 255|debug2: Received exit status from master 255)\r?$/mu.test(log);
-	} catch {
-		return false;
-	}
+async function hasRemoteExit255Evidence(
+	fileOperations: RunEnvironmentExecFileOperations,
+	path: string,
+	timeoutMs: number,
+): Promise<boolean> {
+	const read = Promise.resolve()
+		.then(() => fileOperations.readText(path))
+		.then(
+			(log) => ({ kind: "read" as const, log }),
+			() => ({ kind: "unavailable" as const }),
+		);
+	const settlement = await waitWithin(read, timeoutMs);
+	return (
+		settlement.completed &&
+		settlement.value.kind === "read" &&
+		/^(?:debug1: Exit status 255|debug2: Received exit status from master 255)\r?$/mu.test(settlement.value.log)
+	);
 }
 
+async function removeWithin(
+	fileOperations: RunEnvironmentExecFileOperations,
+	path: string,
+	recursive: boolean,
+	timeoutMs: number,
+): Promise<void> {
+	const removal = Promise.resolve()
+		.then(() => fileOperations.remove(path, { recursive, force: true }))
+		.catch(() => undefined);
+	await waitWithin(removal, timeoutMs);
+}
 function processFailureDetail(label: string, result: RunEnvironmentProcessResult, stderr: string): string {
 	const diagnostic = stderr.trim();
 	if (result.error !== undefined) return `${label}: ${result.error.message}`;
@@ -496,6 +522,11 @@ export async function createRunEnvironmentExecTransport(
 	options: CreateRunEnvironmentExecTransportOptions,
 ): Promise<RunEnvironmentExecTransport> {
 	const runner = options.processRunner ?? createNodeProcessRunner();
+	const fileOperations = options.fileOperations ?? {
+		readText: (path: string) => readFile(path, "utf8"),
+		remove: (path: string, removeOptions: { readonly recursive: boolean; readonly force: true }) =>
+			rm(path, removeOptions),
+	};
 	const controlPlatform = options.controlPlatform ?? process.platform;
 	const sshPath = await resolveSshPath(options.sshPath, controlPlatform, options.environment ?? process.env);
 	const ownsRuntimeDirectory = options.runtimeDirectory === undefined;
@@ -664,6 +695,7 @@ export async function createRunEnvironmentExecTransport(
 				const aborted = new Promise<InterruptedSettlement>((resolve) => {
 					onAbort = () => resolve({ kind: "aborted" });
 					signal.addEventListener("abort", onAbort, { once: true });
+					if (signal.aborted) onAbort();
 				});
 				const timedOut = new Promise<InterruptedSettlement>((resolve) => {
 					if (command.timeoutSeconds !== undefined) {
@@ -700,7 +732,9 @@ export async function createRunEnvironmentExecTransport(
 					if (settlement.result.code !== SSH_TRANSPORT_EXIT_CODE) {
 						return { kind: "exited", code: settlement.result.code };
 					}
-					if (await hasRemoteExit255Evidence(exitStatusLog)) return { kind: "exited", code: 255 };
+					if (await hasRemoteExit255Evidence(fileOperations, exitStatusLog, controlOperationTimeoutMs)) {
+						return { kind: "exited", code: 255 };
+					}
 
 					const masterStatus = await probeControlMaster(
 						runner,
@@ -725,7 +759,7 @@ export async function createRunEnvironmentExecTransport(
 					activeProcesses.delete(process);
 					if (timeout !== undefined) clearTimeout(timeout);
 					if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
-					await rm(exitStatusLog, { force: true });
+					await removeWithin(fileOperations, exitStatusLog, false, controlOperationTimeoutMs);
 				}
 			},
 			close() {
@@ -763,7 +797,9 @@ export async function createRunEnvironmentExecTransport(
 						}
 					} finally {
 						closed = true;
-						if (ownsRuntimeDirectory) await rm(runtimeDirectory, { recursive: true, force: true });
+						if (ownsRuntimeDirectory) {
+							await removeWithin(fileOperations, runtimeDirectory, true, controlOperationTimeoutMs);
+						}
 					}
 				})();
 				return closePromise;
@@ -773,7 +809,7 @@ export async function createRunEnvironmentExecTransport(
 		if (startingMaster !== undefined && startingMasterFinished !== undefined) {
 			await stopProcess(startingMaster, startingMasterFinished, processStopTimeoutMs);
 		}
-		if (ownsRuntimeDirectory) await rm(runtimeDirectory, { recursive: true, force: true });
+		if (ownsRuntimeDirectory) await removeWithin(fileOperations, runtimeDirectory, true, controlOperationTimeoutMs);
 		throw error;
 	}
 }
