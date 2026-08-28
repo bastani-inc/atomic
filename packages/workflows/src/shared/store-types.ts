@@ -226,6 +226,7 @@ export interface PendingStageSender {
 	readonly id: string;
 	readonly name?: string;
 	readonly group?: string;
+	readonly groups?: readonly string[];
 	readonly cwd?: string;
 	readonly model?: string;
 	readonly pid?: number;

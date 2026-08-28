@@ -200,6 +200,7 @@ function serializePendingStageMessages(messages: readonly PendingStageMessage[])
 			id: entry.from.id,
 			...(entry.from.name !== undefined ? { name: entry.from.name } : {}),
 			...(entry.from.group !== undefined ? { group: entry.from.group } : {}),
+			...(entry.from.groups !== undefined ? { groups: [...entry.from.groups] } : {}),
 			...(entry.from.cwd !== undefined ? { cwd: entry.from.cwd } : {}),
 			...(entry.from.model !== undefined ? { model: entry.from.model } : {}),
 			...(entry.from.pid !== undefined ? { pid: entry.from.pid } : {}),
@@ -274,6 +275,8 @@ function isPendingStageSender(value: WorkflowSerializableValue | undefined): boo
 		typeof value.id === "string" &&
 		(value.name === undefined || typeof value.name === "string") &&
 		(value.group === undefined || typeof value.group === "string") &&
+		(value.groups === undefined ||
+			(Array.isArray(value.groups) && value.groups.every((group) => typeof group === "string"))) &&
 		(value.cwd === undefined || typeof value.cwd === "string") &&
 		(value.model === undefined || typeof value.model === "string") &&
 		(value.pid === undefined || typeof value.pid === "number") &&

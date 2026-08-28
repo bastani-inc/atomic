@@ -355,3 +355,42 @@ test("broker joins several groups, routes through each, and lists every group", 
 		"default",
 	]);
 });
+
+test("broker honors groups-only registration and presence for discovery and direct routing", async () => {
+	const target = new WireClient();
+	const reviewer = new WireClient();
+	await target.connected();
+	target.send({
+		type: "register",
+		session: { ...session, name: "groups-only-target", groups: ["intake"] },
+	});
+	const targetId = (await target.next("registered")).sessionId;
+	await reviewer.connected();
+	reviewer.send({
+		type: "register",
+		session: { ...session, name: "legacy-reviewer", group: "reviewers" },
+	});
+	const reviewerId = (await reviewer.next("registered")).sessionId;
+
+	target.send({ type: "presence", groups: ["reviewers"], requestId: "groups-only-presence" });
+	assert.deepEqual(await target.next("presence_ack", (frame) => frame.requestId === "groups-only-presence"), {
+		type: "presence_ack",
+		requestId: "groups-only-presence",
+		group: "reviewers",
+	});
+
+	reviewer.send({ type: "list", requestId: "reviewer-discovery", group: "reviewers" });
+	const visibleIds = (
+		await reviewer.next("sessions", (frame) => frame.requestId === "reviewer-discovery")
+	).sessions.map(({ id }) => id);
+	assert.equal(visibleIds.includes(targetId), true);
+
+	reviewer.send({
+		type: "send",
+		to: targetId,
+		message: { id: "groups-only-direct", timestamp: 3, content: { text: "review" } },
+	});
+	await reviewer.next("delivered", (frame) => frame.messageId === "groups-only-direct");
+	const delivered = await target.next("message", (frame) => frame.message.id === "groups-only-direct");
+	assert.equal(delivered.from.id, reviewerId);
+});
