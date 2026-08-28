@@ -76,6 +76,8 @@ export interface WriteOperations {
 	/** Write content to a file */
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
 	mkdir: (dir: string) => Promise<void>;
+	/** Atomically apply generated-file protection and executable-bit handling in the target filesystem. */
+	writeFileSafely?: (absolutePath: string, content: string) => Promise<{ readonly madeExecutable: boolean }>;
 }
 
 async function findConflictBlocks(root: string, limit = 100): Promise<ConflictBlock[]> {
@@ -446,27 +448,37 @@ export function createWriteToolDefinition(
 				};
 
 				throwIfAborted();
-				// Create parent directories if needed.
-				await ops.mkdir(dir);
-				throwIfAborted();
+				// Custom filesystems can perform all safety checks and the write atomically.
+				// This avoids consulting the control-machine path for remote backends.
+				if (ops.writeFileSafely === undefined) {
+					await ops.mkdir(dir);
+					throwIfAborted();
+				}
 
-				const existing = await fsReadFile(absolutePath, "utf8").catch(() => undefined);
+				const existing =
+					ops.writeFileSafely === undefined
+						? await fsReadFile(absolutePath, "utf8").catch(() => undefined)
+						: undefined;
 				if (existing !== undefined && hasGeneratedMarker(existing))
 					throw new Error(`Refusing to overwrite generated file: ${path}`);
 				const stripped = stripKnownHashlineCopiedContentWithMeta(content, absolutePath, cwd, hashlineStore);
 				const writeContent = stripped.content;
-				await ops.writeFile(absolutePath, writeContent);
-				invalidateNativeSearchCache(absolutePath);
 				let madeExecutable = false;
-				if (writeContent.startsWith("#!")) {
-					const mode = await fsStat(absolutePath)
-						.then((stat) => stat.mode)
-						.catch(() => undefined);
-					if (mode !== undefined) {
-						await fsChmod(absolutePath, mode | 0o111);
-						madeExecutable = true;
+				if (ops.writeFileSafely !== undefined) {
+					madeExecutable = (await ops.writeFileSafely(absolutePath, writeContent)).madeExecutable;
+				} else {
+					await ops.writeFile(absolutePath, writeContent);
+					if (writeContent.startsWith("#!")) {
+						const mode = await fsStat(absolutePath)
+							.then((stat) => stat.mode)
+							.catch(() => undefined);
+						if (mode !== undefined) {
+							await fsChmod(absolutePath, mode | 0o111);
+							madeExecutable = true;
+						}
 					}
 				}
+				invalidateNativeSearchCache(absolutePath);
 				throwIfAborted();
 
 				const header = hashlineHeaderForWrite(absolutePath, cwd, writeContent, hashlineStore);

@@ -32,6 +32,7 @@ export {
 	type FindToolOptions,
 	findToolSystemPromptContribution,
 } from "./find.ts";
+export { createHashlineSnapshotStore, type HashlineSnapshotStore } from "./hashline.ts";
 export {
 	createLsTool,
 	createLsToolDefinition,

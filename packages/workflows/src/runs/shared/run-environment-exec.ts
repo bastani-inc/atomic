@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CoderAgentMetadata } from "./run-environment-coder.js";
 
 const DIAGNOSTIC_LIMIT_BYTES = 16_384;
 const DEFAULT_MASTER_READY_TIMEOUT_MS = 15_000;
@@ -21,6 +22,7 @@ export interface RemoteCommand {
 	readonly cwd?: string;
 	readonly environment?: Readonly<Record<string, string>>;
 	readonly timeoutSeconds?: number;
+	readonly stdin?: Buffer;
 }
 
 export interface OutputSink {
@@ -38,10 +40,10 @@ export interface RunEnvironmentProcessResult {
 	readonly signal: NodeJS.Signals | null;
 	readonly error?: Error;
 }
-
 export interface RunEnvironmentProcess {
 	onStdout(listener: (chunk: Buffer) => void): void;
 	onStderr(listener: (chunk: Buffer) => void): void;
+	endStdin(content?: Buffer): void;
 	wait(): Promise<RunEnvironmentProcessResult>;
 	kill(signal?: NodeJS.Signals): void;
 }
@@ -62,7 +64,7 @@ export interface CreateRunEnvironmentExecTransportOptions {
 	readonly coderPath: string;
 	readonly sshPath?: string;
 	readonly workspaceName: string;
-	readonly operatingSystem: RemoteOperatingSystem;
+	readonly agent: CoderAgentMetadata;
 	readonly controlPlatform?: NodeJS.Platform;
 	readonly environment?: NodeJS.ProcessEnv;
 	readonly runtimeDirectory?: string;
@@ -75,6 +77,7 @@ export interface CreateRunEnvironmentExecTransportOptions {
 }
 
 export interface RunEnvironmentExecTransport {
+	readonly agent: CoderAgentMetadata;
 	execute(command: RemoteCommand, sink: OutputSink, signal: AbortSignal): Promise<ExecOutcome>;
 	close(): Promise<void>;
 }
@@ -150,7 +153,7 @@ function createNodeProcessRunner(): RunEnvironmentProcessRunner {
 		start(command, args, options) {
 			const child = spawn(command, [...args], {
 				env: options?.environment,
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: true,
 			});
 			const result = new Promise<RunEnvironmentProcessResult>((resolve) => {
@@ -169,6 +172,9 @@ function createNodeProcessRunner(): RunEnvironmentProcessRunner {
 				},
 				onStderr(listener) {
 					child.stderr.on("data", listener);
+				},
+				endStdin(content) {
+					child.stdin.end(content);
 				},
 				wait: () => result,
 				kill: (signal = "SIGTERM") => {
@@ -650,13 +656,14 @@ export async function createRunEnvironmentExecTransport(
 
 		let closePromise: Promise<void> | undefined;
 		return {
+			agent: options.agent,
 			async execute(command, sink, signal) {
 				if (closed || closing) return { kind: "transport_lost", detail: "SSH transport is closed" };
 				if (masterLostDetail !== undefined) return { kind: "transport_lost", detail: masterLostDetail };
 				validateTimeoutSeconds(command.timeoutSeconds);
 				if (signal.aborted) return { kind: "aborted" };
 				const exitStatusLog = join(runtimeDirectory, `exec-${randomUUID()}.log`);
-				const remoteCommand = renderRemoteCommand(command, options.operatingSystem);
+				const remoteCommand = renderRemoteCommand(command, options.agent.operatingSystem);
 				let stderr = "";
 				let process: RunEnvironmentProcess;
 				try {
@@ -673,6 +680,7 @@ export async function createRunEnvironmentExecTransport(
 						),
 						processOptions,
 					);
+					process.endStdin(command.stdin);
 				} catch (error) {
 					return {
 						kind: "transport_lost",

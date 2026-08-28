@@ -131,7 +131,17 @@ describe("Coder run-environment client", () => {
 			deployment: "https://coder.test",
 			sessionToken: "token",
 			fetch: createFetch(
-				[json({ id: "build-start" }), json({ id: "build-stop" }), json({ id: "build-delete" })],
+				[
+					json({ id: "build-start" }),
+					json({
+						id: "agent-1",
+						name: "main",
+						operating_system: "windows",
+						architecture: "amd64",
+					}),
+					json({ id: "build-stop" }),
+					json({ id: "build-delete" }),
+				],
 				requests,
 			),
 			webSocket: (url) => {
@@ -144,12 +154,16 @@ describe("Coder run-environment client", () => {
 		});
 
 		await client.createBuild("workspace-1", { transition: "start" }, new AbortController().signal);
-		await client.waitForAgentReady("workspace-1", { timeoutMs: 1_000 }, new AbortController().signal);
+		const agent = await client.waitForAgentReady("workspace-1", { timeoutMs: 1_000 }, new AbortController().signal);
 		await client.stopWorkspace("workspace-1", new AbortController().signal);
 		await client.deleteWorkspace("workspace-1", new AbortController().signal);
 
+		assert.equal(agent.operatingSystem, "windows");
+		assert.equal(new URL(requests[1]!.url).pathname, "/api/v2/workspaceagents/agent-1");
 		assert.deepEqual(
-			requests.map((request) => JSON.parse(String(request.init.body))),
+			requests
+				.filter((request) => request.init.method === "POST")
+				.map((request) => JSON.parse(String(request.init.body))),
 			[{ transition: "start" }, { transition: "stop" }, { transition: "delete" }],
 		);
 		assert.deepEqual(socketUrls, ["wss://coder.test/api/v2/workspaces/workspace-1/agent-connection-watch"]);

@@ -17,6 +17,16 @@ export interface CoderBuild {
 	readonly id: string;
 }
 
+const coderAgentMetadataBrand: unique symbol = Symbol("CoderAgentMetadata");
+
+export interface CoderAgentMetadata {
+	readonly id: string;
+	readonly name: string;
+	readonly operatingSystem: "linux" | "darwin" | "windows";
+	readonly architecture: string;
+	readonly [coderAgentMetadataBrand]: true;
+}
+
 export interface CoderBuildRequest {
 	readonly transition: "start" | "stop" | "delete";
 	readonly templateVersionId?: string;
@@ -79,7 +89,12 @@ export class CoderAgentStartError extends Error {
 export interface CoderClient {
 	createWorkspace(name: string, binding: EnvironmentBinding, signal: AbortSignal): Promise<CoderWorkspace>;
 	createBuild(workspaceId: string, request: CoderBuildRequest, signal: AbortSignal): Promise<CoderBuild>;
-	waitForAgentReady(workspaceId: string, options: WaitForAgentReadyOptions, signal: AbortSignal): Promise<void>;
+	getWorkspaceAgent(agentId: string, signal: AbortSignal): Promise<CoderAgentMetadata>;
+	waitForAgentReady(
+		workspaceId: string,
+		options: WaitForAgentReadyOptions,
+		signal: AbortSignal,
+	): Promise<CoderAgentMetadata>;
 	stopWorkspace(workspaceId: string, signal: AbortSignal): Promise<CoderBuild>;
 	deleteWorkspace(workspaceId: string, signal: AbortSignal): Promise<CoderBuild>;
 }
@@ -105,6 +120,20 @@ function arrayField(value: JsonValue, field: string, context: string): readonly 
 		throw new CoderApiError(`Coder returned an invalid ${context}: missing ${field}`);
 	}
 	return value[field];
+}
+
+function coderAgentMetadata(value: JsonValue): CoderAgentMetadata {
+	const operatingSystem = stringField(value, "operating_system", "workspace agent");
+	if (operatingSystem !== "linux" && operatingSystem !== "darwin" && operatingSystem !== "windows") {
+		throw new CoderApiError(`Coder returned an unsupported workspace agent operating_system: ${operatingSystem}`);
+	}
+	return {
+		id: stringField(value, "id", "workspace agent"),
+		name: stringField(value, "name", "workspace agent"),
+		operatingSystem,
+		architecture: stringField(value, "architecture", "workspace agent"),
+		[coderAgentMetadataBrand]: true,
+	};
 }
 
 function deploymentUrl(deployment: string, path: string): URL {
@@ -177,6 +206,9 @@ export function createCoderClient(options: CreateCoderClientOptions): CoderClien
 
 	const post = (path: string, body: JsonObject, signal: AbortSignal, context: string): Promise<JsonValue> =>
 		request(path, { method: "POST", body: JSON.stringify(body), signal }, context);
+
+	const getWorkspaceAgent = async (agentId: string, signal: AbortSignal): Promise<CoderAgentMetadata> =>
+		coderAgentMetadata(await get(`api/v2/workspaceagents/${segment(agentId)}`, signal, "resolve workspace agent"));
 
 	const resolveOrganizationId = async (binding: EnvironmentBinding, signal: AbortSignal): Promise<string> => {
 		if (binding.organization !== undefined) {
@@ -289,6 +321,7 @@ export function createCoderClient(options: CreateCoderClientOptions): CoderClien
 			};
 		},
 		createBuild,
+		getWorkspaceAgent,
 		async waitForAgentReady(workspaceId, waitOptions, signal) {
 			if (!Number.isFinite(waitOptions.timeoutMs) || waitOptions.timeoutMs <= 0) {
 				throw new TypeError("Coder agent readiness timeout must be positive");
@@ -302,9 +335,9 @@ export function createCoderClient(options: CreateCoderClientOptions): CoderClien
 			if (waitOptions.agentName !== undefined) watch.searchParams.set("agent_name", waitOptions.agentName);
 			const socket = openWebSocket(watch.toString(), { [SESSION_TOKEN_HEADER]: options.sessionToken });
 
-			await new Promise<void>((resolve, reject) => {
+			const agentId = await new Promise<string>((resolve, reject) => {
 				let settled = false;
-				const finish = (error?: Error): void => {
+				const finish = (id?: string, error?: Error): void => {
 					if (settled) return;
 					settled = true;
 					clearTimeout(timeout);
@@ -314,38 +347,50 @@ export function createCoderClient(options: CreateCoderClientOptions): CoderClien
 					socket.removeEventListener("close", onClose);
 					socket.close();
 					if (error) reject(error);
-					else resolve();
+					else if (id !== undefined) resolve(id);
 				};
-				const onAbort = (): void => finish(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
-				const onError = (): void => finish(new CoderAgentStartError("Coder agent readiness watch failed"));
+				const onAbort = (): void =>
+					finish(undefined, signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+				const onError = (): void =>
+					finish(undefined, new CoderAgentStartError("Coder agent readiness watch failed"));
 				const onClose = (): void =>
-					finish(new CoderAgentStartError("Coder agent readiness watch closed before ready"));
+					finish(undefined, new CoderAgentStartError("Coder agent readiness watch closed before ready"));
 				const onMessage = (event: Event | MessageEvent): void => {
 					if (!(event instanceof MessageEvent) || typeof event.data !== "string") return;
 					let value: JsonValue;
 					try {
 						value = JSON.parse(event.data) as JsonValue;
 					} catch {
-						finish(new CoderAgentStartError("Coder agent readiness watch returned invalid JSON"));
+						finish(undefined, new CoderAgentStartError("Coder agent readiness watch returned invalid JSON"));
 						return;
 					}
 					if (!isObject(value)) return;
 					if (isObject(value.error)) {
 						const message = typeof value.error.message === "string" ? value.error.message : "unknown watch error";
-						finish(new CoderAgentStartError(message));
+						finish(undefined, new CoderAgentStartError(message));
 						return;
 					}
 					if (
 						isObject(value.build_update) &&
 						["failed", "canceled"].includes(String(value.build_update.job_status))
 					) {
-						finish(new CoderAgentStartError(`Coder workspace build ${String(value.build_update.job_status)}`));
+						finish(
+							undefined,
+							new CoderAgentStartError(`Coder workspace build ${String(value.build_update.job_status)}`),
+						);
 						return;
 					}
-					if (isObject(value.agent_update) && value.agent_update.lifecycle === "ready") finish();
+					if (isObject(value.agent_update) && value.agent_update.lifecycle === "ready") {
+						const id = value.agent_update.id;
+						if (typeof id !== "string" || id.length === 0) {
+							finish(undefined, new CoderAgentStartError("Coder ready agent update omitted its id"));
+							return;
+						}
+						finish(id);
+					}
 				};
 				const timeout = setTimeout(
-					() => finish(new CoderAgentStartTimeoutError(waitOptions.timeoutMs)),
+					() => finish(undefined, new CoderAgentStartTimeoutError(waitOptions.timeoutMs)),
 					waitOptions.timeoutMs,
 				);
 				signal.addEventListener("abort", onAbort, { once: true });
@@ -354,6 +399,7 @@ export function createCoderClient(options: CreateCoderClientOptions): CoderClien
 				socket.addEventListener("close", onClose);
 				if (signal.aborted) onAbort();
 			});
+			return getWorkspaceAgent(agentId, signal);
 		},
 		stopWorkspace: (workspaceId, signal) => createBuild(workspaceId, { transition: "stop" }, signal),
 		deleteWorkspace: (workspaceId, signal) => createBuild(workspaceId, { transition: "delete" }, signal),

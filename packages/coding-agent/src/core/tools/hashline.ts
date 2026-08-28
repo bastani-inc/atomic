@@ -1,4 +1,4 @@
-import { isAbsolute, normalize as normalizePath, relative, sep } from "node:path";
+import { posix, win32 } from "node:path";
 import {
 	computeFileHash,
 	formatHashlineHeader,
@@ -20,14 +20,18 @@ export interface HashlineSnapshotStore {
 	findByHeader(displayPath: string, tag: string): HashlineSnapshot | undefined;
 }
 
-function toPosixPath(filePath: string): string {
-	return filePath.split(sep).join("/");
+function pathApi(cwd: string): typeof posix | typeof win32 {
+	if (/^(?:[A-Za-z]:[\\/]|\\\\)/u.test(cwd)) return win32;
+	if (cwd.startsWith("/")) return posix;
+	return process.platform === "win32" ? win32 : posix;
 }
 
 export function hashlineDisplayPath(absolutePath: string, cwd: string): string {
-	const relativePath = relative(cwd, absolutePath);
-	if (relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath)) return toPosixPath(relativePath);
-	return toPosixPath(absolutePath);
+	const paths = pathApi(cwd);
+	const relativePath = paths.relative(cwd, absolutePath);
+	if (relativePath && !relativePath.startsWith("..") && !paths.isAbsolute(relativePath))
+		return relativePath.replaceAll("\\", "/");
+	return absolutePath.replaceAll("\\", "/");
 }
 
 export function normalizeHashlineContent(content: string): string {
@@ -47,7 +51,7 @@ export function createHashlineSnapshotStore(): HashlineSnapshotStore {
 	return {
 		snapshots,
 		record(absolutePath: string, cwd: string, content: string): HashlineSnapshot {
-			const normalizedPath = normalizePath(absolutePath);
+			const normalizedPath = pathApi(cwd).normalize(absolutePath);
 			const normalized = normalizeHashlineContent(content);
 			const displayPath = hashlineDisplayPath(normalizedPath, cwd);
 			const tag = snapshots.record(normalizedPath, normalized);

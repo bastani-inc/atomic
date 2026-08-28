@@ -17,7 +17,14 @@ import {
 	type RunEnvironmentProcessResult,
 	type RunEnvironmentProcessRunner,
 } from "../../packages/workflows/src/runs/shared/run-environment-exec.js";
+import { reportedCoderAgent } from "../helpers/coder-agent.js";
 import { spawnSyncCollect } from "../helpers/runtime.js";
+
+const reportedAgents = {
+	linux: await reportedCoderAgent("linux"),
+	darwin: await reportedCoderAgent("darwin"),
+	windows: await reportedCoderAgent("windows"),
+};
 
 interface RecordedProcess {
 	readonly command: string;
@@ -33,6 +40,8 @@ class ScriptedProcess implements RunEnvironmentProcess {
 	killed = false;
 	settleOnKill = true;
 	readonly killSignals: NodeJS.Signals[] = [];
+	stdin?: Buffer;
+	stdinEnded = false;
 	get finished(): boolean {
 		return this.settled;
 	}
@@ -57,6 +66,10 @@ class ScriptedProcess implements RunEnvironmentProcess {
 
 	writeStderr(value: string): void {
 		if (!this.settled) this.events.emit("stderr", Buffer.from(value));
+	}
+	endStdin(content?: Buffer): void {
+		this.stdin = content;
+		this.stdinEnded = true;
 	}
 
 	wait(): Promise<RunEnvironmentProcessResult> {
@@ -246,7 +259,7 @@ class RealSshRunner implements RunEnvironmentProcessRunner {
 
 		const child = spawn(command, [...args], {
 			env: options?.environment,
-			stdio: ["ignore", "pipe", "pipe"],
+			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
 		let resolveResult!: (result: RunEnvironmentProcessResult) => void;
@@ -267,6 +280,9 @@ class RealSshRunner implements RunEnvironmentProcessRunner {
 			},
 			onStderr(listener) {
 				child.stderr.on("data", listener);
+			},
+			endStdin(content) {
+				child.stdin.end(content);
 			},
 			wait: () => result,
 			kill: () => {
@@ -313,7 +329,7 @@ async function withTransport(
 		coderPath: "/pinned/coder",
 		sshPath: "/usr/bin/ssh",
 		workspaceName: "run-123",
-		operatingSystem,
+		agent: reportedAgents[operatingSystem],
 		controlPlatform,
 		runtimeDirectory: directory,
 		processRunner: runner,
@@ -392,6 +408,39 @@ describe("run-environment execute transport", () => {
 		);
 	});
 
+	test("streams a remote command payload through stdin", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(0);
+
+		await withTransport(runner, async (transport) => {
+			const payload = Buffer.from("payload larger than argv");
+			const outcome = await transport.execute(
+				{ argv: ["cat"], stdin: payload },
+				{ write() {} },
+				new AbortController().signal,
+			);
+
+			assert.deepEqual(outcome, { kind: "exited", code: 0 });
+			assert.deepEqual(executionCalls(runner)[0]?.process.stdin, payload);
+		});
+	});
+
+	test("closes remote command stdin when no payload is supplied", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(0);
+
+		await withTransport(runner, async (transport) => {
+			const outcome = await transport.execute(
+				{ argv: ["rg", "needle", "."] },
+				{ write() {} },
+				new AbortController().signal,
+			);
+
+			assert.deepEqual(outcome, { kind: "exited", code: 0 });
+			assert.equal(executionCalls(runner)[0]?.process.stdinEnded, true);
+		});
+	});
+
 	test("stops waiting when a control-master readiness check wedges", async () => {
 		const runner = new ScriptedRunner();
 		runner.checkMaster = () => {};
@@ -401,7 +450,7 @@ describe("run-environment execute transport", () => {
 				coderPath: "/pinned/coder",
 				sshPath: "/usr/bin/ssh",
 				workspaceName: "run-123",
-				operatingSystem: "linux",
+				agent: reportedAgents.linux,
 				controlPlatform: "linux",
 				runtimeDirectory: directory,
 				processRunner: runner,
@@ -436,7 +485,7 @@ describe("run-environment execute transport", () => {
 					coderPath: "/pinned/coder",
 					sshPath: "/usr/bin/ssh",
 					workspaceName: "run-123",
-					operatingSystem: "linux",
+					agent: reportedAgents.linux,
 					controlPlatform: "linux",
 					runtimeDirectory: directory,
 					processRunner: runner,
@@ -464,7 +513,7 @@ describe("run-environment execute transport", () => {
 					coderPath: "/pinned/coder",
 					sshPath: "/usr/bin/ssh",
 					workspaceName: "run-123",
-					operatingSystem: "linux",
+					agent: reportedAgents.linux,
 					controlPlatform: "linux",
 					runtimeDirectory: directory,
 					processRunner: runner,
@@ -626,7 +675,7 @@ describe("run-environment execute transport", () => {
 			const transport = await createRunEnvironmentExecTransport({
 				coderPath: "/pinned/coder",
 				workspaceName: "run-123",
-				operatingSystem: "linux",
+				agent: reportedAgents.linux,
 				controlPlatform: "win32",
 				environment: { GIT_SSH: plinkPath, ProgramFiles: directory },
 				runtimeDirectory,
@@ -678,6 +727,7 @@ describe("run-environment execute transport", () => {
 							commands.push(info.command);
 							const stream = accept();
 							const child = spawn(info.command, { shell: true, windowsHide: true });
+							stream.pipe(child.stdin);
 							child.stdout.pipe(stream, { end: false });
 							child.stderr.pipe(stream.stderr, { end: false });
 							child.once("error", (error) => {
@@ -718,7 +768,7 @@ describe("run-environment execute transport", () => {
 				coderPath: "coder-test-double",
 				sshPath,
 				workspaceName: "run-123",
-				operatingSystem: process.platform === "win32" ? "windows" : "linux",
+				agent: reportedAgents[process.platform === "win32" ? "windows" : "linux"],
 				controlPlatform: process.platform,
 				runtimeDirectory,
 				processRunner: runner,
@@ -1057,7 +1107,7 @@ describe("run-environment execute transport", () => {
 			coderPath: "/pinned/coder",
 			sshPath: "/usr/bin/ssh",
 			workspaceName: "run-123",
-			operatingSystem: "linux",
+			agent: reportedAgents.linux,
 			controlPlatform: "linux",
 			processRunner: runner,
 			masterReadyTimeoutMs: 1_000,
@@ -1179,7 +1229,7 @@ describe("run-environment execute transport", () => {
 				coderPath: "/pinned/coder",
 				sshPath: "/usr/bin/ssh",
 				workspaceName: "run-123",
-				operatingSystem: "linux",
+				agent: reportedAgents.linux,
 				controlPlatform: "linux",
 				runtimeDirectory: directory,
 				processRunner: runner,

@@ -170,7 +170,9 @@ export function createLsToolDefinition(
 								break;
 							}
 
-							const fullPath = nodePath.join(dirPath, entry);
+							const fullPath = /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(dirPath)
+								? nodePath.win32.join(dirPath, entry)
+								: nodePath.join(dirPath, entry);
 							let suffix = "";
 							try {
 								const entryStat = await ops.stat(fullPath);

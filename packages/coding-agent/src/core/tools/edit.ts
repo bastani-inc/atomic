@@ -64,6 +64,8 @@ export interface EditOperations {
 	readFile: (absolutePath: string) => Promise<Buffer>;
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
 	access: (absolutePath: string) => Promise<void>;
+	/** Resolve a path using the target filesystem's syntax without probing the control filesystem. */
+	resolvePath?: (path: string, cwd: string) => string;
 }
 
 const defaultEditOperations: EditOperations = {
@@ -92,7 +94,7 @@ class EditFilesystem extends Filesystem {
 	}
 
 	canonicalPath(path: string): string {
-		return resolveReadPath(path, this.cwd);
+		return this.operations.resolvePath?.(path, this.cwd) ?? resolveReadPath(path, this.cwd);
 	}
 
 	async preflightWrite(path: string): Promise<void> {
