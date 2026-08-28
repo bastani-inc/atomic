@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Custom read backends can resolve paths with explicit POSIX or Windows syntax without probing the control filesystem, preventing control-machine normalization from rewriting remote paths.
+
 ### Fixed
 
 - Fixed workflow discovery helpers from Git-installed production-only packages by making the workflow module loader resolve the same supported TypeBox runtime aliases as extension loading, including `typebox/compile`, `typebox/value`, and legacy `@sinclair/typebox` subpaths.

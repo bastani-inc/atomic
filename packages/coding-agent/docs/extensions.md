@@ -2293,11 +2293,15 @@ Built-in tool implementations:
 Built-in tools support pluggable operations for delegating to remote systems (SSH, containers, etc.):
 
 ```typescript
-import { createReadTool, createBashTool, type ReadOperations } from "@bastani/atomic";
+import { createReadTool, createBashTool, resolvePath, type ReadOperations } from "@bastani/atomic";
 
 // Create tool with custom operations
 const remoteRead = createReadTool(cwd, {
   operations: {
+    resolvePath: (path, cwd) => resolvePath(path, cwd, {
+      expandTilde: false,
+      pathStyle: remote.operatingSystem === "windows" ? "windows" : "posix",
+    }),
     readFile: (path) => sshExec(remote, `cat ${path}`),
     access: (path) => sshExec(remote, `test -r ${path}`).then(() => {}),
   }
@@ -2317,7 +2321,7 @@ pi.registerTool({
 });
 ```
 
-`ReadOperations` may also provide `stat` and `listDir` to keep directory-tree reads on the injected filesystem. The Harness factory supplies both. A custom read backend without both members keeps the existing file-only remote behavior. Archive, SQLite, internal-resource, notebook, and path-variant helpers still use Atomic's local filesystem unless the tool gains dedicated remote seams.
+`ReadOperations` may provide `resolvePath` to apply the target operating system's path syntax without probing the control filesystem. It may also provide `stat` and `listDir` to keep directory-tree reads on the injected filesystem. A custom read backend that omits `resolvePath` retains local filename-variant probing. Archive, SQLite, internal-resource, and notebook helpers remain local unless the tool gains dedicated remote support.
 
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 

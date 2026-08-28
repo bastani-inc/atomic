@@ -96,6 +96,17 @@ describe("resolvePath", () => {
 		expect(resolvePath("subdir/file.txt", pathToFileURL(cwd).href)).toBe(resolve(cwd, "subdir/file.txt"));
 	});
 
+	it("uses POSIX semantics for a POSIX base directory", () => {
+		expect(resolvePath("src/a.txt", "/work")).toBe("/work/src/a.txt");
+	});
+
+	it("selects path syntax before normalizing shell paths", () => {
+		const posixPath = resolvePath("/mnt/c/repo", "/work", { pathStyle: "posix" });
+		expect(posixPath).toBe("/mnt/c/repo");
+		expect(posixPath).not.toBe("/work/C:\\repo");
+		expect(resolvePath("/mnt/c/repo", "D:\\work", { pathStyle: "windows" })).toBe("C:\\repo");
+	});
+
 	it("accepts file URLs", () => {
 		const dir = createTempDir();
 		const filePath = join(dir, "file with spaces.txt");

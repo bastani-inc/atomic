@@ -493,5 +493,6 @@ export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 export { INTERACTIVE_ENGINE_ENV_VARS, scrubInteractiveEngineEnv } from "./utils/interactive-engine-env.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
+export { type PathStyle, resolvePath } from "./utils/paths.ts";
 // Shell utilities
 export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";

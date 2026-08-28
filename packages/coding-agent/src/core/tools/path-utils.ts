@@ -3,6 +3,22 @@ import { access } from "node:fs/promises";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 
 const NARROW_NO_BREAK_SPACE = "\u202F";
+export interface PathFilesystem {
+	access(filePath: string, mode: number): Promise<void>;
+	accessSync(filePath: string, mode: number): void;
+}
+
+const defaultPathFilesystem: PathFilesystem = { access, accessSync };
+let pathFilesystem = defaultPathFilesystem;
+
+/** Replace the filesystem used only for local read-path variant probing. Returns a restore function. */
+export function replacePathFilesystem(replacement: PathFilesystem): () => void {
+	const previous = pathFilesystem;
+	pathFilesystem = replacement;
+	return () => {
+		pathFilesystem = previous;
+	};
+}
 
 function tryMacOSScreenshotPath(filePath: string): string {
 	return filePath.replace(/ (AM|PM)\./gi, `${NARROW_NO_BREAK_SPACE}$1.`);
@@ -21,7 +37,7 @@ function tryCurlyQuoteVariant(filePath: string): string {
 
 function fileExists(filePath: string): boolean {
 	try {
-		accessSync(filePath, constants.F_OK);
+		pathFilesystem.accessSync(filePath, constants.F_OK);
 		return true;
 	} catch {
 		return false;
@@ -30,7 +46,7 @@ function fileExists(filePath: string): boolean {
 
 export async function pathExists(filePath: string): Promise<boolean> {
 	try {
-		await access(filePath, constants.F_OK);
+		await pathFilesystem.access(filePath, constants.F_OK);
 		return true;
 	} catch {
 		return false;

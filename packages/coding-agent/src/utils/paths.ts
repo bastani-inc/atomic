@@ -1,10 +1,12 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
+import { posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnProcessSync } from "./child-process.ts";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+export type PathStyle = "posix" | "windows";
 
 export interface PathInputOptions {
 	/** Trim leading/trailing whitespace before normalization. */
@@ -17,6 +19,8 @@ export interface PathInputOptions {
 	stripAtPrefix?: boolean;
 	/** Normalize unicode space variants to regular spaces. */
 	normalizeUnicodeSpaces?: boolean;
+	/** Path syntax to apply, independent of the control machine. Defaults to native syntax. */
+	pathStyle?: PathStyle;
 }
 
 export function getHomeDir(): string {
@@ -73,7 +77,21 @@ export function normalizeWindowsShellPath(filePath: string): string {
 	return `${match[1].toUpperCase()}:\\${suffix ?? ""}`;
 }
 
+function pathApi(style: PathStyle | undefined): typeof posix | typeof win32 {
+	if (style === "windows") return win32;
+	if (style === "posix") return posix;
+	return process.platform === "win32" ? win32 : posix;
+}
+
+function pathStyleForBase(baseDir: string, requested: PathStyle | undefined): PathStyle | undefined {
+	if (requested !== undefined) return requested;
+	if (/^(?:[A-Za-z]:[\\/]|\\\\)/u.test(baseDir)) return "windows";
+	if (baseDir.startsWith("/")) return "posix";
+	return undefined;
+}
+
 export function normalizePath(input: string, options: PathInputOptions = {}): string {
+	const paths = pathApi(options.pathStyle);
 	let normalized = options.trim ? input.trim() : input;
 	if (options.normalizeUnicodeSpaces) {
 		normalized = normalized.replace(UNICODE_SPACES, " ");
@@ -81,15 +99,15 @@ export function normalizePath(input: string, options: PathInputOptions = {}): st
 	if (options.stripAtPrefix && normalized.startsWith("@")) {
 		normalized = normalized.slice(1);
 	}
-	if (process.platform === "win32") {
+	if (paths === win32) {
 		normalized = normalizeWindowsShellPath(normalized);
 	}
 
 	if (options.expandTilde ?? true) {
 		const home = options.homeDir ?? getHomeDir();
 		if (normalized === "~") return home;
-		if (normalized.startsWith("~/") || (process.platform === "win32" && normalized.startsWith("~\\"))) {
-			return join(home, normalized.slice(2));
+		if (normalized.startsWith("~/") || (paths === win32 && normalized.startsWith("~\\"))) {
+			return paths.join(home, normalized.slice(2));
 		}
 	}
 
@@ -102,25 +120,28 @@ export function normalizePath(input: string, options: PathInputOptions = {}): st
 }
 
 export function resolvePath(input: string, baseDir: string = process.cwd(), options: PathInputOptions = {}): string {
-	const normalized = normalizePath(input, options);
-	const normalizedBaseDir = normalizePath(baseDir);
-	return isAbsolute(normalized) ? nodeResolvePath(normalized) : nodeResolvePath(normalizedBaseDir, normalized);
+	const pathStyle = pathStyleForBase(baseDir, options.pathStyle);
+	const paths = pathApi(pathStyle);
+	const normalized = normalizePath(input, { ...options, pathStyle });
+	const normalizedBaseDir = normalizePath(baseDir, { pathStyle, expandTilde: false });
+	return paths.isAbsolute(normalized) ? paths.resolve(normalized) : paths.resolve(normalizedBaseDir, normalized);
 }
 
 export function getCwdRelativePath(filePath: string, cwd: string): string | undefined {
-	const resolvedCwd = resolvePath(cwd);
-	const resolvedPath = resolvePath(filePath, resolvedCwd);
-	const relativePath = relative(resolvedCwd, resolvedPath);
+	const pathStyle = pathStyleForBase(cwd, undefined);
+	const paths = pathApi(pathStyle);
+	const resolvedCwd = resolvePath(cwd, process.cwd(), { pathStyle });
+	const resolvedPath = resolvePath(filePath, resolvedCwd, { pathStyle });
+	const relativePath = paths.relative(resolvedCwd, resolvedPath);
 	const isInsideCwd =
 		relativePath === "" ||
-		(relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
+		(relativePath !== ".." && !relativePath.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relativePath));
 
 	return isInsideCwd ? relativePath || "." : undefined;
 }
-
 export function formatPathRelativeToCwdOrAbsolute(filePath: string, cwd: string): string {
 	const absolutePath = resolvePath(filePath, cwd);
-	return (getCwdRelativePath(absolutePath, cwd) ?? absolutePath).split(sep).join("/");
+	return (getCwdRelativePath(absolutePath, cwd) ?? absolutePath).replaceAll("\\", "/");
 }
 
 export function markPathIgnoredByCloudSync(path: string): void {

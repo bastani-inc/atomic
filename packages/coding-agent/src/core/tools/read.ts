@@ -102,6 +102,8 @@ const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.override.md", "AGENTS.md", 
 export interface ReadOperations {
 	readFile: (absolutePath: string) => Promise<Buffer>;
 	access: (absolutePath: string) => Promise<void>;
+	/** Resolve a path using the target filesystem's syntax without probing the control filesystem. */
+	resolvePath?: (path: string, cwd: string) => string;
 	stat?: (absolutePath: string) => Promise<{ isFile: boolean; isDirectory: boolean } | undefined>;
 	listDir?: (absolutePath: string) => Promise<DirectoryTreeEntry[] | undefined>;
 	detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
@@ -579,7 +581,9 @@ export function createReadToolDefinition(
 								throw new Error(
 									`Read resource selectors are not supported by this filesystem backend: ${path}`,
 								);
-							const absolutePath = await resolveReadPathAsync(effectivePath, cwd);
+							const absolutePath = ops.resolvePath
+								? ops.resolvePath(effectivePath, cwd)
+								: await resolveReadPathAsync(effectivePath, cwd);
 							if (aborted) return;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
