@@ -93,6 +93,46 @@ type MasterProbeOutcome =
 	| { readonly kind: "dead"; readonly detail: string }
 	| InterruptedSettlement;
 
+type MasterReadinessSettlement =
+	| MasterProbeProcessSettlement
+	| { readonly kind: "ready_timeout" }
+	| { readonly kind: "aborted" }
+	| { readonly kind: "master_lost" };
+
+async function waitForMasterReadinessCheck(
+	check: RunEnvironmentProcess,
+	readyDeadline: number,
+	signal: AbortSignal | undefined,
+	masterLost: Promise<void>,
+): Promise<MasterReadinessSettlement> {
+	let timeout: NodeJS.Timeout | undefined;
+	let onAbort: (() => void) | undefined;
+	const timedOut = new Promise<MasterReadinessSettlement>((resolve) => {
+		timeout = setTimeout(() => resolve({ kind: "ready_timeout" }), Math.max(0, readyDeadline - Date.now()));
+	});
+	const aborted = new Promise<MasterReadinessSettlement>((resolve) => {
+		onAbort = () => resolve({ kind: "aborted" });
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) onAbort();
+	});
+	const processFinished = check
+		.wait()
+		.then((result): MasterProbeProcessSettlement => ({ kind: "probe_process", result }));
+	try {
+		const settlement = await Promise.race([
+			processFinished,
+			timedOut,
+			aborted,
+			masterLost.then((): MasterReadinessSettlement => ({ kind: "master_lost" })),
+		]);
+		if (settlement.kind !== "probe_process") check.kill();
+		return settlement;
+	} finally {
+		if (timeout !== undefined) clearTimeout(timeout);
+		if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
+	}
+}
+
 function createNodeProcessRunner(): RunEnvironmentProcessRunner {
 	return {
 		start(command, args, options) {
@@ -327,7 +367,7 @@ function validateTimeoutSeconds(seconds: number | undefined): void {
 function quoteProxyCommandArgument(value: string, controlPlatform: NodeJS.Platform): string {
 	const normalized = controlPlatform === "win32" ? value.replaceAll("\\", "/") : value;
 	const escaped = normalized.replaceAll("%", "%%");
-	return /^[A-Za-z0-9_./:%=-]+$/u.test(escaped) ? escaped : `"${escaped.replaceAll('"', '\\"')}"`;
+	return quotePosix(escaped);
 }
 
 function executionArguments(
@@ -523,13 +563,23 @@ export async function createRunEnvironmentExecTransport(
 				["-F", configPath, "-S", controlPath, "-O", "check", host],
 				processOptions,
 			);
-			const result = await check.wait();
-			if (result.code === 0 && result.error === undefined) break;
+			const settlement = await waitForMasterReadinessCheck(check, readyDeadline, options.signal, masterLost);
+			if (settlement.kind === "aborted") throw new Error("aborted");
+			if (settlement.kind === "master_lost") {
+				throw new Error(masterLostDetail ?? "SSH control master exited");
+			}
+			if (settlement.kind === "ready_timeout") {
+				master.kill();
+				throw new Error("SSH control master did not become ready: readiness check timed out");
+			}
+			if (settlement.result.code === 0 && settlement.result.error === undefined) break;
 			if (Date.now() >= readyDeadline) {
 				master.kill();
-				throw new Error(processFailureDetail("SSH control master did not become ready", result, ""));
+				throw new Error(processFailureDetail("SSH control master did not become ready", settlement.result, ""));
 			}
-			await new Promise((resolve) => setTimeout(resolve, MASTER_CHECK_INTERVAL_MS));
+			await new Promise((resolve) =>
+				setTimeout(resolve, Math.min(MASTER_CHECK_INTERVAL_MS, Math.max(0, readyDeadline - Date.now()))),
+			);
 		}
 
 		return {
@@ -581,16 +631,19 @@ export async function createRunEnvironmentExecTransport(
 					const settlement: ExecutionSettlement = await Promise.race([processFinished, aborted, timedOut, lost]);
 					if (settlement.kind === "aborted") {
 						process.kill();
+						await processFinished;
 						exitProof.interrupt(emitStderr);
 						return { kind: "aborted" };
 					}
 					if (settlement.kind === "timed_out") {
 						process.kill();
+						await processFinished;
 						exitProof.interrupt(emitStderr);
 						return { kind: "timed_out", seconds: settlement.seconds };
 					}
 					if (settlement.kind === "master_lost" || masterLostDetail !== undefined) {
 						process.kill();
+						await processFinished;
 						exitProof.interrupt(emitStderr);
 						return { kind: "transport_lost", detail: masterLostDetail ?? "SSH control master exited" };
 					}
