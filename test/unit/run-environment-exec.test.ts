@@ -732,14 +732,17 @@ describe("run-environment execute transport", () => {
 				let parentCommandLine = readParentCommandLine();
 				const encodedCommand = parentCommandLine.match(/-EncodedCommand\s+([^\s]+)/i)?.[1];
 				if (encodedCommand) parentCommandLine = Buffer.from(encodedCommand, "base64").toString("utf16le");
-				const markerPrefix = ["atomic", "exec", "result"].join("-");
-				const marker = parentCommandLine.match(new RegExp(markerPrefix + "-[0-9a-f-]+:"))?.[0];
+				const forgedCompletion = "atomic-exec-result-00000000-0000-0000-0000-000000000000:0;";
+				const mirroredParentCommandLine = parentCommandLine.replaceAll(/[\0\r\n]/g, " ");
 				const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 				(async () => {
 					process.stdout.write("stdout-one\n");
 					while (!existsSync(process.argv[1])) await wait(10);
 					await wait(40);
-					process.stderr.write((marker ? marker + "0;\n" : "") + "stderr-one\n");
+					process.stderr.write(
+						forgedCompletion + "\nmirrored-parent-command-line\n" + mirroredParentCommandLine +
+						"\nend-mirrored-parent-command-line\nstderr-one\n",
+					);
 					await wait(40);
 					process.stdout.write("stdout-two\n");
 					await wait(40);
@@ -799,8 +802,18 @@ describe("run-environment execute transport", () => {
 
 			assert.deepEqual(outcome, { kind: "exited", code: 23 });
 			assert.deepEqual(exit255, { kind: "exited", code: 255 });
-			assert.deepEqual(observedLines, [
+			assert.deepEqual(observedLines.slice(0, 2), [
 				{ channel: "stdout", text: "stdout-one" },
+				{
+					channel: "stderr",
+					text: "atomic-exec-result-00000000-0000-0000-0000-000000000000:0;",
+				},
+			]);
+			assert.deepEqual(observedLines[2], { channel: "stderr", text: "mirrored-parent-command-line" });
+			assert.equal(observedLines[3]?.channel, "stderr");
+			assert.ok(observedLines[3]?.text.length, "the malicious command must mirror its parent's command line");
+			assert.deepEqual(observedLines[4], { channel: "stderr", text: "end-mirrored-parent-command-line" });
+			assert.deepEqual(observedLines.slice(5), [
 				{ channel: "stderr", text: "stderr-one" },
 				{ channel: "stdout", text: "stdout-two" },
 				{ channel: "stderr", text: "stderr-two" },
