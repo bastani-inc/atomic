@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
@@ -25,6 +25,9 @@ class ScriptedProcess implements RunEnvironmentProcess {
 	private resolveResult!: (result: RunEnvironmentProcessResult) => void;
 	private settled = false;
 	killed = false;
+	get finished(): boolean {
+		return this.settled;
+	}
 
 	constructor() {
 		this.resultPromise = new Promise((resolve) => {
@@ -67,19 +70,42 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 	readonly processes: RecordedProcess[] = [];
 	readonly master = new ScriptedProcess();
 	executeStarted?: (process: ScriptedProcess) => void;
+	checkMaster?: (process: ScriptedProcess, checkNumber: number) => void;
+	private masterStarted = false;
+	private checkCount = 0;
 
 	start(command: string, args: readonly string[]): RunEnvironmentProcess {
-		const process = args.includes("-M") ? this.master : new ScriptedProcess();
+		const isMaster = args.includes("-M");
+		const process = isMaster ? this.master : new ScriptedProcess();
 		this.processes.push({ command, args: [...args], process });
 		if (command === "/pinned/coder") {
 			queueMicrotask(() => process.finish(0));
-		} else if (args.includes("check") || args.includes("exit")) {
+		} else if (isMaster) {
+			this.masterStarted = true;
+		} else if (args.includes("check")) {
+			this.checkCount += 1;
+			const checkNumber = this.checkCount;
 			queueMicrotask(() => {
-				process.finish(0);
-				if (args.includes("exit")) this.master.finish(0);
+				if (this.checkMaster !== undefined) this.checkMaster(process, checkNumber);
+				else process.finish(this.masterStarted && !this.master.finished ? 0 : 255);
 			});
-		} else if (!args.includes("-M")) {
-			queueMicrotask(() => this.executeStarted?.(process));
+		} else if (args.includes("exit")) {
+			queueMicrotask(() => {
+				process.finish(this.masterStarted ? 0 : 255);
+				this.master.finish(0);
+			});
+		} else {
+			const controlPathIndex = args.indexOf("-S");
+			const proxyCommand = args.find((arg) => arg.startsWith("ProxyCommand="));
+			const usesMaster =
+				this.masterStarted &&
+				!this.master.finished &&
+				((controlPathIndex >= 0 && args[controlPathIndex + 1]?.endsWith("master.sock") === true) ||
+					proxyCommand?.includes("master.sock") === true);
+			queueMicrotask(() => {
+				if (usesMaster) this.executeStarted?.(process);
+				else process.finish(255);
+			});
 		}
 		return process;
 	}
@@ -89,6 +115,7 @@ async function withTransport(
 	runner: ScriptedRunner,
 	run: (transport: Awaited<ReturnType<typeof createRunEnvironmentExecTransport>>) => Promise<void>,
 	operatingSystem: RemoteOperatingSystem = "linux",
+	controlPlatform: NodeJS.Platform = "linux",
 ): Promise<void> {
 	const directory = await mkdtemp(join(tmpdir(), "atomic-exec-test-"));
 	const transport = await createRunEnvironmentExecTransport({
@@ -96,6 +123,7 @@ async function withTransport(
 		sshPath: "/usr/bin/ssh",
 		workspaceName: "run-123",
 		operatingSystem,
+		controlPlatform,
 		runtimeDirectory: directory,
 		processRunner: runner,
 		masterReadyTimeoutMs: 1_000,
@@ -195,7 +223,79 @@ describe("run-environment execute transport", () => {
 		assert.match(script, /Set-Item -LiteralPath 'Env:MODE' -Value 'test'/u);
 		assert.match(script, /& 'tool\.exe' 'it''s one argument'/u);
 	});
+	test("selects Git for Windows SSH instead of native Win32 OpenSSH", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "atomic-exec-windows-test-"));
+		const sshPath = join(directory, "Git", "usr", "bin", "ssh.exe");
+		await mkdir(join(directory, "Git", "usr", "bin"), { recursive: true });
+		await writeFile(sshPath, "");
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(0);
+		const runtimeDirectory = join(directory, "runtime");
+		try {
+			const transport = await createRunEnvironmentExecTransport({
+				coderPath: "/pinned/coder",
+				workspaceName: "run-123",
+				operatingSystem: "linux",
+				controlPlatform: "win32",
+				environment: { ProgramFiles: directory },
+				runtimeDirectory,
+				processRunner: runner,
+				masterReadyTimeoutMs: 1_000,
+			});
+			await transport.close();
+			assert.equal(runner.processes.find(({ args }) => args.includes("-M"))?.command, sshPath);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
 
+	test("uses proxy-mode multiplexing from a Windows control host", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(0);
+
+		await withTransport(
+			runner,
+			async (transport) => {
+				const outcome = await transport.execute({ argv: ["true"] }, { write() {} }, new AbortController().signal);
+				assert.deepEqual(outcome, { kind: "exited", code: 0 });
+			},
+			"linux",
+			"win32",
+		);
+
+		const execution = executionCalls(runner)[0];
+		assert.ok(execution?.args.includes("ControlMaster=no"));
+		const proxyCommand = execution?.args.find((arg) => arg.startsWith("ProxyCommand="));
+		assert.match(proxyCommand ?? "", /\/usr\/bin\/ssh.*-O proxy/u);
+	});
+
+	test("preserves a remote exit code 255 while the control master is alive", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(255);
+
+		await withTransport(runner, async (transport) => {
+			const outcome = await transport.execute(
+				{ argv: ["exit", "255"] },
+				{ write() {} },
+				new AbortController().signal,
+			);
+
+			assert.deepEqual(outcome, { kind: "exited", code: 255 });
+		});
+	});
+
+	test("returns TransportLost when an exit 255 cannot reach the control master", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(255);
+		runner.checkMaster = (process, checkNumber) => process.finish(checkNumber === 1 ? 0 : 255);
+
+		await withTransport(runner, async (transport) => {
+			const outcome = await transport.execute({ argv: ["true"] }, { write() {} }, new AbortController().signal);
+
+			assert.equal(outcome.kind, "transport_lost");
+			if (outcome.kind === "transport_lost") assert.match(outcome.detail, /SSH transport lost/u);
+		});
+	});
 	test("returns TimedOut and preserves the builtin bash timeout error", async () => {
 		const runner = new ScriptedRunner();
 		runner.executeStarted = () => {};
@@ -227,6 +327,30 @@ describe("run-environment execute transport", () => {
 			assert.deepEqual(outcome, { kind: "aborted" });
 			assert.equal(executionCalls(runner)[0]?.process.killed, true);
 			assert.throws(() => bashResultFromExecOutcome(outcome), /^Error: aborted$/u);
+		});
+	});
+
+	test("an abort interrupts a hung post-command master probe", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(0);
+		runner.checkMaster = (process, checkNumber) => {
+			if (checkNumber === 1) process.finish(0);
+		};
+
+		await withTransport(runner, async (transport) => {
+			const controller = new AbortController();
+			const pending = transport.execute({ argv: ["true"] }, { write() {} }, controller.signal);
+			await new Promise((resolve) => setImmediate(resolve));
+			controller.abort();
+			const outcome = await Promise.race([
+				pending,
+				new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
+			]);
+
+			assert.notEqual(outcome, "hung");
+			assert.deepEqual(outcome, { kind: "aborted" });
+			const checks = runner.processes.filter(({ args }) => args.includes("check"));
+			assert.equal(checks.at(-1)?.process.killed, true);
 		});
 	});
 

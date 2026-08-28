@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const SSH_TRANSPORT_EXIT_CODE = 255;
 const DIAGNOSTIC_LIMIT_BYTES = 16_384;
 const DEFAULT_MASTER_READY_TIMEOUT_MS = 15_000;
 const MASTER_CHECK_INTERVAL_MS = 25;
+const MASTER_PROBE_TIMEOUT_MS = 5_000;
 const SSH_HOST_PREFIX = "atomic.";
 
 export type RemoteOperatingSystem = "linux" | "darwin" | "windows";
@@ -55,6 +55,7 @@ export interface CreateRunEnvironmentExecTransportOptions {
 	readonly sshPath?: string;
 	readonly workspaceName: string;
 	readonly operatingSystem: RemoteOperatingSystem;
+	readonly controlPlatform?: NodeJS.Platform;
 	readonly environment?: NodeJS.ProcessEnv;
 	readonly runtimeDirectory?: string;
 	readonly processRunner?: RunEnvironmentProcessRunner;
@@ -78,6 +79,18 @@ type InterruptedSettlement =
 	| { readonly kind: "master_lost" };
 
 type ExecutionSettlement = ProcessSettlement | InterruptedSettlement;
+
+interface MasterProbeProcessSettlement {
+	readonly kind: "probe_process";
+	readonly result: RunEnvironmentProcessResult;
+}
+
+type MasterProbeSettlement = MasterProbeProcessSettlement | InterruptedSettlement | { readonly kind: "probe_timeout" };
+
+type MasterProbeOutcome =
+	| { readonly kind: "alive" }
+	| { readonly kind: "dead"; readonly detail: string }
+	| InterruptedSettlement;
 
 function createNodeProcessRunner(): RunEnvironmentProcessRunner {
 	return {
@@ -196,6 +209,118 @@ function validateTimeoutSeconds(seconds: number | undefined): void {
 	}
 }
 
+function quoteProxyCommandArgument(value: string, controlPlatform: NodeJS.Platform): string {
+	const normalized = controlPlatform === "win32" ? value.replaceAll("\\", "/") : value;
+	return /^[A-Za-z0-9_./:%=-]+$/u.test(normalized) ? normalized : `"${normalized.replaceAll('"', '\\"')}"`;
+}
+
+function executionArguments(
+	sshPath: string,
+	configPath: string,
+	controlPath: string,
+	host: string,
+	remoteCommand: string,
+	controlPlatform: NodeJS.Platform,
+): readonly string[] {
+	const common = ["-F", configPath, "-o", "ControlMaster=no"];
+	if (controlPlatform !== "win32") {
+		return [
+			...common,
+			"-S",
+			controlPath,
+			"-o",
+			"ProxyCommand=none",
+			"-o",
+			"HostName=127.0.0.1",
+			"-o",
+			"Port=1",
+			"-o",
+			"ConnectionAttempts=1",
+			"-o",
+			"ConnectTimeout=1",
+			"-T",
+			host,
+			remoteCommand,
+		];
+	}
+
+	const proxyCommand = [sshPath, "-F", configPath, "-S", controlPath, "-O", "proxy", host]
+		.map((value) => quoteProxyCommandArgument(value, controlPlatform))
+		.join(" ");
+	return [...common, "-o", "ControlPath=none", "-o", `ProxyCommand=${proxyCommand}`, "-T", host, remoteCommand];
+}
+
+async function resolveSshPath(
+	configuredPath: string | undefined,
+	controlPlatform: NodeJS.Platform,
+	environment: NodeJS.ProcessEnv,
+): Promise<string> {
+	if (configuredPath !== undefined) return configuredPath;
+	if (controlPlatform !== "win32") return "ssh";
+
+	const candidates = [
+		environment.GIT_SSH,
+		...(environment.ProgramW6432 === undefined
+			? []
+			: [join(environment.ProgramW6432, "Git", "usr", "bin", "ssh.exe")]),
+		...(environment.ProgramFiles === undefined
+			? []
+			: [join(environment.ProgramFiles, "Git", "usr", "bin", "ssh.exe")]),
+		...(environment.LOCALAPPDATA === undefined
+			? []
+			: [join(environment.LOCALAPPDATA, "Programs", "Git", "usr", "bin", "ssh.exe")]),
+	].filter((candidate): candidate is string => candidate !== undefined && candidate.length > 0);
+	for (const candidate of new Set(candidates)) {
+		try {
+			await access(candidate);
+			return candidate;
+		} catch {
+			// Try the next ControlMaster-capable Git for Windows SSH installation.
+		}
+	}
+	throw new Error("Windows run-environment execution requires Git for Windows SSH or an explicit sshPath");
+}
+
+async function probeControlMaster(
+	runner: RunEnvironmentProcessRunner,
+	sshPath: string,
+	configPath: string,
+	controlPath: string,
+	host: string,
+	processOptions: RunEnvironmentProcessOptions,
+	interrupted: Promise<InterruptedSettlement>,
+	masterLost: Promise<InterruptedSettlement>,
+): Promise<MasterProbeOutcome> {
+	const check = runner.start(sshPath, ["-F", configPath, "-S", controlPath, "-O", "check", host], processOptions);
+	let stderr = "";
+	check.onStderr((chunk) => {
+		stderr = appendDiagnostic(stderr, chunk);
+	});
+	let probeTimeout: NodeJS.Timeout | undefined;
+	const probeTimedOut = new Promise<MasterProbeSettlement>((resolve) => {
+		probeTimeout = setTimeout(() => resolve({ kind: "probe_timeout" }), MASTER_PROBE_TIMEOUT_MS);
+	});
+	try {
+		const processFinished = check
+			.wait()
+			.then((result): MasterProbeProcessSettlement => ({ kind: "probe_process", result }));
+		const settlement = await Promise.race([processFinished, interrupted, masterLost, probeTimedOut]);
+		if (settlement.kind === "aborted" || settlement.kind === "timed_out" || settlement.kind === "master_lost") {
+			check.kill();
+			return settlement;
+		}
+		if (settlement.kind === "probe_timeout") {
+			check.kill();
+			return { kind: "dead", detail: "SSH transport lost: control master check timed out" };
+		}
+		return settlement.result.code === 0 && settlement.result.error === undefined
+			? { kind: "alive" }
+			: { kind: "dead", detail: processFailureDetail("SSH transport lost", settlement.result, stderr) };
+	} finally {
+		if (probeTimeout !== undefined) clearTimeout(probeTimeout);
+	}
+}
+
 function transportDetail(result: RunEnvironmentProcessResult, stderr: string): string {
 	return processFailureDetail("SSH transport lost", result, stderr);
 }
@@ -217,7 +342,8 @@ export async function createRunEnvironmentExecTransport(
 	options: CreateRunEnvironmentExecTransportOptions,
 ): Promise<RunEnvironmentExecTransport> {
 	const runner = options.processRunner ?? createNodeProcessRunner();
-	const sshPath = options.sshPath ?? "ssh";
+	const controlPlatform = options.controlPlatform ?? process.platform;
+	const sshPath = await resolveSshPath(options.sshPath, controlPlatform, options.environment ?? process.env);
 	const ownsRuntimeDirectory = options.runtimeDirectory === undefined;
 	const runtimeDirectory = options.runtimeDirectory ?? (await mkdtemp(join(tmpdir(), "atomic-ssh-")));
 	await mkdir(runtimeDirectory, { recursive: true, mode: 0o700 });
@@ -302,27 +428,7 @@ export async function createRunEnvironmentExecTransport(
 				try {
 					process = runner.start(
 						sshPath,
-						[
-							"-F",
-							configPath,
-							"-S",
-							controlPath,
-							"-o",
-							"ControlMaster=no",
-							"-o",
-							"ProxyCommand=none",
-							"-o",
-							"HostName=127.0.0.1",
-							"-o",
-							"Port=1",
-							"-o",
-							"ConnectionAttempts=1",
-							"-o",
-							"ConnectTimeout=1",
-							"-T",
-							host,
-							remoteCommand,
-						],
+						executionArguments(sshPath, configPath, controlPath, host, remoteCommand, controlPlatform),
 						processOptions,
 					);
 				} catch (error) {
@@ -364,13 +470,25 @@ export async function createRunEnvironmentExecTransport(
 						process.kill();
 						return { kind: "transport_lost", detail: masterLostDetail ?? "SSH control master exited" };
 					}
-					if (
-						settlement.result.error !== undefined ||
-						settlement.result.code === null ||
-						settlement.result.code === SSH_TRANSPORT_EXIT_CODE
-					) {
+					if (settlement.result.error !== undefined || settlement.result.code === null) {
 						return { kind: "transport_lost", detail: transportDetail(settlement.result, stderr) };
 					}
+					const masterStatus = await probeControlMaster(
+						runner,
+						sshPath,
+						configPath,
+						controlPath,
+						host,
+						processOptions,
+						interrupted,
+						lost,
+					);
+					if (masterStatus.kind === "aborted") return { kind: "aborted" };
+					if (masterStatus.kind === "timed_out") return { kind: "timed_out", seconds: masterStatus.seconds };
+					if (masterStatus.kind === "master_lost" || masterLostDetail !== undefined) {
+						return { kind: "transport_lost", detail: masterLostDetail ?? "SSH control master exited" };
+					}
+					if (masterStatus.kind === "dead") return { kind: "transport_lost", detail: masterStatus.detail };
 					return { kind: "exited", code: settlement.result.code };
 				} finally {
 					activeProcesses.delete(process);
