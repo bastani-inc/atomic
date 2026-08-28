@@ -295,6 +295,36 @@ test("Windows edit preserves a UTF-8 BOM and CRLF through one remote command", a
 	});
 });
 
+test("Windows edit preserves mixed endings and an unterminated final line with one remote command", async () => {
+	for (const [name, original, line, expected] of [
+		["crlf", "before\r\nsecond", 1, "after\r\nsecond"],
+		["mixed", "before\r\nsecond\nthird", 2, "before\r\nafter\nthird"],
+	] as const) {
+		await withFixture(async (cwd) => {
+			makeDirectorySync(join(cwd, "src"));
+			const filePath = join(cwd, "src", `${name}.txt`);
+			writeTextSync(filePath, original);
+			spawnSyncCollect(["git", "init", "-q"], { cwd });
+			spawnSyncCollect(["git", "config", "core.autocrlf", "false"], { cwd });
+			const transport = new WindowsEditTransport(cwd, Buffer.from(original));
+			const toolOptions = options(transport, "windows");
+			const read = createRunEnvironmentReadToolDefinition("C:\\work", toolOptions);
+			const edit = createRunEnvironmentEditToolDefinition("C:\\work", toolOptions);
+			const readResult = await execute(read as never, { path: `src\\${name}.txt` });
+			const header = new RegExp(`\\[src/${name}\\.txt#[0-9A-F]{4}\\]`, "u").exec(
+				readResult.content[0]?.text ?? "",
+			)?.[0];
+			assert.ok(header);
+			transport.commands.length = 0;
+
+			await execute(edit as never, { input: `${header}\nreplace ${line}..${line}:\n+after` });
+
+			assert.equal(transport.commands.length, 1);
+			assert.equal(readTextSync(filePath, "utf8"), expected);
+		});
+	}
+});
+
 windowsTest("Windows edit preserves a nested CRLF file with one remote command", async () => {
 	await withFixture(async (cwd) => {
 		makeDirectorySync(join(cwd, "src"));

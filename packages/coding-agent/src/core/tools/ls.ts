@@ -34,6 +34,8 @@ export interface LsToolDetails {
  * Override these to delegate directory listing to remote systems (for example SSH).
  */
 export interface LsOperations {
+	/** Resolve a path using the target filesystem's syntax without consulting the control machine's home directory. */
+	resolvePath?: (path: string, cwd: string) => string;
 	/** Check if path exists */
 	exists: (absolutePath: string) => Promise<boolean> | boolean;
 	/** Get file or directory stats. Throws if not found. */
@@ -132,7 +134,7 @@ export function createLsToolDefinition(
 
 				(async () => {
 					try {
-						const dirPath = resolveToCwd(path || ".", cwd);
+						const dirPath = ops.resolvePath?.(path || ".", cwd) ?? resolveToCwd(path || ".", cwd);
 						const effectiveLimit = limit ?? DEFAULT_LIMIT;
 
 						// Check if path exists.

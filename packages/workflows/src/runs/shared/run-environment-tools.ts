@@ -221,6 +221,13 @@ export function createRunEnvironmentWriteOperations(options: RunEnvironmentToolO
 		return { madeExecutable: output.toString("ascii") === "X" };
 	};
 	return {
+		resolvePath: (filePath, cwd) => {
+			const system = operatingSystem(options);
+			return resolvePath(filePath, cwd, {
+				expandTilde: false,
+				pathStyle: system === "windows" ? "windows" : "posix",
+			});
+		},
 		async mkdir() {
 			// writeFileSafely creates its parent in the same remote command.
 		},
@@ -289,6 +296,13 @@ export function createRunEnvironmentLsOperations(options: RunEnvironmentToolOper
 	const listings = new Map<string, Listing>();
 	const paths = targetPath(operatingSystem(options));
 	return {
+		resolvePath: (filePath, cwd) => {
+			const system = operatingSystem(options);
+			return resolvePath(filePath, cwd, {
+				expandTilde: false,
+				pathStyle: system === "windows" ? "windows" : "posix",
+			});
+		},
 		async exists(filePath) {
 			const command = { argv: listingArgv(operatingSystem(options), filePath) };
 			const result = await executeCommand(options, command);
@@ -344,6 +358,45 @@ function restorePatchBom(section: string): string {
 	return restored.join("\n");
 }
 
+function restorePatchLineEndings(section: string, snapshot: Buffer): string {
+	const snapshotText = snapshot.toString("utf8");
+	const oldEndings = [...snapshotText.matchAll(/\r\n|\n|\r/gu)].map((match) => match[0]);
+	const defaultEnding = oldEndings.find((ending) => ending === "\r\n" || ending === "\n") ?? "\n";
+	const lines = section.split("\n");
+	let oldLine: number | undefined;
+	let newLine: number | undefined;
+	let restored = "";
+	const replacedEndings: string[] = [];
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index]!;
+		const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(line);
+		if (hunk !== null) {
+			oldLine = Number(hunk[1]);
+			newLine = Number(hunk[2]);
+			replacedEndings.length = 0;
+		}
+		let separator = index + 1 < lines.length ? "\n" : "";
+		const marker = line[0];
+		if (
+			separator !== "" &&
+			oldLine !== undefined &&
+			newLine !== undefined &&
+			(marker === " " || marker === "+" || marker === "-")
+		) {
+			const hasNoNewlineMarker = lines[index + 1] === "\\ No newline at end of file";
+			const oldEnding = oldEndings[oldLine - 1];
+			if (marker === "-") replacedEndings.push(oldEnding ?? "");
+			if (marker === " ") replacedEndings.length = 0;
+			const contentEnding = marker === "+" ? (replacedEndings.shift() ?? defaultEnding) : oldEnding;
+			if (!hasNoNewlineMarker && contentEnding === "\r\n") separator = "\r\n";
+			if (marker !== "+") oldLine += 1;
+			if (marker !== "-") newLine += 1;
+		}
+		restored += line + separator;
+	}
+	return restored;
+}
+
 function patchWithSnapshotEncoding(patch: string, snapshots: readonly Buffer[]): string {
 	const starts = [...patch.matchAll(/^--- .*\n\+\+\+ .*$/gmu)].map((match) => match.index);
 	if (starts.length !== snapshots.length) return patch;
@@ -352,7 +405,7 @@ function patchWithSnapshotEncoding(patch: string, snapshots: readonly Buffer[]):
 			let section = patch.slice(start, starts[index + 1] ?? patch.length);
 			const snapshot = snapshots[index]!;
 			if (snapshot.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) section = restorePatchBom(section);
-			return snapshot.includes("\r\n") ? section.replace(/\n/gu, "\r\n") : section;
+			return restorePatchLineEndings(section, snapshot);
 		})
 		.join("");
 }

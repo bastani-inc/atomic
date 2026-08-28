@@ -73,6 +73,8 @@ export interface WriteToolDetails {
  * Override these to delegate file writing to remote systems (for example SSH).
  */
 export interface WriteOperations {
+	/** Resolve a path using the target filesystem's syntax without consulting the control machine's home directory. */
+	resolvePath?: (path: string, cwd: string) => string;
 	/** Write content to a file */
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
 	mkdir: (dir: string) => Promise<void>;
@@ -436,7 +438,7 @@ export function createWriteToolDefinition(
 					details: {},
 				};
 			}
-			const absolutePath = resolveToCwd(path, cwd);
+			const absolutePath = ops.resolvePath?.(path, cwd) ?? resolveToCwd(path, cwd);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the
