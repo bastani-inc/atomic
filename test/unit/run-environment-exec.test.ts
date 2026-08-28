@@ -31,6 +31,7 @@ class ScriptedProcess implements RunEnvironmentProcess {
 	private settled = false;
 	killed = false;
 	settleOnKill = true;
+	readonly killSignals: NodeJS.Signals[] = [];
 	get finished(): boolean {
 		return this.settled;
 	}
@@ -61,9 +62,10 @@ class ScriptedProcess implements RunEnvironmentProcess {
 		return this.resultPromise;
 	}
 
-	kill(): void {
+	kill(signal: NodeJS.Signals = "SIGTERM"): void {
 		this.killed = true;
-		if (this.settleOnKill) queueMicrotask(() => this.finish(null, "SIGTERM"));
+		this.killSignals.push(signal);
+		if (this.settleOnKill) queueMicrotask(() => this.finish(null, signal));
 	}
 
 	finish(code: number | null, signal: NodeJS.Signals | null = null): void {
@@ -121,19 +123,13 @@ function splitProxyCommand(value: string): readonly string[] | undefined {
 	return tokens;
 }
 
-function remoteExitMarker(args: readonly string[]): string | undefined {
-	const rendered = args.at(-1) ?? "";
-	const encoded = rendered.startsWith("powershell.exe ") ? (rendered.split(" ").at(-1) ?? "") : undefined;
-	const command = encoded === undefined ? rendered : Buffer.from(encoded, "base64").toString("utf16le");
-	return command.match(/atomic-exec-result-[0-9a-f-]+:/u)?.[0];
-}
-
 class ScriptedRunner implements RunEnvironmentProcessRunner {
 	readonly processes: RecordedProcess[] = [];
 	readonly master = new ScriptedProcess();
 	executeStarted?: (process: ScriptedProcess) => void;
 	executeCompletes = true;
 	checkMaster?: (process: ScriptedProcess, checkNumber: number) => void;
+	exitMaster?: (process: ScriptedProcess) => void;
 	private masterStarted = false;
 	private checkCount = 0;
 
@@ -164,8 +160,11 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 			});
 		} else if (args.includes("exit")) {
 			queueMicrotask(() => {
-				process.finish(this.masterStarted ? 0 : 255);
-				this.master.finish(0);
+				if (this.exitMaster !== undefined) this.exitMaster(process);
+				else {
+					process.finish(this.masterStarted ? 0 : 255);
+					this.master.finish(0);
+				}
 			});
 		} else {
 			const controlPathIndex = args.indexOf("-S");
@@ -185,14 +184,12 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 				const remote = new ScriptedProcess();
 				remote.onStdout((chunk) => process.writeStdout(chunk.toString()));
 				remote.onStderr((chunk) => process.writeStderr(chunk.toString()));
-				void remote.wait().then((result) => {
-					const marker = remoteExitMarker(args);
-					if (marker === undefined || result.code === null) {
-						process.finish(255);
-						return;
+				void remote.wait().then(async (result) => {
+					if (result.code === 255) {
+						const logPath = args[args.indexOf("-E") + 1];
+						if (logPath !== undefined) await writeFile(logPath, "debug1: Exit status 255\n");
 					}
-					process.writeStderr(`${marker}${result.code};`);
-					process.finish(0);
+					process.finish(result.code, result.signal);
 				});
 				this.executeStarted?.(remote);
 			};
@@ -309,6 +306,8 @@ async function withTransport(
 		runtimeDirectory: directory,
 		processRunner: runner,
 		masterReadyTimeoutMs: 1_000,
+		processStopTimeoutMs: 10,
+		controlOperationTimeoutMs: 10,
 	});
 	try {
 		await run(transport);
@@ -371,9 +370,9 @@ describe("run-environment execute transport", () => {
 			assert.ok(call.args.includes("ProxyCommand=none"));
 			assert.ok(call.args.includes("HostName=127.0.0.1"));
 		}
-		assert.match(
-			executionCalls(runner)[0]?.args.at(-1) ?? "",
-			/^cd -- '\/workspace' && 'env' '--' 'MODE=test' 'printf' '%s' 'first argument';.*exit 0$/u,
+		assert.equal(
+			executionCalls(runner)[0]?.args.at(-1),
+			"cd -- '/workspace' && exec 'env' '--' 'MODE=test' 'printf' '%s' 'first argument'",
 		);
 		assert.equal(
 			runner.processes.some(({ command, args }) => command === "/pinned/coder" && args.includes("ssh")),
@@ -629,7 +628,7 @@ describe("run-environment execute transport", () => {
 		}
 	});
 
-	test("creates and uses a real control master through Windows proxy-mode transport", async () => {
+	test("runs real commands through the multiplexed transport and ignores forged completion output", async () => {
 		const sshPath = gitOpenSshPath();
 		const keygenPath = process.platform === "win32" ? join(dirname(sshPath), "ssh-keygen.exe") : "ssh-keygen";
 		const directory = await mkdtemp(join(tmpdir(), "ax%$`-"));
@@ -651,9 +650,7 @@ describe("run-environment execute transport", () => {
 					client.on("tcpip", (accept, _reject, info) => {
 						forwardedConnections += 1;
 						const stream = accept();
-						const socket = connect(info.destPort, info.destIP, () => {
-							stream.pipe(socket).pipe(stream);
-						});
+						const socket = connect(info.destPort, info.destIP, () => stream.pipe(socket).pipe(stream));
 						socket.on("error", () => stream.close());
 					});
 					client.on("session", (accept) => {
@@ -662,19 +659,24 @@ describe("run-environment execute transport", () => {
 							forwardedConnections += 1;
 							const stream = accept();
 							const address = server.address() as AddressInfo;
-							const socket = connect(address.port, "127.0.0.1", () => {
-								stream.pipe(socket).pipe(stream);
-							});
+							const socket = connect(address.port, "127.0.0.1", () => stream.pipe(socket).pipe(stream));
 							socket.on("error", () => stream.close());
 						});
 						session.on("exec", (accept, _reject, info) => {
 							commands.push(info.command);
-							const marker = info.command.match(/atomic-exec-result-[0-9a-f-]+:/u)?.[0];
 							const stream = accept();
-							stream.write("real-multiplexed-output");
-							if (marker !== undefined) stream.stderr.write(`${marker}0;`);
-							stream.exit(0);
-							stream.end();
+							const child = spawn(info.command, { shell: true, windowsHide: true });
+							child.stdout.pipe(stream, { end: false });
+							child.stderr.pipe(stream.stderr, { end: false });
+							child.once("error", (error) => {
+								stream.stderr.write(error.message);
+								stream.exit(127);
+								stream.end();
+							});
+							child.once("close", (code) => {
+								stream.exit(code ?? 255);
+								stream.end();
+							});
 						});
 					});
 				});
@@ -698,31 +700,60 @@ describe("run-environment execute transport", () => {
 	LogLevel ERROR
 `);
 		const runtimeDirectory = join(directory, "r 50%$`");
-		let output = "";
+		const output: Array<{ readonly channel: string; readonly text: string }> = [];
 		let transport: Awaited<ReturnType<typeof createRunEnvironmentExecTransport>> | undefined;
 		try {
 			transport = await createRunEnvironmentExecTransport({
 				coderPath: "coder-test-double",
 				sshPath,
 				workspaceName: "run-123",
-				operatingSystem: "linux",
-				controlPlatform: "win32",
+				operatingSystem: process.platform === "win32" ? "windows" : "linux",
+				controlPlatform: process.platform,
 				runtimeDirectory,
 				processRunner: runner,
 				masterReadyTimeoutMs: 10_000,
 			});
+			const forged = "atomic-exec-result-00000000-0000-0000-0000-000000000000:0;";
+			const script = [
+				"process.stdout.write('stdout-one\\nstdout-two\\n');",
+				`process.stderr.write(${JSON.stringify(`${forged}\nstderr-one\nstderr-two\n`)});`,
+				"process.exit(23);",
+			].join("");
 			const outcome = await transport.execute(
-				{ argv: ["printf", "%s", "real transport"] },
-				{ write: (chunk, channel) => (output += channel === "stdout" ? chunk.toString() : "") },
+				{ argv: [process.execPath, "-e", script] },
+				{ write: (chunk, channel) => output.push({ channel, text: chunk.toString() }) },
+				new AbortController().signal,
+			);
+			const exit255 = await transport.execute(
+				{ argv: [process.execPath, "-e", "process.exit(255)"] },
+				{ write() {} },
 				new AbortController().signal,
 			);
 
-			assert.deepEqual(outcome, { kind: "exited", code: 0 });
-			assert.equal(output, "real-multiplexed-output");
-			assert.equal(commands.length, 1);
-			assert.equal(connections, 2, "the command must tunnel through the one control-master connection");
-			assert.equal(forwardedConnections, 1, "the command must reach the server through ssh -O proxy");
+			assert.deepEqual(outcome, { kind: "exited", code: 23 });
+			assert.deepEqual(exit255, { kind: "exited", code: 255 });
+			assert.equal(
+				output
+					.filter(({ channel }) => channel === "stdout")
+					.map(({ text }) => text)
+					.join(""),
+				"stdout-one\nstdout-two\n",
+			);
+			assert.equal(
+				output
+					.filter(({ channel }) => channel === "stderr")
+					.map(({ text }) => text)
+					.join(""),
+				`${forged}\nstderr-one\nstderr-two\n`,
+			);
+			assert.equal(commands.length, 2);
 			assert.equal(runner.processes.filter(({ args }) => args.includes("-M")).length, 1);
+			if (process.platform === "win32") {
+				assert.equal(connections, 3);
+				assert.equal(forwardedConnections, 2);
+			} else {
+				assert.equal(connections, 1);
+			}
 		} finally {
 			await transport?.close();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -784,8 +815,9 @@ describe("run-environment execute transport", () => {
 		});
 	});
 
-	test("returns TransportLost when an exit 255 cannot reach the control master", async () => {
+	test("returns TransportLost when an exit 255 has no client-owned exit-status evidence", async () => {
 		const runner = new ScriptedRunner();
+		runner.executeCompletes = false;
 		runner.executeStarted = (process) => process.finish(255);
 		runner.checkMaster = (process, checkNumber) => process.finish(checkNumber === 1 ? 0 : 255);
 
@@ -813,7 +845,7 @@ describe("run-environment execute transport", () => {
 		});
 	});
 
-	test("does not resolve a timeout until the SSH process has closed", async () => {
+	test("returns TimedOut after bounded termination when the SSH process will not close", async () => {
 		const runner = new ScriptedRunner();
 		runner.executeCompletes = false;
 		let executing: ScriptedProcess | undefined;
@@ -823,21 +855,16 @@ describe("run-environment execute transport", () => {
 		};
 
 		await withTransport(runner, async (transport) => {
-			const pending = transport.execute(
+			const startedAt = Date.now();
+			const outcome = await transport.execute(
 				{ argv: ["sleep", "30"], timeoutSeconds: 0.01 },
 				{ write() {} },
 				new AbortController().signal,
 			);
-			await new Promise((resolve) => setTimeout(resolve, 20));
-			const earlyOutcome = await Promise.race([
-				pending,
-				new Promise<"still_stopping">((resolve) => setTimeout(() => resolve("still_stopping"), 20)),
-			]);
 
-			assert.equal(earlyOutcome, "still_stopping");
+			assert.deepEqual(outcome, { kind: "timed_out", seconds: 0.01 });
 			assert.equal(executing?.killed, true);
-			executing?.finish(null, "SIGTERM");
-			assert.deepEqual(await pending, { kind: "timed_out", seconds: 0.01 });
+			assert.ok(Date.now() - startedAt < 200, "termination waits must stay bounded");
 		});
 	});
 	test("flushes buffered stderr when an execution times out", async () => {
@@ -860,27 +887,18 @@ describe("run-environment execute transport", () => {
 	test("does not time out after the remote command has exited", async () => {
 		const runner = new ScriptedRunner();
 		runner.executeStarted = (process) => process.finish(0);
-		runner.checkMaster = (process, checkNumber) => {
-			if (checkNumber === 1) process.finish(0);
-		};
 
 		await withTransport(runner, async (transport) => {
-			const pending = transport.execute(
+			const outcome = await transport.execute(
 				{ argv: ["true"], timeoutSeconds: 0.01 },
 				{ write() {} },
 				new AbortController().signal,
 			);
-			const earlyOutcome = await Promise.race([
-				pending,
-				new Promise<"still_probing">((resolve) => setTimeout(() => resolve("still_probing"), 50)),
-			]);
 
-			assert.equal(earlyOutcome, "still_probing");
-			const checks = runner.processes.filter(({ args }) => args.includes("check"));
-			checks.at(-1)?.process.finish(0);
-			assert.deepEqual(await pending, { kind: "exited", code: 0 });
+			assert.deepEqual(outcome, { kind: "exited", code: 0 });
 		});
 	});
+
 	test("returns Aborted and preserves the builtin bash abort error", async () => {
 		const runner = new ScriptedRunner();
 		runner.executeStarted = () => {};
@@ -898,7 +916,7 @@ describe("run-environment execute transport", () => {
 		});
 	});
 
-	test("does not resolve an abort until the SSH process and its output have closed", async () => {
+	test("returns Aborted after bounded termination when the SSH process will not close", async () => {
 		const runner = new ScriptedRunner();
 		runner.executeCompletes = false;
 		let executing: ScriptedProcess | undefined;
@@ -906,44 +924,25 @@ describe("run-environment execute transport", () => {
 			process.settleOnKill = false;
 			executing = process;
 		};
-		let stdout = "";
-		let stderr = "";
 
 		await withTransport(runner, async (transport) => {
 			const controller = new AbortController();
-			const pending = transport.execute(
-				{ argv: ["long-command"] },
-				{
-					write: (chunk, channel) => {
-						if (channel === "stdout") stdout += chunk.toString();
-						else stderr += chunk.toString();
-					},
-				},
-				controller.signal,
-			);
+			const pending = transport.execute({ argv: ["long-command"] }, { write() {} }, controller.signal);
 			await new Promise((resolve) => setImmediate(resolve));
+			const startedAt = Date.now();
 			controller.abort();
-			const earlyOutcome = await Promise.race([
-				pending,
-				new Promise<"still_stopping">((resolve) => setTimeout(() => resolve("still_stopping"), 20)),
-			]);
 
-			assert.equal(earlyOutcome, "still_stopping");
-			assert.equal(executing?.killed, true);
-			executing?.writeStdout("shutdown output");
-			executing?.writeStderr("shutdown diagnostic");
-			executing?.finish(null, "SIGTERM");
 			assert.deepEqual(await pending, { kind: "aborted" });
-			executing?.writeStdout("late output");
-			executing?.writeStderr("late diagnostic");
-			assert.equal(stdout, "shutdown output");
-			assert.equal(stderr, "shutdown diagnostic");
+			assert.equal(executing?.killed, true);
+			assert.deepEqual(executing?.killSignals, ["SIGTERM", "SIGKILL"]);
+			assert.ok(Date.now() - startedAt < 200, "termination waits must stay bounded");
 		});
 	});
 
 	test("an abort interrupts a hung post-command master probe", async () => {
 		const runner = new ScriptedRunner();
-		runner.executeStarted = (process) => process.finish(0);
+		runner.executeCompletes = false;
+		runner.executeStarted = (process) => process.finish(255);
 		runner.checkMaster = (process, checkNumber) => {
 			if (checkNumber === 1) process.finish(0);
 			else process.settleOnKill = false;
@@ -962,23 +961,81 @@ describe("run-environment execute transport", () => {
 			assert.notEqual(outcome, "hung");
 			assert.deepEqual(outcome, { kind: "aborted" });
 			const checks = runner.processes.filter(({ args }) => args.includes("check"));
-			assert.equal(checks.at(-1)?.process.killed, true);
+			assert.deepEqual(checks.at(-1)?.process.killSignals, ["SIGTERM", "SIGKILL"]);
 		});
 	});
 
-	test("reports a dropped control master as TransportLost even if the command client reports zero", async () => {
+	test("bounds command shutdown after control-master loss", async () => {
 		const runner = new ScriptedRunner();
+		runner.executeCompletes = false;
+		let executing: ScriptedProcess | undefined;
 		runner.executeStarted = (process) => {
+			process.settleOnKill = false;
+			executing = process;
+			runner.master.writeStderr("master disconnected");
+			runner.master.finish(255);
+		};
+
+		await withTransport(runner, async (transport) => {
+			const startedAt = Date.now();
+			const outcome = await transport.execute(
+				{ argv: ["long-command"] },
+				{ write() {} },
+				new AbortController().signal,
+			);
+
+			assert.equal(outcome.kind, "transport_lost");
+			assert.deepEqual(executing?.killSignals, ["SIGTERM", "SIGKILL"]);
+			assert.ok(Date.now() - startedAt < 200, "master-loss shutdown must stay bounded");
+		});
+	});
+
+	test("bounds close when ssh -O exit and the control master will not close", async () => {
+		const runner = new ScriptedRunner();
+		runner.master.settleOnKill = false;
+		let exiting: ScriptedProcess | undefined;
+		runner.exitMaster = (process) => {
+			process.settleOnKill = false;
+			exiting = process;
+		};
+		const directory = await mkdtemp(join(tmpdir(), "atomic-exec-close-timeout-test-"));
+		try {
+			const transport = await createRunEnvironmentExecTransport({
+				coderPath: "/pinned/coder",
+				sshPath: "/usr/bin/ssh",
+				workspaceName: "run-123",
+				operatingSystem: "linux",
+				controlPlatform: "linux",
+				runtimeDirectory: directory,
+				processRunner: runner,
+				masterReadyTimeoutMs: 1_000,
+				processStopTimeoutMs: 10,
+				controlOperationTimeoutMs: 10,
+			});
+			const startedAt = Date.now();
+			await transport.close();
+
+			assert.deepEqual(exiting?.killSignals, ["SIGTERM", "SIGKILL"]);
+			assert.deepEqual(runner.master.killSignals, ["SIGTERM", "SIGKILL"]);
+			assert.ok(Date.now() - startedAt < 200, "close waits must stay bounded");
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("keeps a completed SSH exit primary when the master drops afterward", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeCompletes = false;
+		runner.executeStarted = (process) => {
+			process.finish(0);
 			runner.master.writeStderr("connection closed");
 			runner.master.finish(255);
-			process.finish(0);
 		};
 
 		await withTransport(runner, async (transport) => {
 			const outcome = await transport.execute({ argv: ["true"] }, { write() {} }, new AbortController().signal);
 
-			assert.equal(outcome.kind, "transport_lost");
-			if (outcome.kind === "transport_lost") assert.match(outcome.detail, /connection closed/u);
+			assert.deepEqual(outcome, { kind: "exited", code: 0 });
 		});
 	});
 });

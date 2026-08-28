@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,9 @@ const DIAGNOSTIC_LIMIT_BYTES = 16_384;
 const DEFAULT_MASTER_READY_TIMEOUT_MS = 15_000;
 const MASTER_CHECK_INTERVAL_MS = 25;
 const MASTER_PROBE_TIMEOUT_MS = 5_000;
+const DEFAULT_PROCESS_STOP_TIMEOUT_MS = 1_000;
+const DEFAULT_CONTROL_OPERATION_TIMEOUT_MS = 5_000;
+const SSH_TRANSPORT_EXIT_CODE = 255;
 const SSH_HOST_PREFIX = "atomic.";
 
 export type RemoteOperatingSystem = "linux" | "darwin" | "windows";
@@ -40,7 +43,7 @@ export interface RunEnvironmentProcess {
 	onStdout(listener: (chunk: Buffer) => void): void;
 	onStderr(listener: (chunk: Buffer) => void): void;
 	wait(): Promise<RunEnvironmentProcessResult>;
-	kill(): void;
+	kill(signal?: NodeJS.Signals): void;
 }
 
 export interface RunEnvironmentProcessOptions {
@@ -62,6 +65,8 @@ export interface CreateRunEnvironmentExecTransportOptions {
 	readonly processRunner?: RunEnvironmentProcessRunner;
 	readonly masterReadyTimeoutMs?: number;
 	readonly signal?: AbortSignal;
+	readonly processStopTimeoutMs?: number;
+	readonly controlOperationTimeoutMs?: number;
 }
 
 export interface RunEnvironmentExecTransport {
@@ -104,6 +109,7 @@ async function waitForMasterReadinessCheck(
 	readyDeadline: number,
 	signal: AbortSignal | undefined,
 	masterLost: Promise<void>,
+	stopTimeoutMs: number,
 ): Promise<MasterReadinessSettlement> {
 	let timeout: NodeJS.Timeout | undefined;
 	let onAbort: (() => void) | undefined;
@@ -115,9 +121,10 @@ async function waitForMasterReadinessCheck(
 		signal?.addEventListener("abort", onAbort, { once: true });
 		if (signal?.aborted) onAbort();
 	});
-	const processFinished = check
-		.wait()
-		.then((result): MasterProbeProcessSettlement => ({ kind: "probe_process", result }));
+	const rawProcessFinished = check.wait();
+	const processFinished = rawProcessFinished.then(
+		(result): MasterProbeProcessSettlement => ({ kind: "probe_process", result }),
+	);
 	try {
 		const settlement = await Promise.race([
 			processFinished,
@@ -125,7 +132,7 @@ async function waitForMasterReadinessCheck(
 			aborted,
 			masterLost.then((): MasterReadinessSettlement => ({ kind: "master_lost" })),
 		]);
-		if (settlement.kind !== "probe_process") check.kill();
+		if (settlement.kind !== "probe_process") await stopProcess(check, rawProcessFinished, stopTimeoutMs);
 		return settlement;
 	} finally {
 		if (timeout !== undefined) clearTimeout(timeout);
@@ -159,8 +166,8 @@ function createNodeProcessRunner(): RunEnvironmentProcessRunner {
 					child.stderr.on("data", listener);
 				},
 				wait: () => result,
-				kill: () => {
-					child.kill();
+				kill: (signal = "SIGTERM") => {
+					child.kill(signal);
 				},
 			};
 		},
@@ -172,77 +179,45 @@ function appendDiagnostic(current: string, chunk: Buffer): string {
 	return Buffer.byteLength(next) <= DIAGNOSTIC_LIMIT_BYTES ? next : next.slice(-DIAGNOSTIC_LIMIT_BYTES);
 }
 
-class RemoteExitProof {
-	private pending: Buffer = Buffer.alloc(0);
-	private readonly marker: Buffer;
-	private markerFound = false;
-	private remoteCode: number | undefined;
-	private finalized = false;
+type BoundedSettlement<T> = { readonly completed: true; readonly value: T } | { readonly completed: false };
 
-	constructor(marker: string) {
-		this.marker = Buffer.from(marker);
+async function waitWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<BoundedSettlement<T>> {
+	let timeout: NodeJS.Timeout | undefined;
+	const expired = new Promise<BoundedSettlement<T>>((resolve) => {
+		timeout = setTimeout(() => resolve({ completed: false }), timeoutMs);
+	});
+	try {
+		return await Promise.race([promise.then((value): BoundedSettlement<T> => ({ completed: true, value })), expired]);
+	} finally {
+		if (timeout !== undefined) clearTimeout(timeout);
 	}
+}
 
-	get exitCode(): number | undefined {
-		return this.remoteCode;
-	}
+async function stopProcess(
+	process: RunEnvironmentProcess,
+	finished: Promise<RunEnvironmentProcessResult>,
+	timeoutMs: number,
+): Promise<void> {
+	process.kill("SIGTERM");
+	if ((await waitWithin(finished, timeoutMs)).completed) return;
+	process.kill("SIGKILL");
+	await waitWithin(finished, timeoutMs);
+}
 
-	write(chunk: Buffer, emit: (output: Buffer) => void): void {
-		if (this.finalized) return;
-		if (this.remoteCode !== undefined) {
-			emit(chunk);
-			return;
-		}
-		const combined = Buffer.concat([this.pending, chunk]);
-		if (this.markerFound) {
-			this.consumeExitCode(combined, emit);
-			return;
-		}
-		const markerIndex = combined.indexOf(this.marker);
-		if (markerIndex >= 0) {
-			this.markerFound = true;
-			if (markerIndex > 0) emit(combined.subarray(0, markerIndex));
-			this.consumeExitCode(combined.subarray(markerIndex + this.marker.length), emit);
-			return;
-		}
-		const retainedBytes = Math.min(combined.length, this.marker.length - 1);
-		const emittedBytes = combined.length - retainedBytes;
-		if (emittedBytes > 0) emit(combined.subarray(0, emittedBytes));
-		this.pending = combined.subarray(emittedBytes);
-	}
+function validateBound(name: string, milliseconds: number): void {
+	if (!Number.isFinite(milliseconds) || milliseconds <= 0) throw new TypeError(`${name} must be positive`);
+}
 
-	finish(emit: (output: Buffer) => void): void {
-		if (this.pending.length > 0) {
-			if (this.markerFound) emit(Buffer.concat([this.marker, this.pending]));
-			else emit(this.pending);
-		}
-		this.pending = Buffer.alloc(0);
-		this.finalized = true;
-	}
+function sshLogPath(value: string, controlPlatform: NodeJS.Platform): string {
+	return controlPlatform === "win32" ? value.replaceAll("\\", "/") : value;
+}
 
-	interrupt(emit: (output: Buffer) => void): void {
-		if (!this.markerFound && this.pending.length > 0) emit(this.pending);
-		this.pending = Buffer.alloc(0);
-		this.finalized = true;
-	}
-
-	private consumeExitCode(value: Buffer, emit: (output: Buffer) => void): void {
-		const terminatorIndex = value.indexOf(0x3b);
-		if (terminatorIndex < 0) {
-			this.pending = value;
-			return;
-		}
-		const encodedCode = value.subarray(0, terminatorIndex).toString();
-		if (!/^-?\d+$/u.test(encodedCode)) {
-			emit(Buffer.concat([this.marker, value]));
-			this.markerFound = false;
-			this.pending = Buffer.alloc(0);
-			return;
-		}
-		this.remoteCode = Number(encodedCode);
-		const remainder = value.subarray(terminatorIndex + 1);
-		if (remainder.length > 0) emit(remainder);
-		this.pending = Buffer.alloc(0);
+async function hasRemoteExit255Evidence(path: string): Promise<boolean> {
+	try {
+		const log = await readFile(path, "utf8");
+		return /^(?:debug1: Exit status 255|debug2: Received exit status from master 255)\r?$/mu.test(log);
+	} catch {
+		return false;
 	}
 }
 
@@ -254,28 +229,46 @@ function processFailureDetail(label: string, result: RunEnvironmentProcessResult
 	return `${label}: exit ${String(result.code)}`;
 }
 
-async function waitForSetupProcess(process: RunEnvironmentProcess, label: string, signal?: AbortSignal): Promise<void> {
+async function waitForSetupProcess(
+	process: RunEnvironmentProcess,
+	label: string,
+	timeoutMs: number,
+	stopTimeoutMs: number,
+	signal?: AbortSignal,
+): Promise<void> {
 	let stderr = "";
 	process.onStderr((chunk) => {
 		stderr = appendDiagnostic(stderr, chunk);
 	});
+	const finished = process.wait();
 	if (signal?.aborted) {
-		process.kill();
+		await stopProcess(process, finished, stopTimeoutMs);
 		throw new Error("aborted");
 	}
 	let onAbort: (() => void) | undefined;
-	const aborted = new Promise<RunEnvironmentProcessResult>((resolve) => {
-		onAbort = () => {
-			process.kill();
-			resolve({ code: null, signal: null, error: new Error("aborted") });
-		};
+	let timeout: NodeJS.Timeout | undefined;
+	const interrupted = new Promise<"aborted" | "timed_out">((resolve) => {
+		onAbort = () => resolve("aborted");
 		signal?.addEventListener("abort", onAbort, { once: true });
+		timeout = setTimeout(() => resolve("timed_out"), timeoutMs);
 	});
 	try {
-		const result = signal === undefined ? await process.wait() : await Promise.race([process.wait(), aborted]);
-		if (result.error?.message === "aborted") throw result.error;
-		if (result.code !== 0 || result.error !== undefined) throw new Error(processFailureDetail(label, result, stderr));
+		const settlement = await Promise.race([
+			finished.then((result) => ({ kind: "process" as const, result })),
+			interrupted.then((kind) =>
+				kind === "aborted" ? { kind: "aborted" as const } : { kind: "timed_out" as const },
+			),
+		]);
+		if (settlement.kind === "aborted" || settlement.kind === "timed_out") {
+			await stopProcess(process, finished, stopTimeoutMs);
+			if (settlement.kind === "aborted") throw new Error("aborted");
+			throw new Error(`${label}: timed out`);
+		}
+		if (settlement.result.code !== 0 || settlement.result.error !== undefined) {
+			throw new Error(processFailureDetail(label, settlement.result, stderr));
+		}
 	} finally {
+		if (timeout !== undefined) clearTimeout(timeout);
 		if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
 	}
 }
@@ -284,11 +277,10 @@ function quotePosix(value: string): string {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function renderPosixCommand(command: RemoteCommand, exitMarker: string): string {
+function renderPosixCommand(command: RemoteCommand): string {
 	const environment = Object.entries(command.environment ?? {}).map(([name, value]) => `${name}=${value}`);
 	const invocation = ["env", "--", ...environment, ...command.argv].map(quotePosix).join(" ");
-	const execution = command.cwd === undefined ? invocation : `cd -- ${quotePosix(command.cwd)} && ${invocation}`;
-	return `${execution}; exit_code=$?; printf '%s%s;' ${quotePosix(exitMarker)} "$exit_code" >&2; exit 0`;
+	return command.cwd === undefined ? `exec ${invocation}` : `cd -- ${quotePosix(command.cwd)} && exec ${invocation}`;
 }
 
 function powershellLiteral(value: string): string {
@@ -315,7 +307,7 @@ function quoteWindowsNativeArgument(value: string): string {
 	return `${quoted}${"\\".repeat(backslashes * 2)}"`;
 }
 
-function renderWindowsCommand(command: RemoteCommand, exitMarker: string): string {
+function renderWindowsCommand(command: RemoteCommand): string {
 	const lines = [
 		"$ErrorActionPreference = 'Stop'",
 		"$exitCode = 127",
@@ -336,26 +328,19 @@ function renderWindowsCommand(command: RemoteCommand, exitMarker: string): strin
 		"} catch {",
 		"[Console]::Error.WriteLine($_.Exception.Message)",
 		"}",
-		`[Console]::Error.Write(${powershellLiteral(exitMarker)} + $exitCode + ';')`,
-		"exit 0",
+		"exit $exitCode",
 	];
 	const encoded = Buffer.from(lines.join("\r\n"), "utf16le").toString("base64");
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
 }
 
-function renderRemoteCommand(
-	command: RemoteCommand,
-	operatingSystem: RemoteOperatingSystem,
-	exitMarker: string,
-): string {
+function renderRemoteCommand(command: RemoteCommand, operatingSystem: RemoteOperatingSystem): string {
 	if (command.argv.length === 0) throw new TypeError("Remote command argv must not be empty");
 	for (const name of Object.keys(command.environment ?? {})) {
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name))
 			throw new TypeError(`Invalid remote environment variable name: ${name}`);
 	}
-	return operatingSystem === "windows"
-		? renderWindowsCommand(command, exitMarker)
-		: renderPosixCommand(command, exitMarker);
+	return operatingSystem === "windows" ? renderWindowsCommand(command) : renderPosixCommand(command);
 }
 
 function validateTimeoutSeconds(seconds: number | undefined): void {
@@ -382,8 +367,9 @@ function executionArguments(
 	host: string,
 	remoteCommand: string,
 	controlPlatform: NodeJS.Platform,
+	logPath: string,
 ): readonly string[] {
-	const common = ["-F", configPath, "-o", "ControlMaster=no"];
+	const common = ["-vv", "-E", sshLogPath(logPath, controlPlatform), "-F", configPath, "-o", "ControlMaster=no"];
 	const escapedControlPath = escapeControlPath(controlPath, controlPlatform);
 	if (controlPlatform !== "win32") {
 		return [
@@ -452,6 +438,7 @@ async function probeControlMaster(
 	processOptions: RunEnvironmentProcessOptions,
 	interrupted: Promise<InterruptedSettlement>,
 	masterLost: Promise<InterruptedSettlement>,
+	stopTimeoutMs: number,
 ): Promise<MasterProbeOutcome> {
 	const check = runner.start(
 		sshPath,
@@ -467,16 +454,17 @@ async function probeControlMaster(
 		probeTimeout = setTimeout(() => resolve({ kind: "probe_timeout" }), MASTER_PROBE_TIMEOUT_MS);
 	});
 	try {
-		const processFinished = check
-			.wait()
-			.then((result): MasterProbeProcessSettlement => ({ kind: "probe_process", result }));
+		const rawProcessFinished = check.wait();
+		const processFinished = rawProcessFinished.then(
+			(result): MasterProbeProcessSettlement => ({ kind: "probe_process", result }),
+		);
 		const settlement = await Promise.race([processFinished, interrupted, masterLost, probeTimedOut]);
 		if (settlement.kind === "aborted" || settlement.kind === "timed_out" || settlement.kind === "master_lost") {
-			check.kill();
+			await stopProcess(check, rawProcessFinished, stopTimeoutMs);
 			return settlement;
 		}
 		if (settlement.kind === "probe_timeout") {
-			check.kill();
+			await stopProcess(check, rawProcessFinished, stopTimeoutMs);
 			return { kind: "dead", detail: "SSH transport lost: control master check timed out" };
 		}
 		return settlement.result.code === 0 && settlement.result.error === undefined
@@ -517,6 +505,10 @@ export async function createRunEnvironmentExecTransport(
 	const controlPath = join(runtimeDirectory, "master.sock");
 	const host = `${SSH_HOST_PREFIX}${options.workspaceName}`;
 	const processOptions = { environment: options.environment };
+	const processStopTimeoutMs = options.processStopTimeoutMs ?? DEFAULT_PROCESS_STOP_TIMEOUT_MS;
+	const controlOperationTimeoutMs = options.controlOperationTimeoutMs ?? DEFAULT_CONTROL_OPERATION_TIMEOUT_MS;
+	validateBound("SSH process stop timeout", processStopTimeoutMs);
+	validateBound("SSH control operation timeout", controlOperationTimeoutMs);
 	let closed = false;
 	let closing = false;
 	let masterLostDetail: string | undefined;
@@ -526,6 +518,7 @@ export async function createRunEnvironmentExecTransport(
 	});
 	const activeProcesses = new Set<RunEnvironmentProcess>();
 	let startingMaster: RunEnvironmentProcess | undefined;
+	let startingMasterFinished: Promise<RunEnvironmentProcessResult> | undefined;
 
 	try {
 		const configure = runner.start(
@@ -544,7 +537,13 @@ export async function createRunEnvironmentExecTransport(
 			],
 			processOptions,
 		);
-		await waitForSetupProcess(configure, "coder config-ssh failed", options.signal);
+		await waitForSetupProcess(
+			configure,
+			"coder config-ssh failed",
+			controlOperationTimeoutMs,
+			processStopTimeoutMs,
+			options.signal,
+		);
 
 		const master = runner.start(
 			sshPath,
@@ -564,11 +563,13 @@ export async function createRunEnvironmentExecTransport(
 			processOptions,
 		);
 		startingMaster = master;
+		const masterFinished = master.wait();
+		startingMasterFinished = masterFinished;
 		let masterStderr = "";
 		master.onStderr((chunk) => {
 			masterStderr = appendDiagnostic(masterStderr, chunk);
 		});
-		void master.wait().then((result) => {
+		void masterFinished.then((result) => {
 			if (closing) return;
 			masterLostDetail = processFailureDetail("SSH control master exited", result, masterStderr);
 			resolveMasterLost();
@@ -586,7 +587,13 @@ export async function createRunEnvironmentExecTransport(
 				["-F", configPath, "-S", escapeControlPath(controlPath, controlPlatform), "-O", "check", host],
 				processOptions,
 			);
-			const settlement = await waitForMasterReadinessCheck(check, readyDeadline, options.signal, masterLost);
+			const settlement = await waitForMasterReadinessCheck(
+				check,
+				readyDeadline,
+				options.signal,
+				masterLost,
+				processStopTimeoutMs,
+			);
 			if (settlement.kind === "aborted") throw new Error("aborted");
 			if (settlement.kind === "master_lost") {
 				throw new Error(masterLostDetail ?? "SSH control master exited");
@@ -605,21 +612,29 @@ export async function createRunEnvironmentExecTransport(
 			);
 		}
 
+		let closePromise: Promise<void> | undefined;
 		return {
 			async execute(command, sink, signal) {
 				if (closed || closing) return { kind: "transport_lost", detail: "SSH transport is closed" };
 				if (masterLostDetail !== undefined) return { kind: "transport_lost", detail: masterLostDetail };
 				validateTimeoutSeconds(command.timeoutSeconds);
 				if (signal.aborted) return { kind: "aborted" };
-				const exitMarker = `atomic-exec-result-${randomUUID()}:`;
-				const remoteCommand = renderRemoteCommand(command, options.operatingSystem, exitMarker);
-				const exitProof = new RemoteExitProof(exitMarker);
+				const exitStatusLog = join(runtimeDirectory, `exec-${randomUUID()}.log`);
+				const remoteCommand = renderRemoteCommand(command, options.operatingSystem);
 				let stderr = "";
 				let process: RunEnvironmentProcess;
 				try {
 					process = runner.start(
 						sshPath,
-						executionArguments(sshPath, configPath, controlPath, host, remoteCommand, controlPlatform),
+						executionArguments(
+							sshPath,
+							configPath,
+							controlPath,
+							host,
+							remoteCommand,
+							controlPlatform,
+							exitStatusLog,
+						),
 						processOptions,
 					);
 				} catch (error) {
@@ -629,12 +644,15 @@ export async function createRunEnvironmentExecTransport(
 					};
 				}
 				activeProcesses.add(process);
-				process.onStdout((chunk) => sink.write(chunk, "stdout"));
-				const emitStderr = (output: Buffer): void => {
-					stderr = appendDiagnostic(stderr, output);
-					sink.write(output, "stderr");
-				};
-				process.onStderr((chunk) => exitProof.write(chunk, emitStderr));
+				let acceptingOutput = true;
+				process.onStdout((chunk) => {
+					if (acceptingOutput) sink.write(chunk, "stdout");
+				});
+				process.onStderr((chunk) => {
+					if (!acceptingOutput) return;
+					stderr = appendDiagnostic(stderr, chunk);
+					sink.write(chunk, "stderr");
+				});
 
 				let timeout: NodeJS.Timeout | undefined;
 				let onAbort: (() => void) | undefined;
@@ -648,36 +666,37 @@ export async function createRunEnvironmentExecTransport(
 						timeout = setTimeout(() => resolve({ kind: "timed_out", seconds }), seconds * 1_000);
 					}
 				});
-				const processFinished = process.wait().then((result): ProcessSettlement => ({ kind: "process", result }));
+				const rawProcessFinished = process.wait();
+				const processFinished = rawProcessFinished.then(
+					(result): ProcessSettlement => ({ kind: "process", result }),
+				);
 				const lost = masterLost.then((): InterruptedSettlement => ({ kind: "master_lost" }));
 				try {
 					const settlement: ExecutionSettlement = await Promise.race([processFinished, aborted, timedOut, lost]);
 					if (settlement.kind === "aborted") {
-						process.kill();
-						await processFinished;
-						exitProof.interrupt(emitStderr);
+						await stopProcess(process, rawProcessFinished, processStopTimeoutMs);
 						return { kind: "aborted" };
 					}
 					if (settlement.kind === "timed_out") {
-						process.kill();
-						await processFinished;
-						exitProof.interrupt(emitStderr);
+						await stopProcess(process, rawProcessFinished, processStopTimeoutMs);
 						return { kind: "timed_out", seconds: settlement.seconds };
 					}
-					if (settlement.kind === "master_lost" || masterLostDetail !== undefined) {
-						process.kill();
-						await processFinished;
-						exitProof.interrupt(emitStderr);
+					if (settlement.kind === "master_lost") {
+						await stopProcess(process, rawProcessFinished, processStopTimeoutMs);
 						return { kind: "transport_lost", detail: masterLostDetail ?? "SSH control master exited" };
-					}
-					exitProof.finish(emitStderr);
-					if (settlement.result.error !== undefined || settlement.result.code === null) {
-						return { kind: "transport_lost", detail: transportDetail(settlement.result, stderr) };
 					}
 					if (timeout !== undefined) {
 						clearTimeout(timeout);
 						timeout = undefined;
 					}
+					if (settlement.result.error !== undefined || settlement.result.code === null) {
+						return { kind: "transport_lost", detail: transportDetail(settlement.result, stderr) };
+					}
+					if (settlement.result.code !== SSH_TRANSPORT_EXIT_CODE) {
+						return { kind: "exited", code: settlement.result.code };
+					}
+					if (await hasRemoteExit255Evidence(exitStatusLog)) return { kind: "exited", code: 255 };
+
 					const masterStatus = await probeControlMaster(
 						runner,
 						sshPath,
@@ -688,40 +707,66 @@ export async function createRunEnvironmentExecTransport(
 						processOptions,
 						aborted,
 						lost,
+						processStopTimeoutMs,
 					);
 					if (masterStatus.kind === "aborted") return { kind: "aborted" };
-					if (masterStatus.kind === "timed_out") return { kind: "timed_out", seconds: masterStatus.seconds };
 					if (masterStatus.kind === "master_lost" || masterLostDetail !== undefined) {
 						return { kind: "transport_lost", detail: masterLostDetail ?? "SSH control master exited" };
 					}
 					if (masterStatus.kind === "dead") return { kind: "transport_lost", detail: masterStatus.detail };
-					if (exitProof.exitCode === undefined) {
-						return { kind: "transport_lost", detail: transportDetail(settlement.result, stderr) };
-					}
-					return { kind: "exited", code: exitProof.exitCode };
+					return { kind: "transport_lost", detail: transportDetail(settlement.result, stderr) };
 				} finally {
+					acceptingOutput = false;
 					activeProcesses.delete(process);
 					if (timeout !== undefined) clearTimeout(timeout);
 					if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+					await rm(exitStatusLog, { force: true });
 				}
 			},
-			async close() {
-				if (closed || closing) return;
-				closing = true;
-				for (const process of activeProcesses) process.kill();
-				const exit = runner.start(
-					sshPath,
-					["-F", configPath, "-S", escapeControlPath(controlPath, controlPlatform), "-O", "exit", host],
-					processOptions,
-				);
-				const result = await exit.wait();
-				if (result.code !== 0 || result.error !== undefined) master.kill();
-				closed = true;
-				if (ownsRuntimeDirectory) await rm(runtimeDirectory, { recursive: true, force: true });
+			close() {
+				if (closePromise !== undefined) return closePromise;
+				closePromise = (async () => {
+					if (closed) return;
+					closing = true;
+					try {
+						await Promise.all(
+							[...activeProcesses].map((process) => stopProcess(process, process.wait(), processStopTimeoutMs)),
+						);
+						let exitResult: RunEnvironmentProcessResult | undefined;
+						try {
+							const exit = runner.start(
+								sshPath,
+								["-F", configPath, "-S", escapeControlPath(controlPath, controlPlatform), "-O", "exit", host],
+								processOptions,
+							);
+							const exitFinished = exit.wait();
+							const settlement = await waitWithin(exitFinished, controlOperationTimeoutMs);
+							if (settlement.completed) exitResult = settlement.value;
+							else await stopProcess(exit, exitFinished, processStopTimeoutMs);
+						} catch {
+							// The control master is terminated below when the control operation cannot run.
+						}
+						const masterStopped = await waitWithin(masterFinished, controlOperationTimeoutMs);
+						if (
+							!masterStopped.completed ||
+							exitResult === undefined ||
+							exitResult.code !== 0 ||
+							exitResult.error !== undefined
+						) {
+							await stopProcess(master, masterFinished, processStopTimeoutMs);
+						}
+					} finally {
+						closed = true;
+						if (ownsRuntimeDirectory) await rm(runtimeDirectory, { recursive: true, force: true });
+					}
+				})();
+				return closePromise;
 			},
 		};
 	} catch (error) {
-		startingMaster?.kill();
+		if (startingMaster !== undefined && startingMasterFinished !== undefined) {
+			await stopProcess(startingMaster, startingMasterFinished, processStopTimeoutMs);
+		}
 		if (ownsRuntimeDirectory) await rm(runtimeDirectory, { recursive: true, force: true });
 		throw error;
 	}
