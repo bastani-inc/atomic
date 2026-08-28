@@ -5,8 +5,12 @@ import { controlFilesystem } from "../helpers/control-filesystem.js";
 
 const signal = new AbortController().signal;
 
-async function execute(tool: ReturnType<typeof createReadToolDefinition>, path: string) {
-	return tool.execute("call", { path }, signal, undefined, {} as never);
+async function execute(
+	tool: ReturnType<typeof createReadToolDefinition>,
+	path: string,
+	ctx: Record<string, object> = {},
+) {
+	return tool.execute("call", { path }, signal, undefined, ctx as never);
 }
 
 function remoteReadOperations(
@@ -47,24 +51,42 @@ test("remote read paths and refusals never consult the control filesystem", asyn
 			},
 		},
 	});
+	const readWithoutResolver = createReadToolDefinition("/work", {
+		operations: {
+			async access() {},
+			async readFile() {
+				return Buffer.from("must not read");
+			},
+		} as unknown as ReadOperations,
+	});
+	const sessionContext = {
+		sessionManager: {
+			getSessionDir: () => "/control/session",
+			getSessionId: () => "remote-session",
+		},
+	};
 
 	controlFilesystem.arm();
 	try {
 		const result = await execute(read, "src/a.txt");
 		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /remote/u);
 		await assert.rejects(execute(failingRead, "missing.txt"), /remote path missing/u);
+		await assert.rejects(execute(readWithoutResolver, "ordinary.txt"), TypeError);
 		const document = await execute(read, "docs/remote.pdf");
 		assert.match(document.content[0]?.type === "text" ? document.content[0].text : "", /Cannot read .pdf file/u);
-		for (const [path, selectorKind] of [
-			["bundle.zip:src/a.txt", "archive"],
-			["state.sqlite:events", "sqlite"],
-			["state.sqlite?q=%", "sqlite"],
-			["analysis.ipynb", "notebook"],
-			["local://src/a.txt", "internal"],
-			["skill://tdd/SKILL.md", "internal"],
+		for (const [path, selectorKind, ctx] of [
+			["bundle.zip:src/a.txt", "archive", undefined],
+			["state.sqlite:events", "sqlite", undefined],
+			["state.sqlite?q=%", "sqlite", undefined],
+			["analysis.ipynb", "notebook", undefined],
+			["analysis.ipynb?version=1", "notebook", undefined],
+			["analysis.ipynb#cell", "notebook", undefined],
+			["local://src/a.txt", "internal", undefined],
+			["skill://tdd/SKILL.md", "internal", undefined],
+			["https://example.com/remote", "url", sessionContext],
 		] as const) {
 			await assert.rejects(
-				execute(read, path),
+				execute(read, path, ctx),
 				(error: unknown) =>
 					error instanceof UnsupportedReadSelectorError &&
 					error.name === "UnsupportedReadSelectorError" &&

@@ -17,6 +17,7 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system
 import type { DirectoryTreeEntry } from "../core/tools/directory-tree.ts";
 import { createCodingToolDefinitions, type ToolsOptions } from "../core/tools/index.ts";
 import { detectSupportedImageMimeType } from "../utils/mime.ts";
+import { resolvePath } from "../utils/paths.ts";
 
 export interface CodingAgentHarnessTool extends HarnessTool {
 	promptSnippet?: string;
@@ -174,6 +175,7 @@ function createExecutionEnvToolOptions(
 	return {
 		read: {
 			operations: {
+				resolvePath: (path, cwd) => resolvePath(path, cwd, { expandTilde: false }),
 				readFile: async (path) => Buffer.from(unwrapFileResult(await env.readBinaryFile(path))),
 				access: async (path) => {
 					unwrapFileResult(await env.fileInfo(path));

@@ -100,7 +100,7 @@ interface CompactReadClassification {
 	label: string;
 }
 const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
-export type UnsupportedReadSelectorKind = "archive" | "internal" | "notebook" | "sqlite";
+export type UnsupportedReadSelectorKind = "archive" | "internal" | "notebook" | "sqlite" | "url";
 
 /** Named refusal for selectors whose implementation would bypass a custom filesystem backend. */
 export class UnsupportedReadSelectorError extends Error {
@@ -118,7 +118,8 @@ export class UnsupportedReadSelectorError extends Error {
 function unsupportedCustomReadSelector(path: string): UnsupportedReadSelectorKind | undefined {
 	if (/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//u.test(path))
 		return "internal";
-	if (/\.ipynb(?:$|:)/iu.test(path)) return "notebook";
+	if (isReadableUrlPath(path)) return "url";
+	if (/\.ipynb(?:$|[:?#])/iu.test(path)) return "notebook";
 	if (parseArchiveSelector(path)) return "archive";
 	try {
 		if (parseSqliteSelector(path)) return "sqlite";
@@ -132,7 +133,7 @@ export interface ReadOperations {
 	readFile: (absolutePath: string) => Promise<Buffer>;
 	access: (absolutePath: string) => Promise<void>;
 	/** Resolve a path using the target filesystem's syntax without probing the control filesystem. */
-	resolvePath?: (path: string, cwd: string) => string;
+	resolvePath: (path: string, cwd: string) => string;
 	stat?: (absolutePath: string) => Promise<{ isFile: boolean; isDirectory: boolean } | undefined>;
 	listDir?: (absolutePath: string) => Promise<DirectoryTreeEntry[] | undefined>;
 	detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
@@ -141,6 +142,7 @@ const defaultReadOperations: ReadOperations = {
 	readFile: (path) => fsReadFile(path),
 	access: (path) => fsAccess(path, constants.R_OK),
 	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
+	resolvePath: resolveToCwd,
 };
 export interface ReadToolOptions {
 	autoResizeImages?: boolean;
@@ -352,6 +354,9 @@ export function createReadToolDefinition(
 		parameters: readSchema,
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?) {
+			if (options?.operations && !ops.resolvePath) {
+				throw new TypeError("Custom ReadOperations must provide resolvePath");
+			}
 			if (options?.operations) {
 				const unsupportedSelector = unsupportedCustomReadSelector(path);
 				if (unsupportedSelector) throw new UnsupportedReadSelectorError(unsupportedSelector, path);
@@ -614,7 +619,7 @@ export function createReadToolDefinition(
 								throw new Error(
 									`Read resource selectors are not supported by this filesystem backend: ${path}`,
 								);
-							const absolutePath = ops.resolvePath
+							const absolutePath = options?.operations
 								? ops.resolvePath(effectivePath, cwd)
 								: await resolveReadPathAsync(effectivePath, cwd);
 							if (aborted) return;
