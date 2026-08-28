@@ -12,6 +12,7 @@ import {
 	type RunEnvironmentProcessResult,
 	type RunEnvironmentProcessRunner,
 } from "../../packages/workflows/src/runs/shared/run-environment-exec.js";
+import { spawnSyncCollect } from "../helpers/runtime.js";
 
 interface RecordedProcess {
 	readonly command: string;
@@ -221,15 +222,61 @@ describe("run-environment execute transport", () => {
 		const script = Buffer.from(encoded, "base64").toString("utf16le");
 		assert.match(script, /Set-Location -LiteralPath 'C:\\work tree'/u);
 		assert.match(script, /Set-Item -LiteralPath 'Env:MODE' -Value 'test'/u);
-		assert.match(script, /& 'tool\.exe' 'it''s one argument'/u);
+		assert.match(script, /\$process\.StartInfo\.FileName = 'tool\.exe'/u);
+		assert.match(script, /\$process\.StartInfo\.Arguments = '"it''s one argument"'/u);
 	});
-	test("selects Git for Windows SSH instead of native Win32 OpenSSH", async () => {
+	test.skipIf(process.platform !== "win32")(
+		"preserves empty argv entries through Windows PowerShell 5.1",
+		async () => {
+			const runner = new ScriptedRunner();
+			let output = "";
+			runner.executeStarted = (remoteProcess) => {
+				const rendered = executionCalls(runner).at(-1)?.args.at(-1) ?? "";
+				const encoded = rendered.split(" ").at(-1) ?? "";
+				const result = spawnSyncCollect([
+					"powershell.exe",
+					"-NoLogo",
+					"-NoProfile",
+					"-NonInteractive",
+					"-EncodedCommand",
+					encoded,
+				]);
+				remoteProcess.writeStdout(result.stdout.toString());
+				remoteProcess.writeStderr(result.stderr.toString());
+				remoteProcess.finish(result.exitCode);
+			};
+
+			await withTransport(
+				runner,
+				async (transport) => {
+					const outcome = await transport.execute(
+						{
+							argv: [
+								process.execPath,
+								"-e",
+								"process.stdout.write(JSON.stringify(process.argv.slice(1)))",
+								"",
+								"tail",
+							],
+						},
+						{ write: (chunk, channel) => (output += channel === "stdout" ? chunk.toString() : "") },
+						new AbortController().signal,
+					);
+					assert.deepEqual(outcome, { kind: "exited", code: 0 });
+				},
+				"windows",
+			);
+
+			assert.equal(output, '["","tail"]');
+		},
+	);
+	test("ignores GIT_SSH variants and selects Git for Windows OpenSSH", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "atomic-exec-windows-test-"));
 		const sshPath = join(directory, "Git", "usr", "bin", "ssh.exe");
+		const plinkPath = join(directory, "plink.exe");
 		await mkdir(join(directory, "Git", "usr", "bin"), { recursive: true });
-		await writeFile(sshPath, "");
+		await Promise.all([writeFile(sshPath, "git ssh"), writeFile(plinkPath, "plink")]);
 		const runner = new ScriptedRunner();
-		runner.executeStarted = (process) => process.finish(0);
 		const runtimeDirectory = join(directory, "runtime");
 		try {
 			const transport = await createRunEnvironmentExecTransport({
@@ -237,7 +284,7 @@ describe("run-environment execute transport", () => {
 				workspaceName: "run-123",
 				operatingSystem: "linux",
 				controlPlatform: "win32",
-				environment: { ProgramFiles: directory },
+				environment: { GIT_SSH: plinkPath, ProgramFiles: directory },
 				runtimeDirectory,
 				processRunner: runner,
 				masterReadyTimeoutMs: 1_000,
@@ -248,6 +295,55 @@ describe("run-environment execute transport", () => {
 			await rm(directory, { recursive: true, force: true });
 		}
 	});
+
+	test.skipIf(process.platform !== "win32")(
+		"auto-selected Git for Windows SSH accepts ControlMaster options",
+		async () => {
+			const candidates = [
+				process.env.ProgramW6432 === undefined
+					? undefined
+					: join(process.env.ProgramW6432, "Git", "usr", "bin", "ssh.exe"),
+				process.env.ProgramFiles === undefined
+					? undefined
+					: join(process.env.ProgramFiles, "Git", "usr", "bin", "ssh.exe"),
+				process.env.LOCALAPPDATA === undefined
+					? undefined
+					: join(process.env.LOCALAPPDATA, "Programs", "Git", "usr", "bin", "ssh.exe"),
+			].filter((candidate): candidate is string => candidate !== undefined);
+			let selected: string | undefined;
+			for (const candidate of candidates) {
+				try {
+					const result = spawnSyncCollect([candidate, "-G", "-o", "ControlMaster=yes", "example.invalid"]);
+					if (result.exitCode === 0 && /controlmaster true/iu.test(result.stdout.toString())) {
+						selected = candidate;
+						break;
+					}
+				} catch {
+					// Continue through the documented Git for Windows installation roots.
+				}
+			}
+
+			assert.ok(selected, "Git for Windows OpenSSH must be installed for Windows execution transport tests");
+			const runner = new ScriptedRunner();
+			const directory = await mkdtemp(join(tmpdir(), "atomic-exec-real-windows-ssh-test-"));
+			try {
+				const transport = await createRunEnvironmentExecTransport({
+					coderPath: "/pinned/coder",
+					workspaceName: "run-123",
+					operatingSystem: "linux",
+					controlPlatform: "win32",
+					environment: process.env,
+					runtimeDirectory: directory,
+					processRunner: runner,
+					masterReadyTimeoutMs: 1_000,
+				});
+				await transport.close();
+				assert.equal(runner.processes.find(({ args }) => args.includes("-M"))?.command, selected);
+			} finally {
+				await rm(directory, { recursive: true, force: true });
+			}
+		},
+	);
 
 	test("uses proxy-mode multiplexing from a Windows control host", async () => {
 		const runner = new ScriptedRunner();
@@ -267,6 +363,8 @@ describe("run-environment execute transport", () => {
 		assert.ok(execution?.args.includes("ControlMaster=no"));
 		const proxyCommand = execution?.args.find((arg) => arg.startsWith("ProxyCommand="));
 		assert.match(proxyCommand ?? "", /\/usr\/bin\/ssh.*-O proxy/u);
+		const configCall = runner.processes.find(({ command }) => command === "/pinned/coder");
+		assert.ok(configCall?.args.includes("--force-unix-filepaths"));
 	});
 
 	test("preserves a remote exit code 255 while the control master is alive", async () => {
@@ -313,6 +411,30 @@ describe("run-environment execute transport", () => {
 		});
 	});
 
+	test("does not time out after the remote command has exited", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.finish(0);
+		runner.checkMaster = (process, checkNumber) => {
+			if (checkNumber === 1) process.finish(0);
+		};
+
+		await withTransport(runner, async (transport) => {
+			const pending = transport.execute(
+				{ argv: ["true"], timeoutSeconds: 0.01 },
+				{ write() {} },
+				new AbortController().signal,
+			);
+			const earlyOutcome = await Promise.race([
+				pending,
+				new Promise<"still_probing">((resolve) => setTimeout(() => resolve("still_probing"), 50)),
+			]);
+
+			assert.equal(earlyOutcome, "still_probing");
+			const checks = runner.processes.filter(({ args }) => args.includes("check"));
+			checks.at(-1)?.process.finish(0);
+			assert.deepEqual(await pending, { kind: "exited", code: 0 });
+		});
+	});
 	test("returns Aborted and preserves the builtin bash abort error", async () => {
 		const runner = new ScriptedRunner();
 		runner.executeStarted = () => {};

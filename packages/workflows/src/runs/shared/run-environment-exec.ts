@@ -179,6 +179,26 @@ function powershellLiteral(value: string): string {
 	return `'${value.replaceAll("'", "''")}'`;
 }
 
+function quoteWindowsNativeArgument(value: string): string {
+	if (value.length > 0 && !/[\s"]/u.test(value)) return value;
+	let quoted = '"';
+	let backslashes = 0;
+	for (const character of value) {
+		if (character === "\\") {
+			backslashes += 1;
+			continue;
+		}
+		if (character === '"') {
+			quoted += `${"\\".repeat(backslashes * 2 + 1)}"`;
+			backslashes = 0;
+			continue;
+		}
+		quoted += "\\".repeat(backslashes) + character;
+		backslashes = 0;
+	}
+	return `${quoted}${"\\".repeat(backslashes * 2)}"`;
+}
+
 function renderWindowsCommand(command: RemoteCommand): string {
 	const lines = [
 		"$ErrorActionPreference = 'Stop'",
@@ -187,8 +207,13 @@ function renderWindowsCommand(command: RemoteCommand): string {
 			([name, value]) =>
 				`Set-Item -LiteralPath ${powershellLiteral(`Env:${name}`)} -Value ${powershellLiteral(value)}`,
 		),
-		`& ${command.argv.map(powershellLiteral).join(" ")}`,
-		"if ($null -eq $LASTEXITCODE) { exit 0 } else { exit $LASTEXITCODE }",
+		"$process = New-Object System.Diagnostics.Process",
+		`$process.StartInfo.FileName = ${powershellLiteral(command.argv[0] ?? "")}`,
+		`$process.StartInfo.Arguments = ${powershellLiteral(command.argv.slice(1).map(quoteWindowsNativeArgument).join(" "))}`,
+		"$process.StartInfo.UseShellExecute = $false",
+		"$null = $process.Start()",
+		"$process.WaitForExit()",
+		"exit $process.ExitCode",
 	];
 	const encoded = Buffer.from(lines.join("\r\n"), "utf16le").toString("base64");
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
@@ -259,7 +284,6 @@ async function resolveSshPath(
 	if (controlPlatform !== "win32") return "ssh";
 
 	const candidates = [
-		environment.GIT_SSH,
 		...(environment.ProgramW6432 === undefined
 			? []
 			: [join(environment.ProgramW6432, "Git", "usr", "bin", "ssh.exe")]),
@@ -367,6 +391,7 @@ export async function createRunEnvironmentExecTransport(
 			[
 				"config-ssh",
 				"--yes",
+				...(controlPlatform === "win32" ? ["--force-unix-filepaths"] : []),
 				"--ssh-config-file",
 				configPath,
 				"--coder-binary-path",
@@ -446,9 +471,11 @@ export async function createRunEnvironmentExecTransport(
 
 				let timeout: NodeJS.Timeout | undefined;
 				let onAbort: (() => void) | undefined;
-				const interrupted = new Promise<InterruptedSettlement>((resolve) => {
+				const aborted = new Promise<InterruptedSettlement>((resolve) => {
 					onAbort = () => resolve({ kind: "aborted" });
 					signal.addEventListener("abort", onAbort, { once: true });
+				});
+				const timedOut = new Promise<InterruptedSettlement>((resolve) => {
 					if (command.timeoutSeconds !== undefined) {
 						const seconds = command.timeoutSeconds;
 						timeout = setTimeout(() => resolve({ kind: "timed_out", seconds }), seconds * 1_000);
@@ -457,7 +484,7 @@ export async function createRunEnvironmentExecTransport(
 				const processFinished = process.wait().then((result): ProcessSettlement => ({ kind: "process", result }));
 				const lost = masterLost.then((): InterruptedSettlement => ({ kind: "master_lost" }));
 				try {
-					const settlement: ExecutionSettlement = await Promise.race([processFinished, interrupted, lost]);
+					const settlement: ExecutionSettlement = await Promise.race([processFinished, aborted, timedOut, lost]);
 					if (settlement.kind === "aborted") {
 						process.kill();
 						return { kind: "aborted" };
@@ -473,6 +500,10 @@ export async function createRunEnvironmentExecTransport(
 					if (settlement.result.error !== undefined || settlement.result.code === null) {
 						return { kind: "transport_lost", detail: transportDetail(settlement.result, stderr) };
 					}
+					if (timeout !== undefined) {
+						clearTimeout(timeout);
+						timeout = undefined;
+					}
 					const masterStatus = await probeControlMaster(
 						runner,
 						sshPath,
@@ -480,7 +511,7 @@ export async function createRunEnvironmentExecTransport(
 						controlPath,
 						host,
 						processOptions,
-						interrupted,
+						aborted,
 						lost,
 					);
 					if (masterStatus.kind === "aborted") return { kind: "aborted" };
