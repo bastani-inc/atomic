@@ -353,6 +353,8 @@ export {
 	truncateHead,
 	truncateLine,
 	truncateTail,
+	UnsupportedReadSelectorError,
+	type UnsupportedReadSelectorKind,
 	type WriteOperations,
 	type WriteToolInput,
 	type WriteToolOptions,

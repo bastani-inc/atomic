@@ -60,6 +60,8 @@ export {
 	type ReadToolInput,
 	type ReadToolOptions,
 	readToolSystemPromptContribution,
+	UnsupportedReadSelectorError,
+	type UnsupportedReadSelectorKind,
 } from "./read.ts";
 export {
 	createSearchTool,

@@ -43,6 +43,7 @@ import { getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./
 import {
 	type InternalResourceContext,
 	parseArchiveSelector,
+	parseSqliteSelector,
 	readArchiveSelector,
 	readInternalSelector,
 	readSqliteSelector,
@@ -99,6 +100,27 @@ interface CompactReadClassification {
 	label: string;
 }
 const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
+export type UnsupportedReadSelectorKind = "archive" | "notebook" | "sqlite";
+
+/** Named refusal for selectors whose implementation would bypass a custom filesystem backend. */
+export class UnsupportedReadSelectorError extends Error {
+	readonly selectorKind: UnsupportedReadSelectorKind;
+	readonly selector: string;
+
+	constructor(selectorKind: UnsupportedReadSelectorKind, selector: string) {
+		super(`Read ${selectorKind} selectors are not supported by this filesystem backend: ${selector}`);
+		this.name = "UnsupportedReadSelectorError";
+		this.selectorKind = selectorKind;
+		this.selector = selector;
+	}
+}
+
+function unsupportedCustomReadSelector(path: string): UnsupportedReadSelectorKind | undefined {
+	if (parseArchiveSelector(path)) return "archive";
+	if (parseSqliteSelector(path)) return "sqlite";
+	if (/\.ipynb(?:$|:)/iu.test(path)) return "notebook";
+	return undefined;
+}
 export interface ReadOperations {
 	readFile: (absolutePath: string) => Promise<Buffer>;
 	access: (absolutePath: string) => Promise<void>;
@@ -323,6 +345,10 @@ export function createReadToolDefinition(
 		parameters: readSchema,
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?) {
+			if (ops.resolvePath) {
+				const unsupportedSelector = unsupportedCustomReadSelector(path);
+				if (unsupportedSelector) throw new UnsupportedReadSelectorError(unsupportedSelector, path);
+			}
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const splitSelector = splitReadLineSelector(path),
 				markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
