@@ -1,4 +1,4 @@
-import type { WorkflowActor } from "../shared/store-types.js";
+import type { PendingStageMessage, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
 	isWorkflowFailureCode,
@@ -53,6 +53,9 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 			completedCheckpoints: metadata.completedCheckpoints,
 			pendingPrompts: metadata.pendingPrompts,
 			promptReservationEpoch: metadata.promptReservationEpoch,
+			...(metadata.pendingStageMessages !== undefined
+				? { pendingStageMessages: serializePendingStageMessages(metadata.pendingStageMessages) }
+				: {}),
 			...(metadata.ownerExecutorId !== undefined ? { ownerExecutorId: metadata.ownerExecutorId } : {}),
 			...(metadata.transitionClaimId !== undefined ? { transitionClaimId: metadata.transitionClaimId } : {}),
 			...(metadata.sessionFile !== undefined ? { sessionFile: metadata.sessionFile } : {}),
@@ -137,6 +140,9 @@ function parseDurableWorkflowMetadata(
 	workflowId: string,
 ): DurableWorkflowMetadata | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const serialized = value as Record<string, WorkflowSerializableValue | undefined>;
+	const pendingStageMessages = parsePendingStageMessages(serialized.pendingStageMessages);
+	if (pendingStageMessages === null) return undefined;
 	const metadata = value as Partial<DurableWorkflowMetadata>;
 	if (
 		metadata.workflowId !== workflowId ||
@@ -176,8 +182,143 @@ function parseDurableWorkflowMetadata(
 	const { origin, ...metadataWithoutOrigin } = metadata;
 	return {
 		...metadataWithoutOrigin,
+		pendingStageMessages,
 		...(isWorkflowActor(origin) ? { origin } : {}),
 	} as DurableWorkflowMetadata;
+}
+
+function serializePendingStageMessages(messages: readonly PendingStageMessage[]): WorkflowSerializableValue {
+	return messages.map((entry) => ({
+		id: entry.id,
+		runId: entry.runId,
+		stageKey: entry.stageKey,
+		...(entry.stageId !== undefined ? { stageId: entry.stageId } : {}),
+		...(entry.stageReplayKey !== undefined ? { stageReplayKey: entry.stageReplayKey } : {}),
+		...(entry.senderRegistrationName !== undefined ? { senderRegistrationName: entry.senderRegistrationName } : {}),
+		...(entry.senderReturnAddress !== undefined ? { senderReturnAddress: entry.senderReturnAddress } : {}),
+		from: {
+			id: entry.from.id,
+			...(entry.from.name !== undefined ? { name: entry.from.name } : {}),
+			...(entry.from.group !== undefined ? { group: entry.from.group } : {}),
+			...(entry.from.cwd !== undefined ? { cwd: entry.from.cwd } : {}),
+			...(entry.from.model !== undefined ? { model: entry.from.model } : {}),
+			...(entry.from.pid !== undefined ? { pid: entry.from.pid } : {}),
+			...(entry.from.startedAt !== undefined ? { startedAt: entry.from.startedAt } : {}),
+			...(entry.from.lastActivity !== undefined ? { lastActivity: entry.from.lastActivity } : {}),
+			...(entry.from.status !== undefined ? { status: entry.from.status } : {}),
+		},
+		message: {
+			id: entry.message.id,
+			timestamp: entry.message.timestamp,
+			...(entry.message.replyTo !== undefined ? { replyTo: entry.message.replyTo } : {}),
+			...(entry.message.expectsReply !== undefined ? { expectsReply: entry.message.expectsReply } : {}),
+			...(entry.message.replyError !== undefined ? { replyError: entry.message.replyError } : {}),
+			...(entry.message.source !== undefined ? { source: { ...entry.message.source } } : {}),
+			content: {
+				text: entry.message.content.text,
+				...(entry.message.content.attachments !== undefined
+					? { attachments: entry.message.content.attachments.map((attachment) => ({ ...attachment })) }
+					: {}),
+			},
+		},
+		queuedAt: entry.queuedAt,
+		...(entry.admissionOrder !== undefined ? { admissionOrder: entry.admissionOrder } : {}),
+		status: entry.status,
+		...(entry.deliveredAt !== undefined ? { deliveredAt: entry.deliveredAt } : {}),
+		...(entry.undeliverableReason !== undefined ? { undeliverableReason: entry.undeliverableReason } : {}),
+		...(entry.undeliverableNotificationId !== undefined
+			? { undeliverableNotificationId: entry.undeliverableNotificationId }
+			: {}),
+		...(entry.undeliverableNotifiedAt !== undefined
+			? { undeliverableNotifiedAt: entry.undeliverableNotifiedAt }
+			: {}),
+	}));
+}
+
+function parsePendingStageMessages(
+	value: WorkflowSerializableValue | undefined,
+): readonly PendingStageMessage[] | null {
+	if (value === undefined) return [];
+	if (!Array.isArray(value) || !value.every(isPendingStageMessage)) return null;
+	return value as readonly PendingStageMessage[];
+}
+
+function isPendingStageMessage(value: WorkflowSerializableValue): boolean {
+	if (!isSerializableObject(value)) return false;
+	return (
+		typeof value.id === "string" &&
+		typeof value.runId === "string" &&
+		typeof value.stageKey === "string" &&
+		(value.stageId === undefined || typeof value.stageId === "string") &&
+		(value.stageReplayKey === undefined || typeof value.stageReplayKey === "string") &&
+		(value.senderRegistrationName === undefined || typeof value.senderRegistrationName === "string") &&
+		(value.senderReturnAddress === undefined || typeof value.senderReturnAddress === "string") &&
+		typeof value.queuedAt === "string" &&
+		(value.admissionOrder === undefined ||
+			(typeof value.admissionOrder === "number" &&
+				Number.isSafeInteger(value.admissionOrder) &&
+				value.admissionOrder > 0)) &&
+		(value.status === "queued" || value.status === "delivered" || value.status === "undeliverable") &&
+		(value.deliveredAt === undefined || typeof value.deliveredAt === "string") &&
+		(value.undeliverableReason === undefined || typeof value.undeliverableReason === "string") &&
+		(value.undeliverableNotificationId === undefined || typeof value.undeliverableNotificationId === "string") &&
+		(value.undeliverableNotifiedAt === undefined || typeof value.undeliverableNotifiedAt === "string") &&
+		isPendingStageSender(value.from) &&
+		isPendingStageIntercomMessage(value.message)
+	);
+}
+
+function isPendingStageSender(value: WorkflowSerializableValue | undefined): boolean {
+	return (
+		isSerializableObject(value) &&
+		typeof value.id === "string" &&
+		(value.name === undefined || typeof value.name === "string") &&
+		(value.group === undefined || typeof value.group === "string") &&
+		(value.cwd === undefined || typeof value.cwd === "string") &&
+		(value.model === undefined || typeof value.model === "string") &&
+		(value.pid === undefined || typeof value.pid === "number") &&
+		(value.startedAt === undefined || typeof value.startedAt === "number") &&
+		(value.lastActivity === undefined || typeof value.lastActivity === "number") &&
+		(value.status === undefined || typeof value.status === "string")
+	);
+}
+
+function isPendingStageIntercomMessage(value: WorkflowSerializableValue | undefined): boolean {
+	if (!isSerializableObject(value) || typeof value.id !== "string" || typeof value.timestamp !== "number")
+		return false;
+	if (value.replyTo !== undefined && typeof value.replyTo !== "string") return false;
+	if (value.expectsReply !== undefined && typeof value.expectsReply !== "boolean") return false;
+	if (value.replyError !== undefined && typeof value.replyError !== "string") return false;
+	if (!isSerializableObject(value.content) || typeof value.content.text !== "string") return false;
+	const attachments = value.content.attachments;
+	if (attachments !== undefined && (!Array.isArray(attachments) || !attachments.every(isPendingStageAttachment)))
+		return false;
+	return value.source === undefined || isPendingStageSource(value.source);
+}
+
+function isPendingStageAttachment(value: WorkflowSerializableValue): boolean {
+	return (
+		isSerializableObject(value) &&
+		(value.type === "file" || value.type === "snippet" || value.type === "context") &&
+		typeof value.name === "string" &&
+		typeof value.content === "string" &&
+		(value.language === undefined || typeof value.language === "string")
+	);
+}
+
+function isPendingStageSource(value: WorkflowSerializableValue): boolean {
+	return (
+		isSerializableObject(value) &&
+		typeof value.subagentRunId === "string" &&
+		(value.subagentAgent === undefined || typeof value.subagentAgent === "string") &&
+		(value.subagentIndex === undefined || typeof value.subagentIndex === "number")
+	);
+}
+
+function isSerializableObject(
+	value: WorkflowSerializableValue | undefined,
+): value is Record<string, WorkflowSerializableValue | undefined> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isWorkflowActor(value: WorkflowSerializableValue | undefined): value is WorkflowActor {

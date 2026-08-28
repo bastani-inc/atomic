@@ -17,14 +17,14 @@ function compactWorkflowToolMessage(
 	result: Extract<
 		WorkflowToolResult,
 		{
-			action: "send" | "pause" | "reload" | "interrupt" | "quit" | "resume";
+			action: "answer" | "pause" | "reload" | "interrupt" | "quit" | "resume";
 		}
 	>,
 ): string {
 	if (result.action === "reload") {
 		return `${result.action}: ${result.status} — ${result.message}`;
 	}
-	const target = [result.runId, result.action === "send" ? result.stageId : undefined]
+	const target = [result.runId, result.action === "answer" ? result.stageId : undefined]
 		.filter((part): part is string => part !== undefined && part.length > 0)
 		.join("/");
 	return `${result.action}:${target ? ` ${target}` : ""} ${result.status} — ${result.message}`;
@@ -118,7 +118,7 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 		for (const entry of run.awaitingInput) lines.push(statusAwaitingInputLine(entry));
 	});
 	lines.push(
-		"hint: status with runId returns full run detail; pause/resume/interrupt/quit/send accept the same runId (send also takes stageId/promptId).",
+		"hint: status with runId returns full run detail; workflow answer answers pending prompts using runId/stageId/promptId; workflow resume controls paused runs; pause/interrupt/quit also accept runId. Ordinary Intercom handles free-form workflow-stage communication at <runId>:<stageKey>: live delivery is immediate, known unstarted stages queue before their first model turn. Use Intercom ask once a reply-capable live session exists.",
 	);
 	return lines.join("\n");
 }
@@ -222,7 +222,7 @@ export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, 
 			return renderStagesToolContent(result);
 		case "stage":
 			return renderStageToolContent(result);
-		case "send":
+		case "answer":
 		case "pause":
 		case "reload":
 		case "interrupt":

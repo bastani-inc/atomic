@@ -340,10 +340,14 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 
 		const setup = Reflect.get(InteractiveModeBase.prototype, "setupExtensionShortcuts") as (
 			this: typeof context,
-			runner: { getShortcuts: () => Map<string, { handler: (ctx: unknown) => void }> },
+			runner: {
+				getShortcuts: () => Map<string, { handler: (ctx: unknown) => void }>;
+				getUIContext: () => object;
+			},
 		) => void;
 
 		setup.call(context, {
+			getUIContext: () => context.createExtensionUIContext(),
 			getShortcuts: () =>
 				new Map([
 					[

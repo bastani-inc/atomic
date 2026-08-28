@@ -11,7 +11,7 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
-import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
+import { workflowAnswerAction } from "../../packages/workflows/src/extension/workflow-tool-answer.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
@@ -318,21 +318,18 @@ test.sequential("fresh root resume republishes and answers a pending depth-2 dur
 	const resumedJob = jobs.get(ROOT_ID)?.promise;
 	assert.ok(resumedJob, "the resumed root must still be waiting on its HIL node");
 	const freshPromptId = freshInput.pendingPrompt!.id;
-	const answer = await workflowSendAction({
+	const answer = await workflowAnswerAction({
 		runId: ROOT_ID,
 		stageId: `${grandchildRun.id}:${originalPending.stage.id}`,
 		promptId: freshPromptId,
 		response: "PROCEED",
-		delivery: "answer",
 	});
 	assert.equal(answer.status, "ok");
-	assert.equal(answer.delivery, "answer");
-	const duplicate = await workflowSendAction({
+	const duplicate = await workflowAnswerAction({
 		runId: ROOT_ID,
 		stageId: `${grandchildRun.id}:${originalPending.stage.id}`,
 		promptId: freshPromptId,
 		response: "PROCEED",
-		delivery: "answer",
 	});
 	assert.equal(duplicate.status, "noop");
 	await resumedJob;

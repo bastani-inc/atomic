@@ -558,7 +558,11 @@ test("cut-release still creates the detached version-stamped tag", async () => {
 	const script = await readText(join(root, "scripts/cut-release.ts"));
 	assert.match(script, /canonicalReleaseBaseRef\(baseBranch\)/);
 	assert.match(script, /Release-base-ref: \$\{baseRef\}\\nRelease-base-sha: \$\{baseSha\}/);
-	assert.match(script, /git -C \$\{ROOT\} push origin \$\{version\}/);
+	// Fully-qualified on both sides. A bare `push origin ${version}` resolves
+	// against every ref namespace, so a same-named branch would push heads and
+	// tags in one command and start two publishers on one npm version.
+	assert.match(script, /push origin \$\{`refs\/tags\/\$\{version\}:refs\/tags\/\$\{version\}`\}/u);
+	assert.doesNotMatch(script, /push origin \$\{version\}/u);
 	assert.doesNotMatch(script, /Bun\.sleep|setTimeout/);
 });
 
@@ -579,11 +583,26 @@ test("native-artifacts bounds every dependency acquisition step", async () => {
 		assert.ok(bound, `unbounded acquisition step: ${needle}`);
 		return Number(bound[1]);
 	};
-	assert.equal(budget("uses: dtolnay/rust-toolchain@"), 4);
 	assert.equal(budget("tool: cargo-zigbuild@"), 3);
 	assert.equal(budget("tool: cargo-xwin@"), 3);
 	assert.equal(budget("apt-get install"), 5);
 	assert.equal(budget("cargo-xwin xwin cache xwin"), 8);
+
+	// The rustup fetch that killed both 0.9.16-alpha.5 publish runs overran this
+	// same 4-minute cap. The curl inside the action already retries, so a second
+	// attempt on a fresh step clock is the only thing that helps — and it has to
+	// stay bounded, or the retry reintroduces the stall the cap exists to stop.
+	const rustSteps = steps.filter((step) => step.includes("uses: dtolnay/rust-toolchain@"));
+	assert.equal(rustSteps.length, 2, "the Rust toolchain acquisition must keep exactly one bounded retry");
+	const [rust, rustRetry] = rustSteps as [string, string];
+	assert.match(
+		rust,
+		/id: rust\n\s+uses: dtolnay\/rust-toolchain@\w{40} # v1\n\s+continue-on-error: true\n\s+timeout-minutes: 4\n/u,
+	);
+	assert.match(
+		rustRetry,
+		/if: steps\.rust\.outcome == 'failure'\n\s+uses: dtolnay\/rust-toolchain@\w{40} # v1\n\s+timeout-minutes: 4\n/u,
+	);
 
 	const zigSteps = steps.filter((step) => step.includes("mlugg/setup-zig@"));
 	assert.equal(zigSteps.length, 2, "the Zig acquisition must keep exactly one bounded retry");
@@ -837,39 +856,38 @@ test("Blacksmith runners are used everywhere they are supported", async () => {
 });
 
 /**
- * Every suite CI runs must also gate a push.
+ * Nothing local gates a push any more, so CI has to run every suite.
  *
- * The hooks used to stop at `npm run test:unit`, so an integration or contract
- * failure was invisible locally and reached CI by default. Two did: a
- * Windows-only line-ending bug in a changelog check, and an integration fixture
- * broken by a change in the same branch. Neither could fail the suite anyone was
- * actually running.
+ * The hooks used to run test:unit, test:integration and test:ci-contracts at
+ * `pre-push`, which cost ~110 s on every push. Scoping that to the changed
+ * surface was measured and rejected: `vitest related` took 42 s cold, 21 s warm
+ * and 95 s on a third attempt to run *zero* tests on this repository. The cost is
+ * vite transform and setup across three projects, not test execution, so a
+ * targeted hook cannot be made cheap. `node_modules/.vite` caching helps but
+ * cannot reach a floor worth paying per push.
  *
- * This asserts coverage, not spelling. A hook may run at every stage or only at
- * `pre-push`; what it may not do is exclude the push, because that is the last
- * point before CI. `test:all` and `test:scripts` are deliberately out of scope —
- * the first is a convenience wrapper over suites already covered here, and the
- * second is not part of the `test` workflow's required checks.
+ * Two bugs — a Windows-only line-ending bug in a changelog check, and an
+ * integration fixture broken by a change in the same branch — once reached CI
+ * because the hooks stopped at test:unit. With no push gate at all, CI is now the
+ * only thing between that class of bug and main, so this asserts the suites are
+ * actually wired into the workflow rather than merely declared in package.json.
  */
-test("every CI test suite also gates a push", async () => {
+test("CI runs every test suite, because no hook gates a push", async () => {
 	const prek = await readText(join(root, "prek.toml"));
-	const manifest = await readJson<{ scripts: Record<string, string> }>(join(root, "package.json"));
+	assert.doesNotMatch(
+		prek,
+		/pre-push/u,
+		"prek.toml reinstates a push gate; `vitest related` was measured too slow to make one worth paying for",
+	);
 
+	const manifest = await readJson<{ scripts: Record<string, string> }>(join(root, "package.json"));
+	const workflow = await readText(testPath);
 	for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
 		assert.ok(manifest.scripts[script], `missing script: ${script}`);
-		const hook = new RegExp(String.raw`\{[^}]*entry\s*=\s*"npm run ${script}"[^}]*\}`, "u").exec(prek);
-		assert.ok(
-			hook,
-			`prek.toml declares no hook running \`npm run ${script}\`; a suite CI runs must not be able to fail only in CI`,
+		assert.match(
+			workflow,
+			new RegExp(String.raw`npm run ${script}`, "u"),
+			`.github/workflows/test.yml never runs \`npm run ${script}\`; with no push gate, a suite CI skips is a suite nothing runs`,
 		);
-
-		const stages = /stages\s*=\s*\[([^\]]*)\]/u.exec(hook[0]);
-		if (stages) {
-			assert.match(
-				stages[1] as string,
-				/"pre-push"/u,
-				`the \`${script}\` hook restricts itself to ${stages[1]} and so does not gate a push`,
-			);
-		}
 	}
 });

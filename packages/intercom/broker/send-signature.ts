@@ -29,12 +29,24 @@ export function buildSendSignature(to: string, options: LogicalSendOptions): str
   });
 }
 
-export function buildMessageSendSignature(to: string, message: Message): string {
-  return buildSendSignature(to, {
-    text: message.content.text,
-    attachments: message.content.attachments,
-    replyTo: message.replyTo,
-    expectsReply: message.expectsReply,
-    replyError: message.replyError,
-  });
+export function buildMessageSendSignature(to: string, message: Message, senderId?: string): string {
+	const logicalSignature = buildSendSignature(to, {
+		text: message.content.text,
+		attachments: message.content.attachments,
+		replyTo: message.replyTo,
+		expectsReply: message.expectsReply,
+		replyError: message.replyError,
+	});
+	if (senderId === undefined && message.source === undefined) return logicalSignature;
+	return JSON.stringify({
+		senderId: senderId ?? null,
+		logicalSignature,
+		source: message.source === undefined
+			? null
+			: {
+					subagentRunId: message.source.subagentRunId,
+					subagentAgent: message.source.subagentAgent ?? null,
+					subagentIndex: message.source.subagentIndex ?? null,
+				},
+	});
 }

@@ -35,6 +35,18 @@ test("duplicate broker delivery cannot enqueue a second reply turn context", () 
 	assert.throws(() => tracker.resolveReplyTarget({}), /No active intercom context/);
 });
 
+test("durable custom-message receipt suppresses delivery after process restart", () => {
+	const restored = new InboundMessageAdmission();
+	restored.restore([
+		{
+			customType: "intercom_message",
+			stageAdmissionKey: `intercom:${message.id}`,
+			details: { from: sender, message },
+		},
+	]);
+	assert.equal(restored.admit(sender, { ...message }).kind, "duplicate");
+	assert.equal(restored.admit(sender, { ...message, id: "new-message" }).kind, "reserved");
+});
 test("released reservation permits a stable broker delivery retry", () => {
 	const admission = new InboundMessageAdmission();
 	const first = admission.reserve(sender, message);

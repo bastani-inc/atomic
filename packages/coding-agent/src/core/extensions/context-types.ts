@@ -55,6 +55,44 @@ export interface WorkflowStageMessageAdmission {
 	isOpen(): boolean;
 }
 
+export interface WorkflowPendingStageSender {
+	readonly id: string;
+	readonly name?: string;
+	readonly cwd: string;
+	readonly model: string;
+	readonly pid: number;
+	readonly startedAt: number;
+	readonly lastActivity: number;
+	readonly status?: string;
+	readonly group?: string;
+}
+
+export interface WorkflowPendingStageMessage {
+	readonly id: string;
+	readonly timestamp: number;
+	readonly replyTo?: string;
+	readonly expectsReply?: boolean;
+	readonly replyError?: string;
+	readonly content: {
+		readonly text: string;
+		readonly attachments?: readonly {
+			readonly type: "file" | "snippet" | "context";
+			readonly name: string;
+			readonly content: string;
+			readonly language?: string;
+		}[];
+	};
+}
+
+export interface WorkflowPendingStageDelivery {
+	/** Process-private authority proving this stage belongs to the workflow run route. */
+	readonly routeCapability: string;
+	deliverPending(
+		deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
+	): Promise<void>;
+	ready(): Promise<void> | undefined;
+}
+
 export interface WorkflowStageOrchestrationContext {
 	readonly kind: "workflow-stage";
 	readonly workflowRunId: string;
@@ -73,6 +111,8 @@ export interface WorkflowStageOrchestrationContext {
 	 * inherited by subagents this stage spawns. Absent => no group override.
 	 */
 	readonly intercomGroup?: string;
+	/** Durable pre-start intercom delivery, drained by the intercom extension before the first turn. */
+	readonly pendingStageDelivery?: WorkflowPendingStageDelivery;
 }
 /** Typed child intercom identity and supervisor capability issued at admission. */
 export interface SubagentIntercomIdentity {

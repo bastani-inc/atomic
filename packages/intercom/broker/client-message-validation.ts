@@ -8,6 +8,14 @@ function isAttachment(value: unknown): value is Attachment {
   return attachment.language === undefined || typeof attachment.language === "string";
 }
 
+function isMessageSource(value: unknown): value is NonNullable<Message["source"]> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const source = value as Record<string, unknown>;
+  return typeof source.subagentRunId === "string"
+    && (source.subagentAgent === undefined || typeof source.subagentAgent === "string")
+    && (source.subagentIndex === undefined || typeof source.subagentIndex === "number");
+}
+
 export function isMessage(value: unknown): value is Message {
   if (typeof value !== "object" || value === null) return false;
   const message = value as Record<string, unknown>;
@@ -15,6 +23,7 @@ export function isMessage(value: unknown): value is Message {
   if (message.replyTo !== undefined && typeof message.replyTo !== "string") return false;
   if (message.expectsReply !== undefined && typeof message.expectsReply !== "boolean") return false;
   if (message.replyError !== undefined && typeof message.replyError !== "string") return false;
+  if (message.source !== undefined && !isMessageSource(message.source)) return false;
   if (typeof message.content !== "object" || message.content === null) return false;
   const content = message.content as Record<string, unknown>;
   if (typeof content.text !== "string") return false;

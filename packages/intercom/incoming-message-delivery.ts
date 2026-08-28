@@ -28,6 +28,7 @@ export function createIncomingMessageSender(input: {
     }
     const baseOptions = {
       stageAdmissionKey: `intercom:${entry.message.id}`,
+      persistWhenStreaming: true,
       ...(stageAdmissionBarrier ? { stageAdmissionBarrier } : {}),
     } as const;
     const options = delivery === "trigger"
@@ -35,6 +36,19 @@ export function createIncomingMessageSender(input: {
       : delivery === "followUp" ? { ...baseOptions, deliverAs: "followUp" } as const : baseOptions;
     return Promise.resolve(input.pi.sendMessage(buildIncomingCustomMessage(entry), options));
   };
+}
+
+export function framePendingStageTimestamp(timestamp: number): string {
+	const date = new Date(timestamp);
+	return Number.isNaN(date.getTime()) ? String(timestamp) : date.toISOString();
+}
+
+/** Mark a deferred workflow-stage message as pre-start context without merging it into the stage task prompt. */
+export function framePreStartPendingStageMessage(entry: InboundMessageEntry): InboundMessageEntry {
+	return {
+		...entry,
+		bodyText: `**Messages received before you started**\n\nSent: ${framePendingStageTimestamp(entry.message.timestamp)}\n\n${entry.bodyText}`,
+	};
 }
 
 export function buildIncomingCustomMessage(entry: InboundMessageEntry) {

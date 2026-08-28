@@ -24,8 +24,36 @@ export interface SendOptions {
 export interface SendResult {
   id: string;
   delivered: boolean;
+  queued?: boolean;
   reason?: string;
+	reasonCode?: "message_id_conflict";
+  runId?: string;
+  stageKey?: string;
+  position?: number;
 }
+
+export interface PendingStageMessageRequest {
+	readonly requestId: string;
+	readonly from: SessionInfo;
+	readonly runId: string;
+	readonly stageKey: string;
+	readonly message: Message;
+	readonly senderRegistrationName?: string;
+	readonly senderReturnAddress?: string;
+	readonly live?: boolean;
+}
+
+export interface PendingStageNotificationRequest {
+	readonly requestId: string;
+	readonly from: SessionInfo;
+	readonly message: Message;
+}
+
+export type PendingStageMessageResult =
+	| { readonly outcome: "queued"; readonly position: number }
+	| { readonly outcome: "delivered" }
+	| { readonly outcome: "forward" }
+	| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" };
 export interface PresenceUpdates {
   name?: string;
   status?: string;
@@ -44,6 +72,7 @@ function toError(error: unknown): Error {
 
 
 export class IntercomClient extends EventEmitter {
+	private readonly returnAddress: string;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -52,6 +81,7 @@ export class IntercomClient extends EventEmitter {
   private pendingSends = new PendingSendRegistry();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
   private pendingPresence = new Map<string, { resolve: (group: string) => void; reject: (error: Error) => void }>();
+  private pendingLiveWorkflowStageRoutes = new Map<string, { resolve(): void; reject(error: Error): void }>();
 
   private pendingSupervisorAuthorizations = new Map<string, {
     resolve: (authorization: SupervisorAuthorization) => void;
@@ -60,14 +90,22 @@ export class IntercomClient extends EventEmitter {
   private disconnecting = false;
   private disconnectError: Error | null = null;
 
+	constructor(returnAddress: string = randomUUID()) {
+		super();
+		if (returnAddress.length === 0) throw new Error("Intercom return address must not be empty");
+		this.returnAddress = returnAddress;
+	}
+
   private failPending(error: Error): void {
     this.pendingSends.rejectAll(error);
     for (const pending of this.pendingLists.values()) pending.reject(error);
     for (const pending of this.pendingSupervisorAuthorizations.values()) pending.reject(error);
     for (const pending of this.pendingPresence.values()) pending.reject(error);
+    for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
     this.pendingLists.clear();
     this.pendingSupervisorAuthorizations.clear();
     this.pendingPresence.clear();
+    this.pendingLiveWorkflowStageRoutes.clear();
   }
 
 
@@ -220,6 +258,7 @@ export class IntercomClient extends EventEmitter {
         writeMessage(socket, {
           type: "register",
           session,
+			returnAddress: this.returnAddress,
           ...(supervisor ? { supervisor } : {}),
           ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
         });
@@ -304,6 +343,70 @@ export class IntercomClient extends EventEmitter {
         this.emit("message", from, message, channel);
         break;
       }
+		case "pending_stage_message": {
+			const { requestId, from, senderRegistrationName, senderReturnAddress, runId, stageKey, message, live } = brokerMessage;
+			if (
+				typeof requestId !== "string" ||
+				!isSessionInfo(from) ||
+				(senderRegistrationName !== undefined && typeof senderRegistrationName !== "string") ||
+				(senderReturnAddress !== undefined && typeof senderReturnAddress !== "string") ||
+				typeof runId !== "string" ||
+				typeof stageKey !== "string" ||
+				!isMessage(message) ||
+				(live !== undefined && typeof live !== "boolean")
+			) {
+				throw new Error("Invalid pending-stage message event");
+			}
+			this.emit("pending_stage_message", {
+				requestId,
+				from,
+				...(senderRegistrationName === undefined ? {} : { senderRegistrationName }),
+				...(senderReturnAddress === undefined ? {} : { senderReturnAddress }),
+				runId,
+				stageKey,
+				message,
+				...(live === true ? { live: true } : {}),
+			} satisfies PendingStageMessageRequest);
+			break;
+		}
+		case "pending_stage_notification": {
+			const { requestId, from, message } = brokerMessage;
+			if (typeof requestId !== "string" || !isSessionInfo(from) || !isMessage(message)) {
+				throw new Error("Invalid pending-stage notification event");
+			}
+			this.emit("pending_stage_notification", {
+				requestId,
+				from,
+				message,
+			} satisfies PendingStageNotificationRequest);
+			break;
+		}
+      case "live_workflow_stage_route_registered": {
+        const { requestId } = brokerMessage;
+        if (typeof requestId !== "string") throw new Error("Invalid live workflow-stage route registration");
+        const pending = this.pendingLiveWorkflowStageRoutes.get(requestId);
+        if (!pending) return;
+        this.pendingLiveWorkflowStageRoutes.delete(requestId);
+        pending.resolve();
+        break;
+      }
+      case "queued": {
+        const { messageId, attemptId, runId, stageKey, position } = brokerMessage;
+        if (
+          typeof messageId !== "string" ||
+          (attemptId !== undefined && typeof attemptId !== "string") ||
+          typeof runId !== "string" ||
+          typeof stageKey !== "string" ||
+          typeof position !== "number" ||
+          position < 1
+        ) {
+          throw new Error("Invalid queued message");
+        }
+        const result = { id: messageId, delivered: false, queued: true, runId, stageKey, position } as const;
+        if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
+        else this.pendingSends.resolve(messageId, attemptId, result);
+        break;
+      }
       case "delivered": {
         const { messageId, attemptId } = brokerMessage;
         if (typeof messageId !== "string" || (attemptId !== undefined && typeof attemptId !== "string")) {
@@ -315,14 +418,24 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "delivery_failed": {
-        const { messageId, attemptId, reason } = brokerMessage;
-        if (typeof messageId !== "string" || (attemptId !== undefined && typeof attemptId !== "string") || typeof reason !== "string") {
-          throw new Error("Invalid delivery_failed message");
-        }
-        const result = { id: messageId, delivered: false, reason } as const;
-        if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
-        else this.pendingSends.resolve(messageId, attemptId, result);
-        break;
+		const { messageId, attemptId, reason, reasonCode } = brokerMessage;
+		if (
+			typeof messageId !== "string" ||
+			(attemptId !== undefined && typeof attemptId !== "string") ||
+			typeof reason !== "string" ||
+			(reasonCode !== undefined && reasonCode !== "message_id_conflict")
+		) {
+			throw new Error("Invalid delivery_failed message");
+		}
+		const result = {
+			id: messageId,
+			delivered: false,
+			reason,
+			...(reasonCode === undefined ? {} : { reasonCode }),
+		} as const;
+		if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
+		else this.pendingSends.resolve(messageId, attemptId, result);
+		break;
       }
       case "session_joined": {
         if (!isSessionInfo(brokerMessage.session)) {
@@ -490,15 +603,92 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
+  registerPendingStageRoute(runId: string, group: string, capability: string): void {
+    writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group, capability });
+  }
+
+  registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[], capability: string): Promise<void> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      this.pendingLiveWorkflowStageRoutes.set(requestId, { resolve, reject });
+      try {
+        writeMessage(socket, {
+          type: "register_live_workflow_stage_route",
+          requestId,
+          runId,
+          stageKeys: [...stageKeys],
+          capability,
+        });
+      } catch (error) {
+        this.pendingLiveWorkflowStageRoutes.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+	respondPendingStageMessage(requestId: string, result: PendingStageMessageResult): void {
+		const socket = this.requireActiveSocket();
+		writeMessage(
+			socket,
+			result.outcome === "queued"
+				? { type: "pending_stage_message_result", requestId, outcome: "queued", position: result.position }
+				: result.outcome === "refused"
+					? {
+							type: "pending_stage_message_result",
+							requestId,
+							outcome: "refused",
+							reason: result.reason,
+							...(result.reasonCode === undefined ? {} : { reasonCode: result.reasonCode }),
+						}
+					: { type: "pending_stage_message_result", requestId, outcome: result.outcome },
+		);
+	}
+
+	respondPendingStageNotification(requestId: string, delivered: boolean): void {
+		writeMessage(this.requireActiveSocket(), { type: "pending_stage_notification_result", requestId, delivered });
+	}
+
   send(to: string, options: SendOptions): Promise<SendResult> {
     return this.sendFrame("send", to, options);
   }
+
+	sendPendingStageNotification(
+		runId: string,
+		capability: string,
+		to: string,
+		senderRegistrationName: string | undefined,
+		options: SendOptions,
+		senderReturnAddress?: string,
+	): Promise<SendResult> {
+		return this.sendFrame("send_pending_stage_notification", to, options, {
+			runId,
+			capability,
+			...(senderRegistrationName === undefined ? {} : { senderRegistrationName }),
+			...(senderReturnAddress === undefined ? {} : { senderReturnAddress }),
+		});
+	}
 
   sendToSupervisor(to: string, options: SendOptions): Promise<SendResult> {
     return this.sendFrame("supervisor_send", to, options);
   }
 
-  private sendFrame(type: "send" | "supervisor_send", to: string, options: SendOptions): Promise<SendResult> {
+	private sendFrame(
+		type: "send" | "supervisor_send" | "send_pending_stage_notification",
+		to: string,
+		options: SendOptions,
+		extra: {
+			readonly runId: string;
+			readonly capability: string;
+			readonly senderRegistrationName?: string;
+			readonly senderReturnAddress?: string;
+		} | undefined = undefined,
+	): Promise<SendResult> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -523,7 +713,7 @@ export class IntercomClient extends EventEmitter {
       content: { text: options.text, attachments: options.attachments },
     };
     try {
-      writeMessage(socket, { type, to, message, attemptId: acquired.attempt.attemptId });
+		writeMessage(socket, { type, to, message, attemptId: acquired.attempt.attemptId, ...extra });
     } catch (error) {
       this.pendingSends.reject(acquired.attempt, toError(error));
     }

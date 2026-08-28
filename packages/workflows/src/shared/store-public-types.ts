@@ -1,4 +1,11 @@
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type {
+	PendingStageMessage,
+	PendingStageMessageInput,
+	PendingStageQueueResult,
+} from "./pending-stage-delivery.js";
+import type {
+	LiveStageMessageValidationResult,
 	PendingPrompt,
 	PromptKind,
 	RunResumeSource,
@@ -101,6 +108,39 @@ export interface Store {
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;
+	/** Persist, then queue, an ordinary intercom message for an exact future-stage key. */
+	queueStageMessage(
+		input: PendingStageMessageInput,
+		senderGroup: string | undefined,
+		runGroup: string | undefined,
+		backend: DurableWorkflowBackend,
+	): Promise<PendingStageQueueResult | undefined>;
+	/** Revalidate a live composite delivery against workflow-owned durable identity without queueing a new ID. */
+	validateLiveStageMessage(input: PendingStageMessageInput): Promise<LiveStageMessageValidationResult | undefined>;
+	/** Read queued entries for an exact run/stage key in FIFO order. */
+	pendingStageMessagesFor(runId: string, stageKey: string): readonly PendingStageMessage[];
+	markPendingStageMessageDelivered(
+		runId: string,
+		stageKey: string,
+		messageId: string,
+		deliveredAt: string,
+		backend: DurableWorkflowBackend,
+	): Promise<boolean>;
+	markPendingStageMessageUndeliverable(
+		runId: string,
+		stageKey: string,
+		messageId: string,
+		reason: string,
+		backend: DurableWorkflowBackend,
+	): Promise<boolean>;
+	markPendingStageMessageUndeliverableNotified(
+		runId: string,
+		stageKey: string,
+		messageId: string,
+		notificationId: string,
+		notifiedAt: string,
+		backend: DurableWorkflowBackend,
+	): Promise<boolean>;
 	/** Compare-and-swap a cached child run's owning boundary during durable replay. */
 	reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean;
 	recordStageStart(runId: string, stage: StageSnapshot): void;

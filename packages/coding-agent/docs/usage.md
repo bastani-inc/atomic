@@ -42,11 +42,12 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | Command | Description |
 |---------|-------------|
 | `/login`, `/logout` | Manage OAuth or API-key credentials |
-| `/model` | Switch models |
+| `/model` | Switch models; Ctrl+S in the picker saves the startup default |
+| `/thinking` | Switch thinking level; Ctrl+S in the picker saves the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/fast` | Toggle Codex fast mode for chat and workflow stages when supported OpenAI or shared ChatGPT Codex transport models are available |
+| `/fast` | Configure fast mode for chat and workflow stages when supported OpenAI or GitHub Copilot models are available |
 | `/workflow` | List/run workflows; manage runs (connect/inspect/pause/interrupt/quit/resume); reload workflow resources |
-| `/settings` | Thinking level, theme, message delivery, transport |
+| `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |

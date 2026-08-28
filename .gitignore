@@ -303,3 +303,9 @@ evals/jobs/
 
 # subagent test scratch
 .atomic/subagents/
+
+# `bun build --compile` scratch files. Bun writes these beside the output and
+# removes them on success; an interrupted or failed compile leaves them behind.
+# An untracked one failed the 0.9.16-alpha.5 release preflight's clean-checkout
+# check, which is the only thing that ever notices them.
+.*.bun-build

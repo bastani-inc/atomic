@@ -63,6 +63,24 @@ export interface AgentSettledEvent {
 	type: "agent_settled";
 }
 
+export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
+
+/** Fired when Atomic starts waiting on a blocking user-facing extension UI prompt. */
+export interface UIPromptStartEvent {
+	type: "ui_prompt_start";
+	reason: "ui_prompt";
+	kind: UIPromptKind;
+	title?: string;
+}
+
+/** Fired when Atomic is no longer waiting on a blocking user-facing extension UI prompt. */
+export interface UIPromptEndEvent {
+	type: "ui_prompt_end";
+	reason: "ui_prompt";
+	kind: UIPromptKind;
+	title?: string;
+}
+
 /** Fired at the start of each turn */
 export interface TurnStartEvent {
 	type: "turn_start";

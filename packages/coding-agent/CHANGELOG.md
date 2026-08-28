@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.9] - 2026-08-27
+
+### Added
+
+- Added `ui_prompt_start` and `ui_prompt_end` extension events around blocking `ctx.ui` prompts so integrations can distinguish active agent work from waiting for user input. Nested and overlapping prompts form one balanced outer span, and prompt failures or UI-context replacement still emit the matching end notification without delaying the prompt UI. ([#5329](https://github.com/earendil-works/pi/issues/5329))
+
+## [0.9.16-alpha.8] - 2026-08-27
+
+### Breaking Changes
+
+- Removed the public `workflow send` action. Use `workflow answer` for pending workflow prompts and ordinary Intercom for workflow-stage communication.
+- Workflow source that typechecks against the legacy bare `@bastani/workflows` specifier must migrate to `@bastani/atomic/workflows`; removing the broken ambient declaration bridge intentionally removes TypeScript resolution for the legacy name. Runtime loading remains backward compatible because Atomic continues to alias `@bastani/workflows` to the in-memory SDK. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
+
+### Added
+
+- Added fast-mode support for eligible GitHub Copilot models advertised by the signed-in account, alongside the existing OpenAI priority service tier. Chat and workflow scopes remain independently configurable with `/fast`.
+
+### Fixed
+
+- Fixed `/model` and `/thinking` Ctrl+S failing to persist startup defaults in isolated interactive mode. The engine RPC dropped the persist flag, so `settings.json` never received `defaultProvider`/`defaultModel` or the thinking default. Isolated mode now refreshes the host settings view and remote scoped-model catalog after the engine acknowledges persist, and `set_thinking_level` can include the engine's clamped level plus the provider/model the engine persisted against so a later `model_changed` cannot re-key the saved thinking override. Isolated `/thinking` set and cycle update the host session immediately so rapid cycles and UI refresh do not wait for ACK, while a later `thinking_level_changed` still wins over an older ACK. An unsupported requested level is clamped with the same nearest-supported scan as the engine, so hiding `minimal` via `thinkingLevelMap` becomes `low` immediately rather than `off`. `RpcClient.setThinkingLevel(level)` remains one-argument `Promise<void>`; isolated persist reads that ACK through an internal client path, and data-less `set_thinking_level` success responses remain valid. `set_model`, `cycle_model`, and `set_thinking_level` accept optional `persist`. ([#2727](https://github.com/bastani-inc/atomic/issues/2727))
+- Fixed installed packages where the intercom broker failed to start on every launch, leaving both the `intercom` and `subagent` tools entirely non-functional.
+- Fixed Bun-compiled binaries crashing when a transformed extension performed a second `proper-lockfile` operation. Compiled extension imports now reuse the host's lockfile module instead of transforming and proxy-wrapping its mutable internals.
+
+- Fixed the published workflow SDK so importing `@bastani/atomic` no longer injects the workflows graph into every consumer's TypeScript program, consumers can typecheck against the package again, and workflow authoring types no longer silently collapse to `any`. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
+
+## [0.9.16-alpha.6] - 2026-08-26
+
+### Changed
+
+- The default system prompt now teaches repository-intent inference when a shell tool is available: review recent commits, open and merged PRs, issues and their comments, and project/board status to learn maintainer conventions, and identify the requesting user (`git config user.name`/`user.email`, `gh api user`) to interpret ambiguous requests through their own patterns.
+- The ask_user_question fallback guideline now instructs the agent, when no human input channel exists, to choose the interpretation best supported by the repository and stated objective — mining git history, commits, PRs, issues, and the user's own comments to infer how they would decide — state the assumption, and continue fully autonomously instead of stalling.
+
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Added
@@ -23,6 +55,7 @@
 - Deferred uncommon syntax grammars until after first render to reduce interactive startup work while keeping common languages available immediately.
 - Extension examples whose intent is final settlement now listen for `agent_settled`; JSON mode exposes tool-call ID and tool name at stream start; session-share links use canonical terminal hyperlinks and perform GitHub authentication preflight before export ([#8242](https://github.com/earendil-works/pi/issues/8242), [#7953](https://github.com/earendil-works/pi/issues/7953)).
 - Compaction now reports truthful aggregate planner usage notices, including multi-attempt Verbatim planning, when cache-miss notices are enabled.
+- Documented `/thinking`, the Ctrl+S startup-default shortcut in the model and thinking pickers, and the `modelThinkingLevels` setting.
 
 ### Fixed
 
@@ -50,6 +83,11 @@
 - Fixed atomic managed-state rewrites resetting existing file permissions. `auth.json` and `models-store.json` are created owner-only (`0600`) but keep an administrator-managed mode across later rewrites instead of having it reset by the atomic replacement.
 - Fixed explicitly persisted default models disappearing from non-empty model scopes; persisted defaults are now added to both the active and saved scope.
 - Fixed extension messages sent with `triggerTurn: false` while the agent is running being inserted between a tool call and its result; they are now appended after the turn's tool results ([#8537](https://github.com/earendil-works/pi/issues/8537)).
+- Fixed compaction range planning and branch/session summaries forcing `toolChoice: "none"`, which sent `tool_choice` with no tools and could be rejected by gateways ([#8649](https://github.com/earendil-works/pi/issues/8649), [#8638](https://github.com/earendil-works/pi/issues/8638)).
+- Fixed Windows shell aborts crashing Atomic when `taskkill.exe` is not on `PATH`. Both `killProcessTree` and the detached-child guardian worker now spawn the System32 executable and consume the asynchronous spawn error ([#6596](https://github.com/earendil-works/pi/issues/6596)).
+- Fixed Windows `taskkill` spawning without `windowsHide`. Because the spawn is `detached`, Windows allocated and briefly flashed a console window on every process-tree kill.
+- Fixed session files whose final record has no trailing newline not being repaired on load, so a later append no longer concatenates onto that record.
+- Fixed toggling thinking-block visibility discarding partial Bash output. Rendered assistant messages are updated in place instead of rebuilding the chat and its live tool components ([#8611](https://github.com/earendil-works/pi/issues/8611)).
 
 ## [0.9.16-alpha.4] - 2026-08-23
 

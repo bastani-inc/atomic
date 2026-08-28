@@ -24,7 +24,7 @@ function message(id: string, text = "hello"): Message {
 	return { id, timestamp: 1, content: { text } };
 }
 
-test("broker wire send dedupes identical retries, rejects conflicts, and preserves attempt IDs across sender replacement", () => {
+test("broker wire send dedupes identical retries and rejects target, payload, or sender conflicts with attempt IDs", () => {
 	const senderOne = {} as net.Socket;
 	const senderTwo = {} as net.Socket;
 	const recipient = {} as net.Socket;
@@ -97,17 +97,18 @@ test("broker wire send dedupes identical retries, rejects conflicts, and preserv
 		cache,
 		write,
 	);
-	assert.equal(
-		writes.filter(
-			(entry) =>
-				entry.socket === senderTwo && entry.message.type === "delivered" && entry.message.attemptId === "attempt-5",
-		).length,
-		1,
-	);
+	const senderConflict = writes.find(
+		(entry) =>
+			entry.socket === senderTwo &&
+			entry.message.type === "delivery_failed" &&
+			entry.message.attemptId === "attempt-5",
+	)?.message;
+	assert.equal(senderConflict?.type, "delivery_failed");
+	if (senderConflict?.type === "delivery_failed") assert.equal(senderConflict.reasonCode, "message_id_conflict");
 	assert.equal(
 		writes.filter((entry) => entry.socket === recipient && entry.message.type === "message").length,
 		1,
-		"replacement sender receives cached acknowledgement without replay",
+		"a replacement sender cannot claim another sender's delivered message ID",
 	);
 });
 
@@ -167,6 +168,76 @@ test("broker wire send keeps absent attemptId compatibility but rejects malforme
 		1,
 		"malformed attemptId must not downgrade and forward",
 	);
+});
+
+test("broker rejects every malformed durable message field before pending routing", () => {
+	const senderSocket = {} as net.Socket;
+	const sessions = new Map<string, BrokerConnectedSession>([["sender", session("sender", "sender", senderSocket)]]);
+	const writes: BrokerMessage[] = [];
+	let pendingRoutes = 0;
+	const malformedMessages = [
+		{ id: "bad-reply-error", timestamp: 1, replyError: { bad: true }, content: { text: "bad" } },
+		{ id: "bad-source", timestamp: 1, source: {}, content: { text: "bad" } },
+		{
+			id: "bad-attachment",
+			timestamp: 1,
+			content: { text: "bad", attachments: [{ type: "file", name: "bad", content: "bad", language: 3 }] },
+		},
+	] as const;
+	for (const malformed of malformedMessages) {
+		handleBrokerSend(
+			senderSocket,
+			{ type: "send", to: "4ac72924-c452-4e5f-9e63-2435722109f7:reviewer", message: malformed },
+			"sender",
+			sessions,
+			new DeliveredMessageCache(),
+			(_socket, value) => writes.push(value),
+			undefined,
+			undefined,
+			() => {
+				pendingRoutes++;
+				return true;
+			},
+		);
+	}
+	assert.equal(pendingRoutes, 0);
+	assert.deepEqual(
+		writes.map((entry) => entry.type === "delivery_failed" && [entry.messageId, entry.reason]),
+		malformedMessages.map((entry) => [entry.id, "Invalid message format"]),
+	);
+});
+
+test("broker preserves all valid optional durable message fields verbatim", () => {
+	const senderSocket = {} as net.Socket;
+	const recipientSocket = {} as net.Socket;
+	const sessions = new Map<string, BrokerConnectedSession>([
+		["sender", session("sender", "sender", senderSocket)],
+		["recipient", session("recipient", "recipient", recipientSocket)],
+	]);
+	const fullMessage: Message = {
+		id: "full-message",
+		timestamp: 123,
+		replyTo: "question",
+		expectsReply: false,
+		replyError: "remote failure",
+		source: { subagentRunId: "run", subagentAgent: "worker", subagentIndex: 2 },
+		content: {
+			text: "verbatim",
+			attachments: [{ type: "snippet", name: "proof", content: "literal", language: "txt" }],
+		},
+	};
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: "recipient", message: fullMessage },
+		"sender",
+		sessions,
+		new DeliveredMessageCache(),
+		(socket, value) => writes.push({ socket, message: value }),
+	);
+	const delivered = writes.find(({ socket, message }) => socket === recipientSocket && message.type === "message");
+	assert.equal(delivered?.message.type, "message");
+	if (delivered?.message.type === "message") assert.strictEqual(delivered.message.message, fullMessage);
 });
 test("broker routes the exact full session ID", () => {
 	const sender = {} as net.Socket;

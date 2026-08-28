@@ -338,6 +338,10 @@ function writeAgentConfig(agentDir: string, baseUrl: string): void {
 			onboardedVersion: "0.0.0",
 		}),
 	);
+	// Intercom is unrelated to this steering-queue scenario. Keep its persistent
+	// broker out of the fixture's disposable agent directory.
+	mkdirSync(join(agentDir, "intercom"), { recursive: true });
+	writeFileSync(join(agentDir, "intercom", "config.json"), `${JSON.stringify({ enabled: false }, null, 2)}\n`);
 }
 
 /** Everything the scenario drew, sliced by the keystroke that caused it. */

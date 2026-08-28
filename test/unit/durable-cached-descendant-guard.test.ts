@@ -7,7 +7,7 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
-import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
+import { workflowAnswerAction } from "../../packages/workflows/src/extension/workflow-tool-answer.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
@@ -301,12 +301,11 @@ test.sequential("cached completed boundary republishes a child that handled a fa
 	assert.equal(fixture.calls.get("stage:handled-failure"), 1);
 	assert.equal(fixture.calls.get("stage:after-handled"), 1);
 	assert.equal(fixture.calls.get("live-body"), 2, "the unrelated active sibling has only its live replay owner");
-	const answer = await workflowSendAction({
+	const answer = await workflowAnswerAction({
 		runId: rootId,
 		stageId: `${freshPending.runId}:${freshPending.stage.id}`,
 		promptId: freshPending.stage.pendingPrompt!.id,
 		response: "done",
-		delivery: "answer",
 	});
 	assert.equal(answer.status, "ok");
 	await jobs.get(rootId)!.promise;
@@ -342,12 +341,11 @@ test.sequential("cached completed boundary accepts a fully timed skipped child s
 	assert.equal(fixture.calls.get("completed-body"), 1);
 	assert.equal(fixture.calls.get("stage:handled-failure"), 1);
 	assert.equal(fixture.calls.get("stage:after-handled"), 1);
-	const answer = await workflowSendAction({
+	const answer = await workflowAnswerAction({
 		runId: rootId,
 		stageId: `${freshPending.runId}:${freshPending.stage.id}`,
 		promptId: freshPending.stage.pendingPrompt!.id,
 		response: "done",
-		delivery: "answer",
 	});
 	assert.equal(answer.status, "ok");
 	await jobs.get(rootId)!.promise;

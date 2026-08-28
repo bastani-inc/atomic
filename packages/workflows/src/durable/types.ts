@@ -10,6 +10,7 @@
  */
 
 import type {
+	PendingStageMessage,
 	WorkflowActor,
 	WorkflowFailureCode,
 	WorkflowFailureDisposition,
@@ -73,6 +74,8 @@ export interface DurableWorkflowHandle {
 	readonly failedToolNodeId?: string;
 	/** Executor id of the Atomic process that last wrote this workflow's metadata. */
 	readonly ownerExecutorId?: string;
+	/** Durable pre-start stage messages owned by this workflow run. */
+	readonly pendingStageMessages?: readonly PendingStageMessage[];
 }
 
 export type DurableWorkflowStatus = "running" | "paused" | "completed" | "failed" | "cancelled" | "blocked";
@@ -302,6 +305,8 @@ export interface DurableWorkflowMetadata {
 	readonly repositoryRoot?: string;
 	readonly gitWorktreeRoot?: string;
 	readonly updatedAt: number;
+	/** Optional additive field; legacy metadata hydrates this as an empty collection. */
+	readonly pendingStageMessages?: readonly PendingStageMessage[];
 }
 
 /** Resume catalog entry loaded directly from DBOS metadata. */

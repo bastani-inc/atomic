@@ -1,6 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
-	AssistantMessageComponent,
 	type Component,
 	configureHttpDispatcher,
 	FastModeSelectorComponent,
@@ -187,13 +186,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				onHideThinkingBlockChange: (hidden) => {
 					this.hideThinkingBlock = hidden;
 					this.settingsManager.setHideThinkingBlock(hidden);
-					for (const child of this.chatContainer.children) {
-						if (child instanceof AssistantMessageComponent) {
-							child.setHideThinkingBlock(hidden);
-						}
-					}
-					this.chatContainer.clear();
-					this.rebuildChatFromMessages();
+					this.updateThinkingBlockVisibility();
 				},
 				onMermaidRenderingModeChange: (mode) => {
 					this.settingsManager.setMermaidRenderingMode(mode);

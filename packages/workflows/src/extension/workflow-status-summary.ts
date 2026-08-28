@@ -4,8 +4,8 @@
  * `workflow({ action: "status" })` without a `runId` lists every top-level
  * run in the session. Each run is reduced to an agent-friendly summary that
  * carries status, timing, active stages, and awaiting-input/pending-prompt
- * information plus the identifiers needed to feed `pause`/`resume`/
- * `interrupt`/`quit`/`send` directly.
+ * information plus the identifiers needed for `answer`, run control, and
+ * ordinary Intercom stage communication.
  *
  * cross-ref:
  *  - src/extension/workflow-tool.ts        `case "status"` (listing path)
@@ -43,7 +43,7 @@ export type WorkflowRunStatusFilter = StageStatus | RunStatus | "all";
 
 /** A currently active (running or awaiting-input) stage within a run. */
 export interface WorkflowStatusActiveStage {
-	/** Expanded-graph stage id; valid for stage-scoped send/pause/resume. */
+	/** Expanded-graph stage id; valid for stage-scoped inspection, answer, pause, and resume. */
 	readonly stageId: string;
 	readonly name: string;
 	readonly status: StageStatus;
@@ -54,7 +54,7 @@ export interface WorkflowStatusAwaitingInput {
 	/** Absent for a run-level HIL prompt. */
 	readonly stageId?: string;
 	readonly stageName?: string;
-	/** Pending prompt id; pass as `promptId` to `send` when answering. */
+	/** Pending prompt id; pass as `promptId` to `answer` when responding. */
 	readonly promptId?: string;
 	readonly promptKind?: string;
 	readonly message?: string;
@@ -82,8 +82,8 @@ export interface WorkflowStatusToolNode {
 
 /**
  * Concise, JSON-stable summary of one top-level run for the `status`
- * listing. `runId` feeds pause/resume/interrupt/quit/send directly;
- * `awaitingInput` entries carry the stage/prompt ids that `send` accepts.
+ * listing. `runId` feeds answer and pause/resume/interrupt/quit directly;
+ * `awaitingInput` entries carry the stage/prompt ids that `answer` accepts.
  */
 export interface WorkflowRunStatusSummary {
 	readonly runId: string;

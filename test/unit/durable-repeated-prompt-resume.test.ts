@@ -11,7 +11,7 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
-import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
+import { workflowAnswerAction } from "../../packages/workflows/src/extension/workflow-tool-answer.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
@@ -192,20 +192,18 @@ function resumeDeps(
 
 async function answerFresh(rootId: string, childRunId: string, stage: StageSnapshot, response: boolean) {
 	const promptId = stage.pendingPrompt!.id;
-	const result = await workflowSendAction({
+	const result = await workflowAnswerAction({
 		runId: rootId,
 		stageId: `${childRunId}:${stage.id}`,
 		promptId,
 		response,
-		delivery: "answer",
 	});
 	assert.equal(result.status, "ok");
-	const duplicate = await workflowSendAction({
+	const duplicate = await workflowAnswerAction({
 		runId: rootId,
 		stageId: `${childRunId}:${stage.id}`,
 		promptId,
 		response,
-		delivery: "answer",
 	});
 	assert.equal(duplicate.status, "noop");
 }

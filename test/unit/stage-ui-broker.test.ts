@@ -261,7 +261,7 @@ describe("StageUiBroker", () => {
 				invalidate: () => {},
 			}));
 
-			// Snapshot now exposes the structured prompt for `workflow send` / status.
+			// Snapshot now exposes the structured prompt for `workflow answer` / status.
 			assert.deepEqual(broker.peekStagePrompt("run-1", "stage-1")?.id, "prompt-1");
 			assert.equal(store.runs()[0]?.stages[0]?.status, "awaiting_input");
 			assert.equal(store.runs()[0]?.stages[0]?.inputRequest?.id, "prompt-1");

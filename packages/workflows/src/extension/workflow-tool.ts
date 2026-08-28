@@ -12,6 +12,7 @@ import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 import { isWorkflowStageToolContext, resolveRunId, topLevelExpandedSnapshots } from "./workflow-targets.js";
+import { workflowAnswerAction } from "./workflow-tool-answer.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
 	workflowInterruptAction,
@@ -26,7 +27,6 @@ import {
 	workflowStagesResult,
 	workflowTranscriptResult,
 } from "./workflow-tool-inspection.js";
-import { type WorkflowSendDeps, workflowSendAction } from "./workflow-tool-send.js";
 
 type DurableInspectionSourceResolution =
 	| { readonly kind: "local" }
@@ -67,7 +67,6 @@ export function makeExecuteWorkflowTool(
 	runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
 	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined,
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
-	sendDeps: WorkflowSendDeps = {},
 ): (
 	args: WorkflowToolArgs,
 	ctx: PiExecuteContext,
@@ -175,8 +174,8 @@ export function makeExecuteWorkflowTool(
 				if (action === "stage") return workflowStageResult(args, source);
 				return workflowTranscriptResult(args, source);
 			}
-			case "send":
-				return awaitRequest(workflowSendAction(args, sendDeps));
+			case "answer":
+				return awaitRequest(workflowAnswerAction(args));
 			case "pause":
 				return awaitRequest(workflowPauseAction(args));
 			case "reload":

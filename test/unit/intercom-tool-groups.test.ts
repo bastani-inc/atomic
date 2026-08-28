@@ -12,6 +12,8 @@ type ToolResult = {
 };
 
 type Tool = {
+	description: string;
+	parameters: { properties?: { to?: { description?: string } } };
 	execute(
 		id: string,
 		params: { action?: string; group?: string },
@@ -103,6 +105,14 @@ const context = {
 	sessionManager: { getSessionId: () => "atomic-session" },
 	hasUI: false,
 };
+
+test("heavy tool guidance teaches exact known workflow-stage targets without replacing live sessions", () => {
+	const { tool } = fixture();
+	const guidance = `${tool.description}\n${tool.parameters.properties?.to?.description ?? ""}`;
+	assert.match(guidance, /`<runId>:<stageKey>`/);
+	assert.match(guidance, /pending stage.*queue automatically/i);
+	assert.match(guidance, /live session/i);
+});
 
 test("join changes the broker presence group and leave returns to home", async () => {
 	const current = fixture();

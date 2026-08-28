@@ -735,6 +735,25 @@ describe("workflow heartbeat delivery", () => {
 		assert.equal(send.details.workflowName, "audit-auth");
 		assert.match(send.content, /audit-auth/);
 		assert.ok(send.content.includes(`/workflow status ${runId}`), "the parent is told how to inspect the run");
+		assert.match(send.content, /This is a periodic alignment check\. Review whether the run is still on goal\./);
+		assert.ok(
+			send.content.includes("When steering or communication is useful, use Intercom."),
+			"the parent uses Intercom when the alignment review calls for communication",
+		);
+		assert.match(send.content, /Consider the expanded workflow topology/);
+		assert.match(send.content, /match each update's reach to its impact/);
+		assert.match(send.content, /send a local update to its affected stage/);
+		assert.match(send.content, /shared scope or acceptance criteria change/);
+		assert.match(send.content, /same authoritative Intercom update/);
+		assert.match(send.content, /every relevant live and known unstarted `<runId>:<stageKey>`/);
+		assert.match(send.content, /worker-to-reviewer loop/);
+		assert.match(send.content, /Intercom delivers immediately to live stages/);
+		assert.match(send.content, /queues updates for known stages that have not started/);
+		assert.match(send.content, /delivering them before their first model turn/);
+		assert.match(send.content, /workers and reviewers begin with one consistent contract/);
+		assert.match(send.content, /Use `ask` once the target has a live session that can reply/);
+		assert.match(send.content, /Use workflow pause, resume, interrupt, or quit for run control/);
+		assert.match(send.content, /Continue the progressing run when no intervention is needed/);
 		harness.scheduler.dispose();
 	});
 

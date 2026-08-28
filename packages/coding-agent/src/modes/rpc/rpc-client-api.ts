@@ -56,15 +56,35 @@ export abstract class RpcClientApi {
 	async getState(): Promise<RpcSessionState> {
 		return this.data(await this.request({ type: "get_state" }));
 	}
-	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
-		return this.data(await this.request({ type: "set_model", provider, modelId }));
+	async setModel(
+		provider: string,
+		modelId: string,
+		options?: { persist?: boolean },
+	): Promise<{ provider: string; id: string }> {
+		return this.data(
+			await this.request({
+				type: "set_model",
+				provider,
+				modelId,
+				...(options?.persist === true ? { persist: true } : {}),
+			}),
+		);
 	}
-	async cycleModel(direction?: "forward" | "backward"): Promise<{
+	async cycleModel(
+		direction?: "forward" | "backward",
+		options?: { persist?: boolean },
+	): Promise<{
 		model: Model<Api>;
 		thinkingLevel: ThinkingLevel;
 		isScoped: boolean;
 	} | null> {
-		return this.data(await this.request({ type: "cycle_model", direction }));
+		return this.data(
+			await this.request({
+				type: "cycle_model",
+				direction,
+				...(options?.persist === true ? { persist: true } : {}),
+			}),
+		);
 	}
 	async getAvailableModels(): Promise<ModelInfo[]> {
 		return this.data<{ models: ModelInfo[] }>(await this.request({ type: "get_available_models" })).models;
@@ -99,6 +119,28 @@ export abstract class RpcClientApi {
 	}
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
 		await this.request({ type: "set_thinking_level", level });
+	}
+	/**
+	 * Isolated persist path: forwards `persist` and returns the engine's effective
+	 * level plus the provider/model the engine persisted against. Public callers
+	 * must keep using one-argument {@link setThinkingLevel}.
+	 */
+	async setThinkingLevelAck(
+		level: ThinkingLevel,
+		options?: { persist?: boolean },
+	): Promise<{ level: ThinkingLevel; provider?: string; modelId?: string }> {
+		const response = await this.request({
+			type: "set_thinking_level",
+			level,
+			...(options?.persist === true ? { persist: true } : {}),
+		});
+		if (!response.success) {
+			return this.data(response);
+		}
+		if (response.command === "set_thinking_level" && "data" in response && response.data) {
+			return response.data;
+		}
+		return { level };
 	}
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		return this.data(await this.request({ type: "cycle_thinking_level" }));

@@ -36,7 +36,7 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Built-in Workflows](#built-in-workflows)
 - [Writing a Workflow](#writing-a-workflow)
 - [Scope-Guard Starter Pattern](#scope-guard-starter-pattern)
-- [The `workflow()` Definition](#the-workflow-definition)
+- [The `workflow()` definition](#the-workflow-definition)
 - [WorkflowContext](#workflowcontext)
 - [Task and Stage Options](#task-and-stage-options)
 - [StageContext](#stagecontext)
@@ -51,10 +51,9 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Workflow Configuration](#workflow-configuration)
 - [Settings](#settings)
 - [Package Setup](#package-setup)
-- [Programmatic Usage](#programmatic-usage)
-- [Fast Inference for Workflow Stages](#fast-inference-for-workflow-stages)
+- [Programmatic usage](#programmatic-usage)
+- [Fast inference for workflow stages](#fast-inference-for-workflow-stages)
 - [Context Engineering](#context-engineering)
-- [Migrating from the `defineWorkflow()` Builder API](#migrating-from-the-defineworkflow-builder-api)
 - [Design Checklist](#design-checklist)
 - [Common Mistakes](#common-mistakes)
 - [Workflow Best Practices](#workflow-best-practices)
@@ -125,6 +124,26 @@ Workflow run identifiers are shown in full everywhere they are presented to user
 
 Stage targeting is exact but not UUID-bound, because stage identifiers are not all bare UUIDs. A `stageId` resolves by exact stage id — a bare UUID at the root, the full `runId:stageId` composite for a stage inside a nested workflow, or `tool:<argsHash>` for a `ctx.tool` node — or by exact stage or tool name. Partial names no longer match, so `build` will not select `build-check`. Two stages that share an exact name are still reported as ambiguous, listing the full matching identifiers.
 
+#### Intercom delivery to pending workflow stages
+
+A known workflow stage whose session has not initialized is still addressable by the workflow run's full UUID and its exact authored stage key. From a sibling session in the same workflow Intercom group, use ordinary Intercom delivery:
+
+```ts
+intercom({
+  action: "send",
+  to: "<runId>:reviewer",
+  message: "Scope changed: raw amendment text is now part of the oracle."
+})
+// queued — distinct from live-session delivered
+```
+
+Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages only for known pending stages and delivers them when their sessions initialize, before their first model turn. Live stage delivery is immediate. Use `ask` once the stage session is live and can reply. Unknown run/stage identities retain the ordinary unknown-target failure.
+
+The workflows extension persists pending messages with run state across resume/replay and broker restart. Each exact run/stage key accepts 50 queued messages; the next send is refused without eviction. Only sessions in the run's Intercom group may queue them. When the stage session initializes, Atomic delivers its messages FIFO through the ordinary inbound Intercom path **before the first model turn**. The transcript labels them **Messages received before you started**, preserves sender identity and `Sent:` timestamps, and keeps them separate from the stage task prompt. Duplicate logical message IDs and stage-attempt restarts do not redeliver a message.
+
+If the destination is skipped, the run is cancelled, or the stage becomes terminal before its session initializes, Atomic marks queued messages undeliverable rather than dropping them. Senders whose messages requested acknowledgment receive a correlated failure notification. Running and completed stages continue through their existing live, late, and post-mortem routes.
+
+
 At 80 columns and wider, an ordinary `BACKGROUND` card uses two rows so the id is not squeezed beside the workflow name: the first row contains the status glyph and full UUID, and the second contains the workflow name followed by its mode, progress, live-tool total when more than one is active, pending/running `ctx.tool` node names and statuses as space permits, and elapsed/status metadata. Tool nodes are read-only durable graph nodes, not attachable stage chats. A waiting card with exactly one displayable pending HIL request in its visible run tree uses four rows: those two identity rows, one quoted and cell-bounded question row, and one action row with the exact `/workflow connect <visible-run-id>` command. The command targets the visible top-level run even when the concrete prompt belongs to a nested child, and its full UUID wraps rather than being ellipsized. `F2 answer` appears on that action row only when F2 currently targets the visible run. Promptless waits, multi-question requests, and multiple pending occurrences keep the ordinary two-row status-only card. The panel renders every qualifying top-level run, with the existing spacing between cards. Below 80 columns, the panel keeps its collapsed form, omits ids, prompt text, and tool names, and includes a live-tool count when one or more tool nodes are pending or running.
 
 For chat surfaces such as workflow status, run detail, dispatch confirmation, and the run picker, a full id wraps onto continuation rows when the card is narrower than the id. The renderer never ellipsizes the id and keeps the card border closed at its minimum layout width, while terminals below that floor — including sub-30-column terminals — can hard-clip the box. An awaiting-input attribution banner is titled `AWAITING INPUT` and contains the same two identity rows — `？` plus the full run id, then the workflow name and optional metadata — while the existing prompt question and options remain below it in the normal prompt UI.
@@ -153,7 +172,7 @@ Below the breakpoint the same run set is represented by the collapsed count line
 Workflow files are plain TypeScript modules. Create `.atomic/workflows/explain-file.ts`:
 
 ```ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -236,6 +255,8 @@ The shapes, cheapest first:
 
 For every non-trivial workflow task, perform a short workflow-architecture pass before the first launch. Choose the execution shape before starting substantive work; reconnaissance already counts as inline execution. Derive the task's implementation lifecycle needs, whole-codebase research needs, independent work slices, competing strategies, exact API/type/build contracts, schema or generated-artifact contracts, state-transition/lifecycle behavior, deterministic stop conditions, and required evidence.
 
+For coding tasks, that pass also infers repository intent from repo-level behavior before objectives and acceptance criteria freeze: mine git history (including `git log --show-signature`), merged PRs, issues, commits, and review comments for unwritten conventions — commit signing, message style and issue linking, changelog discipline, PR size and review norms — weighing the requesting user's own activity highest so the authored contract captures norms no doc states. Non-coding tasks mine their analogous available context sources (issue trackers, long-form docs, chat or comment threads, prior artifacts) the same way. Inferred conventions fill contract gaps; they never override the stated objective or explicit repository docs.
+
 Use this compact coverage matrix internally (it may stay concise for a straightforward task), and let every unresolved material row change the graph choice:
 
 ```text
@@ -273,7 +294,7 @@ Ask these questions in order and stop at the cheapest shape that satisfies every
 8. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough—and cheaper than a workflow.
 9. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review—answer or edit inline and stop.
 
-A first named workflow launch commits the selected execution shape for the turn. For one task, end the turn after that launch. For an independent queue, the selected shape is a bounded launch wave: issue every planned per-item top-level launch up to the concurrency bound before ending the turn. Do not casually chain unplanned unrelated top-level workflow launches. When one task needs multiple workflow capabilities or dependent items need ordered handoffs, design composition **before** launch: author one custom parent, import project/package definitions or builtins from `@bastani/workflows/builtin`, and call `ctx.workflow(...)`. Nested children preserve their stages and guarantees within the expanded graph up to `maxDepth`, but they remain under the parent's root lifecycle and failure boundary.
+A first named workflow launch commits the selected execution shape for the turn. For one task, end the turn after that launch. For an independent queue, the selected shape is a bounded launch wave: issue every planned per-item top-level launch up to the concurrency bound before ending the turn. Do not casually chain unplanned unrelated top-level workflow launches. When one task needs multiple workflow capabilities or dependent items need ordered handoffs, design composition **before** launch: author one custom parent, import project/package definitions or builtins from `@bastani/atomic/workflows/builtin`, and call `ctx.workflow(...)`. Nested children preserve their stages and guarantees within the expanded graph up to `maxDepth`, but they remain under the parent's root lifecycle and failure boundary.
 
 Choose the cheapest complete graph. Routing cues are not a reason to add decorative stages: avoid duplicated research and review loops. Before launch, state the selected graph, why one broad builtin is sufficient or insufficient, the evidence each major stage produces, and the stop/repair conditions. A simple direct match can be one sentence; a composed graph should briefly name its children and task-specific gates.
 
@@ -391,7 +412,7 @@ A natural-language request for a worktree does not configure runner isolation. I
 ```ts
 // .atomic/workflows/issue-to-pr.ts
 import { spawnSync } from "node:child_process";
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type, type Static } from "typebox";
 
 const reviewDecision = Type.Object(
@@ -639,7 +660,7 @@ So every builtin stage prompt carries a **steering propagation contract**:
 Every bundled workflow wraps its run context once at the definition entry point, so each `ctx.task`, `ctx.chain`, and `ctx.parallel` prompt carries the contract automatically. Do the same in a custom workflow:
 
 ```ts
-import { withSteeringPropagationContext } from "@bastani/workflows/builtin/steering-context";
+import { withSteeringPropagationContext } from "@bastani/atomic/workflows/builtin/steering-context";
 
 export default workflow({
   name: "my-workflow",
@@ -674,7 +695,7 @@ A long-running stage gets compacted, and compaction ranks lines individually rat
 Wrap contract text in `keepContext` so it survives verbatim regardless of the compression ratio:
 
 ```ts
-import { keepContext, workflow } from "@bastani/workflows";
+import { keepContext, workflow } from "@bastani/atomic/workflows";
 
 const prompt = [
   keepContext("Research only. Do not implement code changes."),
@@ -715,7 +736,7 @@ Note what is tagged and what is not: the constraint and the criteria are protect
 **Steering.** A `send` amendment is authoritative and stages must carry it forward, but it is one short message arriving late into an already-long session, competing against the entire transcript for retention. Tagging it keeps it alive until the stage acts on it:
 
 ```
-workflow({ action: "send", runId, text:
+intercom({ action: "send", to: `${runId}:<stageKey>`, message:
   "<keepContext>\nNew requirement: the fix must not change the public API.\n</keepContext>" })
 ```
 
@@ -748,7 +769,7 @@ Across these builtins, model-facing stages use compact, outcome-first contracts 
 
 ### Six composable pattern builtins
 
-The six common patterns are full definitions exported from `@bastani/workflows/builtin`:
+The six common patterns are full definitions exported from `@bastani/atomic/workflows/builtin`:
 
 | Workflow | Required input | Bounded/defaulted knobs | Principal declared outputs |
 |---|---|---|---|
@@ -769,7 +790,7 @@ import {
   loopUntilDone,
   ralph,
   tournament,
-} from "@bastani/workflows/builtin";
+} from "@bastani/atomic/workflows/builtin";
 
 const research = await ctx.workflow(fanOutAndSynthesize, {
   inputs: {
@@ -787,6 +808,8 @@ All six can run by name or as nested definitions. Prefer composition over copyin
 Goal persists the literal objective and immutable acceptance criteria in a run ledger, delegates implementation through bounded orchestrator turns, records receipts, and asks independent reviewers to inspect the current delta. A TypeScript reducer returns `complete`, `blocked`, or `needs_human` rather than trusting free-form completion claims. The complete Goal artifact directory — both its owning run segment and unique `artifact-<id>` segment — is a durable checkpoint. A fresh-ID continuation therefore reuses the source ledger, receipts, and review paths without rerunning replayed producer stages; loading that ledger preserves its existing records without duplicating replayed receipts or reviews. The model-visible `goal-ledger.json` continues to omit internal turn numbers, while a sibling `goal-ledger-state.json` preserves the complete turn-bearing state for lossless continuation reloads. A live chain of continuations also protects that original owner from retention pruning.
 
 Goal reviewers derive checks from the literal objective before consulting implementation receipts, inspect the actual checkout delta, and report commands, observed output, and file:line evidence rather than internal reasoning. Shared contracts cover acceptance-matrix traceability, contract-fidelity risks, end-to-end and QA-video evidence, and independent verification. `stop_review_loop` is the authoritative convergence signal: it remains `false` for P0–P2 findings, any `required_by_objective` finding, or unproven implementation/validation requirements; it becomes `true` only when independent evidence proves the objective and only non-blocking or authorized post-approval work remains. The deterministic reducer consumes that signal without reinterpreting free-form prose.
+Goal and Ralph stage prompts — orchestrator, implementation, and reviewer alike — also carry shared code-quality verification guidance that points at the `qlty` skill for linting, auto-formatting, complexity and duplication metrics, and code smells, weighted higher when the objective asks for verifiers or high code quality. Repository-defined checks in `AGENTS.md`/`CLAUDE.md`, package scripts, and CI stay authoritative.
+Both workflows also share repository-intent mining guidance: implementers and reviewers infer maintainer and requesting-user conventions from repository behavior — git history (including `git log --show-signature`), merged PRs, issues and their comments, review comments, commit subjects and trailers, and CI/branch-protection config — covering norms written docs rarely state, such as commit signing, message style and issue linking, changelog discipline, and review etiquette. The dominant, recent, intentional pattern wins over accidental drift, the requesting user's own activity weighs highest, implementers match the inferred conventions (an unsigned commit in a signed history is a miss, not a preference), and reviewers report deviations as convention findings. Behavioral evidence fills contract gaps; it never overrides the literal objective, acceptance criteria, or explicit `AGENTS.md`/`CLAUDE.md` guidance.
 Goal and Ralph share the same low-confidence finding re-verification and per-round convergence evidence, documented under [`ralph`](#ralph).
 
 | Input | Type | Required | Default | Description |
@@ -884,7 +907,7 @@ If required inputs are missing or ambiguous, Atomic asks for them or opens the i
 Workflow files are TypeScript modules that export a workflow definition:
 
 ```ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -959,7 +982,6 @@ Authoring basics:
 - `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
 - `run: async (ctx) => { ... }` defines the workflow body.
 
-To migrate an existing file from the removed `defineWorkflow(...).compile()` builder, see [Migrating from the `defineWorkflow()` Builder API](#migrating-from-the-defineworkflow-builder-api) for the full method-to-key mapping, a before/after walkthrough, and a conversion checklist.
 
 `prompt` and `task` are aliases for task text inside authored workflow primitives. Prefer `prompt` because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in `ctx.chain(...)` examples.
 
@@ -1062,7 +1084,7 @@ Protect a stage's role constraints, acceptance criteria, and prohibitions with `
 
 ### Inputs
 
-Inputs are declared with TypeBox `Type.*` schemas in the `inputs` object. Import `Type` from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so TypeBox schemas resolve under `tsc` — see [Programmatic Usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:
+Inputs are declared with TypeBox `Type.*` schemas in the `inputs` object. Import `Type` from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so TypeBox schemas resolve under `tsc` — see [Programmatic usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:
 
 | TypeBox schema | Picker kind | Accepted runtime value |
 |---|---|---|
@@ -1173,7 +1195,7 @@ The same rule applies to inputs: `inputs: { counts: Type.Array(Type.Number()) }`
 When you already have a precise TypeScript type for a deeply-nested serializable value and don't want to hand-write the equivalent TypeBox schema, wrap a permissive runtime schema with `Type.Unsafe<MyType>(...)`. The **static** type becomes exactly `MyType` (so `ctx.inputs`, the `run` return, and `child.outputs` stay precise), while the **runtime** check stays as lenient as the wrapped schema. Use a `type` alias rather than an `interface` for the wrapped type — an `interface` has no implicit index signature, so it does not satisfy the serializable-output constraint:
 
 ```ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 type ResearchPacket = {
@@ -1210,7 +1232,7 @@ Tradeoff: `Type.Unsafe<T>()` does not deeply validate at runtime — it trusts t
 - TypeScript checks the `run` return against your declared outputs at **compile time** (a missing required output or wrong value type is a TypeScript error), and TypeBox `Value` checks it at **runtime** (rejecting undeclared keys and enforcing the declared shape recursively).
 - `ctx.workflow(child)` returns a discriminated child result. When `child.exited === false`, `child.outputs` is the child's full declared `outputs` contract; when `child.exited === true`, `child.outputs` is `Partial<TOutputs>` because child `ctx.exit({ outputs })` may intentionally provide only a subset.
 
-Use `Static<typeof schema>` (both `Static` and `TSchema` are re-exported from `@bastani/workflows`) when you need the inferred TypeScript type of a schema directly — for example to type a helper that builds an output value.
+Use `Static<typeof schema>` (both `Static` and `TSchema` are re-exported from `@bastani/atomic/workflows`) when you need the inferred TypeScript type of a schema directly — for example to type a helper that builds an output value.
 
 ### Stage follow-on user messages
 
@@ -1334,7 +1356,7 @@ User-defined workflows are ordinary TypeScript modules. Import the workflow defi
 
 ```ts
 // .atomic/workflows/shared-research.ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -1354,7 +1376,7 @@ export default workflow({
 });
 
 // .atomic/workflows/research-and-synthesize.ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import sharedResearch from "./shared-research.js";
 
@@ -1400,22 +1422,22 @@ import {
   openClaudeDesign,
   ralph,
   tournament,
-} from "@bastani/workflows/builtin";
+} from "@bastani/atomic/workflows/builtin";
 ```
 
 Or import one individual module:
 
 ```ts
-import goal from "@bastani/workflows/builtin/goal";
-import ralph from "@bastani/workflows/builtin/ralph";
+import goal from "@bastani/atomic/workflows/builtin/goal";
+import ralph from "@bastani/atomic/workflows/builtin/ralph";
 ```
 
 Example parent that maps a repository and verifies the synthesis:
 
 ```ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
-import { adversarialVerification, fanOutAndSynthesize } from "@bastani/workflows/builtin";
+import { adversarialVerification, fanOutAndSynthesize } from "@bastani/atomic/workflows/builtin";
 
 export default workflow({
   name: "research-and-verify",
@@ -1575,7 +1597,7 @@ Use a fresh task when one check at a material boundary is enough. This complete 
 
 ```ts
 // .atomic/workflows/scope-guard-boundary.ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type, type Static } from "typebox";
 
 const decisionLogSchema = Type.Object(
@@ -1685,7 +1707,7 @@ Use `ctx.stage(...)` when one independent checker needs a retained conversation.
 
 ```ts
 // .atomic/workflows/scope-guard-retained.ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 function continueWorker(sessionFile: string | undefined) {
@@ -1760,7 +1782,7 @@ Use a live peer only when steering during generation adds clear value. Both bran
 
 ```ts
 // .atomic/workflows/scope-guard-live.ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type, type Static } from "typebox";
 
 const coordinationSchema = Type.Object(
@@ -1907,9 +1929,9 @@ export default workflow({
 
 The parallel fan-out has one shared parent frontier and downstream persistence waits for both branches. Blocking asks use the guard's retained conversation; the fresh persistence task turns the final transcript into the bounded artifact before correctness review. If Intercom is unavailable, `warn` runs that task as a boundary check, `block` requires `ctx.ui`, and `off` records that no guard approval exists.
 
-## The `workflow()` Definition
+## The `workflow()` definition
 
-`workflow(spec)` is the only supported authoring API. It validates the schema maps, normalizes or infers the name, and returns a frozen branded definition that discovery and `ctx.workflow(...)` accept.
+Use `workflow(spec)` to author a workflow. It validates the schema maps, normalizes or infers the name, and returns a frozen `WorkflowDefinition` for export, discovery, and `ctx.workflow(...)` composition.
 
 ```typescript
 function workflow<
@@ -1953,6 +1975,8 @@ readonly heartbeatIntervalMinutes?: number;
 
 The heartbeat cadence for the workflow, in minutes, measured from the run's persisted start time. Omission resolves to the `15`-minute default and `0` explicitly disables heartbeats; negative and non-finite values are rejected with a `TypeError` when the definition is authored. Every compiled definition carries the resolved value, so consumers read a number rather than re-deriving the default.
 
+Cadence is likewise operator-selected. Atomic's agent guidance assumes the `15`-minute default and does not shorten, lengthen, or disable it unless you ask, so a heartbeat you did not configure arrives on that interval. A heartbeat is an alignment checkpoint rather than a failure signal: the agent re-reads the objective, judges whether the run is still on goal, and then continues, steers, replaces, or asks — it is not a cue to intervene in a run that is progressing.
+
 ```ts
 export default workflow({
   name: "audit-auth",
@@ -1976,6 +2000,19 @@ When a run reaches a terminal state — completed, failed, blocked, skipped, can
 A recoverable provider or rate-limit block is not the terminal `blocked` status: the run remains stored as `running` and resumable. It raises no new heartbeat while blocked, but keeps its cadence state and any card already waiting with the parent; cleanup runs only once the run's own status becomes terminal.
 
 A heartbeat the host has already accepted into the parent's queue is beyond that pass, because nothing withdraws a queued message. It is invalidated instead at the moment the parent reads it: the typed card's exact `runId + scheduledAt` identity must still be pending for a current nonterminal run. If the run has since reached a terminal state, this process no longer knows that run, or a durable resume has reused the run id with a later pending boundary, the old heartbeat is excluded from the model's context and cannot steer the parent. That covers all ways a stale card survives — one parked through a long turn while its run finished, one recovered from a previous process at startup, and one admitted before a same-ID durable resume. The card already rendered in your transcript is deliberately left alone: it is a true record that the heartbeat was raised, and rewriting scrollback after the fact would be worse than leaving it. Only the model-facing steer is invalidated.
+
+### `budget`
+
+```typescript
+readonly budget?: {
+  readonly maxDurationMs?: number;
+  readonly maxTokens?: number;
+  readonly maxCost?: number;
+  readonly warnAtPercent?: number;
+};
+```
+
+The optional budget sets duration, token, and cost limits for this workflow. Atomic freezes the declaration into the compiled definition and resolves each field over the extension default when the workflow runs. See [Run budgets](#run-budgets) for precedence and validation rules.
 
 ### `inputs`
 
@@ -2045,25 +2082,23 @@ interface WorkflowDefinition<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
   TRunInputs extends WorkflowInputValues = TInputs,
-  TDefinitionBrand extends object = {},
 > {
-  readonly __piWorkflow: true;
-  readonly __runInputs?: TRunInputs;
   readonly name: string;
   readonly normalizedName: string;
   readonly description: string;
   readonly autoAttach?: true;
   readonly heartbeatIntervalMinutes: number;
+  readonly budget?: WorkflowBudget;
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };
-  run(
-    ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>,
-  ): Promise<TOutputs> | TOutputs;
+  run(ctx: WorkflowRunContext<TInputs, TOutputs>): Promise<TOutputs> | TOutputs;
 }
 ```
 
-`workflow({...})` returns definitions that narrow `outputs` to required and carry an internal nominal brand. Do not construct `__piWorkflow` objects by hand: discovery and child composition accept only definitions minted by `workflow({...})`.
+`TRunInputs` describes the validated inputs accepted by `run(...)` and `ctx.workflow(...)`; it defaults to the workflow's resolved input values.
+
+`workflow({...})` returns a `WorkflowDefinition` with the resolved name, normalized lookup name, description, runtime defaults, optional budget, schema maps, optional worktree input binding, and `run` function. Authors provide the fields documented above, and Atomic fills the normalized and defaulted values.
 
 ## WorkflowContext
 
@@ -2149,7 +2184,7 @@ ctx.workflow<
   TChildOutputs extends WorkflowOutputValues,
   TChildRunInputs extends WorkflowInputValues = TChildInputs,
 >(
-  definition: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs> & TDefinitionBrand,
+  definition: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
   ...args: WorkflowRunChildArgs<TChildRunInputs>
 ): Promise<WorkflowChildResult<TChildOutputs>>;
 
@@ -2179,7 +2214,7 @@ const child = await ctx.workflow(sharedResearch, {
 });
 ```
 
-The method accepts only branded definitions, not names, aliases, or path objects. See [Workflow Composition](#workflow-composition) for graph flattening, replay, failure, and parent-exit behavior, and [`WorkflowChildResult`](#workflowchildresult) for the discriminated result.
+Pass a definition returned by `workflow({...})`. See [Workflow Composition](#workflow-composition) for graph flattening, replay, failure, and parent-exit behavior, and [`WorkflowChildResult`](#workflowchildresult) for the discriminated result.
 
 ### `ctx.stage(name, options?)`
 
@@ -2999,7 +3034,7 @@ The workflow tool action surface is:
 - discovery: `list`, `get`, `inputs`, plus `models` for the configured model catalog
 - execution: named `run` with validated `workflow` and `inputs`
 - inspection: `status`, `stages`, `stage`, `transcript`
-- messaging on nonterminal root runs and run control: `send`, `pause`, `interrupt`, `quit`, `resume`
+- prompt response: `answer`; run control: `pause`, `interrupt`, `quit`, `resume`; free-form stage communication: ordinary Intercom `send`/`ask` to exact `<runId>:<stageKey>` targets
 - rediscovery: `reload`
 
 Every registered `workflow` tool call has one hard two-minute wall-clock deadline at the shared public tool boundary. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
@@ -3015,9 +3050,9 @@ Every registered `workflow` tool call has one hard two-minute wall-clock deadlin
 }
 ```
 
-Expiry aborts the request operation signal so work that supports cancellation can stop, discards any later success or error, and never retries the action. The interactive engine remains available for the next command. For mutating actions (`reload`, `run`, `send`, `pause`, `resume`, `interrupt`, and `quit`), the error additionally says that the outcome is unknown and instructs you to inspect workflow status before retrying; a timeout never claims that a mutation succeeded. When a timed-out `run` has already allocated its detached run, the structured result includes that exact full `runId`; inspect `status` with that id before any retry. A timeout before run allocation has no `runId`. Read-only actions (`models`, `list`, `get`, `inputs`, `status`, `stages`, `stage`, and `transcript`) omit that unknown-state guidance.
+Expiry aborts the request operation signal so work that supports cancellation can stop, discards any later success or error, and never retries the action. The interactive engine remains available for the next command. For mutating actions (`reload`, `run`, `answer`, `pause`, `resume`, `interrupt`, and `quit`), the error additionally says that the outcome is unknown and instructs you to inspect workflow status before retrying; a timeout never claims that a mutation succeeded. When a timed-out `run` has already allocated its detached run, the structured result includes that exact full `runId`; inspect `status` with that id before any retry. A timeout before run allocation has no `runId`. Read-only actions (`models`, `list`, `get`, `inputs`, `status`, `stages`, `stage`, and `transcript`) omit that unknown-state guidance.
 
-From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Inspection and control calls (`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`) remain available while work runs.
+From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Inspection, prompt-response, and control calls (`status`, `stages`, `stage`, `transcript`, `answer`, `pause`, `resume`, `interrupt`, `quit`) remain available while work runs.
 
 `workflow({ action: "models" })` returns the registry's configured-auth catalog snapshot in registry order. Each entry includes `provider`, `id`, `fullId`, an `isCurrent` marker, and `availableThinkingLevels` derived from the real model's `reasoning` and `thinkingLevelMap` metadata. This is not proof of credentials, entitlements, OAuth freshness, or live provider access, and it exposes no authentication details.
 
@@ -3128,10 +3163,10 @@ workflow({ action: "transcript", runId: "<full-run-uuid>", stageId: "review" })
 workflow({ action: "transcript", runId: "<full-run-uuid>", stageId: "review", tail: 40 })
 workflow({ action: "transcript", runId: "<full-run-uuid>", stageId: "review", limit: 20, includeToolOutput: true })
 
-// send is admitted only while the authoritative root workflow is nonterminal.
-workflow({ action: "send", runId: "<full-run-uuid>", stageId: "review", text: "please focus on tests" })
-workflow({ action: "send", runId: "<full-run-uuid>", stageId: "approval", promptId: "prompt-1", response: true, delivery: "answer" })
-workflow({ action: "send", runId: "<full-run-uuid>", stageId: "review", message: "continue with tests", delivery: "resume" })
+// Free-form stage communication uses Intercom; prompt responses use workflow answer.
+intercom({ action: "send", to: "<full-run-uuid>:review", message: "please focus on tests" })
+workflow({ action: "answer", runId: "<full-run-uuid>", stageId: "approval", promptId: "prompt-1", response: true })
+workflow({ action: "resume", runId: "<full-run-uuid>", stageId: "review", message: "continue with tests" })
 
 workflow({ action: "pause", runId: "<full-run-uuid>" })
 workflow({ action: "pause", runId: "<full-run-uuid>", stageId: "review" })
@@ -3156,25 +3191,15 @@ Control behavior:
 
 - `runId` requires the full 36-character run UUID for every lifecycle and inspection action, including `status`. User-facing status surfaces print that exact value, so pass it back verbatim; typed prefixes are rejected with a distinct `Run id must be a full 36-character UUID` diagnostic rather than resolved. Because ids are matched exactly and are unique, no run target is ambiguous. Status lists and run pickers show top-level user-launched workflows; nested child runs are implementation details of the expanded parent graph.
 - `status`, `stages`, `stage`, and `transcript` with an explicit full `runId` first use the current session store, then perform one exact DBOS hydration when that id is absent locally. This is inspection only: Atomic does not claim ownership, change status, run workflow code, or resume the workflow. A stale durable `running` root is shown as `crashed` with its resumability and an explicit `/workflow resume <id>` hint; fresh work owned by another Atomic process remains `running`, offers read-only status guidance, and stays protected from local control or resume. Deleted/tombstoned, absent, malformed, cyclic, orphaned, nonreciprocal, out-of-scope, and duplicate-node records report distinct failures instead of inventing a partial graph. `status` without `runId` remains current-session-only and never scans durable history.
-- `status` without `runId` lists every top-level run in the session with a concise per-run summary: the full run id, workflow name, run status, started/ended timing with pause-adjusted elapsed time, currently active stages, and awaiting-input details (count plus the stage, prompt id, kind, and message for each pending human prompt). In-flight runs are listed first. The summaries carry the exact identifiers that `pause`/`resume`/`interrupt`/`quit`/`send` accept, so an orchestrating agent can list runs and act on them directly.
+- `status` without `runId` lists every top-level run in the session with a concise per-run summary: the full run id, workflow name, run status, started/ended timing with pause-adjusted elapsed time, currently active stages, and awaiting-input details (count plus the stage, prompt id, kind, and message for each pending human prompt). In-flight runs are listed first. The summaries carry the exact identifiers that `answer`, `pause`, `resume`, `interrupt`, and `quit` accept, so an orchestrating agent can list runs and act on them directly.
 - `statusFilter` narrows the `status` run listing: run statuses (`pending`, `running`, `paused`, `blocked`, `completed`, `failed`, `skipped`, `cancelled`, `killed`) match runs directly, `awaiting_input` selects runs with at least one stage awaiting input or pending human prompt, and `all` (the default) includes everything.
 - `format: "json"` on data-bearing inspection actions (`status`, `stages`, `stage`, `transcript`) returns the full structured result; the default text output for `status` is the concise per-run summary list.
 - `status` / `status <runId>` show terminal `ctx.exit(...)` statuses (`completed`, `skipped`, `cancelled`, or `blocked`) and the optional exit reason when one was supplied.
 - `stages` lists stage summaries, including flattened stages from nested `ctx.workflow(...)` imports and `sessionFile`/`transcriptPath` when a stage has a persisted session. Use `statusFilter: "all"` to include completed, failed, skipped, and pending stages.
 - `stage` returns details for one stage by exact stage id or exact stage name, including nested child stages shown in the expanded graph and the persisted `sessionFile` when available. User-facing graph and control messages print full stage IDs; pass one back verbatim, or use the stage's exact name. Prefixes and partial names no longer resolve. Two stages sharing an exact name return an ambiguity diagnostic rather than selecting one.
 - `transcript` is reference-first with a small preview by default: it returns metadata, transcript paths, and up to 5 recent entries. For targeted lookup, quote the exact `sessionFile`/`transcriptPath` value without changing platform separators (preserve Windows backslashes), search it with `rg` or `grep`, then read only small surrounding ranges. Text results include JSON-escaped `sessionFileJson`/`transcriptPathJson` lines for copy-safe path literals. Pass explicit `tail` or `limit` to override the 5-entry preview; `tail` overrides `limit`; `includeToolOutput` includes captured snapshot tool output in snapshot transcript results.
-- `send` operates only while the authoritative root workflow is nonterminal; delivery modes are `auto`, `answer`, `prompt`, `steer`, `followUp`, and `resume`.
-  - A terminal root (`completed`, `failed`, `skipped`, `cancelled`, `killed`, or terminal `blocked`) rejects every programmatic send with `status: "failed"`, `code: "WORKFLOW_TERMINAL"`, `delivery: "rejected"`, the requested root run id and terminal status, and guidance to start a new workflow. Proceed inline instead only when the remaining work is small, deterministic, and low risk.
-  - Atomic checks an already-terminal root before stage resolution, nested-owner routing, prompt inspection, retained-session probing or revival, handle lookup, message admission, and delivery selection. That rejection creates no agent session or handle, appends no transcript, starts no model/tool/file work, answers no input, and mutates no workflow/stage snapshot. Missing or malformed retained sessions receive the same root-terminal error without being probed.
-  - Atomic checks the same shared terminal authority again at the final synchronous SDK message-admission boundary. If a live root terminates while retained-session creation is pending, the send fails with `WORKFLOW_TERMINAL`, disposes its unclaimed provisional session/handle, and admits no prompt, model request, tool/file work, transcript append, or workflow-state mutation. A user-driven attach or Intercom claim remains independent and keeps the retained handle.
-  - Prompt answers on a nonterminal root can include `promptId` and can carry answer content in `response`, `text`, or `message`; structured UI prompts usually prefer `response`.
-  - Primitive HIL answers are normalized by prompt kind: `input` and `editor` require a text string; `confirm` accepts booleans or trimmed, case-insensitive `true`/`false`, `yes`/`y`, `no`/`n`, `approve`/`reject`, and `confirm`/`deny`; `select` accepts a trimmed, case-insensitive choice label or a 1-based numeric index.
-  - An answer that does not match the pending primitive prompt stays pending. Atomic returns a `noop` explaining the expected shape and, for `select`, the available choices; it never silently chooses the first option. Prompt-card answers from the interactive graph keep their existing typed path.
-  - For a live idle, non-paused stage, `prompt`, `followUp`, and eligible `auto` delivery all start a fresh prompt immediately; an actively streaming `followUp` remains queued and `steer` remains steering, so neither starts a concurrent prompt. During controlled pause, every context-bearing delivery remains held instead. The result's `delivery` and message describe the action actually taken (`prompt`, `followUp`, `steer`, `answer`, or `resume`), not merely the requested mode. Explicit `resume` against a stage that is not paused is a truthful no-op, and explicit message deliveries cannot bypass a paused stage; resume it first.
-  - Delivery timing is mode-specific and deterministic. `steer` (and `auto` against a streaming stage) enters the steering queue and is consumed after the current assistant response finishes its whole tool batch, before the next model request — never between two tool calls of the same response. `followUp` enters the follow-up queue and is consumed only when the agent would otherwise stop. Sequential sends keep submission order *within* the queue they select; there is no global FIFO across the two queues, so a steer submitted after a follow-up is still consumed first. Ordering is promised relative to admission into the selected queue, not relative to when a caller started a request whose session setup or admission finishes later.
-  - While the root remains nonterminal, follow-up messaging to an eligible completed child stage can reuse its retained `sessionFile`. After the root terminates, use explicit `/workflow attach <run-id> <stage>` post-mortem chat instead; `workflow send` never admits a retained-session turn after terminal publication.
-  - Arbitrary `ctx.ui.custom<T>` widget prompts require the interactive workflow graph and return a clear unsupported message when targeted through `send`.
-- On a nonterminal root, `delivery: "auto"` first answers a pending prompt, then resumes paused work, then steers a streaming stage, and finally starts a fresh prompt when the live stage is idle.
+- `answer` responds only to a pending primitive or structured human-input prompt. It accepts `promptId` plus `response`, `text`, or `message`, preserves prompt-kind validation, and never sends stage chat, steers, resumes, or starts a model turn.
+- Send free-form updates through ordinary Intercom to `<runId>:<stageKey>`. Atomic delivers immediately to live stages and queues messages for known stages that have not started, delivering them before their first model turn; unknown stages remain unknown targets. Use `ask` once the target has a reply-capable live session. Use `workflow resume` only for paused workflow control.
 - `pause`, `interrupt`, and `quit` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped `pause` and `interrupt` controls can target a visible nested child stage from the expanded graph. Atomic routes stage controls to the owning nested run internally.
 - `interrupt` and `quit` can also name one in-flight `ctx.tool` node with `stageId`, by expanded node id, local `tool:<argsHash>` id, or tool name. Both mean the same thing for a tool: abort that single call now. Tool nodes stay non-attachable — this is an abort control, not a chat target. Identifiers resolve exactly first and then uniquely; a name shared by two tool nodes (or by a stage and a tool) returns the same ambiguity diagnostic stages get, listing each match as `<name> (tool)`.
 - Aborting one tool node leaves every sibling stage and sibling tool node running and does not pause the run. The node becomes `cancelled`, writes no replayable checkpoint, and re-runs on a later resume. Whether the run itself survives is ordinary author control flow: an awaited `ctx.tool` that is aborted rejects, exactly as it would for any other failure, unless the workflow catches it. A node that has already settled reports that it is not running rather than silently succeeding.
@@ -3211,7 +3236,7 @@ When a callback was abandoned, its executor stays alive but stops owning the run
 
 When a paused stage interrupted an active model turn, Atomic preserves that turn's existing pause loop: a non-empty resume message is delivered exactly once through the resumed loop, and (if the stage has not finalized) Atomic injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` before normal completion/readiness handling. A no-message interrupted-turn resume injects the same continuation directly. A different state applies when the stage was idle and waiting for a new stage-chat turn: resuming with a non-empty message starts exactly one fresh prompt containing the text, while an empty resume only releases the pause and does not fabricate a user turn or continuation.
 
-The same continuation applies to user messages queued into a live streaming stage. Steering a turn (Enter in an attached stage chat), queueing a follow-up (Ctrl+F), or using `workflow({ action: "send" })` with `steer`/`followUp` delivery arms the identical continuation prompt, which Atomic injects once when the interrupted turn ends — even if several messages were queued during that turn — so a steered stage returns to its original (or user-redefined) objective instead of stopping after answering the queued message.
+The same continuation applies to user messages queued into a live streaming stage. Steering a turn (Enter in an attached stage chat) or queueing a follow-up (Ctrl+F) arms the identical continuation prompt, which Atomic injects once when the interrupted turn ends — even if several messages were queued during that turn — so a steered stage returns to its original (or user-redefined) objective instead of stopping after answering the queued message.
 
 Messages delivered to an idle stage start a fresh user turn immediately and receive no continuation nudge; abort, kill, workflow exit, and finalized/fail-fast stage boundaries suppress late prompt creation and continuation injection.
 
@@ -3223,7 +3248,7 @@ These are distinct operations. *Resuming workflow execution* (`/workflow resume`
 
 Any eligible terminal agent stage with a valid retained session opens as an interactive post-mortem chat through the explicit user-driven TUI path: completed-workflow inspection, `/workflow attach`, or `/workflow connect` followed by stage selection, including restored/replayed durable snapshots after a restart. Explicit `/workflow attach <root-run> <nested-stage>` targets are resolved through the expanded graph and routed to the child run that owns the stage while the overlay remains rooted on the requested graph; the resolved owner is preserved when sibling child workflows reuse the same local stage ID.
 
-`workflow({ action: "send" })` is not a post-mortem path. Once the root is terminal, programmatic sends fail closed before retained-session probing or nested-stage routing. Start a new workflow if tracked work remains; proceed inline only for small, deterministic, low-risk work.
+Intercom and explicit `/workflow attach` own stage communication. The workflow tool has no free-form message action; start a new workflow if tracked work remains after a terminal root.
 
 When a nested stage is reopened after a restart or from another checkout through the explicit TUI path, its session cwd comes from the durable root workflow (resolved workflow cwd first, then original invocation cwd) while stage-control ownership remains with the actual child run. Follow-up turns are appended in place to the stage's retained session (no separate fork), so the agent may still invoke its ordinary tools and cause side effects; only the workflow DAG, run/stage status, results, timings, checkpoints, and topology are immutable. Post-mortem chat does not resume or modify workflow execution state.
 
@@ -3233,7 +3258,7 @@ Every host session replacement or shutdown invalidates post-mortem handles, incl
 
 When a known stage cannot be reopened, the attached chat shows the complete `SESSION UNAVAILABLE` explanation down to the supported 40-column minimum instead of incorrectly labeling an invalid file as an archived transcript. Recoverably failed stages keep their execution-resume semantics and are not silently reopened as post-mortem chat.
 
-Completed stages also remain addressable by blocking `intercom.ask` calls from sibling workflow stages. If an ask reaches a completed target with a retained conversation, Atomic schedules one serialized post-mortem turn in that exact conversation; no manual `workflow send` follow-up is needed.
+Completed stages also remain addressable by blocking `intercom.ask` calls from sibling workflow stages. If an ask reaches a completed target with a retained conversation, Atomic schedules one serialized post-mortem turn in that exact conversation.
 
 The target sees the original ask, and its normal `intercom.reply` remains correlated to the originating child session and message ID. The parent chat or another session cannot satisfy the waiter. Late-message routing uses single-owner claiming: after the workflow post-mortem router claims a completed-stage ask and assigns its completion promise, later listeners preserve that claim, making bundled extension registration order irrelevant.
 
@@ -3247,6 +3272,8 @@ Passing a stage session's file path to `--session` still opens it explicitly. Cl
 ## Lifecycle Notices and Human Input
 
 Atomic emits deduplicated main-chat notices when top-level workflow runs complete, fail, end blocked, or stop at an active recoverable provider/auth/rate-limit block. A recoverable block remains resumable (`status` surfaces and headless results report it as blocked even though the stored live snapshot stays active), is retained durably as blocked for cross-session resume, appears in the resume picker, and its notice says the workflow **is blocked** rather than implying terminal completion. Each blocked occurrence is deduped by its `blockedAt` timestamp, so a resumed workflow that hits another recoverable block re-notifies the invoking chat. Nested child workflow outcomes are reflected inside the expanded parent graph instead of producing separate top-level cards.
+
+Treat a blocked run as continuable by default; the blocked notice text itself carries this instruction. On a `WORKFLOW BLOCKED` notice or a blocked status, keep the work moving: resume a resumable block, answer the pending prompt, steer the stage past the obstacle, or start a follow-up workflow that carries the remaining tracked work past a terminal block — continue inline only if the remaining work is minimal. Stop for user input only when the task is so ambiguous that competing interpretations lead to materially different outcomes and judgment cannot infer intent from the stated objective and repository evidence; mine git history, commits, PRs, issues, and the user's own comments before asking. When `ask_user_question` or another human input channel is unavailable, continue fully autonomously on the interpretation best supported by that evidence, and record the assumption in the result or an artifact. A budget-exceeded stop (the resumable `budget_exceeded` blocked rail) is the exception, and its notice says so: the exhausted budget is a boundary someone chose, so summarize progress and the estimated next steps, ask the user whether to proceed — prefer the `ask_user_question` tool when it is available — and resume with a raised `budget` only after approval.
 
 Previously, the streaming `persistWhenStreaming` path directly appended the visible card. It did not enqueue a native steer/follow-up or schedule a later model step. Therefore, an earlier provider context snapshot could finish with an uncorrected running claim.
 
@@ -3290,13 +3317,13 @@ When a workflow needs human input, answer in the graph viewer or attached stage 
 /workflow attach <run-id> <stage-id-or-name>
 ```
 
-Agents can answer primitive and structured pending prompts programmatically with `workflow({ action: "send", delivery: "answer", ... })` only while the root workflow is nonterminal; use `promptId` when it is present in the stage details, and provide answer content with `response`, `text`, or `message`. Arbitrary custom TUI widget prompts intentionally refuse this path in iteration 1 because a generic `T` cannot be reconstructed safely from a non-TUI payload.
+Agents can answer primitive and structured pending prompts programmatically with `workflow({ action: "answer", ... })` only while the root workflow is nonterminal; use `promptId` when it is present in the stage details, and provide answer content with `response`, `text`, or `message`. Arbitrary custom TUI widget prompts intentionally refuse this path in iteration 1 because a generic `T` cannot be reconstructed safely from a non-TUI payload.
 
 `ctx.ui.custom<T>(factory, options?)` reuses Atomic's TUI component path: the factory receives the same real `(tui, theme, keybindings, done)` types as extension `ctx.ui.custom`, and the workflow resumes with the value passed to `done(value)`. Use `options.label` for a safe display-only graph/status label and `options.replayIdentity` when widget semantics can change without the callsite changing. Do not put secrets in labels or replay identities; only a hash of the identity is stored, and label text is not part of replay identity. Both inline connected rendering and `overlay: true` mount in the graph viewer's attached stage chat: overlay is a placement hint rather than a capability request, so an in-stage `ask_user_question` — which always asks for an overlay — mounts, takes focus, and resolves like any other custom prompt. There is no nested host overlay above the graph chrome; the widget occupies the stage-chat custom-UI slot and `overlayOptions` / `onHandle` are not consumed there.
 
 Prompt answers are replayable only while the source run remains in the live in-memory store. `StageSnapshot.promptAnswerState` is snapshot-safe metadata for continuation: `available` means a matching live answer can be replayed, `unavailable` means the matching prompt node exists but its private answer was purged, and `ambiguous` means multiple matching prompt nodes exist so Atomic asks again. The raw answer lives in a private `PromptAnswerRecord` ledger, is never written to snapshots or persistence, and remains resident in memory until the answer is cleared, the run is removed, or the store is cleared.
 
-Prompt replay keys include the prompt kind, message text, select choices, input/editor initial value, custom prompt identity hash, and hashed author callsite, so changing any of those inputs may intentionally re-ask on continuation. An empty `ctx.ui.select(..., [])` has no answerable choices and throws before creating a prompt node. Arbitrary custom-widget answers cannot be supplied through `workflow send`; focus the `custom` awaiting-input node in the interactive graph instead.
+Prompt replay keys include the prompt kind, message text, select choices, input/editor initial value, custom prompt identity hash, and hashed author callsite, so changing any of those inputs may intentionally re-ask on continuation. An empty `ctx.ui.select(..., [])` has no answerable choices and throws before creating a prompt node. Arbitrary custom-widget answers cannot be supplied through `workflow answer`; focus the `custom` awaiting-input node in the interactive graph instead.
 
 If the user answers a human-in-the-loop prompt in the workflow UI or stage UI broker, the stage receives the answer directly and the active main chat receives a display-only notice (`triggerTurn: false`, `excludeFromContext: true`) containing a concise answer summary. The notice is rendered for the user and persisted for audit, but it does not wake the model, enter LLM context, or authorize answering any other workflow prompt. Prompt answers sent by the main-chat `workflow` tool are suppressed from this notice because the tool result already informs the current turn.
 
@@ -3304,7 +3331,7 @@ When an interactive, non-schema workflow stage calls `ask_user_question`, Atomic
 
 In this chat-answer flow, choosing the ready option completes the stage and releases dependent stages. Choosing the not-ready option keeps the stage open for a genuine stage-chat turn and brokers readiness again after that turn. A chat answer is never treated as an invisible stay decision. On the readiness gate, **Type something.** sends the typed text as the next stage-chat message (empty or whitespace-only text cannot be submitted). **Chat about this** is a plain option — it does not open an inline editor — and stays by sending `The user would like to chat more about this`.
 
-The readiness prompt can be answered in the attached stage UI or with `workflow({ action: "send", delivery: "answer", ... })`. Ordinary structured-option answers retain their existing readiness behavior. A schema-backed stage that has successfully finalized through `structured_output` is terminal and does not reopen this readiness gate.
+The readiness prompt can be answered in the attached stage UI or with `workflow({ action: "answer", ... })`. Ordinary structured-option answers retain their existing readiness behavior. A schema-backed stage that has successfully finalized through `structured_output` is terminal and does not reopen this readiness gate.
 
 
 ## Durable Workflows and Cross-Session Resume
@@ -3428,7 +3455,7 @@ A run quit while a `ctx.tool` call was in flight resumes the same way: the unfin
 
 Selecting a completed target—or a checkpointed failed target marked non-resumable—follows a separate read-only open path. Atomic reconstructs root and reciprocal nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage, boundary, and tool references into a stable expanded hierarchy, and never calls the resume dispatcher or runs workflow code, tools, tasks, or prompts. These graphs remain inspectable even when no retained chat transcript survives, including tool-only graphs.
 
-A terminal child stage with a valid retained session may be reopened for detached post-mortem conversation through `/workflow attach` or completed graph inspection. Follow-up is routed to that real child `{runId, stageId}` and may append chat, but it cannot pause, resume, retry, mutate root or child execution state, write a terminal checkpoint, or emit a duplicate lifecycle notice. Programmatic `workflow send` rejects the terminal root before nested-owner routing or session probing. Tool nodes never offer chat attachment.
+A terminal child stage with a valid retained session may be reopened for detached post-mortem conversation through `/workflow attach` or completed graph inspection. Follow-up is routed to that real child `{runId, stageId}` and may append chat, but it cannot pause, resume, retry, mutate root or child execution state, write a terminal checkpoint, or emit a duplicate lifecycle notice. Tool nodes never offer chat attachment.
 
 New tool checkpoints persist topology. A current-format tool checkpoint created before that additive topology existed still replays safely: its cached output remains authoritative and its callback is never rerun. Root-level inspection derives deterministic fallback identity/order from checkpoint identity and record order. If a topology-less cached tool replays inside a child workflow, Atomic first appends awaited topology metadata with the current child/boundary ownership, without replacing the original output checkpoint. Foreign or malformed checkpoint formats remain excluded.
 
@@ -3491,7 +3518,7 @@ Atomic discovers workflow definitions in this order:
 | `~/.atomic/agent/extensions/workflow/config.json` | Global | `workflows.<name>.path` for user-wide configured paths |
 | `~/.atomic/agent/workflows/*.{ts,js,mjs,cjs}` | Global | Legacy `~/.pi/agent/workflows/` is also checked |
 | Installed Atomic packages | Package | Uses package metadata or conventional `workflows/` directories |
-| Bundled workflows | Built-in | Shipped with `@bastani/workflows` |
+| Bundled workflows | Built-in | Shipped with `@bastani/atomic/workflows` |
 
 A workflow module may export one default workflow definition and/or named workflow definitions. Discovery checks the default export first, then named exports.
 
@@ -3508,14 +3535,14 @@ To co-locate reusable helpers with your workflows — for example a `ctx.ui.cust
 
 ```ts
 // .atomic/workflows/release-picker.ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import { tableSelectorFactory } from "./lib/table-selector.js";
 ```
 
 ```ts
 // .atomic/workflows/lib/table-selector.ts
-import type { WorkflowCustomUiFactory } from "@bastani/workflows";
+import type { WorkflowCustomUiFactory } from "@bastani/atomic/workflows";
 
 export const tableSelectorFactory: WorkflowCustomUiFactory<{ id: string; name: string }> = (
   tui,
@@ -3552,6 +3579,8 @@ A successful rescan may still contain per-resource diagnostics. Both reload surf
 ## Run budgets
 
 Set an optional `budget` on workflow extension config, an authored `workflow({...})` definition, a `workflow({ action: "run" })` tool call, or a `workflow({ action: "resume" })` continuation to raise or narrow the ceiling. Each field resolves independently: run override, then definition, then config default. An omitted field falls through; a present `0` disables that dimension.
+
+Budgets are operator-selected. Atomic's agent guidance treats "no budget" as the correct default: the agent passes a `budget` on a `run` or `resume` call only when you asked for a limit, and otherwise omits the field so the definition and config resolve normally. A cap the agent invented would stop an otherwise healthy run at a duration, token, or cost boundary you never chose, and the stop reads as a workflow failure rather than as an added override. When you do state a limit, only the fields you named are passed; the rest keep falling through.
 
 ```ts
 export default workflow({
@@ -3713,22 +3742,14 @@ atomic -e ./local-workflow-package
 
 Workflow stage sessions inherit the same package and temporary `-e` resource discovery snapshot as the main chat. That means a workflow loaded from an external package or directory can start stages that see the package's extensions/tools, subagents and agent definitions, skills, prompt templates, themes, workflows, and trusted borrowed project-local resources without sharing the parent chat's resource-loader instance. Passing an explicit `resourceLoader` in stage options still opts that stage out of this inheritance.
 
-## Programmatic Usage
+## Programmatic usage
 
-`@bastani/workflows` is an Atomic package extension. It registers:
+`@bastani/atomic/workflows` is Atomic's published workflow SDK. Import `workflow` from that specifier, import `Type` from `typebox`, and export the definition returned by `workflow({...})`. Keep runtime helpers such as widget factories and shared utilities in a subdirectory outside the top-level discovery scan, such as `.atomic/workflows/lib/`; see [Workflow Locations](#workflow-locations).
 
-- `/workflow <name> key=value ...` for interactive named runs
-- `/workflow connect|attach|pause|interrupt|quit|resume|status|inputs|reload` for live control, inspection, and rediscovery
-- the `workflow` tool for named execution, discovery, inspection, messaging, run control, and reload
-
-The signatures in this reference follow the externally shipped standalone authoring declaration in `packages/workflows/src/authoring.ts`. Atomic's internal runtime types may specialize opaque SDK values or add executor-only integration fields; those are not ordinary workflow-package authoring API.
-
-Workflow definition files must export definitions produced by `workflow({...})`. Keep non-workflow runtime helpers (widget factories, shared utilities) in a subdirectory the discovery scan ignores, such as `.atomic/workflows/lib/` — see [Workflow Locations](#workflow-locations). The former imperative object-form runner is not part of the public SDK, and authored workflow files cannot use `runWorkflow` as a runner from `@bastani/workflows`.
-
-Standalone TypeScript workflow packages type-check the SDK import without a hand-authored `.d.ts`, `declare module` shim, or `tsconfig` `paths` alias. The SDK types ship with `@bastani/atomic`, so a workflow package depends only on `@bastani/atomic` (plus a `typebox` peer):
+Package authors list both `@bastani/atomic` and `typebox` in `peerDependencies`. The `@bastani/atomic` package publishes compiled JavaScript and declarations for `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin`, and each `@bastani/atomic/workflows/builtin/*` module. TypeScript resolves those exports directly under `moduleResolution: NodeNext`. When Atomic executes a workflow file, its runtime loader resolves the same published specifiers to Atomic's in-memory SDK.
 
 ```ts
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -3745,29 +3766,7 @@ export default workflow({
 });
 ```
 
-Workflow SDK type resolution depends on the package's other imports:
-
-- A package that imports `@bastani/atomic` anywhere (for example, an extension shipped in the same package) automatically resolves the workflow SDK types. `@bastani/atomic`'s root declarations reference the ambient bridge, so no extra configuration is needed.
-- A pure workflow-only package — one that imports nothing but `@bastani/workflows` — adds a single opt-in so TypeScript loads the ambient bridge. Set it once for the project in `tsconfig.json`:
-
-  ```jsonc
-  {
-    "compilerOptions": {
-      "module": "NodeNext",
-      "moduleResolution": "NodeNext",
-      "types": ["@bastani/atomic/workflows/ambient"]
-    }
-  }
-  ```
-
-  or add a single reference directive at the top of one workflow file:
-
-  ```ts
-  /// <reference types="@bastani/atomic/workflows/ambient" />
-  ```
-
-Either form makes `import { workflow } from "@bastani/workflows"
-import { Type } from "typebox"` and the `@bastani/workflows/builtin/*` composition imports resolve under `tsc` (`moduleResolution: NodeNext`) with no hand-authored `.d.ts`, no `declare module` shim, and no `paths` alias. `@bastani/workflows` is not a separate npm package — its types ship with `@bastani/atomic` — so list both `@bastani/atomic` and `typebox` (workflow files import `Type` from `typebox`) in `peerDependencies`. Runtime discovery and loading via `atomic.workflows` are unchanged: Atomic's loader still supplies the SDK when workflow files execute.
+Programmatic callers import `run` and call `run(definition, inputs)` with an exported definition and validated inputs. Use `createRegistry()` when an integration needs to register, merge, or look up several definitions before selecting one to run. The extension also registers the `/workflow` commands and the `workflow` tool for named execution, discovery, inspection, messaging, run control, and reload.
 
 
 ### `workflow(spec)`
@@ -3782,7 +3781,7 @@ function workflow<
 ): AuthoredWorkflowDefinition<TInputs, TOutputs>;
 ```
 
-Creates the frozen branded definition documented in [The `workflow()` Definition](#the-workflow-definition). Discovery accepts only definitions minted by this function.
+Creates the frozen definition documented in [The `workflow()` definition](#the-workflow-definition). Export the returned definition or pass it to `ctx.workflow(...)`, `run(...)`, or a registry.
 
 ### `createRegistry(initial?)`
 
@@ -3807,7 +3806,7 @@ interface WorkflowRegistry {
 Creates an immutable-style registry keyed by normalized workflow name. `register`, `merge`, and `remove` return registries rather than mutating the current registry.
 
 ```ts
-import { createRegistry, workflow } from "@bastani/workflows";
+import { createRegistry, workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 const alpha = workflow({
@@ -4024,16 +4023,8 @@ The factory creates an isolated registry; `cancellationRegistry` is the default 
 export type { Static, TSchema } from "typebox";
 ```
 
-These TypeBox types are re-exported for authoring helpers. The runtime `Type` builder is not re-exported; import it from `typebox`.
+These TypeBox types are re-exported for authoring helpers. Import the runtime `Type` builder from `typebox`.
 
-### `runWorkflow` (removed)
-
-```typescript
-/** @deprecated Always throws a migration error. */
-const runWorkflow: never;
-```
-
-This runtime migration stub exists only so old modules fail at the callsite with a clear error. Use `workflow({...})` for authoring and `run(...)` for programmatic execution.
 
 ### Builtin workflow exports
 
@@ -4048,23 +4039,25 @@ import {
   openClaudeDesign,
   ralph,
   tournament,
-} from "@bastani/workflows/builtin";
+} from "@bastani/atomic/workflows/builtin";
 ```
 
 Each export is a workflow definition. All nine definitions are available through individual module paths. See [Compose with builtin workflows](#compose-with-builtin-workflows) for a parent workflow example.
 
 
-## Fast Inference for Workflow Stages
+## Fast inference for workflow stages
 
-Workflow stages can use faster, higher-priority inference on supported providers so multi-stage runs finish sooner. Codex fast mode currently provides this option.
+Workflow stages can use faster inference on supported OpenAI and GitHub Copilot models so multi-stage runs finish sooner.
 
-### Codex fast mode
+### Fast mode
 
-Use `/fast` to manage Codex fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; workflow stages use the workflow scope, not the chat scope. A stage inside a nested `ctx.workflow(...)` call keeps that workflow scope, and subagents launched by the stage inherit it.
+Use `/fast` to manage fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; workflow stages use the workflow scope, not the chat scope. A stage inside a nested `ctx.workflow(...)` call keeps that workflow scope, and subagents launched by the stage inherit it.
 
-Fast mode is eligible for supported `openai/*` and `openai-codex/*` providers and provider aliases that use the shared `openai-codex-responses` transport. It does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers. Atomic resolves the marker and request tier for the effective model on every fallback attempt, so a supported fallback can be fast even when the primary failed, while an unsupported fallback is not. Workflow stage model labels and stage-launched subagent result labels keep the raw model id and append a separate `fast` marker; graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
+Fast mode is eligible for supported `openai/*` and `openai-codex/*` providers, provider aliases that use the shared `openai-codex-responses` transport, and GitHub Copilot models whose OAuth account catalog advertises a fast variant. OpenAI requests use the priority service tier. GitHub Copilot requests use the account-supported fast variant without adding the OpenAI service-tier field. Azure OpenAI, OpenRouter, and generic OpenAI-compatible providers are not eligible.
 
-Enable workflow fast mode deliberately for broad workflows: parallel fan-out and fallback attempts can multiply priority-tier requests and cost.
+Atomic resolves eligibility for the effective model on every fallback attempt. A supported fallback can use fast mode even when the primary failed, while an unsupported fallback keeps its normal request behavior. Workflow stage model labels and stage-launched subagent result labels keep the raw model ID and append a separate `fast` marker; graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
+
+Enable workflow fast mode deliberately for broad workflows. Parallel fan-out and fallback attempts can multiply fast provider requests and usage.
 
 ## Context Engineering
 
@@ -4240,120 +4233,6 @@ Before turning a process into a workflow, confirm that it suits automation:
 
 For complex workflows, structure the implementation as a pipeline: acquire context, prepare prompts/artifacts, process with LLM stages, parse or validate outputs, and render the final result.
 
-## Migrating from the `defineWorkflow()` Builder API
-
-[#1457](https://github.com/bastani-inc/atomic/pull/1457) removed the chained builder API — `defineWorkflow(name).description(...).input(...).output(...).worktreeFromInputs(...).run(...).compile()` — and made the single `workflow({ name?, description, inputs, outputs, run })` object form the only authoring API. There is no shim and no deprecation period: workflow files that still call `defineWorkflow(...).compile()` fail discovery with a module-load error until authors migrate them.
-
-Use this section for workflow files that use the previous API. If you are authoring a new workflow, skip it and start from [Writing a Workflow](#writing-a-workflow).
-
-### What changed
-
-- `import { defineWorkflow, Type } from "@bastani/workflows"` → `workflow` now comes from `@bastani/workflows`, and `Type` comes from the `typebox` package directly. `@bastani/workflows` no longer re-exports `Type`. The `Static` and `TSchema` *type* exports are still re-exported from `@bastani/workflows`, so `import type { Static } from "@bastani/workflows"` keeps working — only the runtime `Type` builder moved.
-- The fluent builder chain became one object literal passed to `workflow({ ... })`.
-- `name` moved from the `defineWorkflow(name)` argument into the object. It is now **optional** — omit it and discovery derives the name from the filename (the recommended style used by the builtins and most examples), or keep it when you want the name to differ from the file's basename.
-- `outputs` is now **required**. Workflows that declared no outputs before must now pass `outputs: {}`.
-- `.compile()` is gone. `workflow({ ... })` returns the frozen, branded definition directly; `export default` it.
-- The imperative object-form `runWorkflow(...)` runner is also removed (it is a `never` placeholder that throws on access). Programmatic execution uses the exported `run(def, inputs)` helper or a registry — see [Programmatic Usage](#programmatic-usage).
-
-### Builder method → object key
-
-| Removed builder API | New `workflow({ ... })` key |
-| --- | --- |
-| `defineWorkflow("name")` argument | `name: "name"` (optional; derived from the filename when omitted) |
-| `.description(text)` | `description: text` |
-| `.input(key, schema)` (repeatable) | `inputs: { key: schema, ... }` |
-| `.output(key, schema)` (repeatable) | `outputs: { key: schema, ... }` (required, even if `{}`) |
-| `.worktreeFromInputs(binding)` | `worktreeFromInputs: binding` (binding shape unchanged) |
-| `.run(fn)` callback | `run: fn` |
-| `.compile()` terminal | delete — `workflow({ ... })` returns the definition |
-
-`ctx` and every primitive (`ctx.task`, `ctx.chain`, `ctx.parallel`, `ctx.stage`, `ctx.workflow`, `ctx.exit`, `ctx.ui`) are unchanged, so **you do not need to rewrite workflow bodies** — only the authoring wrapper changes.
-
-### Full before / after
-
-Before (removed API):
-
-```ts
-import { defineWorkflow, Type } from "@bastani/workflows";
-
-export default defineWorkflow("review-changes")
-  .description("Run two reviewers in parallel and synthesize a decision.")
-  .input("target", Type.String({ description: "Path or change target to review." }))
-  .input("base_branch", Type.String({ default: "origin/main" }))
-  .output("decision", Type.String())
-  .output("concerns", Type.Optional(Type.Array(Type.String())))
-  .worktreeFromInputs({ baseBranch: "base_branch" })
-  .run(async (ctx) => {
-    const target = String(ctx.inputs.target);
-    const [quality, runtime] = await ctx.parallel(
-      [
-        { name: "quality", prompt: `Review quality of ${target}` },
-        { name: "runtime", prompt: `Review runtime behavior of ${target}` },
-      ],
-      { concurrency: 2 },
-    );
-    return { decision: `${quality.text}\n${runtime.text}`, concerns: [] };
-  })
-  .compile();
-```
-
-After (current API):
-
-```ts
-import { workflow } from "@bastani/workflows";
-import { Type } from "typebox";
-
-export default workflow({
-  name: "review-changes", // optional — omit to derive from filename
-  description: "Run two reviewers in parallel and synthesize a decision.",
-  inputs: {
-    target: Type.String({ description: "Path or change target to review." }),
-    base_branch: Type.String({ default: "origin/main" }),
-  },
-  outputs: {
-    decision: Type.String(),
-    concerns: Type.Optional(Type.Array(Type.String())),
-  },
-  worktreeFromInputs: { baseBranch: "base_branch" },
-  run: async (ctx) => {
-    const target = String(ctx.inputs.target);
-    const [quality, runtime] = await ctx.parallel(
-      [
-        { name: "quality", prompt: `Review quality of ${target}` },
-        { name: "runtime", prompt: `Review runtime behavior of ${target}` },
-      ],
-      { concurrency: 2 },
-    );
-    return { decision: `${quality.text}\n${runtime.text}`, concerns: [] };
-  },
-});
-```
-
-### Conversion checklist
-
-For each `.atomic/workflows/*.ts` (or workflow-package) file:
-
-1. Swap the import to `import { workflow } from "@bastani/workflows"` and add `import { Type } from "typebox"`. Drop `defineWorkflow` from the `@bastani/workflows` import. `import type { Static, TSchema }` can stay on the `@bastani/workflows` import if you use those types.
-2. Replace `defineWorkflow("<name>")` with `workflow({`. You may keep `name: "<name>"` or drop the key entirely to derive the name from the filename.
-3. Move `.description("<text>")` to a `description: "<text>",` property.
-4. Collect every `.input(key, schema)` into one `inputs: { key: schema, ... },` map.
-5. Collect every `.output(key, schema)` into one `outputs: { key: schema, ... },` map. If there were no `.output(...)` calls, add `outputs: {},` — it is now required.
-6. Move `.worktreeFromInputs(binding)` to a `worktreeFromInputs: binding,` property (same binding shape, unchanged).
-7. Move the `.run(fn)` callback to a `run: fn,` property; keep the body byte-for-byte identical.
-8. Delete the trailing `.compile()`, close the object with `})`, and keep `export default`.
-9. Run `/workflow reload` (or restart Atomic) and `/workflow list` to confirm the file loads. Because `ctx` and its primitives are unchanged, stage behavior, graph layout, resume/quit, and human-input prompts are unaffected.
-
-### Gotchas
-
-- **`outputs` is required.** The old `.output(...)` calls were optional, and a workflow without outputs compiled successfully. The new object form throws `workflow: outputs must be a schema map` when `outputs` is missing, so declare `outputs: {}` for outputless workflows.
-- **`Type` is no longer re-exported.** `import { Type } from "@bastani/workflows"` fails type-checking; import it from `typebox` instead. (`Static` and `TSchema` *types* are still re-exported from `@bastani/workflows`, so those imports do not need to change.)
-- **`.compile()` does not exist.** Leaving it produces a runtime `TypeError`; `workflow({ ... })` already returns the frozen, branded definition.
-- **`name` is derived from the filename when omitted.** Discovery derives the name from the filename: `review-changes.ts` becomes `review-changes`, so an explicit `name` is only needed when it should differ from the basename.
-- **Do not construct definitions manually.** Discovery rejects hand-built objects carrying `__piWorkflow: true`, and `ctx.workflow(...)` rejects them too. Both accept only definitions minted by `workflow({ ... })`.
-- **The imperative `runWorkflow` runner is gone.** It is now a `never` placeholder that throws on access; use the exported `run(def, inputs)` helper or a registry for programmatic execution.
-- **Keep `outputs` inline for the strictest type checking.** The old builder enforced no-extra-output keys through a `NoExtraOutputs` generic on `.run(fn)`; the object form re-creates that check for inline `outputs` maps, but cannot recover output keys when a schema map is widened or built up before being passed to `workflow({ ... })`. Keep the `outputs` literal inline so the declared-key check stays exact.
-
-Everything else — stage primitives, `ctx.inputs` typing, runtime validation, DAG inference, MCP scoping, resume/quit, worktree binding, model fallback, and the `/workflow` tool contract — is unchanged.
 
 ## Design Checklist
 
@@ -4383,7 +4262,7 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not guess input keys; inspect with `inputs` or `get` first.
 - Do not call `create`, `update`, or `delete` on the workflow tool; definitions are code-authored.
 - Do not use legacy workflow tool fields like `agent`, `stage`, or run-control `name`.
-- Do not pass strings or path objects to `ctx.workflow(...)`; import the workflow definition from `@bastani/workflows/builtin` or another TypeScript module first.
+- Do not pass strings or path objects to `ctx.workflow(...)`; import the workflow definition from `@bastani/atomic/workflows/builtin` or another TypeScript module first.
 - Do not create a self-edge or a dependency edge from the current frontier to an existing ancestor. Cyclic workflow graphs are unsupported; redesign or stop before launch when a cycle cannot be removed.
 - Do not model a bounded loop by reopening an earlier node beneath its downstream work. Create distinct tracked work per iteration and keep retained-session follow-up as non-topological activity when it adds no dependency work.
 - Do not claim TypeScript or workflow discovery proves a dynamic workflow acyclic. Discovery diagnoses imports and definition shape; execution, replay, and DBOS hydration are the runtime topology boundary.
@@ -4848,7 +4727,7 @@ During the pre-launch architecture pass, enumerate the slices in the coverage ma
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Run each slice through a child workflow that owns its implement/review/repair lifecycle. Import `goal` or `ralph` from `@bastani/workflows/builtin`, or use a task-specific child when neither builtin matches. Before each child, use a durable `ctx.tool(...)` step to create or check out the slice's explicit branch in its worktree. `worktreeFromInputs` creates a missing target with a detached checkout and reuses an existing target as-is; `base_branch` and `git_worktree_dir` do not create or check out a feature branch by themselves. Create slice N+1's branch from slice N's verified branch, then pass that previous branch as `base_branch` and give the child a distinct `git_worktree_dir`.
+Run each slice through a child workflow that owns its implement/review/repair lifecycle. Import `goal` or `ralph` from `@bastani/atomic/workflows/builtin`, or use a task-specific child when neither builtin matches. Before each child, use a durable `ctx.tool(...)` step to create or check out the slice's explicit branch in its worktree. `worktreeFromInputs` creates a missing target with a detached checkout and reuses an existing target as-is; `base_branch` and `git_worktree_dir` do not create or check out a feature branch by themselves. Create slice N+1's branch from slice N's verified branch, then pass that previous branch as `base_branch` and give the child a distinct `git_worktree_dir`.
 
 The parent should verify each child before creating the next boundary. If a gate fails, stop at the first failed gate, report that slice as unverified, and retain the earlier verified slices and their branch/worktree records. Do not roll earlier slices back and do not continue past the failure.
 
@@ -4858,8 +4737,8 @@ The calls below are deliberately unrolled. Repeat the downstream shape for the p
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { Type } from "typebox";
-import { workflow } from "@bastani/workflows";
-import { goal } from "@bastani/workflows/builtin";
+import { workflow } from "@bastani/atomic/workflows";
+import { goal } from "@bastani/atomic/workflows/builtin";
 
 function spawnCommand(argv: readonly string[], cwd: string) {
   const [command, ...args] = argv;

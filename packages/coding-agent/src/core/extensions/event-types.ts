@@ -19,6 +19,8 @@ import type {
 	ToolExecutionUpdateEvent,
 	TurnEndEvent,
 	TurnStartEvent,
+	UIPromptEndEvent,
+	UIPromptStartEvent,
 	UserBashEvent,
 } from "./agent-events.ts";
 import type { ResourcesDiscoverEvent, SessionEvent } from "./session-events.ts";
@@ -36,6 +38,8 @@ export type ExtensionEvent =
 	| AgentStartEvent
 	| AgentEndEvent
 	| AgentSettledEvent
+	| UIPromptStartEvent
+	| UIPromptEndEvent
 	| TurnStartEvent
 	| TurnEndEvent
 	| MessageStartEvent

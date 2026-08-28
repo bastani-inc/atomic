@@ -1,5 +1,6 @@
 /** Durable workflow backend seam for DBOS and explicit in-memory tests. */
 
+import type { PendingStageMessage } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { withCurrentStageTopology } from "./dbos-envelope.js";
 import {
@@ -25,6 +26,35 @@ export interface DurableWorkflowCatalogEntries {
 	readonly completedAll?: readonly ResumableWorkflowEntry[];
 }
 export { durableHash } from "./durable-hash.js";
+/** Replace one logical run's bucket without mutating root or sibling run messages. */
+export function replacePendingStageMessagesForRun(
+	existing: readonly PendingStageMessage[],
+	logicalRunId: string,
+	messages: readonly PendingStageMessage[],
+): readonly PendingStageMessage[] {
+	if (messages.some((entry) => entry.runId !== logicalRunId)) {
+		throw new Error(`atomic-workflows: pending-stage persistence mixed logical run ${logicalRunId}`);
+	}
+	const firstOwnedIndex = existing.findIndex((entry) => entry.runId === logicalRunId);
+	if (firstOwnedIndex < 0) return [...existing, ...messages];
+	const merged: PendingStageMessage[] = [];
+	for (let index = 0; index < existing.length; index += 1) {
+		const entry = existing[index]!;
+		if (index === firstOwnedIndex) merged.push(...messages);
+		if (entry.runId !== logicalRunId) merged.push(entry);
+	}
+	return merged;
+}
+/** Read one logical run's bucket from its root durable metadata handle. */
+export function pendingStageMessagesForDurableRun(
+	backend: DurableWorkflowBackend,
+	logicalRunId: string,
+	rootWorkflowId = logicalRunId,
+): readonly PendingStageMessage[] {
+	return (backend.getWorkflow(rootWorkflowId)?.pendingStageMessages ?? []).filter(
+		(entry) => entry.runId === logicalRunId,
+	);
+}
 
 // ---------------------------------------------------------------------------
 // Backend interface
@@ -54,6 +84,12 @@ export interface DurableWorkflowBackend {
 	readonly persistent: boolean;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void;
+	/** Persist one logical run's pending-stage transition under its durable owner. */
+	persistPendingStageMessages(
+		workflowId: string,
+		messages: readonly PendingStageMessage[],
+		logicalRunId?: string,
+	): Promise<boolean>;
 
 	/** Record a completed checkpoint. Idempotent: same (kind, checkpointId) is a no-op. */
 	recordCheckpoint(checkpoint: DurableCheckpoint): void;
@@ -229,6 +265,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				: existing?.handle.gitWorktreeRoot !== undefined
 					? { gitWorktreeRoot: existing.handle.gitWorktreeRoot }
 					: {}),
+			pendingStageMessages: handle.pendingStageMessages ?? existing?.handle.pendingStageMessages ?? [],
 			...(handle.sessionFile !== undefined ? { sessionFile: handle.sessionFile } : {}),
 			completedCheckpoints,
 			pendingPrompts,
@@ -255,7 +292,26 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				stageOutputByReplayKey: new Map(),
 				stageSessionByReplayKey: new Map(),
 			});
+
 		if (handle.pendingPrompts !== undefined) this.promptReservations.delete(handle.workflowId);
+	}
+	async persistPendingStageMessages(
+		workflowId: string,
+		messages: readonly PendingStageMessage[],
+		logicalRunId = workflowId,
+	): Promise<boolean> {
+		const handle = this.getWorkflow(workflowId);
+		if (handle === undefined) return false;
+		this.registerWorkflow({
+			...handle,
+			pendingStageMessages: replacePendingStageMessagesForRun(
+				handle.pendingStageMessages ?? [],
+				logicalRunId,
+				messages,
+			),
+			updatedAt: nextMetadataTimestamp(handle.updatedAt),
+		});
+		return true;
 	}
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
 		const currentCheckpoint = withCurrentStageTopology(checkpoint);
@@ -492,6 +548,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			createdAt: h.createdAt,
 			completedCheckpoints: h.completedCheckpoints,
 			pendingPrompts: h.pendingPrompts,
+			pendingStageMessages: h.pendingStageMessages ?? [],
 			...(h.ownerExecutorId !== undefined ? { ownerExecutorId: h.ownerExecutorId } : {}),
 			...(h.sessionFile !== undefined ? { sessionFile: h.sessionFile } : {}),
 			...(h.label !== undefined ? { label: h.label } : {}),
@@ -602,4 +659,8 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		createdAt: handle.createdAt,
 		updatedAt: handle.updatedAt,
 	};
+}
+
+function nextMetadataTimestamp(previous: number): number {
+	return Math.max(Date.now(), previous + 1);
 }

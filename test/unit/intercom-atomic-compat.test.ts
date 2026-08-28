@@ -397,6 +397,21 @@ describe("lazy intercom registration", () => {
 		assert.doesNotMatch(modelVisibleText, /\blocal pi sessions\b/i);
 	});
 
+	test("guides model-visible sends to live sessions and exact workflow-stage targets", () => {
+		const captured = captureIntercomRegistration({
+			PI_SUBAGENT_ORCHESTRATOR_TARGET: undefined,
+			ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET: undefined,
+		});
+		const intercomTool = captured.tools.find((tool) => tool.name === "intercom");
+		assert.ok(intercomTool);
+		const targetDescription = (intercomTool.parameters as { properties?: { to?: { description?: string } } })
+			.properties?.to?.description;
+		const guidance = `${intercomTool.description}\n${targetDescription ?? ""}`;
+		assert.match(guidance, /`<runId>:<stageKey>`/);
+		assert.match(guidance, /pending stage.*queue automatically/i);
+		assert.match(guidance, /live session/i);
+	});
+
 	test("registers contact_supervisor when PI or ATOMIC subagent bridge metadata exists", () => {
 		const piCaptured = captureIntercomRegistration({ PI_SUBAGENT_ORCHESTRATOR_TARGET: "parent" });
 		const atomicCaptured = captureIntercomRegistration({ ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET: "parent" });

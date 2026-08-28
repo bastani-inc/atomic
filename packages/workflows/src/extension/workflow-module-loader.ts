@@ -16,13 +16,14 @@ import goal from "../../builtin/goal.js";
 import loopUntilDone from "../../builtin/loop-until-done.js";
 import openClaudeDesign from "../../builtin/open-claude-design.js";
 import ralph from "../../builtin/ralph.js";
+import * as steeringContext from "../../builtin/steering-context.js";
 import tournament from "../../builtin/tournament.js";
 import { isBrandedWorkflowDefinition } from "../authoring/workflow.js";
 import * as workflowsSdkSurface from "../sdk-surface.js";
 import { validateWorkflowBudget } from "../shared/budget.js";
 
-const WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
-const WORKFLOWS_BUILTIN_MODULE_SPECIFIER = `${WORKFLOWS_MODULE_SPECIFIER}/builtin`;
+const WORKFLOWS_MODULE_SPECIFIER = "@bastani/atomic/workflows";
+const LEGACY_WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
 const TYPEBOX_MODULE_SPECIFIER = "typebox";
 // Keep this in sync with index.ts through sdk-surface.ts.
 const WORKFLOWS_SDK_MODULE: Record<string, unknown> = {
@@ -42,19 +43,28 @@ const WORKFLOWS_BUILTIN_MODULE: Record<string, unknown> = {
 const TYPEBOX_MODULE: Record<string, unknown> = {
 	...typeboxModule,
 };
+function createWorkflowVirtualModules(moduleSpecifier: string): Record<string, unknown> {
+	const builtinModuleSpecifier = `${moduleSpecifier}/builtin`;
+	return {
+		[moduleSpecifier]: WORKFLOWS_SDK_MODULE,
+		[builtinModuleSpecifier]: WORKFLOWS_BUILTIN_MODULE,
+		[`${builtinModuleSpecifier}/adversarial-verification`]: { default: adversarialVerification },
+		[`${builtinModuleSpecifier}/classify-and-act`]: { default: classifyAndAct },
+		[`${builtinModuleSpecifier}/fan-out-and-synthesize`]: { default: fanOutAndSynthesize },
+		[`${builtinModuleSpecifier}/generate-and-filter`]: { default: generateAndFilter },
+		[`${builtinModuleSpecifier}/goal`]: { default: goal },
+		[`${builtinModuleSpecifier}/loop-until-done`]: { default: loopUntilDone },
+		[`${builtinModuleSpecifier}/open-claude-design`]: { default: openClaudeDesign },
+		[`${builtinModuleSpecifier}/ralph`]: { default: ralph },
+		[`${builtinModuleSpecifier}/tournament`]: { default: tournament },
+		[`${builtinModuleSpecifier}/steering-context`]: steeringContext,
+	};
+}
+
 const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
-	[WORKFLOWS_MODULE_SPECIFIER]: WORKFLOWS_SDK_MODULE,
-	[WORKFLOWS_BUILTIN_MODULE_SPECIFIER]: WORKFLOWS_BUILTIN_MODULE,
+	...createWorkflowVirtualModules(WORKFLOWS_MODULE_SPECIFIER),
+	...createWorkflowVirtualModules(LEGACY_WORKFLOWS_MODULE_SPECIFIER),
 	[TYPEBOX_MODULE_SPECIFIER]: TYPEBOX_MODULE,
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/adversarial-verification`]: { default: adversarialVerification },
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/classify-and-act`]: { default: classifyAndAct },
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/fan-out-and-synthesize`]: { default: fanOutAndSynthesize },
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/generate-and-filter`]: { default: generateAndFilter },
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/goal`]: { default: goal },
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/loop-until-done`]: { default: loopUntilDone },
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/open-claude-design`]: { default: openClaudeDesign },
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/ralph`]: { default: ralph },
-	[`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/tournament`]: { default: tournament },
 };
 
 const workflowModuleLoader = createJiti(import.meta.url, {
@@ -62,9 +72,9 @@ const workflowModuleLoader = createJiti(import.meta.url, {
 	// Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
 	// resolution instead of handing some imports back to native import().
 	tryNative: false,
-	// Resolve the @bastani/workflows SDK (and its builtin submodules) to in-memory
-	// surfaces in every runtime. This mirrors the compiled bun binary path and
-	// keeps discovery fast: aliasing the SDK to its on-disk package re-evaluated
+	// Resolve the published @bastani/atomic/workflows SDK and legacy @bastani/workflows
+	// aliases (including builtin submodules) to the same in-memory surfaces.
+	// This keeps discovery fast: aliasing the SDK to its on-disk package re-evaluated
 	// the entire SDK module graph once per workflow file (moduleCache stays false),
 	// which scaled discovery to multiple seconds on projects with many workflow
 	// files. Workflow files themselves are still evaluated fresh from disk, so

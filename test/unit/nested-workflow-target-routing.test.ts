@@ -17,13 +17,9 @@ import {
 	workflowStageResult,
 	workflowTranscriptResult,
 } from "../../packages/workflows/src/extension/workflow-tool-inspection.js";
-import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
 import { aggregateWorkflowRootRunId } from "../../packages/workflows/src/runs/background/workflow-lifecycle-aggregate.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import {
-	createStageControlRegistry,
-	stageControlRegistry,
-} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -517,18 +513,6 @@ describe("nested workflow stage target routing", () => {
 		assert.equal(transcript.stageId, "shared");
 		assert.equal(transcript.source, "live");
 
-		const sent = await workflowSendAction({ action: "send", ...target, text: "right only" });
-		assert.deepEqual(
-			{ runId: sent.runId, stageId: sent.stageId, status: sent.status },
-			{
-				runId: fixtureRunId("child-right"),
-				stageId: "shared",
-				status: "ok",
-			},
-		);
-		assert.deepEqual(leftCalls.prompts, []);
-		assert.deepEqual(rightCalls.prompts, ["right only"]);
-
 		const paused = await workflowPauseAction({ action: "pause", ...target });
 		assert.equal(paused.action, "pause");
 		assert.equal("runId" in paused ? paused.runId : undefined, fixtureRunId("child-right"));
@@ -581,53 +565,14 @@ describe("nested workflow stage target routing", () => {
 				ensureWorkflowResourcesLoaded: () => {},
 			},
 		);
-		const send = await workflowSendAction({ action: "send", ...target, text: "do not deliver" });
 		const inspected = workflowStageResult({ action: "stage", ...target });
 		const transcript = workflowTranscriptResult({ action: "transcript", ...target });
 
 		assert.equal("message" in pause ? pause.message : undefined, expected);
 		assert.equal("message" in interrupt ? interrupt.message : undefined, expected);
 		assert.equal("message" in resume ? resume.message : undefined, expected);
-		assert.equal(send.message, expected);
 		assert.equal(inspected.action === "stage" ? inspected.error : undefined, expected);
 		assert.equal(transcript.action === "transcript" ? transcript.entries[0]?.text : undefined, expected);
-	});
-
-	test("post-mortem revival dependencies are resolved for the nested stage owner", async () => {
-		const nestedStage = store.runs().find((run) => run.id === fixtureRunId("child-right"))?.stages[0];
-		assert.ok(nestedStage);
-		store.recordStageEnd(fixtureRunId("child-right"), { ...nestedStage, status: "completed", result: "done" });
-		let dependencyRunId: string | undefined;
-
-		const result = await workflowSendAction(
-			{
-				action: "send",
-				runId: fixtureRunId("root-run"),
-				stageId: `${fixtureRunId("child-right")}:shared`,
-				text: "continue retained chat",
-			},
-			{
-				resolvePostMortemDeps: (runId) => {
-					dependencyRunId = runId;
-					return {
-						registry: createStageControlRegistry(),
-						adapters: {
-							agentSession: {
-								async create() {
-									throw new Error("missing retained session must not create an agent");
-								},
-							},
-						},
-						cwd: process.cwd(),
-					};
-				},
-			},
-		);
-
-		assert.equal(dependencyRunId, fixtureRunId("child-right"));
-		assert.equal(result.runId, fixtureRunId("child-right"));
-		assert.equal(result.stageId, "shared");
-		assert.equal(result.status, "noop");
 	});
 
 	test("top-level expanded listings exclude both child and grandchild implementation runs", () => {

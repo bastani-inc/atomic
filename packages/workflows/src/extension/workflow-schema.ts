@@ -1,7 +1,7 @@
 import { type Static, Type } from "typebox";
 
 /**
- * Advertise the JSON value types accepted by workflow-send responses.
+ * Advertise the JSON value types accepted by workflow-answer responses.
  *
  * `Type.Unknown()` emits `{}`, which tells a provider nothing about this
  * property. A retained session shows an assistant tool call that answered a
@@ -69,7 +69,7 @@ export const WorkflowParametersSchema = Type.Object(
 					Type.Literal("stages"),
 					Type.Literal("stage"),
 					Type.Literal("transcript"),
-					Type.Literal("send"),
+					Type.Literal("answer"),
 					Type.Literal("pause"),
 					Type.Literal("interrupt"),
 					Type.Literal("quit"),
@@ -78,14 +78,14 @@ export const WorkflowParametersSchema = Type.Object(
 				],
 				{
 					description:
-						"Workflow action: run/list/get/inputs/models/status, inspect stage metadata, send messages or prompt answers, pause/resume/interrupt/quit runs, inspect the configured model catalog, or reload workflow resources. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+						"Workflow action: run/list/get/inputs/models/status, inspect stage metadata, answer pending prompts, pause/resume/interrupt/quit runs, inspect the configured model catalog, or reload workflow resources. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
 				},
 			),
 		),
 		runId: Type.Optional(
 			Type.String({
 				description:
-					"Full 36-character run UUID for status/stages/stage/transcript/send/pause/resume/interrupt/quit. Prefixes are not accepted; pass the id exactly as displayed. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
+					"Full 36-character run UUID for status/stages/stage/transcript/answer/pause/resume/interrupt/quit. Prefixes are not accepted; pass the id exactly as displayed. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
 			}),
 		),
 		all: Type.Optional(
@@ -97,13 +97,12 @@ export const WorkflowParametersSchema = Type.Object(
 		stageId: Type.Optional(
 			Type.String({
 				description:
-					"Exact stage id or exact stage name for stage-scoped inspection, transcript, send, pause, or resume. Prefixes and partial names are not accepted. A nested stage id is the full 'runId:stageId' composite. For interrupt and quit it may also name an in-flight ctx.tool node by its exact tool:<argsHash> id or tool name, which aborts that single call.",
+					"Exact stage id or exact stage name for stage-scoped inspection, transcript, answer, pause, or resume. Prefixes and partial names are not accepted. A nested stage id is the full 'runId:stageId' composite. For interrupt and quit it may also name an in-flight ctx.tool node by its exact tool:<argsHash> id or tool name, which aborts that single call.",
 			}),
 		),
 		message: Type.Optional(
 			Type.String({
-				description:
-					"Message payload for send/follow-up/prompt/steer/resume, or optional text forwarded when resuming paused work.",
+				description: "Prompt answer text for answer, or optional text forwarded when resuming paused work.",
 			}),
 		),
 		statusFilter: Type.Optional(
@@ -155,29 +154,13 @@ export const WorkflowParametersSchema = Type.Object(
 		),
 		text: Type.Optional(
 			Type.String({
-				description: "Text to send to a stage for prompt answers, steering, follow-ups, or resume messages.",
+				description: "Text for a pending prompt answer.",
 			}),
 		),
 		response: Type.Optional(WorkflowResponseSchema),
-		delivery: Type.Optional(
-			Type.Union(
-				[
-					Type.Literal("auto"),
-					Type.Literal("answer"),
-					Type.Literal("prompt"),
-					Type.Literal("steer"),
-					Type.Literal("followUp"),
-					Type.Literal("resume"),
-				],
-				{
-					description:
-						"Delivery mode for the send action: auto answers pending prompts first, then resumes paused stages, steers streaming stages, or queues a follow-up.",
-				},
-			),
-		),
 		promptId: Type.Optional(
 			Type.String({
-				description: "Pending prompt identifier to answer when using the send action.",
+				description: "Pending prompt identifier for the answer action.",
 			}),
 		),
 		reason: Type.Optional(

@@ -124,7 +124,7 @@ export function primitivePromptAnswerExpectation(prompt: PrimitivePrompt): strin
 	}
 }
 
-/** Format a truthful workflow-send noop for an unusable primitive answer. */
+/** Format a truthful workflow-answer noop for an unusable primitive answer. */
 export function primitivePromptAnswerRejection(promptId: string, prompt: PrimitivePrompt): string {
 	return `Invalid answer for ${prompt.kind} prompt ${promptId}. ${primitivePromptAnswerExpectation(prompt)}`;
 }

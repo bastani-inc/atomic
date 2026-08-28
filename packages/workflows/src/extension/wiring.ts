@@ -370,7 +370,12 @@ function withWorkflowStageSessionOptions(
 		...options,
 		excludedTools,
 		...(meta
-			? { orchestrationContext: meta.orchestrationContext ?? makeWorkflowStageOrchestrationContext(meta, pi) }
+			? {
+					orchestrationContext:
+						meta.orchestrationContext ??
+						options.orchestrationContext ??
+						makeWorkflowStageOrchestrationContext(meta, pi),
+				}
 			: {}),
 	};
 }
@@ -476,10 +481,12 @@ export function buildRuntimeAdapters(
 				);
 				const result = await createSession(sessionOptions);
 				const bindable = result.session as BindableStageSession;
-				if (shouldBindStageUiContext(pi, meta) && typeof bindable.bindExtensions === "function") {
-					await bindable.bindExtensions({
-						uiContext: makeStageExtensionUiContext(pi.ui ?? {}, meta, broker),
-					});
+				if (typeof bindable.bindExtensions === "function") {
+					await bindable.bindExtensions(
+						shouldBindStageUiContext(pi, meta)
+							? { uiContext: makeStageExtensionUiContext(pi.ui ?? {}, meta, broker) }
+							: {},
+					);
 				}
 				return result;
 			},

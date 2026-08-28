@@ -73,7 +73,7 @@ export class StageUiBroker {
 	 * Register the structured descriptor + headless result builder for the
 	 * prompt a stage is about to raise (or has just raised) via
 	 * `requestCustomUi`. Surfaces the descriptor on the stage snapshot so
-	 * `workflow send` / status can see and answer it. Safe to call before or
+	 * `workflow answer` / status can see and answer it. Safe to call before or
 	 * after the matching `requestCustomUi`; the (runId, stageId) key joins them.
 	 */
 	provideStagePrompt(runId: string, stageId: string, adapter: StagePromptAdapter): void {

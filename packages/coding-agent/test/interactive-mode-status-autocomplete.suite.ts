@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -154,6 +155,7 @@ describe("InteractiveMode /fast autocomplete", () => {
 		options: {
 			hasConfiguredAuth?: (provider: string) => boolean;
 			extensionCommands?: ExtensionCommandFixture[];
+			fastModelIds?: string[];
 		} = {},
 	): AutocompleteProvider {
 		const fakeThis: any = {
@@ -162,6 +164,16 @@ describe("InteractiveMode /fast autocomplete", () => {
 				modelRuntime: {
 					getAvailableSnapshot: vi.fn(() => models),
 					hasConfiguredAuth: vi.fn(options.hasConfiguredAuth ?? (() => true)),
+					getCredentialSnapshot: () =>
+						options.fastModelIds
+							? {
+									type: "oauth" as const,
+									access: "token",
+									refresh: "refresh",
+									expires: Number.MAX_SAFE_INTEGER,
+									fastModelIds: options.fastModelIds,
+								}
+							: undefined,
 				},
 				promptTemplates: [],
 				extensionRunner: {
@@ -214,6 +226,13 @@ describe("InteractiveMode /fast autocomplete", () => {
 		const labels = await slashLabels(createProvider([createModel("github-copilot")]));
 
 		expect(labels).not.toContain("fast");
+	});
+
+	test("shows /fast when a Copilot model has an entitled fast sibling", async () => {
+		const model = createModel("github-copilot", "claude-opus-4.8");
+		const labels = await slashLabels(createProvider([model], [], { fastModelIds: ["claude-opus-4.8-fast"] }));
+
+		assert.equal(labels.includes("fast"), true);
 	});
 
 	test("hides /fast for unauthenticated scoped OpenAI models without falling back", async () => {

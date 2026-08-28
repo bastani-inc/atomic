@@ -12,7 +12,6 @@ import "./slash-dispatch-tool-stages.js";
 import "./slash-dispatch-tool-transcripts.js";
 import "./slash-dispatch-tool-snapshots.js";
 import "./slash-dispatch-tool-prompts.js";
-import "./slash-dispatch-tool-delivery.js";
 import "./slash-dispatch-tool-reload-resume.js";
 import "./slash-dispatch-tool-continuation-failed.js";
 import "./slash-dispatch-tool-continuation-blocked.js";

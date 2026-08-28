@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
+import { loadWorkflowModule } from "../../packages/workflows/src/extension/workflow-module-loader.js";
 import { fileExists, moduleDir, readText } from "../helpers/runtime.js";
 import {
 	type CreateAgentSessionOptions,
@@ -38,7 +38,7 @@ async function loadExample(
 	const source = extractExample(documentation, filename);
 	const examplePath = resolve(directory, filename);
 	await writeFile(examplePath, source);
-	const loaded = (await import(`${pathToFileURL(examplePath).href}?test=${filename}-${Date.now()}`)) as {
+	const loaded = loadWorkflowModule(examplePath) as {
 		readonly default: WorkflowDefinition;
 	};
 	return { definition: loaded.default, source };

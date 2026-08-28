@@ -14,7 +14,6 @@ import {
 	workflowPauseAction,
 	workflowResumeAction,
 } from "../../packages/workflows/src/extension/workflow-tool-control.js";
-import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
@@ -145,23 +144,13 @@ describe("non-attachable tool interactions", () => {
 		view.dispose();
 	});
 
-	test("terminal sends reject before textual tool targeting can create a handle", async () => {
+	test("terminal controls reject textual tool targeting", async () => {
 		recordToolOnly(store, "completed");
 		for (const target of ["tool:publish", "publish-api"]) {
 			const resolved = resolveStageTarget(testRunId("tool-interaction-run"), target);
 			assert.equal(resolved.ok, false, `${target} must not resolve as a stage`);
 		}
 
-		let postMortemCreates = 0;
-		const sent = await workflowSendAction(
-			{ action: "send", runId: testRunId("tool-interaction-run"), stageId: "tool:publish", text: "chat" },
-			{
-				resolvePostMortemDeps: () => {
-					postMortemCreates += 1;
-					throw new Error("must not create");
-				},
-			},
-		);
 		const paused = await workflowPauseAction({
 			action: "pause",
 			runId: testRunId("tool-interaction-run"),
@@ -196,23 +185,12 @@ describe("non-attachable tool interactions", () => {
 			stageId: "tool:publish",
 		});
 
-		assert.equal(sent.status, "failed");
-		if (sent.status === "failed") {
-			assert.equal(sent.code, "WORKFLOW_TERMINAL");
-			assert.equal(sent.workflowStatus, "completed");
-		}
-		assert.equal(sent.delivery, "rejected");
 		assert.equal(paused.status, "noop");
 		assert.equal(interrupted.status, "noop");
-		assert.match(
-			sent.message,
-			new RegExp(`workflow ${testRunId("tool-interaction-run")} has terminated with status completed`),
-		);
 		// Tool nodes are abort-only control targets: pause rejects them explicitly and
 		// interrupt reports that this settled node has nothing in flight to abort.
 		assert.match(paused.message, /Tool nodes cannot be paused/);
 		assert.match(interrupted.message, /Tool node tool:publish is not running/);
-		assert.equal(postMortemCreates, 0);
 		const resumed = await workflowResumeAction(
 			{ action: "resume", runId: testRunId("tool-interaction-run"), stageId: "tool:publish" },
 			{

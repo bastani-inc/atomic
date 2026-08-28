@@ -74,6 +74,11 @@ export class AuthStorage implements CredentialStore {
 		}
 	}
 
+	/** Read the current in-memory credential snapshot without triggering refresh or I/O. */
+	peek(provider: string): Credential | undefined {
+		return this.data[provider];
+	}
+
 	async read(provider: string): Promise<Credential | undefined> {
 		const credential = this.data[provider];
 		if (credential?.type !== "api_key") return credential;

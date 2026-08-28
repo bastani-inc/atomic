@@ -25,6 +25,7 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 		piAi,
 		piAiOauth,
 		piAiCloudflareGatewayBinding,
+		properLockfile,
 		piCodingAgent,
 	] = await Promise.all([
 		import("typebox"),
@@ -43,6 +44,10 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 		// packages import the host entry) reach this specifier, so it needs a key
 		// of its own instead of falling through to the compat/root prefix alias.
 		import("@bastani/pi-ai/api/cloudflare-gateway-binding"),
+		// proper-lockfile mutates graceful-fs with a non-configurable cache
+		// symbol. Keep that dependency graph in the compiled host: evaluating it
+		// through Jiti would put its stale-value caching proxy in the middle.
+		import("proper-lockfile"),
 		// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 		// avoiding a circular dependency while preserving the package-name extension import path.
 		import("../../index.ts"),
@@ -66,6 +71,7 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@earendil-works/pi-ai/compat": piAi,
 		"@earendil-works/pi-ai/oauth": piAiOauth,
 		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
+		"proper-lockfile": properLockfile,
 		"@bastani/atomic": piCodingAgent,
 		"@mariozechner/pi-agent-core": piAgentCore,
 		"@mariozechner/pi-tui": piTui,

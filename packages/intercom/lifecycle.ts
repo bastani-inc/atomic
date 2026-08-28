@@ -33,6 +33,7 @@ interface LifecycleDeps {
   syncPresenceIdentity(sessionId: string): void;
   currentStatus(): string;
   restoreIntercomSessionIdEnv?(): void;
+  disconnectAuxiliaryClients?(): Promise<void>;
 }
 
 export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps): void {
@@ -59,6 +60,13 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
         await activeClient.disconnect();
       } catch (error) {
         console.error(`Intercom failed to disconnect during ${reason.toLowerCase()}; continuing cleanup:`, error);
+      }
+    }
+    if (deps.disconnectAuxiliaryClients) {
+      try {
+        await deps.disconnectAuxiliaryClients();
+      } catch (error) {
+        console.error(`Intercom failed to disconnect auxiliary clients during ${reason.toLowerCase()}; continuing cleanup:`, error);
       }
     }
     deps.restoreIntercomSessionIdEnv?.();

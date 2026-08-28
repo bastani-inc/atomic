@@ -16,6 +16,13 @@ export { keepContext };
  * still score the launch contract and mark the added work as unrequested scope.
  * Each stage therefore restates the amendments it received in its own handoff.
  */
+export const PENDING_STAGE_DELIVERY_GUIDANCE_LINES = [
+  "Send material updates through Intercom to every affected workflow stage, including stages that have not started.",
+  "Atomic queues messages for known pending stages addressed as `<runId>:<stageKey>` and delivers them when their sessions initialize.",
+] as const;
+
+export const PENDING_STAGE_DELIVERY_GUIDANCE = PENDING_STAGE_DELIVERY_GUIDANCE_LINES.join("\n");
+
 export const STEERING_PROPAGATION_CONTRACT = [
   "Steering propagation contract:",
   "- Mid-run user messages (steering, follow-ups, resume text) are authoritative and may amend this run's objective or acceptance criteria. Adopt an amendment as required behavior from the moment you receive it.",
@@ -23,6 +30,7 @@ export const STEERING_PROPAGATION_CONTRACT = [
   "- Keep user-authored amendments visibly separate from your own observations, so later stages can tell a required clause from an agent proposal.",
   "- Treat amendments inherited from an upstream stage as contract clauses. Cover them in acceptance and traceability work; never classify inherited user amendments as beyond_objective, unrequested scope, or speculative expansion.",
   "- If an amendment is ambiguous, or conflicts with the launch contract or another amendment, resolve it before implementing: ask through `intercom` when a supervisor or originating stage is reachable, otherwise state the conflict in your report and implement the narrowest reading consistent with the launch contract.",
+  ...PENDING_STAGE_DELIVERY_GUIDANCE_LINES.map((line) => `- ${line}`),
   "- Propagate nothing else this way. Guidance about how to work, tool preferences, and your own improvement ideas are not amendments; those follow the scope discipline contract.",
 ].join("\n");
 
@@ -67,6 +75,31 @@ export const E2E_VERIFICATION_GUIDANCE = [
   "For TUI/terminal flows, use the tmux skill or delegate with `skill: \"tmux\"` to exercise the scenario and capture pane output.",
   "Assume credentials, auth, and environment access for playwright-cli/tmux E2E exist until a concrete attempt proves otherwise. Before calling E2E impractical, check existing sessions, config, env vars, and CLI auth, then attempt the launch or flow.",
   "If E2E remains impractical, record the commands attempted, observed failure output, smallest missing prerequisite, and narrower validation run; an unattempted assumption is never valid grounds to skip.",
+].join("\n");
+
+/**
+ * Code-quality verification is the lint/format/metrics/smells counterpart to
+ * E2E_VERIFICATION_GUIDANCE, and is included at the same call sites so goal and
+ * ralph stages — implementation, orchestrator, and reviewer alike — receive it.
+ */
+export const CODE_QUALITY_VERIFICATION_GUIDANCE = [
+  "For code-quality verification — linting, auto-formatting, complexity and duplication metrics, and code smells — use the qlty skill or delegate with `skill: \"qlty\"`; it drives one CLI across the repository's languages instead of ad-hoc per-tool linter invocations.",
+  "Weight this higher when the objective asks for verifiers or high code quality: enable the qlty plugins that fit this codebase, then run the check/format/metrics/smells loop and act on what it reports.",
+  "Repository-defined checks in AGENTS.md/CLAUDE.md, package scripts, and CI stay authoritative; qlty supplements them rather than replacing them, and its findings count as evidence only with the command and observed output recorded.",
+].join("\n");
+
+/**
+ * Repositories carry behavioral norms written docs never state — commit
+ * signing, message style, changelog discipline, review etiquette — and they
+ * are inferable from history. Included at the same goal/ralph call sites as
+ * the E2E and code-quality guidance so implementers match inferred
+ * conventions and reviewers check delivered work against them.
+ */
+export const REPO_INTENT_MINING_GUIDANCE = [
+  "Infer maintainer and requesting-user intent from repository behavior, not only written docs: mine git history (`git log`, `git log --show-signature`), merged PRs, issues and their comments, review comments, commit subjects and trailers, and CI/branch-protection config for unwritten conventions.",
+  "Read for commit-signing habits, commit-message style and issue linking, changelog discipline, PR size and stacking norms, review etiquette, formatting and lint norms, and branch naming. Prefer the dominant, recent, intentional pattern over accidental drift; when signals conflict, the requesting user's own commits, PRs, and comments weigh highest — different users of one repository keep different preferences.",
+  "Match inferred conventions in delivered work (for example, sign commits when the surrounding history is signed rather than skipping signing because no doc required it); in review, report deviations as convention findings backed by the mined evidence.",
+  "Behavioral evidence fills gaps where the contract is silent; it never overrides the literal objective, acceptance criteria, or explicit AGENTS.md/CLAUDE.md guidance, and it does not license new contract requirements.",
 ].join("\n");
 
 export function renderE2eQaVideoReviewGuidance(

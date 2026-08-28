@@ -19,7 +19,7 @@ import { jobTracker } from "../../packages/workflows/src/runs/background/job-tra
 import { createStore, store as workflowStore } from "../../packages/workflows/src/shared/store.js";
 
 const READ_ONLY_ACTIONS = ["models", "list", "get", "inputs", "status", "stages", "stage", "transcript"] as const;
-const MUTATING_ACTIONS = ["reload", "run", "send", "pause", "resume", "interrupt", "quit"] as const;
+const MUTATING_ACTIONS = ["reload", "run", "answer", "pause", "resume", "interrupt", "quit"] as const;
 const ALL_ACTIONS = [...READ_ONLY_ACTIONS, ...MUTATING_ACTIONS] as const;
 
 type WorkflowToolExecutor = (

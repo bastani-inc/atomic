@@ -62,6 +62,9 @@ export function _buildStageSnapshots(
 					name,
 					status: "running",
 					parentIds: Array.isArray(parentIds) ? (parentIds as string[]) : [],
+					...(typeof entry.payload.pendingStageDeliveryAvailable === "boolean"
+						? { pendingStageDeliveryAvailable: entry.payload.pendingStageDeliveryAvailable }
+						: {}),
 					startedAt: typeof ts === "number" ? ts : undefined,
 					...replayMetadata(entry.payload),
 					toolEvents: [],

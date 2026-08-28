@@ -9,11 +9,11 @@
  * interactive TUI component.
  *
  * For programmatic / non-interactive control (e.g. an orchestrating agent
- * answering via `workflow send`), we need to synthesize the same value WITHOUT
+ * answering via `workflow answer`), we need to synthesize the same value WITHOUT
  * the TUI. This module:
  *   1. Parses the `ask_user_question` tool args into a serializable
  *      {@link StageInputRequest} descriptor (surfaced on the stage snapshot so
- *      `workflow send` / status can show the questions + options).
+ *      `workflow answer` / status can show the questions + options).
  *   2. Produces a {@link StagePromptAdapter} whose `buildResult` maps a simple
  *      answer (free text, an option label, an option index, or a pre-built raw
  *      result) into the `QuestionnaireResult` the tool expects.
@@ -92,7 +92,7 @@ export function hasStageInputAnswerContent(answer: StageInputAnswer): boolean {
 }
 
 /**
- * Coerce a loosely-typed answer payload — as delivered by `workflow send`
+ * Coerce a loosely-typed answer payload — as delivered by `workflow answer`
  * (`text` / `response` / `message`) — into a normalized {@link StageInputAnswer}
  * the {@link StagePromptAdapter} can resolve against a question's options.
  *

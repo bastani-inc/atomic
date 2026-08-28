@@ -11,6 +11,10 @@ export interface SendResultLike {
   id: string;
   delivered: boolean;
   reason?: string;
+  queued?: boolean;
+  runId?: string;
+  stageKey?: string;
+  position?: number;
 }
 
 export interface PendingSendAttempt {

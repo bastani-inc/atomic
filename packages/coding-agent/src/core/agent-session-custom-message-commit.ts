@@ -7,7 +7,12 @@ import {
 	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
-import type { CustomMessage } from "./messages.ts";
+import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
+
+function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): void {
+	session._appendCustomMessage(message);
+	if ((message as StageAdmittedCustomMessage).stageAdmissionKey !== undefined) session.sessionManager?.flush();
+}
 
 /** Commit one delivery whose source generation already granted admission. */
 export async function commitAdmittedCustomMessage<T>(
@@ -19,7 +24,9 @@ export async function commitAdmittedCustomMessage<T>(
 	if (owner !== session) return commitAdmittedCustomMessage(owner, appMessage, options);
 	const self = session;
 	const useProtectedReconciliation =
-		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
+		options?.persistWhenStreaming === true &&
+		options.excludeFromContext !== true &&
+		(options.triggerTurn === true || options.stageAdmissionKey !== undefined);
 	if (options?.deliverAs === "nextTurn") {
 		self._pendingNextTurnMessages.push(appMessage);
 	} else if (self._queuedMessagesPaused) {
@@ -33,7 +40,7 @@ export async function commitAdmittedCustomMessage<T>(
 		} else if (self.isStreaming) {
 			self._pendingCustomMessages.push(appMessage);
 		} else {
-			self._appendCustomMessage(appMessage);
+			appendDurableStageAdmission(self, appMessage);
 		}
 	} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
 		const interrupt = self._enqueueInterruptCustomMessage(appMessage, options);
@@ -45,7 +52,7 @@ export async function commitAdmittedCustomMessage<T>(
 		options.triggerTurn !== true &&
 		options.deliverAs === undefined
 	) {
-		self._appendCustomMessage(appMessage);
+		appendDurableStageAdmission(self, appMessage);
 	} else if (self.isStreaming && options?.triggerTurn === false) {
 		self._pendingCustomMessages.push(appMessage);
 	} else if (self.isStreaming && useProtectedReconciliation) {
@@ -55,7 +62,7 @@ export async function commitAdmittedCustomMessage<T>(
 			options?.deliverAs === "followUp" ? "followUp" : "steer",
 		);
 	} else if (self.isStreaming && options?.persistWhenStreaming === true) {
-		self._appendCustomMessage(appMessage);
+		appendDurableStageAdmission(self, appMessage);
 	} else if (self.isStreaming && options?.triggerTurn !== false) {
 		self._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 	} else if (options?.triggerTurn) {
@@ -86,7 +93,7 @@ export async function commitAdmittedCustomMessage<T>(
 			void self._continueQueuedAgentMessages().catch(() => {});
 		}
 	} else {
-		self._appendCustomMessage(appMessage);
+		appendDurableStageAdmission(self, appMessage);
 	}
 }
 

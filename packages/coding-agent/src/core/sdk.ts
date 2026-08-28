@@ -14,6 +14,7 @@ import { AgentSession } from "./agent-session.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import {
+	isGitHubCopilotModel,
 	shouldApplyCodexFastMode,
 	streamWithCodexFastMode,
 	usesChatGptCodexTransport,
@@ -277,7 +278,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 	const isCodexFastModeEnabled = (requestModel: Model<Api>): boolean =>
-		shouldApplyCodexFastMode(requestModel, settingsManager.getCodexFastModeSettings(), options.orchestrationContext);
+		shouldApplyCodexFastMode(
+			requestModel,
+			settingsManager.getCodexFastModeSettings(),
+			options.orchestrationContext,
+			modelRuntime.getCredentialSnapshot("github-copilot"),
+		);
 
 	agent = new Agent({
 		initialState: {
@@ -329,7 +335,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const transportHeaders = usesExtensionStream
 				? assembledHeaders
 				: removeUnownedModelHeaders(assembledHeaders, model.headers, requestHeaders);
-			if (fastModeEnabled && !usesExtensionStream && !authResult) {
+			if (fastModeEnabled && !isGitHubCopilotModel(model) && !usesExtensionStream && !authResult) {
 				throw new Error(`No API key found for "${model.provider}"`);
 			}
 			const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
@@ -350,7 +356,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (usesExtensionStream) {
 				return modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
 			}
-			if (fastModeEnabled) {
+			if (fastModeEnabled && !isGitHubCopilotModel(requestModel)) {
 				return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
 			}
 			const transportOptions =
@@ -361,7 +367,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		onPayload: async (payload, model) => {
 			const fastModeEnabled = isCodexFastModeEnabled(model);
-			const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled);
+			const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled, model);
 			const sourceMessages = lastConvertedLlmMessages;
 			const replayGuardedPayload = sourceMessages
 				? restoreAnthropicReplayThinkingBlocks(guardedPayload, sourceMessages, model)

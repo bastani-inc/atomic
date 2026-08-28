@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { zstdDecompressSync } from "node:zlib";
 import {
 	type Api,
@@ -20,6 +21,7 @@ import {
 	isCodexFastModeEnabledForScope,
 	isCodexFastModeEnabledForSession,
 	isCodexFastModeSupportedProvider,
+	isGitHubCopilotFastModeSupportedModel,
 	shouldApplyCodexFastModeForScope,
 	streamWithCodexFastMode,
 	usesFirstPartyCodexRouting,
@@ -113,6 +115,29 @@ describe("codex fast mode helpers", () => {
 		expect(
 			hasSupportedCodexFastModeModel([fullModel({ provider: "codex-proxy", api: "openai-codex-responses" })]),
 		).toBe(true);
+	});
+
+	it("recognizes only the exact entitled Copilot fast sibling", () => {
+		const model = fullModel({ provider: "github-copilot", id: "claude-opus-4.8", api: "anthropic-messages" });
+		const entitledCredential = {
+			type: "oauth" as const,
+			access: "token",
+			refresh: "refresh",
+			expires: Number.MAX_SAFE_INTEGER,
+			fastModelIds: ["claude-opus-4.8-fast"],
+		};
+
+		assert.equal(isGitHubCopilotFastModeSupportedModel(model, entitledCredential), true);
+		assert.equal(hasSupportedCodexFastModeModel([model], entitledCredential), true);
+		assert.equal(
+			isGitHubCopilotFastModeSupportedModel(model, { ...entitledCredential, fastModelIds: ["other-fast"] }),
+			false,
+		);
+		assert.equal(isGitHubCopilotFastModeSupportedModel(model, undefined), false);
+		assert.equal(
+			isGitHubCopilotFastModeSupportedModel(fullModel({ provider: "anthropic" }), entitledCredential),
+			false,
+		);
 	});
 
 	it("detects candidate model ids with the shared provider policy", () => {

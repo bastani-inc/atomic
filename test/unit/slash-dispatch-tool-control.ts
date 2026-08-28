@@ -62,23 +62,23 @@ describe("tool run-control actions", () => {
 		assert.equal(wasDispatched(), false);
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
-	test.sequential("registered workflow tool content elides empty send targets", async () => {
+	test.sequential("registered workflow tool content elides empty answer targets", async () => {
 		const tool = await makeRegisteredWorkflowTool();
 
 		const result = await tool.execute(
-			"tool-content-send-empty-target",
-			{ action: "send", text: "hello" },
+			"tool-content-answer-empty-target",
+			{ action: "answer", text: "hello" },
 			undefined,
 			undefined,
 			{} as never,
 		);
 
-		assert.equal(result.details.action, "send");
+		assert.equal(result.details.action, "answer");
 		const textBlock = result.content[0];
 		assert.equal(textBlock?.type, "text");
 		const textContent = textBlock.type === "text" ? textBlock.text : "";
-		assert.match(textContent, /^send: noop — /);
-		assert.doesNotMatch(textContent, /^send:\s{2,}noop/);
+		assert.match(textContent, /^answer: noop — /);
+		assert.doesNotMatch(textContent, /^answer:\s{2,}noop/);
 	});
 
 	test.sequential("makeExecuteWorkflowTool quit without runId pauses the active run resumably", async () => {

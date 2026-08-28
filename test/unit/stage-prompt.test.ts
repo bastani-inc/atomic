@@ -201,7 +201,7 @@ describe("coerceStageInputAnswer", () => {
 	});
 
 	test("JSON-string questions[] shape → extracted answer text", () => {
-		// This is the exact shape `workflow send` forwarded that stranded the gate.
+		// This is the exact shape `workflow answer` forwarded that stranded the gate.
 		const json = JSON.stringify({
 			questions: [{ question: "Continue?", answer: ADVANCE_LABEL }],
 		});

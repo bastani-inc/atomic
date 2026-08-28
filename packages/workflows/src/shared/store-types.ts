@@ -146,7 +146,7 @@ export interface StageInputQuestion {
  * Serializable descriptor of an in-stage `ask_user_question` (or readiness
  * gate) prompt brokered through `StageUiBroker`. Unlike {@link PendingPrompt}
  * (the simple input/confirm/select/editor HIL model), this mirrors the richer
- * structured ask_user_question shape so `workflow send` and status inspection
+ * structured ask_user_question shape so `workflow answer` and status inspection
  * can see the questions/options and answer the prompt without the TUI.
  *
  * Resolution lives in `StageUiBroker` (the awaiting `ctx.ui.custom` promise);
@@ -196,6 +196,119 @@ export interface WorkflowChildReplaySnapshot {
 	readonly exitReason?: string;
 }
 
+/** Serializable attachment retained verbatim from an ordinary intercom message. */
+export interface PendingStageAttachment {
+	readonly type: "file" | "snippet" | "context";
+	readonly name: string;
+	readonly content: string;
+	readonly language?: string;
+}
+
+/** The ordinary intercom message wire shape persisted by workflows. */
+export interface PendingStageIntercomMessage {
+	readonly id: string;
+	readonly timestamp: number;
+	readonly replyTo?: string;
+	readonly expectsReply?: boolean;
+	readonly replyError?: string;
+	readonly source?: {
+		readonly subagentRunId: string;
+		readonly subagentAgent?: string;
+		readonly subagentIndex?: number;
+	};
+	readonly content: {
+		readonly text: string;
+		readonly attachments?: readonly PendingStageAttachment[];
+	};
+}
+
+export interface PendingStageSender {
+	readonly id: string;
+	readonly name?: string;
+	readonly group?: string;
+	readonly cwd?: string;
+	readonly model?: string;
+	readonly pid?: number;
+	readonly startedAt?: number;
+	readonly lastActivity?: number;
+	readonly status?: string;
+}
+
+export interface PendingStageMessage {
+	readonly id: string;
+	readonly runId: string;
+	readonly stageKey: string;
+	/** Canonical authored stage id. Absent only on durable records written before alias canonicalization. */
+	readonly stageId?: string;
+	/** Stable authored replay identity used to restore the canonical stage across process resume. */
+	readonly stageReplayKey?: string;
+	/** Immutable broker registration name captured separately from mutable sender display presence. */
+	readonly senderRegistrationName?: string;
+	/** Stable internal host identity used only for broker-verified durable replies. */
+	readonly senderReturnAddress?: string;
+	readonly from: PendingStageSender;
+	readonly message: PendingStageIntercomMessage;
+	readonly queuedAt: string;
+	/** Durable workflow admission sequence; sender clocks never determine delivery order. */
+	readonly admissionOrder?: number;
+	readonly status: "queued" | "delivered" | "undeliverable";
+	readonly deliveredAt?: string;
+	readonly undeliverableReason?: string;
+	/** Deterministic outbox identity retained until the correlated sender notification is acknowledged. */
+	readonly undeliverableNotificationId?: string;
+	readonly undeliverableNotifiedAt?: string;
+}
+
+export type PendingStageMessageInput = Omit<
+	PendingStageMessage,
+	| "id"
+	| "stageId"
+	| "stageReplayKey"
+	| "admissionOrder"
+	| "status"
+	| "deliveredAt"
+	| "undeliverableReason"
+	| "undeliverableNotificationId"
+	| "undeliverableNotifiedAt"
+>;
+
+export type PendingStageQueueResult =
+	| {
+			readonly ok: true;
+			readonly messages: readonly PendingStageMessage[];
+			readonly entry: PendingStageMessage;
+			/** One-based position within the active canonical authored stage queue; absent for terminal retries. */
+			readonly position?: number;
+			readonly deduplicated: boolean;
+	  }
+	| {
+			readonly ok: false;
+			readonly reason: "group_mismatch";
+			readonly runId: string;
+			readonly stageKey: string;
+	  }
+	| {
+			readonly ok: false;
+			readonly reason: "message_id_conflict";
+			readonly runId: string;
+			readonly stageKey: string;
+			readonly messageId: string;
+	  }
+	| {
+			readonly ok: false;
+			readonly reason: "capacity";
+			readonly limit: number;
+			readonly runId: string;
+			readonly stageKey: string;
+	  };
+
+export type LiveStageMessageValidationResult =
+	| { readonly outcome: "forward" }
+	| { readonly outcome: "queued"; readonly position: number }
+	| { readonly outcome: "delivered" }
+	| { readonly outcome: "undeliverable"; readonly reason?: string }
+	| { readonly outcome: "message_id_conflict"; readonly messageId: string };
+
 export interface StageSnapshot {
 	readonly id: string;
 	readonly name: string;
@@ -235,6 +348,8 @@ export interface StageSnapshot {
 	skippedReason?: string;
 	/** Stable continuation replay identity, separate from display name. */
 	replayKey?: string;
+	/** Authoritative stage-factory capability; only true stages have a pre-start Intercom drain. */
+	pendingStageDeliveryAvailable?: boolean;
 	/** Snapshot-safe prompt answer availability marker; never contains the raw answer. */
 	promptAnswerState?: "available" | "unavailable" | "ambiguous";
 	/** Snapshot-safe descriptor of the prompt UI shown by this stage; never contains the raw answer. */
@@ -255,7 +370,7 @@ export interface StageSnapshot {
 	/**
 	 * Structured descriptor of a brokered ask_user_question / readiness-gate
 	 * prompt awaiting an answer. Set while the stage's `ctx.ui.custom` promise is
-	 * pending; resolution lives in `StageUiBroker`. Lets `workflow send` answer
+	 * pending; resolution lives in `StageUiBroker`. Lets `workflow answer` answer
 	 * the prompt headlessly. Distinct from {@link pendingPrompt}, which models
 	 * the simpler input/confirm/select/editor HIL prompts.
 	 */
@@ -410,6 +525,8 @@ export interface RunSnapshot {
 	 * straight to pi.ui dialogs).
 	 */
 	pendingPrompt?: PendingPrompt;
+	/** Durable messages queued for workflow stages that have not started yet. */
+	pendingStageMessages?: PendingStageMessage[];
 }
 
 export interface StoreSnapshot {

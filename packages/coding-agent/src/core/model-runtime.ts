@@ -411,6 +411,11 @@ export class ModelRuntime implements Models {
 		return this.snapshot.configuredProviders.has(providerId);
 	}
 
+	/** Return stored credential metadata synchronously without refreshing auth. */
+	getCredentialSnapshot(providerId: string): Credential | undefined {
+		return this.credentials.peek(providerId);
+	}
+
 	getAuth(providerId: string, overrides?: ModelRuntimeAuthOverrides): Promise<AuthResult | undefined>;
 	getAuth(model: Model<Api>, overrides?: ModelRuntimeAuthOverrides): Promise<AuthResult | undefined>;
 	async getAuth(

@@ -16,6 +16,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed OpenAI-compatible Chat Completions reasoning streams to concatenate incremental reasoning deltas instead of replacing earlier content ([#8605](https://github.com/earendil-works/pi/pull/8605)).
 - Fixed OpenRouter reasoning controls by deriving `off` support and available effort levels from model metadata, preventing reasoning-mandatory models from receiving `effort: "none"` ([#8454](https://github.com/earendil-works/pi/issues/8454)).
 - Fixed OpenAI-compatible Chat Completions requests sending `tool_choice` without tools, which gateways can reject during compaction ([#8607](https://github.com/earendil-works/pi/issues/8607)).
+- Fixed OpenAI-compatible Chat Completions ignoring an explicitly requested `toolChoice` when no tools are defined ([#8649](https://github.com/earendil-works/pi/issues/8649), [#8638](https://github.com/earendil-works/pi/issues/8638)).
+- Fixed OpenAI-compatible streaming rewriting `thinkingSignature` on every `reasoning_details` delta. Replay metadata is buffered during streaming and serialized once when the thinking block is finalized, including on the error path ([#8671](https://github.com/earendil-works/pi/issues/8671)).
 
 ## [0.9.15] - 2026-08-21
 

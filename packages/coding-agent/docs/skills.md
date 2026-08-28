@@ -81,6 +81,10 @@ The skill no longer recommends response prefilling, which returns an error on Cl
 
 The bundled `/skill:show-me` from [HumanLayer](https://github.com/humanlayer/skills) helps explain the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts. It is distributed under the MIT License.
 
+### Built-in code quality guidance
+
+The bundled `/skill:qlty` runs code-quality verification through the [qlty](https://qlty.sh) CLI, which drives 70+ linters, auto-formatters, and security scanners across 40+ languages: `qlty check` for linting, `qlty fmt` for auto-formatting, `qlty metrics` for complexity, lines, and cohesion, and `qlty smells` for duplication, deep nesting, and overly complex code. It triggers on requests for verifiers or high code quality and prefers one CLI over ad-hoc per-tool linter invocations. The skill directs the agent to [docs.qlty.sh/llms.txt](https://docs.qlty.sh/llms.txt) as the authoritative documentation index, tells it to enable the qlty plugins and linter extensions that fit the codebase before checking, and ships source-attributed reference excerpts beside `SKILL.md`. The CLI is not bundled; install it with `curl https://qlty.sh | bash` (macOS and Linux) or `powershell -c "iwr https://qlty.sh | iex"` (Windows), and keep `~/.qlty/bin` on `PATH`. Note that `qlty init` writes `.qlty/qlty.toml` into the repository. Offline, `qlty metrics` and `qlty smells` still work (built-in static analysis); `qlty check` and `qlty fmt` download plugins and runtimes on first use per repository and need network then.
+
 ## Skill Commands
 
 Skills register as `/skill:name` commands:

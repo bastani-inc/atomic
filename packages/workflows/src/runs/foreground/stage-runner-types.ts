@@ -11,6 +11,10 @@ import type {
 	WorkflowModelCatalogPort,
 } from "../../shared/types.js";
 
+type WorkflowPendingStageDelivery = NonNullable<
+	CreateAgentSessionOptions["orchestrationContext"]
+>["pendingStageDelivery"];
+
 type AgentStageSessionEvent = Parameters<AgentSession["subscribe"]>[0] extends (event: infer T) => void ? T : never;
 export type StageSessionEvent = AgentStageSessionEvent & { readonly turnId?: string | number };
 
@@ -149,6 +153,8 @@ export interface StageRunnerOpts {
 	onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
 	/** Internal: persist stage-session identity once the SDK has created its path. */
 	onSessionReady?: () => void | Promise<void>;
+	/** Internal durable pre-start message bridge consumed by the intercom extension. */
+	pendingStageDelivery?: WorkflowPendingStageDelivery;
 }
 
 export interface InternalStageContext extends StageContext {

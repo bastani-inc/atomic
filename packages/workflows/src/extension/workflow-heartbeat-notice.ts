@@ -25,8 +25,16 @@ export function formatWorkflowHeartbeatNoticeText(details: WorkflowHeartbeatEven
 	return (
 		`${WORKFLOW_HEARTBEAT_GLYPH} Workflow "${workflowName}" heartbeat (run ${details.runId}) — still running` +
 		`${elapsed === undefined ? "" : ` after ${elapsed}`}, on a ${cadence} cadence. ` +
-		"This is a periodic alignment check, not a failure. Review whether the run is still on goal, then " +
-		"continue, steer it, stop and replace it, or ask the user. " +
+		"This is a periodic alignment check. Review whether the run is still on goal. " +
+		"When steering or communication is useful, use Intercom. Consider the expanded workflow topology and match " +
+		"each update's reach to its impact: send a local update to its affected stage; when shared scope or acceptance " +
+		"criteria change, send the same authoritative Intercom update to every relevant live and known unstarted " +
+		"`<runId>:<stageKey>`, including each worker-to-reviewer loop. Intercom delivers immediately to live stages and " +
+		"queues updates for known stages that have not started, delivering them before their first model turn, so workers " +
+		"and reviewers begin with one consistent contract. " +
+		"Use `ask` once the target has a live session that can reply. " +
+		"Use workflow pause, resume, interrupt, or quit for run control. " +
+		"Continue the progressing run when no intervention is needed, or ask the user when a decision is needed. " +
 		`Inspect: /workflow status ${details.runId}`
 	);
 }

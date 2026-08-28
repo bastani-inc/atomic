@@ -41,11 +41,11 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	if (!existsSync(resolvedFilePath)) return [];
 
 	const entries: FileEntry[] = [];
+	let pending = "";
 	const fd = openSync(resolvedFilePath, "r");
 	try {
 		const decoder = new StringDecoder("utf8");
 		const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
-		let pending = "";
 
 		while (true) {
 			const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
@@ -70,13 +70,14 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 		closeSync(fd);
 	}
 
-	// Validate session header
+	// Validate session header before repairing the file.
 	if (entries.length === 0) return entries;
 	const header = entries[0];
 	if (header.type !== "session" || !("id" in header) || typeof header.id !== "string") {
 		return [];
 	}
 
+	if (pending) appendFileSync(resolvedFilePath, "\n");
 	return entries;
 }
 
@@ -207,6 +208,8 @@ export function hasAssistantMessage(entries: FileEntry[]): boolean {
 /**
  * Append one already-published entry. Buffered entries stay unwritten until an
  * assistant message exists; the first write after that flushes them together.
+ * An explicit flush makes every later entry append immediately, including
+ * entries written before the first assistant turn.
  * Returns the new flushed state and throws without changing it on write failure.
  */
 export function persistAppendedEntry(
@@ -215,8 +218,8 @@ export function persistAppendedEntry(
 	entry: FileEntry,
 	flushed: boolean,
 ): boolean {
-	if (!hasAssistantMessage(entries)) return false;
 	if (flushed) appendSessionEntry(filePath, entry);
+	else if (!hasAssistantMessage(entries)) return false;
 	else appendSessionEntries(filePath, entries);
 	return true;
 }

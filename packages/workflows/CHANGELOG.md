@@ -10,11 +10,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added a live needs-input affordance to the wide `BACKGROUND` panel for a visible run tree with exactly one displayable human-in-the-loop prompt. The card keeps the full workflow identity, shows a bounded, control-stripped question and exact `/workflow connect <run-id>` action, adds `F2 answer` only when F2 targets that run, and repaints back to the ordinary row when the prompt clears; promptless, multi-question, or ambiguous trees retain the status-only presentation without parent-chat or model-context content ([#2529](https://github.com/bastani-inc/atomic/issues/2529)).
 
+## [0.9.16-alpha.8] - 2026-08-27
+
+### Added
+
+- Added a dedicated `workflow answer` action for responding to pending primitive and structured human-in-the-loop prompts without exposing stage-message delivery semantics.
+- Added durable pending-stage message state for ordinary Intercom delivery, including FIFO delivery before the first model turn, resume/replay persistence, exactly-once stage-attempt handling, lifecycle failure notifications, and guidance for propagating material updates to known workflow stages that have not started. ([#2717](https://github.com/bastani-inc/atomic/issues/2717))
+
+### Changed
+
+- Periodic workflow heartbeat prompts now guide supervising agents to use ordinary Intercom when steering or communication is useful, match an update's reach to the expanded workflow topology, send shared scope or acceptance changes consistently across every relevant live and known unstarted worker/reviewer stage, account for immediate and queued pre-first-turn delivery, and use workflow pause, resume, interrupt, or quit for run control.
+
+### Removed
+
+- Removed the public `workflow send` action and its stage-chat delivery modes. Use `workflow answer` for pending human-input prompts, `workflow resume` for paused control, and ordinary Intercom for live or deferred workflow-stage communication.
+
+## [0.9.16-alpha.7] - 2026-08-26
+
+### Changed
+
+- Builtin `goal` and `ralph` stage prompts now carry a shared `code_quality_verification` section pointing stages at the `qlty` skill (or `skill: "qlty"` delegation) for linting, auto-formatting, complexity and duplication metrics, and code smells — weighted higher when the objective asks for verifiers or high code quality. It reaches the goal controller, goal orchestrator, goal reviewer, ralph orchestrator, and both ralph reviewers, alongside the existing end-to-end verification guidance. Repository-defined checks in AGENTS.md/CLAUDE.md, package scripts, and CI remain authoritative.
+- Builtin `goal` and `ralph` stage prompts now carry a shared `repository_intent` section instructing implementers and reviewers to infer maintainer and requesting-user conventions by mining repository behavior — git history (including `git log --show-signature`), merged PRs, issues and their comments, review comments, commit subjects and trailers, and CI/branch-protection config — for unwritten norms such as commit signing, message style and issue linking, changelog discipline, PR size and review etiquette. The dominant, recent, intentional pattern wins over accidental drift, the requesting user's own activity weighs highest, implementers match inferred conventions in delivered work, and reviewers report deviations as evidence-backed convention findings. Behavioral evidence fills contract gaps and never overrides the literal objective, acceptance criteria, or explicit AGENTS.md/CLAUDE.md guidance. It reaches the same call sites as the code-quality guidance: goal controller, goal orchestrator, goal reviewer, ralph orchestrator, and both ralph reviewers.
+- The `workflow` tool's routing guidance adds a repository-intent clause to the pre-launch architecture pass: for coding tasks, mine git history, merged PRs, issues, commits, and review comments before freezing authored workflow objectives and acceptance criteria so they capture unwritten conventions, weighing the requesting user's own activity highest; non-coding tasks mine their analogous available context sources (issue trackers, long-form docs, chat/comment threads, prior artifacts) the same way.
+
+## [0.9.16-alpha.6] - 2026-08-26
+
+### Changed
+
+- The `workflow` tool description, agent routing guidance, and workflow docs now treat a blocked run as continuable by default: resume resumable blocks, answer pending prompts, steer past the obstacle, or start a follow-up workflow past a terminal block (inline only when the remaining work is minimal), stopping for user input only when the task is so ambiguous that judgment cannot infer intent from the objective and repository evidence — git history, commits, PRs, issues, and the user's own comments. When `ask_user_question` or human input is unavailable, the agent is instructed to continue fully autonomously on the interpretation best supported by that evidence and to record the assumption.
+- `WORKFLOW BLOCKED` lifecycle notices now carry that continuation instruction in their text: resume or steer the run, or continue with a follow-up workflow (inline only if what remains is minimal), and ask the user only when intent cannot be inferred from repository evidence.
+- A budget-exceeded stop is now reported as its own blocked-notice variant (`stopped at its <dimension> budget limit`, with `budgetExceeded`/`budgetDimension` details and a `/workflow resume` hint) whose text instructs the agent to summarize progress and estimated next steps, ask the user whether to proceed — preferring the `ask_user_question` tool when available — and resume with a raised `budget` only after approval. Matching guidance was added to the routing prompts and docs.
+
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Changed
 
 - Raised the public `workflow` tool request deadline from 30 seconds to two minutes. Timed-out requests still return `WORKFLOW_TIMEOUT` with `timeoutMs: 120000`, abort cancellable work, discard late settlement, and never retry. Mutating actions keep the unknown-outcome warning that tells callers to inspect workflow status before retrying ([#2654](https://github.com/bastani-inc/atomic/issues/2654)).
+- Agent guidance now treats "no budget" as the default for workflow runs. A `budget` is passed on `run`/`resume` only when the operator asked for a limit, and only the fields they named; otherwise the field is omitted so the workflow declaration and config resolve normally.
+- Agent guidance now assumes the existing 15-minute heartbeat cadence and does not shorten, lengthen, or disable it unless the operator asks. Heartbeats are documented as periodic alignment checks rather than failure signals, so a progressing run is not interrupted, re-capped, or polled in response to one.
 
 ### Fixed
 

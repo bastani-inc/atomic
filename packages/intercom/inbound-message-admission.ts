@@ -1,4 +1,5 @@
 import { DeliveredMessageCache } from "./broker/delivered-message-cache.js";
+import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
 import type { Message, SessionInfo } from "./types.js";
 
 export interface InboundMessageReservation {
@@ -20,12 +21,34 @@ interface PendingInboundMessage {
   delivering: boolean;
 }
 
+export interface PersistedInboundMessageEntry {
+  readonly customType?: unknown;
+  readonly details?: unknown;
+  readonly stageAdmissionKey?: unknown;
+}
+
 /** Deduplicates broker deliveries before reply-tracker or turn-context side effects. */
 export class InboundMessageAdmission {
   private readonly delivered = new DeliveredMessageCache();
   private readonly pending = new Map<string, PendingInboundMessage>();
+  private readonly persistentlyDelivered = new Set<string>();
+
+  restore(entries: Iterable<unknown>): void {
+    this.persistentlyDelivered.clear();
+    for (const value of entries) {
+      if (typeof value !== "object" || value === null) continue;
+      const entry = value as PersistedInboundMessageEntry;
+      if (entry.customType !== "intercom_message" || typeof entry.stageAdmissionKey !== "string") continue;
+      if (typeof entry.details !== "object" || entry.details === null) continue;
+      const details = entry.details as { readonly from?: unknown; readonly message?: unknown };
+      if (!isSessionInfo(details.from) || !isMessage(details.message)) continue;
+      if (entry.stageAdmissionKey !== `intercom:${details.message.id}`) continue;
+      this.persistentlyDelivered.add(details.message.id);
+    }
+  }
 
   admit(from: SessionInfo, message: Message): InboundMessageAdmissionResult {
+    if (this.persistentlyDelivered.has(message.id)) return { kind: "duplicate" };
     const signature = JSON.stringify({ from: from.id, message });
     if (this.delivered.lookup(message.id, signature) !== "miss") return { kind: "duplicate" };
     const pending = this.pending.get(message.id);
@@ -60,6 +83,7 @@ export class InboundMessageAdmission {
     if (pending?.reservation !== reservation) return;
     this.pending.delete(reservation.messageId);
     this.delivered.record(reservation.messageId, reservation.signature);
+    this.persistentlyDelivered.add(reservation.messageId);
     pending.resolve();
   }
 

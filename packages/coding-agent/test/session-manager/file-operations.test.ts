@@ -66,6 +66,36 @@ describe("loadEntriesFromFile", () => {
 		expect(entries).toHaveLength(2);
 	});
 
+	it("adds a newline after an unterminated valid record", () => {
+		const file = join(tempDir, "unterminated.jsonl");
+		const content =
+			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}';
+		writeFileSync(file, content);
+
+		expect(loadEntriesFromFile(file)).toHaveLength(2);
+		expect(readFileSync(file, "utf8")).toBe(`${content}\n`);
+	});
+
+	it("adds a newline after an unterminated malformed final fragment", () => {
+		const file = join(tempDir, "malformed-tail.jsonl");
+		const content =
+			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' + '{"type":"message"';
+		writeFileSync(file, content);
+
+		expect(loadEntriesFromFile(file)).toHaveLength(1);
+		expect(readFileSync(file, "utf8")).toBe(`${content}\n`);
+	});
+
+	it("does not modify an unterminated non-session file", () => {
+		const file = join(tempDir, "invalid.jsonl");
+		const content = '{"type":"message","id":"1"}';
+		writeFileSync(file, content);
+
+		expect(loadEntriesFromFile(file)).toEqual([]);
+		expect(readFileSync(file, "utf8")).toBe(content);
+	});
+
 	it("opens session files larger than Node's max string length", () => {
 		const file = join(tempDir, "large.jsonl");
 		writeFileSync(
@@ -96,6 +126,112 @@ describe("loadEntriesFromFile", () => {
 	});
 });
 
+describe("SessionManager durable prelude persistence", () => {
+	let tempDir: string;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `session-prelude-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("persists each admitted pre-start message once before the first task across restart", () => {
+		const session = SessionManager.create(tempDir, tempDir, {
+			internal: true,
+			workflow: { runId: "run-2724", stageId: "reviewer-id", stageName: "reviewer" },
+		});
+		session.appendModelChange("test-provider", "test-model");
+		session.appendThinkingLevelChange("high");
+		const admissionKeys = ["intercom:pending-first", "intercom:pending-second"];
+		for (const stageAdmissionKey of admissionKeys) {
+			session.appendCustomMessageEntry(
+				"intercom_message",
+				stageAdmissionKey,
+				true,
+				{ message: { id: stageAdmissionKey.slice("intercom:".length) } },
+				undefined,
+				undefined,
+				stageAdmissionKey,
+			);
+			session.flush();
+		}
+		session.appendMessage({ role: "user", content: "review task", timestamp: 1 });
+		session.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "review complete" }],
+			api: "anthropic-messages",
+			provider: "test-provider",
+			model: "test-model",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		});
+
+		const sessionFile = session.getSessionFile();
+		expect(sessionFile).toBeDefined();
+		const readPhysicalEntries = () =>
+			readFileSync(sessionFile!, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+		const physicalEntries = readPhysicalEntries();
+		const firstTaskIndex = physicalEntries.findIndex(
+			(entry) => entry.type === "message" && entry.message?.role === "user",
+		);
+		expect({
+			sessionHeaders: physicalEntries.filter((entry) => entry.type === "session").length,
+			modelChanges: physicalEntries.filter((entry) => entry.type === "model_change").length,
+			thinkingChanges: physicalEntries.filter((entry) => entry.type === "thinking_level_change").length,
+			admissions: admissionKeys.map(
+				(key) => physicalEntries.filter((entry) => entry.stageAdmissionKey === key).length,
+			),
+			admissionsBeforeTask: admissionKeys.map(
+				(key) =>
+					physicalEntries.filter((entry, index) => index < firstTaskIndex && entry.stageAdmissionKey === key)
+						.length,
+			),
+		}).toEqual({
+			sessionHeaders: 1,
+			modelChanges: 1,
+			thinkingChanges: 1,
+			admissions: [1, 1],
+			admissionsBeforeTask: [1, 1],
+		});
+
+		const restored = SessionManager.open(sessionFile!, tempDir, tempDir);
+		restored.appendMessage({ role: "user", content: "retry task", timestamp: 3 });
+		restored.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "retry complete" }],
+			api: "anthropic-messages",
+			provider: "test-provider",
+			model: "test-model",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 4,
+		});
+		expect(
+			admissionKeys.map((key) => readPhysicalEntries().filter((entry) => entry.stageAdmissionKey === key).length),
+		).toEqual([1, 1]);
+	});
+});
 describe("findMostRecentSession", () => {
 	let tempDir: string;
 

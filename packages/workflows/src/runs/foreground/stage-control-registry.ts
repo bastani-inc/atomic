@@ -120,7 +120,7 @@ export interface StageControlHandle {
 	dispose?(): void | Promise<void>;
 }
 
-/** Tentative ownership used by workflow sends until final message admission. */
+/** Tentative ownership used until final message admission. */
 export interface DetachedStageHandleLease {
 	readonly handle: StageControlHandle;
 	/** Keep the handle registered after admission; false when it was displaced. */

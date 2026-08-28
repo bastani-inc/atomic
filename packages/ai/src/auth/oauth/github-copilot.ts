@@ -120,7 +120,12 @@ function parseGitHubCopilotModelCatalog(raw: unknown, allowPolicyFallback: boole
 	const availableModelIds =
 		pickerModelIds.length > 0 || !allowPolicyFallback
 			? pickerModelIds
-			: accountModels.filter((model) => model.policyState === "enabled").map((model) => model.id);
+			: accountModels
+					.filter((model) => !model.id.endsWith("-fast") && model.policyState === "enabled")
+					.map((model) => model.id);
+	const fastModelIds = accountModels
+		.filter((model) => model.id.endsWith("-fast") && model.policyState !== "disabled")
+		.map((model) => model.id);
 	const policyModelIds = accountModels
 		.filter(
 			(model) =>
@@ -129,7 +134,7 @@ function parseGitHubCopilotModelCatalog(raw: unknown, allowPolicyFallback: boole
 				(model.pickerEnabled || usePolicyFallback),
 		)
 		.map((model) => model.id);
-	return { availableModelIds, policyModelIds };
+	return { availableModelIds, fastModelIds, policyModelIds };
 }
 
 async function fetchWithRateLimitRetry(
@@ -356,13 +361,19 @@ async function refreshGitHubCopilotToken(
 	signal: AbortSignal,
 ): Promise<OAuthCredential> {
 	const credentials = await refreshGitHubCopilotAccessToken(refreshToken, enterpriseDomain, signal);
-	const { availableModelIds } = await fetchGitHubCopilotModels(credentials.access, enterpriseDomain, signal, {
-		maxRetries: 0,
-		maxElapsedMs: 0,
-	});
+	const { availableModelIds, fastModelIds } = await fetchGitHubCopilotModels(
+		credentials.access,
+		enterpriseDomain,
+		signal,
+		{
+			maxRetries: 0,
+			maxElapsedMs: 0,
+		},
+	);
 	return {
 		...credentials,
 		availableModelIds,
+		fastModelIds,
 	};
 }
 
@@ -481,6 +492,7 @@ async function loginGitHubCopilot(interaction: ProviderAuthInteraction): Promise
 	return {
 		...credentials,
 		availableModelIds: [...new Set([...models.availableModelIds, ...enabledModelIds])],
+		fastModelIds: models.fastModelIds,
 	};
 }
 

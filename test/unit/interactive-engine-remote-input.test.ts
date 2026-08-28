@@ -190,7 +190,10 @@ function makeProductionThinkingHandler(
 	const editor = new CustomEditor({ requestRender: () => {} } as TUI, getEditorTheme(), keybindings);
 	const mode = Object.assign(Object.create(InteractiveModeBase.prototype), {
 		addTuiInputListener: () => () => {},
-		chatContainer: { clear: () => {} },
+		// `children` matches the real `Container` contract. The thinking toggle now
+		// updates rendered assistant messages in place rather than clearing and
+		// rebuilding the chat, so it reads this instead of only calling clear().
+		chatContainer: { children: [], clear: () => {} },
 		defaultEditor: editor,
 		hideThinkingBlock: false,
 		keybindings,
@@ -205,7 +208,7 @@ function makeProductionThinkingHandler(
 		showStatus: () => {},
 		streamingComponent: undefined,
 		streamingMessage: undefined,
-		ui: {},
+		ui: { requestRender: () => {} },
 	}) as InteractiveModeBase;
 	if (registerThinkingToggle) mode.setupKeyHandlers();
 	return { handler: (data) => mode.handleOverlayUnhandledInput(data), mode, settingWrites };

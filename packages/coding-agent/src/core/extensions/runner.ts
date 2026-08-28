@@ -88,6 +88,7 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
+	UIPromptKind,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
@@ -151,6 +152,8 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private uiPromptBinding = 0;
+	private activeUIPrompt: { depth: number; kind: UIPromptKind; title: string | undefined } | undefined;
 
 	constructor(
 		extensions: Extension[],
@@ -275,8 +278,83 @@ export class ExtensionRunner {
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
-		this.uiContext = uiContext ?? noOpUIContext;
+		this.endActiveUIPrompt();
+		const binding = ++this.uiPromptBinding;
+		this.uiContext = uiContext ? this.wrapUIPromptContext(uiContext, binding) : noOpUIContext;
 		this.mode = mode;
+	}
+
+	private wrapUIPromptContext(ui: ExtensionUIContext, binding: number): ExtensionUIContext {
+		return {
+			...ui,
+			select: (title, options, opts) =>
+				this.withUIPrompt(binding, "select", title, () => ui.select(title, options, opts)),
+			confirm: (title, message, opts) =>
+				this.withUIPrompt(binding, "confirm", title, () => ui.confirm(title, message, opts)),
+			input: (title, placeholder, opts) =>
+				this.withUIPrompt(binding, "input", title, () => ui.input(title, placeholder, opts)),
+			editor: (title, prefill, opts) =>
+				this.withUIPrompt(binding, "editor", title, () => ui.editor(title, prefill, opts)),
+			custom: (factory, options) =>
+				this.withUIPrompt(binding, "custom", undefined, () => ui.custom(factory, options)),
+		};
+	}
+
+	private withUIPrompt<T>(
+		binding: number,
+		kind: UIPromptKind,
+		title: string | undefined,
+		run: () => Promise<T>,
+	): Promise<T> {
+		if (binding !== this.uiPromptBinding) return run();
+
+		let prompt = this.activeUIPrompt;
+		if (!prompt) {
+			prompt = { depth: 0, kind, title };
+			this.activeUIPrompt = prompt;
+			this.emitUIPromptEvent({
+				type: "ui_prompt_start",
+				reason: "ui_prompt",
+				kind,
+				...(title === undefined ? {} : { title }),
+			});
+		}
+		prompt.depth += 1;
+
+		let finished = false;
+		const finish = () => {
+			if (finished) return;
+			finished = true;
+			if (this.activeUIPrompt !== prompt) return;
+
+			prompt.depth -= 1;
+			if (prompt.depth === 0) this.endActiveUIPrompt(prompt);
+		};
+
+		try {
+			return run().finally(finish);
+		} catch (error) {
+			finish();
+			throw error;
+		}
+	}
+
+	private endActiveUIPrompt(prompt = this.activeUIPrompt): void {
+		if (!prompt || this.activeUIPrompt !== prompt) return;
+		this.activeUIPrompt = undefined;
+		prompt.depth = 0;
+		this.emitUIPromptEvent({
+			type: "ui_prompt_end",
+			reason: "ui_prompt",
+			kind: prompt.kind,
+			...(prompt.title === undefined ? {} : { title: prompt.title }),
+		});
+	}
+
+	private emitUIPromptEvent(event: Extract<RunnerEmitEvent, { type: "ui_prompt_start" | "ui_prompt_end" }>): void {
+		queueMicrotask(() => {
+			void this.emit(event);
+		});
 	}
 
 	getUIContext(): ExtensionUIContext {

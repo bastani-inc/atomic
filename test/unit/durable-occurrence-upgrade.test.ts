@@ -12,7 +12,7 @@ import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resu
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
-import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
+import { workflowAnswerAction } from "../../packages/workflows/src/extension/workflow-tool-answer.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
@@ -220,12 +220,11 @@ test.sequential("fresh DBOS replay coalesces an omitted occurrenceKey prompt wit
 	assert.deepEqual(target, { ok: true, runId: ROOT_ID, stageId: legacy.stageId });
 	assert.equal(Object.getPrototypeOf(target), Object.prototype);
 
-	const answer = await workflowSendAction({
+	const answer = await workflowAnswerAction({
 		runId: ROOT_ID,
 		stageId: freshInput.stage.id,
 		promptId: freshInput.stage.pendingPrompt!.id,
 		response: HOLD_RESPONSE,
-		delivery: "answer",
 	});
 	assert.equal(answer.status, "ok");
 	await jobs.get(ROOT_ID)!.promise;

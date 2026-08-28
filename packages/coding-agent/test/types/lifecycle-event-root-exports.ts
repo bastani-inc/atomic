@@ -1,5 +1,12 @@
 import type { AssistantMessageEvent } from "@bastani/pi-ai/compat";
 import type {
+	UIPromptEndEvent as CoreUIPromptEndEvent,
+	UIPromptKind as CoreUIPromptKind,
+	UIPromptStartEvent as CoreUIPromptStartEvent,
+} from "../../src/core/extensions/index.ts";
+import type {
+	ExtensionAPI,
+	ExtensionEvent,
 	MessageEndEvent,
 	MessageStartEvent,
 	MessageUpdateEvent,
@@ -9,7 +16,15 @@ import type {
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
+	UIPromptEndEvent,
+	UIPromptKind,
+	UIPromptStartEvent,
 } from "../../src/index.ts";
+import type {
+	UIPromptEndEvent as ExtensionBarrelUIPromptEndEvent,
+	UIPromptKind as ExtensionBarrelUIPromptKind,
+	UIPromptStartEvent as ExtensionBarrelUIPromptStartEvent,
+} from "../../src/index-extensions.ts";
 
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2 ? true : false;
@@ -42,3 +57,56 @@ export type SessionCompactFailedEventRootExport = Assert<
 		}
 	>
 >;
+
+export type UIPromptKindRootExport = Assert<Equal<UIPromptKind, "select" | "confirm" | "input" | "editor" | "custom">>;
+export type UIPromptStartEventRootExport = Assert<
+	Equal<
+		UIPromptStartEvent,
+		{
+			type: "ui_prompt_start";
+			reason: "ui_prompt";
+			kind: UIPromptKind;
+			title?: string;
+		}
+	>
+>;
+export type UIPromptEndEventRootExport = Assert<
+	Equal<
+		UIPromptEndEvent,
+		{
+			type: "ui_prompt_end";
+			reason: "ui_prompt";
+			kind: UIPromptKind;
+			title?: string;
+		}
+	>
+>;
+export type UIPromptStartExtensionEvent = Assert<
+	Equal<Extract<ExtensionEvent, { type: "ui_prompt_start" }>, UIPromptStartEvent>
+>;
+export type UIPromptEndExtensionEvent = Assert<
+	Equal<Extract<ExtensionEvent, { type: "ui_prompt_end" }>, UIPromptEndEvent>
+>;
+export type UIPromptCoreBarrelExports = Assert<
+	Equal<
+		[CoreUIPromptKind, CoreUIPromptStartEvent, CoreUIPromptEndEvent],
+		[UIPromptKind, UIPromptStartEvent, UIPromptEndEvent]
+	>
+>;
+export type UIPromptExtensionBarrelExports = Assert<
+	Equal<
+		[ExtensionBarrelUIPromptKind, ExtensionBarrelUIPromptStartEvent, ExtensionBarrelUIPromptEndEvent],
+		[UIPromptKind, UIPromptStartEvent, UIPromptEndEvent]
+	>
+>;
+
+export function subscribeToUIPromptEvents(api: ExtensionAPI): void {
+	api.on("ui_prompt_start", (event) => {
+		const prompt: UIPromptStartEvent = event;
+		void prompt;
+	});
+	api.on("ui_prompt_end", (event) => {
+		const prompt: UIPromptEndEvent = event;
+		void prompt;
+	});
+}

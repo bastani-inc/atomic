@@ -1,4 +1,4 @@
-import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { getDurableBackend } from "../durable/factory.js";
@@ -226,6 +226,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		status: "running" as const,
 		stages: [],
 		toolNodes: [],
+		pendingStageMessages: [
+			...pendingStageMessagesForDurableRun(rootBackend, runId, opts.parentRun?.rootRunId ?? runId),
+		],
 		startedAt: Date.now(),
 		...(opts.parentRun !== undefined
 			? {

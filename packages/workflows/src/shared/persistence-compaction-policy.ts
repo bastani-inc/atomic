@@ -64,6 +64,7 @@ export function installCompactionHook(api: CompactionAPI & PersistenceAPI, store
 					stageId: stage.id,
 					name: stage.name,
 					parentIds: [...stage.parentIds],
+					pendingStageDeliveryAvailable: stage.pendingStageDeliveryAvailable,
 					ts: stage.startedAt ?? now,
 				});
 			}

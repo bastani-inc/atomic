@@ -3,15 +3,14 @@
  *
  * Builds `PostMortemStageChatDeps` from live extension runtime surfaces
  * (stage adapters, durable per-run cwd, and the default stage session dir after
- * a host restart) so both the TUI attach pane and `workflow send` revive an
+ * a host restart) so the TUI attach pane can revive an
  * eligible terminal agent stage through the same detached, single-flight
  * resolver instead of process-local handle presence alone.
  *
  * cross-ref:
  *   - src/runs/foreground/postmortem-stage-chat.ts (resolver)
  *   - src/tui/overlay-adapter.ts (attach pane wiring)
- *   - src/extension/workflow-tool-send.ts (send parity)
- */
+ * */
 
 import { getDurableBackend } from "../durable/factory.js";
 import {

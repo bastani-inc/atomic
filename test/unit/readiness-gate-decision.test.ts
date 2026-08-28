@@ -124,7 +124,7 @@ describe("readinessStayMessage", () => {
 
 // Full seam regression: orchestrator answer payload -> coerce -> gate adapter ->
 // ask_user_question tool envelope (buildQuestionnaireResponse) -> readiness
-// decision. Reproduces the real `workflow send` path that left the stage stuck.
+// decision. Reproduces the real `workflow answer` path that left the stage stuck.
 describe("readiness gate end-to-end answer pipeline", () => {
 	const gateParams = READINESS_GATE_QUESTION_PARAMS as unknown as QuestionParams;
 	const adapter = buildStagePromptAdapter("readiness-gate-s1", "readiness_gate", READINESS_GATE_QUESTION_PARAMS, 1)!;
@@ -216,7 +216,7 @@ describe("multi-select chat answer adapter → envelope seam", () => {
 
 // REAL end-to-end path: drives the executor's actual readiness gate through the
 // shared StageUiBroker + the real ask_user_question tool, answering exactly the
-// way `/workflow send` does (peek + answerStagePrompt). This is the path the
+// way `/workflow answer` does (peek + answerStagePrompt). This is the path the
 // prior isolated tests missed; the `answers[]`-without-questionIndex payload
 // reproduces the live "User declined to answer questions" / stuck-stage bug.
 describe("askReadinessViaStageBroker (real broker + tool resolution)", () => {

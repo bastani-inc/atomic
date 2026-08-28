@@ -15,12 +15,25 @@ import {
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
 
 const ROOT = "root-wf-001";
 const CHILD = "child-wf-002";
 
 function toolCheckpoint(workflowId: string, argsHash: string, output: string): DurableCheckpoint {
 	return { kind: "tool", workflowId, checkpointId: `tool:${argsHash}`, name: "t", argsHash, output, completedAt: 1 };
+}
+
+function pendingStageMessage(runId: string, id: string): PendingStageMessage {
+	return {
+		id,
+		runId,
+		stageKey: "shared",
+		from: { id: "sender" },
+		message: { id, timestamp: 1, content: { text: id } },
+		queuedAt: "2026-08-27T17:00:00.000Z",
+		status: "queued",
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +116,38 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 		second.recordCheckpoint(toolCheckpoint(CHILD, "shared-hash", "second-result"));
 		assert.equal(first.getToolOutput(CHILD, "shared-hash"), "first-result");
 		assert.equal(second.getToolOutput(CHILD, "shared-hash"), "second-result");
+	});
+	test("child pending-message transitions replace only their logical root metadata bucket", async () => {
+		const sibling = "sibling-wf-003";
+		const rootEntry = pendingStageMessage(ROOT, "root-message");
+		const childEntry = pendingStageMessage(CHILD, "child-message");
+		const siblingEntry = pendingStageMessage(sibling, "sibling-message");
+		const child = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: "workflow:child:1" });
+		const siblingChild = new ScopedDurableBackend(root, {
+			rootWorkflowId: ROOT,
+			scopePrefix: "workflow:sibling:1",
+		});
+
+		assert.equal(await root.persistPendingStageMessages(ROOT, [rootEntry]), true);
+		assert.equal(await child.persistPendingStageMessages(CHILD, [childEntry]), true);
+		assert.equal(await siblingChild.persistPendingStageMessages(sibling, [siblingEntry]), true);
+		assert.equal(
+			await child.persistPendingStageMessages(CHILD, [
+				{ ...childEntry, status: "delivered", deliveredAt: "2026-08-27T17:01:00.000Z" },
+			]),
+			true,
+		);
+
+		assert.deepEqual(
+			root.getWorkflow(ROOT)?.pendingStageMessages?.map((entry) => [entry.runId, entry.id, entry.status]),
+			[
+				[ROOT, "root-message", "queued"],
+				[CHILD, "child-message", "delivered"],
+				[sibling, "sibling-message", "queued"],
+			],
+		);
+		assert.equal(root.getWorkflow(CHILD), undefined);
+		assert.equal(root.getWorkflow(sibling), undefined);
 	});
 
 	test("scoped lifecycle methods are no-ops (children are not independently resumable)", () => {

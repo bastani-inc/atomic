@@ -111,7 +111,6 @@ export async function generateSessionSummary(
 		signal,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
-		toolChoice: "none",
 	};
 	const response = await (async () => {
 		try {

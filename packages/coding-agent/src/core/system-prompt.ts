@@ -150,7 +150,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 	}
 	if (shouldIncludeAskUserFallbackGuidance) {
-		addGuideline("Clarify ambiguous requirements using the ask_user_question tool if available.");
+		addGuideline(
+			"Clarify ambiguous requirements using the ask_user_question tool if available. When it is unavailable and no human input channel exists, do not stall on a question: choose the interpretation best supported by the repository and the stated objective — mine git history, commits, PRs, issues, and the user's own comments to infer how they would decide — state the assumption in your response, and continue fully autonomously on best judgment.",
+		);
+	}
+	if (hasBash || hasPowerShell) {
+		addGuideline(
+			"**Repository intent**: When working in a repository, infer how its maintainers actually work before imposing defaults: review recent commits, open and merged PRs, issues and their comments, and project/board status when tooling allows (for example `git log` and the `gh` CLI) to learn conventions, priorities, and scope norms. Better, identify the requesting user (`git config user.name`/`user.email`, `gh api user`) and study their own commits, PRs, reviews, and issue comments so you interpret ambiguous requests the way they would, aligning style, scope, and process with their patterns.",
+		);
 	}
 
 	for (const guideline of promptGuidelines ?? []) {

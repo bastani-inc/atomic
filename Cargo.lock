@@ -489,8 +489,6 @@ dependencies = [
 [[package]]
 name = "napi-derive-backend"
 version = "6.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df4056ac7c18e4438ccf0edaed4340ca0d269278c8ec19284f7b23cb039fd0ae"
 dependencies = [
  "convert_case",
  "proc-macro2",

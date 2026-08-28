@@ -17,7 +17,7 @@ describe("WorkflowParametersSchema", () => {
 			{ action: "stages", runId: "abc123", statusFilter: "running" },
 			{ action: "stage", runId: "abc123", stageId: "review" },
 			{ action: "transcript", runId: "abc123", stageId: "review", tail: 20 },
-			{ action: "send", runId: "abc123", stageId: "review", text: "continue" },
+			{ action: "answer", runId: "abc123", stageId: "review", response: true },
 			{ action: "pause", runId: "abc123" },
 			{ action: "resume", runId: "abc123" },
 			{ action: "interrupt", runId: "abc123" },
@@ -53,7 +53,7 @@ describe("WorkflowParametersSchema", () => {
 				type: "toolCall",
 				id: "call-1",
 				name: "workflow",
-				arguments: { action: "send", response },
+				arguments: { action: "answer", response },
 			});
 			assert.equal(validated.response, expected);
 			assert.equal(typeof validated.response, typeof expected);
@@ -101,6 +101,7 @@ describe("WorkflowParametersSchema", () => {
 
 	test("rejects invalid action values and transcript counts", () => {
 		assert.equal(Value.Check(WorkflowParametersSchema, { action: "kill", runId: "abc123" }), false);
+		assert.equal(Value.Check(WorkflowParametersSchema, { action: "send", runId: "abc123" }), false);
 		assert.equal(Value.Check(WorkflowParametersSchema, { action: "transcript", limit: -1 }), false);
 		assert.equal(Value.Check(WorkflowParametersSchema, { action: "transcript", tail: 1.5 }), false);
 	});
@@ -117,7 +118,6 @@ describe("WorkflowParametersSchema", () => {
 			"includeToolOutput",
 			"text",
 			"response",
-			"delivery",
 			"promptId",
 			"reason",
 		]) {

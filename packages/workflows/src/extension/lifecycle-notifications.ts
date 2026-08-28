@@ -83,6 +83,8 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly toolName?: string;
 	readonly durationMs?: number;
 	readonly budgetDimension?: "duration" | "tokens" | "cost";
+	/** True when a blocked stop is the engine-owned budget_exceeded rail. */
+	readonly budgetExceeded?: boolean;
 	readonly active?: boolean;
 	/** Whether a failed author exit or quit run advertises itself as resumable. */
 	readonly resumable?: boolean;
@@ -398,8 +400,12 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 	}
 	if (details.kind === "blocked") {
 		const errorText = details.error ? `: ${details.error}` : "";
+		if (details.budgetExceeded === true) {
+			const dimension = details.budgetDimension === undefined ? "" : ` ${details.budgetDimension}`;
+			return `! Workflow "${workflowName}" stopped at its${dimension} budget limit (run ${details.runId})${origin}${errorText}. Summarize progress and the estimated next steps, then ask the user whether to proceed — prefer the ask_user_question tool when it is available — and after approval resume with a raised budget: workflow({ action: "resume", runId: "${details.runId}", budget: { ... } }). Inspect: /workflow status ${details.runId}`;
+		}
 		const stateText = details.active === true ? "is blocked" : "ended blocked";
-		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Do not treat this as a stopping point: resume or steer the run, or continue the remaining work with a follow-up workflow — inline only if what remains is minimal. Stop to ask the user only when the remaining work is so ambiguous that judgment cannot infer intent from the objective and repository evidence — mine git history, commits, PRs, issues, and the user's comments first. Inspect: /workflow status ${details.runId}`;
 	}
 	if (details.kind === "budget_warning") {
 		const warningText = details.error ? `: ${details.error}` : "";
@@ -432,7 +438,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 	const stage = details.stageName ?? details.stageId ?? "unknown";
 	const responseHint =
 		details.stageId && details.promptId
-			? `/workflow connect ${details.runId} or workflow({ action: "send", runId: ${jsonString(details.runId)}, stageId: ${jsonString(details.stageId)}, promptId: ${jsonString(details.promptId)}, response: ... })`
+			? `/workflow connect ${details.runId} or workflow({ action: "answer", runId: ${jsonString(details.runId)}, stageId: ${jsonString(details.stageId)}, promptId: ${jsonString(details.promptId)}, response: ... })`
 			: `/workflow connect ${details.runId}`;
 	return `？ Workflow "${workflowName}" needs input (run ${details.runId}, stage ${stage}).${prompt} Respond: ${responseHint}.`;
 }
@@ -446,6 +452,13 @@ function makeTerminalNotice(
 	const failedTool = (run.toolNodes ?? []).find((node) => node.id === failedToolNodeId);
 	const activeBlocked = kind === "blocked" && isActiveRecoverableBlockedRun(run);
 	const outputs = kind === "failed" && run.exited === true && run.result !== undefined ? run.result : undefined;
+	const budgetExceeded =
+		kind === "blocked" && run.result?.status === "budget_exceeded" && run.budgetState?.systemOwnedStop === true;
+	const resultDimension = budgetExceeded ? run.result?.dimension : undefined;
+	const budgetDimension =
+		resultDimension === "duration" || resultDimension === "tokens" || resultDimension === "cost"
+			? resultDimension
+			: undefined;
 	const error = activeBlocked
 		? (run.failureMessage ?? structuredRecoverableWorkflowFailureText(run) ?? run.error)
 		: (run.error ??
@@ -468,6 +481,8 @@ function makeTerminalNotice(
 		...(failedToolNodeId !== undefined ? { toolNodeId: failedToolNodeId } : {}),
 		...(failedTool !== undefined ? { toolName: failedTool.name } : {}),
 		...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
+		...(budgetExceeded ? { budgetExceeded: true } : {}),
+		...(budgetDimension !== undefined ? { budgetDimension } : {}),
 		...(run.origin !== undefined ? { origin: run.origin } : {}),
 		createdAt: lifecycleOccurrenceAt(run, kind) ?? Date.now(),
 	};
@@ -811,6 +826,7 @@ function lifecycleNoticeHeadline(details: WorkflowLifecycleNoticeDetails): strin
 		case "awaiting_input":
 			return `Workflow "${name}" needs input`;
 		case "blocked":
+			if (details.budgetExceeded === true) return `Workflow "${name}" stopped at its budget limit`;
 			return `Workflow "${name}" ${details.active === true ? "is blocked" : "ended blocked"}`;
 		case "paused":
 			return `${scope} "${name}" paused`;
@@ -826,6 +842,7 @@ function lifecycleNoticeHeadline(details: WorkflowLifecycleNoticeDetails): strin
 function lifecycleNoticeHint(details: WorkflowLifecycleNoticeDetails): string {
 	if (details.kind === "awaiting_input") return `/workflow connect ${details.runId}`;
 	if (details.kind === "paused" || details.kind === "quit") return `/workflow resume ${details.runId}`;
+	if (details.kind === "blocked" && details.budgetExceeded === true) return `/workflow resume ${details.runId}`;
 	return `/workflow status ${details.runId}`;
 }
 

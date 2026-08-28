@@ -2,6 +2,7 @@ import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
+	AssistantMessageComponent,
 	CHANGELOG_URL,
 	DynamicBorder,
 	getCapabilities,
@@ -82,21 +83,20 @@ InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveMode
 	this.ui.requestRender();
 };
 
+/** Update rendered assistant messages without rebuilding live tool components. */
+InteractiveModeBase.prototype.updateThinkingBlockVisibility = function (this: InteractiveModeBase): void {
+	for (const child of this.chatContainer.children) {
+		if (child instanceof AssistantMessageComponent) {
+			child.setHideThinkingBlock(this.hideThinkingBlock);
+		}
+	}
+	this.ui.requestRender();
+};
+
 InteractiveModeBase.prototype.toggleThinkingBlockVisibility = function (this: InteractiveModeBase): void {
 	this.hideThinkingBlock = !this.hideThinkingBlock;
 	this.settingsManager.setHideThinkingBlock(this.hideThinkingBlock);
-
-	// Rebuild chat from session messages
-	this.chatContainer.clear();
-	this.rebuildChatFromMessages();
-
-	// If streaming, re-add the streaming component with updated visibility and re-render
-	if (this.streamingComponent && this.streamingMessage) {
-		this.streamingComponent.setHideThinkingBlock(this.hideThinkingBlock);
-		this.streamingComponent.updateContent(this.streamingMessage);
-		this.chatContainer.addChild(this.streamingComponent);
-	}
-
+	this.updateThinkingBlockVisibility();
 	this.showStatus(`Thinking blocks: ${this.hideThinkingBlock ? "hidden" : "visible"}`);
 };
 

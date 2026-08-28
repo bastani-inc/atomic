@@ -74,6 +74,14 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		// Child runs are not independently resumable; only the root is registered.
 	}
 
+	persistPendingStageMessages(
+		workflowId: string,
+		messages: readonly import("../shared/store-types.js").PendingStageMessage[],
+		logicalRunId = workflowId,
+	): Promise<boolean> {
+		return this.inner.persistPendingStageMessages(this.scope.rootWorkflowId, messages, logicalRunId);
+	}
+
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
 		this.inner.recordCheckpoint(this.remap(checkpoint));
 	}

@@ -82,7 +82,7 @@ describe("tool run-control actions", () => {
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
 	test.sequential("makeExecuteWorkflowTool answers stage pending prompts", async () => {
-		const runId = testRunId(`stage-tool-send-${Date.now()}`);
+		const runId = testRunId(`stage-tool-answer-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-1",
@@ -99,16 +99,14 @@ describe("tool run-control actions", () => {
 		});
 		const handler = makeToolHandler();
 
-		const result = await handler({ action: "send", runId, stageId: "ask", text: "42" }, {} as never);
+		const result = await handler({ action: "answer", runId, stageId: "ask", text: "42" }, {} as never);
 
-		assert.equal(result.action, "send");
+		assert.equal(result.action, "answer");
 		const send = result as {
 			action: string;
-			delivery: string;
 			status: string;
 			message: string;
 		};
-		assert.equal(send.delivery, "answer");
 		assert.equal(send.status, "ok");
 		assert.match(send.message, /Answered prompt/);
 		const stage = store
@@ -122,11 +120,11 @@ describe("tool run-control actions", () => {
 		// Reproduces run 86dbfd4d-7123-4894-967c-7856227bc708: the retained assistant
 		// tool call carried `response: "true"` (a JSON string), and the pre-fix sinks
 		// turned it into `confirmed: false`.
-		const runId = testRunId(`stage-tool-send-string-true-${Date.now()}`);
+		const runId = testRunId(`stage-tool-answer-string-true-${Date.now()}`);
 		seedPendingPrimitivePrompt(runId, "confirm");
 		const handler = makeToolHandler();
 		const result = await handler(
-			{ action: "send", runId, stageId: "prompt", delivery: "answer", response: "true" },
+			{ action: "answer", runId, stageId: "prompt", delivery: "answer", response: "true" },
 			{} as never,
 		);
 
@@ -165,22 +163,21 @@ describe("tool run-control actions", () => {
 		] as const;
 
 		for (const [index, testCase] of cases.entries()) {
-			const runId = testRunId(`stage-tool-send-coerce-${index}`);
+			const runId = testRunId(`stage-tool-answer-coerce-${index}`);
 			const choices = testCase.kind === "select" ? (["Red", "Blue"] as const) : undefined;
 			seedPendingPrimitivePrompt(runId, testCase.kind, choices);
 			const handler = makeToolHandler();
 			const result = await handler(
 				{
-					action: "send",
+					action: "answer",
 					runId,
 					stageId: "prompt",
-					delivery: "answer",
 					[testCase.field]: testCase.value,
 				},
 				{} as never,
 			);
 
-			assert.equal(result.action, "send");
+			assert.equal(result.action, "answer");
 			assert.equal((result as { status: string }).status, "ok", JSON.stringify(testCase));
 			assert.equal(
 				store.getStagePromptAnswer(runId, "stage-prompt-kind")?.value,
@@ -207,16 +204,15 @@ describe("tool run-control actions", () => {
 		] as const;
 
 		for (const [index, testCase] of cases.entries()) {
-			const runId = testRunId(`stage-tool-send-invalid-${index}`);
+			const runId = testRunId(`stage-tool-answer-invalid-${index}`);
 			const choices = testCase.kind === "select" ? (["Red", "Blue"] as const) : undefined;
 			seedPendingPrimitivePrompt(runId, testCase.kind, choices);
 			const handler = makeToolHandler();
 			const result = await handler(
 				{
-					action: "send",
+					action: "answer",
 					runId,
 					stageId: "prompt",
-					delivery: "answer",
 					response: testCase.value,
 				},
 				{} as never,
@@ -231,8 +227,8 @@ describe("tool run-control actions", () => {
 		}
 	});
 
-	test.sequential("makeExecuteWorkflowTool refuses workflow send answers for custom prompt nodes", async () => {
-		const runId = testRunId(`stage-tool-send-custom-${Date.now()}`);
+	test.sequential("makeExecuteWorkflowTool refuses workflow answer for custom prompt nodes", async () => {
+		const runId = testRunId(`stage-tool-answer-custom-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-custom-prompt",
@@ -254,31 +250,28 @@ describe("tool run-control actions", () => {
 
 		const result = await handler(
 			{
-				action: "send",
+				action: "answer",
 				runId,
 				stageId: "custom",
 				promptId: "custom-prompt-1",
-				delivery: "answer",
 				response: { value: "not-supported" },
 			},
 			{} as never,
 		);
 
-		assert.equal(result.action, "send");
+		assert.equal(result.action, "answer");
 		const send = result as {
 			action: string;
-			delivery: string;
 			status: string;
 			message: string;
 		};
-		assert.equal(send.delivery, "answer");
 		assert.equal(send.status, "noop");
 		assert.match(send.message, /requires the interactive workflow graph/);
 		assert.equal(store.getStagePromptAnswer(runId, "stage-custom-prompt"), undefined);
 	});
 
 	test.sequential("makeExecuteWorkflowTool tags brokered prompt answers as workflow-tool sourced", async () => {
-		const runId = testRunId(`stage-tool-send-broker-${Date.now()}`);
+		const runId = testRunId(`stage-tool-answer-broker-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-broker-prompt",
@@ -314,17 +307,16 @@ describe("tool run-control actions", () => {
 		const handler = makeToolHandler();
 
 		try {
-			const result = await handler({ action: "send", runId, stageId: "ask", text: "Blue" }, {} as never);
+			const result = await handler({ action: "answer", runId, stageId: "ask", text: "Blue" }, {} as never);
 			await pending;
 
-			assert.equal(result.action, "send");
+			assert.equal(result.action, "answer");
 			const send = result as {
 				action: string;
 				delivery: string;
 				status: string;
 				message: string;
 			};
-			assert.equal(send.delivery, "answer");
 			assert.equal(send.status, "ok");
 			assert.match(send.message, /Answered input request/);
 			assert.equal(events[0]?.answerSource, "workflow_tool");
@@ -334,7 +326,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool leaves pending prompts untouched when payload is omitted", async () => {
-		const runId = testRunId(`stage-tool-send-omitted-${Date.now()}`);
+		const runId = testRunId(`stage-tool-answer-omitted-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-omitted",
@@ -351,16 +343,14 @@ describe("tool run-control actions", () => {
 		});
 		const handler = makeToolHandler();
 
-		const result = await handler({ action: "send", runId, stageId: "ask-omitted" }, {} as never);
+		const result = await handler({ action: "answer", runId, stageId: "ask-omitted" }, {} as never);
 
-		assert.equal(result.action, "send");
+		assert.equal(result.action, "answer");
 		const send = result as {
 			action: string;
-			delivery: string;
 			status: string;
 			message: string;
 		};
-		assert.equal(send.delivery, "answer");
 		assert.equal(send.status, "noop");
 		assert.match(send.message, /requires text, response, or message/);
 		const stage = store
@@ -371,7 +361,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool delivery answer without a pending prompt does not fall through to live followUp", async () => {
-		const runId = testRunId(`stage-tool-send-answer-no-prompt-${Date.now()}`);
+		const runId = testRunId(`stage-tool-answer-answer-no-prompt-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-no-prompt",
@@ -386,23 +376,21 @@ describe("tool run-control actions", () => {
 		try {
 			const result = await handler(
 				{
-					action: "send",
+					action: "answer",
 					runId,
 					stageId: "ask",
-					delivery: "answer",
 					text: "42",
 				},
 				{} as never,
 			);
 
-			assert.equal(result.action, "send");
+			assert.equal(result.action, "answer");
 			const send = result as {
 				action: string;
 				delivery: string;
 				status: string;
 				message: string;
 			};
-			assert.equal(send.delivery, "answer");
 			assert.equal(send.status, "noop");
 			assert.match(send.message, /No pending prompt/);
 			assert.deepEqual(followUps, []);
@@ -410,37 +398,17 @@ describe("tool run-control actions", () => {
 			dispose();
 		}
 	});
-
-	test.sequential("makeExecuteWorkflowTool auto delivery without a targeted prompt starts an idle live prompt", async () => {
-		const runId = testRunId(`stage-tool-send-auto-live-${Date.now()}`);
-		store.recordRunStart(makeInflightRun(runId));
-		store.recordStageStart(runId, {
-			id: "stage-auto-live",
-			name: "ask",
-			status: "running",
-			parentIds: [],
-			toolEvents: [],
-		});
-		const { followUps, prompts, dispose } = registerLiveStageHandle(runId, "stage-auto-live");
+	test.sequential("makeExecuteWorkflowTool rejects removed send without mutating workflow state", async () => {
 		const handler = makeToolHandler();
+		const before = store.graphSnapshot();
 
-		try {
-			const result = await handler({ action: "send", runId, stageId: "ask", text: "next" }, {} as never);
-
-			assert.equal(result.action, "send");
-			const send = result as {
-				action: string;
-				delivery: string;
-				status: string;
-				message: string;
-			};
-			assert.equal(send.delivery, "prompt");
-			assert.equal(send.status, "ok");
-			assert.equal(send.message, "Prompt started for stage.");
-			assert.deepEqual(prompts, ["next"]);
-			assert.deepEqual(followUps, []);
-		} finally {
-			dispose();
-		}
+		await assert.rejects(
+			handler(
+				{ action: "send", runId: "missing", stageId: "review", text: "must not deliver" } as never,
+				{} as never,
+			),
+			/unknown action "send"/,
+		);
+		assert.deepEqual(store.graphSnapshot(), before);
 	});
 });

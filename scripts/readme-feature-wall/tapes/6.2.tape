@@ -11,7 +11,7 @@ Type "/workflow fan-out-and-synthesize prompt='Map this repository by independen
 Sleep 1s
 Enter
 Sleep 20s
-Type "List the running fan-out workflow's stages, then use workflow send to steer every running branch stage with this exact text: <keepContext>Cite file:line for every claim. Do not read node_modules.</keepContext> Do not stop after listing the stages."
+Type "List the running fan-out workflow's stages, then use ordinary Intercom send to each exact <runId>:<stageKey> target to steer every running branch stage with this exact text: <keepContext>Cite file:line for every claim. Do not read node_modules.</keepContext> Do not stop after listing the stages."
 Sleep 1s
 Enter
 Sleep 140s

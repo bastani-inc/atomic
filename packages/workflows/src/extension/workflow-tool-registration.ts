@@ -28,7 +28,7 @@ type WorkflowToolExecutor = (
 const MUTATING_WORKFLOW_ACTIONS = new Set<NonNullable<WorkflowToolArgs["action"]>>([
 	"reload",
 	"run",
-	"send",
+	"answer",
 	"pause",
 	"resume",
 	"interrupt",

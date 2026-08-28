@@ -4,6 +4,7 @@ import {
 	DEFAULT_INTERCOM_GROUP,
 	normalizeGroup,
 	resolveStageGroup,
+	stageCanUseWorkflowPendingStageRoute,
 	stageHasIntercomAccess,
 	workflowInvocationIntercomGroup,
 } from "../../packages/workflows/src/shared/intercom-group.js";
@@ -43,4 +44,36 @@ test("stageHasIntercomAccess gates on noTools / tools allowlist / excludedTools"
 	assert.equal(stageHasIntercomAccess({ tools: ["bash", "read"] } as StageOptions), false);
 	assert.equal(stageHasIntercomAccess({ tools: ["bash", "intercom"] } as StageOptions), true);
 	assert.equal(stageHasIntercomAccess({ excludedTools: ["intercom"] } as StageOptions), false);
+});
+
+test("workflow pending routes require both Intercom access and the route owner's exact group", () => {
+	const workflowGroup = "workflow:root";
+	assert.equal(stageCanUseWorkflowPendingStageRoute(undefined, workflowGroup), true);
+	assert.equal(stageCanUseWorkflowPendingStageRoute({ tools: ["intercom"] } as StageOptions, workflowGroup), true);
+	assert.equal(
+		stageCanUseWorkflowPendingStageRoute(
+			{ tools: ["intercom"], group: "  workflow:root  " } as StageOptions,
+			workflowGroup,
+		),
+		true,
+	);
+	assert.equal(
+		stageCanUseWorkflowPendingStageRoute(
+			{ tools: ["intercom"], group: "isolated-reviewers" } as StageOptions,
+			workflowGroup,
+		),
+		false,
+	);
+	assert.equal(
+		stageCanUseWorkflowPendingStageRoute({ tools: ["intercom"], group: true } as StageOptions, workflowGroup),
+		false,
+	);
+	assert.equal(
+		stageCanUseWorkflowPendingStageRoute({ tools: ["intercom"], group: "" } as StageOptions, workflowGroup),
+		false,
+	);
+	assert.equal(
+		stageCanUseWorkflowPendingStageRoute({ tools: ["read"], group: workflowGroup } as StageOptions, workflowGroup),
+		false,
+	);
 });

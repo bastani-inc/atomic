@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
-import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
+import { workflowAnswerAction } from "../../packages/workflows/src/extension/workflow-tool-answer.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 
@@ -37,31 +37,24 @@ function runWithStages(seed: string, stageNames: readonly string[]): string {
 	return runId;
 }
 
-describe("workflow send — answering without naming a stage", () => {
-	for (const delivery of ["answer", undefined] as const) {
-		test(`${delivery ?? "default auto"} delivery targets the only pending prompt`, async () => {
-			const runId = runWithStages(`sole-prompt-${delivery ?? "auto"}`, ["review"]);
-			assert.equal(store.recordStagePendingPrompt(runId, "stage-review", prompt("prompt-1")), true);
+describe("workflow answer — answering without naming a stage", () => {
+	test("targets the only pending prompt", async () => {
+		const runId = runWithStages("sole-prompt", ["review"]);
+		assert.equal(store.recordStagePendingPrompt(runId, "stage-review", prompt("prompt-1")), true);
 
-			const result = await workflowSendAction({
-				runId,
-				text: "fix-p0-and-p1",
-				...(delivery === undefined ? {} : { delivery }),
-			});
+		const result = await workflowAnswerAction({ runId, text: "fix-p0-and-p1" });
 
-			assert.equal(result.status, "ok");
-			assert.equal(result.delivery, "answer");
-			assert.equal(result.stageId, "stage-review");
-			assert.equal(result.message, "Answered prompt prompt-1.");
-		});
-	}
+		assert.equal(result.status, "ok");
+		assert.equal(result.stageId, "stage-review");
+		assert.equal(result.message, "Answered prompt prompt-1.");
+	});
 
 	test("names the candidates when more than one prompt is pending", async () => {
 		const runId = runWithStages("two-prompts", ["select", "approve-release"]);
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-select", prompt("prompt-1")), true);
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve-release", prompt("prompt-2")), true);
 
-		const result = await workflowSendAction({ runId, text: "yes", delivery: "answer" });
+		const result = await workflowAnswerAction({ runId, text: "yes" });
 
 		assert.equal(result.status, "noop");
 		// Recovery has to be possible from this message alone; the previous one
@@ -74,20 +67,8 @@ describe("workflow send — answering without naming a stage", () => {
 	test("still requires a stage when nothing is pending", async () => {
 		const runId = runWithStages("no-prompt", ["review"]);
 
-		const result = await workflowSendAction({ runId, text: "hello", delivery: "answer" });
+		const result = await workflowAnswerAction({ runId, text: "hello" });
 
-		assert.equal(result.status, "noop");
-		assert.equal(result.message, "Stage id or name is required.");
-	});
-
-	test("does not redirect a steer at a pending prompt", async () => {
-		const runId = runWithStages("steer-untouched", ["review"]);
-		assert.equal(store.recordStagePendingPrompt(runId, "stage-review", prompt("prompt-1")), true);
-
-		const result = await workflowSendAction({ runId, text: "change direction", delivery: "steer" });
-
-		// A steer names a live stage as its destination, so a pending prompt is
-		// not evidence of where it was meant to go.
 		assert.equal(result.status, "noop");
 		assert.equal(result.message, "Stage id or name is required.");
 	});
@@ -99,7 +80,7 @@ describe("workflow send — answering without naming a stage", () => {
 
 		// The id already identifies its stage, so this is not ambiguous even
 		// though two prompts are waiting.
-		const result = await workflowSendAction({ runId, promptId: "prompt-2", text: "ship it" });
+		const result = await workflowAnswerAction({ runId, promptId: "prompt-2", text: "ship it" });
 
 		assert.equal(result.status, "ok");
 		assert.equal(result.stageId, "stage-approve-release");
@@ -110,7 +91,7 @@ describe("workflow send — answering without naming a stage", () => {
 		const runId = runWithStages("prompt-id-unknown", ["review"]);
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-review", prompt("prompt-1")), true);
 
-		const result = await workflowSendAction({ runId, promptId: "prompt-missing", text: "yes" });
+		const result = await workflowAnswerAction({ runId, promptId: "prompt-missing", text: "yes" });
 
 		assert.equal(result.status, "noop");
 		assert.equal(result.stageId, "");
@@ -122,11 +103,10 @@ describe("workflow send — answering without naming a stage", () => {
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-select", prompt("prompt-1")), true);
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve-release", prompt("prompt-2")), true);
 
-		const result = await workflowSendAction({
+		const result = await workflowAnswerAction({
 			runId,
 			stageId: "stage-approve-release",
 			text: "ship it",
-			delivery: "answer",
 		});
 
 		assert.equal(result.status, "ok");
@@ -135,13 +115,13 @@ describe("workflow send — answering without naming a stage", () => {
 	});
 });
 
-describe("workflow send — stage inference composes with primitive answer coercion", () => {
+describe("workflow answer — stage inference composes with primitive answer coercion", () => {
 	test("an uncoercible answer to the sole inferred prompt stays pending, with the same noop as an explicit stageId", async () => {
 		const runId = runWithStages("inferred-uncoercible", ["approve"]);
 		const confirm = { id: "prompt-1", kind: "confirm" as const, message: "ship it?", createdAt: 1 };
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve", confirm), true);
 
-		const inferred = await workflowSendAction({ runId, text: "maybe", delivery: "answer" });
+		const inferred = await workflowAnswerAction({ runId, text: "maybe" });
 
 		assert.equal(inferred.status, "noop");
 		assert.equal(inferred.stageId, "stage-approve");
@@ -151,7 +131,7 @@ describe("workflow send — stage inference composes with primitive answer coerc
 		const stage = store.runs().find((run) => run.id === runId)?.stages[0];
 		assert.equal(stage?.pendingPrompt?.id, "prompt-1");
 
-		const explicit = await workflowSendAction({ runId, stageId: "stage-approve", text: "maybe", delivery: "answer" });
+		const explicit = await workflowAnswerAction({ runId, stageId: "stage-approve", text: "maybe" });
 
 		// With or without a stageId, the same coercion boundary answers.
 		assert.equal(explicit.status, "noop");
@@ -164,7 +144,7 @@ describe("workflow send — stage inference composes with primitive answer coerc
 		const confirm = { id: "prompt-1", kind: "confirm" as const, message: "ship it?", createdAt: 1 };
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve", confirm), true);
 
-		const result = await workflowSendAction({ runId, text: "yes", delivery: "answer" });
+		const result = await workflowAnswerAction({ runId, text: "yes" });
 
 		assert.equal(result.status, "ok");
 		assert.equal(result.stageId, "stage-approve");
@@ -187,14 +167,14 @@ describe("workflow send — stage inference composes with primitive answer coerc
 		const confirm = { id: "prompt-2", kind: "confirm" as const, message: "ship it?", createdAt: 1 };
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve", confirm), true);
 
-		const rejectedAnswer = await workflowSendAction({ runId, promptId: "prompt-1", text: "gamma" });
+		const rejectedAnswer = await workflowAnswerAction({ runId, promptId: "prompt-1", text: "gamma" });
 
 		assert.equal(rejectedAnswer.status, "noop");
 		assert.equal(rejectedAnswer.stageId, "stage-pick");
 		assert.match(rejectedAnswer.message, /^Invalid answer for select prompt prompt-1\. .*alpha, beta/);
 		assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt?.id, "prompt-1");
 
-		const accepted = await workflowSendAction({ runId, promptId: "prompt-1", text: "2" });
+		const accepted = await workflowAnswerAction({ runId, promptId: "prompt-1", text: "2" });
 
 		assert.equal(accepted.status, "ok");
 		assert.equal(accepted.message, "Answered prompt prompt-1.");

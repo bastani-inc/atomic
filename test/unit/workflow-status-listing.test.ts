@@ -215,10 +215,18 @@ describe("workflow tool status run listing", () => {
 		liveStage!.status = "running";
 		liveStage!.pendingPrompt = undefined;
 		assert.equal(renderWorkflowToolContent(result, { action: "status" }), text);
-		// Full identifiers for pause/resume/interrupt/quit/send follow-ups.
+		// Full identifiers remain actionable through the supported prompt and control paths.
 		assert.match(text, new RegExp(`runId: ${activeId}`));
 		assert.match(text, new RegExp(`${activeId}-stage-approve`));
 		assert.match(text, /promptId: prompt-1/);
+		assert.match(text, /workflow answer answers pending prompts/);
+		assert.match(text, /workflow resume controls paused runs/);
+		assert.match(text, /Ordinary Intercom handles free-form workflow-stage communication at <runId>:<stageKey>/);
+		assert.match(text, /live delivery is immediate/);
+		assert.match(text, /known unstarted stages queue before their first model turn/);
+		assert.match(text, /Use Intercom ask once a reply-capable live session exists/);
+		assert.doesNotMatch(text, /workflow send/i);
+		assert.doesNotMatch(text, /send also takes stageId\/promptId/);
 
 		const json = renderWorkflowToolContent(result, {
 			action: "status",

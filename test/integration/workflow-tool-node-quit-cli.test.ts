@@ -27,7 +27,7 @@
  */
 
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, test } from "vitest";
@@ -320,6 +320,10 @@ async function runScenario(): Promise<Evidence> {
 	mkdirSync(join(projectDir, ".atomic/workflows"), { recursive: true });
 	mkdirSync(stateDir, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
+	// Intercom is unrelated to this tool-only scenario. Keep its persistent
+	// broker out of the fixture's disposable agent directory.
+	mkdirSync(join(agentDir, "intercom"), { recursive: true });
+	writeFileSync(join(agentDir, "intercom", "config.json"), `${JSON.stringify({ enabled: false }, null, 2)}\n`);
 	copyFileSync(fixturePath, join(projectDir, ".atomic/workflows", FIXTURE));
 
 	const readState = (): FixtureState => {

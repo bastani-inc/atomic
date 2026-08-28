@@ -43,6 +43,35 @@ interface SupervisorAuthorizationRequest {
 }
 
 const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
+const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
+const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+
+interface PendingStageUndeliverableRelay {
+	handled?: boolean;
+	completion?: Promise<boolean>;
+	runId?: string;
+	senderId?: string;
+	senderRegistrationName?: string;
+	senderReturnAddress?: string;
+	messageId?: string;
+	notificationId?: string;
+	reason?: string;
+}
+
+function isPendingStageUndeliverableRelay(value: unknown): value is PendingStageUndeliverableRelay &
+	Required<Pick<PendingStageUndeliverableRelay, "runId" | "senderId" | "messageId" | "notificationId" | "reason">> {
+	if (typeof value !== "object" || value === null) return false;
+	const event = value as PendingStageUndeliverableRelay;
+	return (
+		typeof event.runId === "string" &&
+		typeof event.senderId === "string" &&
+		(event.senderRegistrationName === undefined || typeof event.senderRegistrationName === "string") &&
+		(event.senderReturnAddress === undefined || typeof event.senderReturnAddress === "string") &&
+		typeof event.messageId === "string" &&
+		typeof event.notificationId === "string" &&
+		typeof event.reason === "string"
+	);
+}
 
 interface WorkflowStageLateMessageEvent {
 	handled?: boolean;
@@ -272,7 +301,11 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     }
     const generation = ++lifecycleGeneration;
     sessionSnapshot = { event, ctx, generation, lease };
-    if (loadedHeavy) await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
+    if (ctx.orchestrationContext?.kind === "workflow-stage" && ctx.orchestrationContext.pendingStageDelivery !== undefined) {
+      await loadHeavy(ctx);
+    } else if (loadedHeavy) {
+      await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
+    }
   });
 	pi.on("session_shutdown", async (event, ctx) => {
 		const lease = activeLease;
@@ -381,13 +414,43 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			return await forwarded.completion;
 		});
 	});
-	for (const eventName of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
+	pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
+		if (!isPendingStageUndeliverableRelay(payload) || payload.handled === true) return;
+		payload.handled = true;
+		const forwarded = { ...payload, handled: false, completion: undefined };
+		payload.completion = loadHeavy(latestLifecycleContext())
+			.then(async (handle) => {
+				handle.assertCurrent();
+				await dispatchEventHandlers(handle.heavy, PENDING_STAGE_UNDELIVERABLE_EVENT, forwarded);
+				handle.assertCurrent();
+				return forwarded.handled === true && forwarded.completion !== undefined
+					? await forwarded.completion
+					: false;
+			})
+			.catch((error) => {
+				console.error(`Intercom event relay failed (${PENDING_STAGE_UNDELIVERABLE_EVENT}):`, error);
+				return false;
+			});
+	});
+	for (const eventName of [
+		SUBAGENT_CONTROL_INTERCOM_EVENT,
+		SUBAGENT_RESULT_INTERCOM_EVENT,
+		PENDING_STAGE_ROUTE_EVENT,
+	] as const) {
 		pi.events.on(eventName, (payload) => {
-			void loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			const completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
 				handle.assertCurrent();
 				await dispatchEventHandlers(handle.heavy, eventName, payload);
 				handle.assertCurrent();
-			}).catch((error) => {
+				if (eventName === PENDING_STAGE_ROUTE_EVENT && payload && typeof payload === "object") {
+					const routeCompletion = (payload as { completion?: Promise<void> }).completion;
+					if (routeCompletion !== undefined && routeCompletion !== completion) await routeCompletion;
+				}
+			});
+			if (eventName === PENDING_STAGE_ROUTE_EVENT && payload && typeof payload === "object") {
+				(payload as { completion?: Promise<void> }).completion = completion;
+			}
+			void completion.catch((error) => {
 				rejectLazyResultRelay(pi, eventName, payload, error);
 				console.error(`Intercom event relay failed (${eventName}):`, error);
 			});
@@ -415,6 +478,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
+For send, live session names and exact full session IDs remain supported. For a known workflow stage, use the exact \`<runId>:<stageKey>\` target; send messages to pending stages queue automatically.
 Usage:
   intercom({ action: "list" })                    → List sessions in your group
   intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
@@ -430,7 +494,7 @@ Usage:
 		promptSnippet: "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
 		parameters: Type.Object({
 			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'" }),
-			to: Type.Optional(Type.String({ description: "Exact session name or exact full session ID (for 'send', 'ask', or targeted 'reply')" })),
+			to: Type.Optional(Type.String({ description: "Live session name, exact full session ID, or exact `<runId>:<stageKey>` for a known workflow stage; send messages to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')" })),
 			message: Type.Optional(Type.String({ description: "Message to send (for 'send', 'ask', or 'reply' action)" })),
 			attachments: Type.Optional(Type.Array(Type.Object({
 				type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),

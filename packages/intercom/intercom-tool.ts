@@ -49,6 +49,10 @@ Use this to communicate findings, request help, or coordinate work with other se
 Sessions belong to an intercom group and can ONLY message sessions in the same group;
 cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
 
+For send, live session names and exact full session IDs remain supported. For a known
+workflow stage, use the exact \`<runId>:<stageKey>\` target; send messages to pending stages
+queue automatically.
+
 Usage:
   intercom({ action: "list" })                    → List sessions in your group
   intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
@@ -71,7 +75,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Exact session name or exact full session ID (for 'send', 'ask', or targeted 'reply')",
+        description: "Live session name, exact full session ID, or exact `<runId>:<stageKey>` for a known workflow stage; send messages to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -274,6 +278,26 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
               attachments,
               replyTo,
             });
+            if (result.queued === true) {
+              pi.appendEntry("intercom_sent", {
+                to,
+                message: { text: message, attachments, replyTo },
+                messageId: result.id,
+                timestamp: Date.now(),
+              });
+              return {
+                content: [{ type: "text", text: `Message queued for ${to}` }],
+                isError: false,
+                details: {
+                  messageId: result.id,
+                  delivered: false,
+                  queued: true,
+                  runId: result.runId,
+                  stageKey: result.stageKey,
+                  position: result.position,
+                },
+              };
+            }
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
@@ -414,10 +438,20 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             if (!sendResult.delivered) {
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
               wait.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
+							const pendingStageAskRefusal = errorText.startsWith(
+								"Cannot ask a workflow stage whose session has not initialized.",
+							);
               return {
                 content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
                 isError: true,
-                details: { error: true },
+                details: pendingStageAskRefusal
+                  ? {
+                      error: true,
+                      refusal: "pending_stage_ask_unsupported",
+                      recommendedAction: "send",
+                      reason: errorText,
+                    }
+                  : { error: true },
               };
             }
             pi.appendEntry("intercom_sent", {

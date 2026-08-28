@@ -42,6 +42,7 @@ function appendDurableDisplayCard(
 		{ delivery },
 		admitted.stageAdmissionKey,
 	);
+	if (admitted.stageAdmissionKey !== undefined) session.sessionManager.flush();
 	session.agent.state.messages.push(card);
 	return { card, intentEntryId };
 }

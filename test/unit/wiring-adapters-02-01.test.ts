@@ -500,15 +500,17 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		assert.equal(calls[0]?.excludedTools?.includes("structured_output"), false);
 	});
 
-	test("non-interactive stage sessions exclude ask_user_question without blocking opt-in structured_output", async () => {
+	test("non-interactive stage sessions bind extension lifecycle without exposing UI-only tools", async () => {
 		const calls: Array<CreateAgentSessionOptions | undefined> = [];
 		let bindCalls = 0;
+		let boundWithUiContext = false;
 		const session = {
 			...fakeSession(),
-			async bindExtensions(): Promise<void> {
+			async bindExtensions(bindings: { uiContext?: object }): Promise<void> {
 				bindCalls += 1;
+				boundWithUiContext = bindings.uiContext !== undefined;
 			},
-		} satisfies StageSessionRuntime & { bindExtensions(): Promise<void> };
+		} satisfies StageSessionRuntime & { bindExtensions(bindings: { uiContext?: object }): Promise<void> };
 		const adapters = buildRuntimeAdapters(
 			{},
 			{
@@ -531,6 +533,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 
 		assert.deepEqual(calls[0]?.excludedTools, ["workflow", "ask_user_question"]);
 		assert.equal(calls[0]?.excludedTools?.includes("structured_output"), false);
-		assert.equal(bindCalls, 0);
+		assert.equal(bindCalls, 1);
+		assert.equal(boundWithUiContext, false);
 	});
 });

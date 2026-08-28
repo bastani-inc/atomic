@@ -5,7 +5,7 @@
  * durable-workflow inspection (#1758) so any eligible terminal agent stage
  * with a valid retained Atomic session can be reopened as an interactive
  * post-mortem chat — from generic `/workflow attach` / `/workflow connect`,
- * restored/replayed durable snapshots, and `workflow send` — not only the
+ * restored/replayed durable snapshots — not only the
  * dedicated completed-inspection path.
  *
  * A post-mortem chat appends follow-up conversation to the stage's retained

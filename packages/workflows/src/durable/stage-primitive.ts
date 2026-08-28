@@ -124,6 +124,25 @@ function withMidSessionResumePrompt<T extends StageContext>(stage: T, enabled: b
 	});
 	return stage;
 }
+
+function pendingStageIdForReplay(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+	replayKey: string,
+	stageName: string,
+): string | undefined {
+	const candidates = new Set(
+		(backend.getWorkflow(workflowId)?.pendingStageMessages ?? [])
+			.filter(
+				(entry) =>
+					entry.stageReplayKey === replayKey ||
+					(entry.stageReplayKey === undefined && entry.stageKey === stageName),
+			)
+			.map((entry) => entry.stageId)
+			.filter((stageId): stageId is string => stageId !== undefined),
+	);
+	return candidates.size === 1 ? candidates.values().next().value : undefined;
+}
 export function createDurableStagePrimitive(input: {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
@@ -141,15 +160,13 @@ export function createDurableStagePrimitive(input: {
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
 		const isMidSessionResume = session?.sessionFile !== undefined;
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
+		const durableStageId =
+			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
 		const liveOptions: StageOptions | undefined = {
 			...(options ?? {}),
 			durableReplayKey: replayKey,
-			...(topology !== undefined
-				? {
-						durableStageId: topology.stageId,
-						durableParentIds: [...topology.parentIds],
-					}
-				: {}),
+			...(durableStageId !== undefined ? { durableStageId } : {}),
+			...(topology !== undefined ? { durableParentIds: [...topology.parentIds] } : {}),
 			...(isMidSessionResume
 				? {
 						resumeFromSessionFile: session.sessionFile,

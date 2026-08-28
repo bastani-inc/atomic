@@ -6,7 +6,7 @@
  *  - terminal run/stage guards
  *  - recordStageEnd clears any lingering descriptor
  *
- * These back `workflow send` answering of brokered in-stage prompts
+ * These back `workflow answer` answering of brokered in-stage prompts
  * (ask_user_question / readiness gate); regressions break headless answering.
  */
 

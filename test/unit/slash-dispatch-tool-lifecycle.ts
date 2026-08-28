@@ -101,18 +101,17 @@ describe("tool run-control actions", () => {
 		assert.equal(awaitingStage?.pendingPrompt?.kind, "input");
 		assert.equal(awaitingStage?.pendingPrompt?.message, "Value?");
 
-		const sent = await handler(
+		const answered = await handler(
 			{
-				action: "send",
+				action: "answer",
 				runId,
 				stageId: prompt.stageId,
 				text: "from workflow tool",
 			},
 			{} as never,
 		);
-		assert.equal(sent.action, "send");
-		assert.equal((sent as { delivery: string; status: string }).delivery, "answer");
-		assert.equal((sent as { delivery: string; status: string }).status, "ok");
+		assert.equal(answered.action, "answer");
+		assert.equal((answered as { status: string }).status, "ok");
 
 		await waitForToolRunEnded(runId);
 		const completed = store.runs().find((candidate) => candidate.id === runId);

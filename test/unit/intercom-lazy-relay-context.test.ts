@@ -43,7 +43,7 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 	const ctx = {
 		hasUI: false,
 		cwd: process.cwd(),
-		sessionManager: { getSessionId: () => SESSION_ID },
+		sessionManager: { getSessionId: () => SESSION_ID, getBranch: () => [] },
 		model: { id: "test-model" },
 		isIdle: () => true,
 		ui: { notify() {} },
@@ -270,7 +270,7 @@ describe("lazy relay lifecycle-context fallback", () => {
 			model: { id: "test-model" },
 			isIdle: () => true,
 			ui: { notify() {} },
-			sessionManager: { getSessionId: () => "closed-stage-source" },
+			sessionManager: { getSessionId: () => "closed-stage-source", getBranch: () => [] },
 			orchestrationContext: {
 				kind: "workflow-stage" as const,
 				messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },

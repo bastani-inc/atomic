@@ -29,7 +29,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 
 	// Create a context for shortcut handlers
 	const createContext = (): ExtensionContext => ({
-		ui: this.createExtensionUIContext(),
+		ui: extensionRunner.getUIContext(),
 		mode: "tui",
 		hasUI: true,
 		cwd: this.sessionManager.getCwd(),

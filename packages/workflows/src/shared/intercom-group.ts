@@ -56,3 +56,16 @@ export function stageHasIntercomAccess(stageOptions?: StageOptions): boolean {
 	if (Array.isArray(excluded) && excluded.includes("intercom")) return false;
 	return true;
 }
+
+/**
+ * Whether a stage can present the workflow owner's durable pending/live route.
+ * Ordinary Intercom access is necessary but not sufficient: the stage's authored
+ * home group must also be the exact broker group that owns the workflow route.
+ */
+export function stageCanUseWorkflowPendingStageRoute(
+	stageOptions: StageOptions | undefined,
+	workflowGroup: string | undefined,
+): boolean {
+	if (!stageHasIntercomAccess(stageOptions) || stageOptions?.group === true) return false;
+	return normalizeGroup(resolveStageGroup(stageOptions, workflowGroup)) === normalizeGroup(workflowGroup);
+}

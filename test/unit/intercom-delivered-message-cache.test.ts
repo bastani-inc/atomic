@@ -44,6 +44,29 @@ test("logical send signatures normalize options and ignore transport metadata", 
 		signature,
 		"id and timestamp must not affect logical identity",
 	);
+	const sourcedMessage = {
+		id: "attempt-c",
+		timestamp: 1,
+		replyTo: options.replyTo,
+		expectsReply: options.expectsReply,
+		source: { subagentRunId: "source-run", subagentAgent: "reviewer", subagentIndex: 1 },
+		content: { text: options.text, attachments: options.attachments },
+	};
+	const ownedSignature = buildMessageSendSignature("parent", sourcedMessage, "sender-session");
+	assert.equal(
+		buildMessageSendSignature("parent", { ...sourcedMessage, timestamp: 999 }, "sender-session"),
+		ownedSignature,
+		"transport timestamp does not change broker-owned identity",
+	);
+	assert.notEqual(buildMessageSendSignature("parent", sourcedMessage, "other-sender"), ownedSignature);
+	assert.notEqual(
+		buildMessageSendSignature(
+			"parent",
+			{ ...sourcedMessage, source: { ...sourcedMessage.source, subagentRunId: "other-source" } },
+			"sender-session",
+		),
+		ownedSignature,
+	);
 	assert.notEqual(buildSendSignature("other", options), signature);
 	assert.notEqual(buildSendSignature("parent", { ...options, text: "changed" }), signature);
 	assert.notEqual(buildSendSignature("parent", { ...options, replyTo: "other" }), signature);

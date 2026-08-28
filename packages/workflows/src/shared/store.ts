@@ -1,3 +1,10 @@
+export type {
+	PendingStageMessage,
+	PendingStageMessageInput,
+	PendingStageQueueResult,
+	PendingStageSender,
+} from "./pending-stage-delivery.js";
+export { PENDING_STAGE_MESSAGE_LIMIT } from "./pending-stage-delivery.js";
 /**
  * Plain mutable singleton store public API.
  * cross-ref: spec §5.5

@@ -10,7 +10,7 @@ interface HandlerContext {
 	readonly model: { readonly id: string };
 	readonly isIdle: () => boolean;
 	readonly ui: { readonly notify: () => void };
-	readonly sessionManager: { readonly getSessionId: () => string };
+	readonly sessionManager: { readonly getSessionId: () => string; readonly getBranch: () => [] };
 	readonly orchestrationContext: {
 		readonly kind: "workflow-stage";
 		readonly messageAdmission: { readonly isOpen: () => boolean };
@@ -97,7 +97,7 @@ function fixture(acknowledgement: AcknowledgementMode) {
 		model: { id: "test-model" },
 		isIdle: () => false,
 		ui: { notify() {} },
-		sessionManager: { getSessionId: () => "workflow-stage-session" },
+		sessionManager: { getSessionId: () => "workflow-stage-session", getBranch: () => [] },
 		orchestrationContext: {
 			kind: "workflow-stage",
 			messageAdmission: { isOpen: () => true },

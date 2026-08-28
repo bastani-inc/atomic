@@ -7,6 +7,7 @@ import {
 	type DurableWorkflowCatalogEntries,
 	type DurableWorkflowHydrationResult,
 	InMemoryDurableBackend,
+	replacePendingStageMessagesForRun,
 	type WorkflowRegistrationInput,
 } from "./backend.js";
 import { DurableNestedTopologyError } from "./boundary-topology.js";
@@ -221,6 +222,36 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			await this.sdk.startWorkflow(handle.workflowId, handle.name, handle.inputs);
 			await this.writeMetadata(handle.workflowId);
 		});
+	}
+
+	async persistPendingStageMessages(
+		workflowId: string,
+		messages: readonly import("../shared/store-types.js").PendingStageMessage[],
+		logicalRunId = workflowId,
+	): Promise<boolean> {
+		let persisted = false;
+		await this.enqueueWrite(async () => {
+			if (!this.isWorkflowLoadable(workflowId)) return;
+			const handle = this.mem.getWorkflow(workflowId);
+			const value = this.mem.toMetadata(workflowId);
+			if (handle === undefined || value === undefined) return;
+			const updatedAt = Math.max(Date.now(), handle.updatedAt + 1);
+			const pendingStageMessages = replacePendingStageMessagesForRun(
+				handle.pendingStageMessages ?? [],
+				logicalRunId,
+				messages,
+			);
+			const metadata = {
+				...this.promptReservations.metadata(workflowId, value),
+				pendingStageMessages,
+				ownerExecutorId: this.executorId,
+				updatedAt,
+			};
+			await this.sdk.recordStepOutput(workflowId, metadataStepName(updatedAt), encodeMetadata(metadata));
+			this.mem.registerWorkflow({ ...handle, pendingStageMessages, updatedAt });
+			persisted = true;
+		});
+		return persisted;
 	}
 
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {

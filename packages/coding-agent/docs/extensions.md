@@ -637,6 +637,25 @@ pi.on("agent_settled", async (_event, ctx) => {
 });
 ```
 
+#### ui_prompt_start / ui_prompt_end
+
+These notification-only events wrap blocking user-facing extension prompts opened through `ctx.ui.select()`, `ctx.ui.confirm()`, `ctx.ui.input()`, `ctx.ui.editor()`, and `ctx.ui.custom()`. Each event has `reason: "ui_prompt"`, the prompt `kind`, and the prompt `title` when that method accepts one. Host and status integrations can use the pair to report that Atomic is waiting for the user instead of still working.
+
+Atomic coalesces nested or overlapping prompts into one outer span. The end event keeps the outer prompt's kind and title and fires after every prompt in that span settles, including rejected promises and synchronous failures. Rebinding the host UI context closes an active span before a prompt from the new context can begin.
+
+Handlers run best-effort from the microtask queue. Atomic does not await them before opening or closing the prompt, so a slow handler cannot delay the UI.
+
+```typescript
+pi.on("ui_prompt_start", (event) => {
+  // event.kind - "select" | "confirm" | "input" | "editor" | "custom"
+  // event.title - prompt title when available
+});
+
+pi.on("ui_prompt_end", (event) => {
+  // Atomic is no longer waiting on this outer prompt span.
+});
+```
+
 #### turn_start / turn_end
 
 Fired for each turn (one LLM response + tool calls).

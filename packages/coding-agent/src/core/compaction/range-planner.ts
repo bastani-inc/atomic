@@ -279,7 +279,6 @@ export async function planDeletedLineRanges(
 		signal,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
-		toolChoice: "none",
 		...(model.reasoning && reasoning && reasoning !== "off" ? { reasoning } : {}),
 	};
 	const retry = observeRetryActivity(options.callbacks);
@@ -316,8 +315,8 @@ export async function planDeletedLineRanges(
 		return providerFailureOutcome(options, model, response, text, message, false, retry.scheduled());
 	}
 	// Deliberately before truncated-range recovery, unlike upstream 97fa14e39c:
-	// a tool call despite `toolChoice: "none"` means the response derailed, so
-	// none of its partial ranges are salvaged.
+	// the planner request defines no tools, so a tool call is a derailed response
+	// and none of its partial ranges are salvaged.
 	if (response.content.some((block) => block.type === "toolCall")) {
 		return unusableOutcome(
 			options,
