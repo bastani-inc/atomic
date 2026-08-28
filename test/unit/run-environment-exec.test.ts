@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { Server } from "ssh2";
 import { describe, test } from "vitest";
 import {
 	bashResultFromExecOutcome,
@@ -203,6 +207,90 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 		}
 		return process;
 	}
+}
+
+class RealSshRunner implements RunEnvironmentProcessRunner {
+	readonly processes: Array<{ readonly command: string; readonly args: readonly string[] }> = [];
+
+	start(
+		command: string,
+		args: readonly string[],
+		options?: { readonly environment?: NodeJS.ProcessEnv },
+	): RunEnvironmentProcess {
+		this.processes.push({ command, args: [...args] });
+		if (command === "coder-test-double") {
+			const process = new ScriptedProcess();
+			const configPath = args[args.indexOf("--ssh-config-file") + 1];
+			if (configPath === undefined) {
+				queueMicrotask(() => process.finish(1));
+				return process;
+			}
+			void writeFile(configPath, this.sshConfig).then(
+				() => process.finish(0),
+				(error: Error) => {
+					process.writeStderr(error.message);
+					process.finish(1);
+				},
+			);
+			return process;
+		}
+
+		const child = spawn(command, [...args], {
+			env: options?.environment,
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		let resolveResult!: (result: RunEnvironmentProcessResult) => void;
+		let settled = false;
+		const result = new Promise<RunEnvironmentProcessResult>((resolve) => {
+			resolveResult = resolve;
+		});
+		const finish = (value: RunEnvironmentProcessResult): void => {
+			if (settled) return;
+			settled = true;
+			resolveResult(value);
+		};
+		child.once("error", (error) => finish({ code: null, signal: null, error }));
+		child.once("close", (code, signal) => finish({ code, signal }));
+		return {
+			onStdout(listener) {
+				child.stdout.on("data", listener);
+			},
+			onStderr(listener) {
+				child.stderr.on("data", listener);
+			},
+			wait: () => result,
+			kill: () => {
+				child.kill();
+			},
+		};
+	}
+
+	constructor(private readonly sshConfig: string) {}
+}
+
+function gitOpenSshPath(): string {
+	if (process.platform !== "win32") return "ssh";
+	const candidates = [
+		process.env.ProgramW6432 === undefined
+			? undefined
+			: join(process.env.ProgramW6432, "Git", "usr", "bin", "ssh.exe"),
+		process.env.ProgramFiles === undefined
+			? undefined
+			: join(process.env.ProgramFiles, "Git", "usr", "bin", "ssh.exe"),
+		process.env.LOCALAPPDATA === undefined
+			? undefined
+			: join(process.env.LOCALAPPDATA, "Programs", "Git", "usr", "bin", "ssh.exe"),
+	].filter((candidate): candidate is string => candidate !== undefined);
+	for (const candidate of candidates) {
+		try {
+			const result = spawnSyncCollect([candidate, "-V"]);
+			if (result.exitCode === 0) return candidate;
+		} catch {
+			// Continue through the documented Git for Windows installation roots.
+		}
+	}
+	throw new Error("Git for Windows OpenSSH must be installed for Windows execution transport tests");
 }
 
 async function withTransport(
@@ -471,6 +559,50 @@ describe("run-environment execute transport", () => {
 			assert.equal(output, '["","tail"]');
 		},
 	);
+	test.skipIf(process.platform !== "win32")(
+		"preserves an explicitly empty environment variable on Windows",
+		async () => {
+			const runner = new ScriptedRunner();
+			let output = "";
+			runner.executeStarted = (remoteProcess) => {
+				const rendered = executionCalls(runner).at(-1)?.args.at(-1) ?? "";
+				const encoded = rendered.split(" ").at(-1) ?? "";
+				const result = spawnSyncCollect([
+					"powershell.exe",
+					"-NoLogo",
+					"-NoProfile",
+					"-NonInteractive",
+					"-EncodedCommand",
+					encoded,
+				]);
+				remoteProcess.writeStdout(result.stdout.toString());
+				remoteProcess.writeStderr(result.stderr.toString());
+				remoteProcess.finish(result.exitCode);
+			};
+
+			await withTransport(
+				runner,
+				async (transport) => {
+					const outcome = await transport.execute(
+						{
+							argv: [
+								process.execPath,
+								"-e",
+								"process.stdout.write(JSON.stringify({ present: Object.hasOwn(process.env, 'FLAG'), value: process.env.FLAG }))",
+							],
+							environment: { FLAG: "" },
+						},
+						{ write: (chunk, channel) => (output += channel === "stdout" ? chunk.toString() : "") },
+						new AbortController().signal,
+					);
+					assert.deepEqual(outcome, { kind: "exited", code: 0 });
+				},
+				"windows",
+			);
+
+			assert.deepEqual(JSON.parse(output), { present: true, value: "" });
+		},
+	);
 	test("ignores GIT_SSH variants and selects Git for Windows OpenSSH", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "atomic-exec-windows-test-"));
 		const sshPath = join(directory, "Git", "usr", "bin", "ssh.exe");
@@ -497,119 +629,103 @@ describe("run-environment execute transport", () => {
 		}
 	});
 
-	test.skipIf(process.platform !== "win32")(
-		"auto-selected Git for Windows SSH accepts ControlMaster options",
-		async () => {
-			const candidates = [
-				process.env.ProgramW6432 === undefined
-					? undefined
-					: join(process.env.ProgramW6432, "Git", "usr", "bin", "ssh.exe"),
-				process.env.ProgramFiles === undefined
-					? undefined
-					: join(process.env.ProgramFiles, "Git", "usr", "bin", "ssh.exe"),
-				process.env.LOCALAPPDATA === undefined
-					? undefined
-					: join(process.env.LOCALAPPDATA, "Programs", "Git", "usr", "bin", "ssh.exe"),
-			].filter((candidate): candidate is string => candidate !== undefined);
-			let selected: string | undefined;
-			for (const candidate of candidates) {
-				try {
-					const result = spawnSyncCollect([candidate, "-G", "-o", "ControlMaster=yes", "example.invalid"]);
-					if (result.exitCode === 0 && /controlmaster true/iu.test(result.stdout.toString())) {
-						selected = candidate;
-						break;
-					}
-				} catch {
-					// Continue through the documented Git for Windows installation roots.
-				}
-			}
+	test("creates and uses a real control master through Windows proxy-mode transport", async () => {
+		const sshPath = gitOpenSshPath();
+		const keygenPath = process.platform === "win32" ? join(dirname(sshPath), "ssh-keygen.exe") : "ssh-keygen";
+		const directory = await mkdtemp(join(tmpdir(), "ax%$`-"));
+		const hostKeyPath = join(directory, "host-key");
+		const keygen = spawnSyncCollect([keygenPath, "-q", "-t", "ed25519", "-N", "", "-f", hostKeyPath]);
+		assert.equal(keygen.exitCode, 0, keygen.stderr.toString());
 
-			assert.ok(selected, "Git for Windows OpenSSH must be installed for Windows execution transport tests");
-			const runner = new ScriptedRunner();
-			const directory = await mkdtemp(join(tmpdir(), "atomic-exec-real-windows-ssh-test-"));
-			try {
-				const transport = await createRunEnvironmentExecTransport({
-					coderPath: "/pinned/coder",
-					workspaceName: "run-123",
-					operatingSystem: "linux",
-					controlPlatform: "win32",
-					environment: process.env,
-					runtimeDirectory: directory,
-					processRunner: runner,
-					masterReadyTimeoutMs: 1_000,
+		let connections = 0;
+		let forwardedConnections = 0;
+		const commands: string[] = [];
+		const server = new Server({ hostKeys: [await readFile(hostKeyPath)] }, (client) => {
+			connections += 1;
+			client
+				.on("authentication", (context) => {
+					if (context.method === "none") context.accept();
+					else context.reject(["none"]);
+				})
+				.on("ready", () => {
+					client.on("tcpip", (accept, _reject, info) => {
+						forwardedConnections += 1;
+						const stream = accept();
+						const socket = connect(info.destPort, info.destIP, () => {
+							stream.pipe(socket).pipe(stream);
+						});
+						socket.on("error", () => stream.close());
+					});
+					client.on("session", (accept) => {
+						const session = accept();
+						session.on("shell", (accept) => {
+							forwardedConnections += 1;
+							const stream = accept();
+							const address = server.address() as AddressInfo;
+							const socket = connect(address.port, "127.0.0.1", () => {
+								stream.pipe(socket).pipe(stream);
+							});
+							socket.on("error", () => stream.close());
+						});
+						session.on("exec", (accept, _reject, info) => {
+							commands.push(info.command);
+							const marker = info.command.match(/atomic-exec-result-[0-9a-f-]+:/u)?.[0];
+							const stream = accept();
+							stream.write("real-multiplexed-output");
+							if (marker !== undefined) stream.stderr.write(`${marker}0;`);
+							stream.exit(0);
+							stream.end();
+						});
+					});
 				});
-				await transport.close();
-				assert.equal(runner.processes.find(({ args }) => args.includes("-M"))?.command, selected);
-			} finally {
-				await rm(directory, { recursive: true, force: true });
-			}
-		},
-	);
+		});
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(0, "127.0.0.1", resolve);
+		});
 
-	test("executes through Windows proxy-mode multiplexing when transport paths contain percent signs", async () => {
-		const runner = new ScriptedRunner();
-		runner.executeStarted = (process) => process.finish(0);
-		const directory = await mkdtemp(join(tmpdir(), "atomic-exec-100%-"));
-		const sshPath = join(directory, "Git 100%", "ssh.exe");
+		const port = (server.address() as AddressInfo).port;
+		const runner = new RealSshRunner(`Host atomic.run-123
+	HostName 127.0.0.1
+	Port ${port}
+	User atomic-test
+	PreferredAuthentications none
+	PubkeyAuthentication no
+	PasswordAuthentication no
+	KbdInteractiveAuthentication no
+	StrictHostKeyChecking no
+	UserKnownHostsFile /dev/null
+	LogLevel ERROR
+`);
+		const runtimeDirectory = join(directory, "r 50%$`");
+		let output = "";
+		let transport: Awaited<ReturnType<typeof createRunEnvironmentExecTransport>> | undefined;
 		try {
-			const transport = await createRunEnvironmentExecTransport({
-				coderPath: "/pinned/coder",
+			transport = await createRunEnvironmentExecTransport({
+				coderPath: "coder-test-double",
 				sshPath,
 				workspaceName: "run-123",
 				operatingSystem: "linux",
 				controlPlatform: "win32",
-				runtimeDirectory: join(directory, "runtime 50%"),
+				runtimeDirectory,
 				processRunner: runner,
-				masterReadyTimeoutMs: 1_000,
+				masterReadyTimeoutMs: 10_000,
 			});
-			try {
-				const outcome = await transport.execute({ argv: ["true"] }, { write() {} }, new AbortController().signal);
-				assert.deepEqual(outcome, { kind: "exited", code: 0 });
-			} finally {
-				await transport.close();
-			}
-
-			const execution = runner.processes.find(
-				({ command, args }) => command === sshPath && !args.includes("-M") && !args.includes("-O"),
+			const outcome = await transport.execute(
+				{ argv: ["printf", "%s", "real transport"] },
+				{ write: (chunk, channel) => (output += channel === "stdout" ? chunk.toString() : "") },
+				new AbortController().signal,
 			);
-			const proxyCommand = execution?.args.find((arg) => arg.startsWith("ProxyCommand="));
-			assert.ok(proxyCommand?.includes("100%%"));
-			assert.ok(proxyCommand?.includes("50%%"));
-			const proxyInvocation = runner.processes.find(({ args }) => args[args.indexOf("-O") + 1] === "proxy");
-			assert.ok(proxyInvocation, "the outer SSH command must invoke the constructed proxy transport");
-			assert.ok(proxyInvocation.args.some((value) => value.endsWith("master.sock")));
-		} finally {
-			await rm(directory, { recursive: true, force: true });
-		}
-	});
 
-	test("executes through Windows proxy-mode when transport paths contain shell expansion characters", async () => {
-		const runner = new ScriptedRunner();
-		runner.executeStarted = (process) => process.finish(0);
-		const directory = await mkdtemp(join(tmpdir(), "atomic-exec-$name-`literal`-"));
-		const sshPath = join(directory, "Git $name `literal`", "ssh.exe");
-		try {
-			const transport = await createRunEnvironmentExecTransport({
-				coderPath: "/pinned/coder",
-				sshPath,
-				workspaceName: "run-123",
-				operatingSystem: "linux",
-				controlPlatform: "win32",
-				runtimeDirectory: join(directory, "runtime $name `literal`"),
-				processRunner: runner,
-				masterReadyTimeoutMs: 1_000,
-			});
-			try {
-				const outcome = await transport.execute({ argv: ["true"] }, { write() {} }, new AbortController().signal);
-				assert.deepEqual(outcome, { kind: "exited", code: 0 });
-			} finally {
-				await transport.close();
-			}
-
-			const proxyInvocation = runner.processes.find(({ args }) => args[args.indexOf("-O") + 1] === "proxy");
-			assert.equal(proxyInvocation?.command, sshPath.replaceAll("\\", "/"));
-			assert.ok(proxyInvocation?.args.some((value) => value.endsWith("master.sock")));
+			assert.deepEqual(outcome, { kind: "exited", code: 0 });
+			assert.equal(output, "real-multiplexed-output");
+			assert.equal(commands.length, 1);
+			assert.equal(connections, 2, "the command must tunnel through the one control-master connection");
+			assert.equal(forwardedConnections, 1, "the command must reach the server through ssh -O proxy");
+			assert.equal(runner.processes.filter(({ args }) => args.includes("-M")).length, 1);
 		} finally {
+			await transport?.close();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
 			await rm(directory, { recursive: true, force: true });
 		}
 	});

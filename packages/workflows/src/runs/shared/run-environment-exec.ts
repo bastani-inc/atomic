@@ -321,15 +321,15 @@ function renderWindowsCommand(command: RemoteCommand, exitMarker: string): strin
 		"$exitCode = 127",
 		"try {",
 		...(command.cwd === undefined ? [] : [`Set-Location -LiteralPath ${powershellLiteral(command.cwd)}`]),
-		...Object.entries(command.environment ?? {}).map(
-			([name, value]) =>
-				`Set-Item -LiteralPath ${powershellLiteral(`Env:${name}`)} -Value ${powershellLiteral(value)}`,
-		),
 		"$process = New-Object System.Diagnostics.Process",
 		`$process.StartInfo.FileName = ${powershellLiteral(command.argv[0] ?? "")}`,
 		`$process.StartInfo.Arguments = ${powershellLiteral(command.argv.slice(1).map(quoteWindowsNativeArgument).join(" "))}`,
 		...(command.cwd === undefined ? [] : [`$process.StartInfo.WorkingDirectory = ${powershellLiteral(command.cwd)}`]),
 		"$process.StartInfo.UseShellExecute = $false",
+		...Object.entries(command.environment ?? {}).map(
+			([name, value]) =>
+				`$process.StartInfo.EnvironmentVariables[${powershellLiteral(name)}] = ${powershellLiteral(value)}`,
+		),
 		"$null = $process.Start()",
 		"$process.WaitForExit()",
 		"$exitCode = $process.ExitCode",
@@ -370,6 +370,11 @@ function quoteProxyCommandArgument(value: string, controlPlatform: NodeJS.Platfo
 	return quotePosix(escaped);
 }
 
+function escapeControlPath(value: string, controlPlatform: NodeJS.Platform): string {
+	const normalized = controlPlatform === "win32" ? value.replaceAll("\\", "/") : value;
+	return normalized.replaceAll("%", "%%");
+}
+
 function executionArguments(
 	sshPath: string,
 	configPath: string,
@@ -379,11 +384,12 @@ function executionArguments(
 	controlPlatform: NodeJS.Platform,
 ): readonly string[] {
 	const common = ["-F", configPath, "-o", "ControlMaster=no"];
+	const escapedControlPath = escapeControlPath(controlPath, controlPlatform);
 	if (controlPlatform !== "win32") {
 		return [
 			...common,
 			"-S",
-			controlPath,
+			escapedControlPath,
 			"-o",
 			"ProxyCommand=none",
 			"-o",
@@ -400,7 +406,7 @@ function executionArguments(
 		];
 	}
 
-	const proxyCommand = [sshPath, "-F", configPath, "-S", controlPath, "-O", "proxy", host]
+	const proxyCommand = [sshPath, "-F", configPath, "-S", escapedControlPath, "-O", "proxy", host]
 		.map((value) => quoteProxyCommandArgument(value, controlPlatform))
 		.join(" ");
 	return [...common, "-o", "ControlPath=none", "-o", `ProxyCommand=${proxyCommand}`, "-T", host, remoteCommand];
@@ -442,11 +448,16 @@ async function probeControlMaster(
 	configPath: string,
 	controlPath: string,
 	host: string,
+	controlPlatform: NodeJS.Platform,
 	processOptions: RunEnvironmentProcessOptions,
 	interrupted: Promise<InterruptedSettlement>,
 	masterLost: Promise<InterruptedSettlement>,
 ): Promise<MasterProbeOutcome> {
-	const check = runner.start(sshPath, ["-F", configPath, "-S", controlPath, "-O", "check", host], processOptions);
+	const check = runner.start(
+		sshPath,
+		["-F", configPath, "-S", escapeControlPath(controlPath, controlPlatform), "-O", "check", host],
+		processOptions,
+	);
 	let stderr = "";
 	check.onStderr((chunk) => {
 		stderr = appendDiagnostic(stderr, chunk);
@@ -537,7 +548,19 @@ export async function createRunEnvironmentExecTransport(
 
 		const master = runner.start(
 			sshPath,
-			["-F", configPath, "-M", "-N", "-S", controlPath, "-o", "ControlMaster=yes", "-o", "ControlPersist=no", host],
+			[
+				"-F",
+				configPath,
+				"-M",
+				"-N",
+				"-S",
+				escapeControlPath(controlPath, controlPlatform),
+				"-o",
+				"ControlMaster=yes",
+				"-o",
+				"ControlPersist=no",
+				host,
+			],
 			processOptions,
 		);
 		startingMaster = master;
@@ -560,7 +583,7 @@ export async function createRunEnvironmentExecTransport(
 			if (masterLostDetail !== undefined) throw new Error(masterLostDetail);
 			const check = runner.start(
 				sshPath,
-				["-F", configPath, "-S", controlPath, "-O", "check", host],
+				["-F", configPath, "-S", escapeControlPath(controlPath, controlPlatform), "-O", "check", host],
 				processOptions,
 			);
 			const settlement = await waitForMasterReadinessCheck(check, readyDeadline, options.signal, masterLost);
@@ -661,6 +684,7 @@ export async function createRunEnvironmentExecTransport(
 						configPath,
 						controlPath,
 						host,
+						controlPlatform,
 						processOptions,
 						aborted,
 						lost,
@@ -687,7 +711,7 @@ export async function createRunEnvironmentExecTransport(
 				for (const process of activeProcesses) process.kill();
 				const exit = runner.start(
 					sshPath,
-					["-F", configPath, "-S", controlPath, "-O", "exit", host],
+					["-F", configPath, "-S", escapeControlPath(controlPath, controlPlatform), "-O", "exit", host],
 					processOptions,
 				);
 				const result = await exit.wait();
