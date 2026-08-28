@@ -1,10 +1,10 @@
 import type { SessionInfo } from "../types.js";
-import { normalizeGroup } from "../group.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
+import { sessionsShareGroup } from "./group-membership.js";
 
-/** Two sessions share a group when their normalized group ids are equal. */
+/** Two sessions share a group when any normalized membership intersects. */
 export function sameGroup(a: SessionInfo, b: SessionInfo): boolean {
-  return normalizeGroup(a.group) === normalizeGroup(b.group);
+	return sessionsShareGroup(a, b);
 }
 
 export interface VerticalBypassInput {

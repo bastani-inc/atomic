@@ -13,6 +13,12 @@ export interface SessionInfo {
   group?: string;
 }
 
+export interface GroupSummary {
+	group: string;
+	sessionCount: number;
+	member: boolean;
+}
+
 export interface Message {
   id: string;
   timestamp: number;
@@ -55,6 +61,9 @@ export type ClientMessage =
 	  }
 	| { type: "unregister" }
   | { type: "list"; requestId: string; group?: string }
+	| { type: "list_groups"; requestId: string }
+	| { type: "join_group"; requestId: string; group: string }
+	| { type: "leave_group"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
 	| {
@@ -99,6 +108,8 @@ export type BrokerMessage =
   | { type: "registered"; sessionId: string; supervisorSessionId?: string }
   | { type: "registration_failed"; reason: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
+	| { type: "groups"; requestId: string; groups: GroupSummary[] }
+	| { type: "membership_ack"; requestId: string; groups: string[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
 	| { type: "pending_stage_notification"; requestId: string; from: SessionInfo; message: Message }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import type { ClientMessage, SessionInfo } from "../../packages/intercom/types.js";
+import type { BrokerMessage, ClientMessage, SessionInfo } from "../../packages/intercom/types.js";
 
 const BASE_SESSION = {
 	id: "session-1",
@@ -49,4 +49,22 @@ test("legacy single-group clients remain valid protocol clients", () => {
 	assert.equal(session.group, "reviewers");
 	assert.equal(registration.session.group, "reviewers");
 	assert.equal(presence.group, "reviewers");
+});
+
+test("the broker protocol carries membership commands and all-group summaries", () => {
+	const join: ClientMessage = { type: "join_group", requestId: "join", group: "reviewers" };
+	const leave: ClientMessage = { type: "leave_group", requestId: "leave", group: "reviewers" };
+	const leaveHome: ClientMessage = { type: "leave_group", requestId: "home" };
+	const listGroups: ClientMessage = { type: "list_groups", requestId: "groups" };
+	const summaries: BrokerMessage = {
+		type: "groups",
+		requestId: "groups",
+		groups: [{ group: "reviewers", sessionCount: 2, member: true }],
+	};
+
+	assert.equal(join.type, "join_group");
+	assert.equal(leave.type, "leave_group");
+	assert.equal(leaveHome.type, "leave_group");
+	assert.equal(listGroups.type, "list_groups");
+	assert.deepEqual(summaries.groups, [{ group: "reviewers", sessionCount: 2, member: true }]);
 });

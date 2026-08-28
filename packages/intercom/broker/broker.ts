@@ -17,8 +17,15 @@ import {
   type PendingStageRoute,
 } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
-import { normalizeGroup } from "../group.js";
+import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
+import {
+	knownGroupSummaries,
+	sessionGroups,
+	sessionsInGroup,
+	sessionsVisibleTo,
+	setSessionGroups,
+} from "./group-membership.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
@@ -95,6 +102,11 @@ function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id">
     return false;
   }
 
+
+  if (session.groups !== undefined &&
+    (!Array.isArray(session.groups) || !session.groups.every((group) => typeof group === "string"))) {
+    return false;
+  }
   return session.status === undefined || typeof session.status === "string";
 }
 function isSupervisorRegistration(value: unknown): value is SupervisorRegistration {
@@ -247,7 +259,7 @@ class IntercomBroker {
       this.pendingStageRoutes.delete(route.runId);
       return false;
     }
-		if (route.liveTargetId === undefined && normalizeGroup(route.from.info.group) !== normalizeGroup(ownerRegistration.group)) {
+		if (route.liveTargetId === undefined && !hasGroup(sessionGroups(route.from.info), ownerRegistration.group)) {
       writeMessage(route.socket, {
         type: "delivery_failed",
         messageId: route.message.id,
@@ -490,7 +502,7 @@ class IntercomBroker {
 			target === undefined ||
 			target.info.id === currentId ||
 			normalizeGroup(target.registrationGroup) !== routeGroup ||
-			normalizeGroup(target.info.group) !== routeGroup
+			!hasGroup(sessionGroups(target.info), routeGroup)
 		) {
 			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
 			return;
@@ -596,15 +608,17 @@ class IntercomBroker {
 
         const id = randomUUID();
         setId(id);
+        const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
+        const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
         const info: SessionInfo = {
           ...clientMessage.session,
           id,
-          group: normalizeGroup(clientMessage.session.group),
         };
+		setSessionGroups(info, initialGroups, legacyGroup);
         this.sessions.set(id, {
           socket,
           info,
-          registrationGroup: info.group,
+          registrationGroup: legacyGroup,
 			...(typeof info.name === "string" && info.name.trim().length > 0
 				? { registrationName: info.name.trim() }
 				: {}),
@@ -625,7 +639,7 @@ class IntercomBroker {
         writeMessage(socket, supervisorId
           ? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
           : { type: "registered", sessionId: id });
-        this.broadcastToGroup({ type: "session_joined", session: info }, info.group, id);
+        this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
         break;
       }
 
@@ -645,13 +659,23 @@ class IntercomBroker {
         }
 
         const requester = currentId ? this.sessions.get(currentId) : undefined;
-        const effectiveGroup = normalizeGroup(
-          typeof clientMessage.group === "string" ? clientMessage.group : requester?.info.group,
-        );
-        const sessions = Array.from(this.sessions.values())
-          .map((s) => s.info)
-          .filter((info) => normalizeGroup(info.group) === effectiveGroup);
+		if (requester === undefined) throw new Error("Session not found");
+        const sessions = typeof clientMessage.group === "string"
+			? sessionsInGroup(this.sessions, clientMessage.group)
+			: sessionsVisibleTo(this.sessions, requester.info);
         writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
+        break;
+      }
+
+	  case "list_groups": {
+		if (typeof clientMessage.requestId !== "string") throw new Error("Invalid list_groups message");
+		const requester = currentId ? this.sessions.get(currentId) : undefined;
+		if (requester === undefined) throw new Error("Session not found");
+		writeMessage(socket, {
+			type: "groups",
+			requestId: clientMessage.requestId,
+			groups: knownGroupSummaries(this.sessions, requester.info),
+		});
         break;
       }
 
@@ -815,7 +839,9 @@ class IntercomBroker {
 			break;
 		}
 
-      case "presence": {
+      case "presence":
+	  case "join_group":
+	  case "leave_group": {
         handleBrokerPresence(
           socket,
           clientMessage,
@@ -881,13 +907,12 @@ class IntercomBroker {
 		if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
 	}
 	this.sessions.delete(sessionId);
-	this.broadcastToGroup({ type: "session_left", sessionId }, departed.info.group, sessionId);
+	this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
 	}
-  /** Deliver a broadcast only to sessions in the given (normalized) group. */
-  private broadcastToGroup(msg: BrokerMessage, group: string | undefined, exclude?: string): void {
-    const target = normalizeGroup(group);
+  /** Deliver a broadcast once to each session represented in any given group. */
+  private broadcastToMemberships(msg: BrokerMessage, groups: ReadonlySet<string>, exclude?: string): void {
     for (const [id, session] of this.sessions) {
-      if (id !== exclude && normalizeGroup(session.info.group) === target) {
+      if (id !== exclude && [...groups].some((group) => hasGroup(sessionGroups(session.info), group))) {
         writeMessage(session.socket, msg);
       }
     }
