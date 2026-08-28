@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -131,6 +132,80 @@ function appendDiagnostic(current: string, chunk: Buffer): string {
 	return Buffer.byteLength(next) <= DIAGNOSTIC_LIMIT_BYTES ? next : next.slice(-DIAGNOSTIC_LIMIT_BYTES);
 }
 
+class RemoteExitProof {
+	private pending: Buffer = Buffer.alloc(0);
+	private readonly marker: Buffer;
+	private markerFound = false;
+	private remoteCode: number | undefined;
+	private finalized = false;
+
+	constructor(marker: string) {
+		this.marker = Buffer.from(marker);
+	}
+
+	get exitCode(): number | undefined {
+		return this.remoteCode;
+	}
+
+	write(chunk: Buffer, emit: (output: Buffer) => void): void {
+		if (this.finalized) return;
+		if (this.remoteCode !== undefined) {
+			emit(chunk);
+			return;
+		}
+		const combined = Buffer.concat([this.pending, chunk]);
+		if (this.markerFound) {
+			this.consumeExitCode(combined, emit);
+			return;
+		}
+		const markerIndex = combined.indexOf(this.marker);
+		if (markerIndex >= 0) {
+			this.markerFound = true;
+			if (markerIndex > 0) emit(combined.subarray(0, markerIndex));
+			this.consumeExitCode(combined.subarray(markerIndex + this.marker.length), emit);
+			return;
+		}
+		const retainedBytes = Math.min(combined.length, this.marker.length - 1);
+		const emittedBytes = combined.length - retainedBytes;
+		if (emittedBytes > 0) emit(combined.subarray(0, emittedBytes));
+		this.pending = combined.subarray(emittedBytes);
+	}
+
+	finish(emit: (output: Buffer) => void): void {
+		if (this.pending.length > 0) {
+			if (this.markerFound) emit(Buffer.concat([this.marker, this.pending]));
+			else emit(this.pending);
+		}
+		this.pending = Buffer.alloc(0);
+		this.finalized = true;
+	}
+
+	interrupt(emit: (output: Buffer) => void): void {
+		if (!this.markerFound && this.pending.length > 0) emit(this.pending);
+		this.pending = Buffer.alloc(0);
+		this.finalized = true;
+	}
+
+	private consumeExitCode(value: Buffer, emit: (output: Buffer) => void): void {
+		const terminatorIndex = value.indexOf(0x3b);
+		if (terminatorIndex < 0) {
+			this.pending = value;
+			return;
+		}
+		const encodedCode = value.subarray(0, terminatorIndex).toString();
+		if (!/^-?\d+$/u.test(encodedCode)) {
+			emit(Buffer.concat([this.marker, value]));
+			this.markerFound = false;
+			this.pending = Buffer.alloc(0);
+			return;
+		}
+		this.remoteCode = Number(encodedCode);
+		const remainder = value.subarray(terminatorIndex + 1);
+		if (remainder.length > 0) emit(remainder);
+		this.pending = Buffer.alloc(0);
+	}
+}
+
 function processFailureDetail(label: string, result: RunEnvironmentProcessResult, stderr: string): string {
 	const diagnostic = stderr.trim();
 	if (result.error !== undefined) return `${label}: ${result.error.message}`;
@@ -169,10 +244,11 @@ function quotePosix(value: string): string {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function renderPosixCommand(command: RemoteCommand): string {
+function renderPosixCommand(command: RemoteCommand, exitMarker: string): string {
 	const environment = Object.entries(command.environment ?? {}).map(([name, value]) => `${name}=${value}`);
 	const invocation = ["env", "--", ...environment, ...command.argv].map(quotePosix).join(" ");
-	return command.cwd === undefined ? `exec ${invocation}` : `cd -- ${quotePosix(command.cwd)} && exec ${invocation}`;
+	const execution = command.cwd === undefined ? invocation : `cd -- ${quotePosix(command.cwd)} && ${invocation}`;
+	return `${execution}; exit_code=$?; printf '%s%s;' ${quotePosix(exitMarker)} "$exit_code" >&2; exit 0`;
 }
 
 function powershellLiteral(value: string): string {
@@ -199,9 +275,11 @@ function quoteWindowsNativeArgument(value: string): string {
 	return `${quoted}${"\\".repeat(backslashes * 2)}"`;
 }
 
-function renderWindowsCommand(command: RemoteCommand): string {
+function renderWindowsCommand(command: RemoteCommand, exitMarker: string): string {
 	const lines = [
 		"$ErrorActionPreference = 'Stop'",
+		"$exitCode = 127",
+		"try {",
 		...(command.cwd === undefined ? [] : [`Set-Location -LiteralPath ${powershellLiteral(command.cwd)}`]),
 		...Object.entries(command.environment ?? {}).map(
 			([name, value]) =>
@@ -210,22 +288,34 @@ function renderWindowsCommand(command: RemoteCommand): string {
 		"$process = New-Object System.Diagnostics.Process",
 		`$process.StartInfo.FileName = ${powershellLiteral(command.argv[0] ?? "")}`,
 		`$process.StartInfo.Arguments = ${powershellLiteral(command.argv.slice(1).map(quoteWindowsNativeArgument).join(" "))}`,
+		...(command.cwd === undefined ? [] : [`$process.StartInfo.WorkingDirectory = ${powershellLiteral(command.cwd)}`]),
 		"$process.StartInfo.UseShellExecute = $false",
 		"$null = $process.Start()",
 		"$process.WaitForExit()",
-		"exit $process.ExitCode",
+		"$exitCode = $process.ExitCode",
+		"} catch {",
+		"[Console]::Error.WriteLine($_.Exception.Message)",
+		"}",
+		`[Console]::Error.Write(${powershellLiteral(exitMarker)} + $exitCode + ';')`,
+		"exit 0",
 	];
 	const encoded = Buffer.from(lines.join("\r\n"), "utf16le").toString("base64");
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
 }
 
-function renderRemoteCommand(command: RemoteCommand, operatingSystem: RemoteOperatingSystem): string {
+function renderRemoteCommand(
+	command: RemoteCommand,
+	operatingSystem: RemoteOperatingSystem,
+	exitMarker: string,
+): string {
 	if (command.argv.length === 0) throw new TypeError("Remote command argv must not be empty");
 	for (const name of Object.keys(command.environment ?? {})) {
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name))
 			throw new TypeError(`Invalid remote environment variable name: ${name}`);
 	}
-	return operatingSystem === "windows" ? renderWindowsCommand(command) : renderPosixCommand(command);
+	return operatingSystem === "windows"
+		? renderWindowsCommand(command, exitMarker)
+		: renderPosixCommand(command, exitMarker);
 }
 
 function validateTimeoutSeconds(seconds: number | undefined): void {
@@ -236,7 +326,8 @@ function validateTimeoutSeconds(seconds: number | undefined): void {
 
 function quoteProxyCommandArgument(value: string, controlPlatform: NodeJS.Platform): string {
 	const normalized = controlPlatform === "win32" ? value.replaceAll("\\", "/") : value;
-	return /^[A-Za-z0-9_./:%=-]+$/u.test(normalized) ? normalized : `"${normalized.replaceAll('"', '\\"')}"`;
+	const escaped = normalized.replaceAll("%", "%%");
+	return /^[A-Za-z0-9_./:%=-]+$/u.test(escaped) ? escaped : `"${escaped.replaceAll('"', '\\"')}"`;
 }
 
 function executionArguments(
@@ -447,7 +538,9 @@ export async function createRunEnvironmentExecTransport(
 				if (masterLostDetail !== undefined) return { kind: "transport_lost", detail: masterLostDetail };
 				validateTimeoutSeconds(command.timeoutSeconds);
 				if (signal.aborted) return { kind: "aborted" };
-				const remoteCommand = renderRemoteCommand(command, options.operatingSystem);
+				const exitMarker = `atomic-exec-result-${randomUUID()}:`;
+				const remoteCommand = renderRemoteCommand(command, options.operatingSystem, exitMarker);
+				const exitProof = new RemoteExitProof(exitMarker);
 				let stderr = "";
 				let process: RunEnvironmentProcess;
 				try {
@@ -464,10 +557,11 @@ export async function createRunEnvironmentExecTransport(
 				}
 				activeProcesses.add(process);
 				process.onStdout((chunk) => sink.write(chunk, "stdout"));
-				process.onStderr((chunk) => {
-					stderr = appendDiagnostic(stderr, chunk);
-					sink.write(chunk, "stderr");
-				});
+				const emitStderr = (output: Buffer): void => {
+					stderr = appendDiagnostic(stderr, output);
+					sink.write(output, "stderr");
+				};
+				process.onStderr((chunk) => exitProof.write(chunk, emitStderr));
 
 				let timeout: NodeJS.Timeout | undefined;
 				let onAbort: (() => void) | undefined;
@@ -487,16 +581,20 @@ export async function createRunEnvironmentExecTransport(
 					const settlement: ExecutionSettlement = await Promise.race([processFinished, aborted, timedOut, lost]);
 					if (settlement.kind === "aborted") {
 						process.kill();
+						exitProof.interrupt(emitStderr);
 						return { kind: "aborted" };
 					}
 					if (settlement.kind === "timed_out") {
 						process.kill();
+						exitProof.interrupt(emitStderr);
 						return { kind: "timed_out", seconds: settlement.seconds };
 					}
 					if (settlement.kind === "master_lost" || masterLostDetail !== undefined) {
 						process.kill();
+						exitProof.interrupt(emitStderr);
 						return { kind: "transport_lost", detail: masterLostDetail ?? "SSH control master exited" };
 					}
+					exitProof.finish(emitStderr);
 					if (settlement.result.error !== undefined || settlement.result.code === null) {
 						return { kind: "transport_lost", detail: transportDetail(settlement.result, stderr) };
 					}
@@ -520,7 +618,10 @@ export async function createRunEnvironmentExecTransport(
 						return { kind: "transport_lost", detail: masterLostDetail ?? "SSH control master exited" };
 					}
 					if (masterStatus.kind === "dead") return { kind: "transport_lost", detail: masterStatus.detail };
-					return { kind: "exited", code: settlement.result.code };
+					if (exitProof.exitCode === undefined) {
+						return { kind: "transport_lost", detail: transportDetail(settlement.result, stderr) };
+					}
+					return { kind: "exited", code: exitProof.exitCode };
 				} finally {
 					activeProcesses.delete(process);
 					if (timeout !== undefined) clearTimeout(timeout);

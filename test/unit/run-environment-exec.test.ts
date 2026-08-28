@@ -66,11 +66,61 @@ class ScriptedProcess implements RunEnvironmentProcess {
 		this.resolveResult({ code, signal });
 	}
 }
+function expandProxyCommandPercentTokens(value: string): string | undefined {
+	let expanded = "";
+	for (let index = 0; index < value.length; index += 1) {
+		if (value[index] !== "%") {
+			expanded += value[index];
+			continue;
+		}
+		if (value[index + 1] !== "%") return undefined;
+		expanded += "%";
+		index += 1;
+	}
+	return expanded;
+}
+
+function splitProxyCommand(value: string): readonly string[] | undefined {
+	const expanded = expandProxyCommandPercentTokens(value);
+	if (expanded === undefined) return undefined;
+	const tokens: string[] = [];
+	let token = "";
+	let quoted = false;
+	for (let index = 0; index < expanded.length; index += 1) {
+		const character = expanded[index];
+		if (character === '"') {
+			quoted = !quoted;
+			continue;
+		}
+		if (character === "\\" && expanded[index + 1] === '"') {
+			token += '"';
+			index += 1;
+			continue;
+		}
+		if (!quoted && character === " ") {
+			if (token.length > 0) tokens.push(token);
+			token = "";
+			continue;
+		}
+		token += character;
+	}
+	if (quoted) return undefined;
+	if (token.length > 0) tokens.push(token);
+	return tokens;
+}
+
+function remoteExitMarker(args: readonly string[]): string | undefined {
+	const rendered = args.at(-1) ?? "";
+	const encoded = rendered.startsWith("powershell.exe ") ? (rendered.split(" ").at(-1) ?? "") : undefined;
+	const command = encoded === undefined ? rendered : Buffer.from(encoded, "base64").toString("utf16le");
+	return command.match(/atomic-exec-result-[0-9a-f-]+:/u)?.[0];
+}
 
 class ScriptedRunner implements RunEnvironmentProcessRunner {
 	readonly processes: RecordedProcess[] = [];
 	readonly master = new ScriptedProcess();
 	executeStarted?: (process: ScriptedProcess) => void;
+	executeCompletes = true;
 	checkMaster?: (process: ScriptedProcess, checkNumber: number) => void;
 	private masterStarted = false;
 	private checkCount = 0;
@@ -79,7 +129,7 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 		const isMaster = args.includes("-M");
 		const process = isMaster ? this.master : new ScriptedProcess();
 		this.processes.push({ command, args: [...args], process });
-		if (command === "/pinned/coder") {
+		if (args[0] === "config-ssh") {
 			queueMicrotask(() => process.finish(0));
 		} else if (isMaster) {
 			this.masterStarted = true;
@@ -90,6 +140,16 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 				if (this.checkMaster !== undefined) this.checkMaster(process, checkNumber);
 				else process.finish(this.masterStarted && !this.master.finished ? 0 : 255);
 			});
+		} else if (args[args.indexOf("-O") + 1] === "proxy") {
+			const controlPathIndex = args.indexOf("-S");
+			queueMicrotask(() => {
+				const reachesMaster =
+					this.masterStarted &&
+					!this.master.finished &&
+					controlPathIndex >= 0 &&
+					args[controlPathIndex + 1]?.endsWith("master.sock") === true;
+				process.finish(reachesMaster ? 0 : 255);
+			});
 		} else if (args.includes("exit")) {
 			queueMicrotask(() => {
 				process.finish(this.masterStarted ? 0 : 255);
@@ -97,16 +157,41 @@ class ScriptedRunner implements RunEnvironmentProcessRunner {
 			});
 		} else {
 			const controlPathIndex = args.indexOf("-S");
-			const proxyCommand = args.find((arg) => arg.startsWith("ProxyCommand="));
-			const usesMaster =
-				this.masterStarted &&
-				!this.master.finished &&
-				((controlPathIndex >= 0 && args[controlPathIndex + 1]?.endsWith("master.sock") === true) ||
-					proxyCommand?.includes("master.sock") === true);
-			queueMicrotask(() => {
-				if (usesMaster) this.executeStarted?.(process);
-				else process.finish(255);
-			});
+			const proxyOption = args.find((arg) => arg.startsWith("ProxyCommand="));
+			const proxyArgs =
+				proxyOption === undefined ? undefined : splitProxyCommand(proxyOption.slice("ProxyCommand=".length));
+			const usesDirectMaster = controlPathIndex >= 0 && args[controlPathIndex + 1]?.endsWith("master.sock") === true;
+			const beginExecution = (usesMaster: boolean): void => {
+				if (!usesMaster || !this.masterStarted || this.master.finished) {
+					process.finish(255);
+					return;
+				}
+				if (!this.executeCompletes) {
+					this.executeStarted?.(process);
+					return;
+				}
+				const remote = new ScriptedProcess();
+				remote.onStdout((chunk) => process.writeStdout(chunk.toString()));
+				remote.onStderr((chunk) => process.writeStderr(chunk.toString()));
+				void remote.wait().then((result) => {
+					const marker = remoteExitMarker(args);
+					if (marker === undefined || result.code === null) {
+						process.finish(255);
+						return;
+					}
+					process.writeStderr(`${marker}${result.code};`);
+					process.finish(0);
+				});
+				this.executeStarted?.(remote);
+			};
+			if (usesDirectMaster) {
+				queueMicrotask(() => beginExecution(true));
+			} else if (proxyArgs !== undefined && proxyArgs.length > 1) {
+				const proxy = this.start(proxyArgs[0] ?? "", proxyArgs.slice(1));
+				void proxy.wait().then((result) => beginExecution(result.code === 0));
+			} else {
+				queueMicrotask(() => beginExecution(false));
+			}
 		}
 		return process;
 	}
@@ -190,9 +275,9 @@ describe("run-environment execute transport", () => {
 			assert.ok(call.args.includes("ProxyCommand=none"));
 			assert.ok(call.args.includes("HostName=127.0.0.1"));
 		}
-		assert.equal(
-			executionCalls(runner)[0]?.args.at(-1),
-			`cd -- '/workspace' && exec 'env' '--' 'MODE=test' 'printf' '%s' 'first argument'`,
+		assert.match(
+			executionCalls(runner)[0]?.args.at(-1) ?? "",
+			/^cd -- '\/workspace' && 'env' '--' 'MODE=test' 'printf' '%s' 'first argument';.*exit 0$/u,
 		);
 		assert.equal(
 			runner.processes.some(({ command, args }) => command === "/pinned/coder" && args.includes("ssh")),
@@ -200,31 +285,53 @@ describe("run-environment execute transport", () => {
 		);
 	});
 
-	test("selects PowerShell argv encoding for a Windows workspace agent", async () => {
-		const runner = new ScriptedRunner();
-		runner.executeStarted = (process) => process.finish(0);
+	test.skipIf(process.platform !== "win32")(
+		"runs Windows native commands in the requested working directory",
+		async () => {
+			const runner = new ScriptedRunner();
+			const directory = await mkdtemp(join(tmpdir(), "atomic windows cwd "));
+			let output = "";
+			runner.executeStarted = (remoteProcess) => {
+				const rendered = runner.processes.at(-1)?.args.at(-1) ?? "";
+				const encoded = rendered.split(" ").at(-1) ?? "";
+				const result = spawnSyncCollect([
+					"powershell.exe",
+					"-NoLogo",
+					"-NoProfile",
+					"-NonInteractive",
+					"-EncodedCommand",
+					encoded,
+				]);
+				remoteProcess.writeStdout(result.stdout.toString());
+				remoteProcess.writeStderr(result.stderr.toString());
+				remoteProcess.finish(result.exitCode);
+			};
 
-		await withTransport(
-			runner,
-			async (transport) => {
-				const outcome = await transport.execute(
-					{ argv: ["tool.exe", "it's one argument"], cwd: "C:\\work tree", environment: { MODE: "test" } },
-					{ write() {} },
-					new AbortController().signal,
+			try {
+				await withTransport(
+					runner,
+					async (transport) => {
+						const outcome = await transport.execute(
+							{ argv: [process.execPath, "-e", "process.stdout.write(process.cwd())"], cwd: directory },
+							{ write: (chunk, channel) => (output += channel === "stdout" ? chunk.toString() : "") },
+							new AbortController().signal,
+						);
+						assert.deepEqual(outcome, { kind: "exited", code: 0 });
+						const missingExecutable = await transport.execute(
+							{ argv: [join(directory, "missing.exe")], cwd: directory },
+							{ write() {} },
+							new AbortController().signal,
+						);
+						assert.deepEqual(missingExecutable, { kind: "exited", code: 127 });
+					},
+					"windows",
 				);
-				assert.deepEqual(outcome, { kind: "exited", code: 0 });
-			},
-			"windows",
-		);
-
-		const rendered = executionCalls(runner)[0]?.args.at(-1) ?? "";
-		const encoded = rendered.split(" ").at(-1) ?? "";
-		const script = Buffer.from(encoded, "base64").toString("utf16le");
-		assert.match(script, /Set-Location -LiteralPath 'C:\\work tree'/u);
-		assert.match(script, /Set-Item -LiteralPath 'Env:MODE' -Value 'test'/u);
-		assert.match(script, /\$process\.StartInfo\.FileName = 'tool\.exe'/u);
-		assert.match(script, /\$process\.StartInfo\.Arguments = '"it''s one argument"'/u);
-	});
+				assert.equal(output, directory);
+			} finally {
+				await rm(directory, { recursive: true, force: true });
+			}
+		},
+	);
 	test.skipIf(process.platform !== "win32")(
 		"preserves empty argv entries through Windows PowerShell 5.1",
 		async () => {
@@ -345,26 +452,41 @@ describe("run-environment execute transport", () => {
 		},
 	);
 
-	test("uses proxy-mode multiplexing from a Windows control host", async () => {
+	test("executes through Windows proxy-mode multiplexing when transport paths contain percent signs", async () => {
 		const runner = new ScriptedRunner();
 		runner.executeStarted = (process) => process.finish(0);
-
-		await withTransport(
-			runner,
-			async (transport) => {
+		const directory = await mkdtemp(join(tmpdir(), "atomic-exec-100%-"));
+		const sshPath = join(directory, "Git 100%", "ssh.exe");
+		try {
+			const transport = await createRunEnvironmentExecTransport({
+				coderPath: "/pinned/coder",
+				sshPath,
+				workspaceName: "run-123",
+				operatingSystem: "linux",
+				controlPlatform: "win32",
+				runtimeDirectory: join(directory, "runtime 50%"),
+				processRunner: runner,
+				masterReadyTimeoutMs: 1_000,
+			});
+			try {
 				const outcome = await transport.execute({ argv: ["true"] }, { write() {} }, new AbortController().signal);
 				assert.deepEqual(outcome, { kind: "exited", code: 0 });
-			},
-			"linux",
-			"win32",
-		);
+			} finally {
+				await transport.close();
+			}
 
-		const execution = executionCalls(runner)[0];
-		assert.ok(execution?.args.includes("ControlMaster=no"));
-		const proxyCommand = execution?.args.find((arg) => arg.startsWith("ProxyCommand="));
-		assert.match(proxyCommand ?? "", /\/usr\/bin\/ssh.*-O proxy/u);
-		const configCall = runner.processes.find(({ command }) => command === "/pinned/coder");
-		assert.ok(configCall?.args.includes("--force-unix-filepaths"));
+			const execution = runner.processes.find(
+				({ command, args }) => command === sshPath && !args.includes("-M") && !args.includes("-O"),
+			);
+			const proxyCommand = execution?.args.find((arg) => arg.startsWith("ProxyCommand="));
+			assert.ok(proxyCommand?.includes("100%%"));
+			assert.ok(proxyCommand?.includes("50%%"));
+			const proxyInvocation = runner.processes.find(({ args }) => args[args.indexOf("-O") + 1] === "proxy");
+			assert.ok(proxyInvocation, "the outer SSH command must invoke the constructed proxy transport");
+			assert.ok(proxyInvocation.args.some((value) => value.endsWith("master.sock")));
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	test("preserves a remote exit code 255 while the control master is alive", async () => {
@@ -379,6 +501,45 @@ describe("run-environment execute transport", () => {
 			);
 
 			assert.deepEqual(outcome, { kind: "exited", code: 255 });
+		});
+	});
+	test("returns TransportLost when a command channel fails while the control master remains alive", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeCompletes = false;
+		runner.executeStarted = (process) => {
+			process.writeStderr("mux_client_request_session: session request failed");
+			process.finish(255);
+		};
+
+		await withTransport(runner, async (transport) => {
+			const outcome = await transport.execute({ argv: ["true"] }, { write() {} }, new AbortController().signal);
+
+			assert.equal(outcome.kind, "transport_lost");
+			if (outcome.kind === "transport_lost") assert.match(outcome.detail, /session request failed/u);
+			assert.equal(runner.master.finished, false);
+		});
+	});
+	test("returns TransportLost when a command channel drops after streaming output", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeCompletes = false;
+		runner.executeStarted = (process) => {
+			process.writeStdout("started");
+			process.writeStderr("connection reset during command");
+			process.finish(255);
+		};
+		let stdout = "";
+
+		await withTransport(runner, async (transport) => {
+			const outcome = await transport.execute(
+				{ argv: ["long-command"] },
+				{ write: (chunk, channel) => (stdout += channel === "stdout" ? chunk.toString() : "") },
+				new AbortController().signal,
+			);
+
+			assert.equal(stdout, "started");
+			assert.equal(outcome.kind, "transport_lost");
+			if (outcome.kind === "transport_lost") assert.match(outcome.detail, /connection reset during command/u);
+			assert.equal(runner.master.finished, false);
 		});
 	});
 
@@ -408,6 +569,23 @@ describe("run-environment execute transport", () => {
 			assert.deepEqual(outcome, { kind: "timed_out", seconds: 0.01 });
 			assert.equal(executionCalls(runner)[0]?.process.killed, true);
 			assert.throws(() => bashResultFromExecOutcome(outcome), /^Error: timeout:0\.01$/u);
+		});
+	});
+
+	test("flushes buffered stderr when an execution times out", async () => {
+		const runner = new ScriptedRunner();
+		runner.executeStarted = (process) => process.writeStderr("partial diagnostic");
+		let stderr = "";
+
+		await withTransport(runner, async (transport) => {
+			const outcome = await transport.execute(
+				{ argv: ["sleep", "30"], timeoutSeconds: 0.01 },
+				{ write: (chunk, channel) => (stderr += channel === "stderr" ? chunk.toString() : "") },
+				new AbortController().signal,
+			);
+
+			assert.deepEqual(outcome, { kind: "timed_out", seconds: 0.01 });
+			assert.equal(stderr, "partial diagnostic");
 		});
 	});
 
