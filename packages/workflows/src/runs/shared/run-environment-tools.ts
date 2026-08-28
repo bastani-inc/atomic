@@ -481,7 +481,7 @@ export function createRunEnvironmentEditToolDefinition(cwd: string, options: Run
 		...builtin,
 		async execute(...args: Parameters<typeof builtin.execute>) {
 			const [toolCallId, input, signal, onUpdate, context] = args;
-			const snapshots: Buffer[] = [];
+			const snapshots = new Map<string, Buffer>();
 			for (const match of input.input.matchAll(/^\[([^\]\n]+)#([0-9A-Fa-f]{4})\]$/gmu)) {
 				const selector = match[1] ?? "";
 				const selectorKind = remoteSelectorKind(selector, true);
@@ -490,7 +490,7 @@ export function createRunEnvironmentEditToolDefinition(cwd: string, options: Run
 				if (snapshot !== undefined) {
 					const content = state.files.get(snapshot.absolutePath) ?? Buffer.from(snapshot.content);
 					state.files.set(snapshot.absolutePath, content);
-					snapshots.push(content);
+					snapshots.set(snapshot.absolutePath, content);
 				}
 			}
 			const before = new Map(state.files);
@@ -535,7 +535,7 @@ export function createRunEnvironmentEditToolDefinition(cwd: string, options: Run
 									"-",
 								],
 								cwd,
-								stdin: Buffer.from(patchWithSnapshotEncoding(patch, snapshots)),
+								stdin: Buffer.from(patchWithSnapshotEncoding(patch, [...snapshots.values()])),
 							};
 				const application = executeSuccessful(options, command, signal).then(() => undefined);
 				remoteApplications.set(result, application);

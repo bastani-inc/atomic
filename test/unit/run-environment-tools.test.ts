@@ -295,6 +295,32 @@ test("Windows edit preserves a UTF-8 BOM and CRLF through one remote command", a
 	});
 });
 
+test("Windows edit applies multiple sections for one BOM and CRLF file with one remote command", async () => {
+	await withFixture(async (cwd) => {
+		makeDirectorySync(join(cwd, "src"));
+		const filePath = join(cwd, "src", "bom-crlf.txt");
+		const original = Buffer.from("\uFEFFfirst\r\nsecond\r\nthird\r\n", "utf8");
+		writeTextSync(filePath, original);
+		spawnSyncCollect(["git", "init", "-q"], { cwd });
+		spawnSyncCollect(["git", "config", "core.autocrlf", "false"], { cwd });
+		const transport = new WindowsEditTransport(cwd, original);
+		const toolOptions = options(transport, "windows");
+		const read = createRunEnvironmentReadToolDefinition("C:\\work", toolOptions);
+		const edit = createRunEnvironmentEditToolDefinition("C:\\work", toolOptions);
+		const readResult = await execute(read as never, { path: "src\\bom-crlf.txt" });
+		const header = /\[src\/bom-crlf\.txt#[0-9A-F]{4}\]/u.exec(readResult.content[0]?.text ?? "")?.[0];
+		assert.ok(header);
+		transport.commands.length = 0;
+
+		await execute(edit as never, {
+			input: `${header}\nreplace 1..1:\n+FIRST\n${header}\nreplace 3..3:\n+THIRD`,
+		});
+
+		assert.equal(transport.commands.length, 1);
+		assert.deepEqual(readTextSync(filePath), Buffer.from("\uFEFFFIRST\r\nsecond\r\nTHIRD\r\n"));
+	});
+});
+
 test("Windows edit preserves mixed endings and an unterminated final line with one remote command", async () => {
 	for (const [name, original, line, expected] of [
 		["crlf", "before\r\nsecond", 1, "after\r\nsecond"],
