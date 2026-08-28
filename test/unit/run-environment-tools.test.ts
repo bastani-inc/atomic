@@ -325,25 +325,33 @@ test("Windows edit preserves mixed endings and an unterminated final line with o
 	}
 });
 
-windowsTest("Windows edit preserves a nested CRLF file with one remote command", async () => {
+windowsTest("Windows read, write, edit, and ls operate on one checkout with one command per call", async () => {
 	await withFixture(async (cwd) => {
-		makeDirectorySync(join(cwd, "src"));
-		const filePath = join(cwd, "src", "crlf.txt");
-		writeTextSync(filePath, "before\r\nsecond\r\n");
 		spawnSyncCollect(["git", "init", "-q"], { cwd });
 		spawnSyncCollect(["git", "config", "core.autocrlf", "false"], { cwd });
 		const transport = new LocalCommandTransport();
 		const toolOptions = options(transport, "windows");
+		const write = createRunEnvironmentWriteToolDefinition(cwd, toolOptions);
 		const read = createRunEnvironmentReadToolDefinition(cwd, toolOptions);
 		const edit = createRunEnvironmentEditToolDefinition(cwd, toolOptions);
-		const readResult = await execute(read as never, { path: "src\\crlf.txt" });
-		const header = /\[src\/crlf\.txt#[0-9A-F]{4}\]/u.exec(readResult.content[0]?.text ?? "")?.[0];
+		const ls = createRunEnvironmentLsToolDefinition(cwd, toolOptions);
+
+		await execute(write as never, { path: "src\\nested\\crlf.txt", content: "before\r\nsecond\r\n" });
+		assert.equal(transport.commands.length, 1);
+		assert.equal(readTextSync(join(cwd, "src", "nested", "crlf.txt"), "utf8"), "before\r\nsecond\r\n");
+
+		const readResult = await execute(read as never, { path: "src\\nested\\crlf.txt" });
+		assert.equal(transport.commands.length, 2);
+		assert.match(readResult.content[0]?.text ?? "", /before\r?$/mu);
+		const header = /\[src\/nested\/crlf\.txt#[0-9A-F]{4}\]/u.exec(readResult.content[0]?.text ?? "")?.[0];
 		assert.ok(header);
-		transport.commands.length = 0;
 
 		await execute(edit as never, { input: `${header}\nreplace 1..1:\n+after` });
+		assert.equal(transport.commands.length, 3);
+		assert.equal(readTextSync(join(cwd, "src", "nested", "crlf.txt"), "utf8"), "after\r\nsecond\r\n");
 
-		assert.equal(transport.commands.length, 1);
-		assert.equal(readTextSync(filePath, "utf8"), "after\r\nsecond\r\n");
+		const lsResult = await execute(ls as never, { path: "src\\nested" });
+		assert.equal(transport.commands.length, 4);
+		assert.equal(lsResult.content[0]?.text, "crlf.txt");
 	});
 });

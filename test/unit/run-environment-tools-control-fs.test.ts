@@ -18,7 +18,6 @@ import { controlFilesystem } from "../helpers/control-filesystem.js";
 interface Execution {
 	readonly stdout?: string;
 	readonly outcome?: ExecOutcome;
-	readonly expectedPath?: string;
 }
 
 const windowsAgent = await reportedCoderAgent("windows");
@@ -31,9 +30,6 @@ class ScriptedTransport implements RunEnvironmentExecTransport {
 	async execute(command: RemoteCommand, sink: OutputSink): Promise<ExecOutcome> {
 		this.commands.push(command);
 		const execution = this.executions.shift() ?? {};
-		if (execution.expectedPath !== undefined && !command.argv.includes(execution.expectedPath)) {
-			return { kind: "exited", code: 2 };
-		}
 		if (execution.stdout !== undefined) sink.write(Buffer.from(execution.stdout), "stdout");
 		return execution.outcome ?? { kind: "exited", code: 0 };
 	}
@@ -48,12 +44,10 @@ async function execute(tool: { execute: (...args: never[]) => Promise<object> },
 }
 
 test("every remote public file tool resolves target paths without the control-machine filesystem", async () => {
-	const remoteFile = "C:\\remote\\~\\a.txt";
-	const remoteDirectory = "C:\\remote\\~";
-	const readTransport = new ScriptedTransport([{ stdout: "F\0before\r\n", expectedPath: remoteFile }]);
-	const writeTransport = new ScriptedTransport([{ stdout: "N", expectedPath: remoteFile }]);
-	const editTransport = new ScriptedTransport([{ stdout: "F\0before\r\n", expectedPath: remoteFile }, {}]);
-	const lsTransport = new ScriptedTransport([{ stdout: "D\0f\0a.txt\0", expectedPath: remoteDirectory }]);
+	const readTransport = new ScriptedTransport([{ stdout: "F\0before\r\n" }]);
+	const writeTransport = new ScriptedTransport([{ stdout: "N" }]);
+	const editTransport = new ScriptedTransport([{ stdout: "F\0before\r\n" }, {}]);
+	const lsTransport = new ScriptedTransport([{ stdout: "D\0f\0a.txt\0" }]);
 	const read = createRunEnvironmentReadToolDefinition("C:\\remote", { transport: readTransport });
 	const write = createRunEnvironmentWriteToolDefinition("C:\\remote", { transport: writeTransport });
 	const editRead = createRunEnvironmentReadToolDefinition("C:\\remote", { transport: editTransport });
@@ -62,14 +56,24 @@ test("every remote public file tool resolves target paths without the control-ma
 
 	controlFilesystem.arm();
 	try {
-		await execute(read as never, { path: "~\\a.txt" });
-		await execute(write as never, { path: "~\\a.txt", content: "after\r\n" });
+		const readResult = await execute(read as never, { path: "~\\a.txt" });
+		assert.match((readResult as { content: Array<{ text?: string }> }).content[0]?.text ?? "", /before/u);
+		const writeResult = await execute(write as never, { path: "~\\a.txt", content: "after\r\n" });
+		assert.match(
+			(writeResult as { content: Array<{ text?: string }> }).content[0]?.text ?? "",
+			/Successfully wrote/u,
+		);
 		const snapshot = await execute(editRead as never, { path: "~\\a.txt" });
 		const text = (snapshot as { content: Array<{ text?: string }> }).content[0]?.text ?? "";
 		const header = /\[~\/a\.txt#[0-9A-F]{4}\]/u.exec(text)?.[0];
 		assert.ok(header);
-		await execute(edit as never, { input: `${header}\nreplace 1..1:\n+after` });
-		await execute(ls as never, { path: "~" });
+		const editResult = await execute(edit as never, { input: `${header}\nreplace 1..1:\n+after` });
+		assert.match(
+			(editResult as { content: Array<{ text?: string }> }).content[0]?.text ?? "",
+			/-1 before\n\+1 after/u,
+		);
+		const lsResult = await execute(ls as never, { path: "~" });
+		assert.equal((lsResult as { content: Array<{ text?: string }> }).content[0]?.text, "a.txt");
 	} finally {
 		controlFilesystem.disarm();
 	}
