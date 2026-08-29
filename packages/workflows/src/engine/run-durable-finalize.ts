@@ -76,7 +76,7 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 			failure,
 		);
 	}
-	await input.durableBackend.flush();
+	await input.durableBackend.flush(input.runId);
 }
 
 function toDurableStatus(status: RunSnapshot["status"]): DurableWorkflowStatus | undefined {

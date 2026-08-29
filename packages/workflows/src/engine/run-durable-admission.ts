@@ -46,5 +46,5 @@ export async function admitDurableRootRun(args: {
 	} else if (!args.isChildRun) {
 		args.backend.setWorkflowStatus(args.runId, "running");
 	}
-	if (!args.isChildRun) await args.backend.flush();
+	if (!args.isChildRun) await args.backend.flush(args.runId);
 }

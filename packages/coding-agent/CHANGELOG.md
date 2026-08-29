@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed independent workflow launches appearing indefinitely as empty `running` runs when another workflow's DBOS write stalled. Durable write ordering and errors are isolated per root workflow without weakening the global shutdown drain.
+
 ## [0.9.16-alpha.10] - 2026-08-28
 
 ### Breaking Changes

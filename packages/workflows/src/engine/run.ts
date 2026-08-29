@@ -722,7 +722,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		const result = normalizeWorkflowRunOutput(def.name, rawResult);
 		assertWorkflowRunOutputs(def.name, result, def.outputs);
 		assertWorkflowCreatedExecution(runSnapshot);
-		await durableBackend.flush();
+		await durableBackend.flush(runId);
 		const returned = classifyReturnedRunStatus(result, runSnapshot);
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		appendRunEndWhenRecorded(opts.persistence, recorded, {
@@ -737,7 +737,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		});
 		if (opts.parentRun === undefined) recordRunTimingCheckpoint(durableBackend, runSnapshot);
 		durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
-		await durableBackend.flush();
+		await durableBackend.flush(runId);
 		return reconcileTerminalRunResult(
 			runId,
 			runSnapshot,

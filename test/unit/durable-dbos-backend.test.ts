@@ -17,6 +17,7 @@ import {
 	encodeCheckpoint,
 	isCheckpointEnvelope,
 } from "../../packages/workflows/src/durable/dbos-envelope.js";
+import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import type {
 	DurableStageCheckpoint,
 	DurableToolCheckpoint,
@@ -279,6 +280,165 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		release();
 		assert.equal(await flushed, "flushed");
 		assert.equal(persisted, true);
+	});
+
+	test("a hung workflow write does not block an independent workflow lane", async () => {
+		const blocked = Promise.withResolvers<void>();
+		const persistStarted = Promise.withResolvers<void>();
+		const events: string[] = [];
+		const laneSdk: DbosSdkHandle = {
+			...sdk,
+			async startWorkflow(workflowId, name, inputs) {
+				events.push(`start:${workflowId}`);
+				await sdk.startWorkflow(workflowId, name, inputs);
+			},
+			async recordStepOutput(workflowId, stepName, output) {
+				events.push(`write:${workflowId}:${stepName}`);
+				if (workflowId === "wf-blocked" && stepName === "cp-blocked") {
+					persistStarted.resolve();
+					await blocked.promise;
+				}
+				await sdk.recordStepOutput(workflowId, stepName, output);
+			},
+		};
+		const laneBackend = new DbosDurableBackend(laneSdk);
+		laneBackend.registerWorkflow({
+			workflowId: "wf-blocked",
+			name: "blocked",
+			inputs: {},
+			createdAt: Date.now(),
+			status: "running",
+		});
+		await laneBackend.flush("wf-blocked");
+		laneBackend.recordCheckpoint({
+			kind: "tool",
+			workflowId: "wf-blocked",
+			checkpointId: "cp-blocked",
+			name: "blocked",
+			argsHash: durableHash({ name: "blocked", args: {} }),
+			output: "blocked",
+			completedAt: Date.now(),
+		});
+		await persistStarted.promise;
+
+		laneBackend.registerWorkflow({
+			workflowId: "wf-independent",
+			name: "independent",
+			inputs: {},
+			createdAt: Date.now(),
+			status: "running",
+		});
+		await laneBackend.flush("wf-independent");
+		assert.ok(events.includes("start:wf-independent"));
+
+		laneBackend.recordCheckpoint({
+			kind: "tool",
+			workflowId: "wf-blocked",
+			checkpointId: "cp-after-blocked",
+			name: "after-blocked",
+			argsHash: durableHash({ name: "after-blocked", args: {} }),
+			output: "after",
+			completedAt: Date.now(),
+		});
+		let globalFlushed = false;
+		const globalFlush = laneBackend.flush().then(() => {
+			globalFlushed = true;
+		});
+		await Promise.resolve();
+		assert.equal(globalFlushed, false);
+		assert.equal(
+			events.some((event) => event === "write:wf-blocked:cp-after-blocked"),
+			false,
+		);
+
+		blocked.resolve();
+		await globalFlush;
+		assert.equal(globalFlushed, true);
+		assert.ok(events.indexOf("write:wf-blocked:cp-blocked") < events.indexOf("write:wf-blocked:cp-after-blocked"));
+	});
+
+	test("workflow-scoped flushes surface only their lane's fatal errors", async () => {
+		const events: string[] = [];
+		const failingSdk: DbosSdkHandle = {
+			...sdk,
+			async recordStepOutput(workflowId, stepName, output) {
+				events.push(`write:${workflowId}:${stepName}`);
+				if (workflowId === "wf-failing" && stepName === "cp-failing") throw new Error("lane write failed");
+				await sdk.recordStepOutput(workflowId, stepName, output);
+			},
+		};
+		const laneBackend = new DbosDurableBackend(failingSdk);
+		for (const workflowId of ["wf-failing", "wf-healthy"]) {
+			laneBackend.registerWorkflow({
+				workflowId,
+				name: workflowId,
+				inputs: {},
+				createdAt: Date.now(),
+				status: "running",
+			});
+		}
+		await laneBackend.flush();
+		laneBackend.recordCheckpoint({
+			kind: "tool",
+			workflowId: "wf-failing",
+			checkpointId: "cp-failing",
+			name: "failing",
+			argsHash: durableHash({ name: "failing", args: {} }),
+			output: "failure",
+			completedAt: Date.now(),
+		});
+		laneBackend.recordCheckpoint({
+			kind: "tool",
+			workflowId: "wf-healthy",
+			checkpointId: "cp-healthy",
+			name: "healthy",
+			argsHash: durableHash({ name: "healthy", args: {} }),
+			output: "success",
+			completedAt: Date.now(),
+		});
+
+		await laneBackend.flush("wf-healthy");
+		await assert.rejects(() => laneBackend.flush("wf-failing"), /lane write failed/);
+		laneBackend.recordCheckpoint({
+			kind: "tool",
+			workflowId: "wf-failing",
+			checkpointId: "cp-recovered",
+			name: "recovered",
+			argsHash: durableHash({ name: "recovered", args: {} }),
+			output: "recovered",
+			completedAt: Date.now(),
+		});
+		await laneBackend.flush("wf-failing");
+		assert.ok(events.includes("write:wf-failing:cp-recovered"));
+	});
+
+	test("a child workflow flush stays on its physical root lane", async () => {
+		const rootWorkflowId = "wf-scoped-root";
+		backend.registerWorkflow({
+			workflowId: rootWorkflowId,
+			name: "root",
+			inputs: {},
+			createdAt: Date.now(),
+			status: "running",
+		});
+		await backend.flush(rootWorkflowId);
+		const scoped = new ScopedDurableBackend(backend, {
+			rootWorkflowId,
+			scopePrefix: "workflow:child:1",
+		});
+		await scoped.recordCheckpointAsync({
+			kind: "tool",
+			workflowId: "child-run-id",
+			checkpointId: "child-checkpoint",
+			name: "child-tool",
+			argsHash: "child-hash",
+			output: "child-output",
+			completedAt: Date.now(),
+		});
+		await scoped.flush("child-run-id");
+
+		assert.ok([...sdk.state.steps.keys()].some((key) => key.startsWith(`${rootWorkflowId}:checkpoint:`)));
+		assert.equal(backend.getWorkflow("child-run-id"), undefined);
 	});
 
 	test("flush propagates queued async checkpoint write failures", async () => {
