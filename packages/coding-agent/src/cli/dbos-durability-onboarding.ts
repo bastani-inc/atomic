@@ -39,12 +39,24 @@ export async function normalizeAndValidateDbosSystemDatabaseUrl(
 	}
 
 	const client = createClient(normalized);
+	let validationTimer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		await client.connect();
-		await client.query("SELECT 1");
+		await Promise.race([
+			(async () => {
+				await client.connect();
+				await client.query("SELECT 1");
+			})(),
+			new Promise<never>((_, reject) => {
+				validationTimer = setTimeout(
+					() => reject(new Error("PostgreSQL validation timed out.")),
+					POSTGRESQL_VALIDATION_TIMEOUT_MS,
+				);
+			}),
+		]);
 	} catch (error) {
 		throw sanitizedConnectionError(error instanceof Error ? error : new Error(String(error)), parsed);
 	} finally {
+		if (validationTimer !== undefined) clearTimeout(validationTimer);
 		await client.end();
 	}
 	return normalized;

@@ -4,6 +4,7 @@ import { beforeAll, describe, test, vi } from "vitest";
 import { shouldRunDurabilitySetup } from "../src/cli/startup-ui.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { runFirstTimeSetup } from "../src/main-first-time-setup.js";
 import { FirstTimeSetupComponent } from "../src/modes/interactive/components/first-time-setup.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -28,6 +29,19 @@ test("detects absent, embedded, external, and environment-selected onboarding st
 	assert.equal(shouldRunDurabilitySetup(manager, undefined), false);
 	manager.setDbosSystemDatabaseUrl("postgresql://database.example/workflows");
 	assert.equal(shouldRunDurabilitySetup(manager, undefined), false);
+});
+
+test("leaves first-time setup untouched in every non-interactive mode", async () => {
+	for (const appMode of ["print", "json", "rpc"] as const) {
+		const manager = SettingsManager.inMemory();
+		const capture = { consume: vi.fn(() => ({ text: "", submissions: [] })) };
+		const setDbosSystemDatabaseUrl = vi.spyOn(manager, "setDbosSystemDatabaseUrl");
+
+		assert.equal(await runFirstTimeSetup(appMode, manager, capture), capture);
+		assert.equal(capture.consume.mock.calls.length, 0);
+		assert.equal(setDbosSystemDatabaseUrl.mock.calls.length, 0);
+		assert.equal(manager.getDbosSystemDatabaseUrl(), undefined);
+	}
 });
 
 describe("first-time durability setup", () => {

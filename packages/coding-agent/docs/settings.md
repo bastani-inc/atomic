@@ -144,7 +144,7 @@ Ctrl+G in main chat, embedded chat, and extension editor dialogs uses one shared
 Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Use `--offline` or `ATOMIC_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry. Legacy `PI_*` aliases are also supported for app-specific environment variables.
 
 
-On a genuine first run, Atomic previews available themes and asks whether to opt into analytics. The choice and locally generated identifier are stored as `enableAnalytics` and `trackingId`; analytics remains off unless explicitly enabled.
+On a genuine first run, Atomic previews available themes, asks which durability backend to use for workflows, and then asks whether to opt into analytics. The analytics choice and locally generated identifier are stored as `enableAnalytics` and `trackingId`; analytics remains off unless explicitly enabled.
 
 ### Network proxy
 

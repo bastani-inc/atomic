@@ -71,4 +71,23 @@ describe("DBOS durability onboarding URL validation", () => {
 		);
 		assert.equal(vi.mocked(validationClient.end).mock.calls.length, 1);
 	});
+
+	test("times out a hanging validation query and closes the client", async () => {
+		vi.useFakeTimers();
+		try {
+			const validationClient = client();
+			validationClient.query = vi.fn(() => new Promise<object>(() => {}));
+			const validation = normalizeAndValidateDbosSystemDatabaseUrl(
+				"postgresql://database.example/workflows",
+				() => validationClient,
+			);
+
+			const rejection = assert.rejects(validation, /validation timed out/);
+			await vi.advanceTimersByTimeAsync(5_000);
+			await rejection;
+			assert.equal(vi.mocked(validationClient.end).mock.calls.length, 1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
