@@ -12,6 +12,7 @@ import type {
 import {
 	createRunEnvironmentEditToolDefinition,
 	createRunEnvironmentFindOperations,
+	createRunEnvironmentFindToolDefinition,
 	createRunEnvironmentLsToolDefinition,
 	createRunEnvironmentReadToolDefinition,
 	createRunEnvironmentSearchToolDefinition,
@@ -413,6 +414,38 @@ test("FindOperations batches paired Windows targets into one remote command", as
 	assert.match(text, /b\.tsx/u);
 	assert.doesNotMatch(text, /a\.tsx|b\.ts(?:\n|$)/u);
 	assert.doesNotMatch(text, /\\/u);
+});
+
+test("remote find resolves relative Windows globs with the agent's path semantics", async () => {
+	const transport = new ScriptedTransport({ stdout: "C:/repo/src/a.ts" });
+	const find = createRunEnvironmentFindToolDefinition("C:\\repo", options(transport, "windows"));
+
+	const result = await execute(find as never, { paths: ["src\\**\\*.ts"] });
+
+	assert.equal(transport.commands.length, 1);
+	assert.equal(transport.commands[0]?.cwd, "C:\\repo");
+	assert.ok(transport.commands[0]?.argv.includes("C:\\repo\\src"));
+	assert.match(result.content[0]?.text ?? "", /a\.ts/u);
+});
+
+posixTest("remote find returns an exact file outside cwd from its single command", async () => {
+	await withFixture(async (root) => {
+		const cwd = join(root, "work");
+		const exactPath = join(root, "other", "exact.ts");
+		makeDirectorySync(cwd);
+		makeDirectorySync(join(root, "other"));
+		writeTextSync(exactPath, "export {};\n");
+		const transport = new LocalCommandTransport();
+		const find = createRunEnvironmentFindToolDefinition(cwd, options(transport, nativeOperatingSystem));
+
+		const result = await execute(find as never, { paths: [exactPath] });
+
+		assert.equal(transport.commands.length, 1);
+		assert.equal(transport.commands[0]?.cwd, join(root, "other"));
+		assert.ok(transport.commands[0]?.argv.includes(exactPath));
+		assert.equal(result.content[0]?.text, "# ../other/\nexact.ts");
+		assert.deepEqual(result.details?.files, ["../other/exact.ts"]);
+	});
 });
 
 function rgMatch(path: string, content = "needle\n"): string {

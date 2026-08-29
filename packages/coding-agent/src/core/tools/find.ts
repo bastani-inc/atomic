@@ -84,24 +84,24 @@ async function resolveFindInternal(input: string, cwd: string, ctx?: InternalRes
 function isWindowsAbsolutePath(value: string): boolean {
 	return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
 }
-function resolveFindBackendPath(input: string, cwd: string, customBackend: boolean): string {
-	if (!customBackend) return resolveToCwd(input, cwd);
+function resolveFindBackendPath(input: string, cwd: string, customOperations?: FindOperations): string {
+	if (!customOperations) return resolveToCwd(input, cwd);
+	if (customOperations.resolvePath) return customOperations.resolvePath(input, cwd);
 	if (input === "." || input === "") return cwd;
 	if (input.startsWith("/") || isWindowsAbsolutePath(input)) return input;
-	if (cwd.includes("\\") || isWindowsAbsolutePath(cwd)) return path.resolve(cwd, input);
 	return `${cwd.replace(/\/+$/, "")}/${input}`;
 }
 async function delimiterInExistingGlobRoot(
 	value: string,
 	cwd: string,
 	ops: FindOperations,
-	customBackend: boolean,
+	customOperations?: FindOperations,
 ): Promise<boolean> {
 	const parsed = splitPathLikeGlob(value);
 	return (
 		!!parsed.glob &&
 		/[;,\s]/.test(parsed.basePath) &&
-		(await ops.exists(resolveFindBackendPath(parsed.basePath, cwd, customBackend)))
+		(await ops.exists(resolveFindBackendPath(parsed.basePath, cwd, customOperations)))
 	);
 }
 async function expandDelimitedFindPaths(
@@ -109,7 +109,7 @@ async function expandDelimitedFindPaths(
 	cwd: string,
 	ops: FindOperations,
 	ctx?: InternalResourceContext,
-	customBackend = false,
+	customOperations?: FindOperations,
 ): Promise<string[]> {
 	if (!pathsValue?.length) throw new Error("find.paths must include at least one path or glob.");
 	const expanded: string[] = [];
@@ -120,8 +120,8 @@ async function expandDelimitedFindPaths(
 		const rawParsed = splitPathLikeGlob(resolvedRaw);
 		if (
 			(rawParsed.glob === undefined &&
-				(await ops.exists(resolveFindBackendPath(rawParsed.basePath, cwd, customBackend)))) ||
-			(await delimiterInExistingGlobRoot(resolvedRaw, cwd, ops, customBackend))
+				(await ops.exists(resolveFindBackendPath(rawParsed.basePath, cwd, customOperations)))) ||
+			(await delimiterInExistingGlobRoot(resolvedRaw, cwd, ops, customOperations))
 		) {
 			expanded.push(resolvedRaw);
 			continue;
@@ -137,14 +137,14 @@ async function expandDelimitedFindPaths(
 			? (
 					await Promise.all(
 						parts.map((part) =>
-							ops.exists(resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customBackend)),
+							ops.exists(resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customOperations)),
 						),
 					)
 				).some(Boolean)
 			: (
 					await Promise.all(
 						parts.map((part) =>
-							ops.exists(resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customBackend)),
+							ops.exists(resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customOperations)),
 						),
 					)
 				).every(Boolean);
@@ -153,12 +153,16 @@ async function expandDelimitedFindPaths(
 	}
 	return expanded;
 }
-function normalizeFindTargets(cwd: string, pathsValue: string[] | undefined, customBackend = false): FindTarget[] {
+function normalizeFindTargets(
+	cwd: string,
+	pathsValue: string[] | undefined,
+	customOperations?: FindOperations,
+): FindTarget[] {
 	if (!pathsValue || pathsValue.length === 0) throw new Error("find.paths must include at least one path or glob.");
 	return pathsValue.map((searchPath) => {
 		const parsed = splitPathLikeGlob(searchPath);
 		const target = {
-			searchPath: resolveFindBackendPath(parsed.basePath, cwd, customBackend),
+			searchPath: resolveFindBackendPath(parsed.basePath, cwd, customOperations),
 			pattern: parsed.glob ?? "**/*",
 			exactPathInput: parsed.glob === undefined,
 			inputPath: searchPath,
@@ -200,6 +204,17 @@ function formatFoundPath(foundPath: string, searchPath: string, searchPaths: str
 	if (searchPaths.length <= 1) return relative;
 	const rootLabel = (paths.relative(cwd, searchPath) || paths.basename(searchPath) || ".").split(paths.sep).join("/");
 	return `${rootLabel}/${relative}`;
+}
+function formatCustomFoundPath(foundPath: string, target: FindTarget, searchPaths: string[], cwd: string): string {
+	const paths = findPathApi(target.searchPath);
+	if (
+		target.exactPathInput &&
+		paths.isAbsolute(foundPath) &&
+		paths.normalize(foundPath) === paths.normalize(target.searchPath)
+	) {
+		return formatExactFoundPath(target.searchPath, cwd);
+	}
+	return formatFoundPath(foundPath, target.searchPath, searchPaths, cwd);
 }
 interface FindTreeNode {
 	files: Set<string>;
@@ -324,6 +339,8 @@ export interface FindGlobOptions {
 
 /** Pluggable operations for remote/container find backends. */
 export interface FindOperations {
+	/** Resolve a path with the target filesystem's syntax. */
+	resolvePath?: (path: string, cwd: string) => string;
 	stat?: (
 		path: string,
 	) =>
@@ -439,8 +456,8 @@ export function createFindToolDefinition(
 						const ops = customOps ?? defaultFindOperations;
 						const targets = normalizeFindTargets(
 							cwd,
-							await expandDelimitedFindPaths(paths, cwd, ops, resourceCtx, !!customOps),
-							!!customOps,
+							await expandDelimitedFindPaths(paths, cwd, ops, resourceCtx, customOps),
+							customOps,
 						);
 						const searchPaths = targets.map((target) => target.searchPath);
 						const effectiveLimit = normalizeLimit(limit);
@@ -508,7 +525,7 @@ export function createFindToolDefinition(
 								relativized.push(
 									...visible
 										.slice(0, Math.max(0, remaining))
-										.map((result) => formatFoundPath(result, target.searchPath, searchPaths, cwd)),
+										.map((result) => formatCustomFoundPath(result, target, searchPaths, cwd)),
 								);
 							}
 							settle(() =>

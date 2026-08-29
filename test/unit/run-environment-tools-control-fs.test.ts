@@ -50,7 +50,7 @@ test("every remote public file tool resolves target paths without the control-ma
 	const writeTransport = new ScriptedTransport([{ stdout: "N" }]);
 	const editTransport = new ScriptedTransport([{ stdout: "F\0before\r\n" }, {}]);
 	const lsTransport = new ScriptedTransport([{ stdout: "D\0f\0a.txt\0" }]);
-	const findTransport = new ScriptedTransport([{ outcome: { kind: "exited", code: 1 } }]);
+	const findTransport = new ScriptedTransport([{ stdout: "C:/remote/src/a.ts" }, { stdout: "C:/remote/exact.ts" }]);
 	const searchTransport = new ScriptedTransport([{ outcome: { kind: "exited", code: 1 } }]);
 	const read = createRunEnvironmentReadToolDefinition("C:\\remote", { transport: readTransport });
 	const write = createRunEnvironmentWriteToolDefinition("C:\\remote", { transport: writeTransport });
@@ -80,8 +80,11 @@ test("every remote public file tool resolves target paths without the control-ma
 		);
 		const lsResult = await execute(ls as never, { path: "~" });
 		assert.equal((lsResult as { content: Array<{ text?: string }> }).content[0]?.text, "a.txt");
-		await execute(find as never, { paths: ["**\\*.ts"] });
-		await execute(search as never, { pattern: "needle", paths: "." });
+		const relativeFind = await execute(find as never, { paths: ["src\\**\\*.ts"] });
+		assert.match((relativeFind as { content: Array<{ text?: string }> }).content[0]?.text ?? "", /a\.ts/u);
+		const exactFind = await execute(find as never, { paths: ["C:\\remote\\exact.ts"] });
+		assert.equal((exactFind as { content: Array<{ text?: string }> }).content[0]?.text, "exact.ts");
+		await execute(search as never, { pattern: "needle", paths: "src\\**\\*.ts" });
 	} finally {
 		controlFilesystem.disarm();
 	}
@@ -91,6 +94,11 @@ test("every remote public file tool resolves target paths without the control-ma
 	assert.equal(writeTransport.commands.length, 1);
 	assert.equal(editTransport.commands.length, 2);
 	assert.equal(lsTransport.commands.length, 1);
-	assert.equal(findTransport.commands.length, 1);
+	assert.equal(findTransport.commands.length, 2);
+	assert.equal(findTransport.commands[0]?.cwd, "C:\\remote");
+	assert.ok(findTransport.commands[0]?.argv.includes("C:\\remote\\src"));
+	assert.equal(findTransport.commands[1]?.cwd, "C:\\remote");
+	assert.ok(findTransport.commands[1]?.argv.includes("C:\\remote\\exact.ts"));
 	assert.equal(searchTransport.commands.length, 1);
+	assert.ok(searchTransport.commands[0]?.argv.includes("C:\\remote\\src"));
 });

@@ -2325,7 +2325,7 @@ pi.registerTool({
 
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 
-`FindOperations.globTargets` can batch all requested root/glob pairs into one backend operation. Its result arrays correspond to targets by index, so remote backends can preserve each glob's own root without issuing one transport command per target.
+`FindOperations.globTargets` can batch all requested root/glob pairs into one backend operation. Its result arrays correspond to targets by index, so remote backends can preserve each glob's own root without issuing one transport command per target. Remote find backends should provide `resolvePath` and select its path style from the target's reported operating system, as shown for `ReadOperations` above. This keeps relative Windows targets independent of the control machine's path semantics.
 
 For `user_bash`, extensions can reuse atomic's local shell backend via `createLocalBashOperations()` instead of reimplementing local process spawning, shell resolution, and process-tree termination.
 

@@ -6,7 +6,7 @@
 
 - Custom read backends now require target-aware path resolution and can resolve paths and `file://` URLs with explicit POSIX or Windows syntax selected from the target operating system before normalization, preventing control-machine normalization from rewriting remote paths. Remote document conversion always uses the backend's buffer, while archive, SQLite, notebook, and internal-resource inputs return a typed `UnsupportedReadSelectorError` before any control-filesystem access. HTTP(S) reads remain process-network operations.
 - Custom write and directory-listing backends can now provide target-aware path resolution, preventing remote paths such as `~\\a.txt` from expanding against the control machine's home directory. Custom write backends can also provide one atomic safe-write operation so generated-file checks, content replacement, and executable-bit handling occur in the target filesystem without consulting a same-named control-machine path. Custom edit backends can likewise provide target-aware path resolution, and hashline snapshots and directory listings honor Windows paths when the target filesystem uses Windows syntax.
-- Custom find backends can batch multiple root/glob pairs through `FindOperations.globTargets`, preserving each target's scope while allowing one remote operation per tool call.
+- Custom find backends can batch multiple root/glob pairs through `FindOperations.globTargets`, preserving each target's scope while allowing one remote operation per tool call. Relative Windows targets now resolve with Windows path semantics even when the backend runs from a non-Windows control machine.
 
 ### Fixed
 

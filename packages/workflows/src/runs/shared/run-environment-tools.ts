@@ -572,8 +572,11 @@ function outputLines(output: Buffer): string[] {
 	return output.toString("utf8").split(/\r?\n/gu).filter(Boolean);
 }
 
-function normalizeRemotePath(value: string, system: RemoteOperatingSystem): string {
-	return system === "windows" ? value.replaceAll("/", "\\") : value;
+function resolveRemoteToolPath(value: string, cwd: string, system: RemoteOperatingSystem): string {
+	return resolvePath(value, cwd, {
+		expandTilde: false,
+		pathStyle: system === "windows" ? "windows" : "posix",
+	});
 }
 
 function targetMatches(
@@ -583,9 +586,9 @@ function targetMatches(
 	system: RemoteOperatingSystem,
 ): boolean {
 	const paths = targetPath(system);
-	const absolute = paths.resolve(commandCwd, normalizeRemotePath(value, system));
+	const absolute = resolveRemoteToolPath(value, commandCwd, system);
 	const relative = paths.relative(target.cwd, absolute);
-	if (relative === "") return target.pattern === "**";
+	if (relative === "") return target.pattern === "**" || target.pattern === "**/*";
 	return (
 		!relative.startsWith(`..${paths.sep}`) &&
 		!paths.isAbsolute(relative) &&
@@ -614,9 +617,10 @@ export function createRunEnvironmentFindOperations(options: RunEnvironmentToolOp
 		globOptions: FindGlobOptions,
 	): Promise<readonly string[][]> => {
 		const argv = findArgv(targets, globOptions, system);
+		const firstTarget = targets[0];
 		const command = {
 			argv,
-			cwd: targets[0]?.cwd,
+			...(firstTarget === undefined ? {} : { cwd: targetPath(system).dirname(firstTarget.cwd) }),
 			...(globOptions.timeoutMs === undefined ? {} : { timeoutSeconds: globOptions.timeoutMs / 1_000 }),
 		};
 		const result = await executeCommand(options, command, globOptions.signal);
@@ -630,6 +634,7 @@ export function createRunEnvironmentFindOperations(options: RunEnvironmentToolOp
 	};
 	return {
 		exists: () => true,
+		resolvePath: (filePath, cwd) => resolveRemoteToolPath(filePath, cwd, system),
 		stat: () => ({ isFile: false, isDirectory: true }),
 		glob: async (pattern, cwd, globOptions) => (await globTargets([{ pattern, cwd }], globOptions))[0] ?? [],
 		globTargets,
@@ -647,8 +652,7 @@ function searchPaths(params: SearchToolInput): readonly string[] {
 
 function splitSearchTarget(value: string, cwd: string, system: RemoteOperatingSystem): FindOperationTarget {
 	const paths = targetPath(system);
-	const normalized = normalizeRemotePath(value, system);
-	const absolute = paths.isAbsolute(normalized) ? normalized : paths.resolve(cwd, normalized);
+	const absolute = resolveRemoteToolPath(value, cwd, system);
 	const segments = absolute.slice(paths.parse(absolute).root.length).split(paths.sep);
 	const firstGlob = segments.findIndex((segment) => /[*?[{]/u.test(segment));
 	if (firstGlob < 0) return { cwd: absolute, pattern: "**" };
@@ -750,8 +754,8 @@ function renderSearchFile(
 	cwd: string,
 	options: RunEnvironmentToolOperationsOptions,
 ): RenderedSearchFile {
-	const paths = targetPath(operatingSystem(options));
-	const absolute = paths.resolve(cwd, normalizeRemotePath(file.path, operatingSystem(options)));
+	const system = operatingSystem(options);
+	const absolute = resolveRemoteToolPath(file.path, cwd, system);
 	const content = Buffer.concat(file.chunks).toString("utf8");
 	const state = stateFor(options);
 	const snapshot = state.hashlineStore.record(absolute, cwd, content);
