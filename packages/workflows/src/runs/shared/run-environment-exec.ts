@@ -357,7 +357,7 @@ function renderWindowsCommand(command: RemoteCommand): string {
 		"exit $exitCode",
 	];
 	const encoded = Buffer.from(lines.join("\r\n"), "utf16le").toString("base64");
-	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+	return `powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand ${encoded}`;
 }
 
 function renderRemoteCommand(command: RemoteCommand, operatingSystem: RemoteOperatingSystem): string {
