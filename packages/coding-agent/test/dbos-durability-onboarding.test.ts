@@ -63,6 +63,27 @@ describe("DBOS durability onboarding URL validation", () => {
 		assert.equal(vi.mocked(validationClient.end).mock.calls.length, 1);
 	});
 
+	test("closes the client and sanitizes query-string credentials from a failed connection", async () => {
+		const user = ["query", "identity"].join("-");
+		const password = ["query", "credential"].join("-");
+		const url = `postgresql://database.example/workflows?user=${user}&password=${password}`;
+		const validationClient = client({
+			connectError: new Error(`connection failed for ${url}; supplied credential ${password}`),
+		});
+
+		await assert.rejects(
+			normalizeAndValidateDbosSystemDatabaseUrl(url, () => validationClient),
+			(error: Error) => {
+				assert.match(error.message, /database\.example/);
+				assert.doesNotMatch(error.message, new RegExp(user));
+				assert.doesNotMatch(error.message, new RegExp(password));
+				assert.doesNotMatch(error.message, /password=/);
+				return true;
+			},
+		);
+		assert.equal(vi.mocked(validationClient.end).mock.calls.length, 1);
+	});
+
 	test("closes the client when the validation query fails", async () => {
 		const validationClient = client({ queryError: new Error("probe failed") });
 		await assert.rejects(

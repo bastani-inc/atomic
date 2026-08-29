@@ -1,6 +1,17 @@
 import { Client } from "pg";
 
 const POSTGRESQL_VALIDATION_TIMEOUT_MS = 5_000;
+const POSTGRESQL_CREDENTIAL_PARAMETERS = new Set(["user", "password", "passwd", "pwd", "sslpassword"]);
+
+function credentialRepresentations(value: string): string[] {
+	if (value.length === 0) return [];
+	try {
+		const decoded = decodeURIComponent(value);
+		return decoded === value ? [value] : [value, decoded];
+	} catch {
+		return [value];
+	}
+}
 
 export interface PostgreSqlValidationClient {
 	connect(): Promise<void>;
@@ -15,9 +26,23 @@ const defaultClientFactory: PostgreSqlValidationClientFactory = (url) =>
 
 function sanitizedConnectionError(error: Error, url: URL): Error {
 	const safeUrl = new URL(url);
+	const credentialValues = [
+		...credentialRepresentations(safeUrl.username),
+		...credentialRepresentations(safeUrl.password),
+	];
+	const credentialParameterNames = new Set<string>();
+	for (const [name, value] of safeUrl.searchParams) {
+		if (!POSTGRESQL_CREDENTIAL_PARAMETERS.has(name.toLowerCase())) continue;
+		credentialParameterNames.add(name);
+		credentialValues.push(...credentialRepresentations(value));
+	}
+
 	safeUrl.username = "";
 	safeUrl.password = "";
-	const detail = error.message.replace(/postgres(?:ql)?:\/\/[^\s]+/gi, safeUrl.toString());
+	for (const name of credentialParameterNames) safeUrl.searchParams.delete(name);
+
+	let detail = error.message.replace(/postgres(?:ql)?:\/\/[^\s]+/gi, () => safeUrl.toString());
+	for (const value of new Set(credentialValues)) detail = detail.replaceAll(value, "[REDACTED]");
 	return new Error(`Could not validate PostgreSQL at ${safeUrl.toString()}: ${detail}`);
 }
 
