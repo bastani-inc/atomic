@@ -2325,6 +2325,8 @@ pi.registerTool({
 
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 
+`FindOperations.globTargets` can batch all requested root/glob pairs into one backend operation. Its result arrays correspond to targets by index, so remote backends can preserve each glob's own root without issuing one transport command per target.
+
 For `user_bash`, extensions can reuse atomic's local shell backend via `createLocalBashOperations()` instead of reimplementing local process spawning, shell resolution, and process-tree termination.
 
 The bash tool also supports a spawn hook to adjust the command, cwd, or env before execution:

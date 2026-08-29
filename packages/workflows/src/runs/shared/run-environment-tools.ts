@@ -1,15 +1,25 @@
 import path from "node:path";
 import {
 	createEditToolDefinition,
+	createFindToolDefinition,
 	createHashlineSnapshotStore,
 	createLsToolDefinition,
 	createReadToolDefinition,
+	createSearchToolDefinition,
 	createWriteToolDefinition,
+	DEFAULT_MAX_BYTES,
 	type EditOperations,
+	type FindGlobOptions,
+	type FindOperations,
+	type FindOperationTarget,
+	formatSize,
 	type HashlineSnapshotStore,
 	type LsOperations,
 	type ReadOperations,
 	resolvePath,
+	type SearchToolDetails,
+	type SearchToolInput,
+	truncateHead,
 	type WriteOperations,
 } from "@bastani/atomic";
 
@@ -414,7 +424,7 @@ export type RemoteFilesystemSelectorKind = "archive" | "internal" | "notebook" |
 
 export class RemoteFilesystemSelectorError extends Error {
 	constructor(
-		readonly toolName: "edit" | "read" | "write",
+		readonly toolName: "edit" | "read" | "search" | "write",
 		readonly selectorKind: RemoteFilesystemSelectorKind,
 		readonly selector: string,
 	) {
@@ -552,4 +562,272 @@ export function createRunEnvironmentEditToolDefinition(cwd: string, options: Run
 
 export function createRunEnvironmentLsToolDefinition(cwd: string, options: RunEnvironmentToolOperationsOptions) {
 	return createLsToolDefinition(cwd, { operations: createRunEnvironmentLsOperations(options) });
+}
+
+function rgExecutable(system: RemoteOperatingSystem): string {
+	return system === "windows" ? "rg.exe" : "rg";
+}
+
+function outputLines(output: Buffer): string[] {
+	return output.toString("utf8").split(/\r?\n/gu).filter(Boolean);
+}
+
+function normalizeRemotePath(value: string, system: RemoteOperatingSystem): string {
+	return system === "windows" ? value.replaceAll("/", "\\") : value;
+}
+
+function targetMatches(
+	value: string,
+	target: FindOperationTarget,
+	commandCwd: string,
+	system: RemoteOperatingSystem,
+): boolean {
+	const paths = targetPath(system);
+	const absolute = paths.resolve(commandCwd, normalizeRemotePath(value, system));
+	const relative = paths.relative(target.cwd, absolute);
+	if (relative === "") return target.pattern === "**";
+	return (
+		!relative.startsWith(`..${paths.sep}`) &&
+		!paths.isAbsolute(relative) &&
+		paths.matchesGlob(relative, target.pattern)
+	);
+}
+
+function findArgv(
+	targets: readonly FindOperationTarget[],
+	options: FindGlobOptions,
+	system: RemoteOperatingSystem,
+): readonly string[] {
+	const argv = [rgExecutable(system), "--files"];
+	if (system === "windows") argv.push("--path-separator=/");
+	if (options.hidden) argv.push("--hidden");
+	for (const target of targets) argv.push("--glob", target.pattern);
+	for (const ignore of options.ignore) argv.push("--glob", `!${ignore}`);
+	argv.push("--", ...new Set(targets.map((target) => target.cwd)));
+	return argv;
+}
+
+export function createRunEnvironmentFindOperations(options: RunEnvironmentToolOperationsOptions): FindOperations {
+	const system = operatingSystem(options);
+	const globTargets = async (
+		targets: readonly FindOperationTarget[],
+		globOptions: FindGlobOptions,
+	): Promise<readonly string[][]> => {
+		const argv = findArgv(targets, globOptions, system);
+		const command = {
+			argv,
+			cwd: targets[0]?.cwd,
+			...(globOptions.timeoutMs === undefined ? {} : { timeoutSeconds: globOptions.timeoutMs / 1_000 }),
+		};
+		const result = await executeCommand(options, command, globOptions.signal);
+		if (result.exitCode !== 0 && result.exitCode !== 1) throw commandError(command, result);
+		const lines = result.exitCode === 1 ? [] : outputLines(result.stdout);
+		return targets.map((target) =>
+			lines
+				.filter((line) => targetMatches(line, target, command.cwd ?? target.cwd, system))
+				.slice(0, globOptions.limit),
+		);
+	};
+	return {
+		exists: () => true,
+		stat: () => ({ isFile: false, isDirectory: true }),
+		glob: async (pattern, cwd, globOptions) => (await globTargets([{ pattern, cwd }], globOptions))[0] ?? [],
+		globTargets,
+	};
+}
+
+export function createRunEnvironmentFindToolDefinition(cwd: string, options: RunEnvironmentToolOperationsOptions) {
+	return createFindToolDefinition(cwd, { operations: createRunEnvironmentFindOperations(options) });
+}
+
+function searchPaths(params: SearchToolInput): readonly string[] {
+	if (typeof params.paths === "string") return params.paths.trim() === "" ? ["."] : [params.paths];
+	return params.paths?.length ? params.paths : ["."];
+}
+
+function splitSearchTarget(value: string, cwd: string, system: RemoteOperatingSystem): FindOperationTarget {
+	const paths = targetPath(system);
+	const normalized = normalizeRemotePath(value, system);
+	const absolute = paths.isAbsolute(normalized) ? normalized : paths.resolve(cwd, normalized);
+	const segments = absolute.slice(paths.parse(absolute).root.length).split(paths.sep);
+	const firstGlob = segments.findIndex((segment) => /[*?[{]/u.test(segment));
+	if (firstGlob < 0) return { cwd: absolute, pattern: "**" };
+	return {
+		cwd: paths.join(paths.parse(absolute).root, ...segments.slice(0, firstGlob)),
+		pattern: segments.slice(firstGlob).join("/"),
+	};
+}
+
+function searchTargets(
+	params: SearchToolInput,
+	cwd: string,
+	system: RemoteOperatingSystem,
+): readonly FindOperationTarget[] {
+	return searchPaths(params).map((value) => splitSearchTarget(value, cwd, system));
+}
+
+function unsupportedSearchSelector(
+	params: SearchToolInput,
+): { kind: RemoteFilesystemSelectorKind; selector: string } | undefined {
+	for (const value of searchPaths(params)) {
+		const kind = remoteSelectorKind(value);
+		if (kind !== undefined) return { kind, selector: value };
+		if (/:(?:raw|conflicts|\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)$/iu.test(value)) return { kind: "path", selector: value };
+	}
+	return undefined;
+}
+
+interface RgJsonValue {
+	readonly text?: string;
+	readonly bytes?: string;
+}
+
+interface RgJsonEvent {
+	readonly type?: string;
+	readonly data?: { readonly path?: RgJsonValue; readonly lines?: RgJsonValue; readonly line_number?: number | null };
+}
+
+interface RemoteSearchLine {
+	readonly number: number;
+	readonly text: string;
+	readonly isMatch: boolean;
+}
+
+interface RemoteSearchFile {
+	readonly path: string;
+	readonly chunks: Buffer[];
+	readonly lines: RemoteSearchLine[];
+	hasMatch: boolean;
+}
+
+function decodeRgValue(value: RgJsonValue | undefined): Buffer | undefined {
+	if (value?.text !== undefined) return Buffer.from(value.text, "utf8");
+	return value?.bytes === undefined ? undefined : Buffer.from(value.bytes, "base64");
+}
+
+function parseSearchFiles(output: Buffer): RemoteSearchFile[] {
+	const files = new Map<string, RemoteSearchFile>();
+	for (const raw of output.toString("utf8").split(/\r?\n/gu)) {
+		if (!raw) continue;
+		let event: RgJsonEvent;
+		try {
+			event = JSON.parse(raw) as RgJsonEvent;
+		} catch {
+			throw new Error("Invalid remote search response");
+		}
+		if (event.type !== "match" && event.type !== "context") continue;
+		const pathBuffer = decodeRgValue(event.data?.path);
+		const chunk = decodeRgValue(event.data?.lines);
+		const firstLine = event.data?.line_number;
+		if (pathBuffer === undefined || chunk === undefined || typeof firstLine !== "number") continue;
+		const filePath = pathBuffer.toString("utf8").replace(/^\.\//u, "").replaceAll("\\", "/");
+		const file = files.get(filePath) ?? { path: filePath, chunks: [], lines: [], hasMatch: false };
+		const textLines = chunk.toString("utf8").split(/\r\n|\n|\r/gu);
+		if (textLines.at(-1) === "") textLines.pop();
+		const isMatch = event.type === "match";
+		file.chunks.push(chunk);
+		file.lines.push(...textLines.map((text, index) => ({ number: firstLine + index, text, isMatch })));
+		file.hasMatch ||= isMatch;
+		files.set(filePath, file);
+	}
+	return [...files.values()];
+}
+
+function normalizeSearchSkip(skip: number | null | undefined): number {
+	if (skip === undefined || skip === null) return 0;
+	if (!Number.isFinite(skip) || skip < 0) throw new Error("Skip must be a non-negative number");
+	return Math.floor(skip);
+}
+
+interface RenderedSearchFile {
+	readonly text: string;
+	readonly displayPath: string;
+	readonly matchCount: number;
+}
+
+function renderSearchFile(
+	file: RemoteSearchFile,
+	cwd: string,
+	options: RunEnvironmentToolOperationsOptions,
+): RenderedSearchFile {
+	const paths = targetPath(operatingSystem(options));
+	const absolute = paths.resolve(cwd, normalizeRemotePath(file.path, operatingSystem(options)));
+	const content = Buffer.concat(file.chunks).toString("utf8");
+	const state = stateFor(options);
+	const snapshot = state.hashlineStore.record(absolute, cwd, content);
+	state.files.set(snapshot.absolutePath, Buffer.from(content));
+	const matches = file.lines.filter((line) => line.isMatch).map((line) => line.number);
+	const lines = file.lines
+		.filter((line) => matches.some((match) => line.number >= match - 1 && line.number <= match + 3))
+		.map((line) => `${line.isMatch ? "*" : " "}${line.number}:${line.text}`);
+	return {
+		text: [`[${snapshot.displayPath}#${snapshot.tag}]`, ...lines].join("\n"),
+		displayPath: snapshot.displayPath,
+		matchCount: matches.length,
+	};
+}
+
+function remoteSearchDetails(
+	text: string,
+	cwd: string,
+	scopePath: string,
+	files: readonly RenderedSearchFile[],
+	fileLimitReached: boolean,
+): SearchToolDetails {
+	const matchCount = files.reduce((count, file) => count + file.matchCount, 0);
+	return {
+		scopePath,
+		searchPath: scopePath,
+		cwd,
+		matchCount,
+		fileCount: files.length,
+		files: files.map((file) => file.displayPath),
+		fileMatches: Object.fromEntries(files.map((file) => [file.displayPath, file.matchCount])),
+		displayContent: text,
+		...(fileLimitReached ? { fileLimitReached: true } : {}),
+		meta: { source: scopePath, limits: { fileLimit: 20 } },
+	};
+}
+
+export function createRunEnvironmentSearchToolDefinition(cwd: string, options: RunEnvironmentToolOperationsOptions) {
+	const builtin = createSearchToolDefinition(cwd, { hashlineStore: stateFor(options).hashlineStore });
+	return {
+		...builtin,
+		async execute(_toolCallId: string, params: SearchToolInput, signal?: AbortSignal) {
+			if (params.pattern.trim() === "") throw new Error("Pattern must not be empty");
+			const skip = normalizeSearchSkip(params.skip);
+			const unsupported = unsupportedSearchSelector(params);
+			if (unsupported) throw new RemoteFilesystemSelectorError("search", unsupported.kind, unsupported.selector);
+			const system = operatingSystem(options);
+			const targets = searchTargets(params, cwd, system);
+			const argv = [rgExecutable(system), "--json", "--passthru"];
+			if (system === "windows") argv.push("--path-separator=/");
+			if (params.i === true || params.case === false) argv.push("--ignore-case");
+			if (params.gitignore === false) argv.push("--no-ignore");
+			for (const target of targets) argv.push("--glob", target.pattern);
+			argv.push("--", params.pattern, ...new Set(targets.map((target) => target.cwd)));
+			const command = { argv, cwd };
+			const result = await executeCommand(options, command, signal);
+			if (result.exitCode !== 0 && result.exitCode !== 1) throw commandError(command, result);
+			const matching = parseSearchFiles(result.stdout).filter(
+				(file) => file.hasMatch && targets.some((target) => targetMatches(file.path, target, cwd, system)),
+			);
+			const page = matching.slice(skip, skip + 20);
+			const renderedPage = page.map((file) => renderSearchFile(file, cwd, options));
+			const hasMore = matching.length > skip + 20;
+			let text = renderedPage.map((file) => file.text).join("\n\n");
+			if (!text) text = skip > 0 ? `No more results (skip=${skip})` : "No matches found";
+			if (hasMore) text += `\n\n[20 matching files shown. Use skip=${skip + 20} to view more.]`;
+			const truncation = truncateHead(text, { maxLines: Number.MAX_SAFE_INTEGER });
+			let output = truncation.content;
+			if (truncation.truncated) output += `\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`;
+			const scopePath = searchPaths(params).join(", ") || ".";
+			const details = remoteSearchDetails(output, cwd, scopePath, renderedPage, hasMore);
+			if (truncation.truncated) {
+				details.truncation = truncation;
+				details.meta = { ...(details.meta ?? {}), truncation };
+			}
+			return { content: [{ type: "text" as const, text: output }], details };
+		},
+	};
 }

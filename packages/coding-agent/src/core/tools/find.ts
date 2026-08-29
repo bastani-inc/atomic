@@ -178,8 +178,13 @@ export function relativizeFindResultPath(
 	const posixPath = relativePath.split(pathModule.sep).join("/");
 	return hadTrailingSeparator && !posixPath.endsWith("/") ? `${posixPath}/` : posixPath;
 }
+function findPathApi(value: string): path.PlatformPath {
+	return isWindowsAbsolutePath(value) || value.includes("\\") ? path.win32 : path.posix;
+}
+
 function formatExactFoundPath(foundPath: string, cwd: string): string {
-	return toPosixPath(path.relative(cwd, foundPath) || path.basename(foundPath));
+	const paths = findPathApi(cwd);
+	return (paths.relative(cwd, foundPath) || paths.basename(foundPath)).split(paths.sep).join("/");
 }
 function containsHiddenSegment(value: string): boolean {
 	return toPosixPath(value)
@@ -190,9 +195,10 @@ function findTargetMentionsNodeModules(target: FindTarget): boolean {
 	return target.pattern.includes("node_modules") || toPosixPath(target.searchPath).split("/").includes("node_modules");
 }
 function formatFoundPath(foundPath: string, searchPath: string, searchPaths: string[], cwd: string): string {
-	const relative = relativizeFindResultPath(foundPath, searchPath);
+	const paths = findPathApi(searchPath);
+	const relative = relativizeFindResultPath(foundPath, searchPath, paths);
 	if (searchPaths.length <= 1) return relative;
-	const rootLabel = toPosixPath(path.relative(cwd, searchPath) || path.basename(searchPath) || ".");
+	const rootLabel = (paths.relative(cwd, searchPath) || paths.basename(searchPath) || ".").split(paths.sep).join("/");
 	return `${rootLabel}/${relative}`;
 }
 interface FindTreeNode {
@@ -302,6 +308,20 @@ function buildFindResult(
 	}
 	return { content: [{ type: "text", text: resultOutput }], details };
 }
+/** One root/glob pair for a batched custom find backend. */
+export interface FindOperationTarget {
+	readonly pattern: string;
+	readonly cwd: string;
+}
+
+export interface FindGlobOptions {
+	readonly ignore: string[];
+	readonly signal?: AbortSignal;
+	readonly timeoutMs?: number;
+	readonly limit: number;
+	readonly hidden: boolean;
+}
+
 /** Pluggable operations for remote/container find backends. */
 export interface FindOperations {
 	stat?: (
@@ -311,11 +331,12 @@ export interface FindOperations {
 		| { isFile: boolean; isDirectory: boolean }
 		| undefined;
 	exists: (path: string) => Promise<boolean> | boolean;
-	glob: (
-		pattern: string,
-		cwd: string,
-		options: { ignore: string[]; limit: number; hidden: boolean },
-	) => Promise<string[]> | string[];
+	glob: (pattern: string, cwd: string, options: FindGlobOptions) => Promise<string[]> | string[];
+	/** Batch all roots into one backend operation. Results correspond to targets by index. */
+	globTargets?: (
+		targets: readonly FindOperationTarget[],
+		options: FindGlobOptions,
+	) => Promise<readonly string[][]> | readonly string[][];
 }
 const defaultFindOperations: FindOperations = {
 	exists: pathExists,
@@ -467,6 +488,42 @@ export function createFindToolDefinition(
 								),
 							);
 							emitUpdate(exactFileResults.slice(0, effectiveLimit));
+							return;
+						}
+						if (customOps?.globTargets) {
+							const ignore = searchableTargets.some(findTargetMentionsNodeModules)
+								? ["**/.git/**"]
+								: ["**/node_modules/**", "**/.git/**"];
+							const batched = await customOps.globTargets(
+								searchableTargets.map((target) => ({ pattern: target.pattern, cwd: target.searchPath })),
+								{ ignore, limit: effectiveLimit + 1, hidden: hidden !== false, signal, timeoutMs },
+							);
+							const relativized = [...exactFileResults];
+							let customLimitReached = false;
+							for (const [index, target] of searchableTargets.entries()) {
+								const results = batched[index] ?? [];
+								const visible = results.filter((result) => hidden !== false || !containsHiddenSegment(result));
+								const remaining = effectiveLimit - relativized.length;
+								if (visible.length > remaining) customLimitReached = true;
+								relativized.push(
+									...visible
+										.slice(0, Math.max(0, remaining))
+										.map((result) => formatFoundPath(result, target.searchPath, searchPaths, cwd)),
+								);
+							}
+							settle(() =>
+								resolve(
+									buildFindResult(
+										relativized,
+										effectiveLimit,
+										false,
+										timeoutMs,
+										skippedMissingPaths,
+										customLimitReached,
+									),
+								),
+							);
+							emitUpdate(relativized);
 							return;
 						}
 						if (customOps?.glob) {

@@ -26,7 +26,9 @@ export { withFileMutationQueue } from "./file-mutation-queue.ts";
 export {
 	createFindTool,
 	createFindToolDefinition,
+	type FindGlobOptions,
 	type FindOperations,
+	type FindOperationTarget,
 	type FindToolDetails,
 	type FindToolInput,
 	type FindToolOptions,

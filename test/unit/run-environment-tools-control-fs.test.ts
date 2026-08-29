@@ -8,8 +8,10 @@ import type {
 } from "../../packages/workflows/src/runs/shared/run-environment-exec.js";
 import {
 	createRunEnvironmentEditToolDefinition,
+	createRunEnvironmentFindToolDefinition,
 	createRunEnvironmentLsToolDefinition,
 	createRunEnvironmentReadToolDefinition,
+	createRunEnvironmentSearchToolDefinition,
 	createRunEnvironmentWriteToolDefinition,
 } from "../../packages/workflows/src/runs/shared/run-environment-tools.js";
 import { reportedCoderAgent } from "../helpers/coder-agent.js";
@@ -48,11 +50,15 @@ test("every remote public file tool resolves target paths without the control-ma
 	const writeTransport = new ScriptedTransport([{ stdout: "N" }]);
 	const editTransport = new ScriptedTransport([{ stdout: "F\0before\r\n" }, {}]);
 	const lsTransport = new ScriptedTransport([{ stdout: "D\0f\0a.txt\0" }]);
+	const findTransport = new ScriptedTransport([{ outcome: { kind: "exited", code: 1 } }]);
+	const searchTransport = new ScriptedTransport([{ outcome: { kind: "exited", code: 1 } }]);
 	const read = createRunEnvironmentReadToolDefinition("C:\\remote", { transport: readTransport });
 	const write = createRunEnvironmentWriteToolDefinition("C:\\remote", { transport: writeTransport });
 	const editRead = createRunEnvironmentReadToolDefinition("C:\\remote", { transport: editTransport });
 	const edit = createRunEnvironmentEditToolDefinition("C:\\remote", { transport: editTransport });
 	const ls = createRunEnvironmentLsToolDefinition("C:\\remote", { transport: lsTransport });
+	const find = createRunEnvironmentFindToolDefinition("C:\\remote", { transport: findTransport });
+	const search = createRunEnvironmentSearchToolDefinition("C:\\remote", { transport: searchTransport });
 
 	controlFilesystem.arm();
 	try {
@@ -74,6 +80,8 @@ test("every remote public file tool resolves target paths without the control-ma
 		);
 		const lsResult = await execute(ls as never, { path: "~" });
 		assert.equal((lsResult as { content: Array<{ text?: string }> }).content[0]?.text, "a.txt");
+		await execute(find as never, { paths: ["**\\*.ts"] });
+		await execute(search as never, { pattern: "needle", paths: "." });
 	} finally {
 		controlFilesystem.disarm();
 	}
@@ -83,4 +91,6 @@ test("every remote public file tool resolves target paths without the control-ma
 	assert.equal(writeTransport.commands.length, 1);
 	assert.equal(editTransport.commands.length, 2);
 	assert.equal(lsTransport.commands.length, 1);
+	assert.equal(findTransport.commands.length, 1);
+	assert.equal(searchTransport.commands.length, 1);
 });

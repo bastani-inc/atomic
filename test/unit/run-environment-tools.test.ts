@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { createFindToolDefinition, DEFAULT_MAX_BYTES } from "@bastani/atomic";
 import { test } from "vitest";
 import type { CoderAgentMetadata } from "../../packages/workflows/src/runs/shared/run-environment-coder.js";
 import type {
@@ -10,8 +11,10 @@ import type {
 } from "../../packages/workflows/src/runs/shared/run-environment-exec.js";
 import {
 	createRunEnvironmentEditToolDefinition,
+	createRunEnvironmentFindOperations,
 	createRunEnvironmentLsToolDefinition,
 	createRunEnvironmentReadToolDefinition,
+	createRunEnvironmentSearchToolDefinition,
 	createRunEnvironmentWriteToolDefinition,
 	type RunEnvironmentToolOperationsOptions,
 } from "../../packages/workflows/src/runs/shared/run-environment-tools.js";
@@ -121,7 +124,16 @@ async function execute(
 	tool: {
 		execute: (...args: never[]) => Promise<{
 			content: Array<{ type: string; text?: string }>;
-			details?: { isDirectory?: boolean; madeExecutable?: boolean };
+			details?: {
+				isDirectory?: boolean;
+				madeExecutable?: boolean;
+				fileCount?: number;
+				fileLimitReached?: boolean;
+				files?: string[];
+				fileMatches?: Record<string, number>;
+				meta?: { limits?: { fileLimit?: number } };
+				truncation?: { truncated: boolean };
+			};
 		}>;
 	},
 	input: object,
@@ -380,4 +392,84 @@ windowsTest("Windows read, write, edit, and ls operate on one checkout with one 
 		assert.equal(transport.commands.length, 4);
 		assert.equal(lsResult.content[0]?.text, "crlf.txt");
 	});
+});
+
+test("FindOperations batches paired Windows targets into one remote command", async () => {
+	const transport = new ScriptedTransport({
+		stdout: ["C:/one/a.ts", "C:/one/a.tsx", "D:/two/b.ts", "D:/two/b.tsx"].join("\n"),
+	});
+	const find = createFindToolDefinition("C:\\repo", {
+		operations: createRunEnvironmentFindOperations(options(transport, "windows")),
+	});
+
+	const result = await execute(find as never, {
+		paths: ["C:\\one\\**\\*.ts", "D:\\two\\**\\*.tsx"],
+	});
+
+	assert.equal(transport.commands.length, 1);
+	assert.equal(transport.commands[0]?.argv[0], "rg.exe");
+	const text = result.content[0]?.text ?? "";
+	assert.match(text, /a\.ts/u);
+	assert.match(text, /b\.tsx/u);
+	assert.doesNotMatch(text, /a\.tsx|b\.ts(?:\n|$)/u);
+	assert.doesNotMatch(text, /\\/u);
+});
+
+function rgMatch(path: string, content = "needle\n"): string {
+	return JSON.stringify({
+		type: "match",
+		data: { path: { text: path }, lines: { text: content }, line_number: 1 },
+	});
+}
+
+test("remote search validates skip before issuing its single rg command", async () => {
+	const transport = new ScriptedTransport();
+	const search = createRunEnvironmentSearchToolDefinition("/work", options(transport));
+
+	await assert.rejects(execute(search as never, { pattern: "needle", skip: -1 }), /non-negative/u);
+	assert.equal(transport.commands.length, 0);
+});
+
+test("remote search pages 21 matching files with details and one rg command", async () => {
+	const output = Array.from({ length: 21 }, (_, index) =>
+		rgMatch(`/work/file-${String(index).padStart(2, "0")}.txt`),
+	).join("\n");
+	const transport = new ScriptedTransport({ stdout: output });
+	const search = createRunEnvironmentSearchToolDefinition("/work", options(transport));
+
+	const result = await execute(search as never, { pattern: "needle", paths: "." });
+
+	assert.equal(result.details?.files?.[0], "file-00.txt");
+	assert.equal(result.details?.fileMatches?.["file-00.txt"], 1);
+	assert.equal(transport.commands.length, 1);
+	assert.equal(transport.commands[0]?.argv.filter((argument) => argument === "rg").length, 1);
+
+	assert.match(result.content[0]?.text ?? "", /20 matching files shown\. Use skip=20 to view more\./u);
+	assert.equal(result.details?.fileCount, 20);
+	assert.equal(result.details?.fileLimitReached, true);
+	assert.equal(result.details?.meta?.limits?.fileLimit, 20);
+});
+
+test("remote search supports an exact file target", async () => {
+	const transport = new ScriptedTransport({ stdout: rgMatch("/work/exact.txt") });
+	const search = createRunEnvironmentSearchToolDefinition("/work", options(transport));
+
+	const result = await execute(search as never, { pattern: "needle", paths: "/work/exact.txt" });
+
+	assert.equal(transport.commands.length, 1);
+	assert.match(result.content[0]?.text ?? "", /\[exact\.txt#[0-9A-F]{4}\]/u);
+	assert.deepEqual(result.details?.files, ["exact.txt"]);
+});
+
+test("remote search truncates combined output and reports truncation details", async () => {
+	const hugeLine = `needle-${"x".repeat(DEFAULT_MAX_BYTES)}`;
+	const transport = new ScriptedTransport({ stdout: rgMatch("/work/huge.txt", `${hugeLine}\n`) });
+	const search = createRunEnvironmentSearchToolDefinition("/work", options(transport));
+
+	const result = await execute(search as never, { pattern: "needle", paths: "." });
+
+	assert.equal(transport.commands.length, 1);
+	assert.match(result.content[0]?.text ?? "", /50\.0KB combined output limit reached/u);
+	assert.equal(result.details?.truncation?.truncated, true);
+	assert.ok(Buffer.byteLength(result.content[0]?.text ?? "") < DEFAULT_MAX_BYTES + 200);
 });
