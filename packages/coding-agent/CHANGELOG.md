@@ -4,7 +4,7 @@
 
 ### Added
 
-- Custom read backends now require target-aware path resolution and can resolve paths and `file://` URLs with explicit POSIX or Windows syntax selected from the target operating system before normalization, preventing control-machine normalization from rewriting remote paths. Remote document conversion always uses the backend's buffer, while archive, SQLite, notebook, internal-resource, and HTTP(S) URL inputs return a typed `UnsupportedReadSelectorError` before any control-filesystem access.
+- Custom read backends now require target-aware path resolution and can resolve paths and `file://` URLs with explicit POSIX or Windows syntax selected from the target operating system before normalization, preventing control-machine normalization from rewriting remote paths. Remote document conversion always uses the backend's buffer, while archive, SQLite, notebook, and internal-resource inputs return a typed `UnsupportedReadSelectorError` before any control-filesystem access. HTTP(S) reads remain process-network operations.
 
 ### Fixed
 

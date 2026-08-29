@@ -116,13 +116,18 @@ export class UnsupportedReadSelectorError extends Error {
 }
 
 function unsupportedCustomReadSelector(path: string): UnsupportedReadSelectorKind | undefined {
+	if (isReadableUrlPath(path)) return undefined;
 	if (/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//u.test(path))
 		return "internal";
-	if (isReadableUrlPath(path)) return "url";
 	if (/\.ipynb(?:$|[:?#])/iu.test(path)) return "notebook";
 	if (parseArchiveSelector(path)) return "archive";
+	const lineSelector = splitReadLineSelector(path);
 	try {
-		if (parseSqliteSelector(path)) return "sqlite";
+		if (!lineSelector.ranges && lineSelector.offset === undefined) {
+			if (parseSqliteSelector(path)) return "sqlite";
+		} else if (parseSqliteSelector(lineSelector.path)?.table) {
+			return "sqlite";
+		}
 	} catch (error) {
 		if (error instanceof URIError) return "sqlite";
 		throw error;

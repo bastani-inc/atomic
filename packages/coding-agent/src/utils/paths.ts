@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { posix, win32 } from "node:path";
+import nativePath, { posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnProcessSync } from "./child-process.ts";
 
@@ -80,14 +80,7 @@ export function normalizeWindowsShellPath(filePath: string): string {
 function pathApi(style: PathStyle | undefined): typeof posix | typeof win32 {
 	if (style === "windows") return win32;
 	if (style === "posix") return posix;
-	return process.platform === "win32" ? win32 : posix;
-}
-
-function pathStyleForBase(baseDir: string, requested: PathStyle | undefined): PathStyle | undefined {
-	if (requested !== undefined) return requested;
-	if (/^(?:[A-Za-z]:[\\/]|\\\\)/u.test(baseDir)) return "windows";
-	if (baseDir.startsWith("/")) return "posix";
-	return undefined;
+	return nativePath;
 }
 
 function decodeFileUrlPath(value: string, style: PathStyle | undefined): string {
@@ -134,18 +127,16 @@ export function normalizePath(input: string, options: PathInputOptions = {}): st
 }
 
 export function resolvePath(input: string, baseDir: string = process.cwd(), options: PathInputOptions = {}): string {
-	const pathStyle = pathStyleForBase(baseDir, options.pathStyle);
-	const paths = pathApi(pathStyle);
-	const normalized = normalizePath(input, { ...options, pathStyle });
-	const normalizedBaseDir = normalizePath(baseDir, { pathStyle, expandTilde: false });
+	const paths = pathApi(options.pathStyle);
+	const normalized = normalizePath(input, options);
+	const normalizedBaseDir = normalizePath(baseDir, { pathStyle: options.pathStyle, expandTilde: false });
 	return paths.isAbsolute(normalized) ? paths.resolve(normalized) : paths.resolve(normalizedBaseDir, normalized);
 }
 
 export function getCwdRelativePath(filePath: string, cwd: string): string | undefined {
-	const pathStyle = pathStyleForBase(cwd, undefined);
-	const paths = pathApi(pathStyle);
-	const resolvedCwd = resolvePath(cwd, process.cwd(), { pathStyle });
-	const resolvedPath = resolvePath(filePath, resolvedCwd, { pathStyle });
+	const paths = pathApi(undefined);
+	const resolvedCwd = resolvePath(cwd);
+	const resolvedPath = resolvePath(filePath, resolvedCwd);
 	const relativePath = paths.relative(resolvedCwd, resolvedPath);
 	const isInsideCwd =
 		relativePath === "" ||

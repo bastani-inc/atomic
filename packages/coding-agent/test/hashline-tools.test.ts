@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
@@ -138,7 +138,11 @@ describe("hashline file tool parity", () => {
 
 	it("custom read operations do not require local fsStat", async () => {
 		const read = createReadToolDefinition("/tmp/nonexistent-atomic-cwd", {
-			operations: { access: async () => {}, readFile: async () => Buffer.from("remote\ncontent\n") },
+			operations: {
+				access: async () => {},
+				readFile: async () => Buffer.from("remote\ncontent\n"),
+				resolvePath: (path, cwd) => posix.resolve(cwd, path),
+			},
 			hashlineStore,
 		});
 		const output = text(
@@ -150,7 +154,11 @@ describe("hashline file tool parity", () => {
 
 	it("custom read operations handle non-SQLite .db line selectors", async () => {
 		const read = createReadToolDefinition("/tmp/nonexistent-atomic-cwd", {
-			operations: { access: async () => {}, readFile: async () => Buffer.from("one\ntwo\nthree\n") },
+			operations: {
+				access: async () => {},
+				readFile: async () => Buffer.from("one\ntwo\nthree\n"),
+				resolvePath: (path, cwd) => posix.resolve(cwd, path),
+			},
 			hashlineStore,
 		});
 		const output = text(

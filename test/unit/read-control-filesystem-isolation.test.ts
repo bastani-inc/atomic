@@ -59,12 +59,6 @@ test("remote read paths and refusals never consult the control filesystem", asyn
 			},
 		} as unknown as ReadOperations,
 	});
-	const sessionContext = {
-		sessionManager: {
-			getSessionDir: () => "/control/session",
-			getSessionId: () => "remote-session",
-		},
-	};
 
 	controlFilesystem.arm();
 	try {
@@ -74,19 +68,20 @@ test("remote read paths and refusals never consult the control filesystem", asyn
 		await assert.rejects(execute(readWithoutResolver, "ordinary.txt"), TypeError);
 		const document = await execute(read, "docs/remote.pdf");
 		assert.match(document.content[0]?.type === "text" ? document.content[0].text : "", /Cannot read .pdf file/u);
-		for (const [path, selectorKind, ctx] of [
-			["bundle.zip:src/a.txt", "archive", undefined],
-			["state.sqlite:events", "sqlite", undefined],
-			["state.sqlite?q=%", "sqlite", undefined],
-			["analysis.ipynb", "notebook", undefined],
-			["analysis.ipynb?version=1", "notebook", undefined],
-			["analysis.ipynb#cell", "notebook", undefined],
-			["local://src/a.txt", "internal", undefined],
-			["skill://tdd/SKILL.md", "internal", undefined],
-			["https://example.com/remote", "url", sessionContext],
+		for (const [path, selectorKind] of [
+			["bundle.zip:src/a.txt", "archive"],
+			["state.sqlite:events", "sqlite"],
+			["state.sqlite?q=%", "sqlite"],
+			["analysis.ipynb", "notebook"],
+			["analysis.ipynb?version=1", "notebook"],
+			["state.sqlite:events:2-2", "sqlite"],
+			["state.sqlite:events:10", "sqlite"],
+			["analysis.ipynb#cell", "notebook"],
+			["local://src/a.txt", "internal"],
+			["skill://tdd/SKILL.md", "internal"],
 		] as const) {
 			await assert.rejects(
-				execute(read, path, ctx),
+				execute(read, path),
 				(error: unknown) =>
 					error instanceof UnsupportedReadSelectorError &&
 					error.name === "UnsupportedReadSelectorError" &&

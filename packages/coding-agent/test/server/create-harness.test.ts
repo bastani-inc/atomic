@@ -387,13 +387,20 @@ describe("coding-agent Harness construction", () => {
 			const read = (await created.harness.getTools()).find((tool) => tool.name === "read");
 			if (!read) throw new Error("Expected the default read tool");
 
-			const result = await read.execute("url-read", { path: "http://127.0.0.1/harness-test" });
-			const text = result.content[0];
-			if (text?.type !== "text") throw new Error("Expected URL text output");
+			for (const url of [
+				"http://127.0.0.1/harness-test",
+				"http://127.0.0.1/analysis.ipynb",
+				"http://127.0.0.1/state.sqlite",
+				"http://127.0.0.1/bundle.zip:member.txt",
+			]) {
+				const result = await read.execute("url-read", { path: url });
+				const text = result.content[0];
+				if (text?.type !== "text") throw new Error("Expected URL text output");
 
-			expect(text.text).toContain("remote body");
-			expect(fetchMock).toHaveBeenCalledTimes(1);
-			expect(result.details?.meta?.artifactId).toBeUndefined();
+				expect(text.text).toContain("remote body");
+				expect(result.details?.meta?.artifactId).toBeUndefined();
+			}
+			expect(fetchMock).toHaveBeenCalledTimes(4);
 			expect(existsSync(join(root, "artifacts"))).toBe(false);
 			expect(env.operationLog).toEqual([]);
 		} finally {

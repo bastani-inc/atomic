@@ -96,8 +96,8 @@ describe("resolvePath", () => {
 		expect(resolvePath("subdir/file.txt", pathToFileURL(cwd).href)).toBe(resolve(cwd, "subdir/file.txt"));
 	});
 
-	it("uses POSIX semantics for a POSIX base directory", () => {
-		expect(resolvePath("src/a.txt", "/work")).toBe("/work/src/a.txt");
+	it("uses explicitly selected POSIX semantics for a POSIX base directory", () => {
+		expect(resolvePath("src/a.txt", "/work", { pathStyle: "posix" })).toBe("/work/src/a.txt");
 	});
 
 	it("selects path syntax before normalizing shell paths", () => {
