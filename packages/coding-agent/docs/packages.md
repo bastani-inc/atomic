@@ -177,7 +177,7 @@ If no app manifest (`atomic`, or legacy `pi`) is present, Atomic auto-discovers 
 - `skills/` recursively finds `SKILL.md` folders and loads top-level `.md` files as skills
 - `prompts/` loads `.md` files
 - `themes/` loads `.json` files
-- `workflows/` loads workflow SDK files (`.ts`, `.js`, `.mjs`, `.cjs`); `workflow/` is also accepted as a singular alias. Workflow files import `workflow` from `@bastani/atomic/workflows`, import `Type` from `typebox`, and export the definition returned by `workflow({ ... })`. TypeScript resolves the published `@bastani/atomic/workflows` specifier through the `@bastani/atomic` package. Atomic resolves that workflow specifier to its in-memory SDK when it loads the workflow at runtime. See Programmatic Usage in the workflows guide.
+- `workflows/` loads workflow SDK files (`.ts`, `.js`, `.mjs`, `.cjs`); `workflow/` is also accepted as a singular alias. Workflow files import `workflow` from `@bastani/atomic/workflows`, import `Type` from `typebox`, and export the definition returned by `workflow({ ... })`. TypeScript resolves the published `@bastani/atomic/workflows` specifier through the `@bastani/atomic` package. Atomic resolves that workflow specifier and the supported TypeBox root, `typebox/compile`, `typebox/value`, and legacy `@sinclair/typebox` aliases to in-memory host modules when it loads the workflow at runtime. See Programmatic Usage in the workflows guide.
 
 When a package manifest exists, declared resource arrays normally define what loads. Workflows are the exception: if `atomic.workflows` / legacy `pi.workflows` is omitted, Atomic still checks conventional `workflows/` and `workflow/` directories.
 

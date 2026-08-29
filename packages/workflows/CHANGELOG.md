@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Git-installed workflow discovery when production-only package installs omit local TypeBox by resolving `typebox/compile`, `typebox/value`, and supported legacy `@sinclair/typebox` aliases through the host loader for workflow files and their helpers.
+
 ## [0.9.16-alpha.10] - 2026-08-28
 
 ### Changed

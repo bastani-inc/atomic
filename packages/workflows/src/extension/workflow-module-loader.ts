@@ -8,6 +8,8 @@
 
 import { createJiti } from "jiti/static";
 import * as typeboxModule from "typebox";
+import * as typeboxCompileModule from "typebox/compile";
+import * as typeboxValueModule from "typebox/value";
 import adversarialVerification from "../../builtin/adversarial-verification.js";
 import classifyAndAct from "../../builtin/classify-and-act.js";
 import fanOutAndSynthesize from "../../builtin/fan-out-and-synthesize.js";
@@ -60,11 +62,30 @@ function createWorkflowVirtualModules(moduleSpecifier: string): Record<string, u
 		[`${builtinModuleSpecifier}/steering-context`]: steeringContext,
 	};
 }
+// Workflow modules share the host's TypeBox peer instance. The other host
+// virtual modules are extension execution dependencies (agent core, UI, model
+// transport, and lockfile handling), not workflow-authoring dependencies, so
+// they intentionally stay out of this loader.
+const TYPEBOX_COMPILE_MODULE: Record<string, unknown> = {
+	...typeboxCompileModule,
+};
+const TYPEBOX_VALUE_MODULE: Record<string, unknown> = {
+	...typeboxValueModule,
+};
 
 const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
 	...createWorkflowVirtualModules(WORKFLOWS_MODULE_SPECIFIER),
 	...createWorkflowVirtualModules(LEGACY_WORKFLOWS_MODULE_SPECIFIER),
 	[TYPEBOX_MODULE_SPECIFIER]: TYPEBOX_MODULE,
+	"typebox/compile": TYPEBOX_COMPILE_MODULE,
+	"typebox/value": TYPEBOX_VALUE_MODULE,
+	"@sinclair/typebox": TYPEBOX_MODULE,
+	"@sinclair/typebox/compile": TYPEBOX_COMPILE_MODULE,
+	"@sinclair/typebox/value": TYPEBOX_VALUE_MODULE,
+};
+
+export const workflowModuleLoaderTestHooks = {
+	getVirtualModuleSpecifiers: (): string[] => Object.keys(WORKFLOWS_VIRTUAL_MODULES),
 };
 
 const workflowModuleLoader = createJiti(import.meta.url, {
