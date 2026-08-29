@@ -3490,13 +3490,19 @@ Validation uses the final retained transcript for a repeated stage replay key, s
 
 ### Configuring DBOS/Postgres
 
-**Alpine/musl archives.** Musl release archives deliberately omit `@embedded-postgres/*` binary packages because the available packages are glibc-linked and cannot run on musl. Durable workflows on Alpine must use external Postgres by setting `DBOS_SYSTEM_DATABASE_URL` or use Docker. If neither is available, Atomic falls back to a process-local in-memory backend with a loud non-durable warning; state does not survive process exit and cross-process resume is unavailable.
+Atomic selects the DBOS system database in this order: a non-empty, trimmed `DBOS_SYSTEM_DATABASE_URL`; a non-empty, trimmed global `dbosSystemDatabaseUrl` setting; then Atomic’s embedded PostgreSQL. An explicit empty setting (`"dbosSystemDatabaseUrl": ""`) selects the embedded backend. If embedded provisioning fails, Atomic tries DBOS’s reusable Docker database and finally falls back to a loud process-local, non-durable in-memory backend.
 
-DBOS/Postgres durability requires no setup on supported local platforms. To use an existing Postgres database, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic; otherwise Atomic provisions embedded Postgres where a compatible platform package exists (with drop-privilege support when running as root on Linux), with Docker as a platform fallback. The DBOS SDK ships with `@bastani/atomic`. If no durable backend can be provisioned, workflows run on a process-local in-memory backend with a loud non-durable warning — never on the legacy per-workflow file store under `~/.atomic/workflow-durable` — and cross-process resume is unavailable until Postgres provisioning is fixed.
+Interactive onboarding asks for this choice when the global setting is absent and no environment URL is present. Leave the input empty for embedded PostgreSQL, or enter a `postgres:` or `postgresql:` connection URL; Atomic verifies the connection before saving it. The setting is global-only and is edited directly in `settings.json`, not through `/settings`. Environment selection is never copied into settings, and an unreachable explicitly selected external database fails loudly rather than silently provisioning a local database.
+
+```json
+{ "dbosSystemDatabaseUrl": "postgresql://database.example/atomic_workflows" }
+```
 
 ```bash
-export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
+export DBOS_SYSTEM_DATABASE_URL="postgresql://database.example/atomic_workflows"
 ```
+
+**Alpine/musl archives.** Musl release archives deliberately omit `@embedded-postgres/*` binary packages because the available packages are glibc-linked and cannot run on musl. Durable workflows on Alpine must select external Postgres through the setting or environment variable, or use Docker. If none is available, the in-memory fallback does not survive process exit and cross-process resume is unavailable.
 
 When `/workflow resume` lists or resumes a DBOS-backed workflow in a fresh process, Atomic first hydrates its in-memory replay mirror from DBOS. Atomic stores checkpoints as structured, versioned DBOS outputs containing the checkpoint kind, id, tool argument hash, UI prompt hash, stage replay key, completed output, and additive versioned stage-topology metadata when available, so replay can skip completed `ctx.tool`, `ctx.ui`, `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, and `ctx.workflow` work without relying on prior in-process state and completed inspection can rebuild the original DAG.
 

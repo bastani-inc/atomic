@@ -134,6 +134,7 @@ export class ExtensionRunner {
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
 	private isProjectTrustedFn: () => boolean = () => true;
+	private getDbosSystemDatabaseUrlFn: () => string | undefined = () => undefined;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
@@ -204,6 +205,7 @@ export class ExtensionRunner {
 		this.getScopedModels = contextActions.getScopedModels;
 		this.isIdleFn = contextActions.isIdle;
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
+		this.getDbosSystemDatabaseUrlFn = contextActions.getDbosSystemDatabaseUrl;
 		this.getSignalFn = contextActions.getSignal;
 		this.abortFn = contextActions.abort;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
@@ -486,6 +488,7 @@ export class ExtensionRunner {
 			getCwd: () => this.cwd,
 			getSessionManager: () => this.sessionManager,
 			getModelRegistry: () => this.modelRegistry,
+			getDbosSystemDatabaseUrl: () => this.getDbosSystemDatabaseUrlFn(),
 			getModel: () => this.getModel(),
 			getSubagentPolicy: () => this.subagentPolicy,
 			getScopedModels: () => this.getScopedModels(),

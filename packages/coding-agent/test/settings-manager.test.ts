@@ -24,6 +24,25 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	describe("DBOS system database setting", () => {
+		it("distinguishes an absent choice from embedded and external selections", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getDbosSystemDatabaseUrl()).toBeUndefined();
+			manager.setDbosSystemDatabaseUrl("");
+			await manager.flush();
+			expect(manager.getDbosSystemDatabaseUrl()).toBe("");
+			expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"))).toHaveProperty(
+				"dbosSystemDatabaseUrl",
+				"",
+			);
+
+			manager.setDbosSystemDatabaseUrl("postgresql://database.example/workflows");
+			await manager.flush();
+			expect(manager.getDbosSystemDatabaseUrl()).toBe("postgresql://database.example/workflows");
+		});
+	});
+
 	describe("compaction settings", () => {
 		it("returns default and configured context compaction parameters", () => {
 			const defaults = SettingsManager.create(projectDir, agentDir);

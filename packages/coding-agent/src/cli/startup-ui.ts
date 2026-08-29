@@ -12,6 +12,8 @@ import type { SettingsManager } from "../core/settings-manager.ts";
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../modes/interactive/components/extension-selector.ts";
 import {
+	DURABILITY_BACKEND_HELP,
+	DURABILITY_BACKEND_QUESTION,
 	FirstTimeSetupComponent,
 	type FirstTimeSetupResult,
 } from "../modes/interactive/components/first-time-setup.ts";
@@ -21,6 +23,7 @@ import {
 	setTheme,
 	type TerminalTheme,
 } from "../modes/interactive/theme/theme.ts";
+import { normalizeAndValidateDbosSystemDatabaseUrl } from "./dbos-durability-onboarding.ts";
 
 function createStartupTui(settingsManager: SettingsManager): TUI {
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
@@ -52,6 +55,55 @@ export function shouldRunFirstTimeSetup(settingsPath: string = getSettingsPath()
 	return !getEnvValue(ENV_AGENT_DIR) && !existsSync(settingsPath);
 }
 
+export function shouldRunDurabilitySetup(
+	settingsManager: SettingsManager,
+	envUrl: string | undefined = process.env.DBOS_SYSTEM_DATABASE_URL,
+): boolean {
+	return settingsManager.getDbosSystemDatabaseUrl() === undefined && !envUrl?.trim();
+}
+
+export async function showDurabilitySetup(settingsManager: SettingsManager): Promise<void> {
+	const ui = createStartupTui(settingsManager);
+	return new Promise((resolve) => {
+		let settled = false;
+		let validating = false;
+		const finish = async (value: string | undefined) => {
+			if (settled) return;
+			settled = true;
+			if (value !== undefined) {
+				settingsManager.setDbosSystemDatabaseUrl(value);
+				await settingsManager.flush();
+			}
+			input.dispose();
+			await clearStartupTui(ui);
+			ui.stop();
+			resolve();
+		};
+		const input = new ExtensionInputComponent(
+			`${DURABILITY_BACKEND_QUESTION}\n${DURABILITY_BACKEND_HELP}`,
+			undefined,
+			(value) => {
+				if (validating) return;
+				validating = true;
+				input.setError(undefined);
+				void normalizeAndValidateDbosSystemDatabaseUrl(value).then(
+					(normalized) => finish(normalized),
+					(error: Error) => {
+						validating = false;
+						input.setError(error.message);
+						ui.requestRender();
+					},
+				);
+			},
+			() => void finish(undefined),
+			{ tui: ui },
+		);
+		ui.addChild(input);
+		ui.setFocus(input);
+		ui.start();
+	});
+}
+
 export async function showFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
 	const ui = createStartupTui(settingsManager);
 	return new Promise((resolve) => {
@@ -62,6 +114,9 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 			if (result) {
 				settingsManager.setTheme(result.theme);
 				settingsManager.setEnableAnalytics(result.shareAnalytics);
+				if (result.dbosSystemDatabaseUrl !== undefined) {
+					settingsManager.setDbosSystemDatabaseUrl(result.dbosSystemDatabaseUrl);
+				}
 				await settingsManager.flush();
 			}
 			await clearStartupTui(ui);
@@ -74,10 +129,12 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 			setTheme(detectedTheme);
 			const setup = new FirstTimeSetupComponent({
 				detectedTheme,
+				skipDurability: Boolean(process.env.DBOS_SYSTEM_DATABASE_URL?.trim()),
 				onThemePreview: (name) => {
 					setTheme(name);
 					ui.requestRender();
 				},
+				onValidateDurability: normalizeAndValidateDbosSystemDatabaseUrl,
 				onSubmit: (result) => {
 					void finish(result);
 				},

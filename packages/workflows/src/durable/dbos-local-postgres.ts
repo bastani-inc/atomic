@@ -33,6 +33,12 @@ let embeddedProvider: LocalDbosProvider = ensureEmbeddedDbosPostgres;
 let dockerProvider: LocalDbosProvider = ensureDockerDbosPostgres;
 let shutdownEmbeddedProvider: LocalDbosShutdowner = shutdownEmbeddedDbosPostgres;
 let embeddedShutdown: Promise<void> | undefined;
+let settingsSystemDatabaseUrl: string | undefined;
+
+export function setDbosSystemDatabaseUrlSetting(url: string | undefined): void {
+	settingsSystemDatabaseUrl = url;
+	resolution = undefined;
+}
 
 /**
  * Resolve the system database URL for this process and make its database
@@ -69,7 +75,7 @@ export function shutdownResolvedLocalDbos(): Promise<void> {
 }
 
 export function shouldProvisionLocalDbos(error: unknown): boolean {
-	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return false;
+	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim() || settingsSystemDatabaseUrl?.trim()) return false;
 	const message = error instanceof Error ? `${error.message}\n${error.cause ?? ""}` : String(error);
 	return /ECONNREFUSED|server not reachable|connect failed|connection refused|unable to connect to system database/i.test(
 		message,
@@ -77,8 +83,9 @@ export function shouldProvisionLocalDbos(error: unknown): boolean {
 }
 
 async function resolve(): Promise<string | undefined> {
-	const explicit = process.env.DBOS_SYSTEM_DATABASE_URL?.trim();
-	if (explicit) return undefined;
+	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return undefined;
+	const settingsUrl = settingsSystemDatabaseUrl?.trim();
+	if (settingsUrl) return settingsUrl;
 
 	try {
 		await embeddedProvider();
@@ -156,6 +163,7 @@ export function resetLocalDbosProvisioningForTests(
 	embedded: LocalDbosProvider = ensureEmbeddedDbosPostgres,
 	docker: LocalDbosProvider = ensureDockerDbosPostgres,
 	shutdownEmbedded: LocalDbosShutdowner = shutdownEmbeddedDbosPostgres,
+	settingsUrl?: string,
 ): void {
 	resolution = undefined;
 	resolvedProvider = undefined;
@@ -163,4 +171,5 @@ export function resetLocalDbosProvisioningForTests(
 	embeddedProvider = embedded;
 	dockerProvider = docker;
 	shutdownEmbeddedProvider = shutdownEmbedded;
+	settingsSystemDatabaseUrl = settingsUrl;
 }

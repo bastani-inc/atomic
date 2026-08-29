@@ -183,6 +183,7 @@ export interface ExtensionAPI {
 			ctx?: PiCommandContext & {
 				sessionManager?: SessionManager;
 				hasUI?: boolean;
+				dbosSystemDatabaseUrl?: string;
 			},
 			// `unknown`: a handler may return a result object, a promise of one, or
 			// nothing at all. The host narrows what it actually consumes.

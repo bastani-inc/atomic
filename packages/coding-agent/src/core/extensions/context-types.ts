@@ -165,6 +165,8 @@ export interface ExtensionContext {
 	cwd: string;
 	/** Session manager (read-only) */
 	sessionManager: ReadonlySessionManager;
+	/** Saved global workflow durability database selection; empty selects embedded PostgreSQL. */
+	readonly dbosSystemDatabaseUrl?: string;
 	/** Model registry for API key resolution */
 	modelRegistry: ModelRegistry;
 	/** Current model (may be undefined) */

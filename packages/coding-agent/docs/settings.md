@@ -156,6 +156,20 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 { "httpProxy": "http://127.0.0.1:7890" }
 ```
 
+### Workflow durability database
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `dbosSystemDatabaseUrl` | string | - | PostgreSQL backend for durable workflows. Global setting only. |
+
+Edit this field directly in the global `settings.json`; it is not shown in `/settings`, which has no connection-URL editor. Atomic distinguishes three states: an absent field means no onboarding choice has been saved, `""` explicitly selects Atomic’s embedded PostgreSQL, and a non-empty `postgres:` or `postgresql:` URL selects an external hosted or self-hosted database. Interactive startup prompts for this choice when the field is absent. The URL is trimmed and connectivity-tested before it is saved.
+
+```json
+{ "dbosSystemDatabaseUrl": "postgresql://database.example/atomic_workflows" }
+```
+
+A non-empty `DBOS_SYSTEM_DATABASE_URL` overrides this setting for the current process and suppresses the onboarding prompt. Atomic never copies the environment value into settings, so onboarding becomes eligible again if the variable is later removed while the setting remains absent.
+
 ### Warnings
 
 | Setting | Type | Default | Description |

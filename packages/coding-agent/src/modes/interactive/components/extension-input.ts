@@ -20,6 +20,7 @@ export class ExtensionInputComponent extends Container implements Focusable {
 	private titleText: Text;
 	private baseTitle: string;
 	private countdown: CountdownTimer | undefined;
+	private errorText: Text | undefined;
 
 	// Focusable implementation - propagate to input for IME cursor positioning
 	private _focused = false;
@@ -68,6 +69,12 @@ export class ExtensionInputComponent extends Container implements Focusable {
 		);
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
+	}
+
+	setError(message: string | undefined): void {
+		if (this.errorText) this.removeChild(this.errorText);
+		this.errorText = message ? new Text(theme.fg("error", message), 1, 0) : undefined;
+		if (this.errorText) this.children.splice(Math.max(0, this.children.length - 1), 0, this.errorText);
 	}
 
 	handleInput(keyData: string): boolean {

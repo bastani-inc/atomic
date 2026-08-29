@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added interactive durable-workflow backend onboarding and the global `dbosSystemDatabaseUrl` setting, with validated external PostgreSQL URLs or an explicit embedded PostgreSQL choice.
+
 ## [0.9.16] - 2026-08-29
 
 Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

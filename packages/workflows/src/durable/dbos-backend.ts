@@ -101,18 +101,15 @@ const SILENT_DBOS_LOGGER: DbosLogger = {
 	error() {},
 };
 
-/**
- * Effective system database URL: explicit config wins over
- * `DBOS_SYSTEM_DATABASE_URL`. Values are trimmed so env-injected URLs
- * (secrets managers, env files) with trailing whitespace/newlines connect
- * cleanly, and a whitespace-only value means "not set".
- */
+/** Environment selection wins over a saved settings URL; blank values mean no external database. */
 export function effectiveSystemDatabaseUrl(
-	configUrl: string | undefined,
+	settingsUrl: string | undefined,
 	envUrl: string | undefined = process.env.DBOS_SYSTEM_DATABASE_URL,
 ): string | undefined {
-	const url = (configUrl ?? envUrl)?.trim();
-	return url === undefined || url.length === 0 ? undefined : url;
+	const environment = envUrl?.trim();
+	if (environment) return environment;
+	const settings = settingsUrl?.trim();
+	return settings && settings.length > 0 ? settings : undefined;
 }
 
 /** Configure and register DBOS workflows without launching the executor. */

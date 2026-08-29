@@ -19,6 +19,7 @@ import {
 	shouldProvisionLocalDbos,
 	shutdownResolvedLocalDbos,
 } from "../../packages/workflows/src/durable/dbos-local-postgres.js";
+import { applyWorkflowDurabilitySetting } from "../../packages/workflows/src/extension/extension-factory.js";
 
 const originalUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
 
@@ -30,7 +31,7 @@ afterEach(() => {
 
 describe("resolveDbosSystemDatabaseUrl", () => {
 	test.sequential("defers to an explicit DBOS_SYSTEM_DATABASE_URL without provisioning", async () => {
-		process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://user:pw@db.example:5432/dbos";
+		process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://db.example:5432/dbos";
 		let provisioned = 0;
 		resetLocalDbosProvisioningForTests(
 			async () => {
@@ -222,6 +223,55 @@ describe("resolveDbosSystemDatabaseUrl", () => {
 
 		assert.equal(shutdownCalls, 0);
 	});
+
+	test.sequential("a non-empty settings URL disables local provisioning", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let provisioned = 0;
+		resetLocalDbosProvisioningForTests(
+			async () => {
+				provisioned += 1;
+			},
+			async () => {
+				provisioned += 1;
+			},
+			undefined,
+			"  postgresql://settings.example/workflows  ",
+		);
+
+		assert.equal(await resolveDbosSystemDatabaseUrl(), "postgresql://settings.example/workflows");
+		assert.equal(provisioned, 0);
+		assert.equal(shouldProvisionLocalDbos(new Error("connection refused")), false);
+	});
+
+	test.sequential("the workflow extension applies the host settings selection", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let provisioned = 0;
+		resetLocalDbosProvisioningForTests(async () => {
+			provisioned += 1;
+		});
+		applyWorkflowDurabilitySetting({ dbosSystemDatabaseUrl: " postgresql://settings.example/workflows " });
+
+		assert.equal(await resolveDbosSystemDatabaseUrl(), "postgresql://settings.example/workflows");
+		assert.equal(provisioned, 0);
+	});
+
+	test.sequential("an explicit empty setting keeps embedded PostgreSQL", async () => {
+		delete process.env.DBOS_SYSTEM_DATABASE_URL;
+		let embeddedCalls = 0;
+		resetLocalDbosProvisioningForTests(
+			async () => {
+				embeddedCalls += 1;
+			},
+			async () => {
+				throw new Error("docker must not run");
+			},
+			undefined,
+			"",
+		);
+
+		assert.equal(await resolveDbosSystemDatabaseUrl(), EMBEDDED_DBOS_SYSTEM_DATABASE_URL);
+		assert.equal(embeddedCalls, 1);
+	});
 });
 
 describe("shouldProvisionLocalDbos", () => {
@@ -234,16 +284,16 @@ describe("shouldProvisionLocalDbos", () => {
 		);
 		assert.equal(shouldProvisionLocalDbos(new Error("password authentication failed")), false);
 
-		process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://user:pw@db.example:5432/dbos";
+		process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://db.example:5432/dbos";
 		assert.equal(shouldProvisionLocalDbos(new Error("connect ECONNREFUSED db.example:5432")), false);
 	});
 });
 
 describe("effectiveSystemDatabaseUrl", () => {
-	test("explicit config wins over the environment variable", () => {
+	test("the environment variable wins over the settings URL", () => {
 		assert.equal(
-			effectiveSystemDatabaseUrl("postgresql://config@db/one", "postgresql://env@db/two"),
-			"postgresql://config@db/one",
+			effectiveSystemDatabaseUrl("postgresql://settings.example/one", "postgresql://env.example/two"),
+			"postgresql://env.example/two",
 		);
 	});
 

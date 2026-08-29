@@ -160,6 +160,7 @@ export interface Settings {
 	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY; global setting only
+	dbosSystemDatabaseUrl?: string; // Workflow durability database; empty selects embedded Postgres; global setting only
 	httpIdleTimeoutMs?: number | string; // HTTP idle timeout; 0 or "disabled" disables it
 	websocketConnectTimeoutMs?: number | string; // WebSocket connect timeout; 0 or "disabled" disables it
 	streamDeadlineMs?: number | string; // Max idle gap between provider stream events; 0 or "disabled" disables it

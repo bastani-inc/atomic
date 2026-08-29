@@ -227,6 +227,7 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 			getThinkingLevel: () => this.thinkingLevel,
 			isIdle: () => !this.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
+			getDbosSystemDatabaseUrl: () => this.settingsManager.getDbosSystemDatabaseUrl(),
 			getSignal: () => this.agent.signal,
 			abort: () => this.abort(),
 			hasPendingMessages: () => this.pendingMessageCount > 0,

@@ -68,6 +68,8 @@ interface SettingsManagerBasicAccessors {
 	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number };
 	getHttpProxy(): string | undefined;
 	setHttpProxy(proxy: string | undefined): void;
+	getDbosSystemDatabaseUrl(): string | undefined;
+	setDbosSystemDatabaseUrl(url: string): void;
 	getHttpIdleTimeoutMs(): number;
 	setHttpIdleTimeoutMs(timeoutMs: number): void;
 	getWebSocketConnectTimeoutMs(): number | undefined;
@@ -374,6 +376,17 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.httpProxy = proxy;
 		state.markModified("httpProxy");
+		state.save();
+	},
+
+	getDbosSystemDatabaseUrl() {
+		return settingsInternals(this).globalSettings.dbosSystemDatabaseUrl;
+	},
+
+	setDbosSystemDatabaseUrl(url) {
+		const state = settingsInternals(this);
+		state.globalSettings.dbosSystemDatabaseUrl = url;
+		state.markModified("dbosSystemDatabaseUrl");
 		state.save();
 	},
 

@@ -182,6 +182,7 @@ export interface ExtensionContextActions {
 	getThinkingLevel: () => ThinkingLevel | undefined;
 	isIdle: () => boolean;
 	isProjectTrusted: () => boolean;
+	getDbosSystemDatabaseUrl: () => string | undefined;
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;

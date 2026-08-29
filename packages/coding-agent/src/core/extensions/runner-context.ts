@@ -31,6 +31,7 @@ export interface ExtensionContextSource {
 	hasUI(): boolean;
 	getCwd(): string;
 	getSessionManager(): SessionManager;
+	getDbosSystemDatabaseUrl(): string | undefined;
 	getModelRegistry(): ModelRegistry;
 	getModel(): Model<Api> | undefined;
 	getScopedModels(): readonly ScopedModel[];
@@ -130,6 +131,10 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		get sessionManager() {
 			source.assertActive();
 			return source.getSessionManager();
+		},
+		get dbosSystemDatabaseUrl() {
+			source.assertActive();
+			return source.getDbosSystemDatabaseUrl();
 		},
 		get modelRegistry() {
 			source.assertActive();

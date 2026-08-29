@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Durable workflow database selection now follows `DBOS_SYSTEM_DATABASE_URL` → global `dbosSystemDatabaseUrl` → embedded PostgreSQL precedence, without silently replacing an unreachable external selection with a local database.
+
 ## [0.9.16] - 2026-08-29
 
 Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

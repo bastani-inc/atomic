@@ -1,3 +1,4 @@
+import { setDbosSystemDatabaseUrlSetting } from "../durable/dbos-local-postgres.js";
 import { buildIntercomCallbacks } from "../intercom/intercom-routing.js";
 import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import { store } from "../shared/store.js";
@@ -69,11 +70,16 @@ function registerIntercomControl(pi: ExtensionAPI, intercomControlRef: { current
 	);
 }
 
+export function applyWorkflowDurabilitySetting(ctx: { dbosSystemDatabaseUrl?: string } | undefined): void {
+	setDbosSystemDatabaseUrlSetting(ctx?.dbosSystemDatabaseUrl);
+}
+
 function factory(pi: ExtensionAPI): void {
 	// A child AgentSession is not a workflow owner. Loading this lifecycle there
 	// would rebind process-shared run state away from the parent host session.
 	if (pi.subagentPolicy !== undefined) return;
 	adoptWorkflowSessionRunState(pi.events);
+	pi.on?.("session_start", (_event, ctx) => applyWorkflowDurabilitySetting(ctx));
 
 	const adapters = buildRuntimeAdapters(pi);
 	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);

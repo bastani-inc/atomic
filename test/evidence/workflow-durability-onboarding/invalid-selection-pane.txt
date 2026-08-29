@@ -1,0 +1,40 @@
+[38;2;95;135;255m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+[39m [38;2;138;190;183mWhat durable backend would you like to use for workflows?
+[39m [38;2;138;190;183mLeave empty to use Atomic’s embedded PostgreSQL, or enter a PostgreSQL connection URL for a hosted or self-hosted
+[39m [38;2;138;190;183minstance.[39m
+
+> https://database.example/workflows[7m [0m
+
+ [38;2;102;102;102menter[38;2;128;128;128m submit[39m  [38;2;102;102;102mesc/ctrl+c[38;2;128;128;128m cancel[39m
+
+ [38;2;204;102;102mEnter a PostgreSQL connection URL using the postgres: or postgresql: scheme.[39m
+[38;2;95;135;255m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
