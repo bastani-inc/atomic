@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,6 +24,7 @@ import { type PackageSource, SettingsManager } from "../../packages/coding-agent
 import { discoverAgentsAll } from "../../packages/subagents/src/agents/agents.js";
 import type { Details } from "../../packages/subagents/src/shared/types.js";
 import {
+	buildRuntimeAdapters,
 	type PiCodingAgentSdk,
 	type PiSdkResourceLoader,
 	type PiSdkSettingsManager,
@@ -65,6 +66,10 @@ function restoreEnv(snapshot: ReadonlyMap<string, string | undefined>): void {
 		else process.env[key] = value;
 	}
 }
+type InspectableStageSession = StageSessionRuntime & {
+	getAllTools(): Array<{ name: string }>;
+	getActiveToolNames(): string[];
+};
 
 class StageDefaultResourceLoader extends DefaultResourceLoader implements PiSdkResourceLoader {
 	constructor(options: {
@@ -454,4 +459,87 @@ describe("workflow stage bundled resources", () => {
 			session.dispose();
 		}
 	});
+	test(
+		"inherits package extension tools through the real workflow stage session factory",
+		async () => {
+			const savedNodeEnv = process.env.NODE_ENV;
+			const savedNodeTestContext = process.env.NODE_TEST_CONTEXT;
+			const cwd = tempDir("atomic-workflow-stage-package-extension-cwd-");
+			const agentDir = join(cwd, "agent");
+			const packageDir = tempDir("atomic-workflow-stage-package-extension-");
+			mkdirSync(join(packageDir, ".atomic", "extensions"), { recursive: true });
+			writeFileSync(
+				join(packageDir, "package.json"),
+				JSON.stringify({ name: "workflow-stage-package-extension" }),
+				"utf-8",
+			);
+			writeFileSync(
+				join(packageDir, ".atomic", "extensions", "index.ts"),
+				[
+					"export default function register(pi) {",
+					"  pi.on('session_start', () => {",
+					"    for (const name of ['package_tool_alpha', 'package_tool_beta']) {",
+					"      pi.registerTool({ name, label: name, description: name, parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [{ type: 'text', text: 'ok' }], details: {} }) });",
+					"    }",
+					"  });",
+					"}",
+				].join("\n"),
+				"utf-8",
+			);
+
+			const parentSettingsManager = SettingsManager.inMemory();
+			const parentLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: parentSettingsManager,
+				additionalExtensionPaths: [packageDir],
+				builtinPackagePaths: getBuiltinPackagePaths(),
+			});
+			await parentLoader.reload({ resolveBorrowedProjectTrust: async () => true });
+			const { session: parentSession } = await createAgentSession({
+				cwd,
+				agentDir,
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				settingsManager: parentSettingsManager,
+				resourceLoader: parentLoader,
+				sessionManager: SessionManager.inMemory(cwd),
+			});
+			await parentSession.bindExtensions({});
+			const parentToolNames = parentSession.getAllTools().map((tool) => tool.name);
+			assert.ok(parentToolNames.includes("package_tool_alpha"));
+			assert.ok(parentToolNames.includes("package_tool_beta"));
+
+			delete process.env.NODE_ENV;
+			delete process.env.NODE_TEST_CONTEXT;
+			try {
+				const adapters = buildRuntimeAdapters({
+					getResourceLoaderInheritanceSnapshot: () => parentLoader.getInheritanceSnapshot(),
+				});
+				const result = await adapters.agentSession!.create({
+					cwd,
+					agentDir,
+					model: getModel("anthropic", "claude-sonnet-4-5")!,
+					tools: ["package_tool_alpha", "package_tool_beta"],
+					sessionManager: SessionManager.inMemory(cwd),
+				});
+				const session = ("session" in result ? result.session : result) as InspectableStageSession;
+				try {
+					const allToolNames = session.getAllTools().map((tool) => tool.name);
+					const activeToolNames = session.getActiveToolNames();
+					assert.ok(allToolNames.includes("package_tool_alpha"), `registered tools: ${allToolNames.join(", ")}`);
+					assert.ok(allToolNames.includes("package_tool_beta"), `registered tools: ${allToolNames.join(", ")}`);
+					assert.deepEqual(activeToolNames.sort(), ["package_tool_alpha", "package_tool_beta"]);
+				} finally {
+					session.dispose();
+				}
+			} finally {
+				if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+				else process.env.NODE_ENV = savedNodeEnv;
+				if (savedNodeTestContext === undefined) delete process.env.NODE_TEST_CONTEXT;
+				else process.env.NODE_TEST_CONTEXT = savedNodeTestContext;
+				parentSession.dispose();
+			}
+		},
+		REAL_WORKFLOW_STAGE_RESOURCE_TIMEOUT_MS,
+	);
 });

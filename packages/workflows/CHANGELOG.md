@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Fixed Git-installed workflow discovery when production-only package installs omit local TypeBox by resolving `typebox/compile`, `typebox/value`, and supported legacy `@sinclair/typebox` aliases through the host loader for workflow files and their helpers.
 - Fixed a hung DBOS write in one workflow blocking independent top-level workflows before startup admission. Durable writes now remain ordered per root workflow while workflow-local flushes wait only their own root; process shutdown still drains every root.
 
 ## [0.9.16-alpha.10] - 2026-08-28

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed workflow discovery helpers from Git-installed production-only packages by making the workflow module loader resolve the same supported TypeBox runtime aliases as extension loading, including `typebox/compile`, `typebox/value`, and legacy `@sinclair/typebox` subpaths.
 - Fixed independent workflow launches appearing indefinitely as empty `running` runs when another workflow's DBOS write stalled. Durable write ordering and errors are isolated per root workflow without weakening the global shutdown drain.
 
 ## [0.9.16-alpha.10] - 2026-08-28

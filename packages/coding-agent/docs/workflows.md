@@ -3743,9 +3743,9 @@ Workflow stage sessions inherit the same package and temporary `-e` resource dis
 
 ## Programmatic usage
 
-`@bastani/atomic/workflows` is Atomic's published workflow SDK. Import `workflow` from that specifier, import `Type` from `typebox`, and export the definition returned by `workflow({...})`. Keep runtime helpers such as widget factories and shared utilities in a subdirectory outside the top-level discovery scan, such as `.atomic/workflows/lib/`; see [Workflow Locations](#workflow-locations).
+`@bastani/atomic/workflows` is Atomic's published workflow SDK. Import `workflow` from that specifier, import `Type` from `typebox`, and export the definition returned by `workflow({...})`. Workflow helpers may also import the host TypeBox runtime subpaths `typebox/compile` and `typebox/value`; the legacy `@sinclair/typebox` root and matching subpaths remain supported. Keep runtime helpers such as widget factories and shared utilities in a subdirectory outside the top-level discovery scan, such as `.atomic/workflows/lib/`; see [Workflow Locations](#workflow-locations).
 
-Package authors list both `@bastani/atomic` and `typebox` in `peerDependencies`. The `@bastani/atomic` package publishes compiled JavaScript and declarations for `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin`, and each `@bastani/atomic/workflows/builtin/*` module. TypeScript resolves those exports directly under `moduleResolution: NodeNext`. When Atomic executes a workflow file, its runtime loader resolves the same published specifiers to Atomic's in-memory SDK.
+Package authors list both `@bastani/atomic` and `typebox` in `peerDependencies`. The `@bastani/atomic` package publishes compiled JavaScript and declarations for `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin`, and each `@bastani/atomic/workflows/builtin/*` module. TypeScript resolves those exports directly under `moduleResolution: NodeNext`. When Atomic executes a workflow file or an imported helper, its runtime loader resolves the workflow SDK and supported TypeBox aliases to the same in-memory host modules. It intentionally does not expose extension-only host modules such as the agent core, UI, provider transport, or lockfile implementation.
 
 ```ts
 import { workflow } from "@bastani/atomic/workflows";
