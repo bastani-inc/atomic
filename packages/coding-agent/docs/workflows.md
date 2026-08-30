@@ -30,177 +30,43 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 
 ## Table of Contents
 
-- [Quick Start](#quick-start)
+- [Authoring journey](#authoring-journey)
 - [When to Use Workflows](#when-to-use-workflows)
 - [The Run Contract](#the-run-contract)
+- [Core loop and prompt anatomy](#core-loop-and-prompt-anatomy)
 - [Built-in Workflows](#built-in-workflows)
+- [Select a common pattern](#select-a-common-pattern)
+- [Quick Start](#quick-start)
 - [Writing a Workflow](#writing-a-workflow)
+- [Context Engineering](#context-engineering)
 - [Scope-Guard Starter Pattern](#scope-guard-starter-pattern)
+- [Design Checklist](#design-checklist)
+- [Workflow Locations](#workflow-locations)
+- [Reloading workflow resources](#reloading-workflow-resources)
+- [Running Workflows](#running-workflows)
+- [Exhaustive reference](#exhaustive-reference)
+- [Writing workflow details](#writing-workflow-details)
+- [Scope-guard examples](#scope-guard-examples)
+- [Common pattern reference](#common-pattern-reference)
 - [The `workflow()` definition](#the-workflow-definition)
 - [WorkflowContext](#workflowcontext)
 - [Task and Stage Options](#task-and-stage-options)
 - [StageContext](#stagecontext)
 - [Result Types](#result-types)
-- [Running Workflows](#running-workflows)
 - [Workflow Commands](#workflow-commands)
 - [Monitor and Control Runs](#monitor-and-control-runs)
 - [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input)
 - [Durable Workflows and Cross-Session Resume](#durable-workflows-and-cross-session-resume)
-- [Workflow Locations](#workflow-locations)
-- [Reloading workflow resources](#reloading-workflow-resources)
+- [Run budgets](#run-budgets)
 - [Workflow Configuration](#workflow-configuration)
 - [Settings](#settings)
 - [Package Setup](#package-setup)
 - [Programmatic usage](#programmatic-usage)
 - [Fast inference for workflow stages](#fast-inference-for-workflow-stages)
-- [Context Engineering](#context-engineering)
-- [Design Checklist](#design-checklist)
 - [Common Mistakes](#common-mistakes)
 - [Workflow Best Practices](#workflow-best-practices)
 
-## Quick Start
-
-
-To start a workflow quickly, **describe it in natural language** and let Atomic write it. If you'd rather write the TypeScript yourself, jump to [Or hand-write the TypeScript](#or-hand-write-the-typescript) below.
-
-### Just describe it
-
-Describe the workflow you want in plain chat and Atomic will design and write it for you, using this page as its authoring reference:
-
-```text
-Create a reusable Atomic workflow called explain-file. It takes one required
-text input `path` and runs a single fresh-context task that reads the file,
-then returns { explanation } summarizing purpose, risks, and key symbols.
-```
-
-For example:
-
-```text
-Create a reusable Atomic workflow called review-changes.
-
-It should accept one required text input `target` for a diff, PR summary, or
-review focus.
-
-Run two independent reviewers in parallel with fresh context:
-- one focused on correctness, regressions, and missing tests
-- one focused on edge cases, maintainability, and hidden risks
-
-Then add a synthesis stage that consolidates both reviews, deduplicates
-overlap, keeps only evidence-backed issues, and separates blockers from
-optional suggestions.
-
-Return structured output with `consolidated_review` and `decision` fields.
-```
-
-Atomic will:
-
-- ask clarifying questions when stage purpose, inputs, models, or handoffs are ambiguous,
-- write a `.atomic/workflows/<name>.ts` file using `workflow({...})`,
-- pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [WorkflowContext primitives](#workflowcontext) and [task options](#task-and-stage-options) reference,
-- use `ctx.tool(name, args, fn)` for workflow-owned side effects so completed operations are durably checkpointed and do not run again after resume (see [`ctx.tool`](#ctxtool--durable-cached-tool-execution)),
-- run `/workflow reload` so Atomic rediscovers the workflow resource and you can launch it immediately,
-- then report the generated workflow folder so you can inspect the code it wrote, using `Custom workflow created. You can inspect its code at: <workflow-folder-path>` (for example, `.atomic/workflows/`); Atomic does this only for newly created custom workflows, never builtin or pre-existing workflows.
-
-
-You can also edit or harden an existing workflow in plain chat — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate.
-
-List and run it like any other workflow:
-
-```text
-/workflow list
-/workflow inputs <name>
-/workflow <name> key=value ...
-```
-
-Named workflow runs execute in the background. By default, after launch expect a full run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`. A definition with `autoAttach: true` instead opens the graph overlay as soon as an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. This option does not affect headless launches or nested `ctx.workflow(...)` calls, and existing input-form launch behavior is unchanged.
-
-For a request with several implementation items, do not turn list order into one serial workflow by default. Triage dependencies first, then launch independent items as a bounded wave of separate top-level runs; see [Task queues and software factories](#task-queues-and-software-factories).
-
-While a workflow is running, the visible below-editor `BACKGROUND` panel advances its elapsed label every second from the moment the run starts; it does not require opening or switching to the orchestrator. Updates repaint the existing mounted panel in place, paused timers stay frozen, the panel renders every qualifying top-level run, and terminal or quit cards retain their brief recent-run expiry. A zero-stage workflow whose work consists only of `ctx.tool(...)` calls mounts the same panel without a synthetic stage: at normal widths its run metadata reports the live-tool total when more than one is active, followed by pending and running durable tool-node names and statuses as space permits; the collapsed narrow form reports only the number of live tools. Quit cards remain resumable and discoverable with `/workflow status` after they leave the panel. A run waiting for human input uses the blue `？` indicator in the BACKGROUND panel, the `/workflow connect` picker, and the `/workflow status` listing; answering or cancelling the prompt restores the run's current indicator.
-
-### Workflow run identifiers and the BACKGROUND panel
-
-Workflow run identifiers are shown in full everywhere they are presented to users: the `BACKGROUND` panel, workflow status and detail views, run pickers, control messages, and awaiting-input attribution banners. Input matches that: every command and workflow-tool action that accepts `runId` requires the **full 36-character UUID**, exactly as displayed. Typed prefixes are not accepted, and neither is a 32-character dashless form. A target that is not a well-formed UUID is rejected with `Run id must be a full 36-character UUID; got "339e05a4" (8 chars).`, which is deliberately distinct from `Run not found:` so a truncated paste is diagnosable as truncated rather than looking like a stale run. Because ids are unique and matched exactly, a run target can no longer be ambiguous.
-
-Stage targeting is exact but not UUID-bound, because stage identifiers are not all bare UUIDs. A `stageId` resolves by exact stage id — a bare UUID at the root, the full `runId:stageId` composite for a stage inside a nested workflow, or `tool:<argsHash>` for a `ctx.tool` node — or by exact stage or tool name. Partial names no longer match, so `build` will not select `build-check`. Two stages that share an exact name are still reported as ambiguous, listing the full matching identifiers.
-
-#### Intercom delivery to pending workflow stages
-
-A known workflow stage whose session has not initialized is still addressable by the workflow run's full UUID and its exact authored stage key. From a sibling session in the same workflow Intercom group, use ordinary Intercom delivery:
-
-```ts
-intercom({
-  action: "send",
-  to: "<runId>:reviewer",
-  message: "Scope changed: raw amendment text is now part of the oracle."
-})
-// queued — distinct from live-session delivered
-```
-
-Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages only for known pending stages and delivers them when their sessions initialize, before their first model turn. Live stage delivery is immediate. Use `ask` once the stage session is live and can reply. Unknown run/stage identities retain the ordinary unknown-target failure.
-
-The workflows extension persists pending messages with run state across resume/replay and broker restart. Each exact run/stage key accepts 50 queued messages; the next send is refused without eviction. Only sessions in the run's Intercom group may queue them. When the stage session initializes, Atomic delivers its messages FIFO through the ordinary inbound Intercom path **before the first model turn**. The transcript labels them **Messages received before you started**, preserves sender identity and `Sent:` timestamps, and keeps them separate from the stage task prompt. Duplicate logical message IDs and stage-attempt restarts do not redeliver a message.
-
-If the destination is skipped, the run is cancelled, or the stage becomes terminal before its session initializes, Atomic marks queued messages undeliverable rather than dropping them. Senders whose messages requested acknowledgment receive a correlated failure notification. Running and completed stages continue through their existing live, late, and post-mortem routes.
-
-
-At 80 columns and wider, each `BACKGROUND` card uses two rows so the id is not squeezed beside the workflow name: the first row contains the status glyph and full UUID, and the second contains the workflow name followed by its mode, progress, live-tool total when more than one is active, pending/running `ctx.tool` node names and statuses as space permits, and elapsed/status metadata. Tool nodes are read-only durable graph nodes, not attachable stage chats. The panel renders every qualifying top-level run, so each card is two rows high (plus the existing spacing between cards). Below 80 columns, the panel keeps its collapsed form, omits ids and tool names, and includes a live-tool count when one or more tool nodes are pending or running.
-
-For chat surfaces such as workflow status, run detail, dispatch confirmation, and the run picker, a full id wraps onto continuation rows when the card is narrower than the id. The renderer never ellipsizes the id and keeps the card border closed at its minimum layout width, while terminals below that floor — including sub-30-column terminals — can hard-clip the box. An awaiting-input attribution banner is titled `AWAITING INPUT` and contains the same two identity rows — `？` plus the full run id, then the workflow name and optional metadata — while the existing prompt question and options remain below it in the normal prompt UI.
-
-The `/workflow connect` run picker shows five runs at a time; use the arrow keys or mouse wheel to scroll through additional retained runs.
-
-The rendered card shape at the 80-column breakpoint is:
-
-```text
-│   ●  339e05a4-2289-408e-9076-d1a348f582ae                                    │
-│     stage-output-transcript · chain · 2/3 · 12m                              │
-│                                                                              │
-│   ●  d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f                                    │
-│     build-check · chain · 0/2 · 12m                                          │
-```
-
-Below the breakpoint the same run set is represented by the collapsed count line, for example ` ▾  4 background · 2 ● · 1 quit`; a tool-only run adds its live count, for example ` ▾  1 background · 1 ● · 1 tool`.
-
-### Or hand-write the TypeScript
-
-Workflow files are plain TypeScript modules. Create `.atomic/workflows/explain-file.ts`:
-
-```ts
-import { workflow } from "@bastani/atomic/workflows";
-import { Type } from "typebox";
-
-export default workflow({
-  name: "explain-file",
-  description: "Explain a file with tracked workflow stages.",
-  inputs: {
-    path: Type.String({ description: "File path to explain." }),
-  },
-  outputs: {
-    explanation: Type.String({
-      description: "Explanation of the file's purpose, risks, and key symbols.",
-    }),
-  },
-  run: async (ctx) => {
-    const explanation = await ctx.task("explain", {
-      prompt: `Read ${String(ctx.inputs.path)} and explain purpose, risks, and key symbols.`,
-      context: "fresh",
-    });
-
-    return { explanation: explanation.text };
-  },
-});
-```
-
-Run `/workflow reload` or restart Atomic, then list and run it:
-
-```text
-/workflow list
-/workflow inputs explain-file
-/workflow explain-file path="src/index.ts"
-```
-
-See [Writing a Workflow](#writing-a-workflow) for the full `workflow({...})` API and [WorkflowContext](#workflowcontext) for `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.stage` / `ctx.ui`.
+## Authoring journey
 
 ## When to Use Workflows
 
@@ -744,6 +610,101 @@ An agent launching or steering a run should make this call per message rather th
 - **Expect amendments in the reports.** If a stage received one and its report has no `Contract amendments received` section, the amendment did not propagate and downstream stages will not honor it.
 - **A growing diff with no new criteria is a defect.** That is the tell that scope discipline slipped, and it is a legitimate reason to stop a run.
 
+## Core loop and prompt anatomy
+
+This playbook helps coding agents and workflow systems produce better results.
+
+Treat an agent as a capable engineering partner that needs a clear objective, tight scope, explicit validation, and occasional steering.
+
+Most weak agent runs fail for predictable reasons: the goal is vague, the scope is too broad, validation is missing, or the agent keeps following the wrong signal. This playbook addresses these failure modes.
+
+The examples below are synthetic and intentionally generic. Replace placeholders like `[component]`, `[test command]`, and `[workflow]` with your own project details.
+
+---
+
+### The core loop
+
+The core workflow pattern is:
+
+```text
+Objective -> Scope -> Done criteria -> Run -> Inspect -> Steer -> Validate -> Summarize
+```
+
+Apply this loop per independently verifiable implementation item. When a request contains several items, first use the [task-queue triage and bounded per-item dispatch rule](#task-queues-and-software-factories); do not make one item's inspect/steer/validate cycle block an unrelated item.
+
+Use this sequence:
+
+1. Define the end state.
+2. Constrain the blast radius.
+3. State what counts as done.
+4. Run the agent or workflow.
+5. Inspect status before reading details.
+6. Steer only when the run is off track, blocked, or missing criteria.
+7. Require evidence before accepting the result.
+8. Ask for a summary, handoff, or next-step plan.
+
+A good workflow prompt states both the task and its success criteria.
+
+---
+
+### Prompt anatomy
+
+A strong workflow prompt usually includes:
+
+#### Objective
+
+What should be true when the work is complete?
+
+```text
+Implement `[specific behavior]` in `[component]`.
+```
+
+#### Context
+
+What does the agent need to know before acting?
+
+```text
+This is needed because `[reason]`. The relevant code likely lives near `[area]`.
+```
+
+#### Scope
+
+What is the agent allowed to change?
+
+```text
+Only touch files directly required for `[behavior]`.
+```
+
+#### Non-goals
+
+What should the agent avoid?
+
+```text
+Do not redesign `[subsystem]`, refactor unrelated code, or change public behavior outside `[case]`.
+```
+
+#### Done criteria
+
+How will we know the work is complete?
+
+```text
+Done means:
+- `[new behavior]` works.
+- `[existing behavior]` is unchanged.
+- `[test command]` passes.
+- The final response includes changed files, validation results, and remaining risks.
+```
+
+#### Stop conditions
+
+When should the agent stop and ask instead of guessing?
+
+```text
+If this requires changing `[public API/security behavior/data migration]`, stop and ask first.
+```
+
+---
+
 ## Built-in Workflows
 
 Atomic bundles nine workflows: six reusable control-flow patterns, two autonomous implementation loops, and one end-to-end design workflow. They are available in every session. Use `/workflow list` to confirm the current set and `/workflow inputs <name>` to inspect a contract before launch.
@@ -894,6 +855,146 @@ Run open-claude-design to refresh the settings page hierarchy.
 ```
 
 If required inputs are missing or ambiguous, Atomic asks for them or opens the inline picker. Named runs execute in the background and return a full run id.
+
+## Select a common pattern
+
+### Common Workflow Patterns
+
+For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
+
+The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** and **Stacked implementation slices** are authoring starter patterns rather than builtins; compose scope guard's [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives, and use stacked slices to unroll dependent implementation children through existing `ctx.workflow(...)` boundaries. **Constructive quorum** is an accepted reviewer-coordination pattern used by `goal` and `ralph`; it is prompt guidance rather than a standalone builtin.
+
+These patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run. Constructive quorum shapes bounded deliberation inside parallel reviewer stages; stacked implementation slices split one objective inside that lifecycle; queue triage splits separate whole items.
+
+| Pattern | Use it when | Atomic shape |
+|---|---|---|
+| **Classify-and-act** | Inputs arrive in different categories and each category needs a different path, model, tool set, or output format. | `ctx.task("classify")` → deterministic branch → category-specific `ctx.task`, `ctx.chain`, `ctx.parallel`, or child `ctx.workflow(...)`. |
+| **Fan-out-and-synthesize** | The task can be split into many independent slices that benefit from clean context windows. | `ctx.parallel([...])` with separate artifacts → synthesis barrier that reads the artifacts and merges the answer. |
+| **Adversarial verification** | Outputs need independent checking against a rubric, security rule, factual source, or acceptance contract. | Worker stage(s) → fresh-context verifier stage(s) → reducer that accepts, rejects, or asks for repair. |
+| **Generate-and-filter** | You need many candidate ideas, plans, names, fixes, or hypotheses before selecting the best few. | Generator fan-out → dedupe/filter stage → optional verifier/judge → final shortlist. |
+| **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → seeded ring and pivot rounds score each candidate pair by criterion → reducer reports the winner and full ranking. |
+| **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
+| **Constructive quorum** | Several fresh-context verifiers judge the same artifact and a tallied vote could mask a defect one verifier found or block on one verifier's misreading. | Parallel verifiers form independent preliminary verdicts → exactly one bounded Intercom evidence-exchange round (share and challenge evidence) → each emits its own final structured verdict → deterministic reducer counts votes. |
+| **Scope guard** | A worker or repair stage may turn valid adjacent findings into unplanned work. | Immutable contract artifact → fresh boundary or live scope checker → bounded decision artifact → forked worker continuation; correctness review stays separate. |
+| **Stacked implementation slices** | One dependent implementation objective is too broad for one verified diff but can be divided into ordered, independently verifiable concerns. | Pre-launch slice plan → sequential child `ctx.workflow(...)` boundaries (`goal`, `ralph`, or a task-specific child) → each slice's gates → next slice based on the previous verified branch and worktree, or stop/report at the first failure. |
+
+Constructive quorum relies on existing Intercom mechanics: every workflow invocation gets its own stable Intercom group, and parallel stages and delegated subagents inherit it when they can use Intercom. Reviewers can therefore reach siblings without authoring group plumbing; keep the evidence exchange bounded and leave quorum counting to the deterministic reducer.
+
+#### Choosing a common workflow pattern
+
+- Pick **classify-and-act** when routing correctness matters more than breadth.
+- Pick **fan-out-and-synthesize** when the work divides cleanly into independent slices.
+- Pick **adversarial verification** when the main risk is a plausible but wrong answer.
+- Pick **generate-and-filter** when output quality depends on exploring a large option space.
+- Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
+- Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
+- Pick **constructive quorum** when several fresh-context verifiers judge one artifact and a simple tally could hide a defect or preserve one verifier's misreading; use one bounded evidence exchange before each verifier emits its own final vote.
+- Pick **scope guard** when valid adjacent findings could expand a worker or repair stage beyond its immutable contract; choose a boundary task by default and live parallel steering only when timing requires it.
+- Pick **stacked implementation slices** when one dependent implementation objective needs ordered, independently verified layers. Keep the 100–500 line range as a default with atomic-change escapes; create or check out each named branch before its child, create each next branch from the previous verified branch, pass that previous branch as `base_branch`, use a distinct `git_worktree_dir`, and stop at the first failed gate.
+
+Record the selected pattern in your spec or workflow README, then adapt the diagram to the stage graph. If the final design does not resemble any common pattern, explain why in the workflow's design notes.
+
+---
+
+## Quick Start
+
+
+To start a workflow quickly, **describe it in natural language** and let Atomic write it. If you'd rather write the TypeScript yourself, jump to [Or hand-write the TypeScript](#or-hand-write-the-typescript) below.
+
+### Just describe it
+
+Describe the workflow you want in plain chat and Atomic will design and write it for you, using this page as its authoring reference:
+
+```text
+Create a reusable Atomic workflow called explain-file. It takes one required
+text input `path` and runs a single fresh-context task that reads the file,
+then returns { explanation } summarizing purpose, risks, and key symbols.
+```
+
+For example:
+
+```text
+Create a reusable Atomic workflow called review-changes.
+
+It should accept one required text input `target` for a diff, PR summary, or
+review focus.
+
+Run two independent reviewers in parallel with fresh context:
+- one focused on correctness, regressions, and missing tests
+- one focused on edge cases, maintainability, and hidden risks
+
+Then add a synthesis stage that consolidates both reviews, deduplicates
+overlap, keeps only evidence-backed issues, and separates blockers from
+optional suggestions.
+
+Return structured output with `consolidated_review` and `decision` fields.
+```
+
+Atomic will:
+
+- ask clarifying questions when stage purpose, inputs, models, or handoffs are ambiguous,
+- write a `.atomic/workflows/<name>.ts` file using `workflow({...})`,
+- pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [WorkflowContext primitives](#workflowcontext) and [task options](#task-and-stage-options) reference,
+- use `ctx.tool(name, args, fn)` for workflow-owned side effects so completed operations are durably checkpointed and do not run again after resume (see [`ctx.tool`](#ctxtool--durable-cached-tool-execution)),
+- run `/workflow reload` so Atomic rediscovers the workflow resource and you can launch it immediately,
+- then report the generated workflow folder so you can inspect the code it wrote, using `Custom workflow created. You can inspect its code at: <workflow-folder-path>` (for example, `.atomic/workflows/`); Atomic does this only for newly created custom workflows, never builtin or pre-existing workflows.
+
+
+You can also edit or harden an existing workflow in plain chat — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate.
+
+List and run it like any other workflow:
+
+```text
+/workflow list
+/workflow inputs <name>
+/workflow <name> key=value ...
+```
+
+Named workflow runs execute in the background. By default, after launch expect a full run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`. A definition with `autoAttach: true` instead opens the graph overlay as soon as an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. This option does not affect headless launches or nested `ctx.workflow(...)` calls, and existing input-form launch behavior is unchanged.
+
+For a request with several implementation items, do not turn list order into one serial workflow by default. Triage dependencies first, then launch independent items as a bounded wave of separate top-level runs; see [Task queues and software factories](#task-queues-and-software-factories).
+
+While a workflow is running, the visible below-editor `BACKGROUND` panel advances its elapsed label every second from the moment the run starts; it does not require opening or switching to the orchestrator. Updates repaint the existing mounted panel in place, paused timers stay frozen, the panel renders every qualifying top-level run, and terminal or quit cards retain their brief recent-run expiry. A zero-stage workflow whose work consists only of `ctx.tool(...)` calls mounts the same panel without a synthetic stage: at normal widths its run metadata reports the live-tool total when more than one is active, followed by pending and running durable tool-node names and statuses as space permits; the collapsed narrow form reports only the number of live tools. Quit cards remain resumable and discoverable with `/workflow status` after they leave the panel. A run waiting for human input uses the blue `？` indicator in the BACKGROUND panel, the `/workflow connect` picker, and the `/workflow status` listing; answering or cancelling the prompt restores the run's current indicator.
+
+### Or hand-write the TypeScript
+
+Workflow files are plain TypeScript modules. Create `.atomic/workflows/explain-file.ts`:
+
+```ts
+import { workflow } from "@bastani/atomic/workflows";
+import { Type } from "typebox";
+
+export default workflow({
+  name: "explain-file",
+  description: "Explain a file with tracked workflow stages.",
+  inputs: {
+    path: Type.String({ description: "File path to explain." }),
+  },
+  outputs: {
+    explanation: Type.String({
+      description: "Explanation of the file's purpose, risks, and key symbols.",
+    }),
+  },
+  run: async (ctx) => {
+    const explanation = await ctx.task("explain", {
+      prompt: `Read ${String(ctx.inputs.path)} and explain purpose, risks, and key symbols.`,
+      context: "fresh",
+    });
+
+    return { explanation: explanation.text };
+  },
+});
+```
+
+Run `/workflow reload` or restart Atomic, then list and run it:
+
+```text
+/workflow list
+/workflow inputs explain-file
+/workflow explain-file path="src/index.ts"
+```
+
+See [Writing a Workflow](#writing-a-workflow) for the full `workflow({...})` API and [WorkflowContext](#workflowcontext) for `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.stage` / `ctx.ui`.
 
 ## Writing a Workflow
 
@@ -1076,6 +1177,416 @@ Also document the context that stages pass to one another:
 See [Context Engineering](#context-engineering) for details.
 
 Protect a stage's role constraints, acceptance criteria, and prohibitions with `keepContext` so compaction cannot delete them out from under a long-running stage — see [Protect the contract from compaction](#protect-the-contract-from-compaction).
+
+## Context Engineering
+
+A workflow is an information-flow system, not just a list of prompts. Most workflow failures come from missing, stale, oversized, or poorly-routed context. Design every stage boundary deliberately.
+
+### Locally Scoped Stage Prompts
+
+Stage prompts should define local contracts, not describe the full workflow runtime. Write prompts as if the stage could be executed independently from a fresh session with only the listed inputs. A useful compact shape is `Role · Goal · Success criteria · Constraints · Tools · Output · Stop rules`; omit sections that do not change behavior. Include:
+
+- the stage's current objective and what is out of scope for this stage
+- the exact files, artifacts, child outputs, or user inputs it may use; put long inputs before the final instruction
+- context-dependent tool routes and permission boundaries, without describing tools the stage cannot call
+- the expected output format and length, or the schema it must return when the workflow item is schema-enabled
+- the checks, tools, or deterministic commands it should run when relevant, plus evidence required for progress or completion claims
+- the success criteria and blocker conditions that let this stage stop
+
+State important constraints once. Reserve absolute wording for safety, required fields, forbidden actions, gating derivations, and other true invariants; express search, iteration, and delegation choices as decision rules. Ask for conclusions, commands, observed results, and citations—not private reasoning or generic self-verification.
+
+Avoid unrelated workflow internals such as reducer algorithms, future PR stages, sibling reviewer names, loop implementation details, or project-specific nicknames unless they are explicitly part of the current stage contract. If a term such as a gate name, ledger field, or workflow nickname is necessary, define it in the prompt before using it.
+
+Choose context mode deliberately. Use `context: "fork"` or `forkFromSessionFile` for coherent long-running implementation stages that need continuity from their own earlier work. Use `context: "fresh"` for unbiased reviewer, evaluator, and gate stages so they inspect the current files and explicit artifacts rather than inheriting the implementer's assumptions. When continuity is needed across fresh stages, pass it explicitly through files, declared outputs, and `reads`.
+
+### Context-Mode-Aware Prompt Text
+
+Context mode is an execution property configured with `context`/`forkFromSessionFile`; the model cannot act on context mode, so keep it out of prompt text:
+
+- **Never describe the stage's own context mode.** Sentences like "you are running in a fresh context window", "your context is clean/non-forked", or "this is a forked session" add tokens without changing behavior. State the concrete action, inputs, and success criteria instead.
+- **Fresh stages must not reference invisible context.** A fresh stage has no "previous conversation", cannot see sibling stages, and does not know the surrounding graph, so instructions like "compare against previous workflow reasoning" or "this runs in parallel with the locator pass" do not help and may confuse the model. Phrase the same intent stage-locally ("compare the working tree against the baseline branch"; "do your own scan; do not assume any other stage's output is available") and pass any state the stage needs through files, declared outputs, and `reads`.
+- **Forked continuation prompts send only the delta.** A forked stage already carries the role, contracts, guidance, and output format from its own earlier prompts, so repeating them uses more tokens and can make the two copies diverge. Send what changed since the fork point — new artifacts, updated state, the next action — plus a one-line pointer back ("the contracts and report format established earlier in this thread still apply unchanged") instead of re-injecting the full text.
+- **Keep one canonical copy of shared contracts.** When fresh and forked variants of a stage share guidance, render the full contract only in the prompt that first establishes it and reference it from continuations. If a continuation needs a contract restated (for example, after a schema change), that is a new contract version, not a repeat.
+
+Long-running worker/reviewer workflows should follow this pattern: establish the complete contract once, then send forked continuation turns only the latest state and artifact paths with a pointer back to the established guidance.
+
+### Context Fundamentals
+
+Treat context as a finite attention budget. Include only information needed for the current decision, place critical constraints near the beginning or end of prompts, and use progressive disclosure instead of loading every possible reference up front.
+
+Common context sources:
+
+- **System instructions:** persistent behavior and guardrails.
+- **User inputs:** workflow inputs and human-in-the-loop decisions.
+- **Retrieved documents:** files, search results, logs, API responses, and artifacts.
+- **Message history:** useful for continuity, but grows quickly in long-running stages.
+- **Tool outputs:** often the largest source of context bloat.
+
+For long workflows, assume effective model performance degrades before the advertised context limit. Keep high-signal summaries and artifact references close to the stage that needs them.
+
+### Context Degradation Patterns
+
+Watch for these failure modes in long or multi-stage workflows:
+
+| Pattern | Symptom | Mitigation |
+|---------|---------|------------|
+| Lost in the middle | Important constraints are ignored in long prompts | Shorten the handoff; place documents first and the final query/critical contract last |
+| Context poisoning | Bad or obsolete information steers later stages | Validate sources, overwrite stale artifacts, cite evidence |
+| Distraction | Irrelevant context crowds out useful context | Pass only stage-specific files and summaries |
+| Confusion | Similar instructions or duplicate facts conflict | Consolidate each shared contract into one canonical copy and name artifacts clearly |
+| Clash | User, system, or stage instructions disagree | Resolve conflicts before launching downstream stages |
+
+Use compaction, file references, and bounded loops before context fills with transcript noise. In attached workflow stage chat, manual compaction shows `Compacting context...`, threshold compaction shows `Auto-compacting...`, and overflow recovery shows `Context overflow detected. Auto-compacting...` in the same animated status row used for normal model work. That label is a fact about the stage session rather than about the pane, so detaching to the graph and reattaching while compaction is still running restores the same reason-specific label instead of falling back to the generic `Working...` row; it clears as soon as the compaction ends. A successful compaction leaves the normal expandable `✻ Context compacted` boundary in the transcript; the boundary is reconstructed from the durable session and has a typed live fallback if the refreshed session snapshot is temporarily unavailable.
+
+### Compression and Artifact Handoffs
+
+Optimize for tokens per completed task, not the smallest prompt. Aggressive compression can force later stages to rediscover information.
+
+A compressed handoff includes:
+
+- objective and current status
+- decisions already made
+- files, symbols, commands, and artifact paths with evidence
+- open questions and known risks
+- rejected alternatives when they matter
+- next action expected from the downstream stage
+
+Pass file references, not content. This is the strongly encouraged default for every handoff — between stages and back to the caller — and it is what keeps a multi-stage run affordable. Use `output` with `outputMode: "file-only"` and `reads` for research bundles, logs, plans, diffs, reviewer reports, and any other stage product that can grow. In the downstream stage prompt, say `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
+
+Three rules make that work in practice:
+
+1. **One owner per artifact.** The runner writes the stage's final assistant message to `output` after the stage ends, automatically writes the companion transcript outside the repository tree, and appends one instruction telling the model that its final message becomes the artifact. Your prompt does not need to restate any of that — describe the deliverable, not the plumbing. If a late admitted turn displaces the intended content, search the transcript with `rg` rather than assuming the curated artifact holds every later turn. A prompt may write other files freely; only the declared `output` path is runner-owned and overwritten at stage end.
+2. **Do not read an artifact back just to return it.** `outputMode: "file-only"` exists so the parent receives a compact reference. Calling `readFile` on that artifact and returning its text as a workflow output cancels the saving and drops the whole report into the caller's context window. Return the reference and a `*_path` output instead.
+3. **Return paths from the workflow.** Declared outputs are consumed by the calling session, so a workflow's `result` should be a reference plus explicit `*_path` outputs. Callers that need the body read the path; callers that only need the outcome pay nothing for it. When a detail is missing from the curated artifact, search its companion transcript with `rg` and inspect a narrow range.
+
+Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model summarized. Remember that `reads` passes paths rather than content: a stage reads the file when it runs, so the artifact must hold the real report at that moment.
+
+```ts
+const researchPath = ".atomic/workflows/runs/context-demo/research.md";
+await ctx.task("researcher", {
+  task: "Map the subsystem and return the complete report as your final message.",
+  output: researchPath,
+  outputMode: "file-only",
+});
+
+const review = await ctx.task("reviewer", {
+  task: [
+    `Research artifact: ${researchPath}`,
+    `Read the file at ${researchPath} incrementally and inspect only the sections needed for this review.`,
+  ].join("\n"),
+  reads: [researchPath],
+});
+```
+
+### Multi-Agent and Parallel Patterns
+
+Use parallel stages to isolate context and separate independent work, not merely to assign role labels. Good parallel branches have distinct evidence-gathering or review angles:
+
+- locator / mapper: where relevant files and systems live
+- analyzer: how the current implementation works
+- pattern finder: how similar code is written elsewhere
+- external researcher: what upstream docs or APIs require
+- reviewer/evaluator: whether outputs satisfy the validation contract
+
+Have the parent workflow synthesize results rather than letting branches silently make conflicting decisions. If branches must agree, design an explicit consensus or adjudication stage.
+
+### Filesystem Context
+
+Use files when workflow context grows too large:
+
+```text
+.atomic/workflows/runs/<run-name>/
+  research.md
+  reviews/
+    correctness.md
+    docs.md
+  artifacts/
+    raw-log.txt
+    summary.json
+```
+
+Recommended patterns:
+
+- write large tool outputs to files and return concise references
+- store plans, state, and reviewer findings in structured markdown or JSON
+- pass artifact paths via `reads`; prompt agents with `Read the file at <path>...` rather than pasting artifacts into `{previous}`
+- for review loops, pass the latest review-round artifact first and let a ledger/index point to older rounds only when needed
+- give parallel branches separate output paths to avoid write conflicts
+- use `grep`, globbing, and line-range reads instead of loading entire logs
+- clean scratch files or keep them under run-specific directories
+
+### Evaluation and Quality Gates
+
+Build validation into the workflow instead of waiting for a final manual check. Useful gates include:
+
+- deterministic checks: tests, typechecks, linters, schema validation, command exit codes
+- rubric checks: completeness, correctness, evidence quality, risk coverage, user fit
+- reviewer stages: fresh-context reviewers that inspect artifacts and current files
+- LLM-as-judge stages: direct scoring, pairwise comparison, or rubric-based grading for subjective outputs
+
+Prefer schema-enabled workflow items for model review and gate decisions. Atomic passes the schema directly to the final-answer tool and captures the tool arguments; it no longer adds separate structured-output parsing, object-root restrictions, or sidecar validation. Object-shaped decision schemas with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting are usually easiest to consume, but array or primitive schemas are valid when they fit the handoff. Avoid brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”. Define each convergence field's derivation once and consume it deterministically rather than recomputing approval from narrative text.
+
+Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision by configuring `schema` on that workflow item. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, the evidence to report, and the structured decision it must return. Require progress and completion claims to map to current tool results; when evidence is unavailable, the stage should identify the unverified claim or blocker rather than infer success.
+
+When using LLM judges, reduce bias by defining score anchors, requesting observable evidence and criteria-based justification, calibrating against examples, and keeping length/order effects in mind. Do not ask for chain-of-thought or reconstructed internal reasoning. Track pass rates and failures over time for reusable workflows.
+
+### Tools, MCP, Memory, and Hosted Execution
+
+Constrain each stage to the tools it needs. Too many tools increase ambiguity and token cost; too few tools force brittle workarounds. Tool descriptions should make inputs, side effects, and error handling clear.
+
+Use per-stage `mcp` allow/deny lists when a workflow needs external systems but some stages should remain read-only or isolated. Use memory or durable project knowledge only when cross-run continuity is required; otherwise prefer explicit inputs and artifacts.
+
+Hosted or remote agent workflows need additional design work: sandbox setup, dependency caching, auth boundaries, artifact transfer, concurrency limits, and multiplayer/session handoff behavior. Optimize startup before the user begins the run; do not make each stage rebuild its environment.
+
+### Task Fit and Project Design
+
+Before turning a process into a workflow, confirm that it suits automation:
+
+| Proceed when | Avoid or redesign when |
+|--------------|------------------------|
+| The task needs synthesis across sources | The task requires exact deterministic computation only |
+| The output is natural language or judgment with a rubric | The workflow must be perfectly deterministic every run |
+| Errors can be caught by review or validation gates | A single hallucination would be unacceptable |
+| Stages can be cached, retried, or inspected | Every step depends on unverified previous guesses |
+| A manual prototype works on representative inputs | The model lacks required context and cannot retrieve it |
+
+For complex workflows, structure the implementation as a pipeline: acquire context, prepare prompts/artifacts, process with LLM stages, parse or validate outputs, and render the final result.
+
+
+## Scope-Guard Starter Pattern
+
+Use a scope guard when a worker may find valid adjacent work and a later reviewer or repair stage could treat that finding as part of the current task. The guard is an independent reviewer built from existing workflow composition. It controls scope only: code reviewers and deterministic checks still decide whether the candidate is correct.
+
+Do not add a `watchdog` field, stage option, or custom runtime primitive for this pattern. Choose the lightest existing shape that fits the boundary:
+
+| Need | Shape |
+|---|---|
+| One check at a plan, handoff, repair, or completion boundary | A fresh `ctx.task(...)` downstream of the worker |
+| One checker session that needs several prompts or explicit timing | A fresh `ctx.stage(...)`, with all of its turns completed before downstream dependency work starts |
+| Steering while the worker generation is open | Fresh guard and forked worker items in one `ctx.parallel(...)`, using inherited same-group Intercom |
+
+### Canonical scope contract
+
+Create one inspectable contract artifact before guarded work starts. Treat it as immutable for that run and include:
+
+- the literal objective;
+- required scope and allowed files or systems;
+- explicit non-goals;
+- stage boundaries and expected lifecycle order; and
+- acceptance criteria and required evidence.
+
+Every worker, guard, reviewer, and repair continuation reads the same path. Do not copy the contract into several prompts that can drift, and do not let a stage overwrite it. If a human changes the objective, write a new versioned contract and start a new guarded unit of work instead of silently changing the active contract.
+
+Large plans, diffs, logs, reviewer reports, and decision history belong in artifacts. Pass their paths with `reads` where the primitive supports it, tell fresh stages to read the needed sections, and keep Intercom messages short. A fresh guard must not rely on a sibling transcript or hidden graph state.
+
+### Decision contract and actions
+
+For each proposed material expansion, the guard records one evidence-backed classification and action:
+
+| Classification | Evidence threshold | Action |
+|---|---|---|
+| `required` | The literal objective, stated review feedback, acceptance criteria, or required validation directly demands it. | Permit the smallest change that satisfies that demand. |
+| `dependent` | The selected in-scope implementation would otherwise violate a cited existing contract or proven prerequisite. | Permit only the prerequisite and record the contract that makes it necessary. |
+| `follow-up` | The finding is valid but the current objective and selected implementation do not require it. | Record it once and continue without implementing it. It does not block this run. |
+| `unclear` | Evidence cannot decide a material product, public API, security, migration, or scope choice. | Block that expansion and request a supervisor or human decision through a blocking Intercom exchange or `ctx.ui`. |
+
+Use a stable key for each proposal, such as `public-error-shape` or `transport-timeout`. Keep one row per key, merge repeated evidence into that row, and cap the log (the examples use 20 entries). Do not let the guard and worker echo the same finding back and forth. The persisted decision artifact is the source for later review and repair stages; chat messages only steer the open turn.
+
+A useful decision record contains `key`, `classification`, concrete `evidence`, and `action`. A guard failure or missing coordination channel never means approval.
+
+### Fallback policy
+
+Pick and document one policy before the run:
+
+| Policy | When Intercom or the guard is unavailable |
+|---|---|
+| `warn` | Mark live steering unavailable, forbid unreviewed expansion, and run a fresh boundary `ctx.task(...)` before the next material change. |
+| `block` | Stop before expansion and request a decision with `ctx.ui`; in headless mode, fail with the unresolved decision instead of widening scope. |
+| `off` | Skip the guard only because the workflow author or user explicitly disabled it. Preserve the original scope and do not infer approval for adjacent work. |
+
+Use `block` for risky public contracts, data changes, security behavior, releases, or publication. `warn` is a practical default when a boundary review can replace live steering. Never degrade silently from `block` to `warn` or from guarded execution to `off`.
+
+Ordinary `intercom` is mandatory in every workflow model stage. `noTools: "all"`, restrictive `tools` allowlists, and `excludedTools` continue to restrict every other tool but cannot remove Intercom, so live steering remains available.
+
+### Lifecycle, topology, and context rules
+
+- Keep the graph acyclic. A boundary guard is an ordinary downstream reviewer node. Live Intercom steering is activity inside already-running parallel stages, not a new graph edge.
+- Never make a guard watch itself, recursively start another guard, reopen a terminal task, or add a dependency from the current frontier to an ancestor. Complete all turns on a retained guard before starting downstream dependency work.
+- Messages admitted before a worker generation closes drain through that stage boundary. Late messages do not reopen or mutate its terminal workflow state. Give each live branch a bounded stop rule; `ctx.parallel(...)` releases downstream work only after all started branches settle, even when one finishes first.
+- Persist decisions under stable keys. Pause/resume, model fallback, durable replay, and nested workflows then reread the artifact instead of sending duplicate interventions.
+- Omit `group` for ordinary use. The worker, guard, nested workflows, and delegated subagents inherit the top-level workflow invocation's stable Intercom group. Set an explicit group only for intentional isolation; an override separates that stage from ordinary same-group peers.
+- Use `context: "fresh"` for guards, reviewers, and judges. They should see only the contract, candidate, decision artifacts, and current files.
+- Use `context: "fork"` plus `forkFromSessionFile` for implementation, debugging, and repair roles that need continuity with an owned earlier session. `context: "fork"` alone does not name a fork source; an initial worker with no prior lineage may start fresh. A later continuation should use the earlier worker's `sessionFile` when available. Do not fork an independent guard from the worker it judges.
+- Send a forked continuation only the delta after the fork point: new evidence, the decision artifact, any human answer, and the next action. Keep the full shared contract in its canonical file.
+
+Expected lifecycle state is not a defect. If the contract says `candidate → validation → approval → push/publish`, a guard at the candidate or validation boundary must not reject the patch merely because it is unpushed or unpublished. Only the later publication stage owns that action.
+
+## Design Checklist
+
+Before implementing or shipping a non-trivial workflow, answer these questions:
+
+- **Purpose and fit:** What concrete outcome should the workflow produce? Is the task naturally multi-stage, parallel, resumable, or reusable? What is out of scope?
+- **Inputs:** Which values should be declared as inputs? What is the narrowest schema type? Which defaults are safe?
+- **Common pattern:** Which [common workflow pattern](#common-workflow-patterns) best matches the task, and where does the actual design intentionally diverge?
+- **Stage decomposition:** For each stage, what question does it answer, what context does it need, what output should it return, and what model/tool/MCP requirements does it have?
+- **Local stage contract:** Can this stage prompt stand alone with its current objective, inputs/artifacts, expected outputs, tools/checks, and success criteria, without unexplained workflow internals or future-stage assumptions?
+- **Prompt vocabulary:** Do stage, reviewer, and reducer prompts describe the concrete action, available evidence, and success criteria that the stage can see locally, instead of assuming the model knows the workflow graph's name or surrounding context? Avoid phrasing like "the create-PR workflow stage" or "this Foo workflow" unless that name is explicitly supplied as user-visible context or materially affects behavior.
+- **Information flow:** For every edge between stages, is `previous` enough, or should the handoff use structured returns, files, `reads`, `output`, or `outputMode`?
+- **Output contract:** Which outputs should be declared in `outputs`, which stage/task/child results should `run` return for those keys, and what runtime type must each value have? If another workflow may call this workflow as a child, which non-default outputs should the parent rely on?
+- **Context size:** Can downstream stages succeed from the handoff alone? Should large transcripts, logs, or research bundles be summarized or saved as artifacts?
+- **Control flow:** Should the workflow use `ctx.chain`, `ctx.parallel`, `ctx.ui`, bounded loops, `failFast`, or `fallbackModels`?
+- **Acyclic topology:** What node and dependency shape can each branch, bounded loop, and nested workflow boundary materialize? Which stages repeat, does each iteration create distinct tracked work with stable identity and call order, and what is the current frontier before each repeat? Could any proposed parent edge target the node itself or an ancestor? Are nested children composed through `ctx.workflow(...)` boundaries rather than recursive `run` invocation? Redesign or stop before launch if any self-edge or back-edge remains.
+- **Scope control:** Could valid adjacent findings expand the patch? If so, where will a fresh scope guard read the immutable contract, how will it classify and persist bounded decisions, which `warn`/`block`/`off` fallback applies, and which worker session owns any forked continuation?
+- **User experience:** Are stage names readable in status and graph views? Is the final output compact? Are important artifacts saved with stable paths?
+- **Validation:** What success criteria, review gates, deterministic checks, or evaluator stages prove the workflow did the right thing? Are model gates schema-backed instead of regex/prose-matched, and do adaptive gates run as focused model stages with explicit tool/check instructions?
+- **Final actions:** Does the workflow distinguish implementation/review convergence from post-approval final actions such as PR/MR/review creation, release tagging, deployment, or publication? Are reviewers and reducers prompted to approve and hand off when implementation and validation criteria are proven and only an explicitly authorized final action remains?
+
+Good workflows are information-flow systems, not just prompt sequences. Keep stage prompts focused, preserve evidence with file paths or artifacts, and pass only the context each downstream stage needs.
+
+## Workflow Locations
+
+Atomic discovers workflow definitions in this order:
+
+| Location | Scope | Notes |
+|----------|-------|-------|
+| `.atomic/extensions/workflow/config.json` | Project | `workflows.<name>.path`; project entries override global entries |
+| `.atomic/workflows/*.{ts,js,mjs,cjs}` | Project | Legacy `.pi/workflows/` is also checked |
+| `~/.atomic/agent/extensions/workflow/config.json` | Global | `workflows.<name>.path` for user-wide configured paths |
+| `~/.atomic/agent/workflows/*.{ts,js,mjs,cjs}` | Global | Legacy `~/.pi/agent/workflows/` is also checked |
+| Installed Atomic packages | Package | Uses package metadata or conventional `workflows/` directories |
+| Bundled workflows | Built-in | Shipped with `@bastani/atomic/workflows` |
+
+A workflow module may export one default workflow definition and/or named workflow definitions. Discovery checks the default export first, then named exports.
+
+Discovery validates every runtime export of a discovered workflow file as a workflow definition. Discovery rejects a named export that is not a workflow definition — a widget factory, shared constant, or utility function — with an `INVALID_DEFINITION` discovery diagnostic (`export is not an object`), even when the module also has a valid default export (the valid workflow still loads; the diagnostic flags the extra export as skipped). TypeScript erases type-only exports (`export type` / `export interface`) at runtime, so discovery never flags them.
+
+To co-locate reusable helpers with your workflows — for example a `ctx.ui.custom<T>` widget factory you want to import in tests without running the workflow — put them in a subdirectory and import them from the workflow file. Discovery scans only the top level of each workflow directory, so subdirectories such as `.atomic/workflows/lib/` are never treated as workflow modules:
+
+```text
+.atomic/workflows/
+  release-picker.ts      # only runtime export: workflow({...})
+  lib/
+    table-selector.ts    # widget factory + helpers; not scanned by discovery
+```
+
+```ts
+// .atomic/workflows/release-picker.ts
+import { workflow } from "@bastani/atomic/workflows";
+import { Type } from "typebox";
+import { tableSelectorFactory } from "./lib/table-selector.js";
+```
+
+```ts
+// .atomic/workflows/lib/table-selector.ts
+import type { WorkflowCustomUiFactory } from "@bastani/atomic/workflows";
+
+export const tableSelectorFactory: WorkflowCustomUiFactory<{ id: string; name: string }> = (
+  tui,
+  theme,
+  _keybindings,
+  done,
+) => ({
+  render: (width) => ["..."],
+  invalidate: () => {},
+  handleInput: (data) => {
+    if (data === "enter") {
+      /* ... done({ id, name }) ... */
+      return true;
+    }
+    return false;
+  },
+});
+```
+
+Atomic loads workflow files with [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation.
+
+## Reloading workflow resources
+
+Run `/workflow reload` after adding, editing, renaming, or deleting workflow modules or changing workflow config. Reload rescans project and user conventional directories, legacy `.pi` locations, configured file/directory paths, and package resources without restarting Atomic. The workflow tool's `reload` action uses the same in-process path.
+
+Reload builds a complete replacement registry before publishing it. Concurrent requests are serialized and coalesced, stale discovery from an earlier session cannot overwrite newer state, and a fatal refresh failure retains the previous registry. Reload is safe while workflows are running: existing runs keep the definition and runtime snapshot they started with, their mounted `BACKGROUND` card and live tool-node metadata keep updating in place, and subsequent list/get/inputs/help/completion/invocation calls use the newly published registry.
+
+The top-level `/reload` command replaces the extension generation as well as rediscovering resources. Within the same Atomic process, the replacement workflows extension adopts the current session's run store and control registries before installing its UI, then remounts the below-editor panel from the adopted snapshot. In-process subagent children keep bundled workflow definitions as resources but do not load the workflows extension or expose its tool, so a child cannot rebind the parent's store. If an older extension generation already displaced a live run into an auxiliary session scope, `/reload` reclaims that live store together with its stage, job, cancellation, tool-control, and prompt owners; retained terminal history from the parent scope is merged before the panel remounts. Newly created session scopes never inherit another session's state. Installed builds can evaluate the extension and host SDK through separate jiti module copies; Atomic canonicalizes each generation's `pi.events` facade through a process-shared session-bus map so both copies adopt the same owners. In-flight `ctx.tool` callbacks and their durable node controls remain owned by that live run and may settle normally after reload; completed siblings remain checkpointed. A run or active tool node can also arrive after the UI is installed through durability hydration, which invalidates the store and mounts or updates the panel immediately. This same-process handoff differs from a process crash: after a real process exit there is no live callback to preserve, so explicit `/workflow resume` replays checkpoints and re-executes only unfinished tool work.
+
+After `/reload` invalidates the predecessor extension API, in-flight runs keep executing on that generation's module graph. Transcript appends from the captured persistence port are advisory: a stale-extension-context error is ignored so the run can complete, and any other persistence error still fails the run.
+
+The `/workflow` argument-completion popup reads that same live registry. Project, user, package-provided, and built-in workflow names therefore appear immediately after reload both after `/workflow ` and after `/workflow inputs `; restarting Atomic is not required.
+
+A successful rescan may still contain per-resource diagnostics. Both reload surfaces show `CONFIG_INVALID`, `IMPORT_FAILED`, `INVALID_DEFINITION`, `PATH_NOT_FOUND`, and duplicate-name diagnostics instead of reporting bare success while silently skipping a resource. Valid sibling workflows remain available. Fix the reported source/path and reload again; no process restart is required.
+
+## Running Workflows
+
+List or inspect unfamiliar workflows before running them. If required inputs are missing and cannot be inferred, ask for the missing values before launch:
+
+```ts
+workflow({ action: "list" })
+workflow({ action: "get", workflow: "fan-out-and-synthesize" })
+workflow({ action: "inputs", workflow: "fan-out-and-synthesize" })
+workflow({ action: "models" })
+```
+
+The workflow tool action surface is:
+
+- discovery: `list`, `get`, `inputs`, plus `models` for the configured model catalog
+- execution: named `run` with validated `workflow` and `inputs`
+- inspection: `status`, `stages`, `stage`, `transcript`
+- prompt response: `answer`; run control: `pause`, `interrupt`, `quit`, `resume`; free-form stage communication: ordinary Intercom `send`/`ask` to exact `<runId>:<stageKey>` targets
+- rediscovery: `reload`
+
+Every registered `workflow` tool call has one hard two-minute wall-clock deadline at the shared public tool boundary. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
+
+```json
+{
+  "action": "run",
+  "runId": "339e05a4-2289-408e-9076-d1a348f582ae",
+  "status": "failed",
+  "code": "WORKFLOW_TIMEOUT",
+  "timeoutMs": 120000,
+  "error": "Workflow run request timed out after 120000ms. The outcome is unknown. Inspect workflow status before retrying."
+}
+```
+
+Expiry aborts the request operation signal so work that supports cancellation can stop, discards any later success or error, and never retries the action. The interactive engine remains available for the next command. For mutating actions (`reload`, `run`, `answer`, `pause`, `resume`, `interrupt`, and `quit`), the error additionally says that the outcome is unknown and instructs you to inspect workflow status before retrying; a timeout never claims that a mutation succeeded. When a timed-out `run` has already allocated its detached run, the structured result includes that exact full `runId`; inspect `status` with that id before any retry. A timeout before run allocation has no `runId`. Read-only actions (`models`, `list`, `get`, `inputs`, `status`, `stages`, `stage`, and `transcript`) omit that unknown-state guidance.
+
+From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Inspection, prompt-response, and control calls (`status`, `stages`, `stage`, `transcript`, `answer`, `pause`, `resume`, `interrupt`, `quit`) remain available while work runs.
+
+`workflow({ action: "models" })` returns the registry's configured-auth catalog snapshot in registry order. Each entry includes `provider`, `id`, `fullId`, an `isCurrent` marker, and `availableThinkingLevels` derived from the real model's `reasoning` and `thinkingLevelMap` metadata. This is not proof of credentials, entitlements, OAuth freshness, or live provider access, and it exposes no authentication details.
+
+Named launches wait only for **startup admission**, not for workflow completion. Atomic returns `status: "running"` after durable registration, reusable-worktree setup, and other pre-body setup succeed, while the workflow body and stages continue in the background. If setup fails before the workflow body is admitted — for example, `git_worktree_dir` points inside the invoking checkout — the original `workflow` tool call instead returns a structured `status: "failed"` result with the allocated full run id and concrete setup error. No background-start claim or orphan run is retained, so the caller can correct the inputs and retry immediately. Failures after admission remain ordinary background lifecycle outcomes reported through status and lifecycle notices.
+
+A model may launch in the foreground only when the user explicitly requests it or foreground execution is technically required, and it must tell the user before launching.
+
+Run a named workflow with inputs:
+
+```ts
+workflow({
+  action: "run",
+  workflow: "fan-out-and-synthesize",
+  inputs: { prompt: "map workflow runtime by subsystem", max_concurrency: 4 },
+})
+```
+
+Slash equivalent:
+
+```text
+/workflow fan-out-and-synthesize prompt="map workflow runtime by subsystem" max_concurrency=4
+```
+
+<p align="center"><img src="images/workflow-command.png" alt="Running a Workflow Command" width="600" /></p>
+
+Input overrides are bare `key=value` tokens. Atomic parses values as JSON when possible, so `count=3`, `flag=true`, and `prompt="multi word value"` preserve useful types. A whole input object can also be passed as one JSON token. Runtime validation is strict: unknown input keys, missing required values, type mismatches, and invalid `select` choices fail before a named workflow run starts or before a child workflow starts.
+
+In the TUI, `/workflow <name>` opens an inline input picker when the workflow declares inputs and either no arguments were supplied or required inputs are missing. Supplied values seed the picker. The picker is mounted and focused in the terminal host in both isolated and non-isolated interactive modes, so Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C remain responsive without per-keypress host⇄engine traffic. Escape or Ctrl+C cancels without starting the workflow. Pass `--no-picker` to skip that interactive flow.
+
+In non-interactive (`-p`, `--print`, or `--mode json`) sessions, named workflow dispatch waits for the terminal run snapshot and skips pickers. Because human input is runtime-only and workflows no longer carry a declaration-time HIL marker, headless dispatch does not reject a workflow because its source contains `ctx.ui.*`.
+
+If you copy a HIL workflow example into a headless session, it can pass dispatch and then fail when execution reaches the prompt with an error such as `atomic-workflows: interactive ctx.ui.confirm is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage` (the primitive name varies, including `ctx.ui.custom`). Run those workflows interactively, or guard/remove runtime `ctx.ui.*` calls before using headless mode.
+
+<p align="center"><img src="images/workflow-input-picker.png" alt="Workflow Input Picker" width="600" /></p>
+
+## Exhaustive reference
+
+## Writing workflow details
 
 ### Inputs
 
@@ -1518,73 +2029,7 @@ The child executor writes each skipped child `workflow.stage.end` exactly once b
 
 Continuation replay treats the parent child-workflow boundary as the durable checkpoint: a previously completed child boundary replays with the original exposed outputs and without re-running the child, while a child that failed or was interrupted before completion starts again from the beginning on continuation. If `ctx.exit(...)` wins while a completed boundary is being replayed but before replay finalization, the boundary is finalized as skipped and its preloaded child metadata is omitted from store, persistence, restore, and expanded graph views.
 
-## Scope-Guard Starter Pattern
-
-Use a scope guard when a worker may find valid adjacent work and a later reviewer or repair stage could treat that finding as part of the current task. The guard is an independent reviewer built from existing workflow composition. It controls scope only: code reviewers and deterministic checks still decide whether the candidate is correct.
-
-Do not add a `watchdog` field, stage option, or custom runtime primitive for this pattern. Choose the lightest existing shape that fits the boundary:
-
-| Need | Shape |
-|---|---|
-| One check at a plan, handoff, repair, or completion boundary | A fresh `ctx.task(...)` downstream of the worker |
-| One checker session that needs several prompts or explicit timing | A fresh `ctx.stage(...)`, with all of its turns completed before downstream dependency work starts |
-| Steering while the worker generation is open | Fresh guard and forked worker items in one `ctx.parallel(...)`, using inherited same-group Intercom |
-
-### Canonical scope contract
-
-Create one inspectable contract artifact before guarded work starts. Treat it as immutable for that run and include:
-
-- the literal objective;
-- required scope and allowed files or systems;
-- explicit non-goals;
-- stage boundaries and expected lifecycle order; and
-- acceptance criteria and required evidence.
-
-Every worker, guard, reviewer, and repair continuation reads the same path. Do not copy the contract into several prompts that can drift, and do not let a stage overwrite it. If a human changes the objective, write a new versioned contract and start a new guarded unit of work instead of silently changing the active contract.
-
-Large plans, diffs, logs, reviewer reports, and decision history belong in artifacts. Pass their paths with `reads` where the primitive supports it, tell fresh stages to read the needed sections, and keep Intercom messages short. A fresh guard must not rely on a sibling transcript or hidden graph state.
-
-### Decision contract and actions
-
-For each proposed material expansion, the guard records one evidence-backed classification and action:
-
-| Classification | Evidence threshold | Action |
-|---|---|---|
-| `required` | The literal objective, stated review feedback, acceptance criteria, or required validation directly demands it. | Permit the smallest change that satisfies that demand. |
-| `dependent` | The selected in-scope implementation would otherwise violate a cited existing contract or proven prerequisite. | Permit only the prerequisite and record the contract that makes it necessary. |
-| `follow-up` | The finding is valid but the current objective and selected implementation do not require it. | Record it once and continue without implementing it. It does not block this run. |
-| `unclear` | Evidence cannot decide a material product, public API, security, migration, or scope choice. | Block that expansion and request a supervisor or human decision through a blocking Intercom exchange or `ctx.ui`. |
-
-Use a stable key for each proposal, such as `public-error-shape` or `transport-timeout`. Keep one row per key, merge repeated evidence into that row, and cap the log (the examples use 20 entries). Do not let the guard and worker echo the same finding back and forth. The persisted decision artifact is the source for later review and repair stages; chat messages only steer the open turn.
-
-A useful decision record contains `key`, `classification`, concrete `evidence`, and `action`. A guard failure or missing coordination channel never means approval.
-
-### Fallback policy
-
-Pick and document one policy before the run:
-
-| Policy | When Intercom or the guard is unavailable |
-|---|---|
-| `warn` | Mark live steering unavailable, forbid unreviewed expansion, and run a fresh boundary `ctx.task(...)` before the next material change. |
-| `block` | Stop before expansion and request a decision with `ctx.ui`; in headless mode, fail with the unresolved decision instead of widening scope. |
-| `off` | Skip the guard only because the workflow author or user explicitly disabled it. Preserve the original scope and do not infer approval for adjacent work. |
-
-Use `block` for risky public contracts, data changes, security behavior, releases, or publication. `warn` is a practical default when a boundary review can replace live steering. Never degrade silently from `block` to `warn` or from guarded execution to `off`.
-
-Ordinary `intercom` is mandatory in every workflow model stage. `noTools: "all"`, restrictive `tools` allowlists, and `excludedTools` continue to restrict every other tool but cannot remove Intercom, so live steering remains available.
-
-### Lifecycle, topology, and context rules
-
-- Keep the graph acyclic. A boundary guard is an ordinary downstream reviewer node. Live Intercom steering is activity inside already-running parallel stages, not a new graph edge.
-- Never make a guard watch itself, recursively start another guard, reopen a terminal task, or add a dependency from the current frontier to an ancestor. Complete all turns on a retained guard before starting downstream dependency work.
-- Messages admitted before a worker generation closes drain through that stage boundary. Late messages do not reopen or mutate its terminal workflow state. Give each live branch a bounded stop rule; `ctx.parallel(...)` releases downstream work only after all started branches settle, even when one finishes first.
-- Persist decisions under stable keys. Pause/resume, model fallback, durable replay, and nested workflows then reread the artifact instead of sending duplicate interventions.
-- Omit `group` for ordinary use. The worker, guard, nested workflows, and delegated subagents inherit the top-level workflow invocation's stable Intercom group. Set an explicit group only for intentional isolation; an override separates that stage from ordinary same-group peers.
-- Use `context: "fresh"` for guards, reviewers, and judges. They should see only the contract, candidate, decision artifacts, and current files.
-- Use `context: "fork"` plus `forkFromSessionFile` for implementation, debugging, and repair roles that need continuity with an owned earlier session. `context: "fork"` alone does not name a fork source; an initial worker with no prior lineage may start fresh. A later continuation should use the earlier worker's `sessionFile` when available. Do not fork an independent guard from the worker it judges.
-- Send a forked continuation only the delta after the fork point: new evidence, the decision artifact, any human answer, and the next action. Keep the full shared contract in its canonical file.
-
-Expected lifecycle state is not a defect. If the contract says `candidate → validation → approval → push/publish`, a guard at the candidate or validation boundary must not reject the patch merely because it is unpushed or unpublished. Only the later publication stage owns that action.
+## Scope-guard examples
 
 ### Runnable boundary-task example
 
@@ -1923,6 +2368,378 @@ export default workflow({
 ```
 
 The parallel fan-out has one shared parent frontier and downstream persistence waits for both branches. Blocking asks use the guard's retained conversation; the fresh persistence task turns the final transcript into the bounded artifact before correctness review. If Intercom is unavailable, `warn` runs that task as a boundary check, `block` requires `ctx.ui`, and `off` records that no guard approval exists.
+
+## Common pattern reference
+
+#### Pattern diagrams
+
+##### 1. Classify-and-act
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
+
+```text
+┌─ 1  Classify-and-act ────────────────────────────────────┐
+│                                                          │
+│                             ┌───────┐                    │
+│                         ╭──▸│agent A│                    │
+│                         │   └───────┘                    │
+│  ┌────┐  ┌──────────┐   │   ┌───────┐                    │
+│  │task│─▸│classifier│───┼──▸│agent B│ ◂ chosen           │
+│  └────┘  └──────────┘   │   └───────┘                    │
+│                         │   ┌───────┐                    │
+│                         ╰──▸│agent C│                    │
+│                             └───────┘                    │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Make the classifier return a structured category and confidence, not free-form prose.
+- Keep each action branch isolated with the minimum tools and context it needs.
+- Add a fallback or human-input branch for low-confidence classifications.
+
+##### 2. Fan-out-and-synthesize
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
+
+```text
+┌─ 2  Fan-out-and-synthesize ──────────────────────────────┐
+│                                                          │
+│            ┌───────┐                                     │
+│          ╭▸│agent 1│──╮                                  │
+│          │ └───────┘  │                                  │
+│          │ ┌───────┐  │                                  │
+│          ├▸│agent 2│──┤                                  │
+│  ┌────┐  │ └───────┘  │ ┌───────┐  ┌──────────┐          │
+│  │task│──┤ ┌───────┐  ├▸│barrier│─▸│synthesize│          │
+│  └────┘  ├▸│agent 3│──┤ └───────┘  └──────────┘          │
+│          │ └───────┘  │                                  │
+│          │ ┌───────┐  │                                  │
+│          ╰▸│agent 4│──╯                                  │
+│            └───────┘                                     │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Partition by files, sources, claims, candidates, or work items that can be evaluated independently.
+- Save each branch to a separate artifact and pass paths with `reads` instead of inlining all branch output.
+- Treat synthesis as a barrier: it waits for every branch, deduplicates, resolves conflicts, and cites evidence.
+
+##### 3. Adversarial verification
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
+
+```text
+┌─ 3  Adversarial verification ────────────────────────────┐
+│                                                          │
+│                                                          │
+│  ┌──────┐       ┌──────────┐                             │
+│  │worker│───╮──▸│verifier A│──╮                          │
+│  └──────┘   │   └──────────┘  │                          │
+│             │   ┌──────────┐  │   ┌───────┐              │
+│             ├──▸│verifier B│──┼──▸│reducer│              │
+│             │   └──────────┘  │   └───────┘              │
+│             │   ┌──────────┐  │                          │
+│             ╰──▸│verifier C│──╯                          │
+│                 └──────────┘                             │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Give verifiers fresh context and a concrete rubric with pass/fail evidence requirements. For task-specific contract risk, use a grumpy/skeptical-but-fair persona that seeks realistic counterexamples, stays within the literal objective, rejects hand-waving and circular worker-authored evidence, and reports only actionable evidence-backed defects.
+- Separate adversarial probe design from authoritative execution. Require a structured verifier plan with each exact probe, inputs, command/assertion, expected success condition, and covered requirement/risk; then run selected compile, test, schema generation/validation, runtime, or artifact checks through durable workflow-owned `ctx.tool(...)` calls. Actual tool results—not model self-report—feed judgment and consolidated repair.
+- Known contracts may use direct task-specific `ctx.tool(...)` gates designed before launch; uncertain risks may use model-selected probes executed by those deterministic tools. Rerun the tools after repair until the declared pass condition or iteration limit.
+- Ask verifiers to find blockers and not rewrite the candidate unless you explicitly assign them to repair it. Keep pure transformations as ordinary TypeScript rather than wrapping every model-stage action in `ctx.tool`.
+- Decompose the rubric into named criteria and score each in its own call. Compound rubrics can latch onto one salient factor; the reference scan reports 76.4% for the best single criterion versus 78.3% for a three-criterion ensemble (§4.3).
+- Aggregate by mean plus an explicit veto for genuinely disqualifying findings, never a unanimity AND across verifiers: unanimity makes false-reject grow as 1−(1−p)^K while the false-accept it buys only decays as (1−p)^K. See [Verification scaling](#verification-scaling).
+- The shipped `adversarial-verification` builtin accepts `criteria` as a record of criterion names to descriptions or as a `criteria.md` Markdown string; the shared `verification-criteria` module also canonicalizes string lists and `CriterionInput` lists. Its public doors are `parse_rubric`, `normalize_criteria`, `select_criteria`, and `decide_verification`, using the `Criterion`, `CriterionInput`, `CriterionScore`, and `Finding` shapes; `NoCriteria` and `EmptyCriterion` are explicit rubric errors.
+- A `criteria.md` rubric may have a `#` title, an optional `##` section whose heading contains `ground truth` (normally `## Ground Truth Note`; the first such section wins), and must include a `##` section whose heading contains `criteri` (normally `## Criteria`) whose `### Name {#id}` headings own non-empty criterion bodies. HTML comments are ignored; an omitted `{#id}` is slugged to lowercase alphanumeric/underscore text (up to 40 characters), with a fallback `criterion` id and encounter-order `_2`/`_3` deduplication. `parse_rubric` rejects a rubric with no criterion headings or an empty criterion body.
+- `VERIFICATION_SCALE` anchors integer scores from 1 (certainly fails) through 20 (verified correct). `select_criteria` preserves the requested id order and rejects unknown ids; `decide_verification` accepts only with quorum, a mean at or above the policy threshold, and no `veto` finding, while an invalid report remains metadata rather than a score.
+- Keep a scoring family in the `SHARED HEAD ‖ VARYING TAIL` layout from `verification-prompts`: the byte-identical head contains the task, ground-truth note, candidate bodies (or caller-provided read paths), and scale anchors in that order; the tail contains only the criterion name and description plus the output-format instruction. Candidate-specific bodies stay in the shared head, not the varying tail, so sibling criteria can reuse the cached prefix.
+- Inline the whole candidate family only while every body is at most `32 * 1024` UTF-8 bytes (`MAX_INLINE_CANDIDATE_BYTES`). If any body is larger, switch the whole family to caller-bound paths, preserving path order and duplicates; an oversized pathless family is rejected rather than guessed.
+- `warm_first_fan_out` schedules the first-seen step for each prefix before releasing the remaining steps, establishing the provider's warm prefix before sibling criteria or pair slots vary. Warm failures are observed without fail-fast, the remaining phase is still attempted before the error is rethrown, and successful results return in input order.
+- The builtin input defaults are `verifier_count=3`, `max_repairs=2`, `accept_mean=14` on the 1–20 scale, and `reask_limit=1`; omitted `criteria` uses the `task_fit`, `evidence`, and `completeness` record. A round expects one schema-valid score for every criterion/verifier cell, and the normal call shape is criteria length multiplied by verifier count.
+- Invalid criterion reports are written as invalid artifacts and re-asked in bounded waves up to `reask_limit`; an invalid or missing report is counted in `invalidCount` only and is never converted into a fail vote or included in the mean. If the required quorum is still missing after the re-asks, the round is `indeterminate` rather than silently narrowing the decision.
+- `score_table_path` names the durable `verification-summary-<round>.json` for the final round. Its object contains `scores` (`criterion_id`, integer `score`, `evidence`, and `findings` with `finding` plus `severity`), `mean`, `invalidCount`, the `decision` (`accept`, `repair`, or `indeterminate` with its corresponding mean/findings or missing count), and folded `usage`; `review_report_path` carries repair guidance or quorum evidence.
+
+##### 4. Generate-and-filter
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
+
+```text
+┌─ 4  Generate-and-filter ─────────────────────────────────┐
+│                                                          │
+│                                                          │
+│  ┌─────┐   ┌────┐                      ┌────┐            │
+│  │gen A│──▸│idea│───╮              ╭──▸│best│            │
+│  └─────┘   └────┘   │              │   └────┘            │
+│  ┌─────┐   ┌────┐   │  ┌──────┐    │   ┌────┐            │
+│  │gen B│──▸│idea│───┼─▸│filter│────┼──▸│best│            │
+│  └─────┘   └────┘   │  └──────┘    │   └────┘            │
+│  ┌─────┐   ┌────┐   │              │   ┌╌╌╌╌╌╌╌╌╌┐       │
+│  │gen C│──▸│idea│───╯              ╰──▸╎discarded╎       │
+│  └─────┘   └────┘                      └╌╌╌╌╌╌╌╌╌┘       │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Generate more candidates than you need, then filter hard by an explicit rubric.
+- Dedupe before judging so near-identical candidates do not dominate the shortlist.
+- Use this for exploration, naming, design options, hypotheses, and lightweight eval ideas.
+- When the filter ranks candidates rather than applying a threshold, use the same judge guidance as Tournament: graded per-criterion integer scores rather than binary keep/drop, a Bradley–Terry preference from the score gap so near-ties stay near-ties, and K repeats with candidates swapped between the A and B slots. See [Verification scaling](#verification-scaling).
+- For a custom ranking filter, reuse the shared `verification-criteria` module and its `criteria.md` parser rather than inventing a binary keep/drop rubric; stable criterion ids let the judge select the same criteria in each comparison. See [Adversarial verification](#3-adversarial-verification) for the accepted shapes and score decision.
+
+##### 5. Tournament
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
+
+```text
+┌─ 5  Tournament ──────────────────────────────────────────┐
+│                                                          │
+│  ┌─────────┐                                             │
+│  │attempt A│──╮  ┌───────┐                               │
+│  └─────────┘  ├─▸│judge 1│───╮                           │
+│  ┌─────────┐  │  └───────┘   │                           │
+│  │attempt B│──╯              │   ┌─────┐  ┌──────┐       │
+│  └─────────┘                 ├──▸│final│─▸│winner│       │
+│  ┌─────────┐                 │   └─────┘  └──────┘       │
+│  │attempt C│──╮  ┌───────┐   │                           │
+│  └─────────┘  ├─▸│judge 2│───╯                           │
+│  ┌─────────┐  │  └───────┘                               │
+│  │attempt D│──╯                                          │
+│  └─────────┘                                             │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Use pairwise comparison when absolute scores are noisy or subjective.
+- Randomize or balance presentation order where possible to reduce order bias.
+- Keep the judge rubric short and require rationale tied to observable criteria.
+- Have judges emit graded per-criterion integer scores rather than a binary winner, then derive a Bradley–Terry preference from the score gap so near-ties stay near-ties.
+- Repeat each pair K times with the candidates swapped between the A and B slots; the swap cancels positional bias within the pair and variance falls as O(1/K). In the reference scan's discrete-judge study, 26.7% of pairs tied at K=1; with slot swaps, the reported K=1→16 result moved from 74.7% to 77.5%.
+- See [Verification scaling](#verification-scaling) for score granularity and call-budget trade-offs.
+- The shipped tournament inputs use `num_attempts=4` and `max_concurrency=4`; `n_evaluations=2` repeats each criterion/directed pair, `pivots=1` selects the second comparison phase's pivot candidates, and `seed=0` drives the deterministic schedule. `criteria` is optional and accepts a markdown rubric, a string-to-description record, a string list, or a `CriterionInput` list; omission uses the shipped three-criterion Correctness, Completeness, and Evidence and task fit rubric. Optional ordered `models` ids are assigned round-robin to attempt slots.
+- `comparisons_path` points to `comparisons.json`, whose ledger records the task and seed, `params` (`n`, `pivots`, `n_evaluations`, and normalized `criteria`), per-job `comparisons` rows (`a`, `b`, phase, criterion id, repeat, slot-swap flag, scores or an `invalid` marker, preference, and judge artifact path), aggregate `pairs`, weights/counts, the complete `ranking`, and optional model assignment. Its `budget` records planned versus executed judge stages, including re-asks; invalid reports remain auditable rows and an all-invalid pair remains marked invalid rather than becoming a score.
+
+##### 6. Loop until done
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
+
+```text
+┌─ 6  Loop until done ─────────────────────────────────────┐
+│                                                          │
+│  ┌───────┐   ┌─────────────┐  no   ┌────┐                │
+│  │agent 1│──▸│new findings?│──────▸│done│                │
+│  └───────┘   └──────┬──────┘       └────┘                │
+│                     │ yes, spawn distinct work           │
+│                     ▾                                    │
+│                 ┌───────┐   ┌────────────┐               │
+│                 │agent 2│──▸│next check …│               │
+│                 └───────┘   └────────────┘               │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Define both success and escape conditions before the loop starts.
+- Keep a durable ledger of attempted work, findings, failures, and validation evidence.
+- Bound loops by iterations, budget, or convergence criteria so exhausting a bound produces an inspectable failure instead of letting the loop continue indefinitely.
+- Materialize every iteration as distinct tracked work with stable iteration identity and call order. Never represent repetition by a self-edge, a back-edge to an ancestor, or reopening an ancestor below its downstream work.
+- Record a progress magnitude in the ledger beside the boolean stop bit; a flat or decreasing series is the stall signal that the loop is burning iterations without moving.
+- Treat the trend as a monitoring and escalate-to-human signal, never a kill switch: the explicit stop condition remains authoritative. See [Verification scaling](#verification-scaling).
+- The builtin defaults `max_iterations=5`, `progress_scoring=true`, and `progress_repeats=1`; set `progress_scoring` false to omit advisory scoring, while `progress_repeats` is the repeat count passed to the scoring primitive. Each scored iteration adds a `progress` entry to `progress-ledger.json` with `score`, `perRepeat` (null for an invalid repeat), `trend`, and the classifier `window`; the ledger also emits `progress_curve`, `final_trend`, and `progress_disclaimer`.
+- Progress scores use the anchored 1–20 scale and average valid repeat scores per checkpoint. `classify_trend` uses `window=3`, `riseDelta=1.5`, and `fallDelta=-1.5`; it compares equal leading/trailing halves of the trailing two windows, drops an odd middle sample, and classifies inclusive threshold crossings as `rising`, `flat`, or `regressing`. A short series is `flat` evidence.
+- The trend is monitoring and escalation evidence only: it never kills, terminates, or approves a loop, and the explicit evaluator stop condition remains authoritative. `progress_curve`, `final_trend`, and `progress_disclaimer` are advisory outputs, not alternate closure signals.
+
+##### 7. Constructive quorum
+
+This prompt-level reviewer pattern is used by the `goal` and `ralph` builtins; it does not add a reducer or quorum mechanism.
+
+```text
+┌─ 7  Constructive quorum ──────────────────────────────────┐
+│                                                          │
+│  ┌──────────────┐   ┌──────────────┐                    │
+│  │reviewer A    │   │reviewer B    │   independent       │
+│  │preliminary   │   │preliminary   │   assessments        │
+│  │verdict       │   │verdict       │                    │
+│  └──────┬───────┘   └──────┬───────┘                    │
+│         ╰──── Intercom: one evidence round ────╮        │
+│                share · challenge · correct     │        │
+│                         ┌──────────────────────┘        │
+│                         ▾                               │
+│              ┌──────────────────┐   ┌───────────────┐   │
+│              │final structured  │──▸│deterministic  │   │
+│              │verdicts + change │   │reducer counts │   │
+│              │evidence          │   │votes          │   │
+│              └──────────────────┘   └───────────────┘   │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Give every reviewer an independent preliminary assessment before it reads sibling findings or verdicts.
+- Run exactly one bounded evidence-exchange round. Share concrete findings and evidence, challenge blocking claims, and stop rather than opening a second round.
+- Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether deliberation changed it and which evidence caused the change.
+- Let the existing deterministic reducer count the final votes; deliberation shapes votes but does not replace quorum counts or the `stop_review_loop` contract.
+
+##### Stacked implementation slices starter pattern
+
+Use this authoring pattern when one implementation objective should land as a stack of small, independently verified changes. It is not a queue dispatcher: the slices belong to one dependency chain, so slice N+1 starts only after slice N is verified.
+
+During the pre-launch architecture pass, enumerate the slices in the coverage matrix. Give every slice its own objective, acceptance criteria, changed-file scope, and verification gates. Target roughly 100–500 changed lines between verification points by default, but treat that as a reviewability default rather than a law: keep a genuinely atomic mechanical change or generated-artifact refresh in one slice, and do not split a small objective just to reach a count.
+
+```text
+┌─ Stacked implementation slices ─────────────────────────────┐
+│ plan → prepare branch/worktree → child slice 1 → gates      │
+│                                      │ verified              │
+│                                      ▼                       │
+│              prepare branch from slice 1's verified branch  │
+│                                      ▼                       │
+│                         child slice 2 → gates              │
+│                                      │ failed → stop/report │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Run each slice through a child workflow that owns its implement/review/repair lifecycle. Import `goal` or `ralph` from `@bastani/atomic/workflows/builtin`, or use a task-specific child when neither builtin matches. Before each child, use a durable `ctx.tool(...)` step to create or check out the slice's explicit branch in its worktree. `worktreeFromInputs` creates a missing target with a detached checkout and reuses an existing target as-is; `base_branch` and `git_worktree_dir` do not create or check out a feature branch by themselves. Create slice N+1's branch from slice N's verified branch, then pass that previous branch as `base_branch` and give the child a distinct `git_worktree_dir`.
+
+The parent should verify each child before creating the next boundary. If a gate fails, stop at the first failed gate, report that slice as unverified, and retain the earlier verified slices and their branch/worktree records. Do not roll earlier slices back and do not continue past the failure.
+
+The calls below are deliberately unrolled. Repeat the downstream shape for the planned slices, giving every call a fresh child boundary and distinct tracked nodes; do not reopen an ancestor or add a back-edge.
+
+```ts
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import { Type } from "typebox";
+import { workflow } from "@bastani/atomic/workflows";
+import { goal } from "@bastani/atomic/workflows/builtin";
+
+function spawnCommand(argv: readonly string[], cwd: string) {
+  const [command, ...args] = argv;
+  if (command === undefined) throw new Error("spawnCommand requires a command");
+  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  // A command that could not be spawned at all arrives on `error` with a null
+  // status, so it has to be raised here or it reads as an ordinary failure.
+  if (result.error) throw result.error;
+  return result;
+}
+
+function runCommand(argv: readonly string[], cwd: string): string {
+  const result = spawnCommand(argv, cwd);
+  const stdout = (result.stdout ?? "").trim();
+  const stderr = (result.stderr ?? "").trim();
+  if (result.status !== 0) {
+    throw new Error(`${argv.join(" ")} failed (${result.status})\n${stderr || stdout}`);
+  }
+  return stdout;
+}
+
+export default workflow({
+  name: "stacked-slices",
+  inputs: {
+    slice1_branch: Type.String({ default: "stacked/slice-1" }),
+    slice2_branch: Type.String({ default: "stacked/slice-2" }),
+  },
+  outputs: {},
+  run: async (ctx) => {
+    const repoRoot = runCommand(["git", "rev-parse", "--show-toplevel"], ctx.cwd ?? process.cwd());
+    const slice1Branch = ctx.inputs.slice1_branch;
+    const slice2Branch = ctx.inputs.slice2_branch;
+    if (slice1Branch === slice2Branch) {
+      return ctx.exit({ status: "blocked", reason: "slice branches must be distinct" });
+    }
+
+    const prepareSliceWorktree = async (
+      toolName: string,
+      branch: string,
+      gitWorktreeDir: string,
+      baseBranch: string,
+    ) => {
+      const worktreePath = resolve(repoRoot, gitWorktreeDir);
+      await ctx.tool(
+        toolName,
+        { branch, base_branch: baseBranch, git_worktree_dir: gitWorktreeDir },
+        async () => {
+          const current = spawnCommand(
+            ["git", "-C", worktreePath, "branch", "--show-current"],
+            repoRoot,
+          );
+          if (current.status === 0) {
+            const checkedOutBranch = (current.stdout ?? "").trim();
+            if (checkedOutBranch !== branch) {
+              throw new Error(`${worktreePath} is checked out on ${checkedOutBranch || "detached HEAD"}, expected ${branch}`);
+            }
+            return { branch, worktree: worktreePath };
+          }
+
+          const branchProbe = spawnCommand(
+            ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+            repoRoot,
+          );
+          if (branchProbe.status === 0) {
+            runCommand(["git", "worktree", "add", worktreePath, branch], repoRoot);
+          } else if (branchProbe.status === 1) {
+            runCommand(["git", "worktree", "add", "-b", branch, worktreePath, baseBranch], repoRoot);
+          } else {
+            throw new Error((branchProbe.stderr ?? "").trim() || `could not inspect branch ${branch}`);
+          }
+          return { branch, worktree: worktreePath };
+        },
+      );
+    };
+
+    await prepareSliceWorktree("prepare-slice-1-branch", slice1Branch, "../slice-1", "origin/main");
+    const slice1 = await ctx.workflow(goal, {
+      inputs: {
+        objective: "Implement the first independently verified concern.",
+        acceptance_criteria: "The first concern builds, passes its focused tests, and commits all changes on the current feature branch.",
+        base_branch: "origin/main",
+        git_worktree_dir: "../slice-1",
+        create_pr: false,
+      },
+      stageName: "slice 1",
+    });
+    if (slice1.exited === true || slice1.outputs.approved !== true) {
+      return ctx.exit({ status: "blocked", reason: "slice 1 is unverified" });
+    }
+
+    await prepareSliceWorktree("prepare-slice-2-branch", slice2Branch, "../slice-2", slice1Branch);
+    const slice2 = await ctx.workflow(goal, {
+      inputs: {
+        objective: "Implement the next concern on the verified slice-1 branch.",
+        acceptance_criteria: "The second concern builds, passes its focused tests, preserves slice 1, and commits all changes on the current feature branch.",
+        base_branch: slice1Branch,
+        git_worktree_dir: "../slice-2",
+        create_pr: false,
+      },
+      stageName: "slice 2",
+    });
+    if (slice2.exited === true || slice2.outputs.approved !== true) {
+      return ctx.exit({ status: "blocked", reason: "slice 2 is unverified; slice 1 remains verified" });
+    }
+
+    return {};
+  },
+});
+```
+
+The `prepareSliceWorktree` tools run before their child boundaries and use `git worktree add -b`, so each child starts in a named feature branch. Once the path exists, the child's worktree binding reuses it as-is; `base_branch` remains the comparison base for its reviewers. The child owns implementation, review, repair, and acceptance, while the parent owns branch/worktree setup and the stop boundary.
+
+Use `ralph` or a task-specific child in the same positions when its input contract fits better. For a longer stack, keep the same explicit downstream shape: create each next named branch from the previous verified branch, pass that previous branch as the next child's `base_branch`, and use a distinct worktree. Do not replace the chain with a loop that points back to an ancestor. A final handoff can report `slice → branch → worktree → verified/failed` from the explicit inputs and preparation records without reopening completed child work.
+
+#### Verification scaling
+
+This is authoring guidance for custom workflows, not a description of shipped builtin inputs:
+
+- Use an anchored 1–20 integer scale as the default score granularity.
+- Providers expose no token logprobs, so a K-sample average is the substitute; K=16 parity costs roughly 16× the call cost, making K a budget decision.
+- Treat pool diversity as a bet on the selector's oracle ceiling. In the reference scan's pivot tournament, best-of-3 selection reached 86.5% ±1.1 against 79.4% pass@1 with a 92.1% oracle ceiling, while best-of-5 reached 88.0% ±0.6 against 78.7% pass@1 with a 96.6% oracle ceiling. A chance-level selector can make a more diverse pool worse, so widen the pool only once the judge beats chance.
+- Self-verification—having the same model judge its own rollouts—still gained +7.1 over pass@1 in the best-of-3 comparison (86.5% versus 79.4%) and +9.3 in the best-of-5 comparison (88.0% versus 78.7%).
+- For a cheap operating point, an author can use one pivot and K=2 repeats for a best-of-3-shaped comparison budget; this is an authoring recipe, not a shipped default.
+- For the shipped primitive references, see [Adversarial verification](#3-adversarial-verification) for criteria parsing, warm-first scoring, re-asks, and score summaries; [Tournament](#5-tournament) for inputs and `comparisons.json`; [Loop until done](#6-loop-until-done) for progress ledger/trend outputs; and [Goal](#goal)/[Ralph](#ralph) for re-verification and convergence evidence.
 
 ## The `workflow()` definition
 
@@ -3013,76 +3830,6 @@ interface StageSnapshot extends WorkflowSerializableObject {
 
 Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` termination, and `stages` contains the final stage snapshots.
 
-## Running Workflows
-
-List or inspect unfamiliar workflows before running them. If required inputs are missing and cannot be inferred, ask for the missing values before launch:
-
-```ts
-workflow({ action: "list" })
-workflow({ action: "get", workflow: "fan-out-and-synthesize" })
-workflow({ action: "inputs", workflow: "fan-out-and-synthesize" })
-workflow({ action: "models" })
-```
-
-The workflow tool action surface is:
-
-- discovery: `list`, `get`, `inputs`, plus `models` for the configured model catalog
-- execution: named `run` with validated `workflow` and `inputs`
-- inspection: `status`, `stages`, `stage`, `transcript`
-- prompt response: `answer`; run control: `pause`, `interrupt`, `quit`, `resume`; free-form stage communication: ordinary Intercom `send`/`ask` to exact `<runId>:<stageKey>` targets
-- rediscovery: `reload`
-
-Every registered `workflow` tool call has one hard two-minute wall-clock deadline at the shared public tool boundary. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
-
-```json
-{
-  "action": "run",
-  "runId": "339e05a4-2289-408e-9076-d1a348f582ae",
-  "status": "failed",
-  "code": "WORKFLOW_TIMEOUT",
-  "timeoutMs": 120000,
-  "error": "Workflow run request timed out after 120000ms. The outcome is unknown. Inspect workflow status before retrying."
-}
-```
-
-Expiry aborts the request operation signal so work that supports cancellation can stop, discards any later success or error, and never retries the action. The interactive engine remains available for the next command. For mutating actions (`reload`, `run`, `answer`, `pause`, `resume`, `interrupt`, and `quit`), the error additionally says that the outcome is unknown and instructs you to inspect workflow status before retrying; a timeout never claims that a mutation succeeded. When a timed-out `run` has already allocated its detached run, the structured result includes that exact full `runId`; inspect `status` with that id before any retry. A timeout before run allocation has no `runId`. Read-only actions (`models`, `list`, `get`, `inputs`, `status`, `stages`, `stage`, and `transcript`) omit that unknown-state guidance.
-
-From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Inspection, prompt-response, and control calls (`status`, `stages`, `stage`, `transcript`, `answer`, `pause`, `resume`, `interrupt`, `quit`) remain available while work runs.
-
-`workflow({ action: "models" })` returns the registry's configured-auth catalog snapshot in registry order. Each entry includes `provider`, `id`, `fullId`, an `isCurrent` marker, and `availableThinkingLevels` derived from the real model's `reasoning` and `thinkingLevelMap` metadata. This is not proof of credentials, entitlements, OAuth freshness, or live provider access, and it exposes no authentication details.
-
-Named launches wait only for **startup admission**, not for workflow completion. Atomic returns `status: "running"` after durable registration, reusable-worktree setup, and other pre-body setup succeed, while the workflow body and stages continue in the background. If setup fails before the workflow body is admitted — for example, `git_worktree_dir` points inside the invoking checkout — the original `workflow` tool call instead returns a structured `status: "failed"` result with the allocated full run id and concrete setup error. No background-start claim or orphan run is retained, so the caller can correct the inputs and retry immediately. Failures after admission remain ordinary background lifecycle outcomes reported through status and lifecycle notices.
-
-A model may launch in the foreground only when the user explicitly requests it or foreground execution is technically required, and it must tell the user before launching.
-
-Run a named workflow with inputs:
-
-```ts
-workflow({
-  action: "run",
-  workflow: "fan-out-and-synthesize",
-  inputs: { prompt: "map workflow runtime by subsystem", max_concurrency: 4 },
-})
-```
-
-Slash equivalent:
-
-```text
-/workflow fan-out-and-synthesize prompt="map workflow runtime by subsystem" max_concurrency=4
-```
-
-<p align="center"><img src="images/workflow-command.png" alt="Running a Workflow Command" width="600" /></p>
-
-Input overrides are bare `key=value` tokens. Atomic parses values as JSON when possible, so `count=3`, `flag=true`, and `prompt="multi word value"` preserve useful types. A whole input object can also be passed as one JSON token. Runtime validation is strict: unknown input keys, missing required values, type mismatches, and invalid `select` choices fail before a named workflow run starts or before a child workflow starts.
-
-In the TUI, `/workflow <name>` opens an inline input picker when the workflow declares inputs and either no arguments were supplied or required inputs are missing. Supplied values seed the picker. The picker is mounted and focused in the terminal host in both isolated and non-isolated interactive modes, so Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C remain responsive without per-keypress host⇄engine traffic. Escape or Ctrl+C cancels without starting the workflow. Pass `--no-picker` to skip that interactive flow.
-
-In non-interactive (`-p`, `--print`, or `--mode json`) sessions, named workflow dispatch waits for the terminal run snapshot and skips pickers. Because human input is runtime-only and workflows no longer carry a declaration-time HIL marker, headless dispatch does not reject a workflow because its source contains `ctx.ui.*`.
-
-If you copy a HIL workflow example into a headless session, it can pass dispatch and then fail when execution reaches the prompt with an error such as `atomic-workflows: interactive ctx.ui.confirm is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage` (the primitive name varies, including `ctx.ui.custom`). Run those workflows interactively, or guard/remove runtime `ctx.ui.*` calls before using headless mode.
-
-<p align="center"><img src="images/workflow-input-picker.png" alt="Workflow Input Picker" width="600" /></p>
-
 ## Workflow Commands
 
 ```text
@@ -3138,6 +3885,50 @@ At the supported 40-column terminal minimum, attached stage chats keep the `ctrl
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
 Human-in-the-loop prompts appear as awaiting-input nodes in the workflow graph, not as ordinary chat modals — see [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input) for how to find and answer them.
+
+### Workflow run identifiers and the BACKGROUND panel
+
+Workflow run identifiers are shown in full everywhere they are presented to users: the `BACKGROUND` panel, workflow status and detail views, run pickers, control messages, and awaiting-input attribution banners. Input matches that: every command and workflow-tool action that accepts `runId` requires the **full 36-character UUID**, exactly as displayed. Typed prefixes are not accepted, and neither is a 32-character dashless form. A target that is not a well-formed UUID is rejected with `Run id must be a full 36-character UUID; got "339e05a4" (8 chars).`, which is deliberately distinct from `Run not found:` so a truncated paste is diagnosable as truncated rather than looking like a stale run. Because ids are unique and matched exactly, a run target can no longer be ambiguous.
+
+Stage targeting is exact but not UUID-bound, because stage identifiers are not all bare UUIDs. A `stageId` resolves by exact stage id — a bare UUID at the root, the full `runId:stageId` composite for a stage inside a nested workflow, or `tool:<argsHash>` for a `ctx.tool` node — or by exact stage or tool name. Partial names no longer match, so `build` will not select `build-check`. Two stages that share an exact name are still reported as ambiguous, listing the full matching identifiers.
+
+#### Intercom delivery to pending workflow stages
+
+A known workflow stage whose session has not initialized is still addressable by the workflow run's full UUID and its exact authored stage key. From a sibling session in the same workflow Intercom group, use ordinary Intercom delivery:
+
+```ts
+intercom({
+  action: "send",
+  to: "<runId>:reviewer",
+  message: "Scope changed: raw amendment text is now part of the oracle."
+})
+// queued — distinct from live-session delivered
+```
+
+Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages only for known pending stages and delivers them when their sessions initialize, before their first model turn. Live stage delivery is immediate. Use `ask` once the stage session is live and can reply. Unknown run/stage identities retain the ordinary unknown-target failure.
+
+The workflows extension persists pending messages with run state across resume/replay and broker restart. Each exact run/stage key accepts 50 queued messages; the next send is refused without eviction. Only sessions in the run's Intercom group may queue them. When the stage session initializes, Atomic delivers its messages FIFO through the ordinary inbound Intercom path **before the first model turn**. The transcript labels them **Messages received before you started**, preserves sender identity and `Sent:` timestamps, and keeps them separate from the stage task prompt. Duplicate logical message IDs and stage-attempt restarts do not redeliver a message.
+
+If the destination is skipped, the run is cancelled, or the stage becomes terminal before its session initializes, Atomic marks queued messages undeliverable rather than dropping them. Senders whose messages requested acknowledgment receive a correlated failure notification. Running and completed stages continue through their existing live, late, and post-mortem routes.
+
+
+At 80 columns and wider, each `BACKGROUND` card uses two rows so the id is not squeezed beside the workflow name: the first row contains the status glyph and full UUID, and the second contains the workflow name followed by its mode, progress, live-tool total when more than one is active, pending/running `ctx.tool` node names and statuses as space permits, and elapsed/status metadata. Tool nodes are read-only durable graph nodes, not attachable stage chats. The panel renders every qualifying top-level run, so each card is two rows high (plus the existing spacing between cards). Below 80 columns, the panel keeps its collapsed form, omits ids and tool names, and includes a live-tool count when one or more tool nodes are pending or running.
+
+For chat surfaces such as workflow status, run detail, dispatch confirmation, and the run picker, a full id wraps onto continuation rows when the card is narrower than the id. The renderer never ellipsizes the id and keeps the card border closed at its minimum layout width, while terminals below that floor — including sub-30-column terminals — can hard-clip the box. An awaiting-input attribution banner is titled `AWAITING INPUT` and contains the same two identity rows — `？` plus the full run id, then the workflow name and optional metadata — while the existing prompt question and options remain below it in the normal prompt UI.
+
+The `/workflow connect` run picker shows five runs at a time; use the arrow keys or mouse wheel to scroll through additional retained runs.
+
+The rendered card shape at the 80-column breakpoint is:
+
+```text
+│   ●  339e05a4-2289-408e-9076-d1a348f582ae                                    │
+│     stage-output-transcript · chain · 2/3 · 12m                              │
+│                                                                              │
+│   ●  d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f                                    │
+│     build-check · chain · 0/2 · 12m                                          │
+```
+
+Below the breakpoint the same run set is represented by the collapsed count line, for example ` ▾  4 background · 2 ● · 1 quit`; a tool-only run adds its live count, for example ` ▾  1 background · 1 ● · 1 tool`.
 
 ## Monitor and Control Runs
 
@@ -3503,77 +4294,6 @@ When `/workflow resume` lists or resumes a DBOS-backed workflow in a fresh proce
 Atomic updates the in-memory replay mirror for awaited DBOS checkpoints only after DBOS accepts the write, and root metadata is mirrored as versioned DBOS records where the latest timestamp wins during hydration. Unmarked raw-output checkpoint records remain readable as generic stage checkpoints when their workflow has compatible current metadata; marked envelopes with unsupported envelope versions are ignored rather than decoded as raw output, while unsupported or malformed additive topology fields are ignored without dropping an otherwise valid stage envelope.
 
 Atomic does not use the legacy file backend under `~/.atomic/workflow-durable`; cross-session `/workflow resume` reads DBOS only.
-
-## Workflow Locations
-
-Atomic discovers workflow definitions in this order:
-
-| Location | Scope | Notes |
-|----------|-------|-------|
-| `.atomic/extensions/workflow/config.json` | Project | `workflows.<name>.path`; project entries override global entries |
-| `.atomic/workflows/*.{ts,js,mjs,cjs}` | Project | Legacy `.pi/workflows/` is also checked |
-| `~/.atomic/agent/extensions/workflow/config.json` | Global | `workflows.<name>.path` for user-wide configured paths |
-| `~/.atomic/agent/workflows/*.{ts,js,mjs,cjs}` | Global | Legacy `~/.pi/agent/workflows/` is also checked |
-| Installed Atomic packages | Package | Uses package metadata or conventional `workflows/` directories |
-| Bundled workflows | Built-in | Shipped with `@bastani/atomic/workflows` |
-
-A workflow module may export one default workflow definition and/or named workflow definitions. Discovery checks the default export first, then named exports.
-
-Discovery validates every runtime export of a discovered workflow file as a workflow definition. Discovery rejects a named export that is not a workflow definition — a widget factory, shared constant, or utility function — with an `INVALID_DEFINITION` discovery diagnostic (`export is not an object`), even when the module also has a valid default export (the valid workflow still loads; the diagnostic flags the extra export as skipped). TypeScript erases type-only exports (`export type` / `export interface`) at runtime, so discovery never flags them.
-
-To co-locate reusable helpers with your workflows — for example a `ctx.ui.custom<T>` widget factory you want to import in tests without running the workflow — put them in a subdirectory and import them from the workflow file. Discovery scans only the top level of each workflow directory, so subdirectories such as `.atomic/workflows/lib/` are never treated as workflow modules:
-
-```text
-.atomic/workflows/
-  release-picker.ts      # only runtime export: workflow({...})
-  lib/
-    table-selector.ts    # widget factory + helpers; not scanned by discovery
-```
-
-```ts
-// .atomic/workflows/release-picker.ts
-import { workflow } from "@bastani/atomic/workflows";
-import { Type } from "typebox";
-import { tableSelectorFactory } from "./lib/table-selector.js";
-```
-
-```ts
-// .atomic/workflows/lib/table-selector.ts
-import type { WorkflowCustomUiFactory } from "@bastani/atomic/workflows";
-
-export const tableSelectorFactory: WorkflowCustomUiFactory<{ id: string; name: string }> = (
-  tui,
-  theme,
-  _keybindings,
-  done,
-) => ({
-  render: (width) => ["..."],
-  invalidate: () => {},
-  handleInput: (data) => {
-    if (data === "enter") {
-      /* ... done({ id, name }) ... */
-      return true;
-    }
-    return false;
-  },
-});
-```
-
-Atomic loads workflow files with [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation.
-
-## Reloading workflow resources
-
-Run `/workflow reload` after adding, editing, renaming, or deleting workflow modules or changing workflow config. Reload rescans project and user conventional directories, legacy `.pi` locations, configured file/directory paths, and package resources without restarting Atomic. The workflow tool's `reload` action uses the same in-process path.
-
-Reload builds a complete replacement registry before publishing it. Concurrent requests are serialized and coalesced, stale discovery from an earlier session cannot overwrite newer state, and a fatal refresh failure retains the previous registry. Reload is safe while workflows are running: existing runs keep the definition and runtime snapshot they started with, their mounted `BACKGROUND` card and live tool-node metadata keep updating in place, and subsequent list/get/inputs/help/completion/invocation calls use the newly published registry.
-
-The top-level `/reload` command replaces the extension generation as well as rediscovering resources. Within the same Atomic process, the replacement workflows extension adopts the current session's run store and control registries before installing its UI, then remounts the below-editor panel from the adopted snapshot. In-process subagent children keep bundled workflow definitions as resources but do not load the workflows extension or expose its tool, so a child cannot rebind the parent's store. If an older extension generation already displaced a live run into an auxiliary session scope, `/reload` reclaims that live store together with its stage, job, cancellation, tool-control, and prompt owners; retained terminal history from the parent scope is merged before the panel remounts. Newly created session scopes never inherit another session's state. Installed builds can evaluate the extension and host SDK through separate jiti module copies; Atomic canonicalizes each generation's `pi.events` facade through a process-shared session-bus map so both copies adopt the same owners. In-flight `ctx.tool` callbacks and their durable node controls remain owned by that live run and may settle normally after reload; completed siblings remain checkpointed. A run or active tool node can also arrive after the UI is installed through durability hydration, which invalidates the store and mounts or updates the panel immediately. This same-process handoff differs from a process crash: after a real process exit there is no live callback to preserve, so explicit `/workflow resume` replays checkpoints and re-executes only unfinished tool work.
-
-After `/reload` invalidates the predecessor extension API, in-flight runs keep executing on that generation's module graph. Transcript appends from the captured persistence port are advisory: a stale-extension-context error is ignored so the run can complete, and any other persistence error still fails the run.
-
-The `/workflow` argument-completion popup reads that same live registry. Project, user, package-provided, and built-in workflow names therefore appear immediately after reload both after `/workflow ` and after `/workflow inputs `; restarting Atomic is not required.
-
-A successful rescan may still contain per-resource diagnostics. Both reload surfaces show `CONFIG_INVALID`, `IMPORT_FAILED`, `INVALID_DEFINITION`, `PATH_NOT_FOUND`, and duplicate-name diagnostics instead of reporting bare success while silently skipping a resource. Valid sibling workflows remain available. Fix the reported source/path and reload again; no process restart is required.
 
 ## Run budgets
 
@@ -4058,203 +4778,6 @@ Atomic resolves eligibility for the effective model on every fallback attempt. A
 
 Enable workflow fast mode deliberately for broad workflows. Parallel fan-out and fallback attempts can multiply fast provider requests and usage.
 
-## Context Engineering
-
-A workflow is an information-flow system, not just a list of prompts. Most workflow failures come from missing, stale, oversized, or poorly-routed context. Design every stage boundary deliberately.
-
-### Locally Scoped Stage Prompts
-
-Stage prompts should define local contracts, not describe the full workflow runtime. Write prompts as if the stage could be executed independently from a fresh session with only the listed inputs. A useful compact shape is `Role · Goal · Success criteria · Constraints · Tools · Output · Stop rules`; omit sections that do not change behavior. Include:
-
-- the stage's current objective and what is out of scope for this stage
-- the exact files, artifacts, child outputs, or user inputs it may use; put long inputs before the final instruction
-- context-dependent tool routes and permission boundaries, without describing tools the stage cannot call
-- the expected output format and length, or the schema it must return when the workflow item is schema-enabled
-- the checks, tools, or deterministic commands it should run when relevant, plus evidence required for progress or completion claims
-- the success criteria and blocker conditions that let this stage stop
-
-State important constraints once. Reserve absolute wording for safety, required fields, forbidden actions, gating derivations, and other true invariants; express search, iteration, and delegation choices as decision rules. Ask for conclusions, commands, observed results, and citations—not private reasoning or generic self-verification.
-
-Avoid unrelated workflow internals such as reducer algorithms, future PR stages, sibling reviewer names, loop implementation details, or project-specific nicknames unless they are explicitly part of the current stage contract. If a term such as a gate name, ledger field, or workflow nickname is necessary, define it in the prompt before using it.
-
-Choose context mode deliberately. Use `context: "fork"` or `forkFromSessionFile` for coherent long-running implementation stages that need continuity from their own earlier work. Use `context: "fresh"` for unbiased reviewer, evaluator, and gate stages so they inspect the current files and explicit artifacts rather than inheriting the implementer's assumptions. When continuity is needed across fresh stages, pass it explicitly through files, declared outputs, and `reads`.
-
-### Context-Mode-Aware Prompt Text
-
-Context mode is an execution property configured with `context`/`forkFromSessionFile`; the model cannot act on context mode, so keep it out of prompt text:
-
-- **Never describe the stage's own context mode.** Sentences like "you are running in a fresh context window", "your context is clean/non-forked", or "this is a forked session" add tokens without changing behavior. State the concrete action, inputs, and success criteria instead.
-- **Fresh stages must not reference invisible context.** A fresh stage has no "previous conversation", cannot see sibling stages, and does not know the surrounding graph, so instructions like "compare against previous workflow reasoning" or "this runs in parallel with the locator pass" do not help and may confuse the model. Phrase the same intent stage-locally ("compare the working tree against the baseline branch"; "do your own scan; do not assume any other stage's output is available") and pass any state the stage needs through files, declared outputs, and `reads`.
-- **Forked continuation prompts send only the delta.** A forked stage already carries the role, contracts, guidance, and output format from its own earlier prompts, so repeating them uses more tokens and can make the two copies diverge. Send what changed since the fork point — new artifacts, updated state, the next action — plus a one-line pointer back ("the contracts and report format established earlier in this thread still apply unchanged") instead of re-injecting the full text.
-- **Keep one canonical copy of shared contracts.** When fresh and forked variants of a stage share guidance, render the full contract only in the prompt that first establishes it and reference it from continuations. If a continuation needs a contract restated (for example, after a schema change), that is a new contract version, not a repeat.
-
-Long-running worker/reviewer workflows should follow this pattern: establish the complete contract once, then send forked continuation turns only the latest state and artifact paths with a pointer back to the established guidance.
-
-### Context Fundamentals
-
-Treat context as a finite attention budget. Include only information needed for the current decision, place critical constraints near the beginning or end of prompts, and use progressive disclosure instead of loading every possible reference up front.
-
-Common context sources:
-
-- **System instructions:** persistent behavior and guardrails.
-- **User inputs:** workflow inputs and human-in-the-loop decisions.
-- **Retrieved documents:** files, search results, logs, API responses, and artifacts.
-- **Message history:** useful for continuity, but grows quickly in long-running stages.
-- **Tool outputs:** often the largest source of context bloat.
-
-For long workflows, assume effective model performance degrades before the advertised context limit. Keep high-signal summaries and artifact references close to the stage that needs them.
-
-### Context Degradation Patterns
-
-Watch for these failure modes in long or multi-stage workflows:
-
-| Pattern | Symptom | Mitigation |
-|---------|---------|------------|
-| Lost in the middle | Important constraints are ignored in long prompts | Shorten the handoff; place documents first and the final query/critical contract last |
-| Context poisoning | Bad or obsolete information steers later stages | Validate sources, overwrite stale artifacts, cite evidence |
-| Distraction | Irrelevant context crowds out useful context | Pass only stage-specific files and summaries |
-| Confusion | Similar instructions or duplicate facts conflict | Consolidate each shared contract into one canonical copy and name artifacts clearly |
-| Clash | User, system, or stage instructions disagree | Resolve conflicts before launching downstream stages |
-
-Use compaction, file references, and bounded loops before context fills with transcript noise. In attached workflow stage chat, manual compaction shows `Compacting context...`, threshold compaction shows `Auto-compacting...`, and overflow recovery shows `Context overflow detected. Auto-compacting...` in the same animated status row used for normal model work. That label is a fact about the stage session rather than about the pane, so detaching to the graph and reattaching while compaction is still running restores the same reason-specific label instead of falling back to the generic `Working...` row; it clears as soon as the compaction ends. A successful compaction leaves the normal expandable `✻ Context compacted` boundary in the transcript; the boundary is reconstructed from the durable session and has a typed live fallback if the refreshed session snapshot is temporarily unavailable.
-
-### Compression and Artifact Handoffs
-
-Optimize for tokens per completed task, not the smallest prompt. Aggressive compression can force later stages to rediscover information.
-
-A compressed handoff includes:
-
-- objective and current status
-- decisions already made
-- files, symbols, commands, and artifact paths with evidence
-- open questions and known risks
-- rejected alternatives when they matter
-- next action expected from the downstream stage
-
-Pass file references, not content. This is the strongly encouraged default for every handoff — between stages and back to the caller — and it is what keeps a multi-stage run affordable. Use `output` with `outputMode: "file-only"` and `reads` for research bundles, logs, plans, diffs, reviewer reports, and any other stage product that can grow. In the downstream stage prompt, say `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
-
-Three rules make that work in practice:
-
-1. **One owner per artifact.** The runner writes the stage's final assistant message to `output` after the stage ends, automatically writes the companion transcript outside the repository tree, and appends one instruction telling the model that its final message becomes the artifact. Your prompt does not need to restate any of that — describe the deliverable, not the plumbing. If a late admitted turn displaces the intended content, search the transcript with `rg` rather than assuming the curated artifact holds every later turn. A prompt may write other files freely; only the declared `output` path is runner-owned and overwritten at stage end.
-2. **Do not read an artifact back just to return it.** `outputMode: "file-only"` exists so the parent receives a compact reference. Calling `readFile` on that artifact and returning its text as a workflow output cancels the saving and drops the whole report into the caller's context window. Return the reference and a `*_path` output instead.
-3. **Return paths from the workflow.** Declared outputs are consumed by the calling session, so a workflow's `result` should be a reference plus explicit `*_path` outputs. Callers that need the body read the path; callers that only need the outcome pay nothing for it. When a detail is missing from the curated artifact, search its companion transcript with `rg` and inspect a narrow range.
-
-Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model summarized. Remember that `reads` passes paths rather than content: a stage reads the file when it runs, so the artifact must hold the real report at that moment.
-
-```ts
-const researchPath = ".atomic/workflows/runs/context-demo/research.md";
-await ctx.task("researcher", {
-  task: "Map the subsystem and return the complete report as your final message.",
-  output: researchPath,
-  outputMode: "file-only",
-});
-
-const review = await ctx.task("reviewer", {
-  task: [
-    `Research artifact: ${researchPath}`,
-    `Read the file at ${researchPath} incrementally and inspect only the sections needed for this review.`,
-  ].join("\n"),
-  reads: [researchPath],
-});
-```
-
-### Multi-Agent and Parallel Patterns
-
-Use parallel stages to isolate context and separate independent work, not merely to assign role labels. Good parallel branches have distinct evidence-gathering or review angles:
-
-- locator / mapper: where relevant files and systems live
-- analyzer: how the current implementation works
-- pattern finder: how similar code is written elsewhere
-- external researcher: what upstream docs or APIs require
-- reviewer/evaluator: whether outputs satisfy the validation contract
-
-Have the parent workflow synthesize results rather than letting branches silently make conflicting decisions. If branches must agree, design an explicit consensus or adjudication stage.
-
-### Filesystem Context
-
-Use files when workflow context grows too large:
-
-```text
-.atomic/workflows/runs/<run-name>/
-  research.md
-  reviews/
-    correctness.md
-    docs.md
-  artifacts/
-    raw-log.txt
-    summary.json
-```
-
-Recommended patterns:
-
-- write large tool outputs to files and return concise references
-- store plans, state, and reviewer findings in structured markdown or JSON
-- pass artifact paths via `reads`; prompt agents with `Read the file at <path>...` rather than pasting artifacts into `{previous}`
-- for review loops, pass the latest review-round artifact first and let a ledger/index point to older rounds only when needed
-- give parallel branches separate output paths to avoid write conflicts
-- use `grep`, globbing, and line-range reads instead of loading entire logs
-- clean scratch files or keep them under run-specific directories
-
-### Evaluation and Quality Gates
-
-Build validation into the workflow instead of waiting for a final manual check. Useful gates include:
-
-- deterministic checks: tests, typechecks, linters, schema validation, command exit codes
-- rubric checks: completeness, correctness, evidence quality, risk coverage, user fit
-- reviewer stages: fresh-context reviewers that inspect artifacts and current files
-- LLM-as-judge stages: direct scoring, pairwise comparison, or rubric-based grading for subjective outputs
-
-Prefer schema-enabled workflow items for model review and gate decisions. Atomic passes the schema directly to the final-answer tool and captures the tool arguments; it no longer adds separate structured-output parsing, object-root restrictions, or sidecar validation. Object-shaped decision schemas with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting are usually easiest to consume, but array or primitive schemas are valid when they fit the handoff. Avoid brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”. Define each convergence field's derivation once and consume it deterministically rather than recomputing approval from narrative text.
-
-Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision by configuring `schema` on that workflow item. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, the evidence to report, and the structured decision it must return. Require progress and completion claims to map to current tool results; when evidence is unavailable, the stage should identify the unverified claim or blocker rather than infer success.
-
-When using LLM judges, reduce bias by defining score anchors, requesting observable evidence and criteria-based justification, calibrating against examples, and keeping length/order effects in mind. Do not ask for chain-of-thought or reconstructed internal reasoning. Track pass rates and failures over time for reusable workflows.
-
-### Tools, MCP, Memory, and Hosted Execution
-
-Constrain each stage to the tools it needs. Too many tools increase ambiguity and token cost; too few tools force brittle workarounds. Tool descriptions should make inputs, side effects, and error handling clear.
-
-Use per-stage `mcp` allow/deny lists when a workflow needs external systems but some stages should remain read-only or isolated. Use memory or durable project knowledge only when cross-run continuity is required; otherwise prefer explicit inputs and artifacts.
-
-Hosted or remote agent workflows need additional design work: sandbox setup, dependency caching, auth boundaries, artifact transfer, concurrency limits, and multiplayer/session handoff behavior. Optimize startup before the user begins the run; do not make each stage rebuild its environment.
-
-### Task Fit and Project Design
-
-Before turning a process into a workflow, confirm that it suits automation:
-
-| Proceed when | Avoid or redesign when |
-|--------------|------------------------|
-| The task needs synthesis across sources | The task requires exact deterministic computation only |
-| The output is natural language or judgment with a rubric | The workflow must be perfectly deterministic every run |
-| Errors can be caught by review or validation gates | A single hallucination would be unacceptable |
-| Stages can be cached, retried, or inspected | Every step depends on unverified previous guesses |
-| A manual prototype works on representative inputs | The model lacks required context and cannot retrieve it |
-
-For complex workflows, structure the implementation as a pipeline: acquire context, prepare prompts/artifacts, process with LLM stages, parse or validate outputs, and render the final result.
-
-
-## Design Checklist
-
-Before implementing or shipping a non-trivial workflow, answer these questions:
-
-- **Purpose and fit:** What concrete outcome should the workflow produce? Is the task naturally multi-stage, parallel, resumable, or reusable? What is out of scope?
-- **Inputs:** Which values should be declared as inputs? What is the narrowest schema type? Which defaults are safe?
-- **Common pattern:** Which [common workflow pattern](#common-workflow-patterns) best matches the task, and where does the actual design intentionally diverge?
-- **Stage decomposition:** For each stage, what question does it answer, what context does it need, what output should it return, and what model/tool/MCP requirements does it have?
-- **Local stage contract:** Can this stage prompt stand alone with its current objective, inputs/artifacts, expected outputs, tools/checks, and success criteria, without unexplained workflow internals or future-stage assumptions?
-- **Prompt vocabulary:** Do stage, reviewer, and reducer prompts describe the concrete action, available evidence, and success criteria that the stage can see locally, instead of assuming the model knows the workflow graph's name or surrounding context? Avoid phrasing like "the create-PR workflow stage" or "this Foo workflow" unless that name is explicitly supplied as user-visible context or materially affects behavior.
-- **Information flow:** For every edge between stages, is `previous` enough, or should the handoff use structured returns, files, `reads`, `output`, or `outputMode`?
-- **Output contract:** Which outputs should be declared in `outputs`, which stage/task/child results should `run` return for those keys, and what runtime type must each value have? If another workflow may call this workflow as a child, which non-default outputs should the parent rely on?
-- **Context size:** Can downstream stages succeed from the handoff alone? Should large transcripts, logs, or research bundles be summarized or saved as artifacts?
-- **Control flow:** Should the workflow use `ctx.chain`, `ctx.parallel`, `ctx.ui`, bounded loops, `failFast`, or `fallbackModels`?
-- **Acyclic topology:** What node and dependency shape can each branch, bounded loop, and nested workflow boundary materialize? Which stages repeat, does each iteration create distinct tracked work with stable identity and call order, and what is the current frontier before each repeat? Could any proposed parent edge target the node itself or an ancestor? Are nested children composed through `ctx.workflow(...)` boundaries rather than recursive `run` invocation? Redesign or stop before launch if any self-edge or back-edge remains.
-- **Scope control:** Could valid adjacent findings expand the patch? If so, where will a fresh scope guard read the immutable contract, how will it classify and persist bounded decisions, which `warn`/`block`/`off` fallback applies, and which worker session owns any forked continuation?
-- **User experience:** Are stage names readable in status and graph views? Is the final output compact? Are important artifacts saved with stable paths?
-- **Validation:** What success criteria, review gates, deterministic checks, or evaluator stages prove the workflow did the right thing? Are model gates schema-backed instead of regex/prose-matched, and do adaptive gates run as focused model stages with explicit tool/check instructions?
-- **Final actions:** Does the workflow distinguish implementation/review convergence from post-approval final actions such as PR/MR/review creation, release tagging, deployment, or publication? Are reviewers and reducers prompted to approve and hand off when implementation and validation criteria are proven and only an explicitly authorized final action remains?
-
-Good workflows are information-flow systems, not just prompt sequences. Keep stage prompts focused, preserve evidence with file paths or artifacts, and pass only the context each downstream stage needs.
-
 ## Common Mistakes
 
 - Do not invent workflow names; list first.
@@ -4280,99 +4803,6 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 These mistakes cover workflow tool usage and authoring. For run-prompt anti-patterns, see the [Anti-patterns](#anti-patterns) table in [Workflow Best Practices](#workflow-best-practices).
 
 ## Workflow Best Practices
-
-This playbook helps coding agents and workflow systems produce better results.
-
-Treat an agent as a capable engineering partner that needs a clear objective, tight scope, explicit validation, and occasional steering.
-
-Most weak agent runs fail for predictable reasons: the goal is vague, the scope is too broad, validation is missing, or the agent keeps following the wrong signal. This playbook addresses these failure modes.
-
-The examples below are synthetic and intentionally generic. Replace placeholders like `[component]`, `[test command]`, and `[workflow]` with your own project details.
-
----
-
-### The core loop
-
-The core workflow pattern is:
-
-```text
-Objective -> Scope -> Done criteria -> Run -> Inspect -> Steer -> Validate -> Summarize
-```
-
-Apply this loop per independently verifiable implementation item. When a request contains several items, first use the [task-queue triage and bounded per-item dispatch rule](#task-queues-and-software-factories); do not make one item's inspect/steer/validate cycle block an unrelated item.
-
-Use this sequence:
-
-1. Define the end state.
-2. Constrain the blast radius.
-3. State what counts as done.
-4. Run the agent or workflow.
-5. Inspect status before reading details.
-6. Steer only when the run is off track, blocked, or missing criteria.
-7. Require evidence before accepting the result.
-8. Ask for a summary, handoff, or next-step plan.
-
-A good workflow prompt states both the task and its success criteria.
-
----
-
-### Prompt anatomy
-
-A strong workflow prompt usually includes:
-
-#### Objective
-
-What should be true when the work is complete?
-
-```text
-Implement `[specific behavior]` in `[component]`.
-```
-
-#### Context
-
-What does the agent need to know before acting?
-
-```text
-This is needed because `[reason]`. The relevant code likely lives near `[area]`.
-```
-
-#### Scope
-
-What is the agent allowed to change?
-
-```text
-Only touch files directly required for `[behavior]`.
-```
-
-#### Non-goals
-
-What should the agent avoid?
-
-```text
-Do not redesign `[subsystem]`, refactor unrelated code, or change public behavior outside `[case]`.
-```
-
-#### Done criteria
-
-How will we know the work is complete?
-
-```text
-Done means:
-- `[new behavior]` works.
-- `[existing behavior]` is unchanged.
-- `[test command]` passes.
-- The final response includes changed files, validation results, and remaining risks.
-```
-
-#### Stop conditions
-
-When should the agent stop and ask instead of guessing?
-
-```text
-If this requires changing `[public API/security behavior/data migration]`, stop and ask first.
-```
-
----
 
 ### Core principles
 
@@ -4468,414 +4898,6 @@ Before switching from investigation to implementation, or from implementation to
 ```text
 Summarize root cause, proposed fix, files involved, validation plan, and remaining risks.
 ```
-
----
-
-### Common Workflow Patterns
-
-For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
-
-The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** and **Stacked implementation slices** are authoring starter patterns rather than builtins; compose scope guard's [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives, and use stacked slices to unroll dependent implementation children through existing `ctx.workflow(...)` boundaries. **Constructive quorum** is an accepted reviewer-coordination pattern used by `goal` and `ralph`; it is prompt guidance rather than a standalone builtin.
-
-These patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run. Constructive quorum shapes bounded deliberation inside parallel reviewer stages; stacked implementation slices split one objective inside that lifecycle; queue triage splits separate whole items.
-
-| Pattern | Use it when | Atomic shape |
-|---|---|---|
-| **Classify-and-act** | Inputs arrive in different categories and each category needs a different path, model, tool set, or output format. | `ctx.task("classify")` → deterministic branch → category-specific `ctx.task`, `ctx.chain`, `ctx.parallel`, or child `ctx.workflow(...)`. |
-| **Fan-out-and-synthesize** | The task can be split into many independent slices that benefit from clean context windows. | `ctx.parallel([...])` with separate artifacts → synthesis barrier that reads the artifacts and merges the answer. |
-| **Adversarial verification** | Outputs need independent checking against a rubric, security rule, factual source, or acceptance contract. | Worker stage(s) → fresh-context verifier stage(s) → reducer that accepts, rejects, or asks for repair. |
-| **Generate-and-filter** | You need many candidate ideas, plans, names, fixes, or hypotheses before selecting the best few. | Generator fan-out → dedupe/filter stage → optional verifier/judge → final shortlist. |
-| **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → seeded ring and pivot rounds score each candidate pair by criterion → reducer reports the winner and full ranking. |
-| **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
-| **Constructive quorum** | Several fresh-context verifiers judge the same artifact and a tallied vote could mask a defect one verifier found or block on one verifier's misreading. | Parallel verifiers form independent preliminary verdicts → exactly one bounded Intercom evidence-exchange round (share and challenge evidence) → each emits its own final structured verdict → deterministic reducer counts votes. |
-| **Scope guard** | A worker or repair stage may turn valid adjacent findings into unplanned work. | Immutable contract artifact → fresh boundary or live scope checker → bounded decision artifact → forked worker continuation; correctness review stays separate. |
-| **Stacked implementation slices** | One dependent implementation objective is too broad for one verified diff but can be divided into ordered, independently verifiable concerns. | Pre-launch slice plan → sequential child `ctx.workflow(...)` boundaries (`goal`, `ralph`, or a task-specific child) → each slice's gates → next slice based on the previous verified branch and worktree, or stop/report at the first failure. |
-
-Constructive quorum relies on existing Intercom mechanics: every workflow invocation gets its own stable Intercom group, and parallel stages and delegated subagents inherit it when they can use Intercom. Reviewers can therefore reach siblings without authoring group plumbing; keep the evidence exchange bounded and leave quorum counting to the deterministic reducer.
-
-#### Pattern diagrams
-
-##### 1. Classify-and-act
-
-Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
-
-```text
-┌─ 1  Classify-and-act ────────────────────────────────────┐
-│                                                          │
-│                             ┌───────┐                    │
-│                         ╭──▸│agent A│                    │
-│                         │   └───────┘                    │
-│  ┌────┐  ┌──────────┐   │   ┌───────┐                    │
-│  │task│─▸│classifier│───┼──▸│agent B│ ◂ chosen           │
-│  └────┘  └──────────┘   │   └───────┘                    │
-│                         │   ┌───────┐                    │
-│                         ╰──▸│agent C│                    │
-│                             └───────┘                    │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Make the classifier return a structured category and confidence, not free-form prose.
-- Keep each action branch isolated with the minimum tools and context it needs.
-- Add a fallback or human-input branch for low-confidence classifications.
-
-##### 2. Fan-out-and-synthesize
-
-Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
-
-```text
-┌─ 2  Fan-out-and-synthesize ──────────────────────────────┐
-│                                                          │
-│            ┌───────┐                                     │
-│          ╭▸│agent 1│──╮                                  │
-│          │ └───────┘  │                                  │
-│          │ ┌───────┐  │                                  │
-│          ├▸│agent 2│──┤                                  │
-│  ┌────┐  │ └───────┘  │ ┌───────┐  ┌──────────┐          │
-│  │task│──┤ ┌───────┐  ├▸│barrier│─▸│synthesize│          │
-│  └────┘  ├▸│agent 3│──┤ └───────┘  └──────────┘          │
-│          │ └───────┘  │                                  │
-│          │ ┌───────┐  │                                  │
-│          ╰▸│agent 4│──╯                                  │
-│            └───────┘                                     │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Partition by files, sources, claims, candidates, or work items that can be evaluated independently.
-- Save each branch to a separate artifact and pass paths with `reads` instead of inlining all branch output.
-- Treat synthesis as a barrier: it waits for every branch, deduplicates, resolves conflicts, and cites evidence.
-
-##### 3. Adversarial verification
-
-Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
-
-```text
-┌─ 3  Adversarial verification ────────────────────────────┐
-│                                                          │
-│                                                          │
-│  ┌──────┐       ┌──────────┐                             │
-│  │worker│───╮──▸│verifier A│──╮                          │
-│  └──────┘   │   └──────────┘  │                          │
-│             │   ┌──────────┐  │   ┌───────┐              │
-│             ├──▸│verifier B│──┼──▸│reducer│              │
-│             │   └──────────┘  │   └───────┘              │
-│             │   ┌──────────┐  │                          │
-│             ╰──▸│verifier C│──╯                          │
-│                 └──────────┘                             │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Give verifiers fresh context and a concrete rubric with pass/fail evidence requirements. For task-specific contract risk, use a grumpy/skeptical-but-fair persona that seeks realistic counterexamples, stays within the literal objective, rejects hand-waving and circular worker-authored evidence, and reports only actionable evidence-backed defects.
-- Separate adversarial probe design from authoritative execution. Require a structured verifier plan with each exact probe, inputs, command/assertion, expected success condition, and covered requirement/risk; then run selected compile, test, schema generation/validation, runtime, or artifact checks through durable workflow-owned `ctx.tool(...)` calls. Actual tool results—not model self-report—feed judgment and consolidated repair.
-- Known contracts may use direct task-specific `ctx.tool(...)` gates designed before launch; uncertain risks may use model-selected probes executed by those deterministic tools. Rerun the tools after repair until the declared pass condition or iteration limit.
-- Ask verifiers to find blockers and not rewrite the candidate unless you explicitly assign them to repair it. Keep pure transformations as ordinary TypeScript rather than wrapping every model-stage action in `ctx.tool`.
-- Decompose the rubric into named criteria and score each in its own call. Compound rubrics can latch onto one salient factor; the reference scan reports 76.4% for the best single criterion versus 78.3% for a three-criterion ensemble (§4.3).
-- Aggregate by mean plus an explicit veto for genuinely disqualifying findings, never a unanimity AND across verifiers: unanimity makes false-reject grow as 1−(1−p)^K while the false-accept it buys only decays as (1−p)^K. See [Verification scaling](#verification-scaling).
-- The shipped `adversarial-verification` builtin accepts `criteria` as a record of criterion names to descriptions or as a `criteria.md` Markdown string; the shared `verification-criteria` module also canonicalizes string lists and `CriterionInput` lists. Its public doors are `parse_rubric`, `normalize_criteria`, `select_criteria`, and `decide_verification`, using the `Criterion`, `CriterionInput`, `CriterionScore`, and `Finding` shapes; `NoCriteria` and `EmptyCriterion` are explicit rubric errors.
-- A `criteria.md` rubric may have a `#` title, an optional `##` section whose heading contains `ground truth` (normally `## Ground Truth Note`; the first such section wins), and must include a `##` section whose heading contains `criteri` (normally `## Criteria`) whose `### Name {#id}` headings own non-empty criterion bodies. HTML comments are ignored; an omitted `{#id}` is slugged to lowercase alphanumeric/underscore text (up to 40 characters), with a fallback `criterion` id and encounter-order `_2`/`_3` deduplication. `parse_rubric` rejects a rubric with no criterion headings or an empty criterion body.
-- `VERIFICATION_SCALE` anchors integer scores from 1 (certainly fails) through 20 (verified correct). `select_criteria` preserves the requested id order and rejects unknown ids; `decide_verification` accepts only with quorum, a mean at or above the policy threshold, and no `veto` finding, while an invalid report remains metadata rather than a score.
-- Keep a scoring family in the `SHARED HEAD ‖ VARYING TAIL` layout from `verification-prompts`: the byte-identical head contains the task, ground-truth note, candidate bodies (or caller-provided read paths), and scale anchors in that order; the tail contains only the criterion name and description plus the output-format instruction. Candidate-specific bodies stay in the shared head, not the varying tail, so sibling criteria can reuse the cached prefix.
-- Inline the whole candidate family only while every body is at most `32 * 1024` UTF-8 bytes (`MAX_INLINE_CANDIDATE_BYTES`). If any body is larger, switch the whole family to caller-bound paths, preserving path order and duplicates; an oversized pathless family is rejected rather than guessed.
-- `warm_first_fan_out` schedules the first-seen step for each prefix before releasing the remaining steps, establishing the provider's warm prefix before sibling criteria or pair slots vary. Warm failures are observed without fail-fast, the remaining phase is still attempted before the error is rethrown, and successful results return in input order.
-- The builtin input defaults are `verifier_count=3`, `max_repairs=2`, `accept_mean=14` on the 1–20 scale, and `reask_limit=1`; omitted `criteria` uses the `task_fit`, `evidence`, and `completeness` record. A round expects one schema-valid score for every criterion/verifier cell, and the normal call shape is criteria length multiplied by verifier count.
-- Invalid criterion reports are written as invalid artifacts and re-asked in bounded waves up to `reask_limit`; an invalid or missing report is counted in `invalidCount` only and is never converted into a fail vote or included in the mean. If the required quorum is still missing after the re-asks, the round is `indeterminate` rather than silently narrowing the decision.
-- `score_table_path` names the durable `verification-summary-<round>.json` for the final round. Its object contains `scores` (`criterion_id`, integer `score`, `evidence`, and `findings` with `finding` plus `severity`), `mean`, `invalidCount`, the `decision` (`accept`, `repair`, or `indeterminate` with its corresponding mean/findings or missing count), and folded `usage`; `review_report_path` carries repair guidance or quorum evidence.
-
-##### 4. Generate-and-filter
-
-Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
-
-```text
-┌─ 4  Generate-and-filter ─────────────────────────────────┐
-│                                                          │
-│                                                          │
-│  ┌─────┐   ┌────┐                      ┌────┐            │
-│  │gen A│──▸│idea│───╮              ╭──▸│best│            │
-│  └─────┘   └────┘   │              │   └────┘            │
-│  ┌─────┐   ┌────┐   │  ┌──────┐    │   ┌────┐            │
-│  │gen B│──▸│idea│───┼─▸│filter│────┼──▸│best│            │
-│  └─────┘   └────┘   │  └──────┘    │   └────┘            │
-│  ┌─────┐   ┌────┐   │              │   ┌╌╌╌╌╌╌╌╌╌┐       │
-│  │gen C│──▸│idea│───╯              ╰──▸╎discarded╎       │
-│  └─────┘   └────┘                      └╌╌╌╌╌╌╌╌╌┘       │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Generate more candidates than you need, then filter hard by an explicit rubric.
-- Dedupe before judging so near-identical candidates do not dominate the shortlist.
-- Use this for exploration, naming, design options, hypotheses, and lightweight eval ideas.
-- When the filter ranks candidates rather than applying a threshold, use the same judge guidance as Tournament: graded per-criterion integer scores rather than binary keep/drop, a Bradley–Terry preference from the score gap so near-ties stay near-ties, and K repeats with candidates swapped between the A and B slots. See [Verification scaling](#verification-scaling).
-- For a custom ranking filter, reuse the shared `verification-criteria` module and its `criteria.md` parser rather than inventing a binary keep/drop rubric; stable criterion ids let the judge select the same criteria in each comparison. See [Adversarial verification](#3-adversarial-verification) for the accepted shapes and score decision.
-
-##### 5. Tournament
-
-Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
-
-```text
-┌─ 5  Tournament ──────────────────────────────────────────┐
-│                                                          │
-│  ┌─────────┐                                             │
-│  │attempt A│──╮  ┌───────┐                               │
-│  └─────────┘  ├─▸│judge 1│───╮                           │
-│  ┌─────────┐  │  └───────┘   │                           │
-│  │attempt B│──╯              │   ┌─────┐  ┌──────┐       │
-│  └─────────┘                 ├──▸│final│─▸│winner│       │
-│  ┌─────────┐                 │   └─────┘  └──────┘       │
-│  │attempt C│──╮  ┌───────┐   │                           │
-│  └─────────┘  ├─▸│judge 2│───╯                           │
-│  ┌─────────┐  │  └───────┘                               │
-│  │attempt D│──╯                                          │
-│  └─────────┘                                             │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Use pairwise comparison when absolute scores are noisy or subjective.
-- Randomize or balance presentation order where possible to reduce order bias.
-- Keep the judge rubric short and require rationale tied to observable criteria.
-- Have judges emit graded per-criterion integer scores rather than a binary winner, then derive a Bradley–Terry preference from the score gap so near-ties stay near-ties.
-- Repeat each pair K times with the candidates swapped between the A and B slots; the swap cancels positional bias within the pair and variance falls as O(1/K). In the reference scan's discrete-judge study, 26.7% of pairs tied at K=1; with slot swaps, the reported K=1→16 result moved from 74.7% to 77.5%.
-- See [Verification scaling](#verification-scaling) for score granularity and call-budget trade-offs.
-- The shipped tournament inputs use `num_attempts=4` and `max_concurrency=4`; `n_evaluations=2` repeats each criterion/directed pair, `pivots=1` selects the second comparison phase's pivot candidates, and `seed=0` drives the deterministic schedule. `criteria` is optional and accepts a markdown rubric, a string-to-description record, a string list, or a `CriterionInput` list; omission uses the shipped three-criterion Correctness, Completeness, and Evidence and task fit rubric. Optional ordered `models` ids are assigned round-robin to attempt slots.
-- `comparisons_path` points to `comparisons.json`, whose ledger records the task and seed, `params` (`n`, `pivots`, `n_evaluations`, and normalized `criteria`), per-job `comparisons` rows (`a`, `b`, phase, criterion id, repeat, slot-swap flag, scores or an `invalid` marker, preference, and judge artifact path), aggregate `pairs`, weights/counts, the complete `ranking`, and optional model assignment. Its `budget` records planned versus executed judge stages, including re-asks; invalid reports remain auditable rows and an all-invalid pair remains marked invalid rather than becoming a score.
-
-##### 6. Loop until done
-
-Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
-
-```text
-┌─ 6  Loop until done ─────────────────────────────────────┐
-│                                                          │
-│  ┌───────┐   ┌─────────────┐  no   ┌────┐                │
-│  │agent 1│──▸│new findings?│──────▸│done│                │
-│  └───────┘   └──────┬──────┘       └────┘                │
-│                     │ yes, spawn distinct work           │
-│                     ▾                                    │
-│                 ┌───────┐   ┌────────────┐               │
-│                 │agent 2│──▸│next check …│               │
-│                 └───────┘   └────────────┘               │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Define both success and escape conditions before the loop starts.
-- Keep a durable ledger of attempted work, findings, failures, and validation evidence.
-- Bound loops by iterations, budget, or convergence criteria so exhausting a bound produces an inspectable failure instead of letting the loop continue indefinitely.
-- Materialize every iteration as distinct tracked work with stable iteration identity and call order. Never represent repetition by a self-edge, a back-edge to an ancestor, or reopening an ancestor below its downstream work.
-- Record a progress magnitude in the ledger beside the boolean stop bit; a flat or decreasing series is the stall signal that the loop is burning iterations without moving.
-- Treat the trend as a monitoring and escalate-to-human signal, never a kill switch: the explicit stop condition remains authoritative. See [Verification scaling](#verification-scaling).
-- The builtin defaults `max_iterations=5`, `progress_scoring=true`, and `progress_repeats=1`; set `progress_scoring` false to omit advisory scoring, while `progress_repeats` is the repeat count passed to the scoring primitive. Each scored iteration adds a `progress` entry to `progress-ledger.json` with `score`, `perRepeat` (null for an invalid repeat), `trend`, and the classifier `window`; the ledger also emits `progress_curve`, `final_trend`, and `progress_disclaimer`.
-- Progress scores use the anchored 1–20 scale and average valid repeat scores per checkpoint. `classify_trend` uses `window=3`, `riseDelta=1.5`, and `fallDelta=-1.5`; it compares equal leading/trailing halves of the trailing two windows, drops an odd middle sample, and classifies inclusive threshold crossings as `rising`, `flat`, or `regressing`. A short series is `flat` evidence.
-- The trend is monitoring and escalation evidence only: it never kills, terminates, or approves a loop, and the explicit evaluator stop condition remains authoritative. `progress_curve`, `final_trend`, and `progress_disclaimer` are advisory outputs, not alternate closure signals.
-
-##### 7. Constructive quorum
-
-This prompt-level reviewer pattern is used by the `goal` and `ralph` builtins; it does not add a reducer or quorum mechanism.
-
-```text
-┌─ 7  Constructive quorum ──────────────────────────────────┐
-│                                                          │
-│  ┌──────────────┐   ┌──────────────┐                    │
-│  │reviewer A    │   │reviewer B    │   independent       │
-│  │preliminary   │   │preliminary   │   assessments        │
-│  │verdict       │   │verdict       │                    │
-│  └──────┬───────┘   └──────┬───────┘                    │
-│         ╰──── Intercom: one evidence round ────╮        │
-│                share · challenge · correct     │        │
-│                         ┌──────────────────────┘        │
-│                         ▾                               │
-│              ┌──────────────────┐   ┌───────────────┐   │
-│              │final structured  │──▸│deterministic  │   │
-│              │verdicts + change │   │reducer counts │   │
-│              │evidence          │   │votes          │   │
-│              └──────────────────┘   └───────────────┘   │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Give every reviewer an independent preliminary assessment before it reads sibling findings or verdicts.
-- Run exactly one bounded evidence-exchange round. Share concrete findings and evidence, challenge blocking claims, and stop rather than opening a second round.
-- Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether deliberation changed it and which evidence caused the change.
-- Let the existing deterministic reducer count the final votes; deliberation shapes votes but does not replace quorum counts or the `stop_review_loop` contract.
-
-##### Stacked implementation slices starter pattern
-
-Use this authoring pattern when one implementation objective should land as a stack of small, independently verified changes. It is not a queue dispatcher: the slices belong to one dependency chain, so slice N+1 starts only after slice N is verified.
-
-During the pre-launch architecture pass, enumerate the slices in the coverage matrix. Give every slice its own objective, acceptance criteria, changed-file scope, and verification gates. Target roughly 100–500 changed lines between verification points by default, but treat that as a reviewability default rather than a law: keep a genuinely atomic mechanical change or generated-artifact refresh in one slice, and do not split a small objective just to reach a count.
-
-```text
-┌─ Stacked implementation slices ─────────────────────────────┐
-│ plan → prepare branch/worktree → child slice 1 → gates      │
-│                                      │ verified              │
-│                                      ▼                       │
-│              prepare branch from slice 1's verified branch  │
-│                                      ▼                       │
-│                         child slice 2 → gates              │
-│                                      │ failed → stop/report │
-└─────────────────────────────────────────────────────────────┘
-```
-
-Run each slice through a child workflow that owns its implement/review/repair lifecycle. Import `goal` or `ralph` from `@bastani/atomic/workflows/builtin`, or use a task-specific child when neither builtin matches. Before each child, use a durable `ctx.tool(...)` step to create or check out the slice's explicit branch in its worktree. `worktreeFromInputs` creates a missing target with a detached checkout and reuses an existing target as-is; `base_branch` and `git_worktree_dir` do not create or check out a feature branch by themselves. Create slice N+1's branch from slice N's verified branch, then pass that previous branch as `base_branch` and give the child a distinct `git_worktree_dir`.
-
-The parent should verify each child before creating the next boundary. If a gate fails, stop at the first failed gate, report that slice as unverified, and retain the earlier verified slices and their branch/worktree records. Do not roll earlier slices back and do not continue past the failure.
-
-The calls below are deliberately unrolled. Repeat the downstream shape for the planned slices, giving every call a fresh child boundary and distinct tracked nodes; do not reopen an ancestor or add a back-edge.
-
-```ts
-import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
-import { Type } from "typebox";
-import { workflow } from "@bastani/atomic/workflows";
-import { goal } from "@bastani/atomic/workflows/builtin";
-
-function spawnCommand(argv: readonly string[], cwd: string) {
-  const [command, ...args] = argv;
-  if (command === undefined) throw new Error("spawnCommand requires a command");
-  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
-  // A command that could not be spawned at all arrives on `error` with a null
-  // status, so it has to be raised here or it reads as an ordinary failure.
-  if (result.error) throw result.error;
-  return result;
-}
-
-function runCommand(argv: readonly string[], cwd: string): string {
-  const result = spawnCommand(argv, cwd);
-  const stdout = (result.stdout ?? "").trim();
-  const stderr = (result.stderr ?? "").trim();
-  if (result.status !== 0) {
-    throw new Error(`${argv.join(" ")} failed (${result.status})\n${stderr || stdout}`);
-  }
-  return stdout;
-}
-
-export default workflow({
-  name: "stacked-slices",
-  inputs: {
-    slice1_branch: Type.String({ default: "stacked/slice-1" }),
-    slice2_branch: Type.String({ default: "stacked/slice-2" }),
-  },
-  outputs: {},
-  run: async (ctx) => {
-    const repoRoot = runCommand(["git", "rev-parse", "--show-toplevel"], ctx.cwd ?? process.cwd());
-    const slice1Branch = ctx.inputs.slice1_branch;
-    const slice2Branch = ctx.inputs.slice2_branch;
-    if (slice1Branch === slice2Branch) {
-      return ctx.exit({ status: "blocked", reason: "slice branches must be distinct" });
-    }
-
-    const prepareSliceWorktree = async (
-      toolName: string,
-      branch: string,
-      gitWorktreeDir: string,
-      baseBranch: string,
-    ) => {
-      const worktreePath = resolve(repoRoot, gitWorktreeDir);
-      await ctx.tool(
-        toolName,
-        { branch, base_branch: baseBranch, git_worktree_dir: gitWorktreeDir },
-        async () => {
-          const current = spawnCommand(
-            ["git", "-C", worktreePath, "branch", "--show-current"],
-            repoRoot,
-          );
-          if (current.status === 0) {
-            const checkedOutBranch = (current.stdout ?? "").trim();
-            if (checkedOutBranch !== branch) {
-              throw new Error(`${worktreePath} is checked out on ${checkedOutBranch || "detached HEAD"}, expected ${branch}`);
-            }
-            return { branch, worktree: worktreePath };
-          }
-
-          const branchProbe = spawnCommand(
-            ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-            repoRoot,
-          );
-          if (branchProbe.status === 0) {
-            runCommand(["git", "worktree", "add", worktreePath, branch], repoRoot);
-          } else if (branchProbe.status === 1) {
-            runCommand(["git", "worktree", "add", "-b", branch, worktreePath, baseBranch], repoRoot);
-          } else {
-            throw new Error((branchProbe.stderr ?? "").trim() || `could not inspect branch ${branch}`);
-          }
-          return { branch, worktree: worktreePath };
-        },
-      );
-    };
-
-    await prepareSliceWorktree("prepare-slice-1-branch", slice1Branch, "../slice-1", "origin/main");
-    const slice1 = await ctx.workflow(goal, {
-      inputs: {
-        objective: "Implement the first independently verified concern.",
-        acceptance_criteria: "The first concern builds, passes its focused tests, and commits all changes on the current feature branch.",
-        base_branch: "origin/main",
-        git_worktree_dir: "../slice-1",
-        create_pr: false,
-      },
-      stageName: "slice 1",
-    });
-    if (slice1.exited === true || slice1.outputs.approved !== true) {
-      return ctx.exit({ status: "blocked", reason: "slice 1 is unverified" });
-    }
-
-    await prepareSliceWorktree("prepare-slice-2-branch", slice2Branch, "../slice-2", slice1Branch);
-    const slice2 = await ctx.workflow(goal, {
-      inputs: {
-        objective: "Implement the next concern on the verified slice-1 branch.",
-        acceptance_criteria: "The second concern builds, passes its focused tests, preserves slice 1, and commits all changes on the current feature branch.",
-        base_branch: slice1Branch,
-        git_worktree_dir: "../slice-2",
-        create_pr: false,
-      },
-      stageName: "slice 2",
-    });
-    if (slice2.exited === true || slice2.outputs.approved !== true) {
-      return ctx.exit({ status: "blocked", reason: "slice 2 is unverified; slice 1 remains verified" });
-    }
-
-    return {};
-  },
-});
-```
-
-The `prepareSliceWorktree` tools run before their child boundaries and use `git worktree add -b`, so each child starts in a named feature branch. Once the path exists, the child's worktree binding reuses it as-is; `base_branch` remains the comparison base for its reviewers. The child owns implementation, review, repair, and acceptance, while the parent owns branch/worktree setup and the stop boundary.
-
-Use `ralph` or a task-specific child in the same positions when its input contract fits better. For a longer stack, keep the same explicit downstream shape: create each next named branch from the previous verified branch, pass that previous branch as the next child's `base_branch`, and use a distinct worktree. Do not replace the chain with a loop that points back to an ancestor. A final handoff can report `slice → branch → worktree → verified/failed` from the explicit inputs and preparation records without reopening completed child work.
-
-#### Verification scaling
-
-This is authoring guidance for custom workflows, not a description of shipped builtin inputs:
-
-- Use an anchored 1–20 integer scale as the default score granularity.
-- Providers expose no token logprobs, so a K-sample average is the substitute; K=16 parity costs roughly 16× the call cost, making K a budget decision.
-- Treat pool diversity as a bet on the selector's oracle ceiling. In the reference scan's pivot tournament, best-of-3 selection reached 86.5% ±1.1 against 79.4% pass@1 with a 92.1% oracle ceiling, while best-of-5 reached 88.0% ±0.6 against 78.7% pass@1 with a 96.6% oracle ceiling. A chance-level selector can make a more diverse pool worse, so widen the pool only once the judge beats chance.
-- Self-verification—having the same model judge its own rollouts—still gained +7.1 over pass@1 in the best-of-3 comparison (86.5% versus 79.4%) and +9.3 in the best-of-5 comparison (88.0% versus 78.7%).
-- For a cheap operating point, an author can use one pivot and K=2 repeats for a best-of-3-shaped comparison budget; this is an authoring recipe, not a shipped default.
-- For the shipped primitive references, see [Adversarial verification](#3-adversarial-verification) for criteria parsing, warm-first scoring, re-asks, and score summaries; [Tournament](#5-tournament) for inputs and `comparisons.json`; [Loop until done](#6-loop-until-done) for progress ledger/trend outputs; and [Goal](#goal)/[Ralph](#ralph) for re-verification and convergence evidence.
-
-#### Choosing a common workflow pattern
-
-- Pick **classify-and-act** when routing correctness matters more than breadth.
-- Pick **fan-out-and-synthesize** when the work divides cleanly into independent slices.
-- Pick **adversarial verification** when the main risk is a plausible but wrong answer.
-- Pick **generate-and-filter** when output quality depends on exploring a large option space.
-- Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
-- Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
-- Pick **constructive quorum** when several fresh-context verifiers judge one artifact and a simple tally could hide a defect or preserve one verifier's misreading; use one bounded evidence exchange before each verifier emits its own final vote.
-- Pick **scope guard** when valid adjacent findings could expand a worker or repair stage beyond its immutable contract; choose a boundary task by default and live parallel steering only when timing requires it.
-- Pick **stacked implementation slices** when one dependent implementation objective needs ordered, independently verified layers. Keep the 100–500 line range as a default with atomic-change escapes; create or check out each named branch before its child, create each next branch from the previous verified branch, pass that previous branch as `base_branch`, use a distinct `git_worktree_dir`, and stop at the first failed gate.
-
-Record the selected pattern in your spec or workflow README, then adapt the diagram to the stage graph. If the final design does not resemble any common pattern, explain why in the workflow's design notes.
 
 ---
 
