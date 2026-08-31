@@ -219,7 +219,7 @@ export async function resumeDurableWorkflow(
 		});
 	} catch (error) {
 		backend.setWorkflowStatus(resolved.workflowId, handle.status, handle.pendingPrompts, handle.resumable);
-		await backend.flush();
+		await backend.flush(resolved.workflowId);
 		return {
 			ok: false,
 			reason: "startup_failed",
@@ -237,7 +237,7 @@ export async function resumeDurableWorkflow(
 		);
 		deps.baseRunOpts.store?.removeRun(accepted.runId);
 		backend.setWorkflowStatus(resolved.workflowId, handle.status, handle.pendingPrompts, handle.resumable);
-		await backend.flush();
+		await backend.flush(resolved.workflowId);
 		return {
 			ok: false,
 			reason: "startup_failed",

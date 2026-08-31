@@ -1,4 +1,5 @@
 import { type Component, Text, type TUI } from "@earendil-works/pi-tui";
+import { markLifecycleTiming } from "../../../core/lifecycle-timings.ts";
 import { STARTUP_ASSEMBLY_GAPS, STARTUP_FRAME_MS } from "./atomic-banner.ts";
 
 export interface StartupAnimationState {
@@ -49,6 +50,8 @@ export class StartupIdentityComponent implements Component {
 		const state = this.settled
 			? { gap: 0, manifestoPhase: 4, complete: true }
 			: startupStateAtElapsed(Date.now() - this.startedAt);
+		markLifecycleTiming("startup-coherent");
+		if (state.complete) markLifecycleTiming("startup-complete");
 		return new Text(this.compose(width, state), 1, 0).render(width);
 	}
 

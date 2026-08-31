@@ -4,7 +4,7 @@ import {
 	getAgentDir,
 	getCodexFastModeEnvironmentSettings,
 	getProjectConfigPaths,
-} from "../config.ts";
+} from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { deepMergeSettings } from "./settings-merge.ts";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
@@ -297,6 +297,39 @@ export class SettingsManager {
 
 		this.runtimeSettingsOverrides = SettingsManager.getRuntimeSettingsOverrides();
 		this.settings = this.mergeEffectiveSettings();
+	}
+	/** Load a reload candidate without publishing any settings to live readers. */
+	async prepareReload(): Promise<{ settingsManager: SettingsManager; commit: () => void }> {
+		await this.writeQueue;
+		const candidate = new SettingsManager(
+			this.storage,
+			structuredClone(this.globalSettings),
+			structuredClone(this.projectSettings),
+			this.globalSettingsLoadError,
+			this.projectSettingsLoadError,
+			[...this.errors],
+			this.projectTrusted,
+		);
+		await candidate.reload();
+		return {
+			settingsManager: candidate,
+			commit: () => this.publishReload(candidate),
+		};
+	}
+
+	private publishReload(candidate: SettingsManager): void {
+		this.globalSettings = candidate.globalSettings;
+		this.projectSettings = candidate.projectSettings;
+		this.settings = candidate.settings;
+		this.runtimeSettingsOverrides = candidate.runtimeSettingsOverrides;
+		this.projectTrusted = candidate.projectTrusted;
+		this.modifiedFields = candidate.modifiedFields;
+		this.modifiedNestedFields = candidate.modifiedNestedFields;
+		this.modifiedProjectFields = candidate.modifiedProjectFields;
+		this.modifiedProjectNestedFields = candidate.modifiedProjectNestedFields;
+		this.globalSettingsLoadError = candidate.globalSettingsLoadError;
+		this.projectSettingsLoadError = candidate.projectSettingsLoadError;
+		this.errors = candidate.errors;
 	}
 
 	/** Apply additional overrides on top of current settings */

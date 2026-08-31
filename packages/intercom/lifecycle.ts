@@ -76,7 +76,6 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    if (!deps.config.enabled) return;
     if (hasActiveSession) await cleanupRuntime("Session replaced");
     hasActiveSession = true;
     deps.setShuttingDown(false);

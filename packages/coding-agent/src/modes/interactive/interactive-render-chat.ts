@@ -1,5 +1,6 @@
 import type { Usage } from "@bastani/pi-ai/compat";
 import { CACHE_TTL_MS, collectCacheMisses } from "../../core/cache-stats.ts";
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
@@ -499,6 +500,7 @@ InteractiveModeBase.prototype.getUserInput = async function (
 			if (!this.inputHandlerReadyRecorded) {
 				this.inputHandlerReadyRecorded = true;
 				recordTimeSinceReset("interactive-input-handler-ready");
+				markLifecycleTiming("interactive-input-handler-ready");
 				void (async () => {
 					await yieldToEventLoop();
 					// pi parity: the changelog/first-run notices need nothing from

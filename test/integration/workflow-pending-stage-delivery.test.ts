@@ -509,25 +509,25 @@ afterAll(async () => {
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-test("the production owner route refuses stages without an Intercom startup drain", async () => {
+test("the production owner route preserves pending delivery through tool restrictions", async () => {
 	const scenarios = [
 		{
 			name: "no-tools",
 			runId: "23bb9cf2-354e-475a-8c6f-a4c42306bb03",
 			options: { noTools: "all" },
-			acceptsPending: false,
+			acceptsPending: true,
 		},
 		{
 			name: "read-only",
 			runId: "d10852aa-3f68-46f8-baa7-f7bad2b50b9d",
 			options: { tools: ["read"] },
-			acceptsPending: false,
+			acceptsPending: true,
 		},
 		{
 			name: "excluded-intercom",
 			runId: "3a601bed-fafa-43a7-a68e-587df2c0174a",
 			options: { excludedTools: ["intercom"] },
-			acceptsPending: false,
+			acceptsPending: true,
 		},
 		{
 			name: "explicit-isolated-group",

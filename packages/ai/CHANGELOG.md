@@ -1,8 +1,39 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`8fa7eebd235355522c8104166b4f1f959b4e2f10`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/8fa7eebd235355522c8104166b4f1f959b4e2f10/packages/ai/CHANGELOG.md).
+This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`5ce4afbd95ec10104c0e73866a745f602b592392`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/5ce4afbd95ec10104c0e73866a745f602b592392/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
+
+## [0.9.16] - 2026-08-29
+
+Cumulative release of the `0.9.16-alpha.5` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Added
+
+- Added the Meta Muse Image and Recraft V4 Styles, V4 Styles Pro, V4 Styles Pro Vector, and V4 Styles Vector image models to the generated OpenRouter catalog.
+- Added the DeepSeek V4 Flash Vision experimental model to generated catalogs.
+
+### Fixed
+
+- Fixed fragmented Mistral tool calls splitting when continuation chunks omit the tool-call ID ([#8387](https://github.com/earendil-works/pi/issues/8387)).
+- Fixed Cloudflare AI Gateway typing and mirrored supported Workers AI models through its compatibility endpoint.
+- Fixed OpenAI-compatible Chat Completions reasoning streams to concatenate incremental reasoning deltas instead of replacing earlier content ([#8605](https://github.com/earendil-works/pi/pull/8605)).
+- Fixed OpenRouter reasoning controls by deriving `off` support and available effort levels from model metadata, preventing reasoning-mandatory models from receiving `effort: "none"` ([#8454](https://github.com/earendil-works/pi/issues/8454)).
+- Fixed OpenAI-compatible Chat Completions requests sending `tool_choice` without tools, which gateways can reject during compaction ([#8607](https://github.com/earendil-works/pi/issues/8607)).
+- Fixed OpenAI-compatible Chat Completions ignoring an explicitly requested `toolChoice` when no tools are defined ([#8649](https://github.com/earendil-works/pi/issues/8649), [#8638](https://github.com/earendil-works/pi/issues/8638)).
+- Fixed OpenAI-compatible streaming rewriting `thinkingSignature` on every `reasoning_details` delta. Replay metadata is buffered during streaming and serialized once when the thinking block is finalized, including on the error path ([#8671](https://github.com/earendil-works/pi/issues/8671)).
+
+## [0.9.16-alpha.11] - 2026-08-28
+
+### Added
+
+- Added the Meta Muse Image and Recraft V4 Styles, V4 Styles Pro, V4 Styles Pro Vector, and V4 Styles Vector image models to the generated OpenRouter catalog.
+
+## [0.9.16-alpha.10] - 2026-08-28
+
+### Fixed
+
+- Fixed fragmented Mistral tool calls splitting when continuation chunks omit the tool-call ID ([#8387](https://github.com/earendil-works/pi/issues/8387)).
 
 ## [0.9.16-alpha.5] - 2026-08-26
 

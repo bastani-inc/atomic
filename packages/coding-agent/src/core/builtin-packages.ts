@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getPackageDir } from "../config.ts";
+import { getPackageDir } from "../config.js";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
 import { stripBom } from "../utils/text.ts";
 import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin-install-layout.ts";
@@ -8,6 +8,7 @@ import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin
 interface BuiltinPackageDescriptor {
 	readonly packageName: string;
 	readonly distDirName: BuiltinPackageDirName;
+	readonly mandatory: boolean;
 	readonly requiredEntries: readonly string[];
 	readonly sourceCandidates: (context: BuiltinPackageCandidateContext) => string[];
 }
@@ -18,24 +19,31 @@ interface BuiltinPackageCandidateContext {
 	readonly isSourceCheckout: boolean;
 }
 
+export interface BuiltinPackageLocation {
+	readonly packageName: string;
+	readonly distDirName: BuiltinPackageDirName;
+	readonly packageDir: string;
+}
+
 interface WorkspaceBuiltinSpec {
 	readonly packageName: string;
 	readonly workspaceDirName: BuiltinPackageDirName;
 	readonly distDirName: BuiltinPackageDirName;
 }
 
-const WORKSPACE_BUILTINS: readonly WorkspaceBuiltinSpec[] = [
+const WORKSPACE_BUILTINS: readonly (WorkspaceBuiltinSpec & { mandatory?: boolean })[] = [
 	{ packageName: "@bastani/workflows", workspaceDirName: "workflows", distDirName: "workflows" },
 	{ packageName: "@bastani/subagents", workspaceDirName: "subagents", distDirName: "subagents" },
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp", distDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access", distDirName: "web-access" },
-	{ packageName: "@bastani/intercom", workspaceDirName: "intercom", distDirName: "intercom" },
+	{ packageName: "@bastani/intercom", workspaceDirName: "intercom", distDirName: "intercom", mandatory: true },
 ];
 
 const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS.map(
 	(spec): BuiltinPackageDescriptor => ({
 		packageName: spec.packageName,
 		distDirName: spec.distDirName,
+		mandatory: spec.mandatory === true,
 		requiredEntries: requiredEntriesForBuiltin(spec.distDirName),
 		sourceCandidates: ({ here, packageDir, isSourceCheckout }) =>
 			isSourceCheckout
@@ -101,6 +109,20 @@ function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
 	};
 }
 
+/** Atomic-owned builtin package roots paired with their verified descriptors. */
+export function getBuiltinPackageLocations(): BuiltinPackageLocation[] {
+	const context = getBuiltinPackageCandidateContext();
+	return BUILTIN_PACKAGES.flatMap((descriptor) => {
+		const packageDir = firstExistingPackageDir(
+			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
+			descriptor,
+		);
+		return packageDir
+			? [{ packageName: descriptor.packageName, distDirName: descriptor.distDirName, packageDir }]
+			: [];
+	});
+}
+
 /**
  * Built-in pi package roots shipped with this Atomic distribution.
  *
@@ -114,13 +136,34 @@ function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
  *   process executable dir -> builtin/<package>
  */
 export function getBuiltinPackagePaths(): string[] {
-	const context = getBuiltinPackageCandidateContext();
+	return getBuiltinPackageLocations().map(({ packageDir }) => packageDir);
+}
 
-	return BUILTIN_PACKAGES.flatMap((descriptor) => {
+/** Built-in package roots whose extensions Atomic must load in every model session. */
+export function getMandatoryBuiltinPackagePaths(): string[] {
+	const context = getBuiltinPackageCandidateContext();
+	return BUILTIN_PACKAGES.filter((descriptor) => descriptor.mandatory).flatMap((descriptor) => {
 		const packageDir = firstExistingPackageDir(
 			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
 			descriptor,
 		);
 		return packageDir ? [packageDir] : [];
+	});
+}
+
+/** Trusted extension entries resolved from Atomic's mandatory bundled packages. */
+export function getMandatoryBuiltinExtensionPaths(): string[] {
+	return getMandatoryBuiltinPackagePaths().flatMap((packageDir) => {
+		try {
+			const manifest = JSON.parse(stripBom(readFileSync(join(packageDir, "package.json"), "utf-8"))) as {
+				atomic?: { extensions?: string[] };
+				pi?: { extensions?: string[] };
+			};
+			return (manifest.atomic?.extensions ?? manifest.pi?.extensions ?? []).map((entry) =>
+				resolve(packageDir, entry),
+			);
+		} catch {
+			return [];
+		}
 	});
 }

@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [0.9.16] - 2026-08-29
+
+Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Breaking Changes
+
+- Removed the public `subagent({ action: "resume" })` action and its `index`/`message` inputs. Completed, interrupted, and parent-question children are terminal; migrate follow-ups to a fresh `subagent({ agent, task })` launch with explicit `[TASK_CONTEXT]` and expect a new run identity ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
+- Removed the `subagent({ action: "doctor" })` management action and the `/subagents-doctor` slash command. `doctor` is no longer a valid `action` value, and the observing management actions available to a child are now `list`, `get`, and `status`. Agent discovery still reports invalid-frontmatter files through its load diagnostics; use `intercom({ action: "status" })` to inspect intercom bridge state.
+- Removed the `/run` and `/parallel` slash commands. Launch children with the `subagent` tool (`{ agent, task }` or `{ tasks: [...] }`).
+- Removed `diagnoseIntercomBridge` and the `IntercomBridgeDiagnostic` type. Use `resolveIntercomBridge` when you need bridge availability.
+
+### Added
+
+- New bundled `qlty` skill for code-quality verification through the [qlty](https://qlty.sh) CLI: linting (`qlty check`), auto-formatting (`qlty fmt`), maintainability metrics (`qlty metrics`), and code smells such as duplication and deep nesting (`qlty smells`). The skill triggers on requests for verifiers or high code quality, directs the agent to `https://docs.qlty.sh/llms.txt` as the authoritative documentation index, instructs it to enable the qlty plugins and linter extensions that fit the codebase rather than invoking per-tool linters ad hoc, and ships source-attributed reference excerpts under `skills/qlty/references/`.
+
+### Changed
+
+- Explicit child extension allowlists and legacy `enabled: false` Intercom config no longer remove ordinary `intercom` or suppress authorized subagent supervisor bridging. `contact_supervisor` remains admitted only to delegated children.
+- Added the full and Flash GLM-5.3 direct Z.AI, Z.AI Coding Plan, Baseten, and OpenRouter routes to every built-in subagent fallback chain.
+- Foreground subagent completion, failure, and interruption notifications now render as status-colored tool blocks while preserving their result preview, expansion hint, duration, and session path.
+- Parent-targeted `contact_supervisor` and Intercom asks now end the child and return the verbatim question, ordered attachments, agent identity, and a dynamic fresh-child handoff. Parallel asks no longer retain sibling sets for bare-run-ID continuation ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
+
+### Fixed
+
+- Entitled GitHub Copilot subagents now inherit the launching chat or workflow-stage fast-mode scope for both dispatch and model labels, including thinking-suffixed models, fallbacks, and parallel foreground runs. Copilot labels append `fast` exactly when the request uses the account-advertised fast sibling; disabled or ineligible attempts keep the base model without a stale marker.
+- Subagent fast-mode metadata now keeps the resolved model API for provider aliases on the Codex Responses transport, so live and completed labels match dispatch for those aliases.
+- Parent cancellation of a foreground in-process child now finishes as a terminal interrupted/abort outcome instead of `error` / failed. Parent receipts, Intercom summaries, and progress present the child as cancelled; persisted metadata keeps `status: "interrupted"` with `cause: "abort"` rather than a new public status. The run stays non-retryable, preserves any fallback metadata already recorded before abort, and recovers bounded partial findings from a modified run-scoped `progress.md`, then the last non-empty assistant text, then a cancellation notice with artifact references. Session, Progress, and Output paths are cited only when those files exist when the cancelled envelope or receipt is built. A queued child that never started does not claim "0 tool calls"; a mixed completed-and-cancelled set reports `Status: cancelled` rather than `interrupted`. A mixed parallel set that contains both a user interrupt and a parent cancellation presents the cancellation summary rather than interrupt-specific follow-up guidance ([#2635](https://github.com/bastani-inc/atomic/issues/2635)).
+- In-process subagent children no longer load the workflows extension or expose its `workflow` tool. Child sessions still receive bundled workflow definitions as resources, but they cannot rebind the parent session's workflow store, strand active runs, or disconnect the parent's `BACKGROUND` panel and run controls.
+- Coalesced same-turn sibling `subagent` execution calls into one indexed parallel run instead of rejecting every call after the first. Live result, progress, control, and artifact updates and final results stay route-local without sibling data, while the TUI redraws the shared run as one aggregate parallel widget. Solitary, sequential, management, and true-overlap behavior remains unchanged ([#2588](https://github.com/bastani-inc/atomic/issues/2588)).
+
+### Removed
+
+- Removed every packaged subagent prompt template, including `/parallel-review`, `/parallel-handoff-plan`, `/gather-context-and-clarify`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, and `/parallel-cleanup`. Compose those passes directly with `subagent(...)` or a workflow.
+
+## [0.9.16-alpha.11] - 2026-08-28
+
+### Changed
+
+- Explicit child extension allowlists and legacy `enabled: false` Intercom config no longer remove ordinary `intercom` or suppress authorized subagent supervisor bridging. `contact_supervisor` remains admitted only to delegated children.
+
+### Fixed
+
+- Entitled GitHub Copilot subagents now inherit the launching chat or workflow-stage fast-mode scope for both dispatch and model labels, including thinking-suffixed models, fallbacks, and parallel foreground runs. Copilot labels append `fast` exactly when the request uses the account-advertised fast sibling; disabled or ineligible attempts keep the base model without a stale marker.
+- Subagent fast-mode metadata now keeps the resolved model API for provider aliases on the Codex Responses transport, so live and completed labels match dispatch for those aliases.
+
+## [0.9.16-alpha.10] - 2026-08-28
+
+### Changed
+
+- Added the full and Flash GLM-5.3 direct Z.AI, Z.AI Coding Plan, Baseten, and OpenRouter routes to every built-in subagent fallback chain.
+
 ## [0.9.16-alpha.7] - 2026-08-26
 
 ### Added

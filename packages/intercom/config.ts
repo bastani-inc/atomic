@@ -18,8 +18,6 @@ export interface IntercomConfig {
   /** Optional custom status suffix shown after automatic lifecycle status */
   status?: string;
 
-  /** Enable/disable intercom (default: true) */
-  enabled: boolean;
 
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
@@ -39,7 +37,6 @@ const defaults: IntercomConfig = {
   brokerArgs: [...DEFAULT_BROKER_ARGS],
   confirmSend: false,
   maxPendingAsks: DEFAULT_MAX_PENDING_REPLY_WAITS,
-  enabled: true,
   replyHint: true,
 };
 
@@ -97,12 +94,6 @@ export function loadConfig(): IntercomConfig {
       config.maxPendingAsks = Number(parsedConfig.maxPendingAsks);
     }
 
-    if (Object.hasOwn(parsedConfig, "enabled")) {
-      if (typeof parsedConfig.enabled !== "boolean") {
-        throw new Error(`"enabled" must be a boolean`);
-      }
-      config.enabled = parsedConfig.enabled;
-    }
 
     if (Object.hasOwn(parsedConfig, "replyHint")) {
       if (typeof parsedConfig.replyHint !== "boolean") {

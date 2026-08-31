@@ -34,10 +34,39 @@ const workflowConfigs = [
 	["Ralph reviewer B", reviewerBModelConfig],
 ] as const;
 
+const EXPECTED_GLM_FALLBACKS = [
+	"zai/glm-5.3:high",
+	"zai-coding-cn/glm-5.3:high",
+	"zai/glm-5.3-flash:high",
+	"zai-coding-cn/glm-5.3-flash:high",
+	"baseten/zai-org/GLM-5.3:high",
+	"baseten/zai-org/GLM-5.3-Flash:high",
+	"openrouter/z-ai/glm-5.3:high",
+	"openrouter/z-ai/glm-5.3-flash:high",
+] as const;
+
+type GlmProvider = "zai" | "zai-coding-cn" | "baseten" | "openrouter";
+
+function extractGlmReferences(text: string): string[] {
+	return text.match(/(?:(?:zai|zai-coding-cn)\/glm|openrouter\/z-ai\/glm|baseten\/zai-org\/GLM)-[^"\s,]+/gu) ?? [];
+}
+
+function workflowGlmChains(): Array<{ name: string; references: string[] }> {
+	const chains = workflowConfigs.map(([name, config]) => ({
+		name,
+		references: config.fallbackModels.filter((reference) => extractGlmReferences(reference).length > 0),
+	}));
+	return [
+		...chains,
+		{
+			name: "Open Claude Design",
+			references: extractGlmReferences(read("packages/workflows/builtin/open-claude-design-runner.ts")),
+		},
+	];
+}
+
 function workflowModelReferences(): string[] {
-	const references = workflowConfigs.flatMap(([, config]) => [config.model, ...(config.fallbackModels ?? [])]);
-	const openClaudeSource = read("packages/workflows/builtin/open-claude-design-runner.ts");
-	return [...references, ...(openClaudeSource.match(/(?:zai|zai-coding-cn|openrouter\/z-ai)\/glm-[^"\s,]+/gu) ?? [])];
+	return workflowGlmChains().flatMap(({ references }) => references);
 }
 
 function subagentFrontmatter(): Array<{ name: string; text: string }> {
@@ -65,28 +94,28 @@ test("builtin workflow and subagent sources contain no stale GLM-5.2 references"
 	}
 });
 
-test("builtin Goal, Ralph, and Open Claude Design chains have no active GLM-5.2 entries", () => {
-	for (const reference of workflowModelReferences()) {
-		assert.doesNotMatch(reference, /glm-5\.2/iu, reference);
+test("builtin workflow GLM fallback chains include every provider mirror in order", () => {
+	for (const { name, references } of workflowGlmChains()) {
+		assert.deepEqual(references, EXPECTED_GLM_FALLBACKS, name);
 	}
 });
 
-test("workflow direct Z.AI GLM references use catalog-supported thinking levels", () => {
-	const directReferences = workflowModelReferences().filter((reference) =>
-		/^(?:zai|zai-coding-cn)\/glm-/u.test(reference),
-	);
-	assert.ok(directReferences.length > 0, "expected direct Z.AI GLM workflow references");
+test("workflow GLM references use catalog-supported thinking levels", () => {
+	const references = [...new Set(workflowModelReferences())];
+	assert.deepEqual(references, EXPECTED_GLM_FALLBACKS);
 
-	for (const reference of directReferences) {
-		const match = /^(zai|zai-coding-cn)\/(glm-[^:]+):([^:]+)$/u.exec(reference);
-		assert.ok(match, `direct GLM workflow reference must include a thinking suffix: ${reference}`);
+	for (const reference of references) {
+		const match = /^(zai|zai-coding-cn|baseten|openrouter)\/(.+):([^:]+)$/u.exec(reference);
+		assert.ok(match, `GLM workflow reference must include a thinking suffix: ${reference}`);
 		if (!match) continue;
 
-		const [, provider, modelId, thinkingLevel] = match;
-		assert.ok(provider === "zai" || provider === "zai-coding-cn", `unexpected direct GLM provider: ${provider}`);
-		if (provider !== "zai" && provider !== "zai-coding-cn") continue;
+		const provider = match[1] as GlmProvider;
+		const modelId = match[2];
+		const thinkingLevel = match[3];
+		assert.ok(modelId);
+		assert.ok(thinkingLevel);
 		const model = getBuiltinModels(provider).find((candidate) => candidate.id === modelId);
-		assert.ok(model, `direct GLM workflow reference must resolve in the ${provider} catalog: ${reference}`);
+		assert.ok(model, `GLM workflow reference must resolve in the ${provider} catalog: ${reference}`);
 		if (!model) continue;
 
 		assert.ok(
@@ -96,24 +125,13 @@ test("workflow direct Z.AI GLM references use catalog-supported thinking levels"
 	}
 });
 
-test("builtin subagent fallback chains use GLM-5.3 and omit OpenRouter GLM fallbacks", () => {
-	const allDirectGlmReferences: string[] = [];
-	for (const { name, text } of subagentFrontmatter()) {
+test("builtin subagent fallback chains include every GLM-5.3 provider mirror in order", () => {
+	const agents = subagentFrontmatter();
+	assert.ok(agents.length > 0, "expected builtin subagent definitions");
+	for (const { name, text } of agents) {
 		assert.doesNotMatch(text, /glm-5\.2/iu, name);
-		assert.doesNotMatch(text, /openrouter\/z-ai\/glm-5\.3/iu, name);
-		const directGlmReferences = text.match(/(?:zai|zai-coding-cn)\/glm-[^,\s]+/gu) ?? [];
-		for (const reference of directGlmReferences) {
-			const expectedReference = reference.startsWith("zai-coding-cn/")
-				? "zai-coding-cn/glm-5.3:high"
-				: "zai/glm-5.3:high";
-			assert.equal(reference, expectedReference, name);
-			allDirectGlmReferences.push(reference);
-		}
+		assert.deepEqual(extractGlmReferences(text), EXPECTED_GLM_FALLBACKS, name);
 	}
-	assert.ok(
-		allDirectGlmReferences.length > 0,
-		"expected at least one direct Z.AI GLM fallback across builtin subagents",
-	);
 });
 
 test("direct Z.AI GLM-5.3 resolves through ModelRuntime with the catalog-supported high suffix", async () => {
@@ -167,28 +185,32 @@ test("direct Z.AI GLM-5.3 resolves through ModelRuntime with the catalog-support
 	assert.equal(runtime.getModel("zai-coding-cn", "glm-5.3")?.id, "glm-5.3");
 });
 
-test("no built-in chain ships an OpenRouter GLM-5.3 placeholder", () => {
-	const openrouterModels = getBuiltinModels("openrouter");
-	assert.equal(
-		openrouterModels.some((model) => model.id === "z-ai/glm-5.2"),
-		true,
-	);
-	assert.equal(
-		workflowModelReferences().some((reference) => /openrouter\/z-ai\/glm-5\.3/iu.test(reference)),
-		false,
-	);
-	for (const { name, text } of subagentFrontmatter()) {
-		assert.doesNotMatch(text, /openrouter\/z-ai\/glm-5\.3/iu, name);
+test("every GLM provider catalog exposes full and Flash GLM-5.3 entries", () => {
+	const variants = [
+		["zai", "glm-5.3"],
+		["zai", "glm-5.3-flash"],
+		["zai-coding-cn", "glm-5.3"],
+		["zai-coding-cn", "glm-5.3-flash"],
+		["openrouter", "z-ai/glm-5.3"],
+		["openrouter", "z-ai/glm-5.3-flash"],
+		["baseten", "zai-org/GLM-5.3"],
+		["baseten", "zai-org/GLM-5.3-Flash"],
+	] as const;
+
+	for (const [provider, modelId] of variants) {
+		const model = getBuiltinModels(provider).find((candidate) => candidate.id === modelId);
+		assert.ok(model, `${provider}/${modelId} must exist in the generated catalog`);
+		assert.ok(getSupportedThinkingLevels(model).includes("high"));
 	}
 });
 
-test("Baseten retains its GLM-5.2 default as the documented provider exception", () => {
+test("Baseten defaults to its directly selectable full GLM-5.3 entry", () => {
 	const basetenModels = getBuiltinModels("baseten");
-	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.2");
-	assert.equal(
-		basetenModels.some((model) => model.id === "zai-org/GLM-5.3"),
-		false,
+	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.3");
+	assert.notEqual(defaultModelPerProvider.baseten, "zai-org/GLM-5.3-Flash");
+	assert.ok(basetenModels.some((model) => model.id === defaultModelPerProvider.baseten));
+	assert.match(
+		read("packages/coding-agent/docs/providers.md"),
+		/Baseten defaults to its directly selectable `zai-org\/GLM-5\.3`/iu,
 	);
-	assert.ok(basetenModels.some((model) => model.id === "zai-org/GLM-5.2"));
-	assert.match(read("packages/coding-agent/docs/providers.md"), /Baseten[^\n]*no GLM-5\.3/iu);
 });

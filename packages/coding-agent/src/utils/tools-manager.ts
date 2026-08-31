@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } fro
 import { writeFile } from "fs/promises";
 import { arch, platform } from "os";
 import { join } from "path";
-import { APP_NAME, ENV_OFFLINE, getBinDir, getEnvValue } from "../config.ts";
+import { APP_NAME, ENV_OFFLINE, getBinDir, getEnvValue } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { fetchWithRetry } from "./management-http.ts";
 

@@ -81,6 +81,8 @@ Live sessions accept an exact full session ID or exact case-insensitive name. Or
 
 Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages for known pending stages and delivers them when their sessions initialize:
 
+Before steering a stage, join its invocation group. Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`.
+
 ```typescript
 intercom({
   action: "send",
@@ -94,18 +96,21 @@ The stage receives the ordinary inbound Intercom message before its first model 
 
 ### Runtime named groups
 
-Plain chat sessions can create or join a group without restarting:
+Plain chat sessions can add and remove group memberships without restarting:
 
 ```typescript
-// Join or create the named group. Both sessions should run this call.
+// Add a membership. Existing memberships remain active.
 intercom({ action: "join", group: "api-review" })
-intercom({ action: "list" }) // now shows only peers in api-review
 
-// Leave the named group and return to the resolved startup home group.
+// Discover every available group and see membership markers.
+intercom({ action: "groups" })
+
+// Remove one membership, or reset to home by omitting group.
+intercom({ action: "leave", group: "api-review" })
 intercom({ action: "leave" })
 ```
 
-Joining changes broker presence without changing the session ID. `default` is the shared group. The names `true` and `auto` are reserved for subagent auto-groups and are rejected. Subagents launched after a join inherit the joined group. Ordinary `send`/`ask` calls remain group-isolated; only an authorized `contact_supervisor` call can cross groups.
+`list` still lists sessions: without a filter it returns every peer sharing at least one membership. `default` remains shared, while `true` and `auto` remain reserved. Later subagents inherit the most recently joined membership. Ordinary `send`/`ask` requires a shared membership; only authorized `contact_supervisor` traffic crosses group boundaries.
 
 ### Pattern 3: Reply Naturally
 
@@ -243,14 +248,15 @@ In Atomic workflows, each invocation has its own Intercom group, and parallel st
 
 | Action | Behavior | Use When |
 |--------|----------|----------|
-| `join` | Joins or creates a named group in place | Two plain chat sessions need a private group |
-| `leave` | Returns to the resolved home group | Restore the session's startup group |
+| `join` | Adds or creates a named membership in place | Sessions need another shared routing group |
+| `leave` | Removes one named membership, or resets to home when omitted | Stop sharing one group or restore startup membership |
+| `groups` | Lists every available group with counts and membership markers | Discover a group instead of guessing its name |
 | `send` | Fire-and-forget to a live session, or durable `queued` delivery to `<runId>:<stageKey>` before a workflow stage starts | You don't need a response |
 | `ask` | Blocks until a live recipient replies (10 min timeout); refused for an unstarted stage | You need an answer to continue |
 | `reply` | Responds to the active or pending inbound ask; `to` accepts an exact full session ID or exact session name | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
-| `list` | Returns all sessions in the current group with full session IDs and live status | You need to discover targets or choose an idle peer |
-| `status` | Returns your connection state and current group | Troubleshooting |
+| `list` | Returns all sessions sharing any membership, with full IDs and live status | Discover targets or choose an idle peer |
+| `status` | Returns connection state and every current membership | Troubleshooting |
 
 Inside workflows, `ask` may target a sibling stage that has already completed. If that stage retains a valid conversation, Atomic automatically schedules a post-mortem turn there and preserves the exact child-to-child reply thread; do not send a separate workflow follow-up. Missing, deleted, non-resumable, or failed-to-reopen completed targets return an actionable error. A parent or unrelated session cannot satisfy the pending ask.
 
@@ -471,7 +477,7 @@ if (!result.delivered) {
 
 ### Session not appearing in list
 
-1. Check intercom is enabled: `intercom({ action: "status" })`
+1. Check Intercom connection status: `intercom({ action: "status" })`
 2. Verify the target session has loaded pi-intercom
 3. Ensure both sessions are on the same machine (intercom is same-machine only)
 

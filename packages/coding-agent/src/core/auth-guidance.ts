@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { getDocsPath } from "../config.ts";
+import { getDocsPath } from "../config.js";
 
 const UNKNOWN_PROVIDER = "unknown";
 

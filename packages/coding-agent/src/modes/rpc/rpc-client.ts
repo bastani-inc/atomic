@@ -321,6 +321,9 @@ export class RpcClient extends RpcClientApi {
 	waitForInteractiveEngineBound(): Promise<void> {
 		return this.engineMonitor?.waitUntilBound() ?? Promise.resolve();
 	}
+	waitForInteractiveEngineResources(): Promise<void> {
+		return this.engineMonitor?.waitUntilResourcesReady() ?? Promise.resolve();
+	}
 	getEnginePid(): number | undefined {
 		return this.enginePid;
 	}
@@ -394,7 +397,10 @@ export class RpcClient extends RpcClientApi {
 		for (const listener of this.eventListeners) listener(event);
 	}
 	private emitInteractiveEngineMessage(message: InteractiveEngineMessage, generation: number): void {
-		if (this.engineMessageListeners.length === 0 && message.type.startsWith("engine_custom_")) {
+		if (
+			this.engineMessageListeners.length === 0 &&
+			(message.type.startsWith("engine_custom_") || message.type.startsWith("engine_resources_"))
+		) {
 			this.pendingEngineMessages.push(generation, message);
 		}
 		for (const listener of this.engineMessageListeners) listener(message);

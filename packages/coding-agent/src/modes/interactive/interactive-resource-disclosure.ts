@@ -63,103 +63,75 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 	return lines.join("\n");
 };
 
-InteractiveModeBase.prototype.getResourceDiagnosticsTotal = function (
-	this: InteractiveModeBase,
-	values: ResourceDiagnostic[][],
-): number {
-	return values.reduce((total, diagnostics) => total + diagnostics.length, 0);
-};
-
-InteractiveModeBase.prototype.formatResourceCount = function (
-	this: InteractiveModeBase,
-	count: number,
-	singular: string,
-	plural = `${singular}s`,
-): string | undefined {
-	if (count <= 0) {
-		return undefined;
-	}
-	return `${count} ${count === 1 ? singular : plural}`;
-};
-
 InteractiveModeBase.prototype.addResourceDisclosure = function (
 	this: InteractiveModeBase,
 	options: {
 		contextFiles: ReadonlyArray<{ path: string }>;
 		skills: ReadonlyArray<{ filePath: string; name: string }>;
 		prompts: ReadonlyArray<{ filePath: string; name: string }>;
-		templates: ReadonlyArray<{ filePath: string; name: string }>;
 		extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
-		themes: ReadonlyArray<{ name?: string; sourcePath?: string }>;
-		diagnosticsTotal: number;
-		expandedBody: string;
+		themes: ReadonlyArray<{ name?: string; sourcePath?: string; sourceInfo?: SourceInfo }>;
+		expandedSections: {
+			context?: string;
+			skills?: string;
+			prompts?: string;
+			extensions?: string;
+			themes?: string;
+		};
 		targetContainer?: Container;
 	},
 ): void {
-	const contextLabels = options.contextFiles.map((contextFile) => this.formatContextPath(contextFile.path));
-	const promptCount = options.prompts.length + options.templates.length;
-	const summaryParts = [
-		contextLabels.length > 0 ? contextLabels.join(", ") : "context ready",
-		this.formatResourceCount(options.skills.length, "skill"),
-		this.formatResourceCount(promptCount, "prompt"),
-		this.formatResourceCount(options.extensions.length, "extension"),
-		this.formatResourceCount(options.themes.length, "theme"),
-		this.formatResourceCount(options.diagnosticsTotal, "issue"),
-	].filter((part): part is string => part !== undefined && part.length > 0);
-
-	const collapsed = `${theme.bold(theme.fg("muted", "RESOURCES"))} ${theme.fg("muted", summaryParts.join(" · "))}`;
-
-	const ok = theme.fg("success", "✓");
-	const pending = theme.fg("dim", "○");
-	const sep = theme.fg("dim", " · ");
-	const label = (value: string) => theme.bold(theme.fg("text", value.padEnd(10)));
-	const mutedList = (values: string[], maxItems = 4) => {
-		if (values.length === 0) {
-			return theme.fg("dim", "none");
-		}
-		const shown = values.slice(0, maxItems).join(", ");
-		const suffix = values.length > maxItems ? `, +${values.length - maxItems}` : "";
-		return theme.fg("dim", `${shown}${suffix}`);
+	const targetContainer = options.targetContainer ?? this.chatContainer;
+	const compactList = (values: string[], sort = true): string => {
+		const labels = values.map((value) => value.trim()).filter((value) => value.length > 0);
+		if (sort) labels.sort((left, right) => left.localeCompare(right));
+		return theme.fg("dim", `  ${labels.join(", ")}`);
+	};
+	const addSection = (name: string, labels: string[], expandedBody?: string, sort = true): void => {
+		if (labels.length === 0) return;
+		const collapsedBody = compactList(labels, sort);
+		targetContainer.addChild(
+			new ExpandableText(
+				() => `${theme.fg("mdHeading", `[${name}]`)}\n${collapsedBody}`,
+				() => `${theme.fg("mdHeading", `[${name}]`)}\n${expandedBody ?? collapsedBody}`,
+				this.getStartupExpansionState(),
+				0,
+				0,
+			),
+		);
+		targetContainer.addChild(new Spacer(1));
 	};
 
-	const extensionLabels = this.getCompactExtensionLabels([...options.extensions]);
-	const themeLabels = options.themes.map(
-		(loadedTheme) =>
-			loadedTheme.name ??
-			(loadedTheme.sourcePath ? this.getCompactPathLabel(loadedTheme.sourcePath, undefined) : "theme"),
+	addSection(
+		"Context",
+		options.contextFiles.map((contextFile) => this.formatContextPath(contextFile.path)),
+		options.expandedSections.context,
+		false,
 	);
-	const expandedSummary = [
-		`${ok} ${label("Ready")} ${contextLabels.length > 0 ? contextLabels.join(", ") : "context loaded"}`,
-		`${ok} ${label("Skills")} ${options.skills.length} available${sep}${mutedList(options.skills.map((skill) => skill.name))}`,
-		`${ok} ${label("Prompts")} ${promptCount} available${sep}${mutedList([
-			...options.templates.map((template) => `/${template.name}`),
-			...options.prompts.map((prompt) => prompt.name),
-		])}`,
-		`${ok} ${label("Extensions")} ${options.extensions.length} available${sep}${mutedList(extensionLabels)}`,
-	];
-
-	if (themeLabels.length > 0) {
-		expandedSummary.push(`${ok} ${label("Themes")} ${themeLabels.length} loaded${sep}${mutedList(themeLabels)}`);
-	}
-	if (options.diagnosticsTotal > 0) {
-		expandedSummary.push(
-			`${pending} ${label("Issues")} ${options.diagnosticsTotal} noted${sep}${theme.fg("dim", "details below")}`,
-		);
-	}
-
-	const expanded = `${collapsed}\n${expandedSummary.join("\n")}${
-		options.expandedBody.length > 0 ? `\n\n${options.expandedBody}` : ""
-	}`;
-
-	const targetContainer = options.targetContainer ?? this.chatContainer;
-	targetContainer.addChild(
-		new ExpandableText(
-			() => collapsed,
-			() => expanded,
-			this.getStartupExpansionState(),
-			0,
-			0,
+	addSection(
+		"Skills",
+		options.skills.map((skill) => skill.name),
+		options.expandedSections.skills,
+	);
+	addSection(
+		"Prompts",
+		options.prompts.map((prompt) => `/${prompt.name}`),
+		options.expandedSections.prompts,
+	);
+	addSection(
+		"Extensions",
+		this.getCompactExtensionLabels([...options.extensions]),
+		options.expandedSections.extensions,
+	);
+	addSection(
+		"Themes",
+		options.themes.map(
+			(loadedTheme) =>
+				loadedTheme.name ??
+				(loadedTheme.sourcePath
+					? this.getCompactPathLabel(loadedTheme.sourcePath, loadedTheme.sourceInfo)
+					: "theme"),
 		),
+		options.expandedSections.themes,
 	);
-	targetContainer.addChild(new Spacer(1));
 };

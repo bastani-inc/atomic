@@ -329,7 +329,7 @@ Important fields:
 |-------|-------|
 | `package` | Optional package identifier. A file with `name: api-auditor` and `package: code-analysis` registers as `code-analysis.api-auditor`; serialization keeps `name` and `package` separate. |
 | `tools` | Builtin tool allowlist, comma-separated (`tools: read, bash`) or YAML array-form (`tools: [read, bash]`, or a `tools:` block list) — both spellings produce the same tool set. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
-| `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
+| `extensions` | Omitted means normal extensions; empty means no optional extensions; comma-separated values allowlist specific optional extensions. Atomic still loads mandatory ordinary Intercom. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. When omitted — with no `fallbackModels` and no per-call model override — the subagent inherits the dispatching session's active model and thinking level; a declared `thinking` still takes precedence over the inherited level. |
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. The current user-selected model is automatically appended as the last fallback and de-duplicated. Ordinary task failures do not trigger fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
@@ -360,7 +360,7 @@ Direct MCP tools require [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-a
 ```yaml
 # Omitted: all normal extensions load
 
-# Empty: no extensions
+# Empty: no optional extensions; mandatory ordinary Intercom still loads
 extensions:
 
 # Allowlist
@@ -610,7 +610,7 @@ Fields:
 - `mode`: default `always`; use `fork-only` to inject only for forked runs, or `off` to disable the bridge.
 - `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.atomic/agent/extensions/subagent/` (or the legacy `~/.pi/agent/extensions/subagent/` path when used).
 
-Bridge activation also requires the Atomic intercom companion (or upstream `pi-intercom` installed through `pi install npm:pi-intercom` / a legacy local extension checkout), a targetable current session name or fallback alias, and the intercom extension in any explicit agent `extensions` allowlist.
+Bridge activation also requires the Atomic intercom companion (or upstream `pi-intercom` installed through `pi install npm:pi-intercom` / a legacy local extension checkout), a targetable current session name or fallback alias, while Atomic keeps the mandatory ordinary Intercom extension loaded regardless of an explicit agent `extensions` allowlist.
 
 The default injected guidance tells children to use `contact_supervisor` with `reason: "need_decision"` when blocked or needing a decision, `reason: "progress_update"` only for meaningful blocked/progress updates, generic `intercom` as fallback plumbing, and avoid routine completion handoffs.
 

@@ -13,7 +13,7 @@ import {
 	ENV_SESSION_DIR,
 	ENV_SHARE_VIEWER_URL,
 	ENV_TELEMETRY,
-} from "../config.ts";
+} from "../config.js";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 
 export type Mode = "text" | "json" | "rpc";
@@ -289,15 +289,15 @@ ${chalk.bold("Options:")}
   --name, -n <name>              Set session display name
   --models <patterns>            Comma-separated model patterns for ctrl+p cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
-  --no-tools, -nt                Disable all tools by default (built-in and extension)
+  --no-tools, -nt                Disable every tool except mandatory ordinary intercom
   --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled
-  --tools, -t <tools>            Comma-separated allowlist of tool names to enable
-                                 Applies to built-in, extension, and custom tools
-  --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
-                                 Applies to built-in, extension, and custom tools
+  --tools, -t <tools>            Comma-separated allowlist of non-mandatory tool names
+                                 Mandatory ordinary intercom remains available
+  --exclude-tools, -xt <tools>   Comma-separated denylist of non-mandatory tool names
+                                 Mandatory ordinary intercom cannot be excluded
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
   --extension, -e <path>         Load an extension file (can be used multiple times)
-  --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
+  --no-extensions, -ne           Disable optional extension discovery; mandatory bundled Intercom remains loaded
   --skill <path>                 Load a skill file or directory (can be used multiple times)
   --no-skills, -ns               Disable skills discovery and loading
   --prompt-template <path>       Load a prompt template file or directory (can be used multiple times)

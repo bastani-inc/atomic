@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
-import { CONFIG_DIR_NAME } from "../config.ts";
+import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { deepMergeSettings } from "./settings-merge.ts";

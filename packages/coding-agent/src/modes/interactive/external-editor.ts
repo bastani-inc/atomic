@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { APP_NAME } from "../../config.ts";
+import { APP_NAME } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { stripBom } from "../../utils/text.ts";
 

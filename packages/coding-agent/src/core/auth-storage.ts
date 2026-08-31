@@ -5,7 +5,7 @@
 
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@bastani/pi-ai";
 import { join } from "path";
-import { getAgentConfigPaths, getAgentDir } from "../config.ts";
+import { getAgentConfigPaths, getAgentDir } from "../config.js";
 import { stripBom } from "../utils/text.ts";
 import {
 	type AuthStorageBackend,

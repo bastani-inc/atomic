@@ -23,12 +23,12 @@ type PromptTurnContext = {
 		resourceLoader: { getThemes: () => { themes: [] } };
 		extensionRunner: Record<string, never>;
 		modelRegistry: { getError: () => string | undefined };
-		_tryExecuteBuiltinSlashCommand: (text: string) => Promise<boolean>;
 		_tryExecuteExtensionCommand: (text: string) => Promise<boolean>;
 	};
 	settingsManager: { getClearOnShrink: () => boolean };
 	themeController: { applyFromSettings: () => Promise<void> };
 	bindCurrentSessionExtensions: () => Promise<void>;
+	applyRuntimeSettings: () => void;
 	setupAutocompleteProvider: () => void;
 	setupExtensionShortcuts: (runner: unknown) => void;
 	retryDeferredModelRestore: (container?: Container) => Promise<void>;
@@ -89,8 +89,7 @@ function createContext(overrides: {
 			resourceLoader: { getThemes: () => ({ themes: [] as [] }) },
 			extensionRunner: {},
 			modelRegistry: { getError: () => undefined },
-			_tryExecuteBuiltinSlashCommand: vi.fn(async () => overrides.slashHandled === true),
-			_tryExecuteExtensionCommand: vi.fn(async () => false),
+			_tryExecuteExtensionCommand: vi.fn(async () => overrides.slashHandled === true),
 		},
 		settingsManager: { getClearOnShrink: () => false },
 		themeController: {
@@ -99,6 +98,7 @@ function createContext(overrides: {
 			}),
 		},
 		bindCurrentSessionExtensions: vi.fn(async () => {}),
+		applyRuntimeSettings: vi.fn(),
 		setupAutocompleteProvider: vi.fn(),
 		setupExtensionShortcuts: vi.fn(),
 		retryDeferredModelRestore: vi.fn(async () => {}),

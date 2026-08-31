@@ -1,5 +1,8 @@
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import { getInteractiveEngineResourceOverlaps } from "../interactive-engine/extension-ui-bridge.ts";
+import {
+	getInteractiveEngineResourceExtensions,
+	getInteractiveEngineResourceOverlaps,
+} from "../interactive-engine/extension-ui-bridge.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Container,
@@ -60,6 +63,30 @@ function getExtensionIdentityPath(resourcePath: string): string {
 	return segments.join("/") || normalized;
 }
 
+function mergeExtensions(
+	hostExtensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo; hidden?: boolean }>,
+	engineExtensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo; hidden?: boolean }>,
+): Array<{ path: string; sourceInfo?: SourceInfo }> {
+	const merged: Array<{ path: string; sourceInfo?: SourceInfo }> = [];
+	const indexByIdentity = new Map<string, number>();
+	const hiddenIdentities = new Set<string>();
+	for (const extension of [...hostExtensions, ...engineExtensions]) {
+		const identity = getExtensionIdentityPath(extension.path);
+		if (extension.hidden === true) hiddenIdentities.add(identity);
+		const existingIndex = indexByIdentity.get(identity);
+		if (existingIndex === undefined) {
+			indexByIdentity.set(identity, merged.length);
+			merged.push({ path: extension.path, sourceInfo: extension.sourceInfo });
+			continue;
+		}
+		const existing = merged[existingIndex];
+		if (existing && !existing.sourceInfo && extension.sourceInfo) {
+			merged[existingIndex] = { ...existing, sourceInfo: extension.sourceInfo };
+		}
+	}
+	return merged.filter((extension) => !hiddenIdentities.has(getExtensionIdentityPath(extension.path)));
+}
+
 function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): string[] {
 	const labels = new Set<string>();
 	const localPackageSources = new Set<string>();
@@ -81,17 +108,28 @@ function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly Resource
 	for (const label of getShortestUniqueSourceLabels([...extensionSources], labels).values()) labels.add(label);
 	return [...labels];
 }
-const displayedOverlapFingerprints = new WeakMap<InteractiveModeBase, string>();
+interface DisplayedOverlapNotice {
+	component: Text;
+	container: Container;
+	fingerprint: string;
+}
 
-function shouldDisplayOverlapNotice(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): boolean {
-	if (overlaps.length === 0) return false;
+const displayedOverlapNotices = new WeakMap<InteractiveModeBase, DisplayedOverlapNotice>();
+
+function getOverlapNoticeFingerprint(
+	mode: InteractiveModeBase,
+	overlaps: readonly ResourceOverlap[],
+): string | undefined {
+	if (overlaps.length === 0) return undefined;
 	const fingerprint = overlaps
 		.map((overlap) => `${overlap.resourceType}:${overlap.name}:${overlap.inherited.path}:${overlap.bundled.path}`)
 		.sort()
 		.join("\n");
-	if (displayedOverlapFingerprints.get(mode) === fingerprint) return false;
-	displayedOverlapFingerprints.set(mode, fingerprint);
-	return true;
+	const displayed = displayedOverlapNotices.get(mode);
+	if (displayed?.fingerprint === fingerprint && displayed.container.children.includes(displayed.component)) {
+		return undefined;
+	}
+	return fingerprint;
 }
 
 InteractiveModeBase.prototype.showLoadedResources = function (
@@ -109,19 +147,19 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 	if (!showListing && !showDiagnostics) {
 		return;
 	}
+	if (targetContainer === this.resourceDisclosureContainer) targetContainer.clear();
 
 	const skillsResult = this.session.resourceLoader.getSkills();
 	const promptsResult = this.session.resourceLoader.getPrompts();
 	const themesResult = this.session.resourceLoader.getThemes();
-	const extensions =
+	const hostExtensions =
 		options?.extensions ??
-		this.session.resourceLoader
-			.getExtensions()
-			.extensions.filter((extension) => extension.hidden !== true)
-			.map((extension) => ({
-				path: extension.path,
-				sourceInfo: extension.sourceInfo,
-			}));
+		this.session.resourceLoader.getExtensions().extensions.map((extension) => ({
+			path: extension.path,
+			sourceInfo: extension.sourceInfo,
+			hidden: extension.hidden,
+		}));
+	const extensions = mergeExtensions(hostExtensions, getInteractiveEngineResourceExtensions(this.runtimeHost));
 	const sourceInfos = new Map<string, SourceInfo>();
 	for (const extension of extensions) {
 		if (extension.sourceInfo) {
@@ -153,16 +191,19 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			...this.session.resourceLoader.getAppendSystemPromptSources(),
 			...this.session.resourceLoader.getAgentsFiles().agentsFiles,
 		];
-		const templates = this.session.promptTemplates;
 		const customThemes = themesResult.themes.filter((t) => t.sourcePath);
 
-		const expandedSections: string[] = [];
+		const expandedSections: {
+			context?: string;
+			skills?: string;
+			prompts?: string;
+			extensions?: string;
+			themes?: string;
+		} = {};
 		if (contextFiles.length > 0) {
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "CONTEXT"))}\n${contextFiles
-					.map((contextFile) => theme.fg("dim", `  ${this.formatDisplayPath(contextFile.path)}`))
-					.join("\n")}`,
-			);
+			expandedSections.context = contextFiles
+				.map((contextFile) => theme.fg("dim", `  ${this.formatDisplayPath(contextFile.path)}`))
+				.join("\n");
 		}
 
 		const skills = skillsResult.skills;
@@ -173,62 +214,33 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 					sourceInfo: skill.sourceInfo,
 				})),
 			);
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "SKILLS"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
-				})}`,
-			);
-		}
-
-		if (templates.length > 0) {
-			const groups = this.buildScopeGroups(
-				templates.map((template) => ({
-					path: template.filePath,
-					sourceInfo: template.sourceInfo,
-				})),
-			);
-			const templateByPath = new Map(templates.map((t) => [t.filePath, t]));
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "PROMPTS"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => {
-						const template = templateByPath.get(item.path);
-						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
-					},
-					formatPackagePath: (item) => {
-						const template = templateByPath.get(item.path);
-						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
-					},
-				})}`,
-			);
+			expandedSections.skills = this.formatScopeGroups(groups, {
+				formatPath: (item) => this.formatDisplayPath(item.path),
+				formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+			});
 		}
 
 		const prompts = promptsResult.prompts;
-		if (prompts.length > 0) {
-			const groups = this.buildScopeGroups(
-				prompts.map((prompt) => ({
-					path: prompt.filePath,
-					sourceInfo: prompt.sourceInfo,
-				})),
-			);
-			const promptByPath = new Map(prompts.map((prompt) => [prompt.filePath, prompt]));
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "PROMPTS"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => promptByPath.get(item.path)?.name ?? this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => promptByPath.get(item.path)?.name ?? this.formatDisplayPath(item.path),
-				})}`,
-			);
+		const promptEntries = prompts.map((prompt) => ({
+			path: prompt.filePath,
+			sourceInfo: prompt.sourceInfo,
+			label: `/${prompt.name}`,
+		}));
+		if (promptEntries.length > 0) {
+			const groups = this.buildScopeGroups(promptEntries);
+			const promptByPath = new Map(promptEntries.map((prompt) => [prompt.path, prompt.label]));
+			expandedSections.prompts = this.formatScopeGroups(groups, {
+				formatPath: (item) => promptByPath.get(item.path) ?? this.formatDisplayPath(item.path),
+				formatPackagePath: (item) => promptByPath.get(item.path) ?? this.formatDisplayPath(item.path),
+			});
 		}
 
 		if (extensions.length > 0) {
 			const groups = this.buildScopeGroups(extensions);
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "EXTENSIONS"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatExtensionDisplayPath(item.path),
-					formatPackagePath: (item) =>
-						this.formatExtensionDisplayPath(this.getShortPath(item.path, item.sourceInfo)),
-				})}`,
-			);
+			expandedSections.extensions = this.formatScopeGroups(groups, {
+				formatPath: (item) => this.formatExtensionDisplayPath(item.path),
+				formatPackagePath: (item) => this.formatExtensionDisplayPath(this.getShortPath(item.path, item.sourceInfo)),
+			});
 		}
 
 		if (customThemes.length > 0) {
@@ -238,43 +250,19 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 					sourceInfo: loadedTheme.sourceInfo,
 				})),
 			);
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "THEMES"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
-				})}`,
-			);
-		}
-
-		const extensionDiagnostics: ResourceDiagnostic[] = [];
-		const extensionErrors = this.session.resourceLoader.getExtensions().errors;
-		for (const error of extensionErrors) {
-			extensionDiagnostics.push({
-				type: "error",
-				message: error.error,
-				path: error.path,
+			expandedSections.themes = this.formatScopeGroups(groups, {
+				formatPath: (item) => this.formatDisplayPath(item.path),
+				formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
 			});
 		}
-		extensionDiagnostics.push(
-			...this.session.extensionRunner.getCommandDiagnostics(),
-			...this.getBuiltInCommandConflictDiagnostics(this.session.extensionRunner),
-			...this.session.extensionRunner.getShortcutDiagnostics(),
-		);
 
 		this.addResourceDisclosure({
 			contextFiles,
 			skills,
 			prompts,
-			templates,
 			extensions,
 			themes: customThemes,
-			diagnosticsTotal: this.getResourceDiagnosticsTotal([
-				skillsResult.diagnostics,
-				promptsResult.diagnostics,
-				extensionDiagnostics,
-				themesResult.diagnostics,
-			]),
-			expandedBody: this.options.verbose ? expandedSections.join("\n\n") : "",
+			expandedSections,
 			targetContainer,
 		});
 	}
@@ -285,19 +273,24 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			...getInteractiveEngineResourceOverlaps(this.runtimeHost),
 		];
 		const overlapLabels = getOverlapLabels(this, overlaps);
-		if (shouldDisplayOverlapNotice(this, overlaps) && overlapLabels.length > 0) {
+		const overlapFingerprint = getOverlapNoticeFingerprint(this, overlaps);
+		if (overlapFingerprint && overlapLabels.length > 0) {
 			const sources = formatList(overlapLabels.map((label) => `\`${label}\``));
 			const verb = overlapLabels.length === 1 ? "provides" : "provide";
-			targetContainer.addChild(
-				new Text(
-					theme.fg(
-						"warning",
-						`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
-					),
-					0,
-					0,
+			const notice = new Text(
+				theme.fg(
+					"warning",
+					`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
 				),
+				0,
+				0,
 			);
+			targetContainer.addChild(notice);
+			displayedOverlapNotices.set(this, {
+				component: notice,
+				container: targetContainer,
+				fingerprint: overlapFingerprint,
+			});
 			targetContainer.addChild(new Spacer(1));
 		}
 

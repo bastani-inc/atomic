@@ -10,6 +10,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added a live needs-input affordance to the wide `BACKGROUND` panel for a visible run tree with exactly one displayable human-in-the-loop prompt. The card keeps the full workflow identity, shows a bounded, control-stripped question and exact `/workflow connect <run-id>` action, adds `F2 answer` only when F2 targets that run, and repaints back to the ordinary row when the prompt clears; promptless, multi-question, or ambiguous trees retain the status-only presentation without parent-chat or model-context content ([#2529](https://github.com/bastani-inc/atomic/issues/2529)).
 
+## [0.9.16] - 2026-08-29
+
+Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Added
+
+- Added a dedicated `workflow answer` action for responding to pending primitive and structured human-in-the-loop prompts without exposing stage-message delivery semantics.
+- Added durable pending-stage message state for ordinary Intercom delivery, including FIFO delivery before the first model turn, resume/replay persistence, exactly-once stage-attempt handling, lifecycle failure notifications, and guidance for propagating material updates to known workflow stages that have not started. ([#2717](https://github.com/bastani-inc/atomic/issues/2717))
+- Added Lauren Tan's bundled `bro`, `how`, `teach`, `unslop`, and `why` pstack skills for plain-language restatement, codebase explanation, teaching, writing cleanup, and evidence-backed design rationale. Sourced from https://github.com/cursor/plugins and distributed under the MIT License.
+
+### Changed
+
+- Every workflow model stage now retains ordinary `intercom` and its invocation group through `tools`, `excludedTools`, `noTools`, extension restrictions, and reload. Restrictions on every other tool and workflow group isolation are unchanged.
+- Added the full and Flash GLM-5.3 direct Z.AI, Z.AI Coding Plan, Baseten, and OpenRouter routes to every built-in Goal, Ralph, and Open Claude Design fallback chain.
+- Periodic workflow heartbeat prompts now guide supervising agents to use ordinary Intercom when steering or communication is useful, match an update's reach to the expanded workflow topology, send shared scope or acceptance changes consistently across every relevant live and known unstarted worker/reviewer stage, account for immediate and queued pre-first-turn delivery, and use workflow pause, resume, interrupt, or quit for run control.
+- Builtin `goal` and `ralph` stage prompts now carry a shared `code_quality_verification` section pointing stages at the `qlty` skill (or `skill: "qlty"` delegation) for linting, auto-formatting, complexity and duplication metrics, and code smells — weighted higher when the objective asks for verifiers or high code quality. It reaches the goal controller, goal orchestrator, goal reviewer, ralph orchestrator, and both ralph reviewers, alongside the existing end-to-end verification guidance. Repository-defined checks in AGENTS.md/CLAUDE.md, package scripts, and CI remain authoritative.
+- Builtin `goal` and `ralph` stage prompts now carry a shared `repository_intent` section instructing implementers and reviewers to infer maintainer and requesting-user conventions by mining repository behavior — git history (including `git log --show-signature`), merged PRs, issues and their comments, review comments, commit subjects and trailers, and CI/branch-protection config — for unwritten norms. Behavioral evidence fills contract gaps and never overrides the literal objective, acceptance criteria, or explicit AGENTS.md/CLAUDE.md guidance.
+- The `workflow` tool's routing guidance adds a repository-intent clause to the pre-launch architecture pass: for coding tasks, mine git history, merged PRs, issues, commits, and review comments before freezing authored workflow objectives and acceptance criteria so they capture unwritten conventions, weighing the requesting user's own activity highest; non-coding tasks mine their analogous available context sources the same way.
+- The `workflow` tool description, agent routing guidance, and workflow docs now treat a blocked run as continuable by default: resume resumable blocks, answer pending prompts, steer past the obstacle, or start a follow-up workflow past a terminal block (inline only when the remaining work is minimal), stopping for user input only when the task is so ambiguous that judgment cannot infer intent from the objective and repository evidence. When `ask_user_question` or human input is unavailable, the agent is instructed to continue fully autonomously on the interpretation best supported by that evidence and to record the assumption.
+- `WORKFLOW BLOCKED` lifecycle notices now carry that continuation instruction in their text: resume or steer the run, or continue with a follow-up workflow (inline only if what remains is minimal), and ask the user only when intent cannot be inferred from repository evidence.
+- A budget-exceeded stop is now reported as its own blocked-notice variant (`stopped at its <dimension> budget limit`, with `budgetExceeded`/`budgetDimension` details and a `/workflow resume` hint) whose text instructs the agent to summarize progress and estimated next steps, ask the user whether to proceed — preferring the `ask_user_question` tool when available — and resume with a raised `budget` only after approval.
+- The public `workflow` tool now has a two-minute request deadline. Timed-out requests return `WORKFLOW_TIMEOUT` with `timeoutMs: 120000`, abort cancellable work, discard late settlement, and never retry. Mutating actions keep the unknown-outcome warning that tells callers to inspect workflow status before retrying ([#2654](https://github.com/bastani-inc/atomic/issues/2654), [#2605](https://github.com/bastani-inc/atomic/issues/2605)).
+- Agent guidance now treats "no budget" as the default for workflow runs. A `budget` is passed on `run`/`resume` only when the operator asked for a limit, and only the fields they named; otherwise the field is omitted so the workflow declaration and config resolve normally.
+- Agent guidance now assumes the existing 15-minute heartbeat cadence and does not shorten, lengthen, or disable it unless the operator asks. Heartbeats are documented as periodic alignment checks rather than failure signals, so a progressing run is not interrupted, re-capped, or polled in response to one.
+
+### Fixed
+
+- Fixed Git-installed workflow discovery when production-only package installs omit local TypeBox by resolving `typebox/compile`, `typebox/value`, and supported legacy `@sinclair/typebox` aliases through the host loader for workflow files and their helpers.
+- Fixed a hung DBOS write in one workflow blocking independent top-level workflows before startup admission. Durable writes now remain ordered per root workflow while workflow-local flushes wait only their own root; process shutdown still drains every root.
+- Workflow heartbeat and routing guidance now tells agents to discover a stage's `workflow:<rootRunId>` invocation group with the Intercom `groups` action and join it before steering the stage.
+- An in-flight workflow run no longer fails after a preserving `/reload` when the predecessor persistence port becomes stale. Advisory `workflow.stage.end` and `workflow.run.end` transcript appends swallow exactly `isStaleExtensionContextError` and rethrow every other error. ([#2749](https://github.com/bastani-inc/atomic/issues/2749))
+- Fixed running durable `ctx.tool` message blocks showing a trailing `●` after the tool call header; running and completed calls now use the same marker-free `$ <tool-name>` presentation while other tool-state markers remain unchanged.
+- Fixed a completed `ctx.task` leaving the root raw `running` with no active stage or tool and no path to the next budget boundary. The durable task-result checkpoint now fails closed, duration is rechecked after that checkpoint, quit/interrupt can abort a never-settling persist, and a terminal-only stage checkpoint replays the complete `WorkflowTaskResult` without rerunning the task ([#2650](https://github.com/bastani-inc/atomic/issues/2650)).
+- Fixed raised-budget resume of a blocked workflow when parallel stages shared a completed `ctx.tool` parent. Fresh-ID continuations translate tool parent identities during fail-closed topology validation, preserve cached root-level tool siblings without a false mismatch, and keep a blocked source retryable after a rejection without dropping recorded prompt answers ([#2639](https://github.com/bastani-inc/atomic/issues/2639)).
+- Fresh-ID continuations reuse the source `ctx.tool` checkpoint, including `failureMode: "return"` success and `return_failure` outcomes. To re-run a completed return-mode callback, start a new run or change the tool name or args ([#2639](https://github.com/bastani-inc/atomic/issues/2639)).
+- Fixed ordinary in-process subagents stealing the parent session's workflow store binding. Subagent children retain bundled workflow definitions as resources without loading the workflows extension or exposing its tool, and the extension factory rejects admitted child sessions as a second boundary.
+- Fixed simultaneous post-task budget exhaustion in `ctx.parallel(..., { failFast: false })` being replaced by a generic aggregate failure after every task had already persisted a complete result. Budget-only parallel failures now retain the engine-owned resumable `budget_exceeded` classification and replay all completed task results under a raised budget without rerunning their models.
+- Fixed workflow name resolution racing past an in-flight `/workflow reload`: a run dispatched immediately after a reload could resolve against the pre-reload registry and execute the old module. Resolution now awaits any in-flight discovery before resolving names. ([#2667](https://github.com/bastani-inc/atomic/pull/2667) by [@uppifyagency](https://github.com/uppifyagency))
+- Fixed Goal losing its ledger, orchestrator receipt, and review artifacts when a durable resume continued under a fresh run ID. Goal now checkpoints the complete artifact directory, reloads exact turn-bearing ledger state from a durable sidecar without truncating records or fabricating reducer turns, and scopes artifact ownership to the run's own identity plus its continuation chain.
+- Fixed a missing Goal reviewer `reads` artifact being reported as malformed structured reviewer output. Missing referenced files now remain explicit reviewer execution failures attributed to the `reads` contract.
+- Fixed Windows embedded Postgres startup waiting forever when the daemon inherited `pg_ctl` pipes by directly spawning Postgres behind an opaque native process lease. Orderly shutdown now sends fast shutdown and bounded-waits on that exact retained child/HANDLE, preventing mutable-pidfile and PID-reuse races while leaving attached clusters untouched ([#2547](https://github.com/bastani-inc/atomic/issues/2547), [#2544](https://github.com/bastani-inc/atomic/pull/2544) by [@darionco](https://github.com/darionco)).
+- Fixed active zero-stage workflows whose only work is durable `ctx.tool` calls being under-represented in the below-editor `BACKGROUND` panel. Normal-width cards now show a single pending or running tool node by name and status; when multiple nodes are live, their total appears before the width-clamped node details.
+- Fixed a never-settling public workflow tool request blocking the interactive agent indefinitely ([#2605](https://github.com/bastani-inc/atomic/issues/2605)).
+
+### Removed
+
+- Removed the public `workflow send` action and its stage-chat delivery modes. Use `workflow answer` for pending human-input prompts, `workflow resume` for paused control, and ordinary Intercom for live or deferred workflow-stage communication.
+
+## [0.9.16-alpha.11] - 2026-08-28
+
+### Changed
+
+- Every workflow model stage now retains ordinary `intercom` and its invocation group through `tools`, `excludedTools`, `noTools`, extension restrictions, and reload. Restrictions on every other tool and workflow group isolation are unchanged.
+
+### Fixed
+
+- Fixed Git-installed workflow discovery when production-only package installs omit local TypeBox by resolving `typebox/compile`, `typebox/value`, and supported legacy `@sinclair/typebox` aliases through the host loader for workflow files and their helpers.
+- Fixed a hung DBOS write in one workflow blocking independent top-level workflows before startup admission. Durable writes now remain ordered per root workflow while workflow-local flushes wait only their own root; process shutdown still drains every root.
+
+## [0.9.16-alpha.10] - 2026-08-28
+
+### Changed
+
+- Added the full and Flash GLM-5.3 direct Z.AI, Z.AI Coding Plan, Baseten, and OpenRouter routes to every built-in Goal, Ralph, and Open Claude Design fallback chain.
+
+### Fixed
+
+- Workflow heartbeat and routing guidance now tells agents to discover a stage's `workflow:<rootRunId>` invocation group with the Intercom `groups` action and join it before steering the stage.
+- An in-flight workflow run no longer fails after a preserving `/reload` when the predecessor persistence port becomes stale. Advisory `workflow.stage.end` and `workflow.run.end` transcript appends swallow exactly `isStaleExtensionContextError` and rethrow every other error. ([#2749](https://github.com/bastani-inc/atomic/issues/2749))
+
 ## [0.9.16-alpha.8] - 2026-08-27
 
 ### Added

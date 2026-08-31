@@ -173,7 +173,7 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.doesNotMatch(keybindings, /\| `tui\.altScreen\.search` \|/u);
 		assert.match(keybindings, /does not ship a find-in-transcript shortcut/u);
 		assert.match(keybindings, /\[Terminal setup\]\(\/terminal-setup\)/u);
-		assert.match(keybindings, /pi-tui 0\.84\.3/u);
+		assert.match(keybindings, /pi-tui 0\.84\.4/u);
 	});
 
 	test("environment-variables.md documents PI_TUI_ESC_TIMEOUT, the AI_AGENT marker, and the experimental gate", () => {

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { gt, maxSatisfying, rcompare, satisfies } from "semver";
-import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.js";
 import { markPathIgnoredByCloudSync } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { runCommand, runCommandCapture, runCommandSync } from "./package-manager-command.ts";

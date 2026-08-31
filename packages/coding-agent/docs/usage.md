@@ -8,7 +8,7 @@ This page collects day-to-day usage details that do not fit on the quickstart pa
 
 The interface has four main areas:
 
-- **Startup header** - shortcuts, loaded context files, prompt templates, skills, and extensions
+- **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, extensions, and themes; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
 - **Footer** - working directory, session name, token/cache usage, cost, context usage, and current model
@@ -18,6 +18,8 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 ### Startup and Working Identity
 
 On an interactive TTY, the startup ∀ assembles from two separated halves in whole-column steps, lands its shadow and session identity, then reveals the one-time manifesto beat. Any key—including Ctrl+C—completes the sequence immediately before normal input routing continues. Terminals narrower than the mark show compact textual identity throughout assembly instead of a blank startup area. Quiet startup suppresses the sequence; a mounted interactive UI without a TTY, or with `ATOMIC_REDUCED_MOTION=1`, starts in the complete settled state. `NO_COLOR` suppresses foreground color across the mark, metadata, and manifesto while retaining weight emphasis.
+
+Interactive startup lists loaded context files, skills, prompts, extensions, and themes by name. The Extensions section includes isolated engine extensions such as workflows, subagents, MCP, web access, and Intercom without loading them a second time in the terminal host. Its compact list uses builtin package names and adds parent path segments when a local extension would otherwise have the same label. If no parent segment is available, it shows the local extension's display path and adds a deterministic numeric suffix only when that path is also already taken. Expand the startup disclosure to view source paths.
 
 While ordinary agent work is active, the exact one-cell `∀` remains visible and follows a pronounced ten-frame dark → accent → bright/bold → accent → dark luminance ramp at an 88ms cadence. Optional theme tone overrides control any terminal-supported foreground phase exactly, including palette indices 0–255; Atomic derives omitted tones from selected-surface, `accent`, and `text` roles. Dark, light, custom, and dynamically reloaded themes therefore remain correct without changing glyph shape or geometry. It occupies the same inline, one-row footprint as the standard spinner: one glyph immediately before the existing text. Main and workflow-stage chat preserve all 453 of Atomic's original randomized whimsical working verbs, selecting one message per turn; even the longest fits the tested 64-column surface. Every agent and SDK turn resets to the dark regular phase with a fresh lifecycle-relative cadence, while turn, terminal, error, replacement, and disposal paths stop the active timer cleanly. Restoring the ordinary indicator after an extension override also resets its phase and cadence; extension-provided frames and intervals remain unchanged and render verbatim. Under `NO_COLOR`, regular/bold weight preserves visible activity without foreground-color escapes. With `ATOMIC_REDUCED_MOTION=1`, `∀` remains static, regular, and accent-colored without an animation timer. Factual retry, fallback, error, cancellation, and compaction status suppresses the thematic indicator, while blocker and human-approval/prompt surfaces hide ordinary work chrome and factual receipts remain verbatim.
 
@@ -32,6 +34,7 @@ While ordinary agent work is active, the exact one-cell `∀` remains visible an
 | Shell command | `!command` runs and sends output to the model |
 | Hidden shell command | `!!command` runs without sending output to the model |
 | External editor | CTRL+G opens `$VISUAL` or `$EDITOR` |
+| Copy selection/message | Ctrl+X copies a retained fullscreen selection when `fullscreenCopyOnSelect` is disabled; otherwise it copies the last assistant message |
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
@@ -231,7 +234,7 @@ For raw credential exports, stdout is empty on every non-zero exit but one. Once
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
 
-Interactive sessions always use fullscreen: the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures go first to a focused workflow graph or stage chat overlay; events those overlays do not consume fall through to the alternate-screen viewport. Non-overlay focused components do not block pi-tui's mouse path, so transcript scrolling, scrollbar interaction, and drag selection still work. The `fullscreenExitOutput` setting controls what exiting prints: `"transcript"` (the default) paints the final transcript plus a session resume hint on the main screen, while `"resume-hint"` restores the previous screen and prints only the resume hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
+Interactive sessions always use fullscreen: the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures go first to a focused workflow graph or stage chat overlay; events those overlays do not consume fall through to the alternate-screen viewport. Non-overlay focused components do not block pi-tui's mouse path, so transcript scrolling, scrollbar interaction, and drag selection still work. Selection copies automatically by default; disable `fullscreenCopyOnSelect` to retain it for Ctrl+X. Ctrl+X closes workflow tool detail to the graph, clears a scoped-model selection, returns stage chat to its graph, or returns a workflow graph to main chat before the main editor may copy. `/copy` always copies the last assistant message. The `fullscreenExitOutput` setting controls what exiting prints: `"transcript"` (the default) paints the final transcript plus a session resume hint on the main screen, while `"resume-hint"` restores the previous screen and prints only the resume hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
 
 In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
 
@@ -269,12 +272,12 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 
 | Option | Description |
 |--------|-------------|
-| `--tools <list>`, `-t <list>` | Allowlist specific built-in, extension, and custom tools |
-| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools |
+| `--tools <list>`, `-t <list>` | Allowlist specific built-in, extension, and custom tools; mandatory `intercom` remains available |
+| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools; mandatory `intercom` cannot be excluded |
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
-| `--no-tools`, `-nt` | Disable all tools |
+| `--no-tools`, `-nt` | Disable every tool except mandatory `intercom` |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`. The `defaultTools` setting selects which built-in tools a session starts with; `--tools` replaces that default with a strict allowlist over built-in, custom, and extension tools; `--no-builtin-tools` removes only built-ins; `--no-tools` removes all tools. `ls` remains available as an SDK compatibility tool but is not enabled by default.
+Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more non-mandatory tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`. The `defaultTools` setting selects which built-in tools a session starts with; `--tools` replaces that default with a strict allowlist over non-mandatory built-in, custom, and extension tools; `--no-builtin-tools` removes only built-ins; `--no-tools` removes every tool except ordinary bundled `intercom`. `ls` remains available as an SDK compatibility tool but is not enabled by default.
 
 ### Project Trust Options
 
@@ -290,7 +293,7 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | Option | Description |
 |--------|-------------|
 | `-e`, `--extension <source>` | Load an extension from path, npm, or git; repeatable |
-| `--no-extensions`, `-ne` | Disable extension discovery |
+| `--no-extensions`, `-ne` | Disable optional extension discovery; mandatory bundled Intercom remains loaded |
 | `--skill <path>` | Load a skill; repeatable |
 | `--no-skills`, `-ns` | Disable skill discovery |
 | `--prompt-template <path>` | Load a prompt template; repeatable |

@@ -279,7 +279,7 @@ test("RPC input returns the correlated abort response before compact settles", a
 	});
 });
 
-test("abort_compaction reaches the RPC session and terminates active compaction", async () => {
+test("abort_compaction reaches a resource-ready RPC session and terminates active compaction", async () => {
 	let rejectCompaction: ((error: Error) => void) | undefined;
 	let abortCalls = 0;
 	const session = {
@@ -298,6 +298,7 @@ test("abort_compaction reaches the RPC session and terminates active compaction"
 		getSession: () => session as never,
 		rebindSession: async () => {},
 		output: (record) => records.push(record),
+		waitForResources: () => undefined,
 	});
 	const handleLine = createRpcInputLineHandler({
 		output: (record) => records.push(record),

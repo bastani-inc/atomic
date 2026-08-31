@@ -42,6 +42,7 @@ export interface SettingsConfig {
 	showHardwareCursor: boolean;
 	fullscreenScrollbar: ScrollViewScrollbar;
 	fullscreenExitOutput: FullscreenExitOutput;
+	fullscreenCopyOnSelect: boolean;
 	editorPaddingX: number;
 	outputPad: 0 | 1;
 	showCacheMissNotices: boolean;
@@ -80,6 +81,7 @@ export interface SettingsCallbacks {
 	onShowHardwareCursorChange: (enabled: boolean) => void;
 	onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
 	onFullscreenExitOutputChange: (output: FullscreenExitOutput) => void;
+	onFullscreenCopyOnSelectChange: (enabled: boolean) => void;
 	onEditorPaddingXChange: (padding: number) => void;
 	onOutputPadChange: (padding: 0 | 1) => void;
 	onShowCacheMissNoticesChange: (enabled: boolean) => void;

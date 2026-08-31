@@ -46,7 +46,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { join } from "node:path";
-import { getAgentConfigPaths } from "../../config.ts";
+import { getAgentConfigPaths } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
 	ensureTempDir,

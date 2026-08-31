@@ -275,7 +275,7 @@ describe("manual compaction re-entrancy", () => {
 		}
 	});
 
-	it("runs only the requested manual compaction when an active response crosses the threshold", async () => {
+	it("persists an active response abort before running the requested manual compaction", async () => {
 		const responseGate = createResponseGate();
 		const harness = await createHarnessWithExtensions({
 			model: { ...fauxModel, contextWindow: 1_000, maxTokens: 100 },
@@ -307,7 +307,15 @@ describe("manual compaction re-entrancy", () => {
 
 		expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["manual"]);
 		expect(harness.eventsOfType("compaction_end").map((event) => event.reason)).toEqual(["manual"]);
-		expect(boundaryCount(harness)).toBe(1);
+		const entries = harness.sessionManager.getEntries();
+		const abortedResponseIndex = entries.findIndex(
+			(entry) =>
+				entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "aborted",
+		);
+		const compactionIndex = entries.findIndex((entry) => entry.type === "compaction");
+		expect(abortedResponseIndex).toBeGreaterThanOrEqual(0);
+		expect(compactionIndex).toBeGreaterThan(abortedResponseIndex);
+		expect(entries.filter((entry) => entry.type === "compaction")).toHaveLength(1);
 		expect(manualResult.compactedText).toBe("manual summary");
 	});
 

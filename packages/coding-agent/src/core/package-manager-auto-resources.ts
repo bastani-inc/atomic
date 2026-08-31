@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from "node:path";
-import { getProjectConfigDirs } from "../config.ts";
+import { getProjectConfigDirs } from "../config.js";
 import { getBaseDirsForScope, getHomeDir } from "./package-manager-paths.ts";
 import { addResource, getTargetMap } from "./package-manager-resource-accumulator.ts";
 import {

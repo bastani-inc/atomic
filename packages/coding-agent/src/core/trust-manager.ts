@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
-import { CONFIG_DIR_NAMES } from "../config.ts";
+import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { canonicalizePath, getHomeDir, resolvePath } from "../utils/paths.ts";
 

@@ -32,6 +32,7 @@ function createSettingsConfig(): SettingsConfig {
 		showHardwareCursor: false,
 		fullscreenScrollbar: "auto",
 		fullscreenExitOutput: "transcript",
+		fullscreenCopyOnSelect: true,
 		editorPaddingX: 0,
 		outputPad: 1,
 		showCacheMissNotices: false,

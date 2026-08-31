@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { TUI } from "@earendil-works/pi-tui";
-import { APP_NAME } from "../../config.ts";
+import { APP_NAME } from "../../config.js";
 import { readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { editInExternalEditor, resolveExternalEditorCommand } from "./external-editor.ts";

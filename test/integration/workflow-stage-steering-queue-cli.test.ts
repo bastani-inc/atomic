@@ -33,10 +33,11 @@
  */
 
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, test } from "vitest";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import {
 	bunExecutable,
 	decodeStream,
@@ -338,10 +339,6 @@ function writeAgentConfig(agentDir: string, baseUrl: string): void {
 			onboardedVersion: "0.0.0",
 		}),
 	);
-	// Intercom is unrelated to this steering-queue scenario. Keep its persistent
-	// broker out of the fixture's disposable agent directory.
-	mkdirSync(join(agentDir, "intercom"), { recursive: true });
-	writeFileSync(join(agentDir, "intercom", "config.json"), `${JSON.stringify({ enabled: false }, null, 2)}\n`);
 }
 
 /** Everything the scenario drew, sliced by the keystroke that caused it. */
@@ -461,7 +458,7 @@ async function runScenario(): Promise<Evidence> {
 	} finally {
 		await cli.stop();
 		await model.stop();
-		rmSync(root, { recursive: true, force: true });
+		removeTempRootReleasingBroker(root);
 	}
 }
 

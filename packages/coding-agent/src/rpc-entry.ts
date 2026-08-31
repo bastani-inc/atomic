@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { insertForcedOptionsBeforeTerminator } from "./cli/args.ts";
-import { APP_NAME } from "./config.ts";
+import { APP_NAME } from "./config.js";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { main } from "./main.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";

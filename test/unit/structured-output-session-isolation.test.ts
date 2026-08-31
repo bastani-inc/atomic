@@ -85,10 +85,10 @@ describe("structured_output custom-name isolation in AgentSession", () => {
 			tools: ["final_decision"],
 		});
 		try {
-			assert.deepEqual(session.getActiveToolNames(), ["final_decision"]);
+			assert.deepEqual(session.getActiveToolNames(), ["final_decision", "intercom"]);
 			assert.deepEqual(
 				session.getAllTools().map((tool) => tool.name),
-				["final_decision"],
+				["intercom", "final_decision"],
 			);
 			assert.equal(session.getToolDefinition("final_decision")?.parameters, gateSchema);
 			assert.equal(session.getToolDefinition("structured_output"), undefined);

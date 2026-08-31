@@ -128,7 +128,7 @@ Status and interrupt use the live Rust registry and status watch; `list` and `ge
 
 Inside workflow stages, completion delivery observes the stage generation boundary. A completion received before the boundary closes is queued through the stage AgentSession and processed before the stage publishes its terminal snapshot. A completion that arrives after close is routed once to the parent/main chat and cannot reopen or append to the completed stage transcript. Explicit post-mortem stage chat is still available separately.
 
-Live progress and completed results show each step's resolved model, effective reasoning level, and applied fast-mode marker, including after a model fallback; parallel steps keep their metadata separate.
+Live progress and completed results show each step's resolved model, effective reasoning level, and applied fast-mode marker, including after a model fallback; parallel steps keep their metadata separate. Main-chat children use the launching chat's `codexFastMode.chat` setting, while children launched from a workflow stage (including a stage in a nested workflow) use `codexFastMode.workflow`. Eligible OpenAI children and Codex-transport aliases send `service_tier: priority`. A GitHub Copilot child is eligible only when its OAuth account catalog advertises the exact fast sibling; its outgoing request uses the `<model-id>-fast` wire model and its base-model label gets a separate `fast` marker. When the applicable scope is off or fallback selects an ineligible model, the request and label both return to the normal model without that marker.
 
 ## Orchestrator model and group policy
 
@@ -149,7 +149,7 @@ For adversarial review or research, prefer fresh context so the specialist inspe
 
 For parallel implementation work, `worktree: true` can give each child an isolated git worktree so concurrent edits do not clobber each other.
 
-Fresh child sessions use normal Atomic package discovery when an agent omits `extensions`, so bundled lightweight MCP, web-access, and Intercom wrappers are available just as they are in the parent. An explicit `extensions` field (including an empty list) intentionally switches the child to extension-allowlist mode and excludes unlisted builtins; it does not inherit the parent's normal discovery set.
+Fresh child sessions use normal Atomic package discovery when an agent omits `extensions`, so bundled lightweight MCP and web-access wrappers are available just as they are in the parent. An explicit `extensions` field, including an empty list, switches optional extensions to allowlist mode and excludes unlisted optional builtins; mandatory bundled Intercom remains loaded. The child does not inherit the parent's normal optional discovery set.
 
 Top-level parallel calls support up to 50 subagents after expanding each task's optional `count`. The extension's `parallel.maxTasks` setting defaults to 50 and can enforce a lower task limit; `parallel.concurrency` independently controls how many of those children run at once, while the Rust turn limiter admits at most four running turns per parent.
 

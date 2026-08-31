@@ -2,7 +2,13 @@
  * Shared state and constructor wiring for interactive mode.
  * Responsibility-specific behavior is installed by sibling modules.
  */
-import { isKeyRelease, isViewportTUI, type ScrollView, type TuiInputListener } from "@earendil-works/pi-tui";
+import {
+	isKeyRelease,
+	isViewportTUI,
+	type ScrollView,
+	setCapabilityOverrides,
+	type TuiInputListener,
+} from "@earendil-works/pi-tui";
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
@@ -213,6 +219,19 @@ export class InteractiveModeBase {
 		// overlay owns focus. This keeps the host binding and its user remap as
 		// the source of truth instead of calling the implementation directly.
 		return this.defaultEditor.handleInput(data);
+	}
+
+	setFullscreenCopyOnSelect(enabled: boolean): void {
+		if (this.renderer.mode === "fullscreen") this.renderer.setCopyOnSelect(enabled);
+	}
+
+	getFullscreenCopyOnSelect(): boolean | undefined {
+		return this.renderer.mode === "fullscreen" ? this.renderer.getCopyOnSelect() : undefined;
+	}
+
+	async copyActiveFullscreenSelection(): Promise<boolean | undefined> {
+		if (this.renderer.mode !== "fullscreen" || !this.renderer.hasActiveSelection()) return undefined;
+		return this.renderer.copyActiveSelectionToClipboard();
 	}
 
 	private readonly onRightClickPaste = (): void => {
@@ -568,11 +587,13 @@ export class InteractiveModeBase {
 			// the theme so the live selection tracks the session that is current.
 			await this.themeController.applyFromSettings();
 		});
+		setCapabilityOverrides(this.settingsManager.getTerminalCapabilityOverrides());
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: runtimeHost.services.agentDir,
 			terminal: options.terminal,
+			copyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,

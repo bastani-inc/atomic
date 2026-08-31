@@ -6,7 +6,7 @@ import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { isVerticalBypass, sameGroup } from "./group-isolation.js";
-import { normalizeGroup } from "../group.js";
+import { sessionsShareGroup } from "./group-membership.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 
 export interface BrokerConnectedSession {
@@ -139,12 +139,11 @@ export function handleBrokerSend(
   // supervisor frame or an exact recorded reply may resolve across groups.
 	const liveWorkflowTarget = sessions.has(trimmedTo) ? undefined : resolveLiveWorkflowStage?.(trimmedTo);
 	const exactIdTarget = sessions.get(trimmedTo) ?? liveWorkflowTarget;
-  const senderGroup = normalizeGroup(fromSession.info.group);
   const reachableAcrossGroups = supervisorSend || Boolean(message.replyTo);
   const candidates = reachableAcrossGroups
     ? Array.from(sessions.values(), (session) => session.info)
     : Array.from(sessions.values(), (session) => session.info).filter(
-        (info) => normalizeGroup(info.group) === senderGroup,
+        (info) => sessionsShareGroup(info, fromSession.info),
       );
   const resolution = exactIdTarget
     ? ({ kind: "resolved", session: exactIdTarget.info } as const)

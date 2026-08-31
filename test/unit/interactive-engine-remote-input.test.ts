@@ -77,6 +77,7 @@ interface Bridge {
 
 interface BridgeOptions {
 	fullscreen?: boolean;
+	copyOnSelect?: boolean;
 	stallInput?: boolean;
 	keybindings?: KeybindingsManager;
 	onOverlayUnhandledInput?: (data: string) => boolean;
@@ -109,6 +110,7 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
+			copyOnSelect: options.copyOnSelect,
 			copySelection: async (text) => {
 				selectionCopies.push(text);
 				return true;
@@ -285,14 +287,15 @@ interface FullscreenGraphFixture {
 	host: HostComponent;
 	graph: GraphView;
 	attached: Array<{ runId: string; stageId: string }>;
+	detached: { count: number };
 	overlay: OverlayHandle;
 	transcript: ScrollView;
 	tui: TuiAltScreen;
 	terminal: RecordingTerminal;
 }
 
-async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
-	const bridge = makeBridge({ fullscreen: true });
+async function makeFullscreenGraphFixture(options: BridgeOptions = {}): Promise<FullscreenGraphFixture> {
+	const bridge = makeBridge({ ...options, fullscreen: true });
 	const terminal = bridge.terminal;
 	const tui = bridge.tui;
 	assert.ok(tui, "fullscreen renderer did not mount");
@@ -303,6 +306,7 @@ async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
 		makeStage(`stage-${index}`, index === 0 ? [] : [`stage-${index - 1}`]),
 	);
 	const attached: Array<{ runId: string; stageId: string }> = [];
+	const detached = { count: 0 };
 	const graph = new GraphView({
 		mode: "overlay",
 		runId: "run-1",
@@ -317,6 +321,9 @@ async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
 			},
 		},
 		onStageAttach: (runId, stageId) => attached.push({ runId, stageId }),
+		onDetach: () => {
+			detached.count++;
+		},
 	});
 	void bridge.child.custom(() => ({
 		render: (width: number) => graph.render(width),
@@ -341,7 +348,7 @@ async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
 	});
 	tui.start();
 	tui.renderNow();
-	return { bridge, host, graph, attached, overlay, transcript, tui, terminal };
+	return { bridge, host, graph, attached, detached, overlay, transcript, tui, terminal };
 }
 
 test("fullscreen forwards workflow graph wheel through the remote input path", async () => {
@@ -436,6 +443,35 @@ test("fullscreen keeps pi-tui selection active while a workflow overlay owns foc
 			bridge.selectionCopies.length > copiesBeforeMultiClick,
 			"pi-tui did not copy a multi-click selection over the overlay",
 		);
+	} finally {
+		overlay.hide();
+		tui.stop();
+	}
+});
+
+test("fullscreen workflow Ctrl+X does not copy or retain an overlay-owned selection", async () => {
+	const { bridge, detached, host, overlay, tui, terminal } = await makeFullscreenGraphFixture({ copyOnSelect: false });
+	try {
+		const lines = host.render(terminal.columns).map((line) => stripTerminalSequences(line));
+		const targetRow = lines.findIndex((line) => line.includes("stage-0"));
+		assert.ok(targetRow >= 0, "workflow overlay did not render a selectable row");
+		const targetCol = lines[targetRow]!.indexOf("stage-0");
+
+		terminal.input(sgrMouse(0, targetCol, targetRow));
+		terminal.input(sgrMouse(32, targetCol + 4, targetRow));
+		terminal.input(sgrMouse(0, targetCol + 4, targetRow, "m"));
+		await flush();
+		assert.equal(tui.hasActiveSelection(), true);
+		assert.deepEqual(bridge.selectionCopies, []);
+
+		terminal.input("\x18");
+		await flush();
+		assert.equal(detached.count, 1, "workflow graph did not own the hierarchy transition");
+		assert.deepEqual(bridge.selectionCopies, [], "hierarchy Ctrl+X leaked into clipboard dispatch");
+
+		overlay.hide();
+		tui.renderNow();
+		assert.equal(tui.hasActiveSelection(), false, "overlay selection survived hide and repaint");
 	} finally {
 		overlay.hide();
 		tui.stop();

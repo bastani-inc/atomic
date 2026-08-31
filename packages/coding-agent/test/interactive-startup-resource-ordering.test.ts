@@ -73,6 +73,7 @@ async function renderStartupWithEarlyNotify(
 		});
 		Object.assign(mode, {
 			bindCurrentSessionExtensions: async () => emitNotify(),
+			applyRuntimeSettings() {},
 			promptTurnWorkingLoaderActive: false,
 			stopWorkingLoader() {},
 			themeController: { applyFromSettings: async () => {} },
@@ -131,6 +132,7 @@ function configureDeferredMode(mode: InteractiveMode): void {
 	});
 	Object.assign(mode, {
 		bindCurrentSessionExtensions: async () => {},
+		applyRuntimeSettings() {},
 		promptTurnWorkingLoaderActive: false,
 		stopWorkingLoader() {},
 		themeController: { applyFromSettings: async () => {} },
@@ -422,8 +424,11 @@ test("reload-style rebuild replaces the stale startup disclosure with one curren
 	assert.ok(output.indexOf("restored transcript") < output.indexOf("RESOURCES current"), output);
 });
 
-test("a post-startup runtime rebind appends RESOURCES at the current chat bottom", async () => {
-	const mode = createShowLoadedResourcesThis({ quietStartup: false });
+test("a post-startup runtime rebind appends resource sections at the current chat bottom", async () => {
+	const mode = createShowLoadedResourcesThis({
+		quietStartup: false,
+		skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+	});
 	mode.resourceDisclosureContainer = new Container();
 	mode.startupNoticesContainer = new Container();
 	mode.deferredStartupPending = false;
@@ -442,5 +447,5 @@ test("a post-startup runtime rebind appends RESOURCES at the current chat bottom
 	await InteractiveMode.prototype.bindCurrentSessionExtensions.call(mode);
 
 	const output = normalizeStartupOutput(mode.chatContainer);
-	assert.ok(output.indexOf("existing chat bottom") < output.lastIndexOf("RESOURCES"), output);
+	assert.ok(output.indexOf("existing chat bottom") < output.lastIndexOf("[Skills]"), output);
 });

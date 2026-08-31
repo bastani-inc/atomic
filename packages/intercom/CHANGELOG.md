@@ -4,6 +4,62 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-08-29
+
+Cumulative release of the `0.9.17-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Fixed
+
+- Idle brokers now exit after the 5-second shutdown window even when no session ever registered, including sockets that close before `register`. An evicted incumbent does not delete a successor's socket or pid file ([#2765](https://github.com/bastani-inc/atomic/issues/2765)).
+
+## [0.9.17-alpha.1] - 2026-08-29
+
+### Fixed
+
+- Idle brokers now exit after the 5-second shutdown window even when no session ever registered, including sockets that close before `register`. An evicted incumbent does not delete a successor's socket or pid file ([#2765](https://github.com/bastani-inc/atomic/issues/2765)).
+
+## [0.9.16] - 2026-08-29
+
+Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Breaking Changes
+
+- Parent-targeted blocking asks no longer pause a child for `subagent` resume. They end the child and return a fresh-subagent `[TASK_CONTEXT]` handoff; migrate supervisors to launch a new child with the answer ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
+
+### Added
+
+- Intercom sessions can now hold multiple group memberships. Runtime `join` is additive, targeted `leave` removes one membership, bare `leave` resets to the startup home group, and the new `groups` action discovers every available group with session counts and membership markers. `list` remains session discovery, `status` reports the complete membership set, legacy single-group clients retain their existing behavior, and `contact_supervisor` keeps its capability-based cross-group route.
+- Extended ordinary `send` delivery to known workflow stages whose sessions have not initialized, with durable FIFO queueing, a distinct `queued` acknowledgment, same-group enforcement, bounded per-stage capacity, structured pre-start `ask` refusal, and delivery through the existing Intercom path before the stage's first model turn. ([#2717](https://github.com/bastani-inc/atomic/issues/2717))
+- Concurrent blocking asks now use a correlation-keyed waiter registry, with configurable `maxPendingAsks` capacity, exact out-of-order reply and selective-disconnect settlement, and a structured refusal when full. Blocking supervisor decisions remain exclusive per child while coexisting with ordinary peer asks ([#2628](https://github.com/bastani-inc/atomic/issues/2628)).
+
+### Changed
+
+- Intercom can no longer be disabled with `enabled: false`; Atomic always loads and registers the lightweight ordinary `intercom` tool while keeping broker connection and heavy initialization lazy. `contact_supervisor` remains subagent-only.
+- `contact_supervisor` decisions/interviews and child-to-parent `intercom.ask` now preserve the original question, ordered duplicate attachments, and agent identity in the fresh-start handoff before broker send or reply-waiter admission ([#2604](https://github.com/bastani-inc/atomic/issues/2604)).
+- Session teardown rejects every pending reply waiter while preserving per-waiter reply, timeout, abort, cancel, and peer-disconnect settlement.
+
+### Fixed
+
+- Intercom skill and user docs now tell agents to discover a workflow stage's `workflow:<rootRunId>` invocation group with `groups` and join it before steering the stage.
+- Blocking `ask` and `contact_supervisor` waits now fail promptly with the departed session's name when their target disconnects after delivery, instead of hanging until the 10-minute timeout ([#2627](https://github.com/bastani-inc/atomic/issues/2627)).
+- Replying to an exact pending ask now removes its queued turn context, preventing the same ask from resurfacing and being answered twice ([#2628](https://github.com/bastani-inc/atomic/issues/2628)).
+
+## [0.9.16-alpha.11] - 2026-08-28
+
+### Changed
+
+- Intercom can no longer be disabled with `enabled: false`; Atomic always loads and registers the lightweight ordinary `intercom` tool while keeping broker connection and heavy initialization lazy. `contact_supervisor` remains subagent-only.
+
+## [0.9.16-alpha.10] - 2026-08-28
+
+### Added
+
+- Intercom sessions can now hold multiple group memberships. Runtime `join` is additive, targeted `leave` removes one membership, bare `leave` resets to the startup home group, and the new `groups` action discovers every available group with session counts and membership markers. `list` remains session discovery, `status` reports the complete membership set, legacy single-group clients retain their existing behavior, and `contact_supervisor` keeps its capability-based cross-group route.
+
+### Fixed
+
+- Intercom skill and user docs now tell agents to discover a workflow stage's `workflow:<rootRunId>` invocation group with `groups` and join it before steering the stage.
+
 ## [0.9.16-alpha.8] - 2026-08-27
 
 ### Added

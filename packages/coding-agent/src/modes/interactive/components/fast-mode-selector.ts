@@ -15,7 +15,7 @@ export type FastModeRow = keyof FastModeSelectorConfig;
 
 const ROWS: readonly FastModeRow[] = ["chat", "workflow"];
 const LABEL_WIDTH = 16;
-const DESCRIPTION = "Priority tier for supported OpenAI and shared ChatGPT Codex transports.";
+const DESCRIPTION = "Use faster routing for the selected model when supported by its provider.";
 const ROW_DETAILS: Record<FastModeRow, { label: string; scope: string }> = {
 	chat: {
 		label: "Chat",
@@ -40,7 +40,7 @@ export class FastModeSelectorComponent {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const lines: string[] = [truncateToWidth(theme.bold(theme.fg("accent", "Codex fast mode")), width)];
+		const lines: string[] = [truncateToWidth(theme.bold(theme.fg("accent", "Fast mode")), width)];
 		for (const line of wrapTextWithAnsi(DESCRIPTION, Math.max(20, width))) {
 			lines.push(theme.fg("muted", line));
 		}

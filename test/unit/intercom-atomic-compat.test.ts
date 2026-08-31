@@ -100,7 +100,12 @@ describe("intercom Atomic agent-dir paths", () => {
 	});
 });
 
-function runLoadConfig(home: string): { status?: string; brokerCommand: string; brokerArgs: string[] } {
+function runLoadConfig(home: string): {
+	status?: string;
+	brokerCommand: string;
+	brokerArgs: string[];
+	enabled?: boolean;
+} {
 	const configUrl = pathToFileURL(resolve("packages/intercom/config.ts")).href;
 	const script = [
 		`const mod = await import(${JSON.stringify(configUrl)});`,
@@ -120,7 +125,12 @@ function runLoadConfig(home: string): { status?: string; brokerCommand: string; 
 		encoding: "utf8",
 	});
 	assert.equal(result.status, 0, result.stderr);
-	return JSON.parse(result.stdout.trim()) as { status?: string; brokerCommand: string; brokerArgs: string[] };
+	return JSON.parse(result.stdout.trim()) as {
+		status?: string;
+		brokerCommand: string;
+		brokerArgs: string[];
+		enabled?: boolean;
+	};
 }
 
 describe("intercom default broker runtime", () => {
@@ -131,6 +141,18 @@ describe("intercom default broker runtime", () => {
 
 		assert.equal(config.brokerCommand, "npx");
 		assert.deepEqual(config.brokerArgs, ["--no-install", "tsx"]);
+	});
+
+	test("ignores the removed enabled switch instead of disabling Intercom", () => {
+		const home = tempDir("atomic-intercom-config-enabled-");
+		const configDir = join(home, ".atomic", "agent", "intercom");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(join(configDir, "config.json"), JSON.stringify({ enabled: false, status: "ready" }));
+
+		const config = runLoadConfig(home);
+
+		assert.equal(config.enabled, undefined);
+		assert.equal(config.status, "ready");
 	});
 
 	test("hardens the default sentinel to launch through the current runtime and jiti", () => {

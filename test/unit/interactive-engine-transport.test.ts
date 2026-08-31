@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
 import { test } from "vitest";
 import {
+	runCallback,
 	runSynchronousCallback,
 	setCallbackActivityReporter,
 } from "../../packages/coding-agent/src/core/callback-activity.ts";
@@ -151,6 +152,23 @@ test("activity watchdog retains nested and concurrent attribution", async () => 
 	await sleep(5);
 	assert.equal(diagnostics.at(-1)?.activity?.id, "outer");
 	watchdog.stop();
+});
+
+test("callback activity attribution starts when each callback can run", async () => {
+	const started: string[] = [];
+	setCallbackActivityReporter({
+		started: (activity) => started.push(`${activity.kind} ${activity.name}`),
+		finished: () => {},
+	});
+	try {
+		const tool = runCallback({ kind: "tool.execute", name: "busy_loop" }, () => {
+			assert.deepEqual(started, ["tool.execute busy_loop"]);
+		});
+		const lifecycle = runCallback({ kind: "extension.hook", name: "turn_start" }, () => {});
+		await Promise.all([tool, lifecycle]);
+	} finally {
+		setCallbackActivityReporter(undefined);
+	}
 });
 
 test("watchdog diagnostics are tagged with their source at both thresholds", async () => {

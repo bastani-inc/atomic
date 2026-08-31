@@ -72,12 +72,14 @@ export async function runCallback<T>(
 	descriptor: CallbackActivityDescriptor,
 	callback: () => T | Promise<T>,
 ): Promise<T> {
+	if (!reporter) return callback();
+	// Let the last healthy heartbeat leave first, then announce the callback
+	// immediately before it can run. Announcing before this yield lets later
+	// callbacks overtake the attribution while an earlier callback blocks.
+	await yieldToEventLoop();
 	const active = beginActivity(descriptor);
 	if (!active) return callback();
 	try {
-		// Give the activity frame and the last healthy heartbeat a chance to leave
-		// the engine before arbitrary callback code begins.
-		await yieldToEventLoop();
 		return await callback();
 	} finally {
 		active.reporter.finished(active.activity.id);

@@ -1,3 +1,4 @@
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { Container } from "./interactive-mode-deps.ts";
 
 /**
@@ -26,6 +27,7 @@ interface StartupChatOutputHost {
 export function releaseStartupChatOutput(host: StartupChatOutputHost): void {
 	if (host.chatContainer instanceof StartupChatContainer) {
 		host.chatContainer.releaseStartupOutput();
+		markLifecycleTiming("chat-output-release");
 		host.ui.requestRender();
 	}
 }

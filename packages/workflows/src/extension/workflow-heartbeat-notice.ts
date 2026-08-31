@@ -26,8 +26,10 @@ export function formatWorkflowHeartbeatNoticeText(details: WorkflowHeartbeatEven
 		`${WORKFLOW_HEARTBEAT_GLYPH} Workflow "${workflowName}" heartbeat (run ${details.runId}) — still running` +
 		`${elapsed === undefined ? "" : ` after ${elapsed}`}, on a ${cadence} cadence. ` +
 		"This is a periodic alignment check. Review whether the run is still on goal. " +
-		"When steering or communication is useful, use Intercom. Consider the expanded workflow topology and match " +
-		"each update's reach to its impact: send a local update to its affected stage; when shared scope or acceptance " +
+		"When steering or communication is useful, use Intercom. Before steering a stage, join its invocation group. " +
+		"Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`. " +
+		"Consider the expanded workflow topology and match each update's reach to its impact: send a local update to " +
+		"its affected stage; when shared scope or acceptance " +
 		"criteria change, send the same authoritative Intercom update to every relevant live and known unstarted " +
 		"`<runId>:<stageKey>`, including each worker-to-reviewer loop. Intercom delivers immediately to live stages and " +
 		"queues updates for known stages that have not started, delivering them before their first model turn, so workers " +

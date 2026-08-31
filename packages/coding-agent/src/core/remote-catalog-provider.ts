@@ -1,5 +1,5 @@
 import type { Api, Model, ModelsStoreEntry, Provider } from "@bastani/pi-ai";
-import { VERSION } from "../config.ts";
+import { VERSION } from "../config.js";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 

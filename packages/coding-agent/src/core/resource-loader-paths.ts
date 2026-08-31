@@ -1,4 +1,4 @@
-import { getAgentDir, getAgentDirs } from "../config.ts";
+import { getAgentDir, getAgentDirs } from "../config.js";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 
 export function getLoaderAgentDirs(agentDir: string): string[] {

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import type { EventBus } from "../event-bus.ts";
 import { readPiManifestFile } from "../package-manager-manifest.ts";

@@ -103,8 +103,8 @@ export interface DurableWorkflowBackend {
 	 */
 	recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean>;
 
-	/** Wait for all serialized writes to settle. */
-	flush(): Promise<void>;
+	/** Wait for one workflow's serialized writes, or every workflow when omitted. */
+	flush(workflowId?: string): Promise<void>;
 
 	/**
 	 * Look up a cached tool output by content hash. Returns `undefined` if the

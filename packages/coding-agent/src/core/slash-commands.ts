@@ -1,10 +1,5 @@
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { APP_NAME } from "../config.ts";
-import {
-	ATOMIC_GUIDE_COMMAND_DESCRIPTION,
-	ATOMIC_GUIDE_COMMAND_NAME,
-	getAtomicGuideArgumentCompletions,
-} from "./atomic-guide-command.ts";
+import { APP_NAME } from "../config.js";
 import type { SourceInfo } from "./source-info.ts";
 
 export type SlashCommandSource = "extension" | "prompt" | "skill";
@@ -318,7 +313,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "tree", description: "Navigate session tree (switch branches)" },
 	{ name: "thinking", description: "Set thinking level", argumentHint: "<level>" },
 	{ name: "scoped-models", description: "Enable/disable models for ctrl+p cycling" },
-	{ name: "fast", description: "Configure OpenAI fast mode for chat and workflows in supported models" },
+	{ name: "fast", description: "Configure fast mode for chat and workflows on supported models" },
 	{ name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)" },
 	{ name: "import", description: "Import and resume a session from a JSONL file" },
 	{ name: "share", description: "Share session as a secret GitHub gist" },
@@ -326,11 +321,6 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "name", description: "Set session display name" },
 	{ name: "session", description: "Show session info and stats" },
 	{ name: "changelog", description: "Show changelog entries" },
-	{
-		name: ATOMIC_GUIDE_COMMAND_NAME,
-		description: ATOMIC_GUIDE_COMMAND_DESCRIPTION,
-		getArgumentCompletions: getAtomicGuideArgumentCompletions,
-	},
 	{ name: "hotkeys", description: "Show all keyboard shortcuts" },
 	{ name: "fork", description: "Create a new fork from a previous user message" },
 	{ name: "clone", description: "Duplicate the current session at the current position" },

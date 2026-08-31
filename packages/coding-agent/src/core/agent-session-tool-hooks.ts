@@ -1,4 +1,5 @@
-import type { PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
+import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
+
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
@@ -95,6 +96,20 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		(this.agent.prepareNextTurn
 			? async (_turn: PrepareNextTurnContext, signal?: AbortSignal) => await this.agent.prepareNextTurn?.(signal)
 			: undefined);
+
+	const previousShouldStopAfterTurn = this.agent.shouldStopAfterTurn;
+	this.agent.shouldStopAfterTurn = async (turn, signal) => {
+		const toolCallIds = turn.message.content.filter((part) => part.type === "toolCall").map((part) => part.id);
+		const terminatingBatch =
+			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
+		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
+
+		const shouldStop = (await previousShouldStopAfterTurn?.(turn, signal)) ?? false;
+		this._stopAfterTurnBlockedContinuation = shouldStop;
+		await settleFallbackAfterTurn(this, turn, terminatingBatch);
+		return shouldStop;
+	};
+
 	const previousTransformContext = this.agent.transformContext;
 	this.agent.transformContext = async (messages, signal) => {
 		const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
@@ -104,37 +119,23 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		assertToolPairingInvariant(guarded);
 		return guarded;
 	};
-	this.agent.prepareNextTurnWithContext = async (turn, signal) => {
-		const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
-		const previousContext = previousSnapshot?.context ?? turn.context;
-		const toolCallIds = turn.message.content.filter((part) => part.type === "toolCall").map((part) => part.id);
-		const terminatingBatch =
-			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
-		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
-		const messages =
-			turn.toolResults.length > 0 && !terminatingBatch
-				? await this._preflightPostToolContext(previousContext.messages, signal)
-				: previousContext.messages;
 
-		// Settle before queued follow-up messages are polled, but keep the fallback
-		// lifecycle open for deceptive completions that event processing must retry
-		// on the same model (safety refusal, empty completion, or length truncation).
-		const preserveFallbackForFailure =
-			turn.message.role === "assistant" &&
-			!this.agent.hasQueuedMessages() &&
-			(turn.message.stopReason === "length" ||
-				this._isEmptyCompletion?.(turn.message) === true ||
-				this._isSafetyRefusal?.(turn.message) === true);
-		if (!preserveFallbackForFailure && (turn.toolResults.length === 0 || terminatingBatch)) {
-			await this._agentEventQueue;
-			await this._settleFallbackModelScope();
-		}
+	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {
+		const compactedMessages =
+			turn.toolResults.length > 0
+				? await this._preflightPostToolContext(turn.context.messages, signal)
+				: turn.context.messages;
+		const compactedContext =
+			compactedMessages === turn.context.messages ? turn.context : { ...turn.context, messages: compactedMessages };
+		const preparedTurn = compactedContext === turn.context ? turn : { ...turn, context: compactedContext };
+		const previousSnapshot = await previousPrepareNextTurnWithContext?.(preparedTurn, signal);
+		const previousContext = previousSnapshot?.context ?? compactedContext;
 
 		return {
 			...previousSnapshot,
 			context: {
 				...previousContext,
-				messages,
+				messages: previousContext.messages,
 				systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
 				tools: this.agent.state.tools.slice(),
 			},
@@ -142,6 +143,30 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 			thinkingLevel: this.agent.state.thinkingLevel,
 		};
 	};
+
+	// pi-agent-core 0.84.4 runs the stop hook before queue polling and invokes
+	// preparation only after that polling establishes that another turn will run.
+	this.agent.prepareNextTurnWithContext = prepareTurn;
+}
+
+async function settleFallbackAfterTurn(
+	session: AgentSession,
+	turn: PrepareNextTurnContext,
+	terminatingBatch: boolean,
+): Promise<void> {
+	// Settle before queued follow-up messages are polled, but keep the fallback
+	// lifecycle open for deceptive completions that event processing must retry
+	// on the same model (safety refusal, empty completion, or length truncation).
+	const preserveFallbackForFailure =
+		turn.message.role === "assistant" &&
+		!session.agent.hasQueuedMessages() &&
+		(turn.message.stopReason === "length" ||
+			session._isEmptyCompletion?.(turn.message) === true ||
+			session._isSafetyRefusal?.(turn.message) === true);
+	if (!preserveFallbackForFailure && (turn.toolResults.length === 0 || terminatingBatch)) {
+		await session._agentEventQueue;
+		await session._settleFallbackModelScope();
+	}
 }
 
 export const agentSessionToolHooksMethods = {

@@ -137,6 +137,37 @@ describe("post-tool compaction preflight", () => {
 		assert.equal(harness.session.compactionReason, undefined);
 	});
 
+	it("includes steering queued during post-tool compaction in the resumed request", async () => {
+		const gate = createPostToolCompactionGate();
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-post-tool-steering", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				"completed after steering",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [gate.factory],
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		const prompt = harness.session.prompt(longPrompt);
+		await gate.started;
+		await harness.session.steer("change direction");
+		gate.release();
+		await prompt;
+
+		expect(harness.eventsOfType("agent_start")).toHaveLength(1);
+		expect(JSON.stringify(harness.faux.contexts[1]?.messages)).toContain("change direction");
+		expect(harness.faux.callCount).toBe(2);
+	});
+
 	it("lets manual compaction take over a gated post-tool preflight", async () => {
 		const gate = createPostToolCompactionGate();
 		const harness = await createHarnessWithExtensions({
@@ -430,6 +461,685 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.faux.callCount).toBe(1);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
 		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+	});
+
+	it("checks stop before skipping preparation for a terminating tool batch", async () => {
+		const order: string[] = [];
+		let stopContext:
+			| Parameters<NonNullable<import("@earendil-works/pi-agent-core").Agent["shouldStopAfterTurn"]>>[0]
+			| undefined;
+		const harness = await createHarnessWithExtensions({
+			responses: [{ toolCalls: [{ id: "call-terminate-order", name: "large_result", args: {} }] }],
+			baseToolsOverride: { large_result: terminatingLargeResultTool },
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = (context) => {
+					order.push("shouldStopAfterTurn");
+					stopContext = context;
+					return false;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					order.push("prepareNextTurnWithContext");
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("terminate after the tool");
+
+		expect(order).toEqual(["shouldStopAfterTurn"]);
+		expect(harness.faux.callCount).toBe(1);
+		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
+		expect(stopContext?.message.content).toEqual([
+			expect.objectContaining({ type: "toolCall", id: "call-terminate-order" }),
+		]);
+		expect(stopContext?.toolResults).toHaveLength(1);
+		expect(stopContext?.context.messages.at(-1)).toMatchObject({
+			role: "toolResult",
+			toolCallId: "call-terminate-order",
+		});
+	});
+
+	it("keeps the completed-turn stop result across an out-of-band stop call", async () => {
+		let agent!: import("@earendil-works/pi-agent-core").Agent;
+		let completedTurnStopCalls = 0;
+		let outOfBandStopCalls = 0;
+		let outOfBandResult: boolean | undefined;
+		const harness = await createHarnessWithExtensions({
+			responses: [
+				{ toolCalls: [{ id: "call-out-of-band-stop", name: "large_result", args: {} }] },
+				"completed after preparation",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			configureAgent: (configuredAgent) => {
+				agent = configuredAgent;
+				agent.shouldStopAfterTurn = (context) => {
+					if (context.newMessages === outOfBandContext?.newMessages) {
+						outOfBandStopCalls++;
+						return true;
+					}
+					completedTurnStopCalls++;
+					return false;
+				};
+				agent.prepareNextTurnWithContext = async (context) => {
+					outOfBandContext = { ...context, newMessages: context.newMessages.slice() };
+					outOfBandResult = await agent.shouldStopAfterTurn?.(outOfBandContext);
+					return undefined;
+				};
+			},
+		});
+		let outOfBandContext: import("@earendil-works/pi-agent-core").ShouldStopAfterTurnContext | undefined;
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("run the tool and continue");
+
+		expect(outOfBandResult).toBe(true);
+		expect(outOfBandStopCalls).toBe(1);
+		expect(completedTurnStopCalls).toBe(2);
+		expect(harness.faux.callCount).toBe(2);
+	});
+
+	it("compacts before caller preparation and preserves the caller's complete replacement context", async () => {
+		const preparedEarlierSentinel = "[caller-prepared earlier context]";
+		const preparedTailOne = "[caller-prepared tail one]";
+		const preparedTailTwo = "[caller-prepared tail two]";
+		const order: string[] = [];
+		let toolTurnStopCalls = 0;
+		let finalTurnStopCalls = 0;
+		let prepareCalls = 0;
+		let completedTurnContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let completedTurnSnapshot = "";
+		let callerInputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let callerOutputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let compactionInput = "";
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-continue-order", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				{ text: "completed after preparation", beforeEmit: () => order.push("provider") },
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", () => {
+						order.push("compaction");
+						return { compactedText: "[User]: retained" };
+					});
+				},
+			],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = (context) => {
+					if (context.toolResults.length > 0) {
+						toolTurnStopCalls++;
+						completedTurnContext = context.context;
+						completedTurnSnapshot = JSON.stringify(context.context.messages);
+						order.push("shouldStopAfterTurn");
+					} else {
+						finalTurnStopCalls++;
+					}
+					return false;
+				};
+				agent.prepareNextTurnWithContext = (context) => {
+					prepareCalls++;
+					order.push("prepareNextTurnWithContext");
+					callerInputContext = context.context;
+					const compactedInput = JSON.stringify(context.context.messages);
+					expect(compactedInput).toContain("[User]: retained");
+					expect(compactedInput).not.toContain(preparedEarlierSentinel);
+					const preparedMessages: import("@earendil-works/pi-agent-core").AgentMessage[] = [
+						{
+							role: "user",
+							content: [{ type: "text", text: preparedEarlierSentinel }],
+							timestamp: 1,
+						},
+						...context.context.messages,
+						{
+							role: "user",
+							content: [{ type: "text", text: preparedTailOne }],
+							timestamp: 2,
+						},
+						{
+							role: "user",
+							content: [{ type: "text", text: preparedTailTwo }],
+							timestamp: 3,
+						},
+					];
+					callerOutputContext = { ...context.context, messages: preparedMessages };
+					expect(callerOutputContext).not.toBe(context.context);
+					expect(preparedMessages).not.toBe(context.context.messages);
+					return { context: callerOutputContext };
+				};
+			},
+		});
+		const internal = harness.session as unknown as {
+			_preflightPostToolContext(
+				messages: import("@earendil-works/pi-agent-core").AgentMessage[],
+				signal?: AbortSignal,
+			): Promise<import("@earendil-works/pi-agent-core").AgentMessage[]>;
+		};
+		const originalPreflight = internal._preflightPostToolContext.bind(harness.session);
+		internal._preflightPostToolContext = async (messages, signal) => {
+			compactionInput = JSON.stringify(messages);
+			return originalPreflight(messages, signal);
+		};
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt(longPrompt);
+
+		expect(order).toEqual(["shouldStopAfterTurn", "compaction", "prepareNextTurnWithContext", "provider"]);
+		expect(compactionInput).not.toContain(preparedEarlierSentinel);
+		expect(toolTurnStopCalls).toBe(1);
+		expect(finalTurnStopCalls).toBe(1);
+		expect(prepareCalls).toBe(1);
+		const resumedText = JSON.stringify(harness.faux.contexts[1]?.messages);
+		expect(resumedText).toContain(preparedEarlierSentinel);
+		expect(resumedText).toContain("[User]: retained");
+		expect(resumedText).toContain(preparedTailOne);
+		expect(resumedText).toContain(preparedTailTwo);
+		expect(resumedText.indexOf(preparedEarlierSentinel)).toBeLessThan(resumedText.indexOf(preparedTailOne));
+		expect(JSON.stringify(completedTurnContext?.messages)).toBe(completedTurnSnapshot);
+		expect(JSON.stringify(completedTurnContext?.messages)).not.toContain(preparedEarlierSentinel);
+		expect(JSON.stringify(callerInputContext?.messages)).not.toContain(preparedEarlierSentinel);
+		expect(JSON.stringify(callerOutputContext?.messages)).toContain(preparedEarlierSentinel);
+	});
+
+	it("passes the compacted visible tool pair through caller preparation while excluding hidden additions", async () => {
+		const preparedVisibleSentinel = "[caller prepared visible message]";
+		const excludedTailSentinel = "[excluded prepared tail]";
+		let callerInputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let compactionInput = "";
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-visible-tail", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				"completed after visible-tail compaction",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [compactOffline],
+			configureAgent: (agent) => {
+				agent.prepareNextTurnWithContext = (context) => {
+					callerInputContext = context.context;
+					const compactedText = JSON.stringify(context.context.messages);
+					expect(compactedText).toContain("[Assistant tool calls]: large_result()");
+					expect(compactedText).toContain("[Tool result]: ");
+					return {
+						context: {
+							...context.context,
+							messages: [
+								...context.context.messages,
+								{
+									role: "user",
+									content: [{ type: "text", text: preparedVisibleSentinel }],
+									timestamp: 1,
+								},
+								{
+									role: "custom",
+									customType: "excluded-prepared-tail",
+									content: excludedTailSentinel,
+									display: false,
+									excludeFromContext: true,
+									timestamp: 2,
+								},
+							],
+						},
+					};
+				};
+			},
+		});
+		const internal = harness.session as unknown as {
+			_preflightPostToolContext(
+				messages: import("@earendil-works/pi-agent-core").AgentMessage[],
+				signal?: AbortSignal,
+			): Promise<import("@earendil-works/pi-agent-core").AgentMessage[]>;
+		};
+		const originalPreflight = internal._preflightPostToolContext.bind(harness.session);
+		internal._preflightPostToolContext = async (messages, signal) => {
+			compactionInput = JSON.stringify(messages);
+			return originalPreflight(messages, signal);
+		};
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt(longPrompt);
+
+		expect(compactionInput).not.toContain(preparedVisibleSentinel);
+		expect(compactionInput).not.toContain(excludedTailSentinel);
+		const resumedText = JSON.stringify(harness.faux.contexts[1]?.messages);
+		expect(resumedText).toContain("[Assistant tool calls]: large_result()");
+		expect(resumedText).toContain("[Tool result]: ");
+		expect(resumedText).toContain(preparedVisibleSentinel);
+		expect(resumedText).not.toContain(excludedTailSentinel);
+		expect(JSON.stringify(callerInputContext?.messages)).not.toContain(preparedVisibleSentinel);
+		expect(JSON.stringify(callerInputContext?.messages)).not.toContain(excludedTailSentinel);
+	});
+
+	it("skips preparation when the stop callback ends the run", async () => {
+		let stopCalls = 0;
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			responses: ["finished"],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = () => {
+					stopCalls++;
+					return true;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("finish without a tool");
+
+		expect(stopCalls).toBe(1);
+		expect(prepareCalls).toBe(0);
+		expect(harness.faux.callCount).toBe(1);
+	});
+
+	it.each(["steer", "followUp"] as const)(
+		"preserves queued %s work without continuing after the stop callback ends the run",
+		async (delivery) => {
+			let signalStopStarted!: () => void;
+			const stopStarted = new Promise<void>((resolve) => {
+				signalStopStarted = resolve;
+			});
+			let releaseStop!: () => void;
+			const stopReleased = new Promise<void>((resolve) => {
+				releaseStop = resolve;
+			});
+			let stopCalls = 0;
+			const harness = await createHarnessWithExtensions({
+				responses: ["finished", "explicit run completed", "follow-up completed"],
+				configureAgent: (agent) => {
+					agent.shouldStopAfterTurn = async () => {
+						stopCalls++;
+						if (stopCalls > 1) return false;
+						signalStopStarted();
+						await stopReleased;
+						return true;
+					};
+				},
+			});
+			harnesses.push(harness);
+			await wireHarness(harness);
+
+			const prompt = harness.session.prompt("finish at the stop boundary");
+			await stopStarted;
+			await harness.session[delivery]("queued during the stop callback");
+			releaseStop();
+			await prompt;
+
+			expect(harness.faux.callCount).toBe(1);
+			const queuedMessages = () =>
+				delivery === "steer" ? harness.session.getSteeringMessages() : harness.session.getFollowUpMessages();
+			expect(queuedMessages()).toEqual(["queued during the stop callback"]);
+
+			await harness.session.prompt("explicitly start a new run");
+
+			expect(harness.faux.callCount).toBe(delivery === "steer" ? 2 : 3);
+			expect(queuedMessages()).toEqual([]);
+		},
+	);
+
+	it("checks stop once and skips preparation after a final response with no queued work", async () => {
+		let stopCalls = 0;
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			responses: ["finished"],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = () => {
+					stopCalls++;
+					return false;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("finish without queued work");
+
+		expect(stopCalls).toBe(1);
+		expect(prepareCalls).toBe(0);
+		expect(harness.faux.callCount).toBe(1);
+	});
+
+	it("consumes the completed-turn stop cache at the dependency handoff", async () => {
+		let stopCalls = 0;
+		let completedTurn: import("@earendil-works/pi-agent-core").ShouldStopAfterTurnContext | undefined;
+		const harness = await createHarnessWithExtensions({
+			responses: ["finished"],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = (context) => {
+					stopCalls++;
+					completedTurn = context;
+					return stopCalls > 1;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("finish and consume the cached stop result");
+
+		expect(stopCalls).toBe(1);
+		expect(completedTurn).toBeDefined();
+		const freshResult = await harness.agent.shouldStopAfterTurn?.(completedTurn!);
+		expect(freshResult).toBe(true);
+		expect(stopCalls).toBe(2);
+	});
+
+	it("clears the completed-turn stop cache when preparation rejects before dependency handoff", async () => {
+		let stopCalls = 0;
+		let prepareCalls = 0;
+		let completedTurn: import("@earendil-works/pi-agent-core").ShouldStopAfterTurnContext | undefined;
+		const harness = await createHarnessWithExtensions({
+			responses: [
+				{ toolCalls: [{ id: "call-rejected-preparation", name: "large_result", args: {} }] },
+				"later run completed",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = (context) => {
+					stopCalls++;
+					completedTurn ??= context;
+					return stopCalls > 1;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					throw new Error("caller preparation failed");
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("run the tool before preparation fails");
+		expect(harness.session.messages.at(-1)).toMatchObject({
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: "caller preparation failed",
+		});
+
+		expect(stopCalls).toBe(1);
+		expect(prepareCalls).toBe(1);
+		expect(completedTurn).toBeDefined();
+		const freshResult = await harness.agent.shouldStopAfterTurn?.(completedTurn!);
+		expect(freshResult).toBe(true);
+		expect(stopCalls).toBe(2);
+
+		await harness.session.prompt("start a clean later run");
+		expect(harness.faux.callCount).toBe(2);
+		expect(stopCalls).toBe(3);
+	});
+
+	it("prepares a final response only when queued steering creates another turn", async () => {
+		let markResponseStarted!: () => void;
+		const responseStarted = new Promise<void>((resolve) => {
+			markResponseStarted = resolve;
+		});
+		let releaseResponse!: () => void;
+		const responseReleased = new Promise<void>((resolve) => {
+			releaseResponse = resolve;
+		});
+
+		const order: string[] = [];
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			responses: [
+				{
+					text: "first response",
+					beforeEmit: async () => {
+						markResponseStarted();
+						await responseReleased;
+					},
+				},
+				"response after steering",
+			],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = () => {
+					order.push("shouldStopAfterTurn");
+					return false;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					order.push("prepareNextTurnWithContext");
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		const prompt = harness.session.prompt("finish, unless steering is queued");
+		await responseStarted;
+		await harness.session.steer("continue with this direction");
+		releaseResponse();
+		await prompt;
+
+		expect(order).toEqual(["shouldStopAfterTurn", "prepareNextTurnWithContext", "shouldStopAfterTurn"]);
+		expect(prepareCalls).toBe(1);
+		expect(harness.faux.callCount).toBe(2);
+		expect(JSON.stringify(harness.faux.contexts[1]?.messages)).toContain("continue with this direction");
+	});
+
+	it.each([
+		["steering", "steer"],
+		["follow-up", "followUp"],
+	] as const)(
+		"prepares %s admitted after final-turn settlement before the dependency polls its queue",
+		async (_label, delivery) => {
+			const order: string[] = [];
+			const preparedLateSentinel = `[prepared before late ${delivery}]`;
+			let prepareCalls = 0;
+			const harness = await createHarnessWithExtensions({
+				responses: [
+					"first response",
+					{ text: `response after late ${delivery}`, beforeEmit: () => order.push("provider") },
+				],
+				configureAgent: (agent) => {
+					agent.shouldStopAfterTurn = () => {
+						order.push("shouldStopAfterTurn");
+						return false;
+					};
+					agent.prepareNextTurnWithContext = (context) => {
+						prepareCalls++;
+						order.push("prepareNextTurnWithContext");
+						return {
+							context: {
+								...context.context,
+								messages: [
+									...context.context.messages,
+									{
+										role: "user",
+										content: [{ type: "text", text: preparedLateSentinel }],
+										timestamp: 1,
+									},
+								],
+							},
+						};
+					};
+				},
+			});
+			harnesses.push(harness);
+			await wireHarness(harness);
+
+			const installedShouldStop = harness.agent.shouldStopAfterTurn;
+			let admitted = false;
+			harness.agent.shouldStopAfterTurn = async (context, signal) => {
+				const shouldStop = (await installedShouldStop?.(context, signal)) ?? false;
+				if (!admitted) {
+					admitted = true;
+					order.push("lateAdmission");
+					await harness.session[delivery](`late ${delivery} after final queue check`);
+				}
+				return shouldStop;
+			};
+
+			await harness.session.prompt(`finish, unless ${delivery} arrives after settlement`);
+
+			expect(order).toEqual([
+				"shouldStopAfterTurn",
+				"lateAdmission",
+				"prepareNextTurnWithContext",
+				"provider",
+				"shouldStopAfterTurn",
+			]);
+			expect(prepareCalls).toBe(1);
+			expect(harness.faux.callCount).toBe(2);
+			const resumedContext = JSON.stringify(harness.faux.contexts[1]?.messages);
+			expect(resumedContext).toContain(preparedLateSentinel);
+			expect(resumedContext).toContain(`late ${delivery} after final queue check`);
+		},
+	);
+	it("prepares late steering after a terminating tool batch before the dependency polls its queue", async () => {
+		const order: string[] = [];
+		const preparedLateSentinel = "[prepared after terminating batch]";
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			responses: [
+				{ toolCalls: [{ id: "call-terminate-late-steer", name: "large_result", args: {} }] },
+				{ text: "response after terminating batch steering", beforeEmit: () => order.push("provider") },
+			],
+			baseToolsOverride: { large_result: terminatingLargeResultTool },
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = () => {
+					order.push("shouldStopAfterTurn");
+					return false;
+				};
+				agent.prepareNextTurnWithContext = (context) => {
+					prepareCalls++;
+					order.push("prepareNextTurnWithContext");
+					return {
+						context: {
+							...context.context,
+							messages: [
+								...context.context.messages,
+								{
+									role: "user",
+									content: [{ type: "text", text: preparedLateSentinel }],
+									timestamp: 1,
+								},
+							],
+						},
+					};
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		const installedShouldStop = harness.agent.shouldStopAfterTurn;
+		let admitted = false;
+		harness.agent.shouldStopAfterTurn = async (context, signal) => {
+			const shouldStop = (await installedShouldStop?.(context, signal)) ?? false;
+			if (!admitted) {
+				admitted = true;
+				order.push("lateAdmission");
+				await harness.session.steer("continue after the terminating batch");
+			}
+			return shouldStop;
+		};
+
+		await harness.session.prompt("run the terminating tool");
+
+		expect(order).toEqual([
+			"shouldStopAfterTurn",
+			"lateAdmission",
+			"prepareNextTurnWithContext",
+			"provider",
+			"shouldStopAfterTurn",
+		]);
+		expect(prepareCalls).toBe(1);
+		expect(harness.faux.callCount).toBe(2);
+		const resumedContext = JSON.stringify(harness.faux.contexts[1]?.messages);
+		expect(resumedContext).toContain(preparedLateSentinel);
+		expect(resumedContext).toContain("continue after the terminating batch");
+	});
+
+	it.each([
+		["steering", "steer"],
+		["follow-up", "followUp"],
+	] as const)("prepares late %s admitted during fallback settlement", async (_label, delivery) => {
+		let markQueueSnapshotTaken!: () => void;
+		const queueSnapshotTaken = new Promise<void>((resolve) => {
+			markQueueSnapshotTaken = resolve;
+		});
+		let releaseSettlement!: () => void;
+		const settlementReleased = new Promise<void>((resolve) => {
+			releaseSettlement = resolve;
+		});
+		let installSettlementGate!: () => void;
+		const order: string[] = [];
+		let stopChecks = 0;
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			responses: [
+				{ text: "first response", beforeEmit: () => installSettlementGate() },
+				`response after late ${delivery}`,
+			],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = () => {
+					stopChecks++;
+					order.push("shouldStopAfterTurn");
+					return false;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					order.push("prepareNextTurnWithContext");
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+		const internal = harness.session as unknown as { _agentEventQueue: Promise<void> };
+		installSettlementGate = () => {
+			internal._agentEventQueue = internal._agentEventQueue.then(() => settlementReleased);
+		};
+		const hasQueuedMessages = harness.agent.hasQueuedMessages.bind(harness.agent);
+		let snapshotMarked = false;
+		harness.agent.hasQueuedMessages = () => {
+			const hasQueued = hasQueuedMessages();
+			if (stopChecks === 1 && !snapshotMarked) {
+				snapshotMarked = true;
+				markQueueSnapshotTaken();
+			}
+			return hasQueued;
+		};
+
+		const prompt = harness.session.prompt("finish, unless a message arrives while fallback settles");
+		await queueSnapshotTaken;
+		await harness.session[delivery](`late ${delivery}`);
+		expect(harness.agent.hasQueuedMessages()).toBe(true);
+		releaseSettlement();
+		await prompt;
+
+		expect(order).toEqual(["shouldStopAfterTurn", "prepareNextTurnWithContext", "shouldStopAfterTurn"]);
+		expect(prepareCalls).toBe(1);
+		expect(harness.faux.callCount).toBe(2);
+		expect(JSON.stringify(harness.faux.contexts[1]?.messages)).toContain(`late ${delivery}`);
 	});
 
 	it("does not compact an all-blocked terminating batch", async () => {

@@ -3,7 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { existsSync } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
 import { join } from "path";
-import { getSessionsDir } from "../config.ts";
+import { getSessionsDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";

@@ -10,7 +10,7 @@ export const ONBOARDING_COPY = [
 	"",
 	"Type a message or slash command below to continue normally.",
 	"If you have not connected a provider yet, run `/login` first.",
-	"Run `/atomic` for guides or `/workflow list` to see built-in workflows.",
+	"Run `/workflow list` to see built-in workflows.",
 ].join("\n");
 
 InteractiveModeBase.prototype.initializeFirstRunOnboardingMarkers = function (this: InteractiveModeBase): void {

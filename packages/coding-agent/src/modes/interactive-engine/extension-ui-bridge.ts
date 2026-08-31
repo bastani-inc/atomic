@@ -3,7 +3,7 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
-import type { RpcAutocompleteItem, RpcSlashCommand } from "../rpc/rpc-types.ts";
+import type { RpcAutocompleteItem, RpcResourceExtension, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { EngineDialogHostController } from "./engine-dialog-host.ts";
 import { InputFormHostController } from "./input-form-host.ts";
@@ -133,6 +133,17 @@ export function getInteractiveEngineRemoteCommands(runtime: AgentSessionRuntime)
 
 export function getInteractiveEngineResourceOverlaps(runtime: AgentSessionRuntime): readonly ResourceOverlap[] {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceOverlaps() : [];
+}
+
+export function getInteractiveEngineResourceExtensions(runtime: AgentSessionRuntime): readonly RpcResourceExtension[] {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceExtensions() : [];
+}
+
+export function onInteractiveEngineResourceExtensionsChanged(
+	runtime: AgentSessionRuntime,
+	listener: (extensions: readonly RpcResourceExtension[]) => void,
+): () => void {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onResourceExtensionsChanged(listener) : () => {};
 }
 
 /** Evaluate an engine-child command's live argument completions. */

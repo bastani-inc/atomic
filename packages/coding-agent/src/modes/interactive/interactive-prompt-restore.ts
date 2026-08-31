@@ -1,3 +1,4 @@
+import { isInteractiveEngineResourceReadinessError } from "../interactive-engine/resource-readiness-error.ts";
 import { isRpcRequestAcceptedFailure, isRpcTransportFailure } from "../rpc/rpc-transport-error.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 
@@ -56,7 +57,7 @@ export interface PromptDraftRestoreTarget {
  */
 export function restoreUnsentPromptDraft(error: unknown, target: PromptDraftRestoreTarget): boolean {
 	if (target.turnStarted) return false;
-	if (!isEngineSendFailure(error)) return false;
+	if (!isEngineSendFailure(error) && !isInteractiveEngineResourceReadinessError(error)) return false;
 	target.setEditorText(mergeRestoredDraft(target.draft, target.getEditorText()));
 	// Never steal focus from a modal that took over while the send was pending.
 	if (target.editorOwnsInput()) target.focusEditor();

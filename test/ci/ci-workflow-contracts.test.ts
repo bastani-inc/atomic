@@ -76,7 +76,7 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 	assert.match(await readText(join(root, ".github/workflows/test.yml")), /run-flaky-test-suite\.ts/u);
 });
 
-test("global setups: artifacts everywhere, natives on unit and integration only", async () => {
+test("global setups provide artifacts and native bindings to every project", async () => {
 	const config = (await import("../../vitest.config.js")) as {
 		default: {
 			test?: {
@@ -87,7 +87,7 @@ test("global setups: artifacts everywhere, natives on unit and integration only"
 	const projects = config.default.test?.projects ?? [];
 	const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 	const nativeSetup = "./test/global-setup-natives.ts";
-	for (const name of ["unit", "integration"]) {
+	for (const name of ["unit", "integration", "ci"]) {
 		const project = projects.find((entry) => entry.test?.name === name);
 		assert.ok(project, `missing vitest project: ${name}`);
 		assert.deepEqual(
@@ -96,14 +96,6 @@ test("global setups: artifacts everywhere, natives on unit and integration only"
 			`${name} must keep the artifact and native global setups`,
 		);
 	}
-
-	// The artifact setup must cover every project: workers inherit the env var
-	// from the orchestrator, which is what keeps per-worker temp dirs from
-	// leaking. The native build stays off the ci project, which only inspects
-	// workflow and source state.
-	const ci = projects.find((entry) => entry.test?.name === "ci");
-	assert.ok(ci, "missing vitest project: ci");
-	assert.deepEqual(ci.test?.globalSetup, [artifactSetup], "ci runs the artifact setup but not the native build");
 });
 
 /**
@@ -510,6 +502,16 @@ test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asse
 	assert.match(workflow, /npm run check:shrinkwrap/);
 	assert.match(workflow, /Build Linux x64 archive[\s\S]*--platform linux-x64/);
 	assert.match(workflow, /Build Windows x64 archive[\s\S]*--platform windows-x64/);
+	// Bun 1.4.0 Windows bytecode launchers crash unless compiled on a Windows
+	// host, so the Windows runner builds both shipped archives and the Linux
+	// payload build must not compile Windows targets itself.
+	assert.match(workflow, /Build Windows arm64 archive[\s\S]*--platform windows-arm64/);
+	assert.match(workflow, /Build release archives\n\s+run: \.\/scripts\/build-binaries\.sh [^\n]*--skip-windows/);
+	assert.match(workflow, /name: atomic-windows-archives/);
+	assert.match(
+		jobBlock(workflow, "build", "stage-github-release"),
+		/Stage Windows-built release archives[\s\S]*name: atomic-windows-archives[\s\S]*path: packages\/coding-agent\/binaries/,
+	);
 	assert.match(workflow, /Failed to load extension/);
 	assert.match(workflow, /native optionalDependencies must be the eight exact-version platform packages/u);
 	assert.match(workflow, /test .* = 11/u);

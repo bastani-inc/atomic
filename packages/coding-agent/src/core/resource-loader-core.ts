@@ -1,7 +1,7 @@
 import type { Theme } from "../modes/interactive/theme/theme.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
-import { createEventBus, type EventBus } from "./event-bus.ts";
+import { createEventBus, createStagedEventBus, type EventBus } from "./event-bus.ts";
 import { createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
@@ -26,6 +26,7 @@ import type {
 	ResourceExtensionPaths,
 	ResourceLoader,
 	ResourceLoaderReloadOptions,
+	ResourceLoaderReloadTransaction,
 } from "./resource-loader-types.ts";
 import { type PackageSource, SettingsManager } from "./settings-manager.ts";
 import { buildSkillCatalog, type SkillCatalog } from "./skill-catalog.ts";
@@ -300,6 +301,99 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
 		return reloadDefaultResourceLoader(this, options);
+	}
+	async prepareReload(
+		settingsManager: SettingsManager,
+		options?: ResourceLoaderReloadOptions,
+	): Promise<ResourceLoaderReloadTransaction> {
+		const eventBusTransaction = createStagedEventBus(this.eventBus);
+		const candidate = new DefaultResourceLoader({
+			cwd: this.cwd,
+			agentDir: this.agentDir,
+			settingsManager,
+			eventBus: eventBusTransaction.bus,
+			additionalExtensionPaths: [...this.additionalExtensionPaths],
+			additionalSkillPaths: [...this.additionalSkillPaths],
+			additionalPromptTemplatePaths: [...this.additionalPromptTemplatePaths],
+			additionalThemePaths: [...this.additionalThemePaths],
+			builtinPackagePaths: clonePackageSources(this.builtinPackagePaths),
+			extensionFactories: [...this.extensionFactories],
+			noExtensions: this.noExtensions,
+			noSkills: this.noSkills,
+			noPromptTemplates: this.noPromptTemplates,
+			noThemes: this.noThemes,
+			noContextFiles: this.noContextFiles,
+			systemPrompt: this.systemPromptSource,
+			appendSystemPrompt: this.appendSystemPromptSource,
+			extensionsOverride: this.extensionsOverride,
+			skillsOverride: this.skillsOverride,
+			promptsOverride: this.promptsOverride,
+			themesOverride: this.themesOverride,
+			agentsFilesOverride: this.agentsFilesOverride,
+			systemPromptOverride: this.systemPromptOverride,
+			appendSystemPromptOverride: this.appendSystemPromptOverride,
+			resourceLoaderInheritanceSnapshot: {
+				trustedBorrowedProjectLocalSources:
+					this.trustedBorrowedProjectLocalSources === undefined
+						? undefined
+						: [...this.trustedBorrowedProjectLocalSources],
+			},
+		});
+		await candidate.reload(options);
+		const prepareCommit = () => {
+			const eventBusCommit = eventBusTransaction.prepareCommit();
+			let settled = false;
+			return {
+				commit: () => {
+					if (settled) return;
+					settled = true;
+					eventBusCommit.commit();
+					this.publishCandidate(candidate);
+				},
+				rollback: () => {
+					if (settled) return;
+					settled = true;
+					eventBusCommit.rollback();
+				},
+			};
+		};
+		return {
+			loader: candidate,
+			activate: (liveSettingsManager) => candidate.replaceSettingsManager(liveSettingsManager),
+			prepareCommit,
+			commit: () => prepareCommit().commit(),
+		};
+	}
+
+	private replaceSettingsManager(settingsManager: SettingsManager): void {
+		this.settingsManager = settingsManager;
+		this.packageManager = new DefaultPackageManager({ cwd: this.cwd, agentDir: this.agentDir, settingsManager });
+	}
+
+	private publishCandidate(candidate: DefaultResourceLoader): void {
+		this.extensionsResult = candidate.extensionsResult;
+		this.skills = candidate.skills;
+		this.skillDiagnostics = candidate.skillDiagnostics;
+		this.skillCatalog = candidate.skillCatalog;
+		this.prompts = candidate.prompts;
+		this.promptDiagnostics = candidate.promptDiagnostics;
+		this.themes = candidate.themes;
+		this.themeDiagnostics = candidate.themeDiagnostics;
+		this.agentsFiles = candidate.agentsFiles;
+		this.systemPrompt = candidate.systemPrompt;
+		this.systemPromptSourcePath = candidate.systemPromptSourcePath;
+		this.appendSystemPrompt = candidate.appendSystemPrompt;
+		this.appendSystemPromptSourcePaths = candidate.appendSystemPromptSourcePaths;
+		this.workflowResources = candidate.workflowResources;
+		this.trustedBorrowedProjectLocalSources = candidate.trustedBorrowedProjectLocalSources;
+		this.lastSkillPaths = candidate.lastSkillPaths;
+		this.extensionSkillSourceInfos = candidate.extensionSkillSourceInfos;
+		this.resourceMetadataByPath = candidate.resourceMetadataByPath;
+		this.extensionPromptSourceInfos = candidate.extensionPromptSourceInfos;
+		this.extensionThemeSourceInfos = candidate.extensionThemeSourceInfos;
+		this.lastPromptPaths = candidate.lastPromptPaths;
+		this.lastThemePaths = candidate.lastThemePaths;
+		this.loaded = candidate.loaded;
 	}
 
 	private touchInternalFieldsForSplit(): void {

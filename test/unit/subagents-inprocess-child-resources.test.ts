@@ -381,19 +381,20 @@ describe("in-process child session resources", () => {
 	);
 
 	test(
-		"dropping the bundled package roots leaves a child with no bundled tool at all",
+		"dropping optional bundled package roots still retains mandatory Intercom",
 		async () => {
 			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-nobundled-cwd-");
 			const { session } = await createChildSession({ cwd, agentDir, withoutBundledPackages: true });
 			try {
 				const toolNames = session.getAllTools().map((tool) => tool.name);
-				for (const bundled of ["subagent", "web_search", "fetch_content", "intercom"]) {
+				for (const bundled of ["subagent", "web_search", "fetch_content"]) {
 					assert.equal(
 						toolNames.includes(bundled),
 						false,
-						`expected the pre-fix loader to lose '${bundled}', got: ${toolNames.join(", ")}`,
+						`expected the loader to omit optional '${bundled}', got: ${toolNames.join(", ")}`,
 					);
 				}
+				assert.equal(toolNames.includes("intercom"), true, "mandatory Intercom must survive empty bundled roots");
 			} finally {
 				session.dispose();
 			}

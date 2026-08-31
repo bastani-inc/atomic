@@ -89,6 +89,20 @@ export default function () {
 		expect(second()).toBe("c-edited:b:a");
 	});
 
+	it("re-evaluates and observes new code after the entry file changes directly", async () => {
+		const { entry } = writeChainFixture();
+
+		const first = await loadGated(entry);
+		expect(first()).toBe("c:b:a");
+
+		fs.writeFileSync(entry, `export default function () { return "entry-edited"; }\n`);
+		const second = await loadGated(entry);
+
+		expect(state().evaluations).toBe(1);
+		expect(second).not.toBe(first);
+		expect(second()).toBe("entry-edited");
+	});
+
 	it("re-evaluates and extends the manifest after a new import joins the graph", async () => {
 		const { entry, chainC } = writeChainFixture();
 		const chainD = path.join(path.dirname(chainC), "chain-d.ts");

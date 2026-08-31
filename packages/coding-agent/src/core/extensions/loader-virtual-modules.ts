@@ -4,100 +4,18 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti/static";
-import { getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.ts";
+import { getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
+import { installHostModuleBridge } from "./host-module-bridge.ts";
+import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
+import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
 import type { ExtensionFactory } from "./types.ts";
 
+export { getVirtualModules } from "./loader-host-modules.js";
+
 const require = createRequire(import.meta.url);
-let _virtualModules: Record<string, object> | null = null;
-let _virtualModulesPromise: Promise<Record<string, object>> | null = null;
-
-async function loadVirtualModules(): Promise<Record<string, object>> {
-	const [
-		typebox,
-		typeboxCompile,
-		typeboxValue,
-		piAgentCore,
-		piTui,
-		piTuiLayout,
-		piAi,
-		piAiOauth,
-		piAiCloudflareGatewayBinding,
-		properLockfile,
-		piCodingAgent,
-	] = await Promise.all([
-		import("typebox"),
-		import("typebox/compile"),
-		import("typebox/value"),
-		import("@earendil-works/pi-agent-core"),
-		import("@earendil-works/pi-tui"),
-		import("@earendil-works/pi-tui/dist/layout.js"),
-		// pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
-		// `/compat` (a strict superset). Extensions still `import ... from
-		// "@bastani/pi-ai"`, so we load the compat module here and key it
-		// under the root specifier below to keep every extension working unchanged.
-		import("@bastani/pi-ai/compat"),
-		import("@bastani/pi-ai/oauth"),
-		// Re-exported from `@bastani/atomic`; jiti-loaded extensions (the builtin
-		// packages import the host entry) reach this specifier, so it needs a key
-		// of its own instead of falling through to the compat/root prefix alias.
-		import("@bastani/pi-ai/api/cloudflare-gateway-binding"),
-		// proper-lockfile mutates graceful-fs with a non-configurable cache
-		// symbol. Keep that dependency graph in the compiled host: evaluating it
-		// through Jiti would put its stale-value caching proxy in the middle.
-		import("proper-lockfile"),
-		// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
-		// avoiding a circular dependency while preserving the package-name extension import path.
-		import("../../index.ts"),
-	]);
-
-	return {
-		typebox,
-		"typebox/compile": typeboxCompile,
-		"typebox/value": typeboxValue,
-		"@sinclair/typebox": typebox,
-		"@sinclair/typebox/compile": typeboxCompile,
-		"@sinclair/typebox/value": typeboxValue,
-		"@earendil-works/pi-agent-core": piAgentCore,
-		"@earendil-works/pi-tui": piTui,
-		"@earendil-works/pi-tui/dist/layout.js": piTuiLayout,
-		"@bastani/pi-ai": piAi,
-		"@bastani/pi-ai/compat": piAi,
-		"@bastani/pi-ai/oauth": piAiOauth,
-		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
-		"@earendil-works/pi-ai": piAi,
-		"@earendil-works/pi-ai/compat": piAi,
-		"@earendil-works/pi-ai/oauth": piAiOauth,
-		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
-		"proper-lockfile": properLockfile,
-		"@bastani/atomic": piCodingAgent,
-		"@mariozechner/pi-agent-core": piAgentCore,
-		"@mariozechner/pi-tui": piTui,
-		"@mariozechner/pi-tui/dist/layout.js": piTuiLayout,
-		"@mariozechner/pi-ai": piAi,
-		"@mariozechner/pi-ai/compat": piAi,
-		"@mariozechner/pi-ai/oauth": piAiOauth,
-		"@mariozechner/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
-	};
-}
-
-/** Modules available to extensions via virtualModules (for compiled Bun binary). */
-async function getVirtualModules(): Promise<Record<string, object>> {
-	if (_virtualModules) return _virtualModules;
-	_virtualModulesPromise ??= loadVirtualModules().then(
-		(virtualModules) => {
-			_virtualModules = virtualModules;
-			return virtualModules;
-		},
-		(error: Error) => {
-			_virtualModulesPromise = null;
-			throw error;
-		},
-	);
-	return _virtualModulesPromise;
-}
 let _aliases: Record<string, string> | null = null;
 let _transpileCacheDir: string | null = null;
 
@@ -356,6 +274,41 @@ let extensionCacheCwd: string | undefined;
 let extensionCacheGeneration = 0;
 const extensionCache = new Map<string, ExtensionFactory>();
 
+// Installed builtin bundles are immutable within a running binary. Keep their
+// evaluated factories outside the generation-scoped editable-extension cache.
+const nativeBuiltinFactories = new Map<string, ExtensionFactory>();
+const nativeBuiltinLoads = new Map<string, Promise<ExtensionFactory | undefined>>();
+
+async function loadNativeBuiltinExtensionModule(
+	extensionPath: string,
+	cacheToken: ExtensionCacheToken | undefined,
+): Promise<ExtensionFactory | undefined> {
+	let factory = nativeBuiltinFactories.get(extensionPath);
+	if (!factory) {
+		let pending = nativeBuiltinLoads.get(extensionPath);
+		if (!pending) {
+			pending = (async () => {
+				await installHostModuleBridge();
+				const module = (await import(pathToFileURL(extensionPath).href)) as { default?: unknown };
+				if (typeof module.default !== "function") return undefined;
+				const loadedFactory = module.default as ExtensionFactory;
+				nativeBuiltinFactories.set(extensionPath, loadedFactory);
+				return loadedFactory;
+			})();
+			nativeBuiltinLoads.set(extensionPath, pending);
+		}
+		try {
+			factory = await pending;
+		} finally {
+			nativeBuiltinLoads.delete(extensionPath);
+		}
+	}
+	if (factory && isCurrentCacheToken(cacheToken)) {
+		extensionCache.set(extensionPath, factory);
+	}
+	return factory;
+}
+
 export interface ExtensionCacheToken {
 	cwd: string;
 	generation: number;
@@ -504,6 +457,8 @@ export const extensionLoaderTestHooks = {
 		importExtensionModule(extensionPath, cacheToken, true),
 	loadTransformedExtensionModule: (extensionPath: string, cacheToken?: ExtensionCacheToken) =>
 		loadTransformedExtensionModule(extensionPath, cacheToken),
+	loadNativeBuiltinExtensionModule,
+	hasNativeBuiltinFactory: (extensionPath: string): boolean => nativeBuiltinFactories.has(extensionPath),
 };
 
 /**
@@ -588,6 +543,11 @@ export async function loadExtensionModule(
 	extensionPath: string,
 	cacheToken?: ExtensionCacheToken,
 ): Promise<ExtensionFactory | undefined> {
+	const isSingleFileBuild = isBunBinary || isBundledBuild;
+	if (isSingleFileBuild && isNativeBuiltinExtensionPath(extensionPath)) {
+		return loadNativeBuiltinExtensionModule(extensionPath, cacheToken);
+	}
+
 	if (isCurrentCacheToken(cacheToken)) {
 		const cachedFactory = extensionCache.get(extensionPath);
 		if (cachedFactory) return cachedFactory;
@@ -598,7 +558,7 @@ export async function loadExtensionModule(
 	// package specifiers to files on disk: extensions must share the live
 	// module instances baked into the build, so virtualModules is used instead
 	// (which requires jiti's transformed-import path).
-	const isSingleFileBuild = isBunBinary || isBundledBuild;
+	// Every editable path retains the existing jiti/virtualModules behavior.
 	// Windows first-load fast path: native import() (jiti's default tryNative)
 	// skips per-launch transpilation of the extension module graph. Re-loads of
 	// the same path fall back to transformed imports for fresh evaluation.

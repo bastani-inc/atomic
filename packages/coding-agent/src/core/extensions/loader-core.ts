@@ -11,10 +11,21 @@ import {
 	type WorkflowResourceProviderInput,
 } from "./loader-resources.ts";
 import { createExtensionRuntime } from "./loader-runtime.ts";
-import { type ExtensionCacheToken, loadExtensionModule, useExtensionCacheCwd } from "./loader-virtual-modules.ts";
+import { type ExtensionCacheToken, loadExtensionModule, useExtensionCacheCwd } from "./loader-virtual-modules.js";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./types.ts";
 
-/** Yield between extensions only when the current macrotask turn has run long. */
+/** Associate extension runtimes with the event bus used to construct their APIs. */
+const runtimeEventBuses = new WeakMap<ExtensionRuntime, EventBus>();
+
+export function getExtensionRuntimeEventBus(runtime: ExtensionRuntime): EventBus {
+	let eventBus = runtimeEventBuses.get(runtime);
+	if (!eventBus) {
+		eventBus = createEventBus();
+		runtimeEventBuses.set(runtime, eventBus);
+	}
+	return eventBus;
+}
+
 const INTER_EXTENSION_YIELD_THRESHOLD_MS = 16;
 
 /**
@@ -139,6 +150,7 @@ async function loadExtensionsInternal(
 	const resolvedCwd = cacheToken?.cwd ?? resolvePath(cwd);
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const resolvedRuntime = runtime ?? createExtensionRuntime();
+	runtimeEventBuses.set(resolvedRuntime, resolvedEventBus);
 
 	let processedExtensionCount = 0;
 	let lastYieldAt = Date.now();

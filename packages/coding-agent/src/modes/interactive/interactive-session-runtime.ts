@@ -1,3 +1,4 @@
+import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type AgentSession, setRegisteredThemes, stopThemeWatcher } from "./interactive-mode-deps.ts";
 
@@ -88,6 +89,8 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 };
 
 InteractiveModeBase.prototype.applyRuntimeSettings = function (this: InteractiveModeBase): void {
+	setCapabilityOverrides(this.settingsManager.getTerminalCapabilityOverrides());
+	this.setFullscreenCopyOnSelect(this.settingsManager.getFullscreenCopyOnSelect());
 	this.transcriptScrollView?.setScrollbar(this.settingsManager.getFullscreenScrollbar());
 	this.footer.setSession(this.session);
 	this.usageMeter.setSession(this.session);

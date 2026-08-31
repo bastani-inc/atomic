@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { spawn, spawnSync } from "child_process";
-import { getBinDir } from "../config.ts";
+import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 
 export interface ShellConfig {

@@ -7,8 +7,16 @@ export interface SessionInfo {
   startedAt: number;
   lastActivity: number;
   status?: string;
-  /** Session's intercom group; undefined is treated as the shared "default" group. */
+  /** Session's normalized intercom group memberships. */
+  groups?: string[];
+  /** Legacy single-group membership; accepted alongside `groups` for compatibility. */
   group?: string;
+}
+
+export interface GroupSummary {
+	group: string;
+	sessionCount: number;
+	member: boolean;
 }
 
 export interface Message {
@@ -53,6 +61,9 @@ export type ClientMessage =
 	  }
 	| { type: "unregister" }
   | { type: "list"; requestId: string; group?: string }
+	| { type: "list_groups"; requestId: string }
+	| { type: "join_group"; requestId: string; group: string }
+	| { type: "leave_group"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
 	| {
@@ -82,12 +93,23 @@ export type ClientMessage =
 		reason?: string;
 		reasonCode?: "message_id_conflict";
 	  }
-  | { type: "presence"; name?: string; status?: string; model?: string; group?: string; requestId?: string };
+  | {
+      type: "presence";
+      name?: string;
+      status?: string;
+      model?: string;
+      groups?: string[];
+      /** Legacy single-group membership; accepted alongside `groups` for compatibility. */
+      group?: string;
+      requestId?: string;
+    };
 
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; supervisorSessionId?: string }
   | { type: "registration_failed"; reason: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
+	| { type: "groups"; requestId: string; groups: GroupSummary[] }
+	| { type: "membership_ack"; requestId: string; groups: string[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
 	| { type: "pending_stage_notification"; requestId: string; from: SessionInfo; message: Message }

@@ -1,6 +1,6 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { CONFIG_DIR_NAME } from "../config.ts";
+import { CONFIG_DIR_NAME } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";

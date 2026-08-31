@@ -36,7 +36,7 @@ export {
 	setEnvValue,
 	VERSION,
 	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
-} from "./config.ts";
+} from "./config.js";
 export {
 	AgentSession,
 	type AgentSessionConfig,

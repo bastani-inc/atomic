@@ -86,6 +86,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 				"dynamic_tool",
 				"edit",
 				"find",
+				"intercom",
 				"ls",
 				...(getDefaultToolNames().includes("powershell") ? (["powershell"] as const) : []),
 				"read",
@@ -94,19 +95,20 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 				"write",
 			].sort(),
 		);
-		expect(session.getActiveToolNames()).toEqual(["dynamic_tool"]);
+		expect(session.getActiveToolNames()).toEqual(["intercom", "dynamic_tool"]);
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
+		expect(session.systemPrompt).toContain("- intercom:");
 		expect(session.systemPrompt).not.toContain("- read:");
 		expect(session.systemPrompt).not.toContain("- bash:");
 		session.dispose();
 	});
 
-	it("still disables all tools when noTools is all", async () => {
+	it("keeps only mandatory Intercom when noTools is all", async () => {
 		const session = await createSession({ noTools: "all" });
 
-		expect(session.getAllTools()).toEqual([]);
-		expect(session.getActiveToolNames()).toEqual([]);
-		expect(session.systemPrompt).toContain("Available tools:\n(none)");
+		expect(session.getAllTools().map((tool) => tool.name)).toEqual(["intercom"]);
+		expect(session.getActiveToolNames()).toEqual(["intercom"]);
+		expect(session.systemPrompt).toContain("- intercom:");
 		session.dispose();
 	});
 
@@ -126,8 +128,8 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			noTools: "builtin",
 		});
 
-		expect(session.getActiveToolNames()).toEqual([]);
-		expect(session.systemPrompt).toContain("Available tools:\n(none)");
+		expect(session.getActiveToolNames()).toEqual(["intercom"]);
+		expect(session.systemPrompt).toContain("- intercom:");
 		expect(session.systemPrompt).not.toContain("- read:");
 		session.dispose();
 	});

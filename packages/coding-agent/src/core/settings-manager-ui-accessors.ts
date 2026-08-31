@@ -1,5 +1,5 @@
-import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
-import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.ts";
+import type { ScrollViewScrollbar, TerminalCapabilities } from "@earendil-works/pi-tui";
+import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.js";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode, WarningSettings } from "./settings-types.ts";
@@ -44,6 +44,9 @@ interface SettingsManagerUiAccessors {
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void;
 	getFullscreenExitOutput(): FullscreenExitOutput;
 	setFullscreenExitOutput(output: FullscreenExitOutput): void;
+	getFullscreenCopyOnSelect(): boolean;
+	setFullscreenCopyOnSelect(enabled: boolean): void;
+	getTerminalCapabilityOverrides(): Partial<TerminalCapabilities>;
 }
 
 declare module "./settings-manager-core.ts" {
@@ -211,6 +214,27 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		state.globalSettings.fullscreenExitOutput = output;
 		state.markModified("fullscreenExitOutput");
 		state.save();
+	},
+
+	getFullscreenCopyOnSelect() {
+		return settingsInternals(this).settings.fullscreenCopyOnSelect !== false;
+	},
+
+	setFullscreenCopyOnSelect(enabled) {
+		const state = settingsInternals(this);
+		state.globalSettings.fullscreenCopyOnSelect = enabled;
+		state.markModified("fullscreenCopyOnSelect");
+		state.save();
+	},
+
+	getTerminalCapabilityOverrides() {
+		const terminal = settingsInternals(this).settings.terminal;
+		const overrides: Partial<TerminalCapabilities> = {};
+		if (typeof terminal?.hyperlinks === "boolean") overrides.hyperlinks = terminal.hyperlinks;
+		if (terminal?.images === "kitty" || terminal?.images === "iterm2") overrides.images = terminal.images;
+		else if (terminal?.images === false) overrides.images = null;
+		if (typeof terminal?.trueColor === "boolean") overrides.trueColor = terminal.trueColor;
+		return overrides;
 	},
 
 	getEditorPaddingX() {

@@ -42,18 +42,8 @@ export function resolveStageGroup(
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Whether a stage session will actually have an intercom tool available. Group
- * assignment is skipped for stages without intercom access so an agent is never
- * placed into an isolated group it cannot use.
- */
-export function stageHasIntercomAccess(stageOptions?: StageOptions): boolean {
-	if (!stageOptions) return true;
-	if (stageOptions.noTools === "all") return false;
-	const tools = stageOptions.tools;
-	if (Array.isArray(tools) && !tools.includes("intercom")) return false;
-	const excluded = stageOptions.excludedTools;
-	if (Array.isArray(excluded) && excluded.includes("intercom")) return false;
+/** Every workflow model stage has ordinary Intercom access. */
+export function stageHasIntercomAccess(_stageOptions?: StageOptions): boolean {
 	return true;
 }
 

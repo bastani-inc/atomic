@@ -88,6 +88,9 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 			case "fullscreen-exit-output":
 				callbacks.onFullscreenExitOutputChange(newValue as FullscreenExitOutput);
 				break;
+			case "fullscreen-copy-on-select":
+				callbacks.onFullscreenCopyOnSelectChange(newValue === "true");
+				break;
 			case "editor-padding":
 				callbacks.onEditorPaddingXChange(parseInt(newValue, 10));
 				break;

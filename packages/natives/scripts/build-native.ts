@@ -1,6 +1,7 @@
 import { copyFileSync, mkdirSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { formatNativeSpawnFailure } from "./spawn-error.ts";
 
 const repoRoot = resolve(import.meta.dir, "../../..");
 const packageRoot = resolve(import.meta.dir, "..");
@@ -49,7 +50,7 @@ if (glibcTarget) {
 	if (!debug) cargoArgs.push("--release");
 	const result = spawnSync("cargo", cargoArgs, { cwd: repoRoot, stdio: "inherit" });
 	if (result.status !== 0) {
-		throw new Error(`Failed to build portable Atomic native bindings (cargo zigbuild exited ${result.status ?? "null"})`);
+		throw new Error(`Failed to build portable Atomic native bindings (${formatNativeSpawnFailure("cargo zigbuild", result)})`);
 	}
 	const targetRoot = resolve(repoRoot, Bun.env.CARGO_TARGET_DIR ?? "target");
 	const profile = debug ? "debug" : "release";
@@ -65,6 +66,6 @@ if (glibcTarget) {
 
 	const result = spawnSync("bunx", args, { cwd: repoRoot, stdio: "inherit", env: buildEnv });
 	if (result.status !== 0) {
-		throw new Error(`Failed to build Atomic native bindings (napi exited ${result.status ?? "null"})`);
+		throw new Error(`Failed to build Atomic native bindings (${formatNativeSpawnFailure("napi", result)})`);
 	}
 }

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { ENV_OFFLINE, getEnvValue } from "../config.ts";
+import { ENV_OFFLINE, getEnvValue } from "../config.js";
 import { createGitEnvironment } from "../utils/git-env.ts";
 
 export function getEnv(): NodeJS.ProcessEnv {

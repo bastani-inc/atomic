@@ -1,7 +1,7 @@
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
 import { existsSync, statSync } from "fs";
 import { resolve } from "path";
-import { APP_TITLE } from "../config.ts";
+import { APP_TITLE } from "../config.js";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";

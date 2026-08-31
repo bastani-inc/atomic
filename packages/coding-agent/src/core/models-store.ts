@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { ModelsStore, ModelsStoreEntry } from "@bastani/pi-ai";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir } from "../config.js";
 import { stripBom } from "../utils/text.ts";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "./auth-storage-backends.ts";
 

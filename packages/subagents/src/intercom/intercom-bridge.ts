@@ -23,10 +23,6 @@ function bundledIntercomExtensionDir(): string {
 	return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "intercom");
 }
 
-function defaultIntercomConfigPath(agentDir = defaultAgentDir()): string {
-	return path.join(agentDir, "intercom", "config.json");
-}
-
 function defaultSubagentConfigDir(agentDir = defaultAgentDir()): string {
 	return path.join(agentDir, "extensions", "subagent");
 }
@@ -104,16 +100,6 @@ function resolveIntercomBridgeConfig(value: ExtensionConfig["intercomBridge"]): 
 		mode: resolveIntercomBridgeMode(value.mode),
 		instructionFile: typeof value.instructionFile === "string" ? value.instructionFile : "",
 	};
-}
-
-function intercomConfigStatus(configPath: string): { enabled: boolean; error?: unknown } {
-	if (!fs.existsSync(configPath)) return { enabled: true };
-	try {
-		const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { enabled?: unknown };
-		return { enabled: parsed.enabled !== false };
-	} catch (error) {
-		return { enabled: true, error };
-	}
 }
 
 function readJsonBestEffort(filePath: string): unknown {
@@ -263,21 +249,6 @@ function resolveIntercomExtensionDir(input: ResolveIntercomBridgeInput, agentDir
 	return configuredPiIntercomPackageDir(input, agentDir) ?? legacyDir;
 }
 
-function extensionSandboxAllowsIntercom(extensions: string[] | undefined, extensionDir: string): boolean {
-	if (extensions === undefined) return true;
-
-	const intercomDir = path.resolve(extensionDir).replaceAll("\\", "/").toLowerCase();
-	for (const entry of extensions) {
-		const normalized = entry.trim().replaceAll("\\", "/").toLowerCase();
-		if (normalized === "pi-intercom") return true;
-		if (normalized === intercomDir) return true;
-		if (normalized.startsWith(`${intercomDir}/`)) return true;
-		if (normalized.endsWith("/pi-intercom")) return true;
-		if (normalized.includes("/pi-intercom/")) return true;
-	}
-	return false;
-}
-
 function expandTilde(filePath: string): string {
 	return filePath.startsWith("~/") ? path.join(os.homedir(), filePath.slice(2)) : filePath;
 }
@@ -329,14 +300,6 @@ export function resolveIntercomBridge(input: ResolveIntercomBridgeInput): Interc
 		return { active: false, mode, extensionDir, instruction: defaultInstruction };
 	}
 
-	const configPath = path.resolve(input.configPath ?? defaultIntercomConfigPath(agentDir));
-	const intercomStatus = intercomConfigStatus(configPath);
-	if (intercomStatus.error)
-		console.warn(`Failed to parse intercom config at '${configPath}'. Assuming enabled.`, intercomStatus.error);
-	if (!intercomStatus.enabled) {
-		return { active: false, mode, extensionDir, instruction: defaultInstruction };
-	}
-
 	const instruction = buildIntercomBridgeInstruction(
 		orchestratorTarget,
 		resolveInstructionTemplate(config.instructionFile, settingsDir),
@@ -353,7 +316,6 @@ export function resolveIntercomBridge(input: ResolveIntercomBridgeInput): Interc
 
 export function applyIntercomBridgeToAgent(agent: AgentConfig, bridge: IntercomBridgeState): AgentConfig {
 	if (!bridge.active || !bridge.orchestratorTarget) return agent;
-	if (!extensionSandboxAllowsIntercom(agent.extensions, bridge.extensionDir)) return agent;
 
 	const bridgeTools = ["intercom", "contact_supervisor"];
 	const tools = agent.tools

@@ -1,0 +1,21 @@
+                                                                                
+atomic-intercom-always-enabled on  feat/intercom-always-enabled is 📦 v0.0.0 via 🦀 v1.97.0 
+❯ ATOMIC_CODING_AGENT_DIR=/tmp/iaef node packages/coding-agent/dist/cli.js --pro
+vider openai-codex --model gpt-5.6-sol --print --no-session --tools read --exclu
+de-tools intercom,bash --no-extensions "Call the ordinary intercom tool with action status. Do not use read. Then respond with exactly MAIN_ALLOWLIST_OK and include the group reported by the tool."
+MAIN_ALLOWLIST_OK default
+atomic-intercom-always-enabled on  feat/intercom-always-enabled is 📦 v0.0.0 via 🦀 v1.97.0 
+❯                                                                     took 21s 
+
+
+
+
+
+
+
+
+
+
+
+
+

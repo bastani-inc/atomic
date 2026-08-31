@@ -292,7 +292,7 @@ test.sequential("direct RPC reload updates one shared global and injected manage
 		const committed = await reloaded;
 		assert.equal(committed.state.userBindings["app.tools.expand"], "ctrl+y");
 		assert.equal(committed.state.effectiveBindings["app.tools.expand"], "ctrl+y");
-		assert.deepEqual(committed.state.shortcuts, []);
+		assert.deepEqual(committed.state.shortcuts, [{ key: "alt+m", description: "Open session intercom overlay" }]);
 		assert.equal(hostKeybindings, hostIdentity);
 		assert.deepEqual(hostKeybindings.getKeys("app.tools.expand"), ["ctrl+y"]);
 		hostKeybindings.reload(); // Host /reload repeats this after the child notification.

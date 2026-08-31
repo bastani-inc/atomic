@@ -2,10 +2,11 @@
  * TUI session selector for --resume flag
  */
 
-import { ProcessTerminal, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
-import { getAgentDir } from "../config.ts";
+import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
+import { getAgentDir } from "../config.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../core/session-manager.ts";
+import type { SettingsManager } from "../core/settings-manager.ts";
 import { SessionSelectorComponent } from "../modes/interactive/components/session-selector.ts";
 
 type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
@@ -14,7 +15,9 @@ type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[
 export async function selectSession(
 	currentSessionsLoader: SessionsLoader,
 	allSessionsLoader: SessionsLoader,
+	settingsManager: SettingsManager,
 ): Promise<string | null> {
+	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	return new Promise((resolve) => {
 		const ui = new TuiMainScreen(new ProcessTerminal(), undefined, getAgentDir());
 		const keybindings = KeybindingsManager.create();

@@ -1718,7 +1718,6 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			for (const [prefixedId, model] of Object.entries(data["cloudflare-ai-gateway"].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
-				if (prefixedId.startsWith("workers-ai/")) cloudflareGatewayWorkersAiModelIds.add(prefixedId);
 
 				const slashIdx = prefixedId.indexOf("/");
 				if (slashIdx === -1) continue;

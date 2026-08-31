@@ -283,3 +283,114 @@ test("real client rejects the exact waiter when its target disconnects", async (
 	});
 	await asker.disconnect();
 });
+
+test("broker joins several groups, routes through each, and lists every group", async () => {
+	const bridge = new WireClient();
+	const alpha = new WireClient();
+	const beta = new WireClient();
+	const outside = new WireClient();
+	const bridgeId = await register(bridge, "multi-group-bridge");
+	const alphaId = await register(alpha, "multi-group-alpha");
+	const betaId = await register(beta, "multi-group-beta");
+	const outsideId = await register(outside, "multi-group-outside");
+
+	alpha.send({ type: "presence", group: "alpha", requestId: "alpha-group" });
+	await alpha.next("presence_ack", (frame) => frame.requestId === "alpha-group");
+	beta.send({ type: "presence", group: "beta", requestId: "beta-group" });
+	await beta.next("presence_ack", (frame) => frame.requestId === "beta-group");
+	outside.send({ type: "presence", group: "outside", requestId: "outside-group" });
+	await outside.next("presence_ack", (frame) => frame.requestId === "outside-group");
+
+	bridge.send({ type: "join_group", group: "alpha", requestId: "join-alpha" });
+	assert.deepEqual(await bridge.next("membership_ack", (frame) => frame.requestId === "join-alpha"), {
+		type: "membership_ack",
+		requestId: "join-alpha",
+		groups: ["default", "alpha"],
+	});
+	bridge.send({ type: "join_group", group: "beta", requestId: "join-beta" });
+	assert.deepEqual(await bridge.next("membership_ack", (frame) => frame.requestId === "join-beta"), {
+		type: "membership_ack",
+		requestId: "join-beta",
+		groups: ["default", "alpha", "beta"],
+	});
+
+	bridge.send({ type: "list", requestId: "visible-sessions" });
+	const visibleIds = (await bridge.next("sessions", (frame) => frame.requestId === "visible-sessions")).sessions.map(
+		({ id }) => id,
+	);
+	assert.equal(visibleIds.includes(alphaId), true);
+	assert.equal(visibleIds.includes(betaId), true);
+	assert.equal(visibleIds.includes(bridgeId), true);
+	assert.equal(visibleIds.includes(outsideId), false);
+
+	bridge.send({ type: "list_groups", requestId: "all-groups" });
+	const summaries = (await bridge.next("groups", (frame) => frame.requestId === "all-groups")).groups;
+	assert.deepEqual(
+		summaries.filter(({ group }) => ["alpha", "beta", "outside"].includes(group)),
+		[
+			{ group: "alpha", sessionCount: 2, member: true },
+			{ group: "beta", sessionCount: 2, member: true },
+			{ group: "outside", sessionCount: 1, member: false },
+		],
+	);
+
+	bridge.send({
+		type: "send",
+		to: alphaId,
+		message: { id: "bridge-alpha", timestamp: 1, content: { text: "alpha" } },
+	});
+	await bridge.next("delivered", (frame) => frame.messageId === "bridge-alpha");
+	await alpha.next("message", (frame) => frame.from.id === bridgeId);
+	bridge.send({ type: "send", to: betaId, message: { id: "bridge-beta", timestamp: 2, content: { text: "beta" } } });
+	await bridge.next("delivered", (frame) => frame.messageId === "bridge-beta");
+	await beta.next("message", (frame) => frame.from.id === bridgeId);
+
+	bridge.send({ type: "leave_group", group: "alpha", requestId: "leave-alpha" });
+	assert.deepEqual((await bridge.next("membership_ack", (frame) => frame.requestId === "leave-alpha")).groups, [
+		"default",
+		"beta",
+	]);
+	bridge.send({ type: "leave_group", requestId: "leave-home" });
+	assert.deepEqual((await bridge.next("membership_ack", (frame) => frame.requestId === "leave-home")).groups, [
+		"default",
+	]);
+});
+
+test("broker honors groups-only registration and presence for discovery and direct routing", async () => {
+	const target = new WireClient();
+	const reviewer = new WireClient();
+	await target.connected();
+	target.send({
+		type: "register",
+		session: { ...session, name: "groups-only-target", groups: ["intake"] },
+	});
+	const targetId = (await target.next("registered")).sessionId;
+	await reviewer.connected();
+	reviewer.send({
+		type: "register",
+		session: { ...session, name: "legacy-reviewer", group: "reviewers" },
+	});
+	const reviewerId = (await reviewer.next("registered")).sessionId;
+
+	target.send({ type: "presence", groups: ["reviewers"], requestId: "groups-only-presence" });
+	assert.deepEqual(await target.next("presence_ack", (frame) => frame.requestId === "groups-only-presence"), {
+		type: "presence_ack",
+		requestId: "groups-only-presence",
+		group: "reviewers",
+	});
+
+	reviewer.send({ type: "list", requestId: "reviewer-discovery", group: "reviewers" });
+	const visibleIds = (
+		await reviewer.next("sessions", (frame) => frame.requestId === "reviewer-discovery")
+	).sessions.map(({ id }) => id);
+	assert.equal(visibleIds.includes(targetId), true);
+
+	reviewer.send({
+		type: "send",
+		to: targetId,
+		message: { id: "groups-only-direct", timestamp: 3, content: { text: "review" } },
+	});
+	await reviewer.next("delivered", (frame) => frame.messageId === "groups-only-direct");
+	const delivered = await target.next("message", (frame) => frame.message.id === "groups-only-direct");
+	assert.equal(delivered.from.id, reviewerId);
+});

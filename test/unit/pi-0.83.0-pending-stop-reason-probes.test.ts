@@ -136,8 +136,8 @@ test("a whole pending-carrying turn survives the RPC projection unchanged", asyn
 	}
 });
 
-test("the isolated engine protocol carries a pending message frame at protocol version 3", () => {
-	assert.equal(INTERACTIVE_ENGINE_PROTOCOL_VERSION, 3);
+test("the isolated engine protocol carries a pending message frame at protocol version 4", () => {
+	assert.equal(INTERACTIVE_ENGINE_PROTOCOL_VERSION, 4);
 
 	for (const stopReason of ALL_STOP_REASONS) {
 		const message = JSON.parse(JSON.stringify(assistantWith(stopReason))) as Record<string, unknown>;

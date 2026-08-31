@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { APP_NAME, CONFIG_DIR_NAME, getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { PackageManagerContext, SourceScope } from "./package-manager-types.ts";
 

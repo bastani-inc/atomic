@@ -57,7 +57,7 @@ export async function discardFailedActiveBlockedContinuation(
 	const handle = backend.getWorkflow(runId);
 	if (handle?.status === "running") {
 		backend.setWorkflowStatus(runId, "failed", handle.pendingPrompts, false);
-		await backend.flush();
+		await backend.flush(runId);
 	}
 	const deleted = await backend.deleteWorkflowIfInactive(runId);
 	if (!deleted.ok && deleted.reason !== "not_found") {

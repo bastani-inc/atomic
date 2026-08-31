@@ -102,7 +102,7 @@ The factory requires `ExecutionEnv.renameFile()` and does not add a fallback fil
 
 The main factory function for a single `AgentSession`.
 
-`createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with standard discovery.
+`createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with normal user, project, and configured-package discovery. The SDK does not add optional bundled workflow, subagent, MCP, or web-access extensions by default. It always adds the lightweight ordinary Intercom extension at the model-session boundary.
 
 ```typescript
 import { createAgentSession, SessionManager } from "@bastani/atomic";
@@ -574,20 +574,20 @@ Specify which tools to expose by name:
 
 - Built-in tool names enabled by default: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`
 - `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
-- `tools` is an allowlist: when provided, only the listed built-in, extension, and custom tool names are exposed.
-- `excludedTools` is a blocklist: matching built-in, extension, and custom tool names are omitted from the final registry and active tool set. If both are provided, `tools` is applied first and `excludedTools` subtracts from it.
-- `noTools: "all"` disables all tools
+- `tools` is an allowlist: when provided, only the listed built-in, extension, and custom tool names are exposed, plus mandatory ordinary `intercom`.
+- `excludedTools` is a blocklist: matching built-in, extension, and custom tool names are omitted from the final registry and active tool set, except mandatory ordinary `intercom`. If both are provided, `tools` is applied first and `excludedTools` subtracts from it.
+- `noTools: "all"` disables every tool except mandatory ordinary `intercom`
 - `noTools: "builtin"` disables default built-ins while keeping extension and custom tools enabled, except names listed in `excludedTools`
 
 ```typescript
 import { createAgentSession } from "@bastani/atomic";
 
-// Read-only mode
+// Read-only mode. `tools` selects optional tools; ordinary Intercom remains active.
 const { session } = await createAgentSession({
   tools: ["read", "search", "find", "ls"],
 });
 
-// Pick specific tools
+// Pick specific optional tools. Ordinary Intercom remains active even when omitted.
 const { session } = await createAgentSession({
   tools: ["read", "bash", "search"],
 });
@@ -600,7 +600,7 @@ const { session } = await createAgentSession({
 // Allowlist first, then subtract exclusions
 const { session } = await createAgentSession({
   tools: ["read", "bash", "ask_user_question"],
-  excludedTools: ["ask_user_question"], // final tools: read, bash
+  excludedTools: ["ask_user_question"], // optional tools: read, bash; ordinary Intercom remains active
 });
 ```
 
@@ -759,6 +759,10 @@ await loader.reload();
 
 const { session } = await createAgentSession({ resourceLoader: loader });
 ```
+
+`createAgentSession()` preserves resources from a supplied loader but restores Atomic's mandatory bundled Intercom extension after loader overrides, deferred reloads, and same-name extension or `customTools` collisions. The supplied loader still controls every optional extension.
+
+Strict reloads (`failOnExtensionErrors: true`) require the loader's transactional `prepareReload()` support so a failed candidate cannot mutate live state before validation. `DefaultResourceLoader` provides that support. Custom loaders without it remain compatible with ordinary reloads, but strict reload fails before calling their mutating `reload()` method.
 
 Extensions can register tools, subscribe to events, add commands, and more. See [Extensions](/extensions) for the full API.
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,12 +43,22 @@ test(
 			writeTextSync(
 				join(fixture, "app-entry.ts"),
 				`import { extensionLoaderTestHooks } from ${JSON.stringify(join(root, "packages/coding-agent/src/core/extensions/loader-virtual-modules.ts"))};\n` +
+					'import { createRequire } from "node:module";\n' +
+					'import { dirname, join } from "node:path";\n' +
+					'import { pathToFileURL } from "node:url";\n' +
 					"void (async () => {\n" +
 					'  const entry = process.argv[2];\n  if (!entry) throw new Error("missing extension path");\n' +
 					"  const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry);\n" +
 					'  if (typeof factory !== "function") throw new Error("extension did not load");\n' +
 					"  await factory({} as never);\n" +
-					'  console.log("extension lock probe: OK");\n' +
+					'  const requireFromSidecar = createRequire(pathToFileURL(join(dirname(process.execPath), "app.js")).href);\n' +
+					'  const nativePath = join(dirname(process.execPath), "node_modules/@bastani/atomic-natives/native/index.js");\n' +
+					'  const native = requireFromSidecar(nativePath) as typeof import("@bastani/atomic-natives");\n' +
+					'  const nativeGlob = await native.glob({ pattern: "target.json", path: import.meta.dirname, recursive: false, gitignore: false });\n' +
+					'  if (!nativeGlob.matches.some((match) => match.path === "target.json")) throw new Error("native glob failed");\n' +
+					'  const nativeGrep = await native.grep({ pattern: "native-probe", path: entry.replace(/extension\\.ts$/, "target.json"), gitignore: false });\n' +
+					'  if (nativeGrep.totalMatches !== 1) throw new Error("native grep failed");\n' +
+					'  console.log("extension/native lock probe: OK");\n' +
 					"})();\n",
 			);
 			writeTextSync(
@@ -58,7 +68,7 @@ test(
 					"export default async function extension(): Promise<void> {\n" +
 					'  if (typeof lockfile.lock !== "function") throw new Error("proper-lockfile default import is invalid");\n' +
 					'  const target = join(import.meta.dirname, "target.json");\n' +
-					'  await Bun.write(target, "{}");\n' +
+					'  await Bun.write(target, "native-probe");\n' +
 					"  for (let index = 0; index < 2; index++) {\n" +
 					"    const release = await lockfile.lock(target, { realpath: false });\n" +
 					"    await release();\n" +
@@ -67,7 +77,8 @@ test(
 			);
 			writeTextSync(
 				join(fixture, "split-loader.ts"),
-				'import { dirname, join } from "node:path";\n' +
+				'process.env.ATOMIC_CODING_AGENT = "true";\n' +
+					'import { dirname, join } from "node:path";\n' +
 					'import { pathToFileURL } from "node:url";\n' +
 					'void import(pathToFileURL(join(dirname(process.execPath), "app.js")).href);\n',
 			);
@@ -79,12 +90,20 @@ test(
 				realpathSync(resolvedLockfile).startsWith(`${repositoryLockfileRoot}${sep}`),
 				`fixture resolved an external proper-lockfile: ${resolvedLockfile}`,
 			);
+			const nativeFiles = readdirSync(join(root, "packages/natives/native")).filter((name) =>
+				name.endsWith(".node"),
+			);
+			assert.ok(nativeFiles.length > 0, "Atomic native binding must be built before the binary-boundary test");
+			cpSync(join(root, "packages/natives"), join(runtimeDir, "node_modules/@bastani/atomic-natives"), {
+				recursive: true,
+			});
 
 			const appBuildCommand = [
 				bunExecutable(),
 				"build",
 				"--target=bun",
 				"--format=cjs",
+				"--minify-syntax",
 				"--external=mupdf",
 				"--external=*native-modifiers.js",
 				join(fixture, "app-entry.ts"),
@@ -131,7 +150,7 @@ test(
 			console.log(`startup: ${formatCommand(startupCommand)}`);
 			const startup = spawnSyncCollect(startupCommand, { cwd: fixture });
 			assert.equal(startup.exitCode, 0, startup.stderr.toString());
-			assert.equal(startup.stdout.toString().trim(), "extension lock probe: OK");
+			assert.equal(startup.stdout.toString().trim(), "extension/native lock probe: OK");
 		} finally {
 			removeTempDirectory(fixture);
 		}

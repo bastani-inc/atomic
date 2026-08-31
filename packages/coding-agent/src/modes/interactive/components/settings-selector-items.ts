@@ -83,6 +83,13 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 		values: ["transcript", "resume-hint"],
 	});
 	insertAfter(items, "fullscreen-exit-output", {
+		id: "fullscreen-copy-on-select",
+		label: "Fullscreen copy on select",
+		description: "Copy selected transcript text automatically on mouse release",
+		currentValue: config.fullscreenCopyOnSelect ? "true" : "false",
+		values: ["true", "false"],
+	});
+	insertAfter(items, "fullscreen-copy-on-select", {
 		id: "editor-padding",
 		label: "Editor padding",
 		description: "Horizontal padding for input editor (0-3)",

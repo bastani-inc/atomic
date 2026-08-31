@@ -84,10 +84,10 @@ The dedicated history actions always change history entries, regardless of the c
 
 ### TUI Fullscreen Viewport
 
-Interactive sessions always use this fullscreen viewport for the primary transcript scroll region. Mouse-wheel input scrolls the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler; the jump-to-bottom indicator's internal OSC 8 link returns the focused transcript surface to its live end, including an attached workflow stage chat. Dragging with the primary mouse button selects text and copies it to the clipboard. See [Terminal setup](/terminal-setup) for terminal-specific mouse and trackpad behavior.
+Interactive sessions always use this fullscreen viewport for the primary transcript scroll region. Mouse-wheel input scrolls the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler; the jump-to-bottom indicator's internal OSC 8 link returns the focused transcript surface to its live end, including an attached workflow stage chat. Dragging with the primary mouse button selects text and, by default, copies it to the clipboard. Set `fullscreenCopyOnSelect` to `false` to retain selections for explicit Ctrl+X copying. See [Terminal setup](/terminal-setup) for terminal-specific mouse and trackpad behavior.
 
 
-Fullscreen text selection comes from the installed pi-tui 0.84.3 renderer. Drag with the primary button to select characters; double-click selects a word and triple-click selects a line. Focus changes and non-drag clicks clear transient selection state, preventing a stale highlight from appearing. A drag release reported with the generic SGR button code also ends the selection. The renderer also reduces mouse tracking in tmux, Zellij, and GNU Screen.
+Fullscreen text selection comes from the installed pi-tui 0.84.4 renderer. Drag with the primary button to select characters; double-click selects a word, including complete slash-delimited paths and kebab-case names, and triple-click selects a line. Focus changes and non-drag clicks clear transient selection state, preventing a stale highlight from appearing. A drag release reported with the generic SGR button code also ends the selection. The renderer also reduces mouse tracking in tmux, Zellij, and GNU Screen.
 Fullscreen transcript bindings take precedence over editor bindings while the main editor has focus. The default unmodified navigation keys therefore control the transcript, while their `ctrl` variants continue to control the editor. When a fullscreen overlay or inline custom component has focus, Atomic sends matching viewport bindings to that component first. Returning `true` keeps the key local. For an in-process component, returning `false`, `undefined`, or `void` lets transcript scrolling handle it. A remote component's correlated reply falls through on `false`, failure, or timeout; `undefined` after disposal is dropped because that component no longer owns focus.
 
 | Key | Editor action | Fullscreen action |
@@ -128,6 +128,7 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
 | `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image or text from clipboard |
+| `app.message.copy` | `ctrl+x` | When `fullscreenCopyOnSelect` is `false`, copy the active fullscreen selection; otherwise copy the last assistant message |
 
 When `app.clipboard.pasteImage` finds text rather than an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
 
@@ -136,6 +137,8 @@ On macOS, native `Cmd+V` also pastes a clipboard image when the copy was image-o
 Inside tmux on macOS, `Ctrl+V` is the reliable image-paste shortcut; native `Cmd+V` depends on terminal forwarding. VS Code's terminal may forward the empty bracketed-paste route through tmux, while Ghostty may not forward its Kitty `super+v` route through tmux. This is terminal forwarding behavior, not an Atomic defect.
 
 When the clipboard has both text and an image, behavior depends on the terminal: empty-paste terminals may insert the text on `Cmd+V`, while Kitty-protocol terminals that deliver `super+v` go through the image path (same preference as `Ctrl+V`). `Ctrl+V` always prefers the image. Apple Terminal may send nothing for image-only paste; use Ghostty/iTerm/Kitty or `Ctrl+V` in that case.
+
+Ctrl+X keeps Atomic's hierarchy precedence. A workflow tool-detail view closes to its graph; the scoped-model selector clears its local selection; an attached workflow stage chat returns to its graph; and a workflow graph returns to main chat. Only the main editor then runs `app.message.copy`. Workflow surfaces recognize the physical Ctrl+X chord directly, including CSI variants, rather than the configurable application action. `/copy` is separate and always copies the last assistant message.
 
 A held paused queue by itself is idle for Ctrl+C handling. After an interruption settles, the next Ctrl+C clears the editor without releasing or dequeuing the hold, and a second quick idle press exits normally.
 

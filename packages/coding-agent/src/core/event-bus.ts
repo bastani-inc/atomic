@@ -32,6 +32,107 @@ export function createEventBus(): EventBusController {
 	};
 }
 
+export interface PreparedEventBusCommit {
+	commit(): void;
+	rollback(): void;
+}
+
+export interface StagedEventBus {
+	readonly bus: EventBus;
+	prepareCommit(): PreparedEventBusCommit;
+	commit(): void;
+}
+
+type StagedSubscription = {
+	channel: string;
+	handler: (data: unknown) => void;
+	active: boolean;
+	unsubscribe: () => void;
+};
+
+/** Isolate reload-candidate events from the live bus until publication. */
+export function createStagedEventBus(target: EventBus): StagedEventBus {
+	const local = createEventBus();
+	const subscriptions = new Set<StagedSubscription>();
+	let committed = false;
+	let prepared = false;
+	const bus: EventBus = {
+		emit(channel, data) {
+			if (committed) target.emit(channel, data);
+			else local.emit(channel, data);
+		},
+		on(channel, handler) {
+			if (committed) return target.on(channel, handler);
+			if (prepared) throw new Error("Cannot add staged event subscriptions after commit preparation");
+			const subscription: StagedSubscription = {
+				channel,
+				handler,
+				active: true,
+				unsubscribe: local.on(channel, handler),
+			};
+			subscriptions.add(subscription);
+			return () => {
+				if (!subscription.active) return;
+				subscription.active = false;
+				subscriptions.delete(subscription);
+				subscription.unsubscribe();
+			};
+		},
+	};
+	registerCanonicalEventBus(bus, canonicalEventBusFor(target));
+	const prepareCommit = (): PreparedEventBusCommit => {
+		if (committed) return { commit: () => {}, rollback: () => {} };
+		if (prepared) throw new Error("Staged event bus commit is already prepared");
+		prepared = true;
+		let activated = false;
+		let settled = false;
+		const targetSubscriptions: Array<{ subscription: StagedSubscription; unsubscribe: () => void }> = [];
+		try {
+			for (const subscription of subscriptions) {
+				if (!subscription.active) continue;
+				const unsubscribe = target.on(subscription.channel, (data) => {
+					if (activated && subscription.active) subscription.handler(data);
+				});
+				targetSubscriptions.push({ subscription, unsubscribe });
+			}
+		} catch (error) {
+			for (const registered of targetSubscriptions.reverse()) registered.unsubscribe();
+			prepared = false;
+			throw error;
+		}
+		return {
+			commit() {
+				if (settled) return;
+				settled = true;
+				activated = true;
+				committed = true;
+				for (const { subscription, unsubscribe } of targetSubscriptions) {
+					if (!subscription.active) {
+						unsubscribe();
+						continue;
+					}
+					subscription.unsubscribe();
+					subscription.unsubscribe = unsubscribe;
+				}
+				local.clear();
+			},
+			rollback() {
+				if (settled) return;
+				settled = true;
+				for (const registered of targetSubscriptions.reverse()) registered.unsubscribe();
+				prepared = false;
+			},
+		};
+	};
+	return {
+		bus,
+		prepareCommit,
+		commit() {
+			prepareCommit().commit();
+		},
+	};
+}
+
 /**
  * Shared by duplicate host-module instances in packaged/split-loader builds.
  * The `@1` suffix versions the stored WeakMap shape.

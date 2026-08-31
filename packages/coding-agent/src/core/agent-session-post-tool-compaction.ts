@@ -96,12 +96,9 @@ export async function _preflightPostToolContext(
 		}
 
 		this._pendingPostToolCompactionGuard = { hardInputLimit, result };
-		// `AgentState.messages` has an asymmetric accessor pair: the setter copies, the
-		// getter hands back the live internal array. Returning it directly would make the
-		// agent loop's `currentContext.messages` an alias of `agent.state.messages`, and
-		// from the next turn on both writers (`runLoop` and the `message_end` reducer)
-		// would append every message twice — duplicate `tool_result` blocks for one
-		// `tool_use` id, which the provider rejects with an unrecoverable 400.
+		// `AgentState.messages` has an asymmetric accessor pair: the setter copies,
+		// while the getter returns the live internal array. Return a separate array
+		// so the loop and reducer cannot append the next message twice.
 		return this.agent.state.messages.slice();
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);

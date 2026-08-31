@@ -5,12 +5,16 @@
  *
  * Test with: npx tsx src/cli-new.ts [args...]
  *
- * Deliberately imports only config.ts statically: the full CLI module graph is
- * loaded dynamically so metadata fast paths (e.g. --version) skip it entirely.
+ * Deliberately keeps the static entry graph to config, compile-cache support,
+ * attribution, and the disabled-by-default lifecycle seam. The full CLI graph
+ * loads dynamically so metadata fast paths (for example `--version`) skip it.
  */
-import { APP_NAME, VERSION } from "./config.ts";
+import { APP_NAME, VERSION } from "./config.js";
+import { markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
+
+markLifecycleTiming("process-entry");
 
 enablePersistentCompileCache();
 

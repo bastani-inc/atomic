@@ -374,7 +374,7 @@ async function markDurableQuit(runId: string, run: RunSnapshot): Promise<Durable
 	// Persist the exact accumulated run elapsed at quit time so a later durable
 	// resume seeds the total workflow duration with prior-session time.
 	recordRunTimingCheckpoint(backend, run);
-	await backend.flush();
+	await backend.flush(runId);
 	return "transitioned";
 }
 

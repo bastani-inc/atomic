@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 describe("Baseten models", () => {
-	it("registers GLM 5.2 as the default OpenAI-compatible reasoning model", () => {
+	it("registers GLM 5.2 as an OpenAI-compatible reasoning model", () => {
 		const model = getModel("baseten", "zai-org/GLM-5.2");
 
 		expect(model).toMatchObject({

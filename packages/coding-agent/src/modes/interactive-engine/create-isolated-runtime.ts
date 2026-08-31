@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { Args } from "../../cli/args.ts";
-import { ENV_AGENT_DIR, getEnvValue } from "../../config.ts";
+import { ENV_AGENT_DIR, getEnvValue } from "../../config.js";
 import {
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,

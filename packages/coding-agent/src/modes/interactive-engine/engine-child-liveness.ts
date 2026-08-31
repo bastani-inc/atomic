@@ -7,6 +7,8 @@ import { INTERACTIVE_ENGINE_PROTOCOL_VERSION, serializeInteractiveEngineMessage 
 export interface InteractiveEngineLiveness {
 	ready(): void;
 	bound(): void;
+	resourcesReady(): void;
+	resourcesFailed(error: Error): void;
 	stop(): void;
 }
 
@@ -15,7 +17,9 @@ let activeLiveness: InteractiveEngineLiveness | undefined;
 export function startInteractiveEngineLiveness(write: (line: string) => void): InteractiveEngineLiveness {
 	if (activeLiveness) return activeLiveness;
 	const engineEnv = interactiveEngineStartupEnv();
-	if (engineEnv.child !== "1") return { ready: () => {}, bound: () => {}, stop: () => {} };
+	if (engineEnv.child !== "1") {
+		return { ready: () => {}, bound: () => {}, resourcesReady: () => {}, resourcesFailed: () => {}, stop: () => {} };
+	}
 	const hostPid = Number.parseInt(engineEnv.hostPid ?? "", 10);
 	const stopGuardian =
 		Number.isSafeInteger(hostPid) && hostPid > 0
@@ -33,6 +37,7 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 	heartbeat.unref?.();
 	let readySent = false;
 	let boundSent = false;
+	let resourceState: "pending" | "ready" | "failed" = "pending";
 	const liveness: InteractiveEngineLiveness = {
 		ready: () => {
 			if (readySent) return;
@@ -43,6 +48,16 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 			if (boundSent) return;
 			boundSent = true;
 			send({ type: "engine_bound" });
+		},
+		resourcesReady: () => {
+			if (resourceState === "ready") return;
+			resourceState = "ready";
+			send({ type: "engine_resources_ready" });
+		},
+		resourcesFailed: (error) => {
+			if (resourceState === "failed") return;
+			resourceState = "failed";
+			send({ type: "engine_resources_failed", message: error.message });
 		},
 		stop: () => {
 			clearInterval(heartbeat);

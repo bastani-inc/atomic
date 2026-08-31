@@ -9,10 +9,8 @@ import { reviewDecisionSchema } from "./ralph-core.js";
 //   decorrelate review errors from reviewer A.
 // - Dominated benchmark models stay out of the chains: claude-sonnet-5,
 //   claude-sonnet-4.6, gemini-3.1-pro, and gemini-3.5-flash.
-// - GLM-5.3 exposes reasoning without a thinkingLevelMap or reasoning-effort
-//   control, so chains use the catalog-supported :high tier explicitly rather
-//   than carrying the prior GLM generation's :xhigh/:max suffixes forward. OpenRouter has no
-//   GLM-5.3 catalog entry, so its unavailable fallback is intentionally omitted.
+// - GLM-5.3 full and Flash entries expose low/high/max effort across the
+//   Baseten and OpenRouter mirrors, so every GLM fallback uses :high.
 
 export const promptEngineerModelConfig = {
     model: "anthropic/claude-opus-5:high",
@@ -35,6 +33,10 @@ export const promptEngineerModelConfig = {
       "github-copilot/grok-4.6:xhigh",
       "zai/glm-5.3:high",
       "zai-coding-cn/glm-5.3:high",
+      "zai/glm-5.3-flash:high",
+      "zai-coding-cn/glm-5.3-flash:high",
+      "baseten/zai-org/GLM-5.3:high",
+      "baseten/zai-org/GLM-5.3-Flash:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
@@ -43,6 +45,8 @@ export const promptEngineerModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.6",
+      "openrouter/z-ai/glm-5.3:high",
+      "openrouter/z-ai/glm-5.3-flash:high",
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -68,6 +72,10 @@ export const researchModelConfig = {
       "github-copilot/grok-4.6:xhigh",
       "zai/glm-5.3:high",
       "zai-coding-cn/glm-5.3:high",
+      "zai/glm-5.3-flash:high",
+      "zai-coding-cn/glm-5.3-flash:high",
+      "baseten/zai-org/GLM-5.3:high",
+      "baseten/zai-org/GLM-5.3-Flash:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-fable-5:high",
@@ -76,6 +84,8 @@ export const researchModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.6",
+      "openrouter/z-ai/glm-5.3:high",
+      "openrouter/z-ai/glm-5.3-flash:high",
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -101,6 +111,10 @@ export const orchestratorModelConfig = {
       "github-copilot/grok-4.6:xhigh",
       "zai/glm-5.3:high",
       "zai-coding-cn/glm-5.3:high",
+      "zai/glm-5.3-flash:high",
+      "zai-coding-cn/glm-5.3-flash:high",
+      "baseten/zai-org/GLM-5.3:high",
+      "baseten/zai-org/GLM-5.3-Flash:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-fable-5:high",
@@ -109,6 +123,8 @@ export const orchestratorModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.6",
+      "openrouter/z-ai/glm-5.3:high",
+      "openrouter/z-ai/glm-5.3-flash:high",
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -134,6 +150,10 @@ export const reviewerAModelConfig = {
       "github-copilot/grok-4.6:xhigh",
       "zai/glm-5.3:high",
       "zai-coding-cn/glm-5.3:high",
+      "zai/glm-5.3-flash:high",
+      "zai-coding-cn/glm-5.3-flash:high",
+      "baseten/zai-org/GLM-5.3:high",
+      "baseten/zai-org/GLM-5.3-Flash:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/moonshotai/kimi-k3:max",
@@ -142,6 +162,8 @@ export const reviewerAModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.6",
+      "openrouter/z-ai/glm-5.3:high",
+      "openrouter/z-ai/glm-5.3-flash:high",
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,
@@ -168,6 +190,10 @@ export const reviewerBModelConfig = {
       "github-copilot/grok-4.6:xhigh",
       "zai/glm-5.3:high",
       "zai-coding-cn/glm-5.3:high",
+      "zai/glm-5.3-flash:high",
+      "zai-coding-cn/glm-5.3-flash:high",
+      "baseten/zai-org/GLM-5.3:high",
+      "baseten/zai-org/GLM-5.3-Flash:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
@@ -176,6 +202,8 @@ export const reviewerBModelConfig = {
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/x-ai/grok-4.6",
+      "openrouter/z-ai/glm-5.3:high",
+      "openrouter/z-ai/glm-5.3-flash:high",
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,

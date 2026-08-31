@@ -66,6 +66,7 @@ test("client sends runtime group changes as presence updates", () => {
 		type: "presence",
 		group: "named",
 	});
+	assert.deepEqual(client.groups, ["named"]);
 });
 
 test("client resolves acknowledged runtime group changes", async () => {
@@ -92,4 +93,137 @@ test("client resolves acknowledged runtime group changes", async () => {
 	assert.equal(typeof frame.requestId, "string");
 	internals.handleBrokerMessage({ type: "presence_ack", requestId: frame.requestId, group: "named" });
 	assert.equal(await result, "named");
+	assert.deepEqual(client.groups, ["named"]);
+});
+
+test("client preserves all memberships from an acknowledged multi-group presence update", async () => {
+	const client = new IntercomClient();
+	const frames: Buffer[] = [];
+	const internals = client as unknown as {
+		socket: { destroyed: boolean; writableEnded: boolean; writable: boolean; write(data: Buffer): boolean };
+		_sessionId: string;
+		handleBrokerMessage(message: unknown): void;
+	};
+	internals.socket = {
+		destroyed: false,
+		writableEnded: false,
+		writable: true,
+		write(data) {
+			frames.push(data);
+			return true;
+		},
+	};
+	internals._sessionId = "self";
+
+	const result = client.updatePresenceAcked({ groups: ["alpha", "beta"] });
+	const frame = JSON.parse(frames[0]!.subarray(4).toString("utf8")) as { requestId: string };
+	internals.handleBrokerMessage({ type: "presence_ack", requestId: frame.requestId, group: "alpha" });
+
+	assert.equal(await result, "alpha");
+	assert.deepEqual(client.groups, ["alpha", "beta"]);
+});
+
+test("client joins groups additively and tracks the acknowledged membership set", async () => {
+	const client = new IntercomClient();
+	const frames: Buffer[] = [];
+	const internals = client as unknown as {
+		socket: { destroyed: boolean; writableEnded: boolean; writable: boolean; write(data: Buffer): boolean };
+		_sessionId: string;
+		handleBrokerMessage(message: unknown): void;
+	};
+	internals.socket = {
+		destroyed: false,
+		writableEnded: false,
+		writable: true,
+		write(data) {
+			frames.push(data);
+			return true;
+		},
+	};
+	internals._sessionId = "self";
+
+	const joined = client.joinGroup("reviewers");
+	const frame = JSON.parse(frames[0]!.subarray(4).toString("utf8")) as { requestId: string };
+	assert.deepEqual(
+		{ ...frame, requestId: "request" },
+		{
+			type: "join_group",
+			requestId: "request",
+			group: "reviewers",
+		},
+	);
+	internals.handleBrokerMessage({
+		type: "membership_ack",
+		requestId: frame.requestId,
+		groups: ["default", "reviewers"],
+	});
+
+	assert.deepEqual(await joined, ["default", "reviewers"]);
+	assert.deepEqual(client.groups, ["default", "reviewers"]);
+});
+
+test("client leaves one group while retaining its other memberships", async () => {
+	const client = new IntercomClient();
+	const frames: Buffer[] = [];
+	const internals = client as unknown as {
+		socket: { destroyed: boolean; writableEnded: boolean; writable: boolean; write(data: Buffer): boolean };
+		_sessionId: string;
+		handleBrokerMessage(message: unknown): void;
+	};
+	internals.socket = {
+		destroyed: false,
+		writableEnded: false,
+		writable: true,
+		write(data) {
+			frames.push(data);
+			return true;
+		},
+	};
+	internals._sessionId = "self";
+
+	const left = client.leaveGroup("reviewers");
+	const frame = JSON.parse(frames[0]!.subarray(4).toString("utf8")) as { requestId: string };
+	assert.deepEqual(
+		{ ...frame, requestId: "request" },
+		{
+			type: "leave_group",
+			requestId: "request",
+			group: "reviewers",
+		},
+	);
+	internals.handleBrokerMessage({ type: "membership_ack", requestId: frame.requestId, groups: ["default", "build"] });
+
+	assert.deepEqual(await left, ["default", "build"]);
+	assert.deepEqual(client.groups, ["default", "build"]);
+});
+
+test("client lists every broker group with membership markers", async () => {
+	const client = new IntercomClient();
+	const frames: Buffer[] = [];
+	const internals = client as unknown as {
+		socket: { destroyed: boolean; writableEnded: boolean; writable: boolean; write(data: Buffer): boolean };
+		_sessionId: string;
+		handleBrokerMessage(message: unknown): void;
+	};
+	internals.socket = {
+		destroyed: false,
+		writableEnded: false,
+		writable: true,
+		write(data) {
+			frames.push(data);
+			return true;
+		},
+	};
+	internals._sessionId = "self";
+
+	const listed = client.listGroups();
+	const frame = JSON.parse(frames[0]!.subarray(4).toString("utf8")) as { requestId: string };
+	assert.deepEqual({ ...frame, requestId: "request" }, { type: "list_groups", requestId: "request" });
+	const groups = [
+		{ group: "build", sessionCount: 1, member: false },
+		{ group: "default", sessionCount: 2, member: true },
+	];
+	internals.handleBrokerMessage({ type: "groups", requestId: frame.requestId, groups });
+
+	assert.deepEqual(await listed, groups);
 });

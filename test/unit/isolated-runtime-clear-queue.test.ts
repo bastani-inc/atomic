@@ -3,7 +3,7 @@ import { test } from "vitest";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
-import type { RpcEvent } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
+import type { RpcEvent, RpcResourceExtension } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
 
 function servicesFor(harness: Harness) {
@@ -18,8 +18,10 @@ function servicesFor(harness: Harness) {
 }
 
 function createClearQueueClient() {
+	let generation = 1;
 	let eventListener: ((event: RpcEvent) => void) | undefined;
 	let generationEndedListener: ((event: InteractiveEngineGenerationEnded) => void) | undefined;
+	let resourceExtensions: RpcResourceExtension[] = [];
 	const clearRequests: PromiseWithResolvers<void>[] = [];
 	const client = {
 		onEvent(listener: (event: RpcEvent) => void) {
@@ -34,6 +36,10 @@ function createClearQueueClient() {
 				if (generationEndedListener === listener) generationEndedListener = undefined;
 			};
 		},
+		getGeneration() {
+			return generation;
+		},
+		getState: async () => ({ resourceExtensions }),
 		requestInternal<T>(command: { type: string }): Promise<T> {
 			if (command.type === "clear_queue") {
 				const request = Promise.withResolvers<void>();
@@ -52,6 +58,12 @@ function createClearQueueClient() {
 		},
 		emitGenerationEnded(event: InteractiveEngineGenerationEnded): void {
 			generationEndedListener?.(event);
+		},
+		setGeneration(nextGeneration: number): void {
+			generation = nextGeneration;
+		},
+		setResourceExtensions(extensions: RpcResourceExtension[]): void {
+			resourceExtensions = extensions;
 		},
 		reject(error: Error, index = 0): void {
 			const request = clearRequests[index];
@@ -84,6 +96,53 @@ async function settleRejectedClear(): Promise<void> {
 	await Promise.resolve();
 	await Promise.resolve();
 }
+
+test("ending the current generation clears its cached resource extensions", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		const extensions = [{ path: "/current/extension.ts", hidden: false }];
+		probe.setResourceExtensions(extensions);
+		await runtime.synchronize();
+		assert.deepEqual(runtime.getResourceExtensions(), extensions);
+
+		probe.emitGenerationEnded({
+			generation: 1,
+			error: new Error("engine replaced"),
+			kind: "explicit-stop",
+			expected: true,
+		});
+
+		assert.deepEqual(runtime.getResourceExtensions(), []);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("ending a stale generation preserves the current generation's cached resource extensions", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		const extensions = [{ path: "/current/extension.ts", hidden: false }];
+		probe.setGeneration(2);
+		probe.setResourceExtensions(extensions);
+		await runtime.synchronize();
+		assert.deepEqual(runtime.getResourceExtensions(), extensions);
+
+		probe.emitGenerationEnded({
+			generation: 1,
+			error: new Error("retired engine stopped"),
+			kind: "exit",
+			expected: false,
+		});
+
+		assert.deepEqual(runtime.getResourceExtensions(), extensions);
+	} finally {
+		harness.cleanup();
+	}
+});
 
 test("clearQueue keeps authoritative superset queues without duplicating the failed snapshot", async () => {
 	const harness = await createHarness();

@@ -9,6 +9,7 @@ import {
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.ts";
+import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
@@ -51,6 +52,15 @@ interface TuiAltScreenViewportDeferral {
 	shouldDeferViewportInputToOverlay?(): boolean;
 }
 
+interface TuiAltScreenSelectionInternals {
+	selectionAnchor?: unknown;
+	selectionFocus?: unknown;
+	selectionInitialRange?: unknown;
+	selectionPressActive: boolean;
+	selectionDragged: boolean;
+	lastClick?: unknown;
+}
+
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
 
 export function isOverlayMounted(tui: TUI, component: Component): boolean {
@@ -83,6 +93,7 @@ export interface InteractiveTuiOptions {
 	showHardwareCursor: boolean;
 	logDirectory: string;
 	terminal?: Terminal;
+	copyOnSelect?: boolean;
 	onRightClickPaste?: () => void;
 	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
 	onInternalUiAction?: (url: string) => InternalUiActionResult;
@@ -177,6 +188,8 @@ const viewportInputGates = new WeakMap<AtomicTuiAltScreen, ViewportInputGate>();
 const overlayUnhandledInputHandlers = new WeakMap<AtomicTuiAltScreen, (data: string) => boolean>();
 /** Instances currently replaying overlay-declined input into pi-tui's viewport listener. */
 const viewportInputReplays = new WeakSet<AtomicTuiAltScreen>();
+/** Selections begun over Atomic overlays must never trigger or survive into main-chat clipboard actions. */
+const overlayOwnedSelections = new WeakSet<AtomicTuiAltScreen>();
 interface ViewportInputSubscription {
 	viewportUnsubscribe: () => void;
 	routeListener: TuiInputListener;
@@ -321,7 +334,19 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	 * so removing it after cursor extraction cannot move a column.
 	 */
 	protected override applyLineResets(lines: string[]): string[] {
+		if (overlayOwnedSelections.has(this) && !this.isFocusedOverlay()) this.clearOverlayOwnedSelection();
 		return stripOverlayActiveRowMarker(super.applyLineResets(lines));
+	}
+
+	private clearOverlayOwnedSelection(): void {
+		const selection = this as unknown as TuiAltScreenSelectionInternals;
+		selection.selectionAnchor = undefined;
+		selection.selectionFocus = undefined;
+		selection.selectionInitialRange = undefined;
+		selection.selectionPressActive = false;
+		selection.selectionDragged = false;
+		selection.lastClick = undefined;
+		overlayOwnedSelections.delete(this);
 	}
 
 	/**
@@ -407,6 +432,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		for (const sequence of parseMouseSequences(data) ?? []) {
 			if (isLeftMouseButton(sequence)) viewportListener(sequence.data);
 		}
+		overlayOwnedSelections.add(this);
 	}
 	/**
 	 * Replay input the focused overlay declined. pi-tui's native overlay
@@ -511,6 +537,17 @@ function isCiEnvironment(value: string | undefined): boolean {
 	return normalized !== "" && normalized !== "0" && normalized !== "false";
 }
 
+class LifecycleTimingTerminal extends ProcessTerminal {
+	override write(data: string): void {
+		markLifecycleTiming("first-terminal-write");
+		super.write(data);
+	}
+}
+
+function createProcessTerminal(): ProcessTerminal {
+	return isLifecycleTimingEnabled() ? new LifecycleTimingTerminal() : new ProcessTerminal();
+}
+
 function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
 	if (process.env.TERM?.toLowerCase() === "dumb") return false;
 	if (usesInjectedTerminal) return true;
@@ -527,7 +564,7 @@ function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
  */
 export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScreen {
 	return new AtomicTuiAltScreen(
-		options.terminal ?? new ProcessTerminal(),
+		options.terminal ?? createProcessTerminal(),
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
@@ -538,6 +575,7 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 					openUrl: openBrowser,
 				}),
 			onRightClickPaste: options.onRightClickPaste,
+			copyOnSelect: options.copyOnSelect,
 			copySelection: options.copySelection ?? copySelectionToHostClipboard,
 		},
 		options.shouldHandleViewportInput,
@@ -555,7 +593,7 @@ class AtomicTuiMainScreen extends TuiMainScreen {
 /** Creates the fullscreen renderer for interactive TTY sessions. */
 export function createInteractiveTui(options: InteractiveTuiOptions): InteractiveTui {
 	const usesInjectedTerminal = options.terminal !== undefined;
-	const terminal = options.terminal ?? new ProcessTerminal();
+	const terminal = options.terminal ?? createProcessTerminal();
 	if (!shouldUseFullscreenTui(usesInjectedTerminal)) {
 		// The normal CLI never reaches the interactive mode without a TTY. Keep a
 		// main-screen renderer for internal harnesses and guarded fallback paths.

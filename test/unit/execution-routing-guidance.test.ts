@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -24,7 +25,6 @@ const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}\n
 const workflowDocumentationPaths = [
 	"packages/coding-agent/docs/workflows.md",
 	"packages/coding-agent/docs/quickstart.md",
-	"packages/coding-agent/src/core/atomic-guide-command.ts",
 	"packages/workflows/README.md",
 	"docs/workflow-playbook.md",
 	"README.md",
@@ -735,7 +735,7 @@ describe("workflow-first execution routing", () => {
 			"dynamic fan-out",
 			"adversarial verification",
 			"bounded loop",
-			"@bastani/workflows/builtin",
+			"@bastani/atomic/workflows/builtin",
 			"ctx.workflow(...)",
 			"Nested children",
 			"maxDepth",
@@ -821,18 +821,53 @@ describe("workflow-first execution routing", () => {
 		);
 		expect(returned).toBeDefined();
 		expect(registered?.description).toBe(WORKFLOW_TOOL_DESCRIPTION);
-		expect(registered?.description).toContain(
-			"When steering or communication is useful, use Intercom; address a workflow stage as `<runId>:<stageKey>`.",
+		assert.ok(
+			registered?.description.includes("When steering or communication is useful, use Intercom."),
+			"workflow tool description should direct communication through Intercom",
+		);
+		assert.ok(
+			registered?.description.includes("Before steering a stage, join its invocation group"),
+			"workflow tool description should require joining the invocation group before steering",
 		);
 		expect(registered?.description).toContain(
 			"Live delivery is immediate; a known stage that has not started is queued and receives the message before its first model turn.",
 		);
 		expect(registered?.description).toContain("Use `ask` only for a reply-capable live session.");
+		assert.ok(
+			registered?.description.includes("Intercom `groups` action to discover it"),
+			"workflow tool description should explain invocation-group discovery",
+		);
+		assert.ok(
+			registered?.description.includes("Workflow invocation groups are named `workflow:<rootRunId>`"),
+			"workflow tool description should document invocation-group names",
+		);
 		expect(registered?.description).toContain("answer pending prompts");
 		expect(registered?.description).toContain("pause/resume/interrupt/quit runs");
 		expect(registered?.description).not.toMatch(/workflow send|action ['"]send['"]/i);
 		const readme = await readRepositoryFile("packages/workflows/README.md");
 		expect(readme).toContain(`"description": ${JSON.stringify(WORKFLOW_TOOL_DESCRIPTION)},`);
+	});
+
+	test("requires workflow-group discovery and membership before stage steering", async () => {
+		const routingGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"Before steering a stage, join its invocation group",
+			"Intercom `groups` action to discover it",
+			"Workflow invocation groups are named `workflow:<rootRunId>`",
+		]) {
+			assert.ok(routingGuidance.includes(phrase), `workflow routing guidance should include: ${phrase}`);
+		}
+
+		for (const path of ["packages/intercom/skills/intercom/SKILL.md", "packages/coding-agent/docs/intercom.md"]) {
+			const guidance = await readRepositoryFile(path);
+			for (const phrase of [
+				"Before steering a stage, join its invocation group",
+				"Intercom `groups` action to discover it",
+				"Workflow invocation groups are named `workflow:<rootRunId>`",
+			]) {
+				assert.ok(guidance.includes(phrase), `${path} should include: ${phrase}`);
+			}
+		}
 	});
 
 	test("keeps live workflow communication status, help, docs, and examples on supported actions", async () => {

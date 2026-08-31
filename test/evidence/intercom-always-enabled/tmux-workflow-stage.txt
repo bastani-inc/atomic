@@ -1,0 +1,28 @@
+                                                                                
+atomic-intercom-always-enabled on  feat/intercom-always-enabled is 📦 v0.0.0 via 🦀 v1.97.0 
+❯ ATOMIC_CODING_AGENT_DIR=/tmp/iaef node packages/coding-agent/dist/cli.js --pro
+vider openai-codex --model gpt-5.6-sol --print --no-session "/workflow intercom-restrictive-e2e"
+Intercom heavy initialization failed; a later call will retry: Client disconnected Error: Client disconnected
+    at Socket.onClose (/Users/tonystark/Documents/projects/atomic-intercom-always-enabled/packages/intercom/broker/client.ts:213:57)
+    at Socket.emit (node:events:514:20)
+    at Pipe.<anonymous> (node:net:362:12)
+╭ RUN intercom-restrictive-e2e  ✓ completed ───────────────────────────────────────────────────────╮
+│ run id  768d8480-cd27-4a75-ab19-f32a24598af7                                                     │
+│                                                                                                  │
+│ workflow      intercom-restrictive-e2e                                                           │
+│ state         ✓ completed                                                                        │
+│ mode          single                                                                             │
+│ started       02:32:31                                                                           │
+│ ended         02:32:52                                                                           │
+│ duration      20s                                                                                │
+│                                                                                                  │
+│ STAGES                                                                                           │
+│ ✓ restricted-st…completed 20s                                                                    │
+│                                                                                                  │
+│ ARTIFACTS                                                                                        │
+│ result        {"result":"WORKFLOW_INTERCOM_OK\nworkflow:768d8480-cd27-4a75-ab19-f32a24598af7"}   │
+│                                                                                                  │
+│ ▸ workflow status id=768d8480-cd27-4a75-ab19-f32a24598af7    inspect retained state              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+atomic-intercom-always-enabled on  feat/intercom-always-enabled is 📦 v0.0.0 via 🦀 v1.97.0 
+❯                                                                     took 26s 

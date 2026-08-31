@@ -1,6 +1,6 @@
 import type { Provider } from "@bastani/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
-import { type EventBus, registerCanonicalEventBus } from "../event-bus.ts";
+import { canonicalEventBusFor, type EventBus, registerCanonicalEventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import {
@@ -69,7 +69,7 @@ export function createExtensionAPI(
 			return unsubscribe;
 		},
 	};
-	registerCanonicalEventBus(events, eventBus);
+	registerCanonicalEventBus(events, canonicalEventBusFor(eventBus));
 	const api = {
 		on(event: string, handler: HandlerFn): void {
 			assertActive();

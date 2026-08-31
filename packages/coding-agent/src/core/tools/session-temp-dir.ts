@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, realpathSync, rmSync, type Stats } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, sep } from "node:path";
-import { APP_NAME } from "../../config.ts";
+import { APP_NAME } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
 	resetWindowsDirectorySecurityStateForTesting,

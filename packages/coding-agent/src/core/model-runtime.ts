@@ -28,7 +28,7 @@ import {
 	type Provider,
 } from "@bastani/pi-ai";
 import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir } from "../config.js";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
@@ -105,6 +105,13 @@ export class CredentialSynchronizationError extends Error {
 			configurable: true,
 		});
 	}
+}
+export interface ExtensionProviderTransaction {
+	registerNativeProvider(provider: Provider): void;
+	registerProvider(providerId: string, config: ProviderConfigInput): void;
+	unregisterProvider(providerId: string): void;
+	hasConfiguredAuth(providerId: string): boolean;
+	commit(): Promise<void>;
 }
 
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
@@ -812,6 +819,87 @@ export class ModelRuntime implements Models {
 			}
 		}
 		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
+	}
+
+	createExtensionProviderTransaction(replacedProviderIds: Iterable<string> = []): ExtensionProviderTransaction {
+		const nativeProviders = new Map(this.nativeExtensionProviders);
+		const providers = new Map(this.extensionProviders);
+		for (const providerId of replacedProviderIds) {
+			nativeProviders.delete(providerId);
+			providers.delete(providerId);
+		}
+		const configuredProviders = new Set(this.snapshot.configuredProviders);
+		for (const providerId of replacedProviderIds) configuredProviders.delete(providerId);
+		return {
+			registerNativeProvider: (provider) => {
+				if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
+				providers.delete(provider.id);
+				if (this.snapshot.storedProviders.has(provider.id)) configuredProviders.add(provider.id);
+				nativeProviders.set(provider.id, provider);
+			},
+			registerProvider: (providerId, config) => {
+				validateExtensionProvider(
+					providerId,
+					this.builtins.get(providerId),
+					this.config.getProvider(providerId),
+					config,
+				);
+				nativeProviders.delete(providerId);
+				const effective: ProviderConfigInput = { ...providers.get(providerId) };
+				for (const [key, value] of Object.entries(config)) {
+					if (value !== undefined) (effective as Record<string, unknown>)[key] = value;
+				}
+				if (
+					this.snapshot.storedProviders.has(providerId) ||
+					configuredRequestAuthStatus(this.config.getProvider(providerId), effective)?.configured
+				) {
+					configuredProviders.add(providerId);
+				} else configuredProviders.delete(providerId);
+				providers.set(providerId, effective);
+			},
+			unregisterProvider: (providerId) => {
+				providers.delete(providerId);
+				configuredProviders.delete(providerId);
+				nativeProviders.delete(providerId);
+			},
+			hasConfiguredAuth: (providerId) => configuredProviders.has(providerId),
+			commit: async () => {
+				const previous = {
+					extensionProviders: new Map(this.extensionProviders),
+					nativeExtensionProviders: new Map(this.nativeExtensionProviders),
+					builtins: new Map(this.builtins),
+					config: this.config,
+					snapshot: this.snapshot,
+					compositionErrors: new Map(this.compositionErrors),
+				};
+				try {
+					this.extensionProviders.clear();
+					for (const [providerId, config] of providers) this.extensionProviders.set(providerId, config);
+					this.nativeExtensionProviders.clear();
+					for (const [providerId, provider] of nativeProviders)
+						this.nativeExtensionProviders.set(providerId, provider);
+					this.rebuildProviders();
+					this.markCatalogInputsChanged();
+					await this.runRefresh({ allowNetwork: false }, ++this.refreshSequence, true);
+				} catch (error) {
+					this.extensionProviders.clear();
+					for (const [providerId, config] of previous.extensionProviders)
+						this.extensionProviders.set(providerId, config);
+					this.nativeExtensionProviders.clear();
+					for (const [providerId, provider] of previous.nativeExtensionProviders)
+						this.nativeExtensionProviders.set(providerId, provider);
+					this.builtins.clear();
+					for (const [providerId, provider] of previous.builtins) this.builtins.set(providerId, provider);
+					this.config = previous.config;
+					this.rebuildProviders();
+					this.snapshot = previous.snapshot;
+					this.compositionErrors.clear();
+					for (const [providerId, message] of previous.compositionErrors)
+						this.compositionErrors.set(providerId, message);
+					throw error;
+				}
+			},
+		};
 	}
 
 	registerNativeProvider(provider: Provider): void {

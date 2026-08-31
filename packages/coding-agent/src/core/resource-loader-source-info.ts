@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { getProjectConfigDirs } from "../config.ts";
+import { getProjectConfigDirs } from "../config.js";
 import type { Extension } from "./extensions/types.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";

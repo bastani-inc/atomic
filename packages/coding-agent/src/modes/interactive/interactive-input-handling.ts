@@ -1,3 +1,4 @@
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import {
 	interactiveEngineNeedsExplicitTermination,
@@ -117,6 +118,9 @@ InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveMode
 	});
 	this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 	this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
+	this.defaultEditor.onAction("app.message.copy", () => {
+		void this.handleCopyCommand({ preferSelection: true });
+	});
 	this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
 	this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
 	this.defaultEditor.onAction("app.session.fork", () => this.showUserMessageSelector());
@@ -255,6 +259,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 		if (!this.firstSubmitRecorded) {
 			this.firstSubmitRecorded = true;
 			recordTimeSinceReset("interactive-first-submit");
+			markLifecycleTiming("interactive-first-submit");
 		}
 		// pi-tui trims, expands pastes, and clears the editor before it calls
 		// onSubmit, so the callback argument is already reduced. Prefer the buffer
@@ -335,11 +340,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			if (text === "/changelog") {
 				this.handleChangelogCommand();
 				this.editor.setText("");
-				return;
-			}
-			if (text === "/atomic" || text.startsWith("/atomic ")) {
-				this.editor.setText("");
-				await this.session.prompt(text);
 				return;
 			}
 			if (text === "/hotkeys") {

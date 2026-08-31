@@ -175,6 +175,8 @@ export interface AgentSessionReloadOptions {
 	reason?: "startup" | "reload";
 	/** Runs after resources and the extension runtime are rebuilt, immediately before session_start. */
 	beforeSessionStart?: () => void | Promise<void>;
+	/** Leave the existing extension runner active unless every extension factory loaded successfully. */
+	failOnExtensionErrors?: boolean;
 }
 
 export interface PromptOptions {

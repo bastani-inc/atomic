@@ -7,7 +7,7 @@ import {
 	type TUI,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
-import { getAgentDir } from "../../config.ts";
+import { getAgentDir } from "../../config.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.ts";

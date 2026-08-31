@@ -2,7 +2,7 @@
 // only position from which the stderr cap covers the other modules' own initialization.
 import "./bounded-stderr-install.js";
 import net from "net";
-import { writeFileSync, unlinkSync, mkdirSync } from "fs";
+import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
@@ -17,8 +17,15 @@ import {
   type PendingStageRoute,
 } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
-import { normalizeGroup } from "../group.js";
+import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
+import {
+	knownGroupSummaries,
+	sessionGroups,
+	sessionsInGroup,
+	sessionsVisibleTo,
+	setSessionGroups,
+} from "./group-membership.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
@@ -95,6 +102,11 @@ function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id">
     return false;
   }
 
+
+  if (session.groups !== undefined &&
+    (!Array.isArray(session.groups) || !session.groups.every((group) => typeof group === "string"))) {
+    return false;
+  }
   return session.status === undefined || typeof session.status === "string";
 }
 function isSupervisorRegistration(value: unknown): value is SupervisorRegistration {
@@ -134,6 +146,7 @@ class IntercomBroker {
     this.server.listen(SOCKET_PATH, () => {
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
+      this.scheduleShutdownCheck();
     });
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
@@ -154,10 +167,8 @@ class IntercomBroker {
     socket.on("data", reader);
 
     socket.on("close", () => {
-      if (sessionId) {
-        this.disconnectSession(sessionId);
-        this.scheduleShutdownCheck();
-      }
+      if (sessionId) this.disconnectSession(sessionId);
+      this.scheduleShutdownCheck();
     });
 
     socket.on("error", (error) => {
@@ -247,7 +258,7 @@ class IntercomBroker {
       this.pendingStageRoutes.delete(route.runId);
       return false;
     }
-		if (route.liveTargetId === undefined && normalizeGroup(route.from.info.group) !== normalizeGroup(ownerRegistration.group)) {
+		if (route.liveTargetId === undefined && !hasGroup(sessionGroups(route.from.info), ownerRegistration.group)) {
       writeMessage(route.socket, {
         type: "delivery_failed",
         messageId: route.message.id,
@@ -490,7 +501,7 @@ class IntercomBroker {
 			target === undefined ||
 			target.info.id === currentId ||
 			normalizeGroup(target.registrationGroup) !== routeGroup ||
-			normalizeGroup(target.info.group) !== routeGroup
+			!hasGroup(sessionGroups(target.info), routeGroup)
 		) {
 			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
 			return;
@@ -596,15 +607,17 @@ class IntercomBroker {
 
         const id = randomUUID();
         setId(id);
+        const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
+        const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
         const info: SessionInfo = {
           ...clientMessage.session,
           id,
-          group: normalizeGroup(clientMessage.session.group),
         };
+		setSessionGroups(info, initialGroups, legacyGroup);
         this.sessions.set(id, {
           socket,
           info,
-          registrationGroup: info.group,
+          registrationGroup: legacyGroup,
 			...(typeof info.name === "string" && info.name.trim().length > 0
 				? { registrationName: info.name.trim() }
 				: {}),
@@ -625,7 +638,7 @@ class IntercomBroker {
         writeMessage(socket, supervisorId
           ? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
           : { type: "registered", sessionId: id });
-        this.broadcastToGroup({ type: "session_joined", session: info }, info.group, id);
+        this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
         break;
       }
 
@@ -645,13 +658,23 @@ class IntercomBroker {
         }
 
         const requester = currentId ? this.sessions.get(currentId) : undefined;
-        const effectiveGroup = normalizeGroup(
-          typeof clientMessage.group === "string" ? clientMessage.group : requester?.info.group,
-        );
-        const sessions = Array.from(this.sessions.values())
-          .map((s) => s.info)
-          .filter((info) => normalizeGroup(info.group) === effectiveGroup);
+		if (requester === undefined) throw new Error("Session not found");
+        const sessions = typeof clientMessage.group === "string"
+			? sessionsInGroup(this.sessions, clientMessage.group)
+			: sessionsVisibleTo(this.sessions, requester.info);
         writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
+        break;
+      }
+
+	  case "list_groups": {
+		if (typeof clientMessage.requestId !== "string") throw new Error("Invalid list_groups message");
+		const requester = currentId ? this.sessions.get(currentId) : undefined;
+		if (requester === undefined) throw new Error("Session not found");
+		writeMessage(socket, {
+			type: "groups",
+			requestId: clientMessage.requestId,
+			groups: knownGroupSummaries(this.sessions, requester.info),
+		});
         break;
       }
 
@@ -815,7 +838,9 @@ class IntercomBroker {
 			break;
 		}
 
-      case "presence": {
+      case "presence":
+	  case "join_group":
+	  case "leave_group": {
         handleBrokerPresence(
           socket,
           clientMessage,
@@ -881,15 +906,33 @@ class IntercomBroker {
 		if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
 	}
 	this.sessions.delete(sessionId);
-	this.broadcastToGroup({ type: "session_left", sessionId }, departed.info.group, sessionId);
+	this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
 	}
-  /** Deliver a broadcast only to sessions in the given (normalized) group. */
-  private broadcastToGroup(msg: BrokerMessage, group: string | undefined, exclude?: string): void {
-    const target = normalizeGroup(group);
+  /** Deliver a broadcast once to each session represented in any given group. */
+  private broadcastToMemberships(msg: BrokerMessage, groups: ReadonlySet<string>, exclude?: string): void {
     for (const [id, session] of this.sessions) {
-      if (id !== exclude && normalizeGroup(session.info.group) === target) {
+      if (id !== exclude && [...groups].some((group) => hasGroup(sessionGroups(session.info), group))) {
         writeMessage(session.socket, msg);
       }
+    }
+  }
+
+  private readPidFile(): number | undefined {
+    try {
+      const pid = Number.parseInt(readFileSync(PID_PATH, "utf-8").trim(), 10);
+      return Number.isFinite(pid) ? pid : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Unlink the pid file only while this process still owns PID_PATH. */
+  private unlinkRuntimeFilesIfOwned(): void {
+    if (this.readPidFile() !== process.pid) return;
+    try {
+      unlinkSync(PID_PATH);
+    } catch {
+      // The PID file may already be gone if startup never completed.
     }
   }
 
@@ -906,19 +949,14 @@ class IntercomBroker {
     this.liveWorkflowStageRouteActivations.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
-    if (process.platform !== "win32") {
-      try {
-        unlinkSync(SOCKET_PATH);
-      } catch {
-        // The socket may already be gone if shutdown started after a disconnect.
-      }
+    const ownsRuntime = this.readPidFile() === process.pid;
+    this.unlinkRuntimeFilesIfOwned();
+    // Node unlinks a Unix socket path on server.close() even after a successor
+    // rebound that path. Skip close when we no longer own the pid; process.exit
+    // still closes our fd. Windows named pipes are not path-unlinked this way.
+    if (process.platform === "win32" || ownsRuntime) {
+      this.server.close();
     }
-	try {
-		unlinkSync(PID_PATH);
-    } catch {
-      // The PID file may already be gone if startup never completed.
-    }
-    this.server.close();
     process.exit(0);
   }
 }

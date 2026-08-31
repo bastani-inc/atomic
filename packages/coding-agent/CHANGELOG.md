@@ -2,6 +2,161 @@
 
 ## [Unreleased]
 
+## [0.9.18-alpha.2] - 2026-08-31
+
+### Fixed
+
+- Fixed the `0.9.18-alpha.1` Windows x64 and ARM64 release archives crashing before startup because Bun 1.4.0 bytecode launchers were cross-compiled on Linux. Tagged releases now build both Windows archives on a Windows host, smoke-test the x64 archive, and stage both architectures into the release payload ([#2781](https://github.com/bastani-inc/atomic/pull/2781)).
+
+## [0.9.18-alpha.1] - 2026-08-30
+
+### Changed
+
+- Interactive startup now paints the themed identity and focused editor before isolated-engine binding completes, while first submissions wait for the complete optional resource set. Escape cancels a submission still blocked on readiness, and `/reload` can retry after an extension failure without restarting Atomic. Failed transactional candidates do not publish host-managed settings, providers, tools, resources, event subscriptions, or system-prompt state. Compiled builds syntax-minify the shared application sidecar without identifier minification and now use Bun bytecode launchers on Windows x64 and ARM64, matching Linux and macOS. No measured Windows speedup is claimed yet.
+- Bun compiled and bundled single-file builds now native-import the five fixed Atomic builtin extension bundles once and reuse their evaluated factories across reloads, avoiding jiti source reads, transforms, hashing, and graph-manifest work for immutable shipped code. Editable user, project, and package extensions and user workflows continue to use content-hash invalidation and re-evaluate after direct or transitive source edits.
+
+### Fixed
+
+- Restored the interactive startup resource listing so loaded context files, prompts, skills, extensions, and themes are named on screen by default, with source paths available in the expanded view. Prompt commands now appear once with their slash-prefixed labels, and Ctrl+O expands resource sections nested in the startup disclosure. The Extensions section includes isolated engine-child extensions without loading them again in the terminal host, labels bundled extensions by package name in the compact view, and disambiguates local labels that collide with those builtin names. It prefers compact parent segments, falls back to the local display path when no parent is available, and uses deterministic numeric suffixes only for remaining duplicates. The listing preserves overlap warnings when it refreshes and keeps an extension hidden when either inventory marks its identity hidden. Windows expanded listings also omit trailing extension `index.ts` and `index.js` entry names consistently with other platforms.
+
+### Removed
+
+- Removed the `/atomic` onboarding and help guide command. Use `/workflow list` to explore built-in workflows, `/changelog` for release notes, and `/hotkeys` for keyboard shortcuts.
+
+## [0.9.17] - 2026-08-29
+
+Cumulative release of the `0.9.17-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Fixed
+
+- Idle intercom brokers now exit after the 5-second shutdown window even when no session ever registered, including sockets that close before register. An evicted incumbent does not delete a successor's socket or pid file ([#2765](https://github.com/bastani-inc/atomic/issues/2765)).
+
+## [0.9.17-alpha.1] - 2026-08-29
+
+### Fixed
+
+- Idle intercom brokers now exit after the 5-second shutdown window even when no session ever registered, including sockets that close before register. An evicted incumbent does not delete a successor's socket or pid file ([#2765](https://github.com/bastani-inc/atomic/issues/2765)).
+
+## [0.9.16] - 2026-08-29
+
+Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Breaking Changes
+
+- `AgentSession` now invokes a caller-supplied `Agent.shouldStopAfterTurn` callback before `prepareNextTurn` or `prepareNextTurnWithContext`. Preparation runs only after the loop or a non-empty steering/follow-up queue establishes that another assistant turn will start; it no longer runs after final responses, terminating tool batches without queued work, or a stop callback that returns `true`. For a post-tool threshold crossing, Atomic compacts first, passes that compacted context to preparation, and uses the caller's complete returned replacement for the next provider request. Callers that used preparation as an after-every-turn notification must move that work to `shouldStopAfterTurn` or session events ([#6879](https://github.com/earendil-works/pi/issues/6879)).
+- Removed the public `workflow send` action. Use `workflow answer` for pending workflow prompts and ordinary Intercom for workflow-stage communication.
+- Workflow source that typechecks against the legacy bare `@bastani/workflows` specifier must migrate to `@bastani/atomic/workflows`; removing the broken ambient declaration bridge intentionally removes TypeScript resolution for the legacy name. Runtime loading remains backward compatible because Atomic continues to alias `@bastani/workflows` to the in-memory SDK. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
+
+### Added
+
+- Added JSON-only terminal capability overrides for hyperlinks, Kitty/iTerm2 images, and truecolor, plus a live `fullscreenCopyOnSelect` setting. With automatic selection copying disabled, Ctrl+X copies the retained fullscreen selection before falling back to the last assistant message, while `/copy` keeps its last-message behavior and workflow/scoped-selector hierarchy transitions retain precedence.
+- Added `ui_prompt_start` and `ui_prompt_end` extension events around blocking `ctx.ui` prompts so integrations can distinguish active agent work from waiting for user input. Nested and overlapping prompts form one balanced outer span, and prompt failures or UI-context replacement still emit the matching end notification without delaying the prompt UI. ([#5329](https://github.com/earendil-works/pi/issues/5329))
+- Added fast-mode support for eligible GitHub Copilot models advertised by the signed-in account, alongside the existing OpenAI priority service tier. Chat and workflow scopes remain independently configurable with `/fast`.
+- Added `/thinking [level]` plus searchable model and per-model thinking selectors. Selectors show saved defaults, search by model/provider/default state, order the current and default models first, and use `Ctrl+S` to persist a startup default while Enter changes only the current session ([#8399](https://github.com/earendil-works/pi/issues/8399)).
+- Added a Windows PowerShell tool that prefers PowerShell 7 and falls back to Windows PowerShell when `pwsh.exe` or `powershell.exe` is on `PATH`. The tool is omitted when neither executable is available and is exposed through the SDK with typed extension events and result guards. Bash remains the shell for `!`/`!!`, plus Windows/WSL-friendly default keybindings ([#8512](https://github.com/earendil-works/pi/issues/8512)).
+- Added path-aware, deduplicated settings diagnostics and routed startup diagnostics into the fullscreen transcript so alternate-screen startup cannot hide configuration errors.
+- Added transcript billing notices for compaction and branch summaries when cache-miss notices are enabled. Verbatim Compaction aggregates usage from every completed planner response, including retries, into the persisted boundary, session statistics, footer totals, and cost breakdowns.
+- Added export-only `atomic.share` context records containing the system prompt and tool schemas. Session sharing keeps private-Gist transport and Atomic viewer URLs; no persisted session is mutated and no Radius upload is introduced.
+- Added RPC `clear_queue` to retrieve and remove queued steering and follow-up messages ([#8432](https://github.com/earendil-works/pi/issues/8432)).
+- Exported `detectSupportedImageMimeTypeFromFile` from the public coding-agent API ([#8600](https://github.com/earendil-works/pi/pull/8600)).
+
+### Changed
+
+- Updated the external Pi runtime dependencies to 0.84.4, inheriting nested autocomplete ordering, surrogate-safe chunked terminal writes above 1 MiB, slash/kebab double-click selection, the 0.84.3 agent/client/protocol updates, and TUI fixes for narrow-width padding and wrapped Markdown-table link colors ([#8252](https://github.com/earendil-works/pi/issues/8252), [#8335](https://github.com/earendil-works/pi/issues/8335)).
+- Ordinary bundled `intercom` is now a mandatory runtime tool in main chat and SDK-created model sessions. Tool and extension allowlists, exclusions, no-tool and deferred-resource modes, supplied loaders, overrides, same-name custom/project collisions, runtime active-tool mutation, and reload preserve its trusted definition without changing restrictions on any other tool. Fresh SDK sessions do not load optional bundled workflow, subagent, MCP, or web-access extensions unless configured.
+- Updated Baseten's default model from `zai-org/GLM-5.2` to the directly selectable `zai-org/GLM-5.3`; GLM-5.2 remains available when fully disabled reasoning is required, while GLM-5.3 Flash provides multimodal input.
+- Installed builtin extensions (`workflows`, `subagents`, `mcp`, `web-access`, `intercom`) now ship as prebundled ESM entry files. Resource trees (`skills/`, `agents/`, workflow builtins) stay on disk; leftover extension TypeScript is pruned from the npm/binary payload. Source maps stay in the published `dist/`, matching upstream pi.
+- Main-chat model fallback is now session-sticky: after failover, later turns keep using the selected fallback model and thinking level until an explicit `/model` selection or model cycle changes it.
+- The default system prompt now teaches repository-intent inference when a shell tool is available: review recent commits, open and merged PRs, issues and their comments, and project/board status to learn maintainer conventions, and identify the requesting user (`git config user.name`/`user.email`, `gh api user`) to interpret ambiguous requests through their own patterns.
+- The ask_user_question fallback guideline now instructs the agent, when no human input channel exists, to choose the interpretation best supported by the repository and stated objective — mining git history, commits, PRs, issues, and the user's own comments to infer how they would decide — state the assumption, and continue fully autonomously instead of stalling.
+- Model and thinking-level changes are session-scoped by default; saved per-model thinking overrides determine startup behavior, and persistence is now explicit through `Ctrl+S` ([#8356](https://github.com/earendil-works/pi/issues/8356)).
+- Skill discovery silently ignores ordinary root Markdown files without skill frontmatter, continues diagnosing malformed declared skills, and loads nested Markdown skills from packages ([#8012](https://github.com/earendil-works/pi/issues/8012), [#8255](https://github.com/earendil-works/pi/issues/8255)).
+- llama.cpp catalogs now expose sleeping models, refresh local-router catalogs even in offline mode, detect autoload support and offer presets, and explain when `/llama` is required after login ([#8235](https://github.com/earendil-works/pi/issues/8235), [#8236](https://github.com/earendil-works/pi/issues/8236), [#8238](https://github.com/earendil-works/pi/issues/8238), [#8558](https://github.com/earendil-works/pi/issues/8558)).
+- Deferred uncommon syntax grammars until after first render to reduce interactive startup work while keeping common languages available immediately.
+- Extension examples whose intent is final settlement now listen for `agent_settled`; JSON mode exposes tool-call ID and tool name at stream start; session-share links use canonical terminal hyperlinks and perform GitHub authentication preflight before export ([#8242](https://github.com/earendil-works/pi/issues/8242), [#7953](https://github.com/earendil-works/pi/issues/7953)).
+- Compaction now reports truthful aggregate planner usage notices, including multi-attempt Verbatim planning, when cache-miss notices are enabled.
+- Documented `/thinking`, the Ctrl+S startup-default shortcut in the model and thinking pickers, and the `modelThinkingLevels` setting.
+
+### Fixed
+
+- Fixed workflow discovery helpers from Git-installed production-only packages by making the workflow module loader resolve the same supported TypeBox runtime aliases as extension loading, including `typebox/compile`, `typebox/value`, and legacy `@sinclair/typebox` subpaths.
+- Fixed independent workflow launches appearing indefinitely as empty `running` runs when another workflow's DBOS write stalled. Durable write ordering and errors are isolated per root workflow without weakening the global shutdown drain.
+- Fixed `/fast` command and selector copy that still described fast mode as OpenAI/Codex-only after GitHub Copilot fast variants became eligible.
+- Fixed large tool results crossing the auto-compaction threshold being sent to the provider before compaction. Atomic compacts between tool execution and the next assistant response in the same run, and restores interactive progress when that run resumes ([#6879](https://github.com/earendil-works/pi/issues/6879)).
+- Prevented steering or follow-up messages queued while `shouldStopAfterTurn` resolves `true` from automatically starting another provider request. The stopped run now leaves that work pending for a later explicit prompt or continuation.
+- Fixed `/model` and `/thinking` Ctrl+S failing to persist startup defaults in isolated interactive mode. Isolated mode now refreshes the host settings view and remote scoped-model catalog after the engine acknowledges persist, and `set_thinking_level` can include the engine's clamped level plus the provider/model the engine persisted against so a later `model_changed` cannot re-key the saved thinking override ([#2727](https://github.com/bastani-inc/atomic/issues/2727)).
+- Fixed installed packages where the intercom broker failed to start on every launch, leaving both the `intercom` and `subagent` tools entirely non-functional.
+- Fixed Bun-compiled binaries crashing when a transformed extension performed a second `proper-lockfile` operation. Compiled extension imports now reuse the host's lockfile module instead of transforming and proxy-wrapping its mutable internals.
+- Fixed the published workflow SDK so importing `@bastani/atomic` no longer injects the workflows graph into every consumer's TypeScript program, consumers can typecheck against the package again, and workflow authoring types no longer silently collapse to `any`. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
+- Workflow stages on installed/prebundled builds now resolve credentials from `~/.atomic/agent` again instead of creating an empty `~/.workflows/agent` and reporting `No API key found` for every provider.
+- Coalesced same-turn sibling `subagent` execution calls into one indexed parallel run instead of rejecting every call after the first ([#2588](https://github.com/bastani-inc/atomic/issues/2588)).
+- Fixed `/thinking` being absent from slash-command autocomplete and added completions for the active model's available thinking levels.
+- Fixed `/tree` ranking below `/thinking` in slash-command autocomplete, so typing `/t` again offers branch navigation before the thinking-level command.
+- Fixed the thinking-level selector so a capability-clamped default still receives the default badge when the saved setting is higher than the active model supports.
+- Fixed the per-model thinking-level settings row opening an empty, unexplained picker when no models are available; it now states that a provider login or API key is required.
+- Failed extension loads now roll back provider registrations applied during that load instead of leaving an earlier provider in the runtime.
+- PowerShell cancellation now terminates the Windows process tree and returns without waiting on descendant-held stdout or stderr.
+- Fixed PowerShell tool calls rendering with the Bash `$` transcript prompt. PowerShell calls now render as `PS> <command>`, and truncated PowerShell output is saved under its own temp-file prefix.
+- Fixed Windows compiled binaries crashing with `ERR_INVALID_FILE_URL_PATH` when Return reached native modifier detection, including from the `/model` selector.
+- Fixed `bundle:dev` and `start:fast` omitting the statically registered OAuth adapters. Development bundles now use the Bun entrypoint shared with compiled builds, so OpenAI Codex and xAI OAuth derivation and refresh no longer fail on unresolved runtime imports.
+- Fixed duplicate fullscreen right-click paste in VS Code-based terminals on Windows ([#8186](https://github.com/earendil-works/pi/issues/8186)).
+- Fixed padded text exceeding narrow terminal widths ([#8252](https://github.com/earendil-works/pi/issues/8252)).
+- Fixed wrapped Markdown table links leaking color into borders and neighboring cells, including tables inside blockquotes ([#8335](https://github.com/earendil-works/pi/issues/8335)).
+- Compaction failures and cancellations now emit `session_compact_failed` to extensions and expose public failure details with their trigger, error, abort/retry state, and whether an extension supplied the compacted text ([#8241](https://github.com/earendil-works/pi/issues/8241)).
+- Automatic compaction now estimates message size when providers report all-zero usage instead of silently skipping the threshold check ([#8328](https://github.com/earendil-works/pi/issues/8328)).
+- Branch and session summaries reject tool calls, and their requests explicitly disable tools; planner requests do the same while retaining validated truncated-range recovery.
+- Branch and session summaries reject token-cap-truncated prose instead of persisting incomplete checkpoints ([#7048](https://github.com/earendil-works/pi/issues/7048)).
+- Branch summaries record the source leaf rather than the navigation destination.
+- Fixed package updates comparing versions for inequality and potentially downgrading a newer installed package; upgrades now use semantic-version ordering ([#8239](https://github.com/earendil-works/pi/issues/8239)).
+- Fixed extension flags accepting runtime defaults whose value did not match the declared boolean/string type, and failed extension factories leaking partially registered commands, tools, flags, and inherited resources into later loads ([#8123](https://github.com/earendil-works/pi/issues/8123), [#8424](https://github.com/earendil-works/pi/issues/8424)).
+- Fixed hung authenticated model-catalog attempts consuming the whole request budget without retrying by applying a per-attempt timeout before retrying.
+- Fixed UTF-8 BOMs breaking auth, model, keybinding, frontmatter, package, resource, theme, CLI, and external-editor text inputs while preserving BOM-aware hashline edits.
+- Fixed atomic managed-state rewrites resetting existing file permissions. `auth.json` and `models-store.json` are created owner-only (`0600`) but keep an administrator-managed mode across later rewrites.
+- Fixed explicitly persisted default models disappearing from non-empty model scopes; persisted defaults are now added to both the active and saved scope.
+- Fixed extension messages sent with `triggerTurn: false` while the agent is running being inserted between a tool call and its result; they are now appended after the turn's tool results ([#8537](https://github.com/earendil-works/pi/issues/8537)).
+- Fixed compaction range planning and branch/session summaries forcing `toolChoice: "none"`, which sent `tool_choice` with no tools and could be rejected by gateways ([#8649](https://github.com/earendil-works/pi/issues/8649), [#8638](https://github.com/earendil-works/pi/issues/8638)).
+- Fixed Windows shell aborts crashing Atomic when `taskkill.exe` is not on `PATH`. Both `killProcessTree` and the detached-child guardian worker now spawn the System32 executable and consume the asynchronous spawn error ([#6596](https://github.com/earendil-works/pi/issues/6596)).
+- Fixed Windows `taskkill` spawning without `windowsHide`. Because the spawn is `detached`, Windows allocated and briefly flashed a console window on every process-tree kill.
+- Fixed session files whose final record has no trailing newline not being repaired on load, so a later append no longer concatenates onto that record.
+- Fixed toggling thinking-block visibility discarding partial Bash output. Rendered assistant messages are updated in place instead of rebuilding the chat and its live tool components ([#8611](https://github.com/earendil-works/pi/issues/8611)).
+
+### Removed
+
+- Removed the bundled writing-rule set from the default system prompt's `Guidelines` section. The unrelated "Be concise in your responses" and "Show file paths clearly when working with files" guidelines remain.
+- Removed the bundled `/subagents-doctor`, `/run`, and `/parallel` entries from the slash-command catalog, and dropped `/parallel-review` and `/parallel-cleanup` suggestions from the `/atomic` guide. Launch children with the `subagent` tool.
+
+## [0.9.16-alpha.11] - 2026-08-28
+
+### Added
+
+- Added JSON-only terminal capability overrides for hyperlinks, Kitty/iTerm2 images, and truecolor, plus a live `fullscreenCopyOnSelect` setting. With automatic selection copying disabled, Ctrl+X copies the retained fullscreen selection before falling back to the last assistant message, while `/copy` keeps its last-message behavior and workflow/scoped-selector hierarchy transitions retain precedence.
+
+### Changed
+
+- Updated the external Pi runtime dependencies to 0.84.4, inheriting nested autocomplete ordering, surrogate-safe chunked terminal writes above 1 MiB, and slash/kebab double-click selection.
+- Ordinary bundled `intercom` is now a mandatory runtime tool in main chat and SDK-created model sessions. Tool and extension allowlists, exclusions, no-tool and deferred-resource modes, supplied loaders, overrides, same-name custom/project collisions, runtime active-tool mutation, and reload preserve its trusted definition without changing restrictions on any other tool. Fresh SDK sessions do not load optional bundled workflow, subagent, MCP, or web-access extensions unless configured.
+
+### Fixed
+
+- Fixed workflow discovery helpers from Git-installed production-only packages by making the workflow module loader resolve the same supported TypeBox runtime aliases as extension loading, including `typebox/compile`, `typebox/value`, and legacy `@sinclair/typebox` subpaths.
+- Fixed independent workflow launches appearing indefinitely as empty `running` runs when another workflow's DBOS write stalled. Durable write ordering and errors are isolated per root workflow without weakening the global shutdown drain.
+- Fixed `/fast` command and selector copy that still described fast mode as OpenAI/Codex-only after GitHub Copilot fast variants became eligible.
+
+## [0.9.16-alpha.10] - 2026-08-28
+
+### Breaking Changes
+
+- `AgentSession` now invokes a caller-supplied `Agent.shouldStopAfterTurn` callback before `prepareNextTurn` or `prepareNextTurnWithContext`. Preparation runs only after the loop or a non-empty steering/follow-up queue establishes that another assistant turn will start; it no longer runs after final responses, terminating tool batches without queued work, or a stop callback that returns `true`. For a post-tool threshold crossing, Atomic compacts first, passes that compacted context to preparation, and uses the caller's complete returned replacement for the next provider request. Callers that used preparation as an after-every-turn notification must move that work to `shouldStopAfterTurn` or session events ([#6879](https://github.com/earendil-works/pi/issues/6879)).
+
+### Changed
+
+- Updated Baseten's default model from `zai-org/GLM-5.2` to the directly selectable `zai-org/GLM-5.3`; GLM-5.2 remains available when fully disabled reasoning is required, while GLM-5.3 Flash provides multimodal input.
+
+### Fixed
+
+- Fixed large tool results crossing the auto-compaction threshold being sent to the provider before compaction. Atomic compacts between tool execution and the next assistant response in the same run, and restores interactive progress when that run resumes ([#6879](https://github.com/earendil-works/pi/issues/6879)).
+- Prevented steering or follow-up messages queued while `shouldStopAfterTurn` resolves `true` from automatically starting another provider request. The stopped run now leaves that work pending for a later explicit prompt or continuation.
+
 ## [0.9.16-alpha.9] - 2026-08-27
 
 ### Added

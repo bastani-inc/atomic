@@ -97,8 +97,8 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return await this.inner.recordAdditiveCheckpointBestEffort(this.remap(checkpoint));
 	}
 
-	flush(): Promise<void> {
-		return this.inner.flush();
+	flush(workflowId?: string): Promise<void> {
+		return workflowId === undefined ? this.inner.flush() : this.inner.flush(this.scope.rootWorkflowId);
 	}
 
 	getToolOutput(_workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {

@@ -1,5 +1,5 @@
 import { compare, valid } from "semver";
-import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, getEnvValue, PACKAGE_NAME } from "../config.ts";
+import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, getEnvValue, PACKAGE_NAME } from "../config.js";
 import { fetchWithRetry } from "./management-http.ts";
 
 const LATEST_VERSION_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;

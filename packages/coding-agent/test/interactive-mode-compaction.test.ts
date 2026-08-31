@@ -531,6 +531,24 @@ describe("InteractiveMode compaction events", () => {
 		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
 	});
 
+	it("keeps terminal progress active when the same run resumes after compaction", async () => {
+		const { mode } = makeMode();
+		mode.settingsManager.getShowTerminalProgress = () => true;
+
+		await emit(mode, { type: "compaction_start", reason: "threshold", midTurn: true });
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "threshold",
+			result,
+			aborted: false,
+			willRetry: false,
+			midTurn: true,
+		});
+
+		expect(mode.ui.terminal.setProgress).toHaveBeenCalledTimes(1);
+		expect(mode.ui.terminal.setProgress).toHaveBeenCalledWith(true);
+	});
+
 	it("preserves steering behavior when flushing into an active agent run", async () => {
 		const fakeThis = {
 			compactionQueuedMessages: [{ text: "change direction", mode: "steer" as const }],

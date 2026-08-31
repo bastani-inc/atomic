@@ -73,7 +73,7 @@ export type RpcCommand =
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string; persist?: boolean }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward"; persist?: boolean }
-	| { id?: string; type: "get_available_models" }
+	| { id?: string; type: "get_available_models"; allowPartialResources?: boolean }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
 	| { id?: string; type: "save_provider_credential"; provider: string; credential: Credential }
 	| { id?: string; type: "cancel_login_provider"; provider: string; loginId?: string }
@@ -166,6 +166,12 @@ export interface RpcSlashCommand {
 // RPC State
 // ============================================================================
 
+export interface RpcResourceExtension {
+	path: string;
+	sourceInfo?: SourceInfo;
+	hidden: boolean;
+}
+
 export interface RpcSessionState {
 	model?: Model<Api>;
 	modelFallbackMessage?: string;
@@ -184,6 +190,7 @@ export interface RpcSessionState {
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
 	resourceOverlaps?: ResourceOverlap[];
+	resourceExtensions?: RpcResourceExtension[];
 }
 
 export interface RpcLogoutProviderResult {

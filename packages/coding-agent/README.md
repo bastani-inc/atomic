@@ -557,10 +557,10 @@ cat README.md | atomic -p "Summarize this text"
 
 | Option | Description |
 |--------|-------------|
-| `--tools <list>`, `-t <list>` | Allowlist specific tool names across built-in, extension, and custom tools |
-| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools |
+| `--tools <list>`, `-t <list>` | Allowlist specific tool names across built-in, extension, and custom tools; mandatory ordinary `intercom` remains available |
+| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools; mandatory ordinary `intercom` cannot be excluded |
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
-| `--no-tools`, `-nt` | Disable all tools by default |
+| `--no-tools`, `-nt` | Disable every tool except mandatory ordinary `intercom` |
 
 Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. `read`/`search`/`write`/`edit` share session-scoped hashline snapshot tags for stale-safe line edits; copied hashline output is stripped by `write` only when it matches a known current-session snapshot. Archive selectors are Bun-native, and internal-resource selectors use the session router when available. Use `--exclude-tools` to disable one or more tools while leaving the rest available.
 
@@ -578,7 +578,7 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | Option | Description |
 |--------|-------------|
 | `-e`, `--extension <source>` | Load extension from path, npm, or git (repeatable) |
-| `--no-extensions`, `-ne` | Disable extension discovery |
+| `--no-extensions`, `-ne` | Disable optional extension discovery; mandatory bundled Intercom remains loaded |
 | `--skill <path>` | Load skill (repeatable) |
 | `--no-skills`, `-ns` | Disable skill discovery |
 | `--prompt-template <path>` | Load prompt template (repeatable) |

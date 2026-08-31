@@ -46,4 +46,10 @@ describe("built-in slash commands", () => {
 		assert.match(compactCommand.description, /verbatim/i);
 		assert.equal(compactCommand.getArgumentCompletions, undefined);
 	});
+
+	test("does not list the removed Atomic guide command", () => {
+		const atomicCommand = BUILTIN_SLASH_COMMANDS.find((item) => item.name === "atomic");
+
+		assert.equal(atomicCommand, undefined);
+	});
 });

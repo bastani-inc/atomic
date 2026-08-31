@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { APP_NAME } from "../config.ts";
+import { APP_NAME } from "../config.js";
 import { stripBom } from "../utils/text.ts";
 import type { PiManifest, ResourceType } from "./package-manager-types.ts";
 

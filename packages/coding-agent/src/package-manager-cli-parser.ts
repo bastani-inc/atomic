@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { APP_NAME, CONFIG_DIR_NAME } from "./config.ts";
+import { APP_NAME, CONFIG_DIR_NAME } from "./config.js";
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
 

@@ -1,4 +1,4 @@
-import { APP_NAME } from "../config.ts";
+import { APP_NAME } from "../config.js";
 import type { Args } from "./args.ts";
 
 export type AuthCommandKind = "check" | "api_key" | "bearer_token";

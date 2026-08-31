@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import chalk from "chalk";
-import { getAgentDir, getAgentDirs } from "../config.ts";
+import { getAgentDir, getAgentDirs } from "../config.js";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { findGitPaths } from "./footer-data-provider.ts";

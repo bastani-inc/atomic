@@ -46,7 +46,7 @@ import type {
 	ToolInfo,
 } from "./extensions/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import type { ModelRuntime } from "./model-runtime.js";
+import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
@@ -170,7 +170,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_runAgentPrompt(messages: AgentMessage | AgentMessage[], promptStarted?: () => void): Promise<void>;
 	_runAgentContinue(): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
-	_tryExecuteBuiltinSlashCommand(text: string): Promise<boolean>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;
 	_expandSkillCommand(text: string): string;
 	steer(text: string, images?: ImageContent[]): Promise<void>;
@@ -267,7 +266,15 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_applyExtensionBindings(runner: ExtensionRunner): void;
 	_refreshCurrentModelFromRegistry(): void;
 	refreshCurrentModelFromRegistry(): void;
-	_bindExtensionCore(runner: ExtensionRunner): void;
+	_bindExtensionCore(
+		runner: ExtensionRunner,
+		publication?: {
+			resourceLoader: ResourceLoader;
+			providerTransaction: ExtensionProviderTransaction;
+			providerIds: Set<string>;
+			defer(effect: () => void | Promise<void>): void;
+		},
+	): void;
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;
 	reload(options?: AgentSessionReloadOptions): Promise<void>;
@@ -434,6 +441,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_postToolCompactionPreflightError: string | undefined;
 	_pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined;
 	_terminatingToolCallIds: Set<string>;
+	_stopAfterTurnBlockedContinuation: boolean;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_queuedMessagesPaused: boolean;
@@ -490,6 +498,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_extensionErrorListener?: ExtensionErrorListener;
 	_extensionErrorUnsubscriber?: () => void;
 	_modelRuntime: ModelRuntime;
+	_extensionProviderIds: Set<string>;
 	_toolRegistry: Map<string, AgentTool>;
 	_toolDefinitions: Map<string, ToolDefinitionEntry>;
 	_toolPromptSnippets: Map<string, string>;

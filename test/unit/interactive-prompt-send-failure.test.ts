@@ -7,6 +7,7 @@ import {
 	mergeRestoredDraft,
 	restoreUnsentPromptDraft,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-prompt-restore.ts";
+import { InteractiveEngineResourceReadinessError } from "../../packages/coding-agent/src/modes/interactive-engine/resource-readiness-error.ts";
 import { QueuedWriter } from "../../packages/coding-agent/src/modes/rpc/queued-writer.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.ts";
 import {
@@ -98,7 +99,6 @@ function makeStub(options: {
 			subscribe: options.subscribe ?? (() => () => {}),
 			resumeQueuedMessages: async () => {},
 			prompt: options.prompt,
-			_tryExecuteBuiltinSlashCommand: async () => false,
 			_tryExecuteExtensionCommand: async () => false,
 		},
 		showWorkingLoaderNow: () => {},
@@ -214,6 +214,22 @@ test("a send that the engine never accepted restores the exact typed draft witho
 		assert.deepEqual(stub.errors, [], "a restored draft must not also raise a red transport error");
 		assert.ok(stub.renders > 0, "no render was requested after restoring the draft");
 	}
+});
+
+test("resource-readiness failure restores the exact draft without a duplicate prompt error", async () => {
+	const { stub, run } = makeStub({
+		draft: "  exact draft\n",
+		prompt: async () => {
+			throw new InteractiveEngineResourceReadinessError(1, new Error("workflow load failed"));
+		},
+	});
+
+	await run("exact draft");
+
+	assert.equal(stub.editorText, "  exact draft\n");
+	assert.deepEqual(stub.discarded, ["exact draft"]);
+	assert.deepEqual(stub.errors, []);
+	assert.equal(stub.startupCookedInputRecovered, true);
 });
 
 /**

@@ -3,7 +3,7 @@ name: codebase-pattern-finder
 description: Find similar implementations, usage examples, or existing patterns in the codebase that can be modeled after.
 tools: read, search, find, ls
 model: openai-codex/gpt-5.6-sol:low
-fallbackModels: github-copilot/gpt-5.6-sol:low, openai/gpt-5.6-sol:low, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.8:low, xai/grok-4.6:xhigh, github-copilot/grok-4.6:xhigh, zai/glm-5.3:high, zai-coding-cn/glm-5.3:high, openrouter/openai/gpt-5.6-sol:low, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/x-ai/grok-4.6
+fallbackModels: github-copilot/gpt-5.6-sol:low, openai/gpt-5.6-sol:low, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.8:low, xai/grok-4.6:xhigh, github-copilot/grok-4.6:xhigh, zai/glm-5.3:high, zai-coding-cn/glm-5.3:high, zai/glm-5.3-flash:high, zai-coding-cn/glm-5.3-flash:high, baseten/zai-org/GLM-5.3:high, baseten/zai-org/GLM-5.3-Flash:high, openrouter/openai/gpt-5.6-sol:low, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/x-ai/grok-4.6, openrouter/z-ai/glm-5.3:high, openrouter/z-ai/glm-5.3-flash:high
 ---
 
 ## Role and goal

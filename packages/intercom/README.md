@@ -51,8 +51,7 @@ Coordinate with other local Atomic/pi sessions on related codebases. Use `/skill
 ```
 
 A session becomes intercom-connected when all of these are true:
-- the intercom extension is installed/bundled and loaded in that session
-- `enabled` is not set to `false` in `~/.atomic/agent/intercom/config.json` (Atomic) or the legacy `~/.pi/agent/intercom/config.json` fallback
+- the mandatory bundled Intercom extension is loaded in that Atomic model session
 - the model or user has invoked an Intercom tool, `/intercom`, or the `ALT+M` overlay in that session
 - the local broker is running or can be auto-started
 
@@ -82,13 +81,15 @@ intercom({ action: "list" })
 // → **Other sessions:**
 // → • research (6332faab-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
 
-// Join a named group (it is created if no session is there yet)
+// Add a named membership (it is created if no session is there yet)
 intercom({ action: "join", group: "api-review" })
-// → Joined intercom group "api-review".
+// → Joined intercom group "api-review". Memberships: default, api-review.
 
-// Return to the group's home resolved at session start
-intercom({ action: "leave" })
-// → Returned to home intercom group "default".
+// Discover all available groups and see which ones you belong to
+intercom({ action: "groups" })
+
+// Leave one membership, or omit group to reset to the startup home group
+intercom({ action: "leave", group: "api-review" })
 
 // Send a message
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
@@ -181,7 +182,7 @@ intercom({
 // Worker continues implementing with the answer, same turn, full context.
 ```
 
-To coordinate two plain chat sessions without changing their startup config, have each one call `intercom({ action: "join", group: "NAME" })`. Joining updates broker presence in place, so the broker broadcasts a leave to the old group and a join to `NAME` without changing the session ID; the tool reports success only after the broker acknowledges the new group. Calls to `list`, `status`, `send`, and `ask` then use `NAME`; sessions that stay in `default` cannot discover or message the joined peers. Call `intercom({ action: "leave" })` to return to the original resolved home group. `contact_supervisor` keeps its dedicated capability-based cross-group behavior.
+To coordinate two plain chat sessions without changing startup config, have each call `intercom({ action: "join", group: "NAME" })`. Joining adds a membership without changing the session ID or removing existing memberships. Calls to `list`, `send`, and `ask` can then reach any session sharing at least one membership. Use `intercom({ action: "groups" })` to discover every available name, connected-session count, and membership marker. Call `intercom({ action: "leave", group: "NAME" })` to remove one membership while keeping the others, or bare `leave` to reset to the original home group. `contact_supervisor` keeps its dedicated capability-based cross-group behavior.
 
 **Worker finds something unexpected — escalates and waits:**
 ```typescript
@@ -333,12 +334,12 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
+| `action` | string | `"list"`, `"groups"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
 | `to` | string | Exact session name/full session ID, or `<runId>:<stageKey>` for `send` to a not-yet-started workflow stage (for send/ask, or targeted reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
-| `group` | string | Group name for `join`; read-only group filter for `list`/`status`. `send`/`ask` stay locked to the current group. |
+| `group` | string | Group name for `join` or optional targeted `leave`; read-only filter for `list`/`status`. `send`/`ask` require a shared membership. |
 
 ### contact_supervisor
 
@@ -358,11 +359,13 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ### intercom actions
 
-**`join`** — Moves this session into the trimmed named group and creates that group when no peer is there yet. `default` is the shared default group. The names `true` and `auto` are reserved for subagent auto-groups and are rejected. Subagents launched after the join inherit the joined group.
+**`join`** — Adds a trimmed named membership and creates that group when no peer is there yet. The result reports the complete membership set. `default` is shared; `true` and `auto` remain reserved.
 
-**`leave`** — Moves this session back to the resolved home group from session startup. It takes no `group` parameter.
+**`leave`** — With `group`, removes only that membership. Without `group`, resets the complete set to the startup home group. The result reports the memberships that remain.
 
-**`list`** — Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status. Every displayed full session ID can be passed directly to `send`, `ask`, or targeted `reply`.
+**`groups`** — Lists every group represented by a connected session, with session counts and membership markers, so callers can discover names instead of guessing.
+
+**`list`** — Keeps session-listing semantics: returns the current session and every active session sharing at least one membership. Pass `group` for a read-only view of one group.
 
 Live target lookup accepts only an exact full session ID or an exact case-insensitive session name. Ordinary `send` also accepts `<runId>:<stageKey>` for a known workflow stage whose session has not initialized. The run ID is a full UUID and the stage key is exact. Unknown runs and stages retain the ordinary unknown-target failure. All targeting remains **group-scoped** — see [Groups](#groups) below.
 
@@ -376,7 +379,7 @@ Live target lookup accepts only an exact full session ID or an exact case-insens
 
 `contact_supervisor` decisions and interviews are deliberately exclusive per child: one supervisor wait may coexist with ordinary peer asks, but a second concurrent supervisor wait receives `Already waiting for a supervisor reply`. Claimed foreground parent handoffs remain first-claim-wins and do not allocate a waiter. Multiple children can contact the same parent independently because inbound asks and handoffs are keyed by child/message identity. Mutual peer asks are supported, but each side must process inbound work to reply; the per-waiter timeout remains the deadlock backstop.
 
-**`status`** — Shows connection status, session ID, current group, and the total count of active sessions in that group. A `group` filter remains a read-only peek.
+**`status`** — Shows connection status, session ID, every current membership, and the total visible-session count. A `group` filter remains a read-only peek.
 
 ## Keyboard Shortcuts
 
@@ -396,7 +399,6 @@ Create `~/.atomic/agent/intercom/config.json` for Atomic. Legacy pi-compatible i
   "brokerCommand": "npx",
   "brokerArgs": ["--no-install", "tsx"],
   "confirmSend": false,
-  "enabled": true,
   "replyHint": true,
   "status": "researching"
 }
@@ -409,7 +411,6 @@ The default `npx --no-install tsx` pair is a compatibility sentinel: intercom re
 | `brokerCommand` | `"npx"` | Command used to start the local broker process; the default sentinel is hardened internally to avoid PATH lookup |
 | `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
-| `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 
@@ -450,7 +451,7 @@ graph TB
     B2 <-->|Local Socket/Pipe| B3
 ```
 
-The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first intercom-enabled session needs it and exits after 5 seconds when the last connected session disconnects. Clients now reconnect automatically if the broker disappears and later comes back.
+The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first session that invokes Intercom needs it and exits after 5 seconds when it last has no registered sessions, including brokers that never received a connection and sockets that close before register. Clients now reconnect automatically if the broker disappears and later comes back.
 
 Messages use length-prefixed JSON over a local socket/pipe transport (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages.
 

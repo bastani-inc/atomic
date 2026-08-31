@@ -8,7 +8,7 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { APP_NAME } from "../config.ts";
+import { APP_NAME } from "../config.js";
 import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import type { BashOperations, BashOutputChannel } from "./tools/bash.ts";

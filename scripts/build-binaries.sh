@@ -4,13 +4,14 @@
 # Mirrors .github/workflows/publish.yml binary build.
 #
 # Usage:
-#   ./scripts/build-binaries.sh [--skip-deps] [--skip-install] [--skip-package-build] [--offline-model-data] [--platform <platform>]
+#   ./scripts/build-binaries.sh [--skip-deps] [--skip-install] [--skip-package-build] [--offline-model-data] [--skip-windows] [--platform <platform>]
 #
 # Options:
 #   --skip-deps          Skip installing cross-platform native bindings
 #   --skip-install       Reuse dependencies installed by the caller
 #   --skip-package-build Reuse packages/coding-agent/dist built by the caller
 #   --offline-model-data Build @bastani/pi-ai with bundled model data instead of refreshing it
+#   --skip-windows       Build every default platform except the Windows targets
 #   --platform <name>    Build only for specified platform
 #                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64,
 #                         linux-x64-musl, linux-arm64-musl, windows-x64, windows-arm64)
@@ -39,6 +40,7 @@ SKIP_DEPS=false
 SKIP_INSTALL=false
 SKIP_PACKAGE_BUILD=false
 OFFLINE_MODEL_DATA=false
+SKIP_WINDOWS=false
 PLATFORM=""
 
 ALPINE_MUSL_RUNTIME_BRANCH="v3.22"
@@ -83,6 +85,10 @@ while [[ $# -gt 0 ]]; do
             OFFLINE_MODEL_DATA=true
             shift
             ;;
+        --skip-windows)
+            SKIP_WINDOWS=true
+            shift
+            ;;
         --platform)
             PLATFORM="$2"
             shift 2
@@ -104,6 +110,11 @@ if [[ -n "$PLATFORM" ]]; then
             exit 1
             ;;
     esac
+fi
+
+if [[ "$SKIP_WINDOWS" == "true" && "$PLATFORM" == windows-* ]]; then
+    echo "--skip-windows cannot be combined with --platform $PLATFORM"
+    exit 1
 fi
 
 alias_pi_ai() {
@@ -210,6 +221,13 @@ if [[ -n "$PLATFORM" ]]; then
     PLATFORMS=("$PLATFORM")
 else
     PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl windows-x64 windows-arm64)
+    if [[ "$SKIP_WINDOWS" == "true" ]]; then
+        non_windows_platforms=()
+        for candidate_platform in "${PLATFORMS[@]}"; do
+            [[ "$candidate_platform" == windows-* ]] || non_windows_platforms+=("$candidate_platform")
+        done
+        PLATFORMS=("${non_windows_platforms[@]}")
+    fi
 fi
 
 shared_app_dir="binaries/.app"
@@ -218,7 +236,7 @@ mkdir -p "$shared_app_dir"
 echo "==> Building shared app bundle..."
 # Bun's compiled launcher cannot resolve bare packages from the dynamically loaded CJS sidecar.
 # Bundle pi-tui itself, but keep the import.meta.url-sensitive native loader payload-relative.
-bun build --target=bun --format=cjs --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
+bun build --target=bun --format=cjs --minify-syntax --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
 bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile "$shared_app_dir/image-resize-worker.js"
 
 for platform in "${PLATFORMS[@]}"; do
@@ -230,15 +248,17 @@ for platform in "${PLATFORMS[@]}"; do
     if [[ "$platform" == *-x64 || "$platform" == *-x64-* ]]; then
         bun_target="${bun_target}-baseline"
     fi
+    binary_name="atomic"
     if [[ "$platform" == windows-* ]]; then
-        # Bun 1.3.14 bytecode-compiled Windows standalone executables can
-        # segfault before user code runs (llint_entry / bytecode alignment).
-        # Keep Windows release binaries standalone-compiled, but ship source
-        # payload instead of embedded bytecode until Bun's fix is available.
-        bun build --compile --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
-    else
-        bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic"
+        binary_name="atomic.exe"
     fi
+    # Every release target embeds startup-optimized bytecode, but Bun 1.4.0
+    # Windows bytecode executables must be compiled on a Windows host: the same
+    # command cross-compiled from a non-Windows host produces a launcher that
+    # segfaults before user code runs (even on --version). publish.yml builds
+    # the Windows archives on the Windows runner and passes --skip-windows to
+    # the Linux release-payload build.
+    bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/$binary_name"
 done
 
 echo "==> Copying runtime dependencies..."

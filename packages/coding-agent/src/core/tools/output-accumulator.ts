@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { APP_NAME } from "../../config.ts";
+import { APP_NAME } from "../../config.js";
 import { PersistedOutputFile } from "./persisted-output-file.ts";
 import { ensureSessionTempDir } from "./session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getCustomThemesDir } from "../../../config.ts";
+import { getCustomThemesDir } from "../../../config.js";
 import { closeWatcher, isSafeFsWatchPathError, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
 import { getDefaultTheme } from "./terminal-detection.ts";
 import type { Theme } from "./theme-class.ts";

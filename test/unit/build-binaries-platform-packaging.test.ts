@@ -1,13 +1,28 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
+import {
+	readPortableExecutableMachine,
+	WINDOWS_BYTECODE_PROBE_BUN_VERSION,
+	WINDOWS_BYTECODE_PROBE_TARGETS,
+	windowsBytecodeCompileArgs,
+} from "../../scripts/probe-windows-bytecode.ts";
 import { spawnSyncCollect } from "../helpers/runtime.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const buildScriptPath = join(root, "scripts/build-binaries.sh");
+const packageManifestPath = join(root, "packages/coding-agent/package.json");
+
+function sharedAppBuildCommand(source: string): string {
+	const command = source
+		.split(/&&|\r?\n/u)
+		.find((candidate) => candidate.includes("bun build") && candidate.includes("dist/bun/cli.js"));
+	assert.ok(command, "missing shared app bundle command");
+	return command;
+}
 
 const BUN_TARGETS = {
 	"darwin-arm64": { bytecode: true, target: "bun-darwin-arm64" },
@@ -16,8 +31,8 @@ const BUN_TARGETS = {
 	"linux-arm64": { bytecode: true, target: "bun-linux-arm64" },
 	"linux-x64-musl": { bytecode: true, target: "bun-linux-x64-musl-baseline" },
 	"linux-arm64-musl": { bytecode: true, target: "bun-linux-arm64-musl" },
-	"windows-x64": { bytecode: false, target: "bun-windows-x64-baseline" },
-	"windows-arm64": { bytecode: false, target: "bun-windows-arm64" },
+	"windows-x64": { bytecode: true, target: "bun-windows-x64-baseline" },
+	"windows-arm64": { bytecode: true, target: "bun-windows-arm64" },
 } as const;
 
 function assertBuildScriptSyntax(): void {
@@ -34,6 +49,23 @@ function getCompilationLoop(buildScript: string): string {
 	assert.notEqual(end, -1, "build script must finish the compilation loop before staging dependencies");
 	return buildScript.slice(start, end);
 }
+
+test("every compiled target shares the syntax-minified application sidecar", () => {
+	const buildScript = readFileSync(buildScriptPath, "utf8");
+	const manifest = JSON.parse(readFileSync(packageManifestPath, "utf8")) as { scripts: Record<string, string> };
+	const packageBuild = sharedAppBuildCommand(manifest.scripts["build:binary"] ?? "");
+	const releaseBuild = sharedAppBuildCommand(buildScript);
+
+	for (const [site, command] of [
+		["packages/coding-agent/package.json build:binary", packageBuild],
+		["scripts/build-binaries.sh", releaseBuild],
+	] as const) {
+		assert.match(command, /(?:^|\s)--minify-syntax(?:\s|$)/u, `${site} must syntax-minify the shared app`);
+		assert.doesNotMatch(command, /(?:^|\s)--minify-identifiers(?:\s|$)/u, `${site} must preserve identifiers`);
+	}
+
+	assertBuildScriptSyntax();
+});
 
 test("musl archive staging removes embedded-postgres binary leaves", () => {
 	const buildScript = readFileSync(buildScriptPath, "utf8");
@@ -83,6 +115,41 @@ test("x64 release binaries target Bun's baseline CPU runtime", () => {
 	}
 
 	assertBuildScriptSyntax();
+});
+
+test("the pinned Windows bytecode probe covers the enabled x64 and ARM64 release policy", () => {
+	assert.equal(WINDOWS_BYTECODE_PROBE_BUN_VERSION, "1.4.0");
+	assert.deepEqual(
+		WINDOWS_BYTECODE_PROBE_TARGETS.map(({ platform, target, machine }) => ({ platform, target, machine })),
+		[
+			{ platform: "windows-x64", target: "bun-windows-x64-baseline", machine: 0x8664 },
+			{ platform: "windows-arm64", target: "bun-windows-arm64", machine: 0xaa64 },
+		],
+	);
+	for (const spec of WINDOWS_BYTECODE_PROBE_TARGETS) {
+		const args = windowsBytecodeCompileArgs(spec.target, "split-loader.js", `atomic-${spec.platform}.exe`);
+		assert.deepEqual(args.slice(0, 3), ["build", "--compile", "--bytecode"]);
+		assert.ok(args.includes(`--target=${spec.target}`));
+		assert.ok(args.includes("--no-compile-autoload-dotenv"));
+		assert.ok(args.includes("--no-compile-autoload-bunfig"));
+	}
+
+	const tempDir = mkdtempSync(join(tmpdir(), "atomic-bytecode-pe-"));
+	try {
+		const path = join(tempDir, "probe.exe");
+		const pe = Buffer.alloc(0x88);
+		pe.write("MZ", 0, "ascii");
+		pe.writeUInt32LE(0x80, 0x3c);
+		pe.write("PE\0\0", 0x80, "ascii");
+		pe.writeUInt16LE(0xaa64, 0x84);
+		writeFileSync(path, pe);
+		assert.equal(readPortableExecutableMachine(path), 0xaa64);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+
+	assert.equal(BUN_TARGETS["windows-x64"].bytecode, true);
+	assert.equal(BUN_TARGETS["windows-arm64"].bytecode, true);
 });
 
 test("tagged payload builds do not fetch unpublished natives and re-alias pi-ai after restore", () => {

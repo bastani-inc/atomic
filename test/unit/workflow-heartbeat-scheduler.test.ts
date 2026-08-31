@@ -740,6 +740,9 @@ describe("workflow heartbeat delivery", () => {
 			send.content.includes("When steering or communication is useful, use Intercom."),
 			"the parent uses Intercom when the alignment review calls for communication",
 		);
+		assert.match(send.content, /Before steering a stage, join its invocation group/);
+		assert.match(send.content, /Intercom `groups` action to discover it/);
+		assert.match(send.content, /Workflow invocation groups are named `workflow:<rootRunId>`/);
 		assert.match(send.content, /Consider the expanded workflow topology/);
 		assert.match(send.content, /match each update's reach to its impact/);
 		assert.match(send.content, /send a local update to its affected stage/);

@@ -95,6 +95,8 @@ test("hello world", () => {
 });
 ```
 
+For regression tests that fix a GitHub issue, add a comment with the issue number next to the test.
+
 ### Replacing Bun globals in tests
 
 Root suites run under Node, so `Bun.*` and `import.meta.dir` are unavailable. Use

@@ -1,3 +1,4 @@
+import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
@@ -69,6 +70,7 @@ export class RpcSessionBinding {
 		this.session = this.runtimeHost.session;
 		this.disposeSubscriptions();
 		const session = this.session;
+		setCapabilityOverrides(session.settingsManager.getTerminalCapabilityOverrides());
 		this.renderService?.bindSession(session);
 		this.footerDataProvider = new FooterDataProvider(session.sessionManager.getCwd());
 		// Seed the provider count from the current catalog snapshot, mirroring
@@ -145,6 +147,26 @@ export class RpcSessionBinding {
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {
 			await waitForRawStdoutBackpressure();
 		});
+		this.reloadCoordinator?.publishCurrentState(session);
+	}
+
+	/** Load and atomically publish the optional resource set after the minimal interactive engine binds. */
+	async loadDeferredResources(): Promise<void> {
+		const session = this.session;
+		try {
+			await session.reload({ reason: "startup", failOnExtensionErrors: true });
+		} catch (error) {
+			for (const extensionError of session.resourceLoader.getExtensions().errors) {
+				this.output({
+					type: "extension_error",
+					extensionPath: extensionError.path,
+					event: "startup",
+					error: extensionError.error,
+				});
+			}
+			throw error;
+		}
+		if (session !== this.session) return;
 		this.reloadCoordinator?.publishCurrentState(session);
 	}
 

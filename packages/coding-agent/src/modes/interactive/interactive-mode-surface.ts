@@ -127,17 +127,19 @@ declare module "./interactive-mode-base.ts" {
 		findSourceInfoForPath(p: string, sourceInfos: Map<string, SourceInfo>): SourceInfo | undefined;
 		formatPathWithSource(p: string, sourceInfo?: SourceInfo): string;
 		formatDiagnostics(diagnostics: readonly ResourceDiagnostic[], sourceInfos: Map<string, SourceInfo>): string;
-		getResourceDiagnosticsTotal(values: ResourceDiagnostic[][]): number;
-		formatResourceCount(count: number, singular: string, plural?: string): string | undefined;
 		addResourceDisclosure(options: {
 			contextFiles: ReadonlyArray<{ path: string }>;
 			skills: ReadonlyArray<{ filePath: string; name: string }>;
 			prompts: ReadonlyArray<{ filePath: string; name: string }>;
-			templates: ReadonlyArray<{ filePath: string; name: string }>;
 			extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
-			themes: ReadonlyArray<{ name?: string; sourcePath?: string }>;
-			diagnosticsTotal: number;
-			expandedBody: string;
+			themes: ReadonlyArray<{ name?: string; sourcePath?: string; sourceInfo?: SourceInfo }>;
+			expandedSections: {
+				context?: string;
+				skills?: string;
+				prompts?: string;
+				extensions?: string;
+				themes?: string;
+			};
 			targetContainer?: Container;
 		}): void;
 		showLoadedResources(options?: {
@@ -374,13 +376,16 @@ declare module "./interactive-mode-base.ts" {
 		getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined;
 		handleImportCommand(text: string): Promise<void>;
 		handleShareCommand(): Promise<void>;
-		handleCopyCommand(): Promise<void>;
+		handleCopyCommand(options?: { preferSelection?: boolean }): Promise<void>;
 		handleNameCommand(text: string): void;
 		handleSessionCommand(): void;
 		handleChangelogCommand(): void;
 		getAppKeyDisplay(action: AppKeybinding): string;
 		getEditorKeyDisplay(action: Keybinding): string;
 		jumpToTranscriptEnd(): void;
+		setFullscreenCopyOnSelect(enabled: boolean): void;
+		getFullscreenCopyOnSelect(): boolean | undefined;
+		copyActiveFullscreenSelection(): Promise<boolean | undefined>;
 		handleHotkeysCommand(): void;
 		handleClearCommand(): Promise<void>;
 		handleDebugCommand(): void;

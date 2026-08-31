@@ -1,9 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { markLifecycleTiming } from "../core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "../utils/agent-attribution.ts";
 import { stripBom } from "../utils/text.ts";
 import { INTERNAL_INTERCOM_BROKER_ARG, importInternalIntercomBroker } from "./internal-intercom-broker.ts";
+
+markLifecycleTiming("process-entry");
 
 const APP_NAME = "atomic";
 

@@ -61,7 +61,7 @@ export {
 	getShareViewerUrl,
 	setCodexFastModeEnvironmentSettings,
 	VERSION,
-} from "../../config.ts";
+} from "../../config.js";
 export { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 export { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 export { formatNoModelsAvailableMessage } from "../../core/auth-guidance.ts";

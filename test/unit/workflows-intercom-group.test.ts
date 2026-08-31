@@ -36,14 +36,14 @@ test("resolveStageGroup preserves explicit precedence over a workflow group", ()
 	assert.notEqual(a, b, "each single-stage true mints its own uuid");
 });
 
-test("stageHasIntercomAccess gates on noTools / tools allowlist / excludedTools", () => {
+test("workflow tool restrictions never remove Intercom access", () => {
 	assert.equal(stageHasIntercomAccess(undefined), true);
 	assert.equal(stageHasIntercomAccess({} as StageOptions), true);
-	assert.equal(stageHasIntercomAccess({ noTools: "all" } as StageOptions), false);
+	assert.equal(stageHasIntercomAccess({ noTools: "all" } as StageOptions), true);
 	assert.equal(stageHasIntercomAccess({ noTools: "builtin" } as StageOptions), true);
-	assert.equal(stageHasIntercomAccess({ tools: ["bash", "read"] } as StageOptions), false);
+	assert.equal(stageHasIntercomAccess({ tools: ["bash", "read"] } as StageOptions), true);
 	assert.equal(stageHasIntercomAccess({ tools: ["bash", "intercom"] } as StageOptions), true);
-	assert.equal(stageHasIntercomAccess({ excludedTools: ["intercom"] } as StageOptions), false);
+	assert.equal(stageHasIntercomAccess({ excludedTools: ["intercom"] } as StageOptions), true);
 });
 
 test("workflow pending routes require both Intercom access and the route owner's exact group", () => {
@@ -74,6 +74,6 @@ test("workflow pending routes require both Intercom access and the route owner's
 	);
 	assert.equal(
 		stageCanUseWorkflowPendingStageRoute({ tools: ["read"], group: workflowGroup } as StageOptions, workflowGroup),
-		false,
+		true,
 	);
 });

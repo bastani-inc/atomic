@@ -1,6 +1,6 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { getProjectConfigDirs } from "../config.ts";
+import { getProjectConfigDirs } from "../config.js";
 import { loadThemeFromContent, type Theme } from "../modes/interactive/theme/theme.ts";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";

@@ -381,7 +381,8 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			} else if (event.reason === "manual") {
 				this.manualCompactionTakeoverPending = false;
 			}
-			if (!manualTakeoverPending && this.settingsManager.getShowTerminalProgress()) {
+			const resumesActiveRun = event.midTurn && !event.aborted && !event.errorMessage && !manualTakeoverPending;
+			if (!manualTakeoverPending && !resumesActiveRun && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
 			if (!manualTakeoverPending && this.autoCompactionEscapeHandlerSaved) {

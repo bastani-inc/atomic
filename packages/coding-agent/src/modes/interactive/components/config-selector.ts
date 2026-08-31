@@ -7,7 +7,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { CONFIG_DIR_NAME } from "../../../config.ts";
+import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { ResolvedPaths } from "../../../core/package-manager.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { theme } from "../theme/theme.ts";

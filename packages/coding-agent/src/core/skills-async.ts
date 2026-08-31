@@ -1,7 +1,7 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import ignore from "ignore";
-import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";

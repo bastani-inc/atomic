@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -9,7 +10,8 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import {
 	INSTALLED_EXTENSION_ENTRIES,
 	WORKFLOWS_SDK_BUNDLE_ENTRY,
@@ -21,6 +23,9 @@ import {
 	shouldSkipBuiltinCopyEntry,
 } from "./derive-import-closure.js";
 
+const require = createRequire(import.meta.url);
+const linkedomWorkerEntry = join(dirname(require.resolve("linkedom/package.json")), "worker.js");
+const openXdgOpenEntry = join(dirname(require.resolve("open")), "xdg-open");
 interface BuiltinCopy {
 	label: string;
 	destinationName: BuiltinPackageDirName;
@@ -68,12 +73,33 @@ const rawAuthoringSourcesToPrune = [
 const HOST_PROVIDED_EXTERNALS = [
 	"@bastani/atomic",
 	"@bastani/atomic/*",
+	"@bastani/atomic-natives",
+	"@bastani/pi-ai",
+	"@bastani/pi-ai/compat",
+	"@bastani/pi-ai/oauth",
+	"@bastani/pi-ai/api/cloudflare-gateway-binding",
 	"@earendil-works/*",
 	"@mariozechner/*",
 	"typebox",
 	"typebox/*",
 	"@sinclair/typebox",
 	"@sinclair/typebox/*",
+	"proper-lockfile",
+];
+
+const SELF_CONTAINED_BUILTIN_PLUGINS: Bun.BunPlugin[] = [
+	{
+		name: "atomic-builtin-dependency-resolution",
+		setup(build) {
+			// linkedom's default Node entry probes its optional native `canvas`
+			// peer. Builtins use its equivalent worker entry so the shipped bundle
+			// keeps the DOM parser without an unbundleable `.node` dependency.
+			build.onResolve({ filter: /^linkedom$/ }, () => ({ path: linkedomWorkerEntry }));
+			// `open` stays bundled because unregistered bare imports cannot resolve
+			// from external files in compiled Bun. Its Linux fallback is a sibling
+			// executable, copied beside the MCP bundle below.
+		},
+	},
 ];
 
 const WORKSPACE_BUILTINS = [
@@ -113,6 +139,7 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"LICENSE",
 		INSTALLED_EXTENSION_ENTRIES.mcp,
 		"app-bridge.bundle.js",
+		"xdg-open",
 	],
 	"web-access": [
 		"package.json",
@@ -249,8 +276,8 @@ async function bundleEntrypoint(entry: string, outfile: string, label: string): 
 		entrypoints: [entry],
 		target: "node",
 		format: "esm",
-		packages: "external",
 		external: HOST_PROVIDED_EXTERNALS,
+		plugins: SELF_CONTAINED_BUILTIN_PLUGINS,
 	});
 	const output = result.outputs[0];
 	if (!result.success || output === undefined) {
@@ -269,8 +296,8 @@ async function bundleWorkflowBuiltins(): Promise<void> {
 		root: builtinDir,
 		target: "node",
 		format: "esm",
-		packages: "external",
 		external: HOST_PROVIDED_EXTERNALS,
+		plugins: SELF_CONTAINED_BUILTIN_PLUGINS,
 		splitting: true,
 	});
 	if (!result.success) {
@@ -415,6 +442,9 @@ await bundleEntrypoint(
 	join(distBuiltinDir, "mcp", INSTALLED_EXTENSION_ENTRIES.mcp),
 	"@bastani/mcp extension",
 );
+const installedXdgOpen = join(distBuiltinDir, "mcp", "xdg-open");
+cpSync(openXdgOpenEntry, installedXdgOpen);
+chmodSync(installedXdgOpen, 0o755);
 await bundleEntrypoint(
 	join(distBuiltinDir, "web-access", "index.ts"),
 	join(distBuiltinDir, "web-access", INSTALLED_EXTENSION_ENTRIES["web-access"]),

@@ -3,7 +3,7 @@
  * Enable with the app-specific timing environment variable (for Atomic, ATOMIC_TIMING=1).
  */
 
-import { ENV_TIMING, getEnvValue } from "../config.ts";
+import { ENV_TIMING, getEnvValue } from "../config.js";
 
 const ENABLED = getEnvValue(ENV_TIMING) === "1";
 

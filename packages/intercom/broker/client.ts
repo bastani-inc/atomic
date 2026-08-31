@@ -3,12 +3,14 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
-import type { SessionInfo, Message, Attachment, SupervisorRegistration } from "../types.js";
+import type { SessionInfo, Message, Attachment, GroupSummary, SupervisorRegistration } from "../types.js";
 import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
+import { normalizeGroups } from "../group.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
+const GROUP_REQUEST_TIMEOUT_MS = 5000;
 const PRESENCE_ACK_TIMEOUT_MS = 5000;
 
 
@@ -58,6 +60,7 @@ export interface PresenceUpdates {
   name?: string;
   status?: string;
   model?: string;
+  groups?: string[];
   group?: string;
 }
 
@@ -79,8 +82,15 @@ export class IntercomClient extends EventEmitter {
   /** Source identity is captured once at connect, never read from env per message. */
   private _messageSource: Message["source"] | undefined;
   private pendingSends = new PendingSendRegistry();
+  private pendingGroupLists = new Map<string, { resolve: (groups: GroupSummary[]) => void; reject: (error: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
-  private pendingPresence = new Map<string, { resolve: (group: string) => void; reject: (error: Error) => void }>();
+  private pendingPresence = new Map<string, {
+    resolve: (group: string) => void;
+    reject: (error: Error) => void;
+    groups?: string[];
+  }>();
+  private pendingMemberships = new Map<string, { resolve: (groups: string[]) => void; reject: (error: Error) => void }>();
+  private _groups = normalizeGroups();
   private pendingLiveWorkflowStageRoutes = new Map<string, { resolve(): void; reject(error: Error): void }>();
 
   private pendingSupervisorAuthorizations = new Map<string, {
@@ -98,13 +108,17 @@ export class IntercomClient extends EventEmitter {
 
   private failPending(error: Error): void {
     this.pendingSends.rejectAll(error);
+    for (const pending of this.pendingGroupLists.values()) pending.reject(error);
     for (const pending of this.pendingLists.values()) pending.reject(error);
     for (const pending of this.pendingSupervisorAuthorizations.values()) pending.reject(error);
     for (const pending of this.pendingPresence.values()) pending.reject(error);
+    for (const pending of this.pendingMemberships.values()) pending.reject(error);
     for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
     this.pendingLists.clear();
+    this.pendingGroupLists.clear();
     this.pendingSupervisorAuthorizations.clear();
     this.pendingPresence.clear();
+    this.pendingMemberships.clear();
     this.pendingLiveWorkflowStageRoutes.clear();
   }
 
@@ -115,6 +129,10 @@ export class IntercomClient extends EventEmitter {
   get supervisorSessionId(): string | null {
     return this._supervisorSessionId;
   }
+  get groups(): string[] {
+    return [...this._groups];
+  }
+
 
 
   isConnected(): boolean {
@@ -149,6 +167,7 @@ export class IntercomClient extends EventEmitter {
       return Promise.reject(new Error("Already connected"));
     }
     this._messageSource = messageSource ?? readSubagentMessageSource();
+    this._groups = normalizeGroups(session.groups, session.group);
 
     return new Promise((resolve, reject) => {
       const socket = net.connect(BROKER_SOCKET);
@@ -323,6 +342,27 @@ export class IntercomClient extends EventEmitter {
         pending.resolve(sessions);
         break;
       }
+      case "groups": {
+        const { requestId, groups } = brokerMessage;
+        if (
+          typeof requestId !== "string" ||
+          !Array.isArray(groups) ||
+          !groups.every((summary) =>
+            typeof summary === "object" &&
+            summary !== null &&
+            typeof summary.group === "string" &&
+            typeof summary.sessionCount === "number" &&
+            typeof summary.member === "boolean"
+          )
+        ) {
+          throw new Error("Invalid groups message");
+        }
+        const pending = this.pendingGroupLists.get(requestId);
+        if (!pending) return;
+        this.pendingGroupLists.delete(requestId);
+        pending.resolve(groups as GroupSummary[]);
+        break;
+      }
       case "supervisor_authorized": {
         const { requestId, capability, supervisorSessionId, childName } = brokerMessage;
         if (typeof requestId !== "string" || typeof capability !== "string"
@@ -465,17 +505,39 @@ export class IntercomClient extends EventEmitter {
         const pending = this.pendingPresence.get(brokerMessage.requestId);
         if (!pending) return;
         this.pendingPresence.delete(brokerMessage.requestId);
+        this._groups = pending.groups === undefined
+          ? normalizeGroups(undefined, brokerMessage.group)
+          : normalizeGroups(pending.groups);
         pending.resolve(brokerMessage.group);
+        break;
+      }
+      case "membership_ack": {
+        const { requestId, groups } = brokerMessage;
+        if (typeof requestId !== "string" || !Array.isArray(groups) || !groups.every((group) => typeof group === "string")) {
+          throw new Error("Invalid membership_ack message");
+        }
+        const pending = this.pendingMemberships.get(requestId);
+        if (!pending) return;
+        this.pendingMemberships.delete(requestId);
+        const normalizedGroups = [...normalizeGroups(groups)];
+        this._groups = new Set(normalizedGroups);
+        pending.resolve(normalizedGroups);
         break;
       }
       case "presence_failed": {
         if (typeof brokerMessage.requestId !== "string" || typeof brokerMessage.reason !== "string") {
           throw new Error("Invalid presence_failed message");
         }
-        const pending = this.pendingPresence.get(brokerMessage.requestId);
-        if (!pending) return;
-        this.pendingPresence.delete(brokerMessage.requestId);
-        pending.reject(new Error(brokerMessage.reason));
+        const presence = this.pendingPresence.get(brokerMessage.requestId);
+        if (presence) {
+          this.pendingPresence.delete(brokerMessage.requestId);
+          presence.reject(new Error(brokerMessage.reason));
+          break;
+        }
+        const membership = this.pendingMemberships.get(brokerMessage.requestId);
+        if (!membership) return;
+        this.pendingMemberships.delete(brokerMessage.requestId);
+        membership.reject(new Error(brokerMessage.reason));
         break;
       }
       case "peer_disconnected": {
@@ -573,6 +635,69 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
+  listGroups(): Promise<GroupSummary[]> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingGroupLists.delete(requestId)) return;
+        reject(new Error("List groups timeout"));
+      }, GROUP_REQUEST_TIMEOUT_MS);
+      this.pendingGroupLists.set(requestId, {
+        resolve: (groups) => { clearTimeout(timeout); resolve(groups); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { type: "list_groups", requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingGroupLists.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+  joinGroup(group: string): Promise<string[]> {
+    return this.updateMembership("join_group", group);
+  }
+
+  leaveGroup(group?: string): Promise<string[]> {
+    return this.updateMembership("leave_group", group);
+  }
+
+  private updateMembership(type: "join_group" | "leave_group", group?: string): Promise<string[]> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingMemberships.delete(requestId)) return;
+        reject(new Error("Membership update timeout"));
+      }, GROUP_REQUEST_TIMEOUT_MS);
+      this.pendingMemberships.set(requestId, {
+        resolve: (groups) => { clearTimeout(timeout); resolve(groups); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, group === undefined ? { type, requestId } : { type, requestId, group });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingMemberships.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+
   authorizeSupervisorChild(childName: string, capability?: string): Promise<SupervisorAuthorization> {
     let socket: net.Socket;
     try {
@@ -728,6 +853,8 @@ export class IntercomClient extends EventEmitter {
       return false;
     }
     writeMessage(socket, { type: "presence", ...updates });
+    if (updates.groups !== undefined) this._groups = normalizeGroups(updates.groups, updates.group);
+    else if (updates.group !== undefined) this._groups = normalizeGroups(undefined, updates.group);
     return true;
   }
 
@@ -752,7 +879,11 @@ export class IntercomClient extends EventEmitter {
         if (!this.pendingPresence.delete(requestId)) return;
         reject(new Error("Presence update timeout"));
       }, PRESENCE_ACK_TIMEOUT_MS);
-      this.pendingPresence.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
+      this.pendingPresence.set(requestId, {
+        resolve: wrappedResolve,
+        reject: wrappedReject,
+        ...(updates.groups === undefined ? {} : { groups: [...updates.groups] }),
+      });
       try {
         writeMessage(socket, { type: "presence", ...updates, requestId });
       } catch (error) {

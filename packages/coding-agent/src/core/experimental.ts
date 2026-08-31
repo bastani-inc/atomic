@@ -1,5 +1,5 @@
 import type { ConstrainedSamplingConfig } from "@bastani/pi-ai/compat";
-import { APP_NAME, LEGACY_ENV_PREFIX } from "../config.ts";
+import { APP_NAME, LEGACY_ENV_PREFIX } from "../config.js";
 
 export function areExperimentalFeaturesEnabled(): boolean {
 	return (

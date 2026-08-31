@@ -704,6 +704,25 @@ describe("durable workflow stage messages metadata", () => {
 		assert.deepEqual(parsed?.pendingStageMessages, accepted.messages);
 	});
 
+	test("metadata round-trip preserves all sender memberships", () => {
+		const senderGroups = ["planning", RUN_GROUP];
+		const accepted = queueStageMessage(
+			[],
+			pendingMessage("membership", {
+				from: { id: "sender-1", name: "planner", group: "planning", groups: senderGroups },
+			}),
+			RUN_GROUP,
+			RUN_GROUP,
+		);
+		assert.equal(accepted.ok, true);
+		if (!accepted.ok) return;
+		const parsed = parseCurrentMetadataRecord(
+			{ stepName: "__atomic_metadata:2:test", output: encodeMetadata(metadata(accepted.messages)) },
+			RUN_ID,
+		);
+		assert.deepEqual(parsed?.pendingStageMessages?.[0]?.from.groups, senderGroups);
+	});
+
 	test("accepts legacy durable messages without a return address", () => {
 		const accepted = queueStageMessage([], pendingMessage("legacy"), RUN_GROUP, RUN_GROUP);
 		assert.equal(accepted.ok, true);

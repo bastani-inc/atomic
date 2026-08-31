@@ -44,6 +44,12 @@ test("standalone app builds bundle pi-tui but leave its native modifier loader r
 			command.includes(nativeModifiersExternal),
 			`${site} must bundle pi-tui and externalize only its native modifier loader`,
 		);
+		assert.match(command, /(?:^|\s)--minify-syntax(?:\s|$)/u, `${site} must syntax-minify the shared sidecar`);
+		assert.doesNotMatch(
+			command,
+			/(?:^|\s)--minify-identifiers(?:\s|$)/u,
+			`${site} must preserve diagnostic and reflection names`,
+		);
 		assert.equal(
 			command.includes("--external @earendil-works/pi-tui"),
 			false,
@@ -116,6 +122,7 @@ test(
 					"build",
 					"--target=bun",
 					"--format=cjs",
+					"--minify-syntax",
 					"--external=*native-modifiers.js",
 					join(fixture, "app-entry.ts"),
 					"--outfile",

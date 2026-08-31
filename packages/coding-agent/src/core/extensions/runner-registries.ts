@@ -1,3 +1,5 @@
+import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "../mandatory-runtime-tools.ts";
+
 import type {
 	EntryRenderer,
 	Extension,
@@ -13,7 +15,8 @@ export function collectRegisteredTools(extensions: Extension[]): RegisteredTool[
 	const toolsByName = new Map<string, RegisteredTool>();
 	for (const ext of extensions) {
 		for (const tool of ext.tools.values()) {
-			if (!toolsByName.has(tool.definition.name)) {
+			const existing = toolsByName.get(tool.definition.name);
+			if (!existing || (isMandatoryRuntimeTool(tool.definition.name) && isTrustedMandatoryRuntimeTool(tool))) {
 				toolsByName.set(tool.definition.name, tool);
 			}
 		}
@@ -25,13 +28,14 @@ export function findToolDefinition(
 	extensions: Extension[],
 	toolName: string,
 ): RegisteredTool["definition"] | undefined {
+	let first: RegisteredTool | undefined;
 	for (const ext of extensions) {
 		const tool = ext.tools.get(toolName);
-		if (tool) {
-			return tool.definition;
-		}
+		if (!tool) continue;
+		first ??= tool;
+		if (isMandatoryRuntimeTool(toolName) && isTrustedMandatoryRuntimeTool(tool)) return tool.definition;
 	}
-	return undefined;
+	return first?.definition;
 }
 
 export function collectFlags(extensions: Extension[]): Map<string, ExtensionFlag> {

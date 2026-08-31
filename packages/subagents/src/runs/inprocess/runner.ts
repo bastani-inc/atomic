@@ -10,6 +10,7 @@ import {
 	getAgentDir,
 	getBuiltinPackagePaths,
 	type PackageSource,
+	readStoredCredential,
 	SessionManager,
 	type SessionStats,
 	SettingsManager,
@@ -171,11 +172,12 @@ function initialThinkingForAttempt(
 function defaultFastModeForChild(
 	cwd: string,
 	context: ParentContext["orchestrationContext"],
-	workflowStageSubagentGuard?: boolean,
+	resolvedModel?: Model<Api>,
 ): (model?: string) => boolean {
 	const settings = getSubagentCodexFastModeSettings(cwd);
-	const scope = resolveSubagentCodexFastModeScope(workflowStageSubagentGuard ?? context?.kind === "workflow-stage");
-	return (model) => resolveSubagentModelFastMode({ model, cwd, settings, scope });
+	const scope = resolveSubagentCodexFastModeScope(context);
+	const copilotCredential = readStoredCredential("github-copilot");
+	return (model) => resolveSubagentModelFastMode({ model, resolvedModel, cwd, settings, scope, copilotCredential });
 }
 
 export interface AttemptSignals {
@@ -1187,11 +1189,7 @@ export class SubagentControlRuntime {
 		);
 		const fastModeForModel =
 			options.fastModeForModel ??
-			defaultFastModeForChild(
-				admitted.policy.cwd,
-				admitted.spec.parent?.orchestrationContext,
-				admitted.spec.parent?.workflowStageSubagentGuard,
-			);
+			defaultFastModeForChild(admitted.policy.cwd, admitted.spec.parent?.orchestrationContext, candidate.model);
 		const running: RunningAttempt = {
 			id: this.nextAttemptId++,
 			child: admitted,
@@ -1350,11 +1348,7 @@ export function run_child_attempt(
 		candidate,
 		signals,
 		undefined,
-		defaultFastModeForChild(
-			admitted.policy.cwd,
-			admitted.spec.parent?.orchestrationContext,
-			admitted.spec.parent?.workflowStageSubagentGuard,
-		),
+		defaultFastModeForChild(admitted.policy.cwd, admitted.spec.parent?.orchestrationContext, candidate.model),
 	);
 }
 

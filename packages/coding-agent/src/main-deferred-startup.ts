@@ -20,6 +20,17 @@ export interface ComputeDeferExtensionsInput {
 	model?: string;
 }
 
+export interface ComputeInteractiveEngineResourceDeferralInput {
+	interactiveEngineChild: boolean;
+	hasSessionStartEvent: boolean;
+	shouldResolveProjectTrust: boolean;
+	storedProjectTrust: boolean | null;
+	resolvedExtensionPathCount: number;
+	resolvedResourcePathCount: number;
+	hasSystemPromptInput: boolean;
+	unknownFlagCount: number;
+}
+
 export interface ComputeStartupInputCaptureInput {
 	appMode: AppMode;
 	stdinIsTTY: boolean;
@@ -84,6 +95,25 @@ export function computeDeferExtensions(input: ComputeDeferExtensionsInput): bool
 		!input.hasSystemPromptInput &&
 		input.provider === undefined &&
 		input.model === undefined &&
+		input.unknownFlagCount === 0
+	);
+}
+
+/**
+ * The isolated engine may bind its minimal RPC session before loading optional
+ * bundled resources. User-selected paths and trust-sensitive startup stay
+ * synchronous because they can affect the first visible or interactive state.
+ */
+export function computeInteractiveEngineResourceDeferral(
+	input: ComputeInteractiveEngineResourceDeferralInput,
+): boolean {
+	return (
+		input.interactiveEngineChild &&
+		!input.hasSessionStartEvent &&
+		(!input.shouldResolveProjectTrust || input.storedProjectTrust !== null) &&
+		input.resolvedExtensionPathCount === 0 &&
+		input.resolvedResourcePathCount === 0 &&
+		!input.hasSystemPromptInput &&
 		input.unknownFlagCount === 0
 	);
 }

@@ -38,7 +38,7 @@ import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
-import { normalizeGroup, resolveHomeGroup } from "./group.js";
+import { normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
@@ -143,7 +143,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let runtimeGeneration = 0;
   let agentRunning = false;
   let sessionHomeGroup: string | null = null;
-  let joinedGroup: string | null = null;
+  let joinedGroups: Set<string> | null = null;
   const activeTools = new Map<string, string>();
   let replyTracker = new ReplyTracker();
   const replyWaiters = new ReplyWaiterRegistry(DEFAULT_REPLY_TIMEOUT_MS, config.maxPendingAsks);
@@ -191,18 +191,22 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   function resolveSessionHomeGroup(): string {
     return sessionHomeGroup ?? resolveHomeGroup(config, getLiveContext());
   }
+  function currentIntercomGroups(): Set<string> {
+    return joinedGroups === null
+      ? normalizeGroups(undefined, resolveSessionHomeGroup())
+      : new Set(joinedGroups);
+  }
   function currentIntercomGroup(): string {
-    return joinedGroup ?? resolveSessionHomeGroup();
+    return [...currentIntercomGroups()].at(-1) ?? resolveSessionHomeGroup();
   }
-  function setJoinedGroup(group: string): void {
+  function setJoinedGroups(groups: readonly string[]): void {
+    joinedGroups = normalizeGroups(groups);
     const sessionId = currentSessionId;
-    if (!sessionId) return;
-    setRuntimeIntercomGroup(sessionId, group);
-    joinedGroup = group;
+    if (sessionId) setRuntimeIntercomGroup(sessionId, currentIntercomGroup());
   }
-  function clearJoinedGroup(): void {
+  function clearJoinedGroups(): void {
+    joinedGroups = null;
     const sessionId = currentSessionId;
-    joinedGroup = null;
     if (sessionId) clearRuntimeIntercomGroup(sessionId);
   }
   function buildRegistration(): Omit<SessionInfo, "id"> {
@@ -219,6 +223,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       startedAt: sessionStartedAt,
       lastActivity: Date.now(),
       status: currentStatus(),
+      groups: [...currentIntercomGroups()],
       group: currentIntercomGroup(),
     };
   }
@@ -701,7 +706,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       state.client = nextClient;
       attachPendingStageRouteClientHandlers(runId, state, nextClient);
       await nextClient.connect(
-        { ...buildRegistration(), name: undefined, group: normalizeGroup(route.group) },
+        { ...buildRegistration(), name: undefined, groups: [normalizeGroup(route.group)], group: normalizeGroup(route.group) },
         undefined,
         undefined,
         readSubagentMessageSource(runtimeContext?.subagentPolicy),
@@ -758,9 +763,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     await ensurePendingStageRouteClient(runId, { ...route, group: routeGroup });
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
-    if (!config.enabled) {
-      throw new Error("Intercom disabled");
-    }
     if (disposed || shuttingDown) {
       throw new Error("Intercom shutting down");
     }
@@ -906,7 +908,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     clearReconnectTimer,
     setRuntimeContext: (value) => {
       if (value === null) {
-        clearJoinedGroup();
+        clearJoinedGroups();
         sessionHomeGroup = null;
       } else {
         sessionHomeGroup = resolveHomeGroup(config, value);
@@ -962,8 +964,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
-    setJoinedGroup,
-    clearJoinedGroup,
+    setJoinedGroups,
+    clearJoinedGroups,
     replyTracker: () => replyTracker,
   });
   registerIntercomOverlay(pi, {

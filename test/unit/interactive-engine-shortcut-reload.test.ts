@@ -208,6 +208,7 @@ async function reloadInteractiveMode(driver: InteractiveModeDriver, expectedBind
 		(report) => report.type === "reload_done" && report.expandKeys?.[0] === expectedBinding,
 		12_000,
 	);
+	await driver.waitUntilShortcutReady(expectedBinding === "ctrl+u" ? "ctrl+y" : "ctrl+u", from);
 }
 
 async function reloadThroughExtensionContext(
@@ -258,8 +259,8 @@ serialTest(
 		const keybindingsPath = join(agentDir, "keybindings.json");
 		const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(shortcutConfig, "ctrl+x,ctrl+y");
-		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
+		writeFileSync(shortcutConfig, "ctrl+u,ctrl+y");
+		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+u" }));
 		const driver = new InteractiveModeDriver(fixtureArgs(extension), {
 			ATOMIC_CODING_AGENT_DIR: agentDir,
 			ATOMIC_KEYBINDINGS_SHORTCUT_CONFIG_FILE: shortcutConfig,
@@ -271,10 +272,10 @@ serialTest(
 			await driver.waitFor((report) => report.type === "terminal_ready");
 			await driver.waitFor((report) => report.type === "heartbeat" && typeof report.enginePid === "number");
 			driver.send({ type: "state" });
-			let state = await driver.waitFor((report) => report.type === "state" && report.expandKeys?.[0] === "ctrl+x");
-			assert.equal(state.expandDisplay, "ctrl+x");
+			let state = await driver.waitFor((report) => report.type === "state" && report.expandKeys?.[0] === "ctrl+u");
+			assert.equal(state.expandDisplay, "ctrl+u");
 			const initiallyExpanded = state.toolsExpanded;
-			driver.send({ type: "input", data: "\x18" });
+			driver.send({ type: "input", data: "\x15" });
 			await sleep(50);
 			assert.deepEqual(shortcutInvocations(shortcutLog), []);
 			const stateIndex = driver.reports.length;
@@ -289,23 +290,23 @@ serialTest(
 
 			writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+y" }));
 			await reloadThroughExtensionContext(driver, sessionStartFile, "ctrl+y");
-			driver.send({ type: "input", data: "\x18" });
+			driver.send({ type: "input", data: "\x15" });
 			const firstDeadline = performance.now() + 3_000;
 			while (shortcutInvocations(shortcutLog).length < 2 && performance.now() < firstDeadline) await sleep(20);
-			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"]);
+			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+u"]);
 			driver.send({ type: "input", data: "\x19" });
 			await sleep(50);
-			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"], "reserved callback must be removed");
+			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+u"], "reserved callback must be removed");
 
-			writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
-			await reloadInteractiveMode(driver, "ctrl+x");
-			driver.send({ type: "input", data: "\x18" });
+			writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+u" }));
+			await reloadInteractiveMode(driver, "ctrl+u");
+			driver.send({ type: "input", data: "\x15" });
 			await sleep(50);
-			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"], "stale callback must not survive");
+			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+u"], "stale callback must not survive");
 			driver.send({ type: "input", data: "\x19" });
 			const secondDeadline = performance.now() + 3_000;
 			while (shortcutInvocations(shortcutLog).length < 3 && performance.now() < secondDeadline) await sleep(20);
-			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x", "ctrl+y"]);
+			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+u", "ctrl+y"]);
 		} finally {
 			await driver.stop();
 			rmSync(temp, { recursive: true, force: true });
@@ -410,8 +411,8 @@ serialTest(
 		const keybindingsPath = join(agentDir, "keybindings.json");
 		const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(shortcutConfig, "ctrl+x,ctrl+y");
-		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
+		writeFileSync(shortcutConfig, "ctrl+u,ctrl+y");
+		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+u" }));
 		const driver = new InteractiveModeDriver(fixtureArgs(extension), {
 			ATOMIC_BLOCKING_EXTENSION_INIT: "1",
 			ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
@@ -426,9 +427,9 @@ serialTest(
 			);
 			driver.send({ type: "state" });
 			const startup = await driver.waitFor(
-				(report) => report.type === "state" && report.expandKeys?.[0] === "ctrl+x",
+				(report) => report.type === "state" && report.expandKeys?.[0] === "ctrl+u",
 			);
-			assert.equal(startup.expandDisplay, "ctrl+x");
+			assert.equal(startup.expandDisplay, "ctrl+u");
 			await driver.waitUntilEngineBound("ctrl+y");
 			driver.send({ type: "input", data: "\x19" });
 			const initialShortcutDeadline = performance.now() + 3_000;
@@ -437,7 +438,7 @@ serialTest(
 			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
 
 			writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+y" }));
-			writeFileSync(shortcutConfig, "ctrl+x");
+			writeFileSync(shortcutConfig, "ctrl+u");
 			driver.send({ type: "input", data: "restart with new shortcuts" });
 			await driver.waitFor(
 				(report) => report.type === "heartbeat" && report.editorText === "restart with new shortcuts",
@@ -512,11 +513,11 @@ serialTest(
 				"stale remote key must not dispatch after restart",
 			);
 
-			driver.send({ type: "input", data: "\x18" });
+			driver.send({ type: "input", data: "\x15" });
 			const restartedShortcutDeadline = performance.now() + 3_000;
 			while (shortcutInvocations(shortcutLog).length < 2 && performance.now() < restartedShortcutDeadline)
 				await sleep(20);
-			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"]);
+			assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+u"]);
 		} finally {
 			await driver.stop();
 			rmSync(temp, { recursive: true, force: true });

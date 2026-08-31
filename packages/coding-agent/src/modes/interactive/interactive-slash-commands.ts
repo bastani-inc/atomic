@@ -73,18 +73,8 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 			activeHeader.setExpanded(this.toolOutputExpanded);
 		}
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+		this.applyRuntimeSettings();
 		await this.themeController.applyFromSettings();
-		const editorPaddingX = this.settingsManager.getEditorPaddingX();
-		const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
-		this.defaultEditor.setPaddingX(editorPaddingX);
-		this.defaultEditor.setAutocompleteMaxVisible(autocompleteMaxVisible);
-		if (this.editor !== this.defaultEditor) {
-			this.editor.setPaddingX?.(editorPaddingX);
-			this.editor.setAutocompleteMaxVisible?.(autocompleteMaxVisible);
-		}
-		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
-		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.setupAutocompleteProvider();
 		const runner = this.session.extensionRunner;
 		this.setupExtensionShortcuts(runner);
@@ -322,7 +312,15 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	}
 };
 
-InteractiveModeBase.prototype.handleCopyCommand = async function (this: InteractiveModeBase): Promise<void> {
+InteractiveModeBase.prototype.handleCopyCommand = async function (
+	this: InteractiveModeBase,
+	options: { preferSelection?: boolean } = {},
+): Promise<void> {
+	if (options.preferSelection && this.getFullscreenCopyOnSelect() === false) {
+		const selectionCopied = await this.copyActiveFullscreenSelection();
+		if (selectionCopied !== undefined) return;
+	}
+
 	const text = this.session.getLastAssistantText();
 	if (!text) {
 		this.showError("No agent messages to copy yet.");

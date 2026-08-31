@@ -13,13 +13,17 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { durableHash } from "../../packages/workflows/src/durable/backend.js";
+import { DbosDurableBackend, type DbosSdkHandle } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
+import { launchDetachedUntilStartup } from "../../packages/workflows/src/runs/background/startup-admission.js";
 import { killRun, statusRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { PromptAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Deferred adapter — a prompt adapter that holds until explicitly released
@@ -183,6 +187,80 @@ describe("runDetached — returns immediately", () => {
 		if (job === undefined) throw new Error("expected background job to be registered");
 		await job.promise;
 		assert.equal(bodyStarted, true);
+	});
+
+	test("an independent root reaches startup admission while another root write is hung", async () => {
+		const sdk = createMockSdk();
+		const blocked = Promise.withResolvers<void>();
+		const persistStarted = Promise.withResolvers<void>();
+		const laneSdk: DbosSdkHandle = {
+			...sdk,
+			async recordStepOutput(workflowId, stepName, output) {
+				if (workflowId === "startup-blocker" && stepName === "blocked-checkpoint") {
+					persistStarted.resolve();
+					await blocked.promise;
+				}
+				await sdk.recordStepOutput(workflowId, stepName, output);
+			},
+		};
+		const durableBackend = new DbosDurableBackend(laneSdk);
+		durableBackend.registerWorkflow({
+			workflowId: "startup-blocker",
+			name: "blocker",
+			inputs: {},
+			createdAt: Date.now(),
+			status: "running",
+		});
+		await durableBackend.flush("startup-blocker");
+		durableBackend.recordCheckpoint({
+			kind: "tool",
+			workflowId: "startup-blocker",
+			checkpointId: "blocked-checkpoint",
+			name: "blocked",
+			argsHash: durableHash({ name: "blocked", args: {} }),
+			output: "blocked",
+			completedAt: Date.now(),
+		});
+		await persistStarted.promise;
+
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		let bodyStarted = false;
+		const independent = workflow({
+			name: "independent-startup",
+			description: "",
+			inputs: {},
+			outputs: { done: Type.Boolean() },
+			run: async (ctx) => {
+				bodyStarted = true;
+				await ctx.tool("startup-marker", {}, async () => true);
+				return { done: true };
+			},
+		}) as WorkflowDefinition;
+		const launch = launchDetachedUntilStartup(
+			independent,
+			{},
+			{
+				store,
+				cancellation,
+				jobs,
+				durableBackend,
+			},
+		);
+		try {
+			assert.deepEqual(await launch.wait, { started: true });
+			assert.equal(bodyStarted, true);
+			const job = jobs.get(launch.accepted.runId);
+			assert.ok(job);
+			await job.promise;
+			const run = store.runs().find((candidate) => candidate.id === launch.accepted.runId);
+			assert.equal(run?.status, "completed", JSON.stringify(run));
+			assert.notEqual(run?.endedAt, undefined);
+		} finally {
+			blocked.resolve();
+			await durableBackend.flush();
+		}
 	});
 
 	test("killing before deferred workflow body starts prevents body execution", async () => {

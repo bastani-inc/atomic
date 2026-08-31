@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { getAgentDir as getDefaultAgentDir } from "../config.ts";
+import { getAgentDir as getDefaultAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 
 /**

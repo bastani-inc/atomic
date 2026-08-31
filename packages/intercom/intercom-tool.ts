@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
+import type { SessionInfo } from "./types.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
@@ -16,7 +17,7 @@ import {
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.js";
 import { resolveSessionTargetId } from "./session-target.js";
-import { normalizeGroup, validateRuntimeGroup } from "./group.js";
+import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 
 interface IntercomToolDeps {
   childOrchestratorMetadata?: ChildOrchestratorMetadata | null | (() => ChildOrchestratorMetadata | null);
@@ -24,8 +25,8 @@ interface IntercomToolDeps {
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup(): string;
-  setJoinedGroup(group: string): void;
-  clearJoinedGroup(): void;
+  setJoinedGroups(groups: readonly string[]): void;
+  clearJoinedGroups(): void;
   confirmSend: boolean;
   /** Atomically reserves one correlation-keyed reply waiter. */
   beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
@@ -54,25 +55,27 @@ workflow stage, use the exact \`<runId>:<stageKey>\` target; send messages to pe
 queue automatically.
 
 Usage:
-  intercom({ action: "list" })                    → List sessions in your group
-  intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
-  intercom({ action: "join", group: "name" })     → Join or create a named group
+  intercom({ action: "list" })                    → List sessions visible through your groups
+  intercom({ action: "list", group: "name" })     → Read-only peek at one group's sessions
+  intercom({ action: "groups" })                  → Discover every available group and your memberships
+  intercom({ action: "join", group: "name" })     → Add a named group membership
+  intercom({ action: "leave", group: "name" })    → Leave one named group
   intercom({ action: "leave" })                   → Return to your resolved home group
-  intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
+  intercom({ action: "send", to: "session-name", message: "..." })  → Send message (shared group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
-  intercom({ action: "status" })                  → Show connection status and your group
+  intercom({ action: "status" })                  → Show connection status and all your groups
 
-The "join" action changes this session's group in place. "default" is the shared
-default group; "true" and "auto" are reserved for subagent auto-groups. Joining
-does not grant cross-group access: contact_supervisor is the only cross-group path.`,
+The "join" action is additive. "default" is the shared default group; "true" and
+"auto" are reserved for subagent auto-groups. Ordinary delivery requires at least
+one shared membership; contact_supervisor remains the only cross-group path.`,
     promptSnippet:
-      "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
+      "Use to coordinate with other local agent sessions that share an intercom group: discover groups or peers, send updates, ask for help, or check connectivity. Ordinary messages require a shared membership.",
 
     parameters: Type.Object({
       action: Type.String({
-        description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
+        description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
         description: "Live session name, exact full session ID, or exact `<runId>:<stageKey>` for a known workflow stage; send messages to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')",
@@ -90,7 +93,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         description: "Exact pending-ask message ID; disambiguates concurrent asks, including asks from one sender",
       })),
       group: Type.Optional(Type.String({
-        description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group.",
+        description: "Group name for 'join' or optional targeted 'leave'; read-only group filter for 'list'/'status'. 'send'/'ask' use shared memberships.",
       })),
     }),
 
@@ -108,17 +111,21 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
       const { action, to, message, attachments, replyTo, group } = params;
-      const requestedGroup = typeof group === "string" && group.trim() ? normalizeGroup(group) : undefined;
-      const resolveOwnGroup = async (): Promise<string> => {
-        const sessions = await connectedClient.listSessions();
-        const self = sessions.find((s) => s.id === connectedClient.sessionId);
-        return normalizeGroup(self?.group);
+      const resolveOwnGroups = (sessions?: readonly SessionInfo[]): string[] => {
+        if (Array.isArray(connectedClient.groups)) {
+          return connectedClient.groups.map((membership) => normalizeGroup(membership));
+        }
+        const self = sessions?.find((session) => session.id === connectedClient.sessionId);
+        return [...normalizeGroups(self?.groups, self?.group)];
       };
+      const isOnlyOwnGroup = (candidate: string | undefined, ownGroups: readonly string[]): boolean =>
+        candidate !== undefined && ownGroups.length === 1 && ownGroups[0] === candidate;
+      const requestedGroup = typeof group === "string" && group.trim() ? normalizeGroup(group) : undefined;
       if ((action === "send" || action === "ask") && requestedGroup) {
-        const ownGroup = await resolveOwnGroup();
-        if (requestedGroup !== ownGroup) {
+        const ownGroups = resolveOwnGroups();
+        if (!ownGroups.includes(requestedGroup)) {
           return {
-            content: [{ type: "text", text: `The 'group' parameter is read-only for 'list'/'status'. '${action}' is always locked to your own group ("${ownGroup}"); it cannot target group "${requestedGroup}".` }],
+            content: [{ type: "text", text: `The 'group' parameter is read-only for 'list'/'status'. '${action}' is always locked to your groups (${ownGroups.join(", ")}); it cannot target group "${requestedGroup}".` }],
             isError: true,
             details: { error: true },
           };
@@ -138,15 +145,12 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             };
           }
           try {
-            const acknowledgedGroup = await connectedClient.updatePresenceAcked({ group: targetGroup });
-            if (acknowledgedGroup !== targetGroup) {
-              throw new Error(`Broker acknowledged group "${acknowledgedGroup}" instead of "${targetGroup}"`);
-            }
-            deps.setJoinedGroup(targetGroup);
+            const groups = await connectedClient.joinGroup(targetGroup);
+            deps.setJoinedGroups(groups);
             return {
-              content: [{ type: "text", text: `Joined intercom group "${targetGroup}".` }],
+              content: [{ type: "text", text: `Joined intercom group "${targetGroup}". Memberships: ${groups.join(", ")}.` }],
               isError: false,
-              details: { group: targetGroup },
+              details: { group: targetGroup, groups },
             };
           } catch (error) {
             return {
@@ -158,16 +162,13 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         }
 
         case "leave": {
-          if (typeof group === "string" && group.trim().length > 0) {
-            return {
-              content: [{ type: "text", text: "The 'leave' action does not accept a group; it returns to the resolved home group." }],
-              isError: true,
-              details: { error: true },
-            };
-          }
-          let targetGroup: string;
+          let targetGroup: string | undefined;
+          let homeGroup: string | undefined;
           try {
-            targetGroup = validateRuntimeGroup(deps.homeGroup());
+            targetGroup = typeof group === "string" && group.trim().length > 0
+              ? validateRuntimeGroup(group)
+              : undefined;
+            if (targetGroup === undefined) homeGroup = validateRuntimeGroup(deps.homeGroup());
           } catch (error) {
             return {
               content: [{ type: "text", text: `Cannot leave intercom group: ${getErrorMessage(error)}` }],
@@ -176,15 +177,23 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             };
           }
           try {
-            const acknowledgedGroup = await connectedClient.updatePresenceAcked({ group: targetGroup });
-            if (acknowledgedGroup !== targetGroup) {
-              throw new Error(`Broker acknowledged group "${acknowledgedGroup}" instead of "${targetGroup}"`);
+            let groups: string[];
+            if (targetGroup === undefined) {
+              if (homeGroup === undefined) throw new Error("Intercom home group is unavailable");
+              await connectedClient.updatePresenceAcked({ groups: [homeGroup] });
+              groups = connectedClient.groups;
+              deps.clearJoinedGroups();
+            } else {
+              groups = await connectedClient.leaveGroup(targetGroup);
+              deps.setJoinedGroups(groups);
             }
-            deps.clearJoinedGroup();
+            const text = targetGroup === undefined
+              ? `Returned to home intercom membership. Memberships: ${groups.join(", ")}.`
+              : `Left intercom group "${targetGroup}". Memberships: ${groups.join(", ")}.`;
             return {
-              content: [{ type: "text", text: `Returned to home intercom group "${targetGroup}".` }],
+              content: [{ type: "text", text }],
               isError: false,
-              details: { group: targetGroup },
+              details: targetGroup === undefined ? { group: homeGroup, groups } : { groups },
             };
           } catch (error) {
             return {
@@ -195,12 +204,31 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
           }
         }
 
+        case "groups": {
+          try {
+            const groups = await connectedClient.listGroups();
+            const lines = groups.map(({ group: groupName, sessionCount, member }) =>
+              `- ${groupName} — ${sessionCount} session${sessionCount === 1 ? "" : "s"}${member ? " [member]" : ""}`
+            );
+            return {
+              content: [{ type: "text", text: `**Intercom groups:**\n${lines.join("\n")}` }],
+              isError: false,
+              details: { groups },
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Failed to list groups: ${getErrorMessage(error)}` }],
+              isError: true,
+              details: { error: true },
+            };
+          }
+        }
+
         case "list": {
           try {
             const mySessionId = connectedClient.sessionId;
             const ownSessions = await connectedClient.listSessions();
-            const currentSession = ownSessions.find(s => s.id === mySessionId);
-
+            const currentSession = ownSessions.find((session) => session.id === mySessionId);
             if (!currentSession) {
               return {
                 content: [{ type: "text", text: "Current session is missing from intercom session list." }],
@@ -208,30 +236,29 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
                 details: { error: true },
               };
             }
-            const ownGroup = normalizeGroup(currentSession.group);
-
-            if (requestedGroup && requestedGroup !== ownGroup) {
+            const ownGroups = resolveOwnGroups(ownSessions);
+            if (requestedGroup && !isOnlyOwnGroup(requestedGroup, ownGroups)) {
               const peeked = await connectedClient.listSessions(requestedGroup);
               const section = peeked.length === 0
                 ? `**Group [${requestedGroup}] (read-only peek):**\nNo sessions in this group.`
-                : `**Group [${requestedGroup}] (read-only peek):**\n${peeked.map(s => formatSessionListRow(s, currentSession.cwd, s.id === mySessionId)).join("\n")}`;
+                : `**Group [${requestedGroup}] (read-only peek):**\n${peeked.map((session) => formatSessionListRow(session, currentSession.cwd, session.id === mySessionId)).join("\n")}`;
               return {
-                content: [{ type: "text", text: `Your group: ${ownGroup}\n\n${section}` }],
+                content: [{ type: "text", text: `Your groups: ${ownGroups.join(", ")}\n\n${section}` }],
                 isError: false,
-                details: { group: ownGroup, peekGroup: requestedGroup },
+                details: { group: ownGroups.at(-1), groups: ownGroups, peekGroup: requestedGroup },
               };
             }
 
-            const otherSessions = ownSessions.filter(s => s.id !== mySessionId);
-            const currentSection = `**Current session** (group: ${ownGroup}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
+            const otherSessions = ownSessions.filter((session) => session.id !== mySessionId);
+            const currentSection = `**Current session** (groups: ${ownGroups.join(", ")}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
             const otherSection = otherSessions.length === 0
-              ? `**Other sessions:**\nNo other sessions in your group (${ownGroup}).`
-              : `**Other sessions** (group: ${ownGroup}):\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false)).join("\n")}`;
+              ? "**Other sessions:**\nNo other sessions share any of your groups."
+              : `**Other visible sessions:**\n${otherSessions.map((session) => formatSessionListRow(session, currentSession.cwd, false)).join("\n")}`;
 
             return {
               content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
               isError: false,
-              details: { group: ownGroup },
+              details: { group: ownGroups.at(-1), groups: ownGroups },
             };
           } catch (error) {
             return {
@@ -568,23 +595,31 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             details: {},
           };
         }
-
         case "status": {
           try {
             const mySessionId = connectedClient.sessionId;
             const sessions = await connectedClient.listSessions();
-            const self = sessions.find((s) => s.id === mySessionId);
-            const ownGroup = normalizeGroup(self?.group);
-            const peekSection = requestedGroup && requestedGroup !== ownGroup
-              ? `\nPeeked group [${requestedGroup}]: ${(await connectedClient.listSessions(requestedGroup)).length} session(s)`
-              : "";
+            const ownGroups = resolveOwnGroups(sessions);
+            const selectedGroup = isOnlyOwnGroup(requestedGroup, ownGroups) ? undefined : requestedGroup;
+            const selectedGroupSessions = selectedGroup === undefined
+              ? undefined
+              : await connectedClient.listSessions(selectedGroup);
+            const selectedSection = selectedGroupSessions === undefined
+              ? ""
+              : `\nSelected group [${selectedGroup}]: ${selectedGroupSessions.length} session(s)`;
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroup: ${ownGroup}\nActive sessions in group: ${sessions.length}${peekSection}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}\nActive visible sessions: ${sessions.length}${selectedSection}`,
               }],
               isError: false,
-              details: { group: ownGroup },
+              details: {
+                group: ownGroups.at(-1),
+                groups: ownGroups,
+                ...(selectedGroup === undefined
+                  ? {}
+                  : { selectedGroup, selectedGroupSessionCount: selectedGroupSessions?.length ?? 0 }),
+              },
             };
           } catch (error) {
             return {

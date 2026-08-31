@@ -34,6 +34,21 @@ export interface ResourceLoaderReloadOptions {
 		extensionsResult: LoadExtensionsResult;
 	}) => boolean | Promise<boolean>;
 }
+export interface PreparedResourceLoaderCommit {
+	commit(): void;
+	rollback(): void;
+}
+
+export interface ResourceLoaderReloadTransaction {
+	/** Fully loaded candidate. Live readers must not observe it before commit. */
+	readonly loader: ResourceLoader;
+	/** Rebind the candidate to the live settings identity immediately before commit. */
+	activate(settingsManager: SettingsManager): void;
+	/** Prepare fallible publication work without exposing candidate behavior. */
+	prepareCommit?(): PreparedResourceLoaderCommit;
+	/** Publish synchronously after all candidate work has succeeded. */
+	commit(): void;
+}
 
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
@@ -48,6 +63,11 @@ export interface ResourceLoader {
 	getAppendSystemPromptSources(): Array<{ path: string }>;
 	extendResources(paths: ResourceExtensionPaths): Promise<void>;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
+	supportsTransactionalReload?(): boolean;
+	prepareReload?(
+		settingsManager: SettingsManager,
+		options?: ResourceLoaderReloadOptions,
+	): Promise<ResourceLoaderReloadTransaction>;
 }
 
 export interface DefaultResourceLoaderInheritanceSnapshot {

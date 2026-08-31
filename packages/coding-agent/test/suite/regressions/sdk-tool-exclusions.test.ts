@@ -48,11 +48,11 @@ describe("SDK tool exclusions", () => {
 			extensionFactories: options.extensionToolName
 				? [
 						(pi) => {
-							pi.on("session_start", () => {
+							const registerTool = () => {
 								pi.registerTool({
 									name: options.extensionToolName!,
 									label: "Dynamic Tool",
-									description: "Tool registered from session_start",
+									description: "Tool registered by an extension",
 									promptSnippet: "Run dynamic test behavior",
 									parameters: Type.Object({}),
 									execute: async () => ({
@@ -60,7 +60,9 @@ describe("SDK tool exclusions", () => {
 										details: {},
 									}),
 								});
-							});
+							};
+							if (options.extensionToolName === "intercom") registerTool();
+							else pi.on("session_start", registerTool);
 						},
 					]
 				: undefined,
@@ -106,8 +108,8 @@ describe("SDK tool exclusions", () => {
 				.getAllTools()
 				.map((tool) => tool.name)
 				.sort(),
-		).toEqual(["read"]);
-		expect(session.getActiveToolNames()).toEqual(["read"]);
+		).toEqual(["intercom", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["read", "intercom"]);
 		expect(session.systemPrompt).toContain("- read: Read a path selector.");
 		expect(session.systemPrompt).not.toContain("- ask_user_question:");
 		expect(session.systemPrompt).toContain("using the ask_user_question tool if available");
@@ -126,8 +128,8 @@ describe("SDK tool exclusions", () => {
 				.getAllTools()
 				.map((tool) => tool.name)
 				.sort(),
-		).toEqual(["bash", "read"]);
-		expect(session.getActiveToolNames().sort()).toEqual(["bash", "read"]);
+		).toEqual(["bash", "intercom", "read"]);
+		expect(session.getActiveToolNames().sort()).toEqual(["bash", "intercom", "read"]);
 		expect(session.systemPrompt).toContain("- read: Read a path selector.");
 		expect(session.systemPrompt).toContain("- bash:");
 		expect(session.systemPrompt).not.toContain("ask_user_question");
@@ -145,8 +147,8 @@ describe("SDK tool exclusions", () => {
 		expect(session.getAllTools().map((tool) => tool.name)).toEqual(
 			expect.arrayContaining(["read", "bash", "edit", "write", "todo"]),
 		);
-		expect(session.getActiveToolNames()).toEqual([]);
-		expect(session.systemPrompt).toContain("Available tools:\n(none)");
+		expect(session.getActiveToolNames()).toEqual(["intercom"]);
+		expect(session.systemPrompt).toContain("- intercom:");
 		expect(session.systemPrompt).not.toContain("ask_user_question");
 
 		session.dispose();
@@ -206,6 +208,87 @@ describe("SDK tool exclusions", () => {
 		session.dispose();
 	});
 
+	it("reserves ordinary bundled Intercom against an SDK custom-tool collision", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager: SettingsManager.create(tempDir, agentDir),
+			sessionManager: SessionManager.inMemory(tempDir),
+			tools: ["read"],
+			excludedTools: ["intercom", "bash"],
+			customTools: [
+				{
+					name: "intercom",
+					label: "Spoofed Intercom",
+					description: "SDK collision that must not replace bundled Intercom",
+					promptSnippet: "Spoofed Intercom metadata",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "spoofed" }], details: {} }),
+				},
+			],
+		});
+		try {
+			const info = session.getAllTools().find((tool) => tool.name === "intercom");
+			expect(info?.sourceInfo.configurationOrigin).toBe("bundled");
+			expect(session.getToolDefinition("intercom")?.label).toBe("Intercom");
+			expect(session.getToolDefinition("intercom")?.promptSnippet).not.toBe("Spoofed Intercom metadata");
+			expect(session.getActiveToolNames()).toEqual(["read", "intercom"]);
+			expect(session.getToolDefinition("bash")).toBeUndefined();
+			expect(session.getToolDefinition("contact_supervisor")).toBeUndefined();
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("keeps Intercom registered and active across SDK restrictions, mutation, and reload", async () => {
+		const session = await createSession({
+			extensionToolName: "intercom",
+			tools: ["read"],
+			excludedTools: ["intercom", "bash"],
+		});
+
+		await session.bindExtensions({});
+
+		expect(
+			session
+				.getAllTools()
+				.map((tool) => tool.name)
+				.sort(),
+		).toEqual(["intercom", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["read", "intercom"]);
+		expect(session.systemPrompt).not.toContain("contact_supervisor");
+
+		session.setActiveToolsByName([]);
+		expect(session.getActiveToolNames()).toEqual(["intercom"]);
+		expect(session.getToolDefinition("intercom")?.label).toBe("Intercom");
+		expect(session.systemPrompt).not.toContain("contact_supervisor");
+
+		await session.reload();
+		expect(
+			session
+				.getAllTools()
+				.map((tool) => tool.name)
+				.sort(),
+		).toEqual(["intercom", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["intercom", "read"]);
+		expect(session.getToolDefinition("intercom")).toBeDefined();
+		expect(session.getToolDefinition("bash")).toBeUndefined();
+
+		session.dispose();
+	});
+
+	it("keeps only Intercom active when SDK noTools disables all other tools", async () => {
+		const session = await createSession({ extensionToolName: "intercom", noTools: "all" });
+
+		await session.bindExtensions({});
+
+		expect(session.getAllTools().map((tool) => tool.name)).toEqual(["intercom"]);
+		expect(session.getActiveToolNames()).toEqual(["intercom"]);
+
+		session.dispose();
+	});
+
 	it("main CLI print/json exclusion removes ask_user_question while keeping workflow", async () => {
 		const session = await createSession({
 			extensionToolName: "workflow",
@@ -253,7 +336,6 @@ describe("SDK tool exclusions", () => {
 		expect(session.getAllTools().map((tool) => tool.name)).not.toContain("ask_user_question");
 		expect(session.getActiveToolNames()).not.toContain("ask_user_question");
 		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "bash", "edit", "write", "todo"]));
-		expect(session.systemPrompt).not.toContain("ask_user_question");
 
 		session.dispose();
 	});

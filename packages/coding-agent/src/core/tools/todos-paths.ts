@@ -1,5 +1,5 @@
 import path from "node:path";
-import { APP_NAME, CONFIG_DIR_NAME, getEnvValue } from "../../config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, getEnvValue } from "../../config.js";
 
 const TODO_DIR_NAME = `${CONFIG_DIR_NAME}/todos`;
 const TODO_PATH_ENV = `${APP_NAME.toUpperCase()}_TODO_PATH`;

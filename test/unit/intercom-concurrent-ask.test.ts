@@ -9,6 +9,35 @@ import { type ReplyWaiterRecord, ReplyWaiterRegistry } from "../../packages/inte
 import type { SessionInfo } from "../../packages/intercom/types.js";
 import { sleep } from "../helpers/runtime.js";
 
+/**
+ * The fixture's scripted send delay, and the budget a test gives work that must
+ * finish after it.
+ *
+ * These tests used to sleep a fixed wall-clock span and then assert the work had
+ * finished — `sleep(20)` against a 15 ms send left five milliseconds of headroom.
+ * vitest runs test files in parallel, so on a loaded machine that margin vanishes
+ * and the assertion fails for a reason that has nothing to do with the code under
+ * test. AGENTS.md is explicit that a test which only passes on an idle machine is
+ * a bug in that test.
+ *
+ * `settles` waits for the condition instead of for the clock: it returns as soon
+ * as the predicate holds, so an idle machine is faster than the old fixed sleep,
+ * and a loaded one waits up to SETTLE_BUDGET_MS rather than failing. The budget is
+ * two orders of magnitude above the work it covers, so exhausting it means the
+ * condition is genuinely unreachable, not merely late.
+ */
+const SEND_DELAY_MS = 15;
+const SETTLE_BUDGET_MS = 2_000;
+const SETTLE_POLL_MS = 1;
+
+async function settles(condition: () => boolean, description: string): Promise<void> {
+	const deadline = Date.now() + SETTLE_BUDGET_MS;
+	while (!condition()) {
+		assert.ok(Date.now() < deadline, `timed out after ${SETTLE_BUDGET_MS}ms waiting until ${description}`);
+		await sleep(SETTLE_POLL_MS);
+	}
+}
+
 type ToolResult = { content: Array<{ text: string }>; isError: boolean };
 type Tool = {
 	execute(
@@ -160,15 +189,14 @@ describe("concurrent blocking intercom requests", () => {
 		const resolveGate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		const current = fixture({ send: { delayMs: 15 }, resolveGate });
+		const current = fixture({ send: { delayMs: SEND_DELAY_MS }, resolveGate });
 
 		// Start both in the same tick, as parallel sibling tool calls do.
 		const first = current.ask();
 		const second = current.ask();
 		await sleep(0);
 		release();
-		await sleep(20);
-		assert.equal(current.sent.length, 2, "both asks send their questions");
+		await settles(() => current.sent.length === 2, "both asks send their questions");
 		current.replyToPending();
 		current.replyToPending();
 		for (const result of await Promise.all([first, second])) {
@@ -182,14 +210,16 @@ describe("concurrent blocking intercom requests", () => {
 		const resolveGate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		const current = fixture({ send: { delayMs: 15 }, resolveGate });
+		const current = fixture({ send: { delayMs: SEND_DELAY_MS }, resolveGate });
 
 		const askExecution = current.ask();
 		const superviseExecution = current.supervise();
 		await sleep(0);
 		release();
-		await sleep(20);
-		assert.equal(current.slot.size(), 2);
+		await settles(
+			() => current.slot.size() === 2 && current.sent.length === 2,
+			"the peer ask and the supervisor wait are both admitted and sent",
+		);
 		current.replyToPending();
 		current.replyToPending();
 
@@ -205,8 +235,10 @@ describe("concurrent blocking intercom requests", () => {
 		const loser = await current.supervise();
 		assert.equal(loser.isError, true);
 		assert.match(loser.content[0]?.text ?? "", /Already waiting for a supervisor reply/);
-		await sleep(15);
-		assert.equal(current.slot.size(), 1);
+		await settles(
+			() => current.slot.size() === 1 && current.sent.length === 1,
+			"only the winning supervisor wait remains, and it has sent",
+		);
 		current.replyToPending();
 		assert.equal((await winner).isError, false);
 	});
@@ -238,10 +270,9 @@ describe("concurrent blocking intercom requests", () => {
 		};
 		const children = [0, 1, 2].map((childIndex) => fixture({ claimParent: claimOnce, childIndex }));
 		const executions = children.map((child) => child.supervise());
-		await sleep(5);
-		assert.deepEqual(
-			children.map((child) => child.slot.size()),
-			[0, 1, 1],
+		await settles(
+			() => children.every((child, index) => child.slot.size() === (index === 0 ? 0 : 1)),
+			"the claiming child holds no waiter and each loser holds exactly one",
 		);
 		assert.match((await executions[0]!).content[0]?.text ?? "", /Parent ask claimed/);
 		const loserIds = children.slice(1).map((child) => child.slot.pending()[0]!.replyTo);
@@ -261,7 +292,7 @@ describe("concurrent blocking intercom requests", () => {
 
 		const retryable = fixture();
 		const retried = retryable.ask();
-		await sleep(5);
+		await settles(() => retryable.slot.has(), "the retried ask reserves the slot");
 		retryable.replyToPending();
 		assert.equal((await retried).isError, false);
 	});
@@ -270,8 +301,7 @@ describe("concurrent blocking intercom requests", () => {
 		const current = fixture();
 		const controller = new AbortController();
 		const execution = current.ask(controller.signal);
-		await sleep(5);
-		assert.ok(current.slot.has(), "the ask is waiting before cancellation");
+		await settles(() => current.slot.has(), "the ask is waiting before cancellation");
 		controller.abort();
 		const result = await execution;
 		assert.equal(result.isError, true);
@@ -279,7 +309,7 @@ describe("concurrent blocking intercom requests", () => {
 		assert.equal(current.slot.has(), false);
 
 		const next = current.ask();
-		await sleep(5);
+		await settles(() => current.slot.has(), "the next ask reserves the freed slot");
 		current.replyToPending();
 		assert.equal((await next).isError, false);
 	});
@@ -288,7 +318,7 @@ describe("concurrent blocking intercom requests", () => {
 		const current = fixture();
 		const controller = new AbortController();
 		const execution = current.supervise(controller.signal);
-		await sleep(5);
+		await settles(() => current.slot.has(), "the supervisor wait is registered before cancellation");
 		controller.abort();
 		const result = await execution;
 		assert.equal(result.isError, true);
@@ -306,10 +336,9 @@ describe("concurrent blocking intercom requests", () => {
 		const loser = current.ask();
 		await sleep(0);
 		release();
-		await sleep(5);
+		await settles(() => current.slot.size() === 2, "both asks are admitted");
 
 		const waiter = current.slot.pending();
-		assert.ok(waiter);
 		const misrouted = routeIncomingReply(waiter, from, {
 			id: "unrelated",
 			timestamp: Date.now(),
@@ -339,9 +368,7 @@ describe("concurrent blocking intercom requests", () => {
 		const firstB = current.ask(undefined, "b");
 		const secondB = current.ask(undefined, "b");
 		const onlyC = current.ask(undefined, "c");
-		await sleep(5);
-
-		assert.equal(current.slot.size(), 3);
+		await settles(() => current.slot.size() === 3, "all three asks are admitted");
 		const bWaiters = current.slot.pending().filter((waiter) => waiter.from === "b");
 		const cWaiter = current.slot.pending().find((waiter) => waiter.from === "c");
 		assert.equal(bWaiters.length, 2);
@@ -392,15 +419,12 @@ describe("concurrent blocking intercom requests", () => {
 		const controller = new AbortController();
 
 		const first = current.ask(controller.signal);
-		await sleep(5);
-		assert.ok(current.slot.has(), "the first ask reserves the slot before it is aborted");
+		await settles(() => current.slot.has(), "the first ask reserves the slot before it is aborted");
 		controller.abort();
-		await sleep(0);
-		assert.equal(current.slot.has(), false, "aborting mid-send releases the reservation");
+		await settles(() => !current.slot.has(), "aborting mid-send releases the reservation");
 
 		const second = current.ask();
-		await sleep(5);
-		assert.ok(current.slot.has(), "a second ask reserves the freed slot");
+		await settles(() => current.slot.has(), "a second ask reserves the freed slot");
 
 		const firstResult = await first;
 		assert.equal(firstResult.isError, true);

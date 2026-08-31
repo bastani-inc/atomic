@@ -1,9 +1,11 @@
 import { ScrollView, VStack } from "@earendil-works/pi-tui";
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
 import {
 	onInteractiveEngineRemoteCommandsChanged,
+	onInteractiveEngineResourceExtensionsChanged,
 	waitForInteractiveEngineBound,
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
@@ -158,6 +160,18 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	this.ui.requestRender();
 };
 
+export function attachInteractiveEngineResourceExtensionRefresh(mode: InteractiveModeBase): () => void {
+	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, () => {
+		if (mode.resourceDisclosureContainer.children.length === 0) return;
+		mode.showLoadedResources({
+			force: true,
+			showDiagnosticsWhenQuiet: true,
+			targetContainer: mode.resourceDisclosureContainer,
+		});
+		mode.ui.requestRender();
+	});
+}
+
 InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase): Promise<void> {
 	if (this.isInitialized) return;
 
@@ -214,6 +228,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
 		this.setupAutocompleteProvider();
 	});
+	attachInteractiveEngineResourceExtensionRefresh(this);
 
 	seedStartupInput(
 		this.pendingUserInputs,
@@ -228,15 +243,14 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		},
 	);
 
-	// Start UI before extension/session work; fd/rg readiness and git watching move after first paint.
+	// Start and paint the host-owned TUI before waiting for the isolated engine.
+	// The editor remains local and responsive; session binding and provider work
+	// still stay behind the engine-bound gate below.
+	markLifecycleTiming("tui-start");
 	this.ui.start();
-	await waitForInteractiveEngineBound(this.runtimeHost);
-	if (this.isShuttingDown) return;
-	recordTimeSinceReset("time-to-first-frame");
 	this.footerDataProvider.onBranchChange(() => {
 		this.ui.requestRender();
 	});
-	this.isInitialized = true;
 
 	await this.themeController.applyFromSettings();
 
@@ -254,6 +268,16 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.builtInHeader = new Text("", 0, 0);
 		this.headerContainer.addChild(this.builtInHeader);
 	}
+	markLifecycleTiming("header-mounted");
+	this.ui.requestRender();
+	// This legacy mark now means the first requested identity frame. The settled
+	// animation frame remains the external benchmark's startup-complete mark.
+	recordTimeSinceReset("time-to-first-frame");
+
+	await waitForInteractiveEngineBound(this.runtimeHost);
+	if (this.isShuttingDown) return;
+	this.isInitialized = true;
+	// The isolated engine may have replaced the preliminary model/provider view.
 	this.ui.requestRender();
 
 	// fd/rg readiness runs after first paint so slow downloads never make
@@ -515,9 +539,7 @@ InteractiveModeBase.prototype.formatDisplayPath = function (this: InteractiveMod
 };
 
 InteractiveModeBase.prototype.formatExtensionDisplayPath = function (this: InteractiveModeBase, path: string): string {
-	let result = this.formatDisplayPath(path);
-	result = result.replace(/\/index\.ts$/, "").replace(/\/index\.js$/, "");
-	return result;
+	return this.formatDisplayPath(path).replace(/[\\/]index\.(?:ts|js)$/, "");
 };
 
 InteractiveModeBase.prototype.formatContextPath = function (this: InteractiveModeBase, p: string): string {

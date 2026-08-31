@@ -199,6 +199,35 @@ describe("model refresh timeout boundaries", () => {
 			label: "ANTHROPIC_API_KEY",
 		});
 	});
+	it("rolls back extension provider publication when the commit refresh fails", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: false,
+			refreshOnCreate: false,
+		});
+		const before = {
+			providerIds: runtime.getRegisteredProviderIds(),
+			models: runtime.getModels().map((model) => `${model.provider}/${model.id}`),
+		};
+		const internals = runtime as unknown as {
+			runRefresh(options: object, sequence: number, discardIfSuperseded?: boolean): Promise<unknown>;
+		};
+		vi.spyOn(internals, "runRefresh").mockRejectedValueOnce(new Error("provider refresh failed"));
+		const transaction = runtime.createExtensionProviderTransaction();
+		transaction.registerProvider("candidate-provider", {
+			api: "openai-completions",
+			baseUrl: "http://localhost:8080/candidate/v1",
+			models: [{ id: "candidate-model", name: "Candidate model" }],
+		});
+
+		await expect(transaction.commit()).rejects.toThrow("provider refresh failed");
+		expect(runtime.getRegisteredProviderIds()).toEqual(before.providerIds);
+		expect(runtime.getRegisteredProviderConfig("candidate-provider")).toBeUndefined();
+		expect(runtime.getModel("candidate-provider", "candidate-model")).toBeUndefined();
+		expect(runtime.getModels().map((model) => `${model.provider}/${model.id}`)).toEqual(before.models);
+	});
+
 	it("reports provider-scoped availability failures in ModelsRefreshResult", async () => {
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory(),

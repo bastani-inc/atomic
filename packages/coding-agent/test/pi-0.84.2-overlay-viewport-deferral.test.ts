@@ -124,6 +124,8 @@ interface FixtureOptions {
 	userBindings?: KeybindingsConfig;
 	/** Default true. When false the editor keeps focus and no overlay is mounted. */
 	mountOverlay?: boolean;
+	copyOnSelect?: boolean;
+	copySelection?: (text: string) => Promise<boolean>;
 }
 
 function createFixture(options: FixtureOptions = {}): Fixture {
@@ -144,6 +146,8 @@ function createFixture(options: FixtureOptions = {}): Fixture {
 		showHardwareCursor: false,
 		logDirectory: tmpdir(),
 		terminal,
+		copyOnSelect: options.copyOnSelect,
+		copySelection: options.copySelection,
 		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay, focusedIsViewportSearch) =>
 			shouldHandleFullscreenViewportInput(
 				tui.getFocusedComponent(),
@@ -213,6 +217,34 @@ async function settle(fixture: Fixture): Promise<void> {
 	fixture.tui.renderNow();
 }
 
+describe("pi-tui 0.84.4 overlay selection ownership", () => {
+	test("a workflow-style overlay selection neither copies nor survives hide and repaint", async () => {
+		const copied: string[] = [];
+		const fixture = createFixture({
+			consumes: true,
+			copyOnSelect: false,
+			copySelection: async (text) => {
+				copied.push(text);
+				return true;
+			},
+		});
+		try {
+			fixture.terminal.input("\x1b[<0;1;1M");
+			fixture.terminal.input("\x1b[<32;5;1M");
+			fixture.terminal.input("\x1b[<0;5;1m");
+			await settle(fixture);
+			expect(copied).toEqual([]);
+
+			fixture.tui.hideOverlay();
+			fixture.tui.renderNow();
+			expect(fixture.tui.hasActiveSelection()).toBe(false);
+			expect(await fixture.tui.copyActiveSelectionToClipboard()).toBe(false);
+			expect(copied).toEqual([]);
+		} finally {
+			fixture.stop();
+		}
+	});
+});
 /**
  * pi-tui 0.84.2 added `shouldDeferViewportInputToOverlay()` (upstream #7894),
  * which drops viewport keys and wheel reports whenever an overlay holds focus.

@@ -7,6 +7,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { STALE_EXTENSION_CONTEXT_MESSAGE } from "../../packages/coding-agent/src/core/extensions/stale-context.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/index.js";
 import { makePersistencePort } from "../../packages/workflows/src/extension/index.js";
 
@@ -140,5 +141,70 @@ describe("makePersistencePort — all slots", () => {
 		assert.equal(typeof port.appendEntry, "function");
 		assert.equal(typeof port.setLabel, "function");
 		assert.equal(typeof port.appendCustomMessageEntry, "function");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// makePersistencePort — stale extension context after a preserving boundary
+// ---------------------------------------------------------------------------
+
+function throwStale(): never {
+	throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+}
+
+describe("makePersistencePort — stale extension context", () => {
+	test("appendEntry swallows isStaleExtensionContextError", () => {
+		const port = makePersistencePort(piWithAppendEntry(throwStale), true)!;
+		assert.equal(port.appendEntry("workflow.stage.end", { runId: "r1" }), undefined);
+	});
+
+	test("setLabel swallows isStaleExtensionContextError", () => {
+		const port = makePersistencePort(
+			piWithAppendEntry(() => "eid", { setLabel: throwStale }),
+			true,
+		)!;
+		port.setLabel!("eid-1", "wf:name:r1");
+	});
+
+	test("appendCustomMessageEntry swallows isStaleExtensionContextError", () => {
+		const port = makePersistencePort(
+			piWithAppendEntry(() => "eid", { appendCustomMessageEntry: throwStale }),
+			true,
+		)!;
+		assert.equal(port.appendCustomMessageEntry!("done", { runId: "r1" }), undefined);
+	});
+
+	test("appendEntry rethrows every other error", () => {
+		const port = makePersistencePort(
+			piWithAppendEntry(() => {
+				throw new Error("disk full");
+			}),
+			true,
+		)!;
+		assert.throws(() => port.appendEntry("workflow.run.end", { runId: "r1" }), { message: "disk full" });
+	});
+
+	test("setLabel rethrows every other error", () => {
+		const port = makePersistencePort(
+			piWithAppendEntry(() => "eid", {
+				setLabel: () => {
+					throw new Error("label failed");
+				},
+			}),
+			true,
+		)!;
+		assert.throws(() => port.setLabel!("eid-1", "wf:name:r1"), { message: "label failed" });
+	});
+
+	test("appendCustomMessageEntry rethrows every other error", () => {
+		const port = makePersistencePort(
+			piWithAppendEntry(() => "eid", {
+				appendCustomMessageEntry: () => {
+					throw new Error("message failed");
+				},
+			}),
+			true,
+		)!;
+		assert.throws(() => port.appendCustomMessageEntry!("done"), { message: "message failed" });
 	});
 });

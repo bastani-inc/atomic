@@ -65,6 +65,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		flagOwners: new Map(),
 		flagOwnerOrigins: new Map(),
 		pendingProviderRegistrations: [],
+		extensionProviderIds: new Set(),
 		canRegisterResource: () => true,
 		beginResourceRegistrationBatch: () => {
 			batchDepth += 1;

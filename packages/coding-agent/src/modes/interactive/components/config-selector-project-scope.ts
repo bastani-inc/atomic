@@ -1,5 +1,5 @@
 import { dirname, join, relative } from "node:path";
-import { CONFIG_DIR_NAME } from "../../../config.ts";
+import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
 import { isLocalPath, resolvePath } from "../../../utils/paths.ts";
 import type { ResourceItem, ResourceType } from "./config-selector-list.ts";

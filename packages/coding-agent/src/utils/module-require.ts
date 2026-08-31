@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { isBunBinary } from "../config.ts";
+import { isBunBinary } from "../config.js";
 
 /**
  * createRequire anchored so bare-specifier resolution works in every runtime.

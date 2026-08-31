@@ -3,11 +3,11 @@ import type { HostInputFormField, HostSessionPickerRow } from "../../core/extens
 import type { KeyId } from "../../core/keybindings.ts";
 
 /**
- * Version 3 adds correlated replies for `engine_custom_input`. The host uses
- * those replies to decide whether a matching fullscreen viewport key should be
- * replayed, so a child that cannot send them must not be treated as compatible.
+ * Version 4 separates minimal session binding from optional resource readiness.
+ * A host must not submit a prompt until the matching engine generation reports
+ * `engine_resources_ready`.
  */
-export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 3;
+export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 4;
 
 export interface JsonObject {
 	[key: string]: JsonValue;
@@ -53,6 +53,8 @@ export interface EngineKeybindingState {
 export type InteractiveEngineMessage =
 	| { type: "engine_ready"; protocolVersion: typeof INTERACTIVE_ENGINE_PROTOCOL_VERSION; pid: number }
 	| { type: "engine_bound" }
+	| { type: "engine_resources_ready" }
+	| { type: "engine_resources_failed"; message: string }
 	| { type: "engine_keybindings_reloaded"; state: EngineKeybindingState }
 	| { type: "engine_heartbeat"; at: number }
 	| { type: "engine_activity_started"; activity: CallbackActivity }
@@ -334,6 +336,10 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_bound":
 			return { type: value.type };
+		case "engine_resources_ready":
+			return { type: value.type };
+		case "engine_resources_failed":
+			return typeof value.message === "string" ? { type: value.type, message: value.message } : undefined;
 		case "engine_keybindings_reloaded": {
 			const state = parseKeybindingState(value.state);
 			return state ? { type: value.type, state } : undefined;

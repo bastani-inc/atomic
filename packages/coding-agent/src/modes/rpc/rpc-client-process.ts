@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
 import {
@@ -58,6 +59,7 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 		: options.cliArgs;
 	let child: ChildProcess;
 	try {
+		if (options.interactiveEngine) markLifecycleTiming("interactive-engine-spawn");
 		child = spawn(
 			options.runtimeExecutable ?? "bun",
 			[...(options.runtimeArgs ?? []), ...(options.cliPath ? [options.cliPath] : []), ...cliArgs],

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { APP_NAME, getProjectConfigDirs } from "../config.ts";
+import { APP_NAME, getProjectConfigDirs } from "../config.js";
 import type { GitSource } from "../utils/git.ts";
 import { stripBom } from "../utils/text.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";

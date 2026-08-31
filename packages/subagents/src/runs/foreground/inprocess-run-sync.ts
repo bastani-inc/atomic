@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { CodexFastModeResolvedSettings, CodexFastModeScope } from "@bastani/atomic";
+import { readStoredCredential } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import {
@@ -101,22 +101,13 @@ function resultFromOutcome(
 	outcome: AttemptOutcome,
 	startedAt: number,
 	artifactPaths: ArtifactPaths | undefined,
-	fastMode: {
-		cwd: string;
-		settings: CodexFastModeResolvedSettings;
-		scope: CodexFastModeScope;
-	},
+	fastModeForModel: (model: string | undefined) => boolean,
 ): SingleResult {
 	const status = outcome.status;
 	const output = outcome.status === "ok" ? outcome.output : outcome.envelope;
 	const model = outcome.model;
 	const thinking = outcome.thinking;
-	const fastModeEnabled = resolveSubagentModelFastMode({
-		model,
-		cwd: fastMode.cwd,
-		settings: fastMode.settings,
-		scope: fastMode.scope,
-	});
+	const fastModeEnabled = fastModeForModel(model);
 	const result: SingleResult = {
 		agent: agent.name,
 		task,
@@ -228,16 +219,19 @@ export async function runSingleInProcess(
 	// Resolving the candidate here is what makes the agent's configured model win.
 	const resolvedCandidate = candidate ? options.resolveCandidateModel?.(candidate) : undefined;
 	const fastModeSettings = getSubagentCodexFastModeSettings(cwd);
+	const copilotCredential = readStoredCredential("github-copilot");
 	const orchestrationContext = workflowOrchestrationContext(options);
-	const fastModeScope = resolveSubagentCodexFastModeScope(
-		options.workflowStageSubagentGuard ?? orchestrationContext?.kind === "workflow-stage",
-	);
+	const fastModeScope = resolveSubagentCodexFastModeScope(orchestrationContext);
+	const resolveModel = (modelId: string) => options.resolveCandidateModel?.(modelId)?.model;
 	const fastModeForModel = (model: string | undefined): boolean =>
 		resolveSubagentModelFastMode({
 			model,
+			resolvedModel: resolvedCandidate?.model,
+			resolveModel,
 			cwd,
 			settings: fastModeSettings,
 			scope: fastModeScope,
+			copilotCredential,
 		});
 	const parent: ParentContext = {
 		path: options.runId,
@@ -391,11 +385,7 @@ export async function runSingleInProcess(
 		detachCleanup();
 		parentAskCleanup();
 		void running.promise.then(async (continuedOutcome) => {
-			const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths, {
-				cwd,
-				settings: fastModeSettings,
-				scope: fastModeScope,
-			});
+			const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths, fastModeForModel);
 			await control.deliverChildResult(
 				{
 					path: continuedOutcome.path,
@@ -463,11 +453,7 @@ export async function runSingleInProcess(
 	detachCleanup();
 	parentAskCleanup();
 	const outcome = winner.value;
-	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, {
-		cwd,
-		settings: fastModeSettings,
-		scope: fastModeScope,
-	});
+	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, fastModeForModel);
 	if (filteredCandidates.skippedAttempts.length)
 		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];
 	await control.deliverChildResult(

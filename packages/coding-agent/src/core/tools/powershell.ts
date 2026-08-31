@@ -1,4 +1,4 @@
-import { APP_NAME } from "../../config.ts";
+import { APP_NAME } from "../../config.js";
 import { waitForChildProcess } from "../../utils/child-process.ts";
 import {
 	getPowerShellConfig,

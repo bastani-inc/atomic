@@ -23,7 +23,7 @@ test("RPC get_state round-trips the active compaction reason", async () => {
 		},
 		sessionManager: SessionManager.inMemory(process.cwd()),
 		settingsManager: { getCompactionEnabled: () => true },
-		_resourceLoader: { getExtensions: () => ({ overlaps: [] }) },
+		_resourceLoader: { getExtensions: () => ({ extensions: [], overlaps: [] }) },
 		_scopedModels: [],
 		_steeringMessages: [],
 		_followUpMessages: [],

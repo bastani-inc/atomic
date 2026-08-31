@@ -1,3 +1,4 @@
+import { getBuiltinExtensionEntryLabel } from "../../core/extensions/builtin-extension-entry-labels.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { parseGitUrl, path, type SourceInfo, theme } from "./interactive-mode-deps.ts";
 
@@ -135,7 +136,7 @@ InteractiveModeBase.prototype.getCompactNonPackageExtensionLabel = function (
 		}
 	}
 
-	return segments.join("/");
+	return this.formatDisplayPath(resourcePath).replace(/\\/g, "/");
 };
 
 InteractiveModeBase.prototype.getCompactExtensionLabels = function (
@@ -144,20 +145,24 @@ InteractiveModeBase.prototype.getCompactExtensionLabels = function (
 ): string[] {
 	const nonPackageExtensions = extensions
 		.map((extension) => {
-			const segments = this.getCompactDisplayPathSegments(extension.path);
+			const builtinLabel = getBuiltinExtensionEntryLabel(extension.path);
+			const segments = builtinLabel ? [builtinLabel] : this.getCompactDisplayPathSegments(extension.path);
 			const lastSegment = segments[segments.length - 1];
-			if (segments.length > 1 && (lastSegment === "index.ts" || lastSegment === "index.js")) {
+			if (!builtinLabel && segments.length > 1 && (lastSegment === "index.ts" || lastSegment === "index.js")) {
 				segments.pop();
 			}
 			return {
 				path: extension.path,
 				sourceInfo: extension.sourceInfo,
 				segments,
+				builtinLabel,
 			};
 		})
-		.filter((extension) => !this.isPackageSource(extension.sourceInfo));
+		.filter((extension) => extension.builtinLabel || !this.isPackageSource(extension.sourceInfo));
 
-	return extensions.map((extension) => {
+	const labels = extensions.map((extension) => {
+		const builtinLabel = getBuiltinExtensionEntryLabel(extension.path);
+		if (builtinLabel) return builtinLabel;
 		if (this.isPackageSource(extension.sourceInfo)) {
 			return this.getCompactExtensionLabel(extension.path, extension.sourceInfo);
 		}
@@ -168,6 +173,27 @@ InteractiveModeBase.prototype.getCompactExtensionLabels = function (
 		}
 
 		return this.getCompactNonPackageExtensionLabel(extension.path, nonPackageIndex, nonPackageExtensions);
+	});
+
+	const taken = new Set<string>(
+		extensions.flatMap((extension) => {
+			const builtinLabel = getBuiltinExtensionEntryLabel(extension.path);
+			return builtinLabel ? [builtinLabel] : [];
+		}),
+	);
+
+	return labels.map((label, index) => {
+		if (getBuiltinExtensionEntryLabel(extensions[index]!.path)) return label;
+		if (!taken.has(label)) {
+			taken.add(label);
+			return label;
+		}
+
+		let suffix = 2;
+		while (taken.has(`${label} (${suffix})`)) suffix += 1;
+		const uniqueLabel = `${label} (${suffix})`;
+		taken.add(uniqueLabel);
+		return uniqueLabel;
 	});
 };
 

@@ -20,6 +20,11 @@ export const DEFAULT_GROUP = "default";
 
 const RESERVED_RUNTIME_GROUPS = new Set(["true", "auto"]);
 
+/** Runtime representation of a session's normalized group memberships. */
+export type GroupMemberships = ReadonlySet<string>;
+
+type GroupMembershipInput = readonly (string | null | undefined)[] | ReadonlySet<string | null | undefined>;
+
 /**
  * Normalize an intercom group id. Undefined, empty, or whitespace-only values
  * collapse to the shared {@link DEFAULT_GROUP} so ungrouped sessions all compare
@@ -29,6 +34,22 @@ export function normalizeGroup(value?: string | null): string {
 	if (typeof value !== "string") return DEFAULT_GROUP;
 	const trimmed = value.trim();
 	return trimmed.length > 0 ? trimmed : DEFAULT_GROUP;
+}
+
+/**
+ * Normalize serialized group memberships into a non-empty set. Duplicate names
+ * collapse, and an absent or empty collection retains legacy default membership.
+ * A legacy `group` value is merged so single-group clients remain authoritative.
+ */
+export function normalizeGroups(
+	values?: GroupMembershipInput | null,
+	legacyGroup?: string | null,
+): Set<string> {
+	const groups = new Set<string>();
+	for (const value of values ?? []) groups.add(normalizeGroup(value));
+	if (legacyGroup !== undefined) groups.add(normalizeGroup(legacyGroup));
+	if (groups.size === 0) groups.add(DEFAULT_GROUP);
+	return groups;
 }
 
 /**
@@ -44,6 +65,25 @@ export function validateRuntimeGroup(value: unknown): string {
 		throw new Error(`Intercom group name "${group}" is reserved; choose another name`);
 	}
 	return group;
+}
+
+/** Add one validated runtime group to a normalized membership set. */
+export function addGroup(groups: GroupMemberships, value: unknown): Set<string> {
+	const next = normalizeGroups(groups);
+	next.add(validateRuntimeGroup(value));
+	return next;
+}
+
+/** Remove one normalized group while retaining default membership when none remain. */
+export function removeGroup(groups: GroupMemberships, value?: string | null): Set<string> {
+	const next = normalizeGroups(groups);
+	next.delete(normalizeGroup(value));
+	return normalizeGroups(next);
+}
+
+/** Test a normalized group membership. */
+export function hasGroup(groups: GroupMemberships, value?: string | null): boolean {
+	return normalizeGroups(groups).has(normalizeGroup(value));
 }
 
 interface HomeGroupContext {

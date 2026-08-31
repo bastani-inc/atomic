@@ -95,7 +95,7 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
 	});
 	test("Baseten and Qwen Token Plan Individual defaults track current models", () => {
-		expect(defaultModelPerProvider.baseten).toBe("zai-org/GLM-5.2");
+		expect(defaultModelPerProvider.baseten).toBe("zai-org/GLM-5.3");
 		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
 	});
 	test("built-in defaults exist in generated provider catalogs", () => {

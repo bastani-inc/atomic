@@ -174,10 +174,10 @@ export async function importDbosSdk(): Promise<DbosStatic> {
 
 /**
  * DBOS-backed durable backend. Wraps a {@link DbosSdkHandle} to implement the
- * {@link DurableWorkflowBackend} interface. Writes are serialized to DBOS
- * with an in-memory mirror for synchronous queries. A fresh process hydrates
- * its mirror from DBOS via {@link hydrateWorkflow} / {@link hydrateResumableWorkflows}
- * before resume/replay reads.
+ * {@link DurableWorkflowBackend} interface. Writes are serialized per durable
+ * root workflow, with an in-memory mirror for synchronous queries. A fresh
+ * process hydrates its mirror from DBOS via {@link hydrateWorkflow} /
+ * {@link hydrateResumableWorkflows} before resume/replay reads.
  *
  * cross-ref: issue #1498 — DBOS read-side hydration.
  */
@@ -190,8 +190,8 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	private readonly locallyRegistered = new Set<string>();
 	private readonly promptReservations: DbosPromptReservationTracker;
 	private readonly executorId: string;
-	private writeQueue: Promise<void> = Promise.resolve();
-	private writeErrors: Error[] = [];
+	private readonly writeQueues = new Map<string, Promise<void>>();
+	private readonly writeErrors = new Map<string, Error[]>();
 
 	constructor(sdk: DbosSdkHandle, options?: { readonly executorId?: string }) {
 		this.sdk = sdk;
@@ -200,7 +200,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			pendingPrompts: (workflowId) => this.mem.getWorkflow(workflowId)?.pendingPrompts ?? 0,
 			adjustPendingPrompts: (workflowId, delta) => this.mem.adjustPendingPrompts(workflowId, delta),
 			persist: (workflowId, stepName, output) => {
-				this.enqueueWrite(() => this.sdk.recordStepOutput(workflowId, stepName, output));
+				this.enqueueWrite(workflowId, () => this.sdk.recordStepOutput(workflowId, stepName, output));
 			},
 		});
 	}
@@ -218,7 +218,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			this.mem.getWorkflow(handle.workflowId)?.pendingPrompts ?? 0,
 		);
 		this.mem.registerWorkflow({ ...handle, pendingPrompts });
-		this.enqueueWrite(async () => {
+		this.enqueueWrite(handle.workflowId, async () => {
 			await this.sdk.startWorkflow(handle.workflowId, handle.name, handle.inputs);
 			await this.writeMetadata(handle.workflowId);
 		});
@@ -230,7 +230,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		logicalRunId = workflowId,
 	): Promise<boolean> {
 		let persisted = false;
-		await this.enqueueWrite(async () => {
+		await this.enqueueWrite(workflowId, async () => {
 			if (!this.isWorkflowLoadable(workflowId)) return;
 			const handle = this.mem.getWorkflow(workflowId);
 			const value = this.mem.toMetadata(workflowId);
@@ -257,7 +257,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
 		if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
 		this.mem.recordCheckpoint(checkpoint);
-		this.enqueueWrite(() => this.persistCheckpoint(checkpoint));
+		this.enqueueWrite(checkpoint.workflowId, () => this.persistCheckpoint(checkpoint));
 	}
 
 	async recordCheckpointAsync(
@@ -267,7 +267,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
 		const signal = options?.signal;
 		if (signal?.aborted) throw abortSignalReason(signal);
-		await this.enqueueWrite(async () => {
+		await this.enqueueWrite(checkpoint.workflowId, async () => {
 			if (signal?.aborted || !this.isWorkflowLoadable(checkpoint.workflowId)) return;
 			const persist = (async () => {
 				await this.persistCheckpointRecord(checkpoint);
@@ -298,7 +298,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		// Encode before the best-effort storage boundary: malformed topology or
 		// serialization must remain authoritative errors rather than be ignored.
 		const encoded = encodeCheckpoint(checkpoint);
-		return await this.enqueueBestEffortWrite(async () => {
+		return await this.enqueueBestEffortWrite(checkpoint.workflowId, async () => {
 			if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
 			await this.sdk.recordStepOutput(checkpoint.workflowId, checkpoint.checkpointId, encoded);
 			this.mem.recordCheckpoint(checkpoint);
@@ -351,7 +351,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			this.promptReservations.setBaseline(workflowId, pendingPrompts);
 		}
 		this.mem.setWorkflowStatus(workflowId, status, pendingPrompts, resumable, failure);
-		this.enqueueWrite(async () => {
+		this.enqueueWrite(workflowId, async () => {
 			if (!this.isWorkflowLoadable(workflowId)) return;
 			if (status === "cancelled") await this.sdk.cancelWorkflow(workflowId);
 			else if (status === "running") await this.sdk.resumeWorkflow(workflowId);
@@ -369,7 +369,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		return await transitionDbosWorkflowStatus({
 			expectedStatuses: expected,
 			status,
-			flush: () => this.flush(),
+			flush: () => this.flush(workflowId),
 			local: () => this.getLoadableWorkflow(workflowId),
 			read: async () => classifyLatestMetadata(await this.sdk.listStepRecords(workflowId), workflowId),
 			reconcile: (entry) => this.mem.setWorkflowStatus(workflowId, entry.status, undefined, entry.resumable),
@@ -377,7 +377,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 				this.claimStatusTransition(workflowId, authoritative, generation, status, pendingPrompts, resumable),
 			write: async () => {
 				this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
-				await this.flush();
+				await this.flush(workflowId);
 			},
 		});
 	}
@@ -467,14 +467,14 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.locallyRegistered.delete(workflowId);
 		this.promptReservations.delete(workflowId);
 		await this.mem.deleteWorkflow(workflowId);
-		await this.enqueueWrite(async () => {
+		await this.enqueueWrite(workflowId, async () => {
 			await this.sdk.deleteWorkflowData(workflowId);
 			await this.sdk.recordStepOutput(workflowId, DBOS_DELETION_STEP, encodeDbosDeletionTombstone(workflowId));
 		});
 	}
 
 	async deleteWorkflowIfInactive(workflowId: string): Promise<DurableInactiveDeleteResult> {
-		await this.flush();
+		await this.flush(workflowId);
 		await this.hydrateWorkflow(workflowId);
 		const handle = this.getLoadableWorkflow(workflowId);
 		if (handle === undefined) return { ok: false, reason: "not_found" };
@@ -482,7 +482,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		const guarded = await this.transitionWorkflowStatus(workflowId, [handle.status], handle.status);
 		if (!guarded) return { ok: false, reason: "running" };
 		await this.deleteWorkflow(workflowId);
-		await this.flush();
+		await this.flush(workflowId);
 		return { ok: true };
 	}
 	isWorkflowLoadable(workflowId: string): boolean {
@@ -494,16 +494,22 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.current.clear();
 		this.locallyRegistered.clear();
 		this.promptReservations.clear();
-		this.writeQueue = Promise.resolve();
-		this.writeErrors = [];
+		this.writeQueues.clear();
+		this.writeErrors.clear();
 	}
 
-	async flush(): Promise<void> {
-		await this.writeQueue;
-		if (this.writeErrors.length === 0) return;
-		const [first] = this.writeErrors;
-		this.writeErrors = [];
-		throw first;
+	async flush(workflowId?: string): Promise<void> {
+		const workflowIds =
+			workflowId === undefined
+				? [...new Set([...this.writeQueues.keys(), ...this.writeErrors.keys()])]
+				: [workflowId];
+		await Promise.all(workflowIds.map(async (id) => await this.writeQueues.get(id)));
+		for (const id of workflowIds) {
+			const errors = this.writeErrors.get(id);
+			if (errors === undefined || errors.length === 0) continue;
+			this.writeErrors.delete(id);
+			throw errors[0];
+		}
 	}
 
 	async hydrateWorkflow(workflowId: string): Promise<void> {
@@ -611,23 +617,38 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		await this.mem.deleteWorkflow(workflowId);
 	}
 
-	private enqueueWrite(fn: () => Promise<void>): Promise<void> {
-		const next = this.writeQueue.then(fn, fn);
-		this.writeQueue = next.catch((err) => {
+	private enqueueWrite(workflowId: string, fn: () => Promise<void>): Promise<void> {
+		const previous = this.writeQueues.get(workflowId) ?? Promise.resolve();
+		const next = previous.then(fn, fn);
+		const tracked = next.catch((err) => {
 			const error = err instanceof Error ? err : new Error(String(err));
-			this.writeErrors.push(error);
-			// The next readiness/flush boundary surfaces this fatal persistence error.
+			const errors = this.writeErrors.get(workflowId) ?? [];
+			errors.push(error);
+			this.writeErrors.set(workflowId, errors);
+			// The next readiness/flush boundary for this workflow surfaces the fatal persistence error.
 		});
+		this.trackWriteQueue(workflowId, tracked);
 		return next;
 	}
 
-	private async enqueueBestEffortWrite(fn: () => Promise<void>): Promise<boolean> {
-		const next = this.writeQueue.then(fn, fn);
-		this.writeQueue = next.catch(() => undefined);
+	private async enqueueBestEffortWrite(workflowId: string, fn: () => Promise<void>): Promise<boolean> {
+		const previous = this.writeQueues.get(workflowId) ?? Promise.resolve();
+		const next = previous.then(fn, fn);
+		this.trackWriteQueue(
+			workflowId,
+			next.catch(() => undefined),
+		);
 		return await next.then(
 			() => true,
 			() => false,
 		);
+	}
+
+	private trackWriteQueue(workflowId: string, queue: Promise<void>): void {
+		this.writeQueues.set(workflowId, queue);
+		void queue.finally(() => {
+			if (this.writeQueues.get(workflowId) === queue) this.writeQueues.delete(workflowId);
+		});
 	}
 
 	private async writeMetadata(workflowId: string): Promise<void> {

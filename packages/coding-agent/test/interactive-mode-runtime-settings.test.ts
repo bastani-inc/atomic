@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { getCapabilities, setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-session-runtime.ts";
 
@@ -11,16 +12,21 @@ interface RuntimeSettingsHarness {
 	footerDataProvider: { setCwd: Setter<string> };
 	session: SessionLike;
 	sessionManager: { getCwd: () => string };
+	transcriptScrollView?: { setScrollbar: Setter<"auto" | "always" | "hidden"> };
 	hideThinkingBlock: boolean;
 	outputPad: 0 | 1;
 	settingsManager: {
 		getHideThinkingBlock: () => boolean;
+		getTerminalCapabilityOverrides: () => { images?: null };
+		getFullscreenCopyOnSelect: () => boolean;
+		getFullscreenScrollbar: () => "auto" | "always" | "hidden";
 		getOutputPad: () => 0 | 1;
 		getShowHardwareCursor: () => boolean;
 		getClearOnShrink: () => boolean;
 		getEditorPaddingX: () => number;
 		getAutocompleteMaxVisible: () => number;
 	};
+	setFullscreenCopyOnSelect: Setter<boolean>;
 	ui: { setShowHardwareCursor: Setter<boolean>; setClearOnShrink: Setter<boolean> };
 	defaultEditor: { setPaddingX: Setter<number>; setAutocompleteMaxVisible: Setter<number> };
 	editor: { setPaddingX?: Setter<number>; setAutocompleteMaxVisible?: Setter<number> };
@@ -29,6 +35,10 @@ interface RuntimeSettingsHarness {
 const applyRuntimeSettings = InteractiveModeBase.prototype.applyRuntimeSettings as (
 	this: RuntimeSettingsHarness,
 ) => void;
+
+afterEach(() => {
+	setCapabilityOverrides({});
+});
 
 describe("InteractiveMode runtime settings", () => {
 	it("reloads outputPad alongside other mutable runtime settings", () => {
@@ -44,14 +54,19 @@ describe("InteractiveMode runtime settings", () => {
 			sessionManager: { getCwd: () => "/repo" },
 			hideThinkingBlock: false,
 			outputPad: 1,
+			transcriptScrollView: { setScrollbar: vi.fn() },
 			settingsManager: {
 				getHideThinkingBlock: () => true,
+				getTerminalCapabilityOverrides: () => ({ images: null }),
+				getFullscreenCopyOnSelect: () => false,
+				getFullscreenScrollbar: () => "always",
 				getOutputPad: () => 0,
 				getShowHardwareCursor: () => true,
 				getClearOnShrink: () => true,
 				getEditorPaddingX: () => 2,
 				getAutocompleteMaxVisible: () => 7,
 			},
+			setFullscreenCopyOnSelect: vi.fn(),
 			ui: { setShowHardwareCursor: vi.fn(), setClearOnShrink: vi.fn() },
 			defaultEditor: { setPaddingX: vi.fn(), setAutocompleteMaxVisible: vi.fn() },
 			editor: secondaryEditor,
@@ -64,5 +79,8 @@ describe("InteractiveMode runtime settings", () => {
 		expect(harness.defaultEditor.setPaddingX).toHaveBeenCalledWith(2);
 		expect(secondaryEditor.setPaddingX).toHaveBeenCalledWith(2);
 		expect(secondaryEditor.setAutocompleteMaxVisible).toHaveBeenCalledWith(7);
+		expect(harness.setFullscreenCopyOnSelect).toHaveBeenCalledWith(false);
+		expect(harness.transcriptScrollView?.setScrollbar).toHaveBeenCalledWith("always");
+		expect(getCapabilities().images).toBeNull();
 	});
 });

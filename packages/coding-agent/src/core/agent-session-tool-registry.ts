@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinitionEntry } from "./agent-session-types.ts";
 import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.ts";
+import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.ts";
@@ -17,6 +18,7 @@ export function _refreshToolRegistry(
 	const allowedToolNames = this._allowedToolNames;
 	const excludedToolNames = this._excludedToolNames;
 	const isExposedTool = (name: string): boolean => {
+		if (isMandatoryRuntimeTool(name)) return true;
 		if (allowedToolNames && !allowedToolNames.has(name)) {
 			return false;
 		}
@@ -26,13 +28,17 @@ export function _refreshToolRegistry(
 		return true;
 	};
 
-	const registeredTools = this._extensionRunner.getAllRegisteredTools();
+	const registeredTools = this._extensionRunner
+		.getAllRegisteredTools()
+		.filter((tool) => !isMandatoryRuntimeTool(tool.definition.name) || isTrustedMandatoryRuntimeTool(tool));
 	const allCustomTools = [
 		...registeredTools,
-		...this._customTools.map((definition) => ({
-			definition,
-			sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
-		})),
+		...this._customTools
+			.filter((definition) => !isMandatoryRuntimeTool(definition.name))
+			.map((definition) => ({
+				definition,
+				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
+			})),
 	].filter((tool) => isExposedTool(tool.definition.name));
 	const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 		Array.from(this._baseToolDefinitions.entries())

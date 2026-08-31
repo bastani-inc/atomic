@@ -3,6 +3,24 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 const timingMock = vi.hoisted(() => ({ labels: [] as string[] }));
 
+const engineWaitMock = vi.hoisted(() => ({ wait: vi.fn(async () => {}) }));
+const startupBindingMock = vi.hoisted(() => ({ bind: vi.fn(async () => {}) }));
+const catalogStartupMock = vi.hoisted(() => ({ updateProviderCount: vi.fn() }));
+
+vi.mock("../src/modes/interactive/interactive-initial-session-binding.ts", () => ({
+	bindInitialEagerSession: startupBindingMock.bind,
+}));
+
+vi.mock("../src/modes/interactive/interactive-model-catalog-startup.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/modes/interactive/interactive-model-catalog-startup.ts")>()),
+	updateProviderCountFromSnapshot: catalogStartupMock.updateProviderCount,
+}));
+
+vi.mock("../src/modes/interactive-engine/extension-ui-bridge.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/modes/interactive-engine/extension-ui-bridge.ts")>()),
+	waitForInteractiveEngineBound: engineWaitMock.wait,
+}));
+
 vi.mock("../src/core/timings.ts", () => ({
 	recordTimeSinceReset: vi.fn((label: string) => {
 		timingMock.labels.push(label);
@@ -207,6 +225,76 @@ describe("InteractiveMode startup latency hooks", () => {
 		await waitForImmediate();
 		expect(context.footerDataProvider.startGitWatcher).not.toHaveBeenCalled();
 		expect(timingMock.labels).not.toContain("interactive-input-handler-ready");
+	});
+
+	it("paints the startup identity and editor before the isolated engine binds", async () => {
+		startupBindingMock.bind.mockClear();
+		catalogStartupMock.updateProviderCount.mockClear();
+		let resolveEngine!: () => void;
+		engineWaitMock.wait.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					resolveEngine = resolve;
+				}),
+		);
+		const headerChildren: object[] = [];
+		const context = {
+			runtimeHost: {},
+			isInitialized: false,
+			registerSignalHandlers: vi.fn(),
+			ui: {
+				addChild: vi.fn(),
+				setFocus: vi.fn(),
+				start: vi.fn(),
+				requestRender: vi.fn(),
+			},
+			headerContainer: { addChild: (child: object) => headerChildren.push(child) },
+			documentContainer: {},
+			chatContainer: {},
+			pendingMessagesContainer: {},
+			statusContainer: {},
+			widgetContainerAbove: {},
+			usageMeter: {},
+			editorContainer: {},
+			footerContainer: {},
+			widgetContainerBelow: {},
+			editor: {},
+			renderWidgets: vi.fn(),
+			mountInteractiveTui: vi.fn(),
+			setupKeyHandlers: vi.fn(),
+			setupEditorSubmitHandler: vi.fn(),
+			pendingUserInputs: [],
+			defaultEditor: {},
+			options: {},
+			startupReplayInputs: [],
+			footerDataProvider: { onBranchChange: vi.fn() },
+			themeController: { applyFromSettings: vi.fn(async () => {}) },
+			settingsManager: { getFullscreenScrollbar: () => "auto", getQuietStartup: () => false },
+			getStartupIdentityText: () => "Atomic v0.0.0",
+			isShuttingDown: false,
+			deferredStartupPending: false,
+			ensureManagedToolsReady: vi.fn(async () => {}),
+			attachStartupNoticesContainer: vi.fn(),
+			renderInitialMessages: vi.fn(),
+		} as unknown as InitContext;
+
+		const init = interactiveModePrototype.init.call(context);
+		await waitForImmediate();
+
+		expect(context.ui.start).toHaveBeenCalledTimes(1);
+		expect(context.ui.setFocus).toHaveBeenCalledWith(context.editor);
+		expect(headerChildren).toHaveLength(3);
+		expect(context.ui.requestRender).toHaveBeenCalledTimes(1);
+		expect(context.isInitialized).toBe(false);
+		expect(startupBindingMock.bind).not.toHaveBeenCalled();
+		expect(catalogStartupMock.updateProviderCount).not.toHaveBeenCalled();
+
+		resolveEngine();
+		await expect(init).resolves.toBeUndefined();
+		expect(startupBindingMock.bind).toHaveBeenCalledTimes(1);
+		expect(startupBindingMock.bind).toHaveBeenCalledWith(context);
+		expect(catalogStartupMock.updateProviderCount).toHaveBeenCalledTimes(1);
+		expect(context.isInitialized).toBe(true);
 	});
 
 	it("does not start footer git watching during the inline init path", async () => {

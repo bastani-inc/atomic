@@ -112,6 +112,7 @@ Chat and workflow-stage scopes are independent. Workflow stages, nested `ctx.wor
 | `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, a Catppuccin built-in, or custom) |
 | `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. |
 | `fullscreenExitOutput` | string | `"transcript"` | Fullscreen exit output: `"transcript"` prints the final transcript and session resume hint, while `"resume-hint"` restores the terminal's previous screen and prints only the resume hint. Settable from `/settings` |
+| `fullscreenCopyOnSelect` | boolean | `true` | Copy fullscreen text selections automatically on mouse release. When `false`, the selection remains highlighted and main-editor Ctrl+X copies it; Ctrl+X falls back to the last assistant message when there is no selection. Settable from `/settings` |
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
@@ -128,7 +129,7 @@ Chat and workflow-stage scopes are independent. Workflow stages, nested `ctx.wor
 | `autocompleteMaxVisible` | number | `5` | Max visible items in the default editor and custom editors installed through `ctx.ui.setEditorComponent()` (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 
-Interactive sessions always use the fullscreen renderer. The transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures go first to a focused workflow overlay, including workflow graphs and stage chats. Events that overlay does not consume fall through to the alternate-screen viewport; non-overlay focused components leave mouse input with pi-tui so transcript scrolling, scrollbar interaction, and drag selection remain available.
+Interactive sessions always use the fullscreen renderer. The transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures go first to a focused workflow overlay, including workflow graphs and stage chats. Events that overlay does not consume fall through to the alternate-screen viewport; non-overlay focused components leave mouse input with pi-tui so transcript scrolling, scrollbar interaction, and drag selection remain available. A selection made over a workflow overlay never copies during a hierarchy transition and is cleared when that overlay hides and the main chat repaints.
 
 The fullscreen renderer keeps minimum sizes for nested layout stacks during resize, and transient fullscreen notices stack instead of replacing a notice that is still visible.
 
@@ -284,7 +285,12 @@ Older settings with a boolean `websockets` value are migrated to `transport`: `t
 | `terminal.showTerminalProgress` | boolean | `false` | Show OSC 9;4 progress indicators in the terminal tab bar |
 | `images.autoResize` | boolean | `true` | Resize oversized images to a 2000x2000 maximum. Applies to `@file` attachments, `read`, and images returned by tools |
 | `images.blockImages` | boolean | `false` | Block all images from being sent to LLM |
+| `terminal.hyperlinks` | boolean or `"auto"` | `"auto"` | JSON-only hyperlink capability override. `true`/`false` overrides detection; `"auto"`, omitted, and invalid values preserve detection. Not shown in `/settings` |
+| `terminal.images` | `"kitty"`, `"iterm2"`, `"auto"`, or `false` | `"auto"` | JSON-only inline-image protocol override. `false` disables terminal images; `"auto"`, omitted, and invalid values preserve detection. Not shown in `/settings` |
+| `terminal.trueColor` | boolean or `"auto"` | `"auto"` | JSON-only truecolor capability override. `true`/`false` overrides detection; `"auto"`, omitted, and invalid values preserve detection. Not shown in `/settings` |
 
+
+The installed pi-tui 0.84.4 renderer owns the matching environment overrides: `PI_HYPERLINKS=1|0|auto`, `PI_IMAGE_PROTOCOL=kitty|iterm2|none|auto`, and `PI_TRUE_COLOR=1|0|auto`. Explicit JSON booleans/protocols take precedence over those environment values. Use `"auto"` or omit a JSON value to leave environment and terminal detection in control.
 When `images.autoResize` is enabled, Atomic normalizes images before sending them to the model. Tool-result images are normalized after `tool_result` extension handlers run, so images an extension inserts receive the same limit; if processing fails, Atomic keeps the original image. Set it to `false` to preserve source dimensions.
 
 ### Shell
@@ -346,7 +352,7 @@ On Windows, select `powershell` instead of `bash`, or include both:
 }
 ```
 
-An empty array starts with no built-in tools while preserving extension and custom tools. `--tools` replaces this behavior with a strict allowlist covering all tools, `--no-tools` disables all tools, and `--no-builtin-tools` disables only the built-in defaults. `--exclude-tools` filters the resulting list. A project `defaultTools` array replaces the global array.
+An empty array starts with no built-in tools while preserving extension and custom tools. `--tools` replaces this behavior with a strict allowlist covering every non-mandatory tool, `--no-tools` disables every tool except mandatory ordinary `intercom`, and `--no-builtin-tools` disables only the built-in defaults. `--exclude-tools` filters the resulting list but cannot remove Intercom. A project `defaultTools` array replaces the global array.
 
 ### Sessions
 
@@ -385,7 +391,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 
 Mermaid code blocks render as themed Unicode diagrams in interactive transcripts when they fit the available width. `"off"` keeps the Markdown fence, `"final"` renders only finalized responses, and `"streaming"` also renders partial assistant responses. Invalid or too-wide diagrams remain as code, and rendering is display-only: stored messages and model context keep the original Markdown. LaTeX rendering is also display-only and converts supported expressions to terminal-friendly Unicode math; set `markdown.latex` to `false` to keep the source form.
 
-The installed pi-tui 0.84.3 LaTeX renderer also handles whitespace and matrix layouts correctly.
+The installed pi-tui 0.84.4 LaTeX renderer also handles whitespace and matrix layouts correctly.
 
 ### Resources
 

@@ -290,7 +290,7 @@ export function createFauxStreamFn(responses: FauxResponseInput[]): {
 
 	const state: FauxStreamFnState = { callCount: 0, contexts: [] };
 
-	const streamFn = (_model: Model<any>, context: Context, _options?: SimpleStreamOptions) => {
+	const streamFn = (_model: Model<any>, context: Context, options?: SimpleStreamOptions) => {
 		const index = state.callCount % responses.length;
 		state.callCount++;
 		state.contexts.push(context);
@@ -298,10 +298,25 @@ export function createFauxStreamFn(responses: FauxResponseInput[]): {
 		const resp = normalizeResponse(responses[index]);
 		const message = buildAssistantMessage(resp);
 		const stream = createAssistantMessageEventStream();
-
-		const emit = () => {
-			streamWithDeltas(stream, message);
+		let settled = false;
+		const onAbort = () => {
+			finish({
+				...message,
+				content: [],
+				stopReason: "aborted",
+				errorMessage: "Request was aborted",
+			});
 		};
+		const finish = (finalMessage: AssistantMessage) => {
+			if (settled) return;
+			settled = true;
+			options?.signal?.removeEventListener("abort", onAbort);
+			streamWithDeltas(stream, finalMessage);
+		};
+		const emit = () => finish(message);
+
+		if (options?.signal?.aborted) onAbort();
+		else options?.signal?.addEventListener("abort", onAbort, { once: true });
 
 		if (resp.beforeEmit) {
 			void Promise.resolve(resp.beforeEmit()).then(emit);
@@ -340,6 +355,8 @@ export interface HarnessOptions {
 	resourceLoader?: ResourceLoader;
 	/** Inline extensions to load into the session resource loader. */
 	extensionFactories?: Array<ExtensionFactory | CreateTestExtensionsResultInput>;
+	/** Configure the real Agent before AgentSession installs its runtime adapters. */
+	configureAgent?: (agent: Agent) => void;
 }
 
 export interface Harness {
@@ -384,6 +401,7 @@ async function createHarnessWithResourceLoader(
 		},
 		streamFn,
 	});
+	options.configureAgent?.(agent);
 
 	const sessionManager = SessionManager.inMemory();
 	const settingsManager = SettingsManager.create(tempDir, tempDir);

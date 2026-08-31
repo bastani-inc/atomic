@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	type ComputeDeferExtensionsInput,
+	type ComputeInteractiveEngineResourceDeferralInput,
 	type ComputeStartupInputCaptureInput,
 	computeDeferExtensions,
+	computeInteractiveEngineResourceDeferral,
 	computeStartupInputCaptureEnabled,
 } from "../src/main-deferred-startup.ts";
 
@@ -99,6 +101,43 @@ describe("computeDeferExtensions", () => {
 
 	it("keeps print prompts synchronous so slash commands load before atomic -p runs", () => {
 		expect(computeDeferExtensions(baseInput({ appMode: "print" }))).toBe(false);
+	});
+});
+
+describe("computeInteractiveEngineResourceDeferral", () => {
+	const baseEngineInput = (
+		overrides: Partial<ComputeInteractiveEngineResourceDeferralInput> = {},
+	): ComputeInteractiveEngineResourceDeferralInput => ({
+		interactiveEngineChild: true,
+		hasSessionStartEvent: false,
+		shouldResolveProjectTrust: false,
+		storedProjectTrust: null,
+		resolvedExtensionPathCount: 0,
+		resolvedResourcePathCount: 0,
+		hasSystemPromptInput: false,
+		unknownFlagCount: 0,
+		...overrides,
+	});
+
+	it("defers default bundled resources even with an explicit built-in provider and model", () => {
+		expect(computeInteractiveEngineResourceDeferral(baseEngineInput())).toBe(true);
+	});
+
+	it("keeps trust, user resource paths, system prompts, and extension flags synchronous", () => {
+		expect(
+			computeInteractiveEngineResourceDeferral(
+				baseEngineInput({ shouldResolveProjectTrust: true, storedProjectTrust: null }),
+			),
+		).toBe(false);
+		expect(computeInteractiveEngineResourceDeferral(baseEngineInput({ resolvedExtensionPathCount: 1 }))).toBe(false);
+		expect(computeInteractiveEngineResourceDeferral(baseEngineInput({ resolvedResourcePathCount: 1 }))).toBe(false);
+		expect(computeInteractiveEngineResourceDeferral(baseEngineInput({ hasSystemPromptInput: true }))).toBe(false);
+		expect(computeInteractiveEngineResourceDeferral(baseEngineInput({ unknownFlagCount: 1 }))).toBe(false);
+	});
+
+	it("does not defer standalone RPC or replacement-session creation", () => {
+		expect(computeInteractiveEngineResourceDeferral(baseEngineInput({ interactiveEngineChild: false }))).toBe(false);
+		expect(computeInteractiveEngineResourceDeferral(baseEngineInput({ hasSessionStartEvent: true }))).toBe(false);
 	});
 });
 

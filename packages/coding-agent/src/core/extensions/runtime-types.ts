@@ -98,6 +98,8 @@ export interface ExtensionRuntimeState {
 	pendingProviderRegistrations: Array<
 		{ provider: Provider; extensionPath: string } | { name: string; config: ProviderConfig; extensionPath: string }
 	>;
+	/** Provider IDs already published on behalf of this extension generation. */
+	extensionProviderIds: Set<string>;
 	/** Resource-level compatibility gate installed after extension provenance is resolved. */
 	canRegisterResource?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => boolean;
 	beginResourceRegistrationBatch?: () => void;

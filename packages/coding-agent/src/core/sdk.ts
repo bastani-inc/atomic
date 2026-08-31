@@ -8,7 +8,7 @@ import {
 	streamSimple,
 } from "@bastani/pi-ai/compat";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
@@ -24,6 +24,8 @@ import {
 } from "./codex-fast-mode.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
+import { markLifecycleTiming } from "./lifecycle-timings.ts";
+import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
 import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.js";
@@ -141,6 +143,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		await resourceLoader.reload();
 		time("resourceLoader.reload");
 	}
+	resourceLoader = await withMandatoryResourceLoader(resourceLoader, cwd);
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
@@ -382,7 +385,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
 					: extensionPayload;
 			}
-			return sanitizeOpenAIResponsesPayload(finalPayload, model);
+			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
+			markLifecycleTiming("before-provider-request");
+			return sanitizedPayload;
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;

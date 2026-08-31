@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { runtimeIntercomGroupEnvKey } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import {
+	addGroup,
 	DEFAULT_GROUP,
+	hasGroup,
 	normalizeGroup,
+	normalizeGroups,
+	removeGroup,
 	resolveHomeGroup,
 	validateRuntimeGroup,
 } from "../../packages/intercom/group.js";
@@ -35,6 +39,43 @@ test("normalizeGroup collapses empty/whitespace/undefined to default and trims n
 	assert.equal(normalizeGroup("   "), DEFAULT_GROUP);
 	assert.equal(normalizeGroup("default"), DEFAULT_GROUP);
 	assert.equal(normalizeGroup("  teamA  "), "teamA");
+});
+
+test("normalizeGroups turns protocol memberships into a normalized set", () => {
+	assert.deepEqual(normalizeGroups(), new Set([DEFAULT_GROUP]));
+	assert.deepEqual(normalizeGroups([]), new Set([DEFAULT_GROUP]));
+	assert.deepEqual(normalizeGroups(["  teamA  ", "teamA", "", "   "]), new Set(["teamA", DEFAULT_GROUP]));
+});
+
+test("normalizeGroups honours the legacy single group alongside set memberships", () => {
+	assert.deepEqual(normalizeGroups(undefined, " legacy "), new Set(["legacy"]));
+	assert.deepEqual(normalizeGroups(["teamA"], "legacy"), new Set(["teamA", "legacy"]));
+	assert.deepEqual(normalizeGroups(["teamA"], "   "), new Set(["teamA", DEFAULT_GROUP]));
+});
+
+test("normalization preserves reserved sentinels while runtime addition rejects them", () => {
+	assert.deepEqual(normalizeGroups([" true ", "AUTO"]), new Set(["true", "AUTO"]));
+	assert.throws(() => addGroup(new Set([DEFAULT_GROUP]), "true"), /reserved/);
+	assert.throws(() => addGroup(new Set([DEFAULT_GROUP]), " AUTO "), /reserved/);
+});
+
+test("group membership helpers add, remove, and test normalized memberships without mutating their input", () => {
+	const original = new Set([DEFAULT_GROUP]);
+	const joined = addGroup(original, "  teamA  ");
+
+	assert.deepEqual(original, new Set([DEFAULT_GROUP]));
+	assert.deepEqual(joined, new Set([DEFAULT_GROUP, "teamA"]));
+	assert.equal(hasGroup(joined, " teamA "), true);
+	assert.equal(hasGroup(joined, "teamB"), false);
+
+	const left = removeGroup(joined, DEFAULT_GROUP);
+	assert.deepEqual(joined, new Set([DEFAULT_GROUP, "teamA"]));
+	assert.deepEqual(left, new Set(["teamA"]));
+	assert.deepEqual(removeGroup(left, "teamA"), new Set([DEFAULT_GROUP]));
+});
+
+test("adding a membership rejects empty values", () => {
+	assert.throws(() => addGroup(new Set([DEFAULT_GROUP]), ""), /non-empty/);
 });
 
 test("validateRuntimeGroup trims named groups and permits explicit default", () => {

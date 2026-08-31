@@ -23,6 +23,7 @@ import {
 	createInteractiveTuiReference,
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
+import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
@@ -475,12 +476,64 @@ interface CopyCommandContext {
 	ui: ReturnType<typeof createInteractiveTui>;
 	showStatus(message: string): void;
 	showError(message: string): void;
+	getFullscreenCopyOnSelect(): boolean | undefined;
+	copyActiveFullscreenSelection(): Promise<boolean | undefined>;
 }
 
 type CopyCommandPrototype = Pick<InteractiveMode, "handleCopyCommand">;
 
 const copyCommandPrototype: CopyCommandPrototype = InteractiveMode.prototype;
 
+describe("pi-tui 0.84.4 fullscreen copy", () => {
+	test("retains a disabled automatic selection and copies it programmatically", async () => {
+		const copied: string[] = [];
+		const terminal = new RecordingTerminal();
+		const tui = createFullscreenTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			copyOnSelect: false,
+			copySelection: async (text) => {
+				copied.push(text);
+				return true;
+			},
+		});
+		tui.addChild(new Text("alpha\nbeta", 0, 0));
+		tui.start();
+		tui.renderNow();
+		terminal.input("\x1b[<0;1;1M");
+		terminal.input("\x1b[<32;4;2M");
+		terminal.input("\x1b[<0;4;2m");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(copied).toEqual([]);
+		expect(tui.hasActiveSelection()).toBe(true);
+		expect(await tui.copyActiveSelectionToClipboard()).toBe(true);
+		expect(copied).toEqual(["alpha\nbeta"]);
+		tui.stop();
+	});
+
+	test("reports programmatic selection copy failure without claiming success", async () => {
+		const terminal = new RecordingTerminal();
+		const tui = createFullscreenTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			copyOnSelect: false,
+			copySelection: async () => false,
+		});
+		tui.addChild(new Text("alpha", 0, 0));
+		tui.start();
+		tui.renderNow();
+		terminal.input("\x1b[<0;1;1M");
+		terminal.input("\x1b[<32;4;1M");
+		terminal.input("\x1b[<0;4;1m");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(await tui.copyActiveSelectionToClipboard()).toBe(false);
+		tui.stop();
+	});
+});
 describe("InteractiveMode /copy confirmation", () => {
 	beforeEach(() => {
 		clipboardMocks.copyToClipboard.mockReset();
@@ -497,12 +550,57 @@ describe("InteractiveMode /copy confirmation", () => {
 			}),
 			showStatus: vi.fn(),
 			showError: vi.fn(),
+			getFullscreenCopyOnSelect: () => true,
+			copyActiveFullscreenSelection: vi.fn(async () => undefined),
 		};
-
 		await copyCommandPrototype.handleCopyCommand.call(context);
 
 		expect(context.showStatus).toHaveBeenCalledWith("Copied last agent message to clipboard");
 		expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
 		expect(context.showError).not.toHaveBeenCalled();
+	});
+
+	test("main-editor copy prefers a retained selection only when automatic copy is disabled", async () => {
+		const selectionCopy = vi.fn(async () => true);
+		const context: CopyCommandContext = {
+			session: { getLastAssistantText: () => "assistant response" },
+			ui: createInteractiveTui({
+				showHardwareCursor: false,
+				logDirectory: "/tmp",
+				terminal: new RecordingTerminal(),
+			}),
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+			getFullscreenCopyOnSelect: () => false,
+			copyActiveFullscreenSelection: selectionCopy,
+		};
+
+		await copyCommandPrototype.handleCopyCommand.call(context, { preferSelection: true });
+
+		expect(selectionCopy).toHaveBeenCalledOnce();
+		expect(clipboardMocks.copyToClipboard).not.toHaveBeenCalled();
+	});
+
+	test("enabled copy-on-select and absent selections fall back to the last assistant message", async () => {
+		for (const { copyOnSelect, selectionResult } of [
+			{ copyOnSelect: true, selectionResult: true },
+			{ copyOnSelect: false, selectionResult: undefined },
+		]) {
+			clipboardMocks.copyToClipboard.mockClear();
+			const context: CopyCommandContext = {
+				session: { getLastAssistantText: () => "assistant response" },
+				ui: createInteractiveTui({
+					showHardwareCursor: false,
+					logDirectory: "/tmp",
+					terminal: new RecordingTerminal(),
+				}),
+				showStatus: vi.fn(),
+				showError: vi.fn(),
+				getFullscreenCopyOnSelect: () => copyOnSelect,
+				copyActiveFullscreenSelection: vi.fn(async () => selectionResult),
+			};
+			await copyCommandPrototype.handleCopyCommand.call(context, { preferSelection: true });
+			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
+		}
 	});
 });

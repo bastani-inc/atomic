@@ -15,7 +15,7 @@ import {
 	type SelfUpdateCommand,
 	type SelfUpdateTarget,
 	VERSION,
-} from "./config.ts";
+} from "./config.js";
 import { parseConfigCommand } from "./config-command-parser.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";

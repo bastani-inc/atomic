@@ -36,6 +36,9 @@ export interface TerminalSettings {
 	imageWidthCells?: number; // default: 60 (preferred inline image width in terminal cells)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
 	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
+	hyperlinks?: boolean | "auto";
+	images?: "kitty" | "iterm2" | "auto" | false;
+	trueColor?: boolean | "auto";
 }
 
 export interface ImageSettings {
@@ -151,6 +154,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"
+	fullscreenCopyOnSelect?: boolean; // default: true
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow

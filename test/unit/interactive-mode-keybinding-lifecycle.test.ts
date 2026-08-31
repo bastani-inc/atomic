@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFauxProvider } from "@bastani/pi-ai/compat";
-import { getKeybindings, setKeybindings, type Terminal } from "@earendil-works/pi-tui";
+import {
+	getCapabilities,
+	getKeybindings,
+	setCapabilityOverrides,
+	setKeybindings,
+	type Terminal,
+} from "@earendil-works/pi-tui";
 import { afterEach, test } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -47,10 +53,15 @@ afterEach(async () => {
 	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
 	setKeybindings(originalKeybindings);
+	setCapabilityOverrides({});
 });
 
 function writeExpandBinding(agentDir: string, binding: string): void {
 	writeFileSync(join(agentDir, "keybindings.json"), JSON.stringify({ "app.tools.expand": binding }));
+}
+
+function writeTerminalSettings(agentDir: string, settings: Record<string, boolean | string>): void {
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ terminal: settings }));
 }
 
 async function createMode(agentDir: string, extensionFactory?: ExtensionFactory): Promise<InteractiveMode> {
@@ -75,6 +86,11 @@ async function createMode(agentDir: string, extensionFactory?: ExtensionFactory)
 				noThemes: true,
 			},
 		});
+		assert.equal(
+			services.resourceLoader.getExtensions().extensions.length,
+			extensionFactory ? 2 : 1,
+			"service creation must load mandatory Intercom and explicit factories without optional built-ins",
+		);
 		return {
 			...(await createAgentSessionFromServices({
 				services,
@@ -126,6 +142,21 @@ test.sequential("exported InteractiveMode uses services.agentDir for display and
 	};
 	mode.stop();
 	assert.equal(hostDisposals, 1, "mode stop must dispose its interactive-engine host attachment");
+});
+
+test.sequential("applies terminal capabilities before interactive rendering and before reload rebuilds", async () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "atomic-capability-agent-dir-"));
+	writeTerminalSettings(agentDir, { hyperlinks: false, images: false, trueColor: false });
+	const mode = await createMode(agentDir);
+	assert.deepEqual(getCapabilities(), { hyperlinks: false, images: null, trueColor: false });
+
+	writeTerminalSettings(agentDir, { hyperlinks: true, images: "kitty", trueColor: true });
+	let capabilitiesDuringRebuild: ReturnType<typeof getCapabilities> | undefined;
+	mode.rebuildChatFromMessages = () => {
+		capabilitiesDuringRebuild = getCapabilities();
+	};
+	await mode.handleReloadCommand();
+	assert.deepEqual(capabilitiesDuringRebuild, { hyperlinks: true, images: "kitty", trueColor: true });
 });
 
 test.sequential("local slash and extension-context reloads stage keybindings before session_start and roll back in place", async () => {

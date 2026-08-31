@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { getProjectConfigDirs } from "../config.ts";
+import { getProjectConfigDirs } from "../config.js";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs } from "./resource-loader-paths.ts";
