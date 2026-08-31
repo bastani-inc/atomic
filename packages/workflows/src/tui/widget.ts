@@ -7,6 +7,7 @@
  *  - One compact rounded card per run:
  *      title: `<status glyph>  <full id>`
  *      row 1: `<name> · <dim mode · progress · live tool nodes · duration>`
+ *      awaiting-input cards add one quoted prompt row and one connect hint.
  *  - Collapsed single-line form below 80 cells:
  *      `▾  N background · X ●` in dim+warning.
  *
@@ -23,17 +24,23 @@
 
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
-import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import { isTopLevelWorkflowRun, topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
-import { renderRoundedBoxLines } from "./chat-surface.js";
+import { ELLIPSIS, renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { deriveGraphTheme } from "./graph-theme.js";
-import { renderRunIdentityRows } from "./run-identity-rows.js";
+import {
+	type PendingInputAffordance,
+	pendingInputAffordance,
+	sanitizePromptDisplay,
+} from "./pending-input-affordance.js";
+import { renderRunIdentityRows, wrapIdentifierLines } from "./run-identity-rows.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
+import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -315,6 +322,72 @@ function plainRunLines(run: RunSnapshot, now: number, allRuns: readonly RunSnaps
 	});
 }
 
+function renderAwaitingPromptLine(message: string, bodyWidth: number, theme: GraphTheme | undefined): string {
+	const indent = " ".repeat(5);
+	const messageBudget = Math.max(1, bodyWidth - visibleWidth(indent) - 2);
+	// truncateToWidth is ANSI-aware, so untrusted prompt bytes must be
+	// control-stripped at this sink even if the projection already sanitized.
+	const clipped = truncateToWidth(sanitizePromptDisplay(message), messageBudget, ELLIPSIS);
+	const row = `${indent}"${clipped}"`;
+	return theme === undefined ? row : `${hexToAnsi(theme.info)}${row}${RESET}`;
+}
+
+function renderAwaitingActionLines(
+	visibleRunId: string,
+	bodyWidth: number,
+	theme: GraphTheme | undefined,
+	f2TargetsThisRun: boolean,
+): string[] {
+	const prefix = f2TargetsThisRun ? "    ❯ F2 answer · /workflow connect " : "    ❯ /workflow connect ";
+	const rows = wrapIdentifierLines(visibleRunId, bodyWidth, prefix, "      ");
+	return rows.map((row) => {
+		const text = `${row.prefix}${row.chunk}`;
+		return theme === undefined ? text : `${hexToAnsi(theme.info)}${text}${RESET}`;
+	});
+}
+
+function awaitingRunLines(
+	run: RunSnapshot,
+	now: number,
+	theme: GraphTheme | undefined,
+	allRuns: readonly RunSnapshot[],
+	affordance: PendingInputAffordance,
+	bodyWidth: number,
+	f2TargetsThisRun: boolean,
+): string[] {
+	const meta = metaLine(run, now);
+	const identity = renderRunIdentityRows({
+		runId: run.id,
+		name: run.name,
+		meta,
+		glyph: statusGlyph(run, allRuns),
+		...(theme
+			? {
+					glyphColor: statusFg(run, theme, allRuns),
+					metaColor: effectiveRunStatus(run) === "running" ? theme.textMuted : theme.dim,
+					theme,
+				}
+			: {}),
+		width: bodyWidth,
+	});
+	identity.push(renderAwaitingPromptLine(affordance.message, bodyWidth, theme));
+	identity.push(...renderAwaitingActionLines(affordance.visibleRunId, bodyWidth, theme, f2TargetsThisRun));
+	return identity;
+}
+
+/** Mirror Store.activeRunId() over a serializable snapshot for F2 hint attribution. */
+export function deriveActiveRunId(runs: readonly RunSnapshot[]): string | null {
+	for (let i = runs.length - 1; i >= 0; i--) {
+		const run = runs[i];
+		if (run !== undefined && isTopLevelWorkflowRun(run) && run.endedAt === undefined) return run.id;
+	}
+	for (let i = runs.length - 1; i >= 0; i--) {
+		const run = runs[i];
+		if (run !== undefined && run.endedAt === undefined) return run.id;
+	}
+	return null;
+}
+
 // ---------------------------------------------------------------------------
 // Collapsed (< 80 cell) form
 // ---------------------------------------------------------------------------
@@ -401,10 +474,27 @@ export function buildThemedWidgetLines(
 	const badges = formatTitleBadges(badgeList, graphTheme, themed);
 	const title = `BACKGROUND  ${subtitle}${badges ? `  ${badges}` : ""}`;
 	const body: string[] = [];
+	const activeRunId = deriveActiveRunId(snap.runs);
+	const bodyWidth = Math.max(2, width - 2);
 
 	for (let i = 0; i < display.length; i++) {
 		const run = display[i]!;
-		const runLines = themed ? themedRunLines(run, now, graphTheme, snap.runs) : plainRunLines(run, now, snap.runs);
+		const affordance = pendingInputAffordance(run, snap.runs);
+		const indicator = runIndicatorStatus(run, snap.runs);
+		const runLines =
+			indicator === "awaiting_input" && affordance !== undefined
+				? awaitingRunLines(
+						run,
+						now,
+						themed ? graphTheme : undefined,
+						snap.runs,
+						affordance,
+						bodyWidth,
+						activeRunId === affordance.visibleRunId,
+					)
+				: themed
+					? themedRunLines(run, now, graphTheme, snap.runs)
+					: plainRunLines(run, now, snap.runs);
 		body.push(...runLines);
 		if (i < display.length - 1) body.push("");
 	}

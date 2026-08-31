@@ -10,7 +10,7 @@ import { beforeEach, describe, test } from "vitest";
 import { statusRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { installStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.js";
 
 // ---------------------------------------------------------------------------
@@ -267,6 +267,47 @@ describe("installStoreWidget", () => {
 		assert.equal(widgetCalls.length, callsAfterMount, "awaiting input must not remount the widget");
 		assert.ok(renderRequests.count > beforeRequests, "expected in-place repaint for awaiting input");
 		assert.match(component.render(120).join("\n"), /● 1 running\s+？ ↵ 1 needs attention/);
+	});
+
+	test("repaints and self-clears a real stage prompt without remounting", async () => {
+		const { pi, widgetCalls, renderRequests } = makeMockPi();
+		installStoreWidget(pi, storeInstance);
+		const run = makeRun("r1", "my-wf");
+		(run.stages as StageSnapshot[]).push(makeStage("s1", "ask"));
+		storeInstance.recordRunStart(run);
+
+		const mountCall = widgetCalls.findLast((c) => typeof c.factory === "function")!;
+		const component = mountCall.factory!(null, undefined) as { render(w: number): string[] };
+		const callsAfterMount = widgetCalls.length;
+		const prompt: PendingPrompt = {
+			id: "prompt-1",
+			kind: "confirm",
+			message: "Approve the deployment?",
+			createdAt: Date.now(),
+		};
+		const requestsBeforePrompt = renderRequests.count;
+
+		assert.equal(storeInstance.recordStagePendingPrompt("r1", "s1", prompt), true);
+		await Promise.resolve();
+
+		assert.equal(widgetCalls.length, callsAfterMount, "recording a prompt must not remount the widget");
+		assert.ok(renderRequests.count > requestsBeforePrompt, "prompt creation must request an in-place repaint");
+		const waiting = component.render(120).join("\n");
+		assert.match(waiting, /"Approve the deployment\?"/);
+		assert.match(waiting, /❯ F2 answer · \/workflow connect r1/);
+
+		const requestsBeforeResolution = renderRequests.count;
+		assert.equal(storeInstance.resolveStagePendingPrompt("r1", "s1", "prompt-1", true), true);
+		await Promise.resolve();
+
+		assert.equal(widgetCalls.length, callsAfterMount, "resolving a prompt must not remount the widget");
+		assert.ok(renderRequests.count > requestsBeforeResolution, "prompt resolution must request an in-place repaint");
+		const ordinary = component.render(120).join("\n");
+		assert.doesNotMatch(ordinary, /Approve the deployment/);
+		assert.doesNotMatch(ordinary, /\/workflow connect/);
+		assert.doesNotMatch(ordinary, /F2 answer/);
+		assert.match(ordinary, /●/);
+		assert.match(ordinary, /my-wf/);
 	});
 
 	test("repaints the mounted widget in place when a run fails", async () => {

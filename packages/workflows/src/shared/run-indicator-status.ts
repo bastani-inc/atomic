@@ -7,6 +7,15 @@ export type RunIndicatorStatus = RunStatus | "awaiting_input";
 const TERMINAL_OR_BLOCKED = new Set<RunStatus>(["completed", "failed", "killed", "cancelled", "skipped", "blocked"]);
 
 /**
+ * Whether a run status is authoritative over any stale awaiting-input fields.
+ * A terminal or blocked run never contributes human-input state to a visible
+ * ancestor.
+ */
+function isTerminalOrBlockedRun(run: RunSnapshot): boolean {
+	return TERMINAL_OR_BLOCKED.has(effectiveRunStatus(run));
+}
+
+/**
  * Resolve the status represented by a run's primary indicator.
  *
  * A live run with a pending run/stage prompt is awaiting input. When the
@@ -17,14 +26,11 @@ const TERMINAL_OR_BLOCKED = new Set<RunStatus>(["completed", "failed", "killed",
  */
 export function runIndicatorStatus(run: RunSnapshot, allRuns: readonly RunSnapshot[] = [run]): RunIndicatorStatus {
 	const status = effectiveRunStatus(run);
-	if (TERMINAL_OR_BLOCKED.has(status)) return status;
+	if (isTerminalOrBlockedRun(run)) return status;
 	if (runHasPendingInput(run)) return "awaiting_input";
 
-	const runsById = new Map(allRuns.map((candidate) => [candidate.id, candidate]));
-	for (const candidate of allRuns) {
-		if (candidate.id === run.id || !runBelongsTo(candidate, run, runsById)) continue;
-		const candidateStatus = effectiveRunStatus(candidate);
-		if (!TERMINAL_OR_BLOCKED.has(candidateStatus) && runHasPendingInput(candidate)) return "awaiting_input";
+	for (const candidate of visibleRunTreeMembers(run, allRuns)) {
+		if (candidate.id !== run.id && runHasPendingInput(candidate)) return "awaiting_input";
 	}
 	return status;
 }
@@ -56,6 +62,11 @@ function runHasPendingInput(run: RunSnapshot): boolean {
 	);
 }
 
+/**
+ * Check whether a candidate is in an ancestor's explicit or inferred run
+ * tree. Parent traversal is cycle-safe because restored snapshots can contain
+ * incomplete or malformed ancestry.
+ */
 function runBelongsTo(
 	candidate: RunSnapshot,
 	ancestor: RunSnapshot,
@@ -72,4 +83,26 @@ function runBelongsTo(
 		current = runsById.get(current.parentRunId);
 	}
 	return false;
+}
+
+/**
+ * Return the live, non-terminal members attributed to a visible run.
+ *
+ * This is the shared ancestry boundary for run indicators and widget-local
+ * projections. A terminal or blocked visible root is authoritative, so its
+ * descendants cannot manufacture a stale awaiting-input state.
+ */
+export function visibleRunTreeMembers(
+	visibleRun: RunSnapshot,
+	allRuns: readonly RunSnapshot[] = [visibleRun],
+): RunSnapshot[] {
+	if (isTerminalOrBlockedRun(visibleRun)) return [];
+
+	const runsById = new Map(allRuns.map((candidate) => [candidate.id, candidate]));
+	const members: RunSnapshot[] = [visibleRun];
+	for (const candidate of allRuns) {
+		if (candidate.id === visibleRun.id || isTerminalOrBlockedRun(candidate)) continue;
+		if (runBelongsTo(candidate, visibleRun, runsById)) members.push(candidate);
+	}
+	return members;
 }
