@@ -365,6 +365,10 @@ export class ExtensionRunner {
 		return this.uiContext !== noOpUIContext;
 	}
 
+	hasNonBuiltinExtensions(): boolean {
+		return this.extensions.some((extension) => extension.sourceInfo.configurationOrigin !== "bundled");
+	}
+
 	getExtensionPaths(): string[] {
 		return this.extensions.map((extension) => extension.path);
 	}
@@ -483,6 +487,7 @@ export class ExtensionRunner {
 			getUIContext: () => this.uiContext,
 			getMode: () => this.mode,
 			hasUI: () => this.hasUI(),
+			hasNonBuiltinExtensions: () => this.hasNonBuiltinExtensions(),
 			getCwd: () => this.cwd,
 			getSessionManager: () => this.sessionManager,
 			getModelRegistry: () => this.modelRegistry,

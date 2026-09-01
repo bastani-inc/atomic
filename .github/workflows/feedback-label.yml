@@ -1,0 +1,33 @@
+name: Label Atomic feedback
+
+permissions: {}
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  label-feedback:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            if (owner !== "bastani-inc" || repo !== "atomic") return;
+
+            const body = context.payload.issue?.body ?? "";
+            const marker = /^<!-- atomic-feedback-request:([A-Za-z0-9._:-]{1,128});kind:(bug|enhancement) -->$/gmu;
+            const matches = [...body.matchAll(marker)];
+            if (matches.length !== 1) return;
+
+            const kind = matches[0][2];
+            await github.rest.issues.addLabels({
+              owner,
+              repo,
+              issue_number: context.payload.issue.number,
+              labels: [kind],
+            });

@@ -94,6 +94,7 @@ function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorCont
 		cwd,
 		mode: "tui",
 		hasUI: uiResult !== undefined,
+		hasNonBuiltinExtensions: false,
 		ui: makeUiContext(uiResult),
 		model: undefined,
 		scopedModels: [],

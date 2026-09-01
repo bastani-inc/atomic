@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/feedback <prompt>` as a built-in, single-turn way to draft and submit Atomic bug reports and enhancements without leaving the TUI. Bugs run one foreground investigation with the bundled `debugger`; enhancements skip investigation. The command maps drafts to the repository issue forms, reports extension and working-tree state, privacy-reviews the exact title and body, discloses every automatic redaction or bound, and requires an inline Edit/Post issue/Cancel decision before GitHub mutation. Posting prefers authenticated `gh`, falls back to the REST API with header-only `GH_TOKEN` or `GITHUB_TOKEN`, reconciles uncertain results to prevent duplicates, retains editable/copyable drafts on model, debugger, authentication, network, permission, rate-limit, and validation failures, and labels external reports through narrow repository automation. It does not launch a workflow, create an agent, repair the reported problem, publish diagnostic artifacts, or upload screenshots ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+
 ## [0.9.18-alpha.2] - 2026-08-31
 
 ### Fixed

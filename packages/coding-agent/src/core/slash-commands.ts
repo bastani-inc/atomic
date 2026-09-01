@@ -308,6 +308,11 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 }
 
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
+	{
+		name: "feedback",
+		description: "Draft and review an Atomic bug report or enhancement",
+		argumentHint: "<what happened or what you would like changed>",
+	},
 	{ name: "settings", description: "Open settings menu" },
 	{ name: "model", description: "Select model (opens selector UI)", argumentHint: "<provider/model>" },
 	{ name: "tree", description: "Navigate session tree (switch branches)" },

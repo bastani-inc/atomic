@@ -49,6 +49,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/thinking` | Switch thinking level; Ctrl+S in the picker saves the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
 | `/fast` | Configure fast mode for chat and workflow stages when supported OpenAI or GitHub Copilot models are available |
+| `/feedback <prompt>` | Draft, privacy-review, edit, and explicitly approve an Atomic bug report or enhancement |
 | `/workflow` | List/run workflows; manage runs (connect/inspect/pause/interrupt/quit/resume); reload workflow resources |
 | `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
@@ -67,6 +68,28 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/changelog` | Display version history |
 | `/exit` | Exit Atomic |
 | `/quit` | Quit Atomic |
+
+### Feedback issue reports
+
+Use `/feedback <what happened or what you would like changed>` in an interactive session. The prompt is required. Running `/feedback` without text shows usage and starts neither a model turn nor GitHub work.
+
+The command starts one normal model-led turn. The model classifies the prompt as a bug or enhancement and asks one concise question only when the classification or a required issue-form field remains unresolved. A bug runs the existing bundled `debugger` once in the foreground with its normal model and fallback policy. The debugger receives the original prompt plus safe session facts such as the Atomic version, runtime, selected model, extension state, and outcome-only failure summaries. An enhancement does not run the debugger. `/feedback` does not start a workflow, create an agent, apply a fix, or enter a review or repair loop.
+
+Before the debugger runs, Atomic records the current Git working-tree state. It compares that state again after the run, leaves existing changes and new diagnostic artifacts in place, and includes a path-only disclosure in the draft. Outside a Git checkout, the disclosure says it is unavailable instead of assuming that the current directory contains Atomic source.
+
+Atomic formats bugs against the repository bug form and enhancements against the contribution form. Bug drafts also state whether non-builtin extensions were active and whether the problem was reproduced with `atomic -ne`. An unknown extension-free result appears as `Not tested without extensions`.
+
+The inline preview shows the exact target repository, kind, title, body, hidden request marker, and every automatic privacy replacement in a bounded content window. Use PageUp and PageDown to review long content. The visible range indicator shows your position while Edit, Post issue, and Cancel remain fixed below the content. Up, Down, or Tab changes the selected action; Enter chooses it, and Escape cancels. Edit validates and privacy-reviews the text again. Replacements removed by an edit disappear from the disclosure, while preserved redacted placeholders keep their matching disclosure. Atomic does not contact GitHub until you choose Post issue. Cancellation does not create an issue.
+
+The privacy review checks only the final proposed title and body. It redacts common API and access tokens, credential assignments, credentials in URLs, and private-key blocks. It replaces home-directory prefixes with `~` where safe and bounds long traces, diagnostic dumps, titles, and bodies. The preview describes each replacement without displaying the removed value. Review the complete preview yourself. The scrubber is intentionally small and cannot prove that arbitrary text is safe.
+
+`/feedback` never attaches a debugger transcript, raw trace, environment dump, repository file, screenshot, or diagnostic artifact. For a visual problem, the draft may contain a clearly labelled sanitized `text` block, ASCII layout, or Mermaid diagram with expected and observed behavior. It must describe that material as a reconstruction, not as a captured screenshot or observed artifact. Use the private process in [Reporting security issues](/security#reporting-security-issues) instead of `/feedback` for security-sensitive reports.
+
+Posting targets `bastani-inc/atomic`. Atomic first uses an authenticated `gh issue create`. If `gh` is unavailable or not authenticated, it calls the GitHub REST Issues API with `GH_TOKEN`, or `GITHUB_TOKEN` when `GH_TOKEN` is absent. Tokens stay in request headers and never enter the draft or command arguments. If neither route is ready, or GitHub returns an authentication, permission, rate-limit, validation, network, or uncertain result, Atomic keeps the complete reviewed draft and offers Retry, Copy, or Cancel.
+
+Each preview contains a stable request identifier. Atomic locks an active submission and reconciles an uncertain result before Retry, which prevents a repeated keypress or timeout from creating a second issue. A successful result returns the created issue URL and makes a best-effort request through the same authenticated transport to apply exactly the matching `bug` or `enhancement` label. Label permission denial does not turn a created issue into a failure. Default-branch repository automation reads only the non-privileged hidden marker and applies the same label, including for reporters without triage permission.
+
+If the selected model cannot draft the report, Atomic builds an editable fallback from the original prompt and safe metadata. If the debugger is disabled, unavailable, interrupted, or fails, the bug draft says `Investigation unavailable` rather than claiming a diagnosis. When the debugger is available, a bug cannot reach preview until its one foreground investigation has run. A posting failure never discards the reviewed draft or reports success. The first version does not provide a non-interactive `atomic feedback` command, screenshot upload, dedicated GitHub OAuth, duplicate-issue search, or reporting for failures that prevent Atomic from starting.
 
 ## Message Queue
 

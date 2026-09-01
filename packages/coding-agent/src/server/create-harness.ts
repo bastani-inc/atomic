@@ -377,6 +377,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 				},
 				mode: "rpc",
 				hasUI: false,
+				hasNonBuiltinExtensions: false,
 				cwd: env.cwd,
 				sessionManager,
 				get modelRegistry() {

@@ -29,6 +29,7 @@ export interface ExtensionContextSource {
 	getUIContext(): ExtensionUIContext;
 	getMode(): ExtensionMode;
 	hasUI(): boolean;
+	hasNonBuiltinExtensions(): boolean;
 	getCwd(): string;
 	getSessionManager(): SessionManager;
 	getModelRegistry(): ModelRegistry;
@@ -122,6 +123,10 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		get hasUI() {
 			source.assertActive();
 			return source.hasUI();
+		},
+		get hasNonBuiltinExtensions() {
+			source.assertActive();
+			return source.hasNonBuiltinExtensions();
 		},
 		get cwd() {
 			source.assertActive();

@@ -99,6 +99,7 @@ function makeContext(cwd: string, subagentPolicy?: SubagentChildPolicy): Executo
 		cwd,
 		mode: "tui",
 		hasUI: false,
+		hasNonBuiltinExtensions: false,
 		ui: { custom: async <T>() => undefined as T } as unknown as ExecutorContextForTest["ui"],
 		model: undefined,
 		scopedModels: [],

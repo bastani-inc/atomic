@@ -32,6 +32,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 		ui: extensionRunner.getUIContext(),
 		mode: "tui",
 		hasUI: true,
+		hasNonBuiltinExtensions: extensionRunner.hasNonBuiltinExtensions?.() ?? false,
 		cwd: this.sessionManager.getCwd(),
 		sessionManager: this.sessionManager,
 		modelRegistry: new ModelRegistry(this.session.modelRuntime),
