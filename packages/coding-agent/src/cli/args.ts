@@ -281,9 +281,9 @@ ${chalk.bold("Options:")}
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
-  --session <path|id>            Use specific session file or partial UUID
+  --session <path|id>            Use file, exact ID, or unique 8-hex UUID prefix
   --session-id <id>              Use exact project session ID, creating it if missing
-  --fork <path|id>               Fork specific session file or partial UUID into a new session
+  --fork <path|id>               Fork file, exact ID, or unique 8-hex UUID prefix into a new session
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)
   --name, -n <name>              Set session display name

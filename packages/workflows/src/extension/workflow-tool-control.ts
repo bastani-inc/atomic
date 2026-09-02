@@ -5,6 +5,7 @@ import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
 import { interruptAllRuns, interruptRun, pauseAllRuns, pauseRun, resumeRun } from "../runs/background/status.js";
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
+import { isRunIdPrefix } from "../shared/run-id.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
@@ -398,14 +399,20 @@ async function resolveExplicitDurableTarget(
 ): Promise<WorkflowToolResult> {
 	const runtime = deps.getRuntime();
 	let durable: readonly ResumableWorkflowEntry[];
+	let completed: readonly ResumableWorkflowEntry[];
 	try {
 		await deps.ensureWorkflowResourcesLoaded();
-		durable = await runtime.prepareDurableResumable(target);
+		const catalog = await runtime.prepareDurableCatalog?.();
+		durable = catalog?.resumable ?? (await runtime.prepareDurableResumable(target));
+		completed =
+			catalog?.completed ??
+			(await runtime.prepareCompletedDurable?.()) ??
+			getDurableBackend().listCompletedWorkflows();
 	} catch (error) {
 		return controlFailure("resume", target, error);
 	}
-	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, []);
-	if (resolved.kind === "malformed") {
+	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, completed);
+	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 		return { action: "resume", runId: target, status: "noop", message: resolved.message };
 	}
 	if (resolved.kind === "durable") return resumePreparedDurableTarget(resolved.workflowId, deps, args.budget);
@@ -442,6 +449,12 @@ export async function workflowResumeAction(
 	args: WorkflowToolArgs,
 	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
 ): Promise<WorkflowToolResult> {
+	const explicitTarget = args.runId?.trim();
+	if (explicitTarget !== undefined && isRunIdPrefix(explicitTarget)) {
+		// #2603: resume prefixes must see both live and durable candidates before
+		// local precedence can select a run.
+		return resolveExplicitDurableTarget(explicitTarget, args, deps, store.runs());
+	}
 	const target = resolveToolRunTarget(args, "No active run to resume.");
 	if (target.kind === "all")
 		return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
@@ -449,14 +462,14 @@ export async function workflowResumeAction(
 		return { action: "resume", runId: target.target, status: "noop", message: target.message };
 	}
 	if (target.kind === "not_found") {
-		const explicitTarget = args.runId?.trim();
 		if (explicitTarget !== undefined && explicitTarget.length > 0) {
 			return resolveExplicitDurableTarget(explicitTarget, args, deps);
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message };
 	}
-	// An explicit target now resolves only by exact id, so it can never disagree
-	// with the resolved run; the old re-resolution branch here is unreachable.
+	// Any exact id or unique prefix has been normalized to the canonical full id,
+	// so it cannot disagree with the resolved run; the old re-resolution branch
+	// here is unreachable.
 	const backend = getDurableBackend();
 	const exact = store.runs().find((run) => run.id === target.runId);
 	const shadow = exact === undefined ? "not_shadow" : classifyDurableResumeShadow(exact, store, { backend });

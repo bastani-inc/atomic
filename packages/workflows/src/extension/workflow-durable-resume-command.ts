@@ -5,7 +5,7 @@ import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
-import { isFullRunId, malformedRunIdMessage } from "../shared/run-id.js";
+import { resolveRunIdTarget } from "../shared/run-id.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
@@ -41,6 +41,7 @@ export interface WorkflowResumeTarget {
 export type WorkflowResumeTargetResolution =
 	| WorkflowResumeTarget
 	| { readonly kind: "malformed"; readonly message: string }
+	| { readonly kind: "ambiguous"; readonly message: string }
 	| { readonly kind: "not_found" };
 
 export async function prepareWorkflowResumeCatalog(
@@ -105,7 +106,7 @@ export async function handleDurableResume(
 			// directory a second time for the same command invocation.
 			catalog.completed,
 		);
-		if (resolved.kind === "malformed") {
+		if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 			fail(resolved.message);
 			return true;
 		}
@@ -197,9 +198,11 @@ export function resolveWorkflowResumeTarget(
 			name: run.name,
 		});
 	}
-	if (!isFullRunId(target)) return { kind: "malformed", message: malformedRunIdMessage(target) };
-	const exact = targets.get(target);
-	return exact ?? { kind: "not_found" };
+	const resolution = resolveRunIdTarget(target, targets.keys());
+	if (resolution.kind === "malformed" || resolution.kind === "ambiguous" || resolution.kind === "not_found") {
+		return resolution;
+	}
+	return targets.get(resolution.runId) ?? { kind: "not_found" };
 }
 
 function isExplicitResumeCandidate(run: RunSnapshot): boolean {

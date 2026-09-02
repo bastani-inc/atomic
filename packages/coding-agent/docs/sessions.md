@@ -13,11 +13,13 @@ atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
 atomic --no-session        # Ephemeral mode; do not save
 atomic --name "my task"    # Set session display name at startup
-atomic --session <path|id> # Use a specific session file or partial session ID
-atomic --fork <path|id>    # Fork a session file or partial session ID into a new session
+atomic --session <path|id> # Use a file, exact ID, or unique 8-hex UUID prefix
+atomic --fork <path|id>    # Fork a file, exact ID, or unique 8-hex UUID prefix
 ```
 
 Use `/session` in interactive mode to see the current session file, session ID, message count, tokens, and cost.
+
+For UUID-backed sessions, `--session` and `--fork` accept either the full UUID or exactly eight hexadecimal prefix characters. A prefix must be unique within the current project (or, if no local session matches, across the global session store); collisions list the matching UUIDs and require the full value. Exact custom session IDs keep their existing priority. `--session-id` remains an exact project-local ID used to open or create a session, not a prefix selector.
 
 ### Custom session directories
 

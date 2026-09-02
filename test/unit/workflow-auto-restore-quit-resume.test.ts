@@ -252,7 +252,7 @@ describe("gracefully quit durable workflow session restore", () => {
 	test.sequential.each([
 		["exact id", (workflowId: string) => workflowId],
 		["short prefix rejected", (workflowId: string) => workflowId.slice(0, 18)],
-	] as const)("workflow tool resume requires an exact durable-only id", async (_label, selectTarget) => {
+	] as const)("workflow tool resume rejects unsupported durable-only truncations", async (_label, selectTarget) => {
 		const workflowId = testRunId(`tool-durable-only-${Date.now()}`);
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
@@ -286,8 +286,10 @@ describe("gracefully quit durable workflow session restore", () => {
 	});
 
 	test.sequential("workflow tool rejects a shared durable-only prefix", async () => {
-		const prefix = `tool-durable-ambiguous-${Date.now()}`;
-		const workflowIds = [testRunId(`${prefix}-alpha`), testRunId(`${prefix}-beta`)];
+		const firstId = testRunId(`tool-durable-ambiguous-${Date.now()}-alpha`);
+		const secondId = `${firstId.slice(0, 8)}-${testRunId(`tool-durable-ambiguous-${Date.now()}-beta`).slice(9)}`;
+		const prefix = firstId.slice(0, 8);
+		const workflowIds = [firstId, secondId];
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		for (const workflowId of workflowIds) seedDurableOnly(backend, workflowId);
@@ -302,7 +304,9 @@ describe("gracefully quit durable workflow session restore", () => {
 
 		assert.equal(result.action, "resume");
 		assert.equal(result.status, "noop");
-		assert.match(result.message, /Run id must be a full 36-character UUID/);
+		// Regression: #2603 — valid 8-hex collisions list matches instead of selecting one.
+		assert.match(result.message, /ambiguous/);
+		for (const workflowId of workflowIds) assert.match(result.message, new RegExp(workflowId));
 		for (const workflowId of workflowIds) {
 			assert.equal(backend.getWorkflow(workflowId)?.status, "paused");
 			assert.equal(jobTracker.has(workflowId), false);
@@ -310,9 +314,10 @@ describe("gracefully quit durable workflow session restore", () => {
 	});
 
 	test.sequential("workflow tool rejects a prefix shared by local and durable-only runs", async () => {
-		const prefix = `tool-mixed-ambiguous-${Date.now()}`;
-		const localIds = [testRunId(`${prefix}-local`)];
-		const durableId = testRunId(`${prefix}-durable`);
+		const localId = testRunId(`tool-mixed-ambiguous-${Date.now()}-local`);
+		const prefix = localId.slice(0, 8);
+		const localIds = [localId];
+		const durableId = `${prefix}-${testRunId(`tool-mixed-ambiguous-${Date.now()}-durable`).slice(9)}`;
 		for (const id of localIds) {
 			store.recordRunStart({
 				id,
@@ -338,7 +343,10 @@ describe("gracefully quit durable workflow session restore", () => {
 
 		assert.equal(result.action, "resume");
 		assert.equal(result.status, "noop");
-		assert.match(result.message, /Run id must be a full 36-character UUID/);
+		// Regression: #2603 — live and durable scopes are combined before ambiguity is decided.
+		assert.match(result.message, /ambiguous/);
+		assert.match(result.message, new RegExp(localId));
+		assert.match(result.message, new RegExp(durableId));
 		assert.equal(jobTracker.has(durableId), false);
 	});
 

@@ -58,22 +58,25 @@ describe("resolveDurableEntry", () => {
 		assert.equal(r!.workflowId, fullId);
 	});
 
-	test("rejects a unique prefix and accepts the full id", async () => {
+	test("accepts a unique 8-hex prefix and the full id", async () => {
 		const fullId = testRunId("wf-aaa-001");
-		const malformed = resolveDurableEntry(fullId.slice(0, 8), catalog);
-		assert.ok(malformed && "kind" in malformed && malformed.kind === "malformed");
-		assert.match(malformed.message, /full 36-character UUID/);
+		// Regression: #2603 — durable workflow selectors support unique UUID prefixes.
+		const prefixed = resolveDurableEntry(fullId.slice(0, 8), catalog);
+		assert.ok(prefixed && !("kind" in prefixed));
+		assert.equal(prefixed.workflowId, fullId);
 		const exact = resolveDurableEntry(fullId, catalog);
 		assert.ok(exact && !("kind" in exact));
 		assert.equal(exact.workflowId, fullId);
 	});
 
-	test("rejects a shared prefix while full ids remain independently addressable", async () => {
+	test("reports a shared prefix as ambiguous while full ids remain independently addressable", async () => {
 		const firstId = testRunId("ambiguous-first");
 		const secondId = `${firstId.slice(0, 8)}-${testRunId("ambiguous-second").slice(9)}`;
 		const sharedCatalog = [makeEntry(firstId, "alpha", "running"), makeEntry(secondId, "beta", "paused")];
-		const malformed = resolveDurableEntry(firstId.slice(0, 8), sharedCatalog);
-		assert.ok(malformed && "kind" in malformed && malformed.kind === "malformed");
+		// Regression: #2603 — durable catalog collisions never resolve by insertion order.
+		const ambiguous = resolveDurableEntry(firstId.slice(0, 8), sharedCatalog);
+		assert.ok(ambiguous && "kind" in ambiguous && ambiguous.kind === "ambiguous");
+		assert.match(ambiguous.message, /Use the full UUID/);
 		const first = resolveDurableEntry(firstId, sharedCatalog);
 		const second = resolveDurableEntry(secondId, sharedCatalog);
 		assert.ok(first && !("kind" in first));
@@ -142,7 +145,7 @@ describe("resumeDurableWorkflow", () => {
 		assert.equal(result.reason, "not_registered");
 	});
 
-	test("rejects a unique prefix before exact-id loadability checks", async () => {
+	test("resolves a unique prefix before exact-id loadability checks", async () => {
 		class ExactOnlyLoadableBackend extends InMemoryDurableBackend {
 			override isWorkflowLoadable(workflowId: string): boolean {
 				return this.getWorkflow(workflowId) !== undefined;
@@ -161,9 +164,9 @@ describe("resumeDurableWorkflow", () => {
 
 		const result = await resumeDurableWorkflow(fullId.slice(0, 8), { ...deps(), durableBackend: exactBackend });
 
-		assert.equal(result.ok, false);
-		assert.equal(result.reason, "not_registered");
-		assert.match(result.message, /full 36-character UUID/);
+		// Regression: #2603 — downstream backend checks receive the resolved full UUID.
+		assert.equal(result.ok, true);
+		if (result.ok) assert.equal(result.workflowId, fullId);
 	});
 
 	test("rejects a shared prefix while full workflow ids remain independently addressable", async () => {
@@ -188,7 +191,10 @@ describe("resumeDurableWorkflow", () => {
 		const result = await resumeDurableWorkflow(firstId.slice(0, 8), deps());
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "not_registered");
-		assert.match(result.message, /full 36-character UUID/);
+		// Regression: #2603 — the ambiguity error exposes both authoritative matches.
+		assert.match(result.message, /ambiguous/);
+		assert.match(result.message, new RegExp(firstId));
+		assert.match(result.message, new RegExp(secondId));
 		const first = resolveDurableEntry(firstId, backend.listResumableWorkflows());
 		const second = resolveDurableEntry(secondId, backend.listResumableWorkflows());
 		assert.ok(first && !("kind" in first));

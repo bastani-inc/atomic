@@ -695,7 +695,7 @@ Raw stage-chat prompt answer replay is live-memory only. `StageSnapshot.promptAn
     "inputs": "object (optional) — key/value map of workflow inputs",
     "budget": "optional run-only object: maxDurationMs/maxTokens non-negative integers; maxCost/warnAtPercent non-negative numbers; 0 disables a field",
     "action": "'run' | 'list' | 'get' | 'inputs' | 'models' | 'status' | 'stages' | 'stage' | 'transcript' | 'answer' | 'pause' | 'interrupt' | 'quit' | 'resume' | 'reload'",
-    "runId": "optional full 36-character run id; prefixes are rejected; control actions default to the active run where safe; use '--all' or all:true for pause/interrupt/quit all",
+	    "runId": "optional full 36-character run UUID or unique 8-character hexadecimal UUID prefix; other truncations and ambiguous prefixes are rejected; control actions default to the active run where safe; use '--all' or all:true for pause/interrupt/quit all",
     "stageId": "optional exact stage id or exact stage name for stage-scoped actions; prefixes and partial names are rejected; cannot be combined with all:true",
     "statusFilter": "optional filter for stages or the no-runId status run listing: pending/running/awaiting_input/paused/blocked/completed/failed/skipped/cancelled/killed/all; for the status listing, run statuses match directly and awaiting_input selects runs with a pending human prompt",
     "format": "optional agent-facing output format: text or json",
