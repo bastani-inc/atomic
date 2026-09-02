@@ -6,14 +6,6 @@ import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-for
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { PromptOptions } from "./agent-session-types.ts";
 import {
-	ATOMIC_GUIDE_COMMAND_NAME,
-	ATOMIC_GUIDE_HELP_CHOICES,
-	atomicGuideModeForChoice,
-	getAtomicGuideMessage,
-	isAtomicGuideHelpChoice,
-	normalizeAtomicGuideMode,
-} from "./atomic-guide-command.ts";
-import {
 	formatNoApiKeyFoundMessage,
 	formatNoModelSelectedMessage,
 	formatUnresolvedModelMessage,
@@ -33,13 +25,12 @@ type PromptOptionsWithWorkflowDelivery = PromptOptions & {
 	};
 };
 
-/** Dispatch registered slash commands without changing the raw queue pause gate. */
+/** Dispatch registered extension slash commands without changing the raw queue pause gate. */
 export async function tryExecuteSessionSlashCommand(
-	session: Pick<AgentSession, "_tryExecuteBuiltinSlashCommand" | "_tryExecuteExtensionCommand">,
+	session: Pick<AgentSession, "_tryExecuteExtensionCommand">,
 	text: string,
 ): Promise<boolean> {
 	if (!text.startsWith("/")) return false;
-	if (await session._tryExecuteBuiltinSlashCommand(text)) return true;
 	return session._tryExecuteExtensionCommand(text);
 }
 
@@ -341,44 +332,6 @@ async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void>
 }
 
 /**
- * Try to execute a built-in slash command. Returns true if command was found and executed.
- */
-
-export async function _tryExecuteBuiltinSlashCommand(this: AgentSession, text: string): Promise<boolean> {
-	const spaceIndex = text.indexOf(" ");
-	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-	if (commandName !== ATOMIC_GUIDE_COMMAND_NAME) return false;
-
-	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
-	const mode = normalizeAtomicGuideMode(args);
-	if (mode === "help" && this._extensionUIContext) {
-		const choice = await this._extensionUIContext.select("Atomic. Select where to start:", [
-			...ATOMIC_GUIDE_HELP_CHOICES,
-		]);
-		if (!choice || !isAtomicGuideHelpChoice(choice)) return true;
-		await this.sendCustomMessage(
-			{
-				customType: "atomic",
-				content: getAtomicGuideMessage(atomicGuideModeForChoice(choice), this._cwd),
-				display: true,
-			},
-			{ triggerTurn: false },
-		);
-		return true;
-	}
-
-	await this.sendCustomMessage(
-		{
-			customType: "atomic",
-			content: getAtomicGuideMessage(mode, this._cwd),
-			display: true,
-		},
-		{ triggerTurn: false },
-	);
-	return true;
-}
-
-/**
  * Try to execute an extension command. Returns true if command was found and executed.
  */
 
@@ -561,7 +514,6 @@ export const agentSessionPromptMethods = {
 	_runAgentPrompt,
 	_runAgentContinue,
 	_continueQueuedAgentMessages,
-	_tryExecuteBuiltinSlashCommand,
 	_tryExecuteExtensionCommand,
 	_expandSkillCommand,
 	steer,

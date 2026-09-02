@@ -166,6 +166,12 @@ export interface RpcSlashCommand {
 // RPC State
 // ============================================================================
 
+export interface RpcResourceExtension {
+	path: string;
+	sourceInfo?: SourceInfo;
+	hidden: boolean;
+}
+
 export interface RpcSessionState {
 	model?: Model<Api>;
 	modelFallbackMessage?: string;
@@ -184,6 +190,7 @@ export interface RpcSessionState {
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
 	resourceOverlaps?: ResourceOverlap[];
+	resourceExtensions?: RpcResourceExtension[];
 }
 
 export interface RpcLogoutProviderResult {

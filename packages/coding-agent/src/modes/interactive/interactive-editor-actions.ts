@@ -4,6 +4,7 @@ import {
 	APP_NAME,
 	AssistantMessageComponent,
 	CHANGELOG_URL,
+	Container,
 	DynamicBorder,
 	getCapabilities,
 	hyperlink,
@@ -74,11 +75,16 @@ InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveMode
 	if (isExpandable(activeHeader)) {
 		activeHeader.setExpanded(expanded);
 	}
-	for (const child of this.chatContainer.children) {
-		if (isExpandable(child)) {
-			child.setExpanded(expanded);
+	const visited = new Set<Container>();
+	const setNestedExpandables = (container: Container): void => {
+		if (visited.has(container)) return;
+		visited.add(container);
+		for (const child of container.children) {
+			if (isExpandable(child)) child.setExpanded(expanded);
+			if (child instanceof Container) setNestedExpandables(child);
 		}
-	}
+	};
+	setNestedExpandables(this.chatContainer);
 	// The rendered chat is the feedback; a status line restating it only adds noise.
 	this.ui.requestRender();
 };

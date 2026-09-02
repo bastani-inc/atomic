@@ -229,6 +229,246 @@ describe("concurrent blocking intercom requests", () => {
 		}
 	});
 
+	test("disambiguates sibling child runs by the boundary segment of the ask path", async () => {
+		// Regression: review round 2, D8 clarification — depth-faithful roster targets carry the
+		// boundary identity in their middle segments, so an ask whose middle names one boundary
+		// must key the waiter on that boundary's stage session, not fall back to the raw path.
+		const rootRunId = "4ac72924-c452-4e5f-9e63-2435722109f7";
+		const stageEntry = (sessionId: string, boundaryName: string, childRunId: string) => ({
+			kind: "workflow-stage" as const,
+			runId: childRunId,
+			stageId: `reviewer-id-${sessionId}`,
+			stageName: "reviewer",
+			target: `workflow:${rootRunId}/${boundaryName}/reviewer-id-${sessionId}`,
+			lifecycle: "running" as const,
+			group: `workflow:${rootRunId}`,
+			sessionId,
+		});
+		const stageEntryA = stageEntry(
+			"slice-2-reviewer-session",
+			"implement-slice-2",
+			"22222222-2222-4222-8222-222222222222",
+		);
+		const stageEntryB = stageEntry(
+			"slice-3-reviewer-session",
+			"implement-slice-3",
+			"33333333-3333-4333-8333-333333333333",
+		);
+		const tools = new Map<string, Tool>();
+		const slot = new ReplyWaiterRegistry();
+		const waiterKeys: string[] = [];
+		const sent: Array<{ to: string }> = [];
+		const client = {
+			sessionId: "self-id",
+			listDirectory: async () => ({ sessions: [], workflowStages: [stageEntryA, stageEntryB] }),
+			async send(to: string, message: { messageId?: string; text: string }) {
+				sent.push({ to });
+				return { id: message.messageId ?? "sent", delivered: true };
+			},
+		};
+		const pi = {
+			registerTool(tool: Tool & { name: string }) {
+				tools.set(tool.name, tool);
+			},
+			appendEntry() {},
+		};
+		registerIntercomTool(
+			pi as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				resolveSessionTarget: async (_client: object, target: string) => target,
+				beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) => {
+					waiterKeys.push(from);
+					return slot.begin(from, replyTo, signal);
+				},
+				confirmSend: false,
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		const context = { sessionManager: { getSessionId: () => "self-session" }, hasUI: false };
+		const tool = tools.get("intercom");
+		assert.ok(tool);
+		// The middle segment is the owning child-run id, which the advertised name-form target
+		// does not contain — only boundary agreement with the owning run identity can resolve it.
+		const execution = tool.execute(
+			"call",
+			{
+				action: "ask",
+				to: `workflow:${rootRunId}/22222222-2222-4222-8222-222222222222/reviewer`,
+				message: "Choose",
+			},
+			undefined,
+			undefined,
+			context,
+		);
+		await settles(() => sent.length === 1, "the boundary-disambiguated ask sends its question");
+		assert.deepEqual(waiterKeys, ["slice-2-reviewer-session"]);
+		const waiter = slot.pending()[0];
+		assert.ok(waiter);
+		const routed = routeIncomingReply(
+			waiter,
+			{ ...from, id: "slice-2-reviewer-session", name: "reviewer" },
+			{
+				id: "stage-reply",
+				timestamp: Date.now(),
+				replyTo: waiter.replyTo,
+				content: { text: "Approved" },
+			},
+		);
+		assert.equal(routed, true);
+		const result = await execution;
+		assert.equal(result.isError, false);
+		assert.match(result.content[0]?.text ?? "", /Approved/);
+	});
+
+	test("refuses an ask whose final segment matches several live stages without keying a path waiter", async () => {
+		// Regression: review round 2, #2784 hang class — two live nested stages sharing the same
+		// boundary name and stage name must refuse the ask with a clear reason instead of
+		// keying the waiter on a path string no inbound reply can ever correlate.
+		const rootRunId = "4ac72924-c452-4e5f-9e63-2435722109f7";
+		const stageEntry = (sessionId: string, stageId: string) => ({
+			kind: "workflow-stage" as const,
+			runId: "22222222-2222-4222-8222-222222222222",
+			stageId,
+			stageName: "reviewer",
+			target: `workflow:${rootRunId}/workflow:iter/${stageId}`,
+			lifecycle: "running" as const,
+			group: `workflow:${rootRunId}`,
+			sessionId,
+		});
+		const tools = new Map<string, Tool>();
+		const slot = new ReplyWaiterRegistry();
+		const sent: Array<{ to: string }> = [];
+		const client = {
+			sessionId: "self-id",
+			listDirectory: async () => ({
+				sessions: [],
+				workflowStages: [
+					stageEntry("iter-1-session", "reviewer-id-1"),
+					stageEntry("iter-2-session", "reviewer-id-2"),
+				],
+			}),
+			async send(to: string, message: { messageId?: string; text: string }) {
+				sent.push({ to });
+				return { id: message.messageId ?? "sent", delivered: true };
+			},
+		};
+		const pi = {
+			registerTool(tool: Tool & { name: string }) {
+				tools.set(tool.name, tool);
+			},
+			appendEntry() {},
+		};
+		registerIntercomTool(
+			pi as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				resolveSessionTarget: async (_client: object, target: string) => target,
+				beginReplyWait: (from: string) => {
+					throw new Error(`a waiter must never be keyed on "${from}" for an ambiguous ask`);
+				},
+				confirmSend: false,
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		const context = { sessionManager: { getSessionId: () => "self-session" }, hasUI: false };
+		const tool = tools.get("intercom");
+		assert.ok(tool);
+		const result = await tool.execute(
+			"call",
+			{ action: "ask", to: `workflow:${rootRunId}/workflow:iter/reviewer`, message: "Choose" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /ambiguous/);
+		assert.deepEqual(sent, [], "an ambiguous ask must not send");
+		assert.equal(slot.size(), 0, "an ambiguous ask must not reserve a reply waiter");
+	});
+
+	test("keys a boundary-form workflow stage ask on the stage's live session", async () => {
+		// Regression: review round 1, #2784 hang class — a nested stage addressed by its
+		// boundary-stage-name path must key the reply waiter on the stage's live session id,
+		// the only identity inbound reply routing produces, not on the unmatchable path string.
+		const rootRunId = "4ac72924-c452-4e5f-9e63-2435722109f7";
+		const childRunId = "22222222-2222-4222-8222-222222222222";
+		const stageSessionId = "nested-stage-session-id";
+		const stageEntry = {
+			kind: "workflow-stage" as const,
+			runId: childRunId,
+			stageId: "child-reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${rootRunId}/${childRunId}/child-reviewer-id`,
+			lifecycle: "running" as const,
+			group: `workflow:${rootRunId}`,
+			sessionId: stageSessionId,
+		};
+		const tools = new Map<string, Tool>();
+		const slot = new ReplyWaiterRegistry();
+		const waiterKeys: string[] = [];
+		const sent: Array<{ to: string }> = [];
+		const client = {
+			sessionId: "self-id",
+			listDirectory: async () => ({ sessions: [], workflowStages: [stageEntry] }),
+			async send(to: string, message: { messageId?: string; text: string }) {
+				sent.push({ to });
+				return { id: message.messageId ?? "sent", delivered: true };
+			},
+		};
+		const pi = {
+			registerTool(tool: Tool & { name: string }) {
+				tools.set(tool.name, tool);
+			},
+			appendEntry() {},
+		};
+		registerIntercomTool(
+			pi as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				resolveSessionTarget: async (_client: object, target: string) => target,
+				beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) => {
+					waiterKeys.push(from);
+					return slot.begin(from, replyTo, signal);
+				},
+				confirmSend: false,
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		const context = { sessionManager: { getSessionId: () => "self-session" }, hasUI: false };
+		const tool = tools.get("intercom");
+		assert.ok(tool);
+		const execution = tool.execute(
+			"call",
+			{ action: "ask", to: `workflow:${rootRunId}/workflow:child/reviewer`, message: "Choose" },
+			undefined,
+			undefined,
+			context,
+		);
+		await settles(() => sent.length === 1, "the boundary-form ask sends its question");
+		const waiter = slot.pending()[0];
+		assert.ok(waiter, "the boundary-form ask reserves one reply waiter");
+		assert.equal(waiterKeys[0], stageSessionId);
+		assert.equal(waiter.from, stageSessionId);
+		const routed = routeIncomingReply(
+			waiter,
+			{ ...from, id: stageSessionId, name: "reviewer" },
+			{
+				id: "stage-reply",
+				timestamp: Date.now(),
+				replyTo: waiter.replyTo,
+				content: { text: "Approved" },
+			},
+		);
+		assert.equal(routed, true);
+		const result = await execution;
+		assert.equal(result.isError, false);
+		assert.match(result.content[0]?.text ?? "", /Approved/);
+	});
+
 	test("concurrent supervisor waits have one winner and a deterministic refusal", async () => {
 		const current = fixture({ send: { delayMs: 10 } });
 		const winner = current.supervise();

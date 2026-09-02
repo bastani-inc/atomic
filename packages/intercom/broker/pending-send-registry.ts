@@ -12,8 +12,7 @@ export interface SendResultLike {
   delivered: boolean;
   reason?: string;
   queued?: boolean;
-  runId?: string;
-  stageKey?: string;
+  target?: string;
   position?: number;
 }
 

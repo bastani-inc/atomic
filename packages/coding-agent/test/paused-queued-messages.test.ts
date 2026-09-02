@@ -497,27 +497,39 @@ describe("regular chat paused queued messages", () => {
 		expect(harness.getPendingResponseCount()).toBe(2);
 	});
 
-	test("built-in atomic usage keeps late trigger and exact queued content held until ordinary resume", async () => {
-		const harness = await createHarness();
+	test("handled extension command keeps late trigger and exact queued content held until ordinary resume", async () => {
+		const commandArgs: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("hold-queued", {
+						description: "Handle without releasing exact queued content",
+						handler: async (args) => {
+							commandArgs.push(args);
+						},
+					});
+				},
+			],
+		});
 		harnesses.push(harness);
 		let providerCalls = 0;
 		harness.setResponses([
 			() => {
 				providerCalls += 1;
-				return fauxAssistantMessage("ordinary built-in resume accepted");
+				return fauxAssistantMessage("ordinary extension resume accepted");
 			},
 			() => {
 				providerCalls += 1;
 				return fauxAssistantMessage("queued steering delivered");
 			},
 		]);
-		const exactQueuedText = "\tqueued before built-in usage  \n";
-		const exactLateTrigger = "\tlate built-in trigger payload  \n";
+		const exactQueuedText = "\tqueued before extension command  \n";
+		const exactLateTrigger = "\tlate extension trigger payload  \n";
 		harness.session.pauseQueuedMessages();
 		await harness.session.steer(exactQueuedText);
 		await harness.session.sendCustomMessage(
 			{
-				customType: "late-held-built-in-trigger",
+				customType: "late-held-extension-trigger",
 				content: [{ type: "text", text: exactLateTrigger }],
 				display: true,
 				details: { sequence: 1 },
@@ -530,8 +542,9 @@ describe("regular chat paused queued messages", () => {
 		const displayBeforeCommand = harness.session.getSteeringMessages();
 		const responsesBeforeCommand = harness.getPendingResponseCount();
 
-		await runUserPromptTurn.call(host, "/atomic usage");
+		await runUserPromptTurn.call(host, "/hold-queued  exact command args  ");
 
+		expect(commandArgs).toEqual([" exact command args  "]);
 		expect(providerCalls).toBe(0);
 		expect(harness.getPendingResponseCount()).toBe(responsesBeforeCommand);
 		expect(harness.session.queuedMessagesPaused).toBe(true);
@@ -539,23 +552,18 @@ describe("regular chat paused queued messages", () => {
 		expect(heldBeforeCommand?.steering).toEqual(rawBeforeCommand);
 		expect(heldBeforeCommand?.steering.map(getMessageText)).toEqual([exactQueuedText, exactLateTrigger]);
 		expect(harness.session.getSteeringMessages()).toEqual(displayBeforeCommand);
-		expect(
-			harness.session.messages.filter(
-				(message) => message.role === "custom" && message.customType === "atomic" && message.display === true,
-			),
-		).toHaveLength(1);
 
-		await runUserPromptTurn.call(host, "ordinary input resumes built-in hold");
+		await runUserPromptTurn.call(host, "ordinary input resumes extension hold");
 
 		expect(harness.session.queuedMessagesPaused).toBe(false);
 		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
 		expect(getUserTexts(harness).filter((text) => text === exactQueuedText)).toHaveLength(1);
-		expect(getUserTexts(harness).filter((text) => text === "ordinary input resumes built-in hold")).toHaveLength(1);
+		expect(getUserTexts(harness).filter((text) => text === "ordinary input resumes extension hold")).toHaveLength(1);
 		expect(
 			harness.session.messages.filter(
 				(message) =>
 					message.role === "custom" &&
-					message.customType === "late-held-built-in-trigger" &&
+					message.customType === "late-held-extension-trigger" &&
 					getMessageText(message) === exactLateTrigger,
 			),
 		).toHaveLength(1);

@@ -31,28 +31,31 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
 
     deps.syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
-    let currentSession: SessionInfo;
-    let sessions: SessionInfo[];
-    let duplicates: Set<string>;
-    try {
-      const mySessionId = overlayClient.sessionId;
-      const allSessions = await overlayClient.listSessions();
-      if (!deps.getLiveContext(ctx, overlayGeneration)) return;
-      const foundCurrentSession = allSessions.find(s => s.id === mySessionId);
-      if (!foundCurrentSession) {
-        deps.notifyIfLive(ctx, "Current session is missing from intercom session list", "error", overlayGeneration);
-        return;
-      }
-      currentSession = foundCurrentSession;
-      duplicates = duplicateSessionNames(allSessions);
-      sessions = allSessions.filter(s => s.id !== mySessionId);
-    } catch (error) {
+	let currentSession: SessionInfo;
+	let sessions: SessionInfo[];
+	let workflowStages: Awaited<ReturnType<IntercomClient["listDirectory"]>>["workflowStages"];
+	let duplicates: Set<string>;
+	try {
+		const mySessionId = overlayClient.sessionId;
+		const directory = await overlayClient.listDirectory();
+		if (!deps.getLiveContext(ctx, overlayGeneration)) return;
+		const foundCurrentSession = directory.sessions.find((session) => session.id === mySessionId);
+		if (!foundCurrentSession) {
+			deps.notifyIfLive(ctx, "Current session is missing from intercom session list", "error", overlayGeneration);
+			return;
+		}
+		currentSession = foundCurrentSession;
+		duplicates = duplicateSessionNames(directory.sessions);
+		sessions = directory.sessions.filter((session) => session.id !== mySessionId);
+		workflowStages = directory.workflowStages;
+	} catch (error) {
       deps.notifyIfLive(ctx, `Failed to list sessions: ${getErrorMessage(error)}`, "error", overlayGeneration);
       return;
     }
 
     const selectedSession = await ctx.ui.custom<SessionInfo | undefined>(
-      (_tui, theme, keybindings, done) => new SessionListOverlay(theme, keybindings, currentSession, sessions, done),
+	  (_tui, theme, keybindings, done) =>
+		new SessionListOverlay(theme, keybindings, currentSession, sessions, done, workflowStages),
       { overlay: true }
     ).catch(() => undefined);
 

@@ -515,7 +515,10 @@ async function runCutRelease(
  *
  * `upload-pack` is git's own child of `ls-remote` over a local path — the
  * transport answering the query, not a command the script issued — so it is
- * dropped rather than pinned into the expected sequence.
+ * dropped rather than pinned into the expected sequence. A Blacksmith runner
+ * can likewise inject an origin-discovery probe, `remote get-url origin`,
+ * immediately before `ls-remote`; the script never issues that command, so its
+ * exact form is dropped while every other remote command remains visible.
  */
 function gitCommands(fixture: Fixture): string[] {
 	if (!fileExistsSync(fixture.traceLog)) return [];
@@ -524,7 +527,11 @@ function gitCommands(fixture: Fixture): string[] {
 		.map((line) => /trace: built-in: git (.*)$/u.exec(line)?.[1])
 		.filter((command): command is string => command !== undefined)
 		.map((command) => command.replace(/\b[0-9a-f]{40}\b/gu, "<sha>").trim())
-		.filter((command) => !/^(?:upload-pack|receive-pack|index-pack|pack-objects) /u.test(command));
+		.filter(
+			(command) =>
+				command !== "remote get-url origin" &&
+				!/^(?:upload-pack|receive-pack|index-pack|pack-objects) /u.test(command),
+		);
 }
 
 /** Everything the script could have mutated, read back after it exits. */
@@ -533,6 +540,39 @@ function repositoryState(root: string): { tags: string; status: string } {
 }
 
 describe("cut-release npm registration preflight", () => {
+	test("ambient origin discovery does not alter the recorded release-command sequence", () => {
+		const stage = makeTempDirectory("atomic-cut-release-trace-");
+		const fixture: Fixture = {
+			stage,
+			root: join(stage, "repo"),
+			npmCache: join(stage, "npm-cache"),
+			traceLog: join(stage, "git-trace.log"),
+		};
+		try {
+			writeTextSync(
+				fixture.traceLog,
+				[
+					"12:00:00 git.c:476 trace: built-in: git rev-parse --abbrev-ref HEAD",
+					"12:00:01 git.c:476 trace: built-in: git remote get-url origin",
+					"12:00:02 git.c:476 trace: built-in: git ls-remote --exit-code --refs origin refs/heads/main",
+					"12:00:03 git.c:476 trace: built-in: git worktree prune",
+					"12:00:04 git.c:476 trace: built-in: git remote get-url upstream",
+				].join("\n"),
+			);
+
+			// The runner probe is absent, but a real release mutation remains visible:
+			// the exact mutation-free assertion below would still reject this trace.
+			assert.deepEqual(gitCommands(fixture), [
+				"rev-parse --abbrev-ref HEAD",
+				"ls-remote --exit-code --refs origin refs/heads/main",
+				"worktree prune",
+				"remote get-url upstream",
+			]);
+		} finally {
+			removePathSync(stage, { recursive: true, force: true });
+		}
+	});
+
 	test(
 		"cut-release-aborts-on-unregistered-package",
 		async () => {

@@ -104,6 +104,7 @@ test("the submit handler falls back to the callback text for editors without cap
 	};
 	const host = {
 		firstSubmitRecorded: true,
+		deferredStartupPending: true,
 		defaultEditor: editor,
 		editor,
 		editorContainer: { children: [editor] },
@@ -121,6 +122,7 @@ test("the submit handler falls back to the callback text for editors without cap
 		},
 		isExtensionCommand: () => false,
 		flushPendingBashComponents: () => {},
+		ensureDeferredStartupComplete: async () => {},
 		renderDeferredUserInput: () => {},
 		showError: (message: string) => {
 			state.errors.push(message);
@@ -130,7 +132,7 @@ test("the submit handler falls back to the callback text for editors without cap
 	const mode = host as unknown as InteractiveModeBase;
 	InteractiveModeBase.prototype.setupEditorSubmitHandler.call(mode);
 	// No takeSubmittedDraft on this editor: the callback argument is all there is.
-	await editor.onSubmit?.("/atomic fallback");
-	assert.equal(state.editorText, "/atomic fallback");
+	await editor.onSubmit?.("/some-extension-command fallback");
+	assert.equal(state.editorText, "/some-extension-command fallback");
 	assert.deepEqual(state.errors, []);
 });

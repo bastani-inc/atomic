@@ -8,7 +8,7 @@ description: "The external benchmarks that inform Atomic model selection — Art
 Atomic's model-selection docs are keyed to two live external benchmark sources rather than a hand-maintained table of scores. This page lists each benchmark, what it measures, and **when to reference it** for a given workflow role — so the docs stay useful as new models ship without a manual rewrite every time.
 
 <Warning>
-No single benchmark is the source of truth. Use these as inputs and validate against Atomic's own workflow evals — public suites test different task distributions than real engineering loops. When Atomic's numbers disagree with a public index, Atomic's evals win. **Last reviewed: 2026-08-21.**
+No single benchmark is the source of truth. Use these as inputs and validate against Atomic's own workflow evals — public suites test different task distributions than real engineering loops. When Atomic's numbers disagree with a public index, Atomic's evals win. The DeepSWE snapshot used by the linked model-selection pages was updated August 26, 2026. **Last reviewed: 2026-09-01.**
 </Warning>
 
 ## The two sources at a glance
@@ -22,6 +22,7 @@ No single benchmark is the source of truth. Use these as inputs and validate aga
 
 DeepSWE is the closest public proxy for what Atomic actually does. Tasks are written from scratch (not scraped from PRs), so no model has seen the solutions; solutions require substantially more code than SWE-bench-style suites; and verifiers test behavior rather than implementation.
 
+- **Current snapshot:** DeepSWE v1.1, 113 tasks across 91 repositories and 5 languages, updated August 26, 2026. The site reports 26 measured models and displays 19 leaderboard rows.
 - **Metric:** `pass@1`, plus average cost per task, output tokens, and agent steps.
 - **When to reference:** default weighting for debugger, worker, and any code-writing role. This is the table that drives [Model Selection](/models/model-selection) and [Pareto Efficiency](/models/pareto-efficiency).
 - **Watch:** cost and step count, not just score — a model that passes but takes 268 steps (e.g. sonnet-5) is a poor worker even at a good pass rate.

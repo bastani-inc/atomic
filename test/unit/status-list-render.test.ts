@@ -15,6 +15,8 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { chatWidth } from "../../packages/workflows/src/tui/chat-surface.js";
 import { hexToAnsi, RESET } from "../../packages/workflows/src/tui/color-utils.js";
@@ -580,6 +582,113 @@ describe("renderStatusList — populated", () => {
 		}
 	});
 
+	test("names pending targets and singularizes exactly one omitted stage within the card width", () => {
+		const run = makeRun({
+			id: "pending-run",
+			stages: [
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+				makeStage("later", "later", "pending", { pendingStageDeliveryAvailable: true }),
+			],
+		});
+		const plain = renderStatusList([run], { width: 120, showDetailHint: false });
+		assert.ok(plain.includes("pending: review (review-a) → workflow:pending-run/review-a"));
+		assert.ok(plain.includes("pending: review (review-b) → workflow:pending-run/review-b"));
+		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
+		assert.doesNotMatch(plain, /pending-run:offline/);
+		assert.match(plain, /… 1 more pending stage/);
+		assert.doesNotMatch(plain, /… 1 more pending stages/);
+		assert.doesNotMatch(plain, /pending-run:later/);
+		for (const line of renderStatusList([run], { width: 40 }).split("\n")) assert.equal(visibleWidth(line), 40);
+	});
+
+	test("wraps exact pending-stage targets instead of rendering truncated addresses at width 60", () => {
+		const now = 1_000_000;
+		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
+		const run = makeRun({
+			id: runId,
+			name: "release-docs",
+			startedAt: now - 5_000,
+			stages: [
+				makeStage("s-build", "build", "completed", { durationMs: 1_000 }),
+				makeStage("s-verify", "verify", "running", { startedAt: now - 4_000 }),
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+			],
+		});
+		const plain = stripAnsi(
+			renderResult({ action: "status", filter: "all", runs: [], snapshots: [run] }, { plain: true, width: 60, now }),
+		);
+
+		const compact = plain.replace(/[\s│]/gu, "");
+		assert.ok(compact.includes(`workflow:${runId}/review-a`));
+		assert.ok(compact.includes(`workflow:${runId}/review-b`));
+		assert.doesNotMatch(plain, /→ [^\n│]*…/u);
+		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
+		for (const line of plain.split("\n")) assert.equal(visibleWidth(line), 60);
+	});
+	test("preserves duplicate pending-stage targets through the live graph projection", () => {
+		// Regression test for #2784: graph compaction must not strip pre-start delivery capability from status cards.
+		const runId = "live-projected-pending-run";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun({
+				id: runId,
+				name: "projected-pending",
+				stages: [
+					makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+					makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				],
+			}),
+		);
+
+		const plain = renderStatusList(localStore.graphSnapshot().runs, { width: 120, showDetailHint: false });
+
+		assert.match(plain, new RegExp(`workflow:${runId}/review-a`));
+		assert.match(plain, new RegExp(`workflow:${runId}/review-b`));
+		assert.doesNotMatch(plain, /delivery unavailable/);
+	});
+	test("keeps projected pending-stage canonical IDs exact at narrow card widths", () => {
+		const runId = "narrow-pending-run";
+		const stageId = "canonical-review-stage";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun({
+				id: runId,
+				name: "narrow-pending",
+				stages: [makeStage(stageId, "review", "pending", { pendingStageDeliveryAvailable: false })],
+			}),
+		);
+		const projected = localStore.graphSnapshot().runs;
+
+		for (let width = 20; width <= 40; width++) {
+			const plain = renderStatusList(projected, { width, showDetailHint: false });
+			const compact = plain.replace(/[\s│]/gu, "");
+			assert.ok(compact.includes(stageId), `canonical stage id must remain exact at width ${width}`);
+			assert.doesNotMatch(plain, /canonical-[^\n│]*…/u);
+			for (const line of plain.split("\n")) assert.equal(visibleWidth(line), chatWidth(width));
+		}
+	});
+	test("projected status cards suppress pending-stage targets after the run terminates", () => {
+		const runId = "terminated-projected-list";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun({
+				id: runId,
+				name: "terminated-list",
+				stages: [makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true })],
+			}),
+		);
+		localStore.recordRunEnd(runId, "failed", undefined, "boom");
+
+		const plain = renderStatusList(localStore.graphSnapshot().runs, { width: 100, showDetailHint: false });
+
+		assert.match(plain, /✗ failed/);
+		assert.match(plain, /pending: review \(review-a\) · delivery unavailable/);
+		assert.doesNotMatch(plain, new RegExp(`workflow:${runId}/review-a`));
+	});
 	test("themes every wrapped run-id row in the workflow status hint", () => {
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const run = makeRun({ id: runId, name: "narrow-hint", status: "running" });

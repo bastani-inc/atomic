@@ -33,6 +33,7 @@ export function durableStageCheckpointMetadata(
 			version: DURABLE_STAGE_TOPOLOGY_VERSION,
 			stageId: stage.id,
 			parentIds: [...stage.parentIds],
+			...(stage.intercomGroup !== undefined ? { intercomGroup: stage.intercomGroup } : {}),
 			...(stage.executionOrder !== undefined ? { order: stage.executionOrder } : {}),
 			...(sourceOrder !== undefined && sourceOrder >= 0 ? { sourceOrder } : {}),
 			...(stage.promptFootprint !== undefined ? { occurrenceKey: stage.id } : {}),

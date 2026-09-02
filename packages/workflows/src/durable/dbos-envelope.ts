@@ -140,6 +140,7 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
 						version: s.topology.version,
 						stageId: s.topology.stageId,
 						parentIds: [...s.topology.parentIds],
+						...(s.topology.intercomGroup !== undefined ? { intercomGroup: s.topology.intercomGroup } : {}),
 						...(s.topology.sourceOrder !== undefined ? { sourceOrder: s.topology.sourceOrder } : {}),
 						...(s.topology.occurrenceKey !== undefined ? { occurrenceKey: s.topology.occurrenceKey } : {}),
 						...(s.topology.status !== undefined ? { status: s.topology.status } : {}),
@@ -364,6 +365,7 @@ function stageTopology(value: WorkflowSerializableValue | undefined): DurableSta
 		typeof record.stageId !== "string" ||
 		!isStringArray(record.parentIds) ||
 		!isOptionalSourceOrder(record.sourceOrder) ||
+		(record.intercomGroup !== undefined && typeof record.intercomGroup !== "string") ||
 		(record.occurrenceKey !== undefined && typeof record.occurrenceKey !== "string") ||
 		(record.status !== undefined && !isStageLifecycleStatus(record.status))
 	)
@@ -376,6 +378,7 @@ function stageTopology(value: WorkflowSerializableValue | undefined): DurableSta
 		version: DURABLE_STAGE_TOPOLOGY_VERSION,
 		stageId: record.stageId,
 		parentIds: record.parentIds,
+		...(typeof record.intercomGroup === "string" ? { intercomGroup: record.intercomGroup } : {}),
 		...(typeof record.sourceOrder === "number" ? { sourceOrder: record.sourceOrder } : {}),
 		...(typeof record.occurrenceKey === "string" ? { occurrenceKey: record.occurrenceKey } : {}),
 		...(isStageLifecycleStatus(record.status) ? { status: record.status } : {}),

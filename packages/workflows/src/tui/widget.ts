@@ -21,6 +21,11 @@
  *  - src/tui/chat-surface.ts renderRoundedBoxLines
  */
 
+import {
+	pendingWorkflowStageStatuses,
+	type WorkflowBoundarySegmentsResolver,
+	workflowBoundarySegments,
+} from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
@@ -34,6 +39,7 @@ import { deriveGraphTheme } from "./graph-theme.js";
 import { renderRunIdentityRows } from "./run-identity-rows.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
+import { visibleWidth } from "./text-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -225,21 +231,65 @@ function activeToolLabel(run: RunSnapshot): string | undefined {
 	const details = nodes.map((node) => `${node.name} · ${node.status}`).join(", ");
 	return nodes.length === 1 ? details : `${nodes.length} tools · ${details}`;
 }
+const MAX_PENDING_WIDGET_ITEMS = 2;
 
-function metaLine(run: RunSnapshot, now: number): string {
+function pendingStageLabel(
+	run: RunSnapshot,
+	width = Number.POSITIVE_INFINITY,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
+): string | undefined {
+	const stages = pendingWorkflowStageStatuses(run, undefined, resolveBoundarySegments);
+	if (stages.length === 0) return undefined;
+	const maxItems = Math.min(MAX_PENDING_WIDGET_ITEMS, stages.length);
+
+	for (let count = maxItems; count >= 1; count--) {
+		let combinations: string[][] = [[]];
+		for (const stage of stages.slice(0, count)) {
+			const exact =
+				stage.target === undefined
+					? `${stage.name} (${stage.stageId}) · unavailable`
+					: `${stage.name} (${stage.stageId}) → ${stage.target}`;
+			const variants = stage.target === undefined ? [exact] : [exact, `${stage.name} · stage ${stage.stageId}`];
+			combinations = combinations.flatMap((labels) => variants.map((variant) => [...labels, variant]));
+		}
+
+		for (const labels of combinations) {
+			const omitted = stages.length - count;
+			const visible = omitted > 0 ? [...labels, `… ${omitted} more`] : labels;
+			const label = `pending: ${visible.join(", ")}`;
+			if (visibleWidth(label) <= width) return label;
+		}
+	}
+
+	return undefined;
+}
+
+function metaLine(
+	run: RunSnapshot,
+	now: number,
+	width = Number.POSITIVE_INFINITY,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
+): string {
 	if (run.endedAt !== undefined) {
 		return elapsedLabel(run, now);
 	}
 	if (isQuitRun(run)) return "quit · resumable via /workflow resume";
 	if (effectiveRunStatus(run) === "blocked") return "blocked · resumable via /workflow resume";
-	const parts: string[] = [modeLabel(run)];
+	const prefix: string[] = [modeLabel(run)];
 	const prog = progressLabel(run);
-	if (prog) parts.push(prog);
+	if (prog) prefix.push(prog);
+	const suffix: string[] = [];
 	const tools = activeToolLabel(run);
-	if (tools) parts.push(tools);
+	if (tools) suffix.push(tools);
 	const elapsed = elapsedLabel(run, now);
-	if (elapsed) parts.push(elapsed);
-	return parts.join(" · ");
+	if (elapsed) suffix.push(elapsed);
+	const otherParts = [...prefix, ...suffix];
+	const pendingWidth = Math.max(
+		0,
+		width - otherParts.reduce((total, part) => total + visibleWidth(part), 0) - otherParts.length * 3,
+	);
+	const pending = pendingStageLabel(run, pendingWidth, resolveBoundarySegments);
+	return [...prefix, ...(pending === undefined ? [] : [pending]), ...suffix].join(" · ");
 }
 
 // ---------------------------------------------------------------------------
@@ -290,8 +340,21 @@ function formatTitleBadges(badges: readonly FlatBandBadge[], theme: GraphTheme, 
 // Themed rendering (ANSI + Catppuccin)
 // ---------------------------------------------------------------------------
 
-function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme, allRuns: readonly RunSnapshot[]): string[] {
-	const meta = metaLine(run, now);
+function runMetaWidth(run: RunSnapshot, width: number): number {
+	const inner = Math.max(2, Math.max(32, width) - 2);
+	return Math.max(0, inner - visibleWidth(`     ${run.name} · `));
+}
+
+function themedRunLines(
+	run: RunSnapshot,
+	now: number,
+	theme: GraphTheme,
+	allRuns: readonly RunSnapshot[],
+	width: number,
+): string[] {
+	const resolveBoundarySegments: WorkflowBoundarySegmentsResolver = (runId) =>
+		workflowBoundarySegments(allRuns, runId);
+	const meta = metaLine(run, now, runMetaWidth(run, width), resolveBoundarySegments);
 	// Render the meta line in muted while running so the elapsed-time
 	// gradient stays readable; dim it once the run has terminated.
 	const metaColor = effectiveRunStatus(run) === "running" ? theme.textMuted : theme.dim;
@@ -306,11 +369,13 @@ function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme, allRun
 	});
 }
 
-function plainRunLines(run: RunSnapshot, now: number, allRuns: readonly RunSnapshot[]): string[] {
+function plainRunLines(run: RunSnapshot, now: number, allRuns: readonly RunSnapshot[], width: number): string[] {
+	const resolveBoundarySegments: WorkflowBoundarySegmentsResolver = (runId) =>
+		workflowBoundarySegments(allRuns, runId);
 	return renderRunIdentityRows({
 		runId: run.id,
 		name: run.name,
-		meta: metaLine(run, now),
+		meta: metaLine(run, now, runMetaWidth(run, width), resolveBoundarySegments),
 		glyph: statusGlyph(run, allRuns),
 	});
 }
@@ -404,7 +469,9 @@ export function buildThemedWidgetLines(
 
 	for (let i = 0; i < display.length; i++) {
 		const run = display[i]!;
-		const runLines = themed ? themedRunLines(run, now, graphTheme, snap.runs) : plainRunLines(run, now, snap.runs);
+		const runLines = themed
+			? themedRunLines(run, now, graphTheme, snap.runs, width)
+			: plainRunLines(run, now, snap.runs, width);
 		body.push(...runLines);
 		if (i < display.length - 1) body.push("");
 	}

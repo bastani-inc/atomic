@@ -31,6 +31,7 @@ function compactWorkflowToolMessage(
 }
 
 const STATUS_MESSAGE_CHAR_LIMIT = 120;
+const STATUS_PENDING_STAGE_LIMIT = 10;
 
 function truncateStatusText(text: string): string {
 	const flattened = text.replace(/\s+/g, " ").trim();
@@ -80,6 +81,9 @@ function statusAwaitingInputLine(entry: WorkflowStatusAwaitingInput): string {
 	const message = entry.message !== undefined ? ` — "${truncateStatusText(entry.message)}"` : "";
 	return `    awaiting input: ${target}${prompt}${message}`;
 }
+function statusPendingStageLine(stage: WorkflowRunStatusSummary["pendingStages"][number]): string {
+	return `    pending stage: ${stage.name} (${stage.stageId}) lifecycle=${stage.lifecycle} pendingStageDeliveryAvailable=${stage.pendingStageDeliveryAvailable} Intercom target=${stage.target ?? "unavailable"}`;
+}
 
 function statusRunIcon(
 	run: WorkflowRunStatusSummary,
@@ -116,9 +120,16 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 		lines.push(summaryLine);
 		lines.push(`    runId: ${run.runId}`);
 		for (const entry of run.awaitingInput) lines.push(statusAwaitingInputLine(entry));
+		for (const stage of run.pendingStages.slice(0, STATUS_PENDING_STAGE_LIMIT)) {
+			lines.push(statusPendingStageLine(stage));
+		}
+		if (run.pendingStages.length > STATUS_PENDING_STAGE_LIMIT) {
+			const omitted = run.pendingStages.length - STATUS_PENDING_STAGE_LIMIT;
+			lines.push(`    … ${omitted} more pending stage${omitted === 1 ? "" : "s"}; use status with runId`);
+		}
 	});
 	lines.push(
-		"hint: status with runId returns full run detail; workflow answer answers pending prompts using runId/stageId/promptId; workflow resume controls paused runs; pause/interrupt/quit also accept runId. Ordinary Intercom handles free-form workflow-stage communication at <runId>:<stageKey>: live delivery is immediate, known unstarted stages queue before their first model turn. Use Intercom ask once a reply-capable live session exists.",
+		"hint: status with runId returns full run detail; workflow answer answers pending prompts using runId/stageId/promptId; workflow resume controls paused runs; pause/interrupt/quit also accept runId. Ordinary Intercom handles free-form workflow-stage communication at workflow:<rootRunId>/<segment>[/<segment>...]: live stage delivery is immediate; a known pending stage `send` queues before its first model turn; `ask` requires a live reply-capable stage.",
 	);
 	return lines.join("\n");
 }

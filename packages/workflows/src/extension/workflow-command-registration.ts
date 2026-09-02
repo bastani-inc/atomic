@@ -162,7 +162,10 @@ async function workflowSlashHandler(
 			}
 			const inspected = inspectRun(resolved.runId, { toolControlRegistry });
 			if (!inspected.ok) return fail(`Run not found: ${target}`);
-			emitChatSurface(pi, { kind: "detail", detail: inspected.detail });
+			const owningRunStatuses = Object.fromEntries(
+				store.graphSnapshot().runs.map((run) => [run.id, run.status] as const),
+			);
+			emitChatSurface(pi, { kind: "detail", detail: inspected.detail, owningRunStatuses });
 			return;
 		}
 		const capturedRuns = store.graphSnapshot().runs;

@@ -6,6 +6,7 @@ import type {
 	DeferredCancelOptions,
 	DeferredFetchOptions,
 	DeferredHandle,
+	DocumentContent,
 	ImageContent,
 	Message,
 	Model,
@@ -161,7 +162,7 @@ function randomId(prefix: string): string {
 	return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
 
-function contentToText(content: string | Array<TextContent | ImageContent>): string {
+function contentToText(content: string | Array<TextContent | ImageContent | DocumentContent>): string {
 	if (typeof content === "string") {
 		return content;
 	}
@@ -170,12 +171,15 @@ function contentToText(content: string | Array<TextContent | ImageContent>): str
 			if (block.type === "text") {
 				return block.text;
 			}
+			if (block.type === "document") {
+				return `[document:${block.mimeType}:${block.data.length}]`;
+			}
 			return `[image:${block.mimeType}:${block.data.length}]`;
 		})
 		.join("\n");
 }
 
-function assistantContentToText(content: Array<TextContent | ThinkingContent | ToolCall>): string {
+function assistantContentToText(content: AssistantMessage["content"]): string {
 	return content
 		.map((block) => {
 			if (block.type === "text") {
@@ -183,6 +187,10 @@ function assistantContentToText(content: Array<TextContent | ThinkingContent | T
 			}
 			if (block.type === "thinking") {
 				return block.thinking;
+			}
+			// Fallback boundary markers carry no text.
+			if (block.type !== "toolCall") {
+				return "";
 			}
 			return `${block.name}:${JSON.stringify(block.arguments)}`;
 		})
@@ -401,6 +409,16 @@ async function streamWithDeltas(
 				stream.push({ type: "text_delta", contentIndex: index, delta: chunk, partial: { ...partial } });
 			}
 			stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: { ...partial } });
+			continue;
+		}
+
+		// Fallback boundary markers are replay metadata with nothing to stream, but they still
+		// occupy a slot in `partial.content` so later blocks keep their source `contentIndex`.
+		// This matches the real Anthropic provider, which pushes the wire `fallback` block into
+		// `output.content` and emits no event for it; every `contentIndex` consumer indexes
+		// `partial.content` directly, so skipping the slot would shift every later block by one.
+		if (block.type !== "toolCall") {
+			partial.content = [...partial.content, block];
 			continue;
 		}
 

@@ -23,13 +23,7 @@ export function normalizeGroup(value?: string | null): string {
 	return trimmed.length > 0 ? trimmed : DEFAULT_INTERCOM_GROUP;
 }
 
-/**
- * Resolve a stage's home group. An explicit authored group wins over the
- * workflow invocation group. A named string is trimmed; a bare `true` that
- * survives to this point (a single, non-parallel stage) mints one fresh UUID
- * for that stage. Parallel sets resolve `true` to one shared UUID upstream.
- * Without a workflow group, omission keeps the legacy env/config/default path.
- */
+/** Resolve explicit workflow groups as invocation-owned subgroups, except for the documented default escape. */
 export function resolveStageGroup(
 	stageOptions?: { group?: string | true },
 	workflowGroup?: string,
@@ -37,9 +31,20 @@ export function resolveStageGroup(
 	if (!stageOptions) return workflowGroup;
 	const group = stageOptions.group;
 	if (group === undefined) return workflowGroup;
-	if (group === true) return randomUUID();
-	const trimmed = group.trim();
-	return trimmed.length > 0 ? trimmed : undefined;
+	const authored = group === true ? randomUUID() : group.trim();
+	if (authored.length === 0) return undefined;
+	if (workflowGroup === undefined || authored === DEFAULT_INTERCOM_GROUP) return authored;
+	const owner = normalizeGroup(workflowGroup);
+	if (authored === owner || authored.startsWith(`${owner}/`)) return authored;
+	return `${owner}/${authored}`;
+}
+
+/** True when a group is the invocation group itself or one of its broker-recognizable owned subgroups. */
+export function workflowInvocationOwnsGroup(workflowGroup: string | undefined, candidate: string | undefined): boolean {
+	if (workflowGroup === undefined || candidate === undefined) return false;
+	const owner = normalizeGroup(workflowGroup);
+	const group = normalizeGroup(candidate);
+	return group === owner || group.startsWith(`${owner}/`);
 }
 
 /** Every workflow model stage has ordinary Intercom access. */
@@ -47,15 +52,13 @@ export function stageHasIntercomAccess(_stageOptions?: StageOptions): boolean {
 	return true;
 }
 
-/**
- * Whether a stage can present the workflow owner's durable pending/live route.
- * Ordinary Intercom access is necessary but not sufficient: the stage's authored
- * home group must also be the exact broker group that owns the workflow route.
- */
+/** Whether a stage can present the workflow owner's durable pending/live route. */
 export function stageCanUseWorkflowPendingStageRoute(
 	stageOptions: StageOptions | undefined,
 	workflowGroup: string | undefined,
 ): boolean {
-	if (!stageHasIntercomAccess(stageOptions) || stageOptions?.group === true) return false;
-	return normalizeGroup(resolveStageGroup(stageOptions, workflowGroup)) === normalizeGroup(workflowGroup);
+	return (
+		stageHasIntercomAccess(stageOptions) &&
+		workflowInvocationOwnsGroup(workflowGroup, resolveStageGroup(stageOptions, workflowGroup))
+	);
 }

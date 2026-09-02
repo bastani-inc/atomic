@@ -16,7 +16,7 @@ const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "icr-"));
 const socketPath = getBrokerSocketPath(process.platform, agentDir);
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
-const TARGET = `${RUN_ID}:reviewer`;
+const TARGET = `workflow:${RUN_ID}/reviewer`;
 const VICTIM_GROUP = `workflow:${RUN_ID}`;
 const ROUTE_CAPABILITY = "victim-workflow-route-capability";
 const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -150,7 +150,12 @@ async function registrationOutcome(client: WireClient, requestId: string): Promi
 
 async function forwardNextLiveMessage(owner: WireClient): Promise<BrokerMessage & { type: "pending_stage_message" }> {
 	const request = await owner.next("pending_stage_message", (frame) => frame.live === true);
-	owner.send({ type: "pending_stage_message_result", requestId: request.requestId, outcome: "forward" });
+	owner.send({
+		type: "pending_stage_message_result",
+		requestId: request.requestId,
+		outcome: "forward",
+		target: request.target,
+	});
 	return request;
 }
 
@@ -247,6 +252,253 @@ test("broker flushes registration_failed before an orderly close and ignores lat
 	assert.equal(brokerOutput.includes("write after end"), false, brokerOutput);
 });
 
+test("an invalid workflow-stage roster is rejected orderly and leaves no route registered", async () => {
+	// Regression: #2784 — this path threw into the framing reader, so the client got an abrupt
+	// socket.destroy(error) with no reason frame, and only AFTER pendingStageRoutes had already been
+	// written. Every neighbouring rejection in this handler writes registration_failed then ends.
+	const runId = "89258800-bf6c-4e44-bba8-bb298794a9c4";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	const observer = new WireClient();
+	await register(owner, "invalid-roster-owner", group);
+	await register(observer, "invalid-roster-observer", group);
+
+	owner.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "invalid-roster-capability",
+			// Foreign group: not owned by this invocation, so roster validation must refuse it.
+			stages: [
+				{
+					stageId: "reviewer-id",
+					stageName: "reviewer",
+					target: `workflow:${runId}/reviewer-id`,
+					lifecycle: "pending",
+					routeEligible: true,
+					group: "workflow:00000000-0000-4000-8000-000000000000/foreign",
+				},
+			],
+		},
+		{ type: "list", requestId: "must-not-run-after-invalid-roster" },
+	]);
+
+	assert.deepEqual(await owner.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow-stage roster",
+	});
+	await owner.closed;
+	assert.deepEqual(owner.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(owner.closeHadError, false, "an invalid roster must not destroy the socket with an error");
+	assert.equal(
+		owner.received.some(
+			(frame) => frame.type === "sessions" && frame.requestId === "must-not-run-after-invalid-roster",
+		),
+		false,
+	);
+
+	// The refused announcement must not have left a pending route behind: the observer sees no roster.
+	observer.send({ type: "list", requestId: "invalid-roster-barrier" });
+	const listed = await observer.next("sessions", (frame) => frame.requestId === "invalid-roster-barrier");
+	assert.deepEqual(listed.workflowStages ?? [], []);
+});
+
+test("a live-route registration with a non-segment stage key is refused orderly without destroying the socket", async () => {
+	// Review round 1: the canonical grammar cannot express '/' or '*' inside one path
+	// segment, but throwing into the framing reader severs the stage session's whole
+	// broker connection. Refuse with registration_failed and a graceful end, like every
+	// neighbouring rejection in this handler.
+	const runId = "7f5a6a8b-4c3d-4e2f-9a8b-5d6c7b8a9f0e";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	await register(owner, "segment-key-owner", group);
+	owner.send({ type: "register_pending_stage_route", runId, group, capability: "segment-key-capability" });
+	assert.equal(await registrationOutcome(owner, "segment-key-route-processed"), "acknowledged");
+
+	const stage = new WireClient();
+	await register(stage, "segment-key-stage", group);
+	stage.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "segment-key-live-route",
+		runId,
+		stageKeys: ["docs/update"],
+		capability: "segment-key-capability",
+	});
+	assert.deepEqual(await stage.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Live workflow-stage route keys must be single path segments",
+	});
+	await stage.closed;
+	assert.deepEqual(stage.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(stage.closeHadError, false, "a non-segment stage key must not destroy the socket with an error");
+});
+
+test("a roster target anchored at another invocation root is rejected", async () => {
+	// Regression: review round 2 — depth-faithful roster targets carry boundary-name
+	// segments, so validation anchors them at the registration's invocation group root
+	// instead of the announcing run id. A foreign root must still be rejected.
+	const rootId = "8b4c5d6e-7f80-4a9b-bc0d-1e2f3a4b5c6d";
+	const foreignRoot = "9c5d6e7f-8091-4b0a-ad1e-2f3a4b5c6d7e";
+	const childRunId = "aadb5e6f-7182-4293-9e04-3f4a5b6c7d8e";
+	const group = `workflow:${rootId}`;
+	const owner = new WireClient();
+	await register(owner, "foreign-root-owner", group);
+	owner.send({
+		type: "register_pending_stage_route",
+		runId: childRunId,
+		group,
+		capability: "foreign-root-capability",
+		stages: [
+			{
+				stageId: "reviewer-id",
+				stageName: "reviewer",
+				target: `workflow:${foreignRoot}/workflow:child/reviewer-id`,
+				lifecycle: "pending",
+				routeEligible: true,
+				group,
+			},
+		],
+	});
+	assert.deepEqual(await owner.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow-stage roster",
+	});
+	await owner.closed;
+	assert.deepEqual(owner.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(owner.closeHadError, false);
+});
+
+test("nested live stages register depth-faithful aliases derived from the announced roster", async () => {
+	// Regression: review round 2, D8 clarification — the roster publishes the depth-faithful
+	// id-form target, and the broker derives both live aliases from it so a nested stage is
+	// addressable by its depth-faithful id and name forms.
+	const rootId = "bcec6f70-91a2-4c1b-be2f-3a4b5c6d7e8f";
+	const childRunId = "cdfd7a81-a2b3-4d2c-af3a-4b5c6d7e8f9a";
+	const group = `workflow:${rootId}`;
+	// Production shape: every run announces its own random route capability.
+	const rootCapability = "nested-root-route-capability";
+	const childCapability = "nested-child-route-capability";
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const sender = new IntercomClient();
+	for (const client of [owner, stage, sender]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("nested-owner", group));
+	await stage.connect(productionRegistration("nested-stage", group));
+	await sender.connect(productionRegistration("nested-sender", group));
+
+	// Production topology registers every run in the invocation, root included; the root
+	// route is what boundary-name-form targets resolve through when no middle segment is
+	// a registered run id.
+	owner.registerPendingStageRoute(rootId, group, rootCapability);
+	// The roster's advertised target is depth-faithful; validation must anchor it at the
+	// invocation group root even though the announcing run is the nested child run.
+	owner.registerPendingStageRoute(childRunId, group, childCapability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${rootId}/workflow:child/reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	const directory = await owner.listDirectory();
+	assert.equal(directory.workflowStages[0]?.lifecycle, "pending");
+	assert.equal(directory.workflowStages.length, 1);
+	assert.equal(directory.workflowStages[0]?.target, `workflow:${rootId}/workflow:child/reviewer-id`);
+
+	stage.registerLiveWorkflowStageRoute(childRunId, ["reviewer-id", "reviewer"], childCapability);
+	await stage.listSessions();
+	const liveDirectory = await sender.listDirectory();
+	const liveEntry = liveDirectory.workflowStages[0];
+	assert.equal(liveEntry?.lifecycle, "running");
+	assert.equal(liveEntry?.sessionId, stage.sessionId);
+
+	const deliver = async (target: string, text: string): Promise<void> => {
+		const stageMessage = new Promise<Message>((resolveMessage) => {
+			stage.once("message", (_from, message) => resolveMessage(message));
+		});
+		const ownerValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+			owner.once("pending_stage_message", resolveRequest);
+		});
+		const send = sender.send(target, { text });
+		const request = await ownerValidation;
+		assert.equal(request.live, true, target);
+		owner.respondPendingStageMessage(request.requestId, {
+			outcome: "forward",
+			target: `workflow:${rootId}/workflow:child/reviewer-id`,
+		});
+		assert.equal((await send).delivered, true, target);
+		assert.equal((await stageMessage).content.text, text, target);
+	};
+	// Both depth-faithful forms resolve to the live stage session.
+	await deliver(`workflow:${rootId}/workflow:child/reviewer-id`, "id form");
+	await deliver(`workflow:${rootId}/workflow:child/reviewer`, "name form");
+});
+
+test("a nested live-route registration waits for in-flight boundary-form pendings before acking", async () => {
+	// Regression: review round 3 (P3) — a boundary-form pending settles on the root
+	// registration while the going-live stage registers under its child run id; the
+	// activation barrier must still hold the route ack until that pending settles.
+	const rootId = "dfee8b92-a3b4-4e3d-8f40-5a6b7c8d9e0f";
+	const childRunId = "e0ff9ca3-b4c5-4f4e-8051-6b7c8d9e0f1a";
+	const group = `workflow:${rootId}`;
+	const rootCapability = "barrier-root-route-capability";
+	const childCapability = "barrier-child-route-capability";
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const sender = new IntercomClient();
+	for (const client of [owner, stage, sender]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("barrier-owner", group));
+	await stage.connect(productionRegistration("barrier-stage", group));
+	await sender.connect(productionRegistration("barrier-sender", group));
+
+	owner.registerPendingStageRoute(rootId, group, rootCapability);
+	owner.registerPendingStageRoute(childRunId, group, childCapability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${rootId}/workflow:child/reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await owner.listSessions();
+
+	const ownerValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const send = sender.send(`workflow:${rootId}/workflow:child/reviewer`, { text: "in-flight boundary pending" });
+	const request = await ownerValidation;
+	assert.equal(request.live, undefined);
+
+	let routeRegistered = false;
+	const registration = stage.registerLiveWorkflowStageRoute(childRunId, ["reviewer-id", "reviewer"], childCapability);
+	void registration.then(() => {
+		routeRegistered = true;
+	});
+	await owner.listSessions();
+	assert.equal(routeRegistered, false, "the route ack must wait for the in-flight boundary-form pending to settle");
+
+	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
+	const queuedResult = await send;
+	assert.equal(queuedResult.queued, true);
+	const deadline = Date.now() + 2000;
+	while (!routeRegistered && Date.now() < deadline) {
+		await new Promise((resolveTick) => setTimeout(resolveTick, 5));
+	}
+	assert.equal(routeRegistered, true, "the route ack lands once the pending settles");
+	await registration;
+});
+
 function productionRegistration(name: string | undefined, group: string) {
 	return {
 		...(name === undefined ? {} : { name }),
@@ -258,6 +510,235 @@ function productionRegistration(name: string | undefined, group: string) {
 		lastActivity: 1,
 	};
 }
+
+test("workflow roster lists pending and running stages only inside its invocation group", async () => {
+	// Regression: #2784
+	const runId = "27840000-3528-413e-84c4-87a43e5037a2";
+	const group = `workflow:${runId}`;
+	const capability = "workflow-roster-capability";
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const member = new IntercomClient();
+	const outsider = new IntercomClient();
+	for (const client of [owner, stage, member, outsider]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("owner", group));
+	await stage.connect(productionRegistration("reviewer", group));
+	await member.connect(productionRegistration("member", group));
+	await outsider.connect(productionRegistration("outsider", "other-group"));
+
+	owner.registerPendingStageRoute(runId, group, capability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${runId}/reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowStages, [
+		{
+			kind: "workflow-stage",
+			runId,
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${runId}/reviewer-id`,
+			lifecycle: "pending",
+			group,
+		},
+	]);
+	assert.deepEqual((await outsider.listDirectory()).workflowStages, []);
+
+	stage.registerPendingStageRoute(runId, group, capability);
+	await stage.listSessions();
+	await stage.registerLiveWorkflowStageRoute(runId, ["reviewer-id", "reviewer"], capability);
+	assert.deepEqual(
+		(await member.listDirectory()).workflowStages.map(({ lifecycle, sessionId }) => ({ lifecycle, sessionId })),
+		[{ lifecycle: "running", sessionId: stage.sessionId }],
+	);
+
+	// Regression: #2784 — a stage must not appear in its own roster. The tool renders these rows
+	// under "Other visible sessions and workflow stages", so listing self there reports one session
+	// twice and invites a wasted turn addressing a target that answers "Cannot message the current
+	// session". Ordinary session rows already exclude self; the roster must match.
+	assert.deepEqual((await stage.listDirectory()).workflowStages, []);
+	assert.deepEqual(
+		(await member.listDirectory()).workflowStages.map(({ stageId, sessionId }) => ({ stageId, sessionId })),
+		[{ stageId: "reviewer-id", sessionId: stage.sessionId }],
+		"peers must still see the running stage after self-exclusion",
+	);
+
+	owner.registerPendingStageRoute(runId, group, capability, []);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowStages, []);
+});
+
+test("invocation roster control is directional across owned subgroups", async () => {
+	// Regression: #2784
+	const runId = "27840001-3528-413e-84c4-87a43e5037a2";
+	const invocation = `workflow:${runId}`;
+	const subgroupA = `${invocation}/reviewers-a`;
+	const subgroupB = `${invocation}/reviewers-b`;
+	const capability = "directional-roster-capability";
+	const owner = new IntercomClient();
+	const memberA = new IntercomClient();
+	const memberB = new IntercomClient();
+	const otherRun = new IntercomClient();
+	for (const client of [owner, memberA, memberB, otherRun]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("owner", invocation));
+	await memberA.connect(productionRegistration("member-a", subgroupA));
+	await memberB.connect(productionRegistration("member-b", subgroupB));
+	await otherRun.connect(productionRegistration("other-run", "workflow:other-run"));
+	owner.registerPendingStageRoute(runId, invocation, capability, [
+		{
+			stageId: "a",
+			stageName: "a",
+			target: `workflow:${runId}/a`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group: subgroupA,
+		},
+		{
+			stageId: "b",
+			stageName: "b",
+			target: `workflow:${runId}/b`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group: subgroupB,
+		},
+	]);
+	await owner.listSessions();
+	assert.deepEqual((await owner.listDirectory()).workflowStages.map((stage) => stage.stageId).sort(), ["a", "b"]);
+	// Regression: #2784. Pin the allow half of directory authorization so the
+	// sibling-deny assertions cannot pass through an over-restrictive predicate.
+	const ownerSubgroupDirectory = await owner.listDirectory(subgroupB);
+	assert.deepEqual(
+		ownerSubgroupDirectory.sessions.map((session) => session.name),
+		["member-b"],
+	);
+	assert.deepEqual(
+		ownerSubgroupDirectory.workflowStages.map((stage) => stage.stageId),
+		["b"],
+	);
+	assert.deepEqual(
+		(await memberA.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["a"],
+	);
+	assert.deepEqual(
+		(await memberB.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["b"],
+	);
+	assert.deepEqual((await otherRun.listDirectory()).workflowStages, []);
+	const lateralPeek = await memberA.listDirectory(subgroupB);
+	assert.deepEqual(lateralPeek.sessions, []);
+	assert.deepEqual(lateralPeek.workflowStages, []);
+
+	// Regression: #2784. Mutable membership lets the main invocation join, but
+	// must not let an isolated workflow stage or a different workflow root turn
+	// that join into lateral pending/live control.
+	await memberA.joinGroup(invocation);
+	await otherRun.joinGroup(invocation);
+	// Regression: #2784. Joining the invocation must not turn mutable membership
+	// into directory authorization for a sibling workflow subgroup.
+	assert.deepEqual(
+		(await memberA.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["a"],
+	);
+	const memberALateralPeekAfterJoin = await memberA.listDirectory(subgroupB);
+	assert.deepEqual(memberALateralPeekAfterJoin.sessions, []);
+	assert.deepEqual(memberALateralPeekAfterJoin.workflowStages, []);
+	const otherRunLateralPeekAfterJoin = await otherRun.listDirectory(subgroupB);
+	assert.deepEqual(otherRunLateralPeekAfterJoin.sessions, []);
+	assert.deepEqual(otherRunLateralPeekAfterJoin.workflowStages, []);
+	for (const [sender, messageId] of [
+		[memberA, "subgroup-pending-escalation"],
+		[otherRun, "other-root-pending-escalation"],
+	] as const) {
+		const result = await sender.send(`workflow:${runId}/b`, { messageId, text: "must stay isolated" });
+		assert.equal(result.delivered, false);
+		assert.equal(result.reason, "Target workflow run is in a different intercom group");
+	}
+
+	await memberB.registerLiveWorkflowStageRoute(runId, ["b"], capability);
+	for (const [sender, messageId] of [
+		[memberA, "subgroup-live-ask-escalation"],
+		[otherRun, "other-root-live-ask-escalation"],
+	] as const) {
+		const result = await sender.send(`workflow:${runId}/b`, {
+			messageId,
+			text: "must not ask across the boundary",
+			expectsReply: true,
+		});
+		assert.equal(result.delivered, false);
+		assert.equal(result.reason, "Target session is in a different intercom group");
+	}
+});
+
+test("an authenticated second-session replay publishes the roster without stealing pending-route ownership", async () => {
+	// Regression: #2784 — workflow store invalidation replays the process-shared owner announcement
+	// with materialized stages from a stage session, after the owner registered without a roster.
+	const runId = "27840002-3528-413e-84c4-87a43e5037a2";
+	const group = `workflow:${runId}`;
+	const capability = "second-session-roster-replay-capability";
+	const owner = new IntercomClient();
+	const replayingStage = new IntercomClient();
+	const member = new IntercomClient();
+	for (const client of [owner, replayingStage, member]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("replay-owner", group));
+	await replayingStage.connect(productionRegistration("replaying-stage", group));
+	await member.connect(productionRegistration("replay-member", group));
+
+	owner.registerPendingStageRoute(runId, group, capability);
+	await owner.listSessions();
+	replayingStage.registerPendingStageRoute(runId, group, capability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${runId}/reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await replayingStage.listSessions();
+
+	assert.deepEqual((await member.listDirectory()).workflowStages, [
+		{
+			kind: "workflow-stage",
+			runId,
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${runId}/reviewer-id`,
+			lifecycle: "pending",
+			group,
+		},
+	]);
+
+	const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const send = member.send(`workflow:${runId}/reviewer-id`, { text: "original owner must receive this" });
+	const request = await pendingRequest;
+	assert.equal(request.message.content.text, "original owner must receive this");
+	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
+	assert.equal((await send).queued, true);
+
+	await owner.disconnect();
+	assert.deepEqual((await member.listDirectory()).workflowStages, []);
+	const afterDisconnect = await member.send(`workflow:${runId}/reviewer-id`, { text: "route must be gone" });
+	assert.equal(afterDisconnect.delivered, false);
+	assert.equal(afterDisconnect.reason, "Session not found");
+});
 
 test("production clients keep the pending owner and live stage connected when a shared capability replays", async () => {
 	const runId = "13ec4058-3528-413e-84c4-87a43e5037a2";
@@ -282,7 +763,7 @@ test("production clients keep the pending owner and live stage connected when a 
 	const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 		owner.once("pending_stage_message", resolveRequest);
 	});
-	const pendingSend = sender.send(`${runId}:pending-stage`, { text: "queue before stage startup" });
+	const pendingSend = sender.send(`workflow:${runId}/pending-stage`, { text: "queue before stage startup" });
 	const request = await pendingRequest;
 	assert.equal(request.message.content.text, "queue before stage startup");
 	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
@@ -291,19 +772,19 @@ test("production clients keep the pending owner and live stage connected when a 
 		id: pendingResult.id,
 		delivered: false,
 		queued: true,
-		runId,
-		stageKey: "pending-stage",
+		target: `workflow:${runId}/pending-stage`,
 		position: 1,
 	});
 
-	for (const target of ["ordinary-unknown", "2ca70520-338b-4740-a94c-d814b08b4155:reviewer"]) {
-		const unknownResult = await sender.send(target, { text: "ordinary miss" });
-		assert.deepEqual(unknownResult, {
-			id: unknownResult.id,
-			delivered: false,
-			reason: "Session not found",
-		});
-	}
+	const ordinaryUnknown = await sender.send("ordinary-unknown", { text: "ordinary miss" });
+	assert.deepEqual(ordinaryUnknown, {
+		id: ordinaryUnknown.id,
+		delivered: false,
+		reason: "Session not found",
+	});
+	const legacyUnknown = await sender.send("2ca70520-338b-4740-a94c-d814b08b4155:reviewer", { text: "legacy miss" });
+	assert.equal(legacyUnknown.delivered, false);
+	assert.match(legacyUnknown.reason ?? "", /Legacy workflow-stage targets/);
 	for (const [stageKey, reason] of [
 		[
 			"still-pending",
@@ -317,12 +798,12 @@ test("production clients keep the pending owner and live stage connected when a 
 		const ownerValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 			owner.once("pending_stage_message", resolveRequest);
 		});
-		const ask = sender.send(`${runId}:${stageKey}`, {
+		const ask = sender.send(`workflow:${runId}/${stageKey}`, {
 			text: `blocking question for ${stageKey}`,
 			expectsReply: true,
 		});
 		const request = await ownerValidation;
-		assert.equal(request.stageKey, stageKey);
+		assert.equal(request.target, `workflow:${runId}/${stageKey}`);
 		owner.respondPendingStageMessage(request.requestId, { outcome: "refused", reason });
 		const refusal = await ask;
 		assert.equal(refusal.delivered, false);
@@ -336,10 +817,13 @@ test("production clients keep the pending owner and live stage connected when a 
 	const liveValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 		owner.once("pending_stage_message", resolveRequest);
 	});
-	const liveSendPromise = sender.send(`${runId}:reviewer`, { text: "deliver to live composite" });
+	const liveSendPromise = sender.send(`workflow:${runId}/reviewer`, { text: "deliver to live composite" });
 	const liveRequest = await liveValidation;
 	assert.equal(liveRequest.live, true);
-	owner.respondPendingStageMessage(liveRequest.requestId, { outcome: "forward" });
+	owner.respondPendingStageMessage(liveRequest.requestId, {
+		outcome: "forward",
+		target: `workflow:${runId}/reviewer-id`,
+	});
 	assert.equal((await liveSendPromise).delivered, true);
 	assert.equal((await liveMessage).content.text, "deliver to live composite");
 	const liveAskMessage = new Promise<Message>((resolveMessage) => {
@@ -348,10 +832,16 @@ test("production clients keep the pending owner and live stage connected when a 
 	const liveAskValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 		owner.once("pending_stage_message", resolveRequest);
 	});
-	const liveAskPromise = sender.send(`${runId}:reviewer-id`, { text: "live blocking question", expectsReply: true });
+	const liveAskPromise = sender.send(`workflow:${runId}/reviewer-id`, {
+		text: "live blocking question",
+		expectsReply: true,
+	});
 	const liveAskRequest = await liveAskValidation;
 	assert.equal(liveAskRequest.live, true);
-	owner.respondPendingStageMessage(liveAskRequest.requestId, { outcome: "forward" });
+	owner.respondPendingStageMessage(liveAskRequest.requestId, {
+		outcome: "forward",
+		target: `workflow:${runId}/reviewer-id`,
+	});
 	assert.equal((await liveAskPromise).delivered, true);
 	assert.equal((await liveAskMessage).content.text, "live blocking question");
 
@@ -360,6 +850,74 @@ test("production clients keep the pending owner and live stage connected when a 
 	assert.equal(sender.isConnected(), true);
 	await Promise.all([owner.listSessions(), stage.listSessions(), sender.listSessions()]);
 	assert.equal(brokerOutput.includes("write after end"), false);
+});
+
+test("an owner forward answer cannot redirect a sender's message to another invocation", async () => {
+	// Review round 1: the pending-route owner chooses the live alias for boundary-form
+	// targets, so the broker must bind its forward answer to the pending target's
+	// invocation root — otherwise an owner could deliver a sender's message into a
+	// different invocation's live stage, bypassing the sender's group authorization.
+	const rootA = "5d3d4d6f-8fa8-4c7a-bdaa-2b6d5ba2c333";
+	const rootB = "6e4e5e7a-9ab9-4d8b-9ebb-3c7e6cb3d444";
+	const groupA = `workflow:${rootA}`;
+	const groupB = `workflow:${rootB}`;
+	const capabilityA = "invocation-a-route-capability";
+	const capabilityB = "invocation-b-route-capability";
+	const ownerA = new IntercomClient();
+	const stageA = new IntercomClient();
+	const ownerB = new IntercomClient();
+	const stageB = new IntercomClient();
+	const sender = new IntercomClient();
+	for (const client of [ownerA, stageA, ownerB, stageB, sender]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await ownerA.connect(productionRegistration("invocation-a-owner", groupA));
+	await stageA.connect(productionRegistration("invocation-a-stage", groupA));
+	await ownerB.connect(productionRegistration("invocation-b-owner", groupB));
+	await stageB.connect(productionRegistration("invocation-b-stage", groupB));
+	await sender.connect(productionRegistration("invocation-cross-sender", groupA));
+
+	ownerA.registerPendingStageRoute(rootA, groupA, capabilityA);
+	ownerB.registerPendingStageRoute(rootB, groupB, capabilityB);
+	await ownerA.listSessions();
+	await ownerB.listSessions();
+	// Both stages go live so a forged forward would have a real destination.
+	await stageA.registerLiveWorkflowStageRoute(rootA, ["reviewer-id", "reviewer"], capabilityA);
+	await stageB.registerLiveWorkflowStageRoute(rootB, ["reviewer-id", "reviewer"], capabilityB);
+	await stageA.listSessions();
+	await stageB.listSessions();
+
+	const ownerAValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		ownerA.once("pending_stage_message", resolveRequest);
+	});
+	const crossSend = sender.send(`workflow:${rootA}/workflow:alpha/reviewer`, { text: "cross-invocation probe" });
+	const request = await ownerAValidation;
+	assert.equal(request.live, undefined);
+	// The route owner answers with another invocation's live stage — the broker must refuse.
+	ownerA.respondPendingStageMessage(request.requestId, {
+		outcome: "forward",
+		target: `workflow:${rootB}/reviewer-id`,
+	});
+	const refused = await crossSend;
+	assert.equal(refused.delivered, false);
+	assert.equal(refused.reason, "Session not found");
+
+	// The same-root forward the bridge legitimately produces still delivers.
+	const stageAMessage = new Promise<Message>((resolveMessage) => {
+		stageA.once("message", (_from, message) => resolveMessage(message));
+	});
+	const legitimateValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		ownerA.once("pending_stage_message", resolveRequest);
+	});
+	const legitimateSend = sender.send(`workflow:${rootA}/reviewer`, { text: "same invocation still delivers" });
+	const legitimateRequest = await legitimateValidation;
+	ownerA.respondPendingStageMessage(legitimateRequest.requestId, {
+		outcome: "forward",
+		target: `workflow:${rootA}/reviewer-id`,
+	});
+	assert.equal((await legitimateSend).delivered, true);
+	assert.equal((await stageAMessage).content.text, "same invocation still delivers");
 });
 
 test("pending-stage notifications prefer an exact live UUID and fail closed across reconnect alias trust controls", async () => {
@@ -589,7 +1147,7 @@ test("stable return addresses restore nameless and duplicate-name recipients acr
 		const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 			ownerBefore.once("pending_stage_message", resolveRequest);
 		});
-		const send = recipient.client.send(`${runId}:reviewer`, {
+		const send = recipient.client.send(`workflow:${runId}/reviewer`, {
 			text: `queued by ${recipient.key}`,
 			messageId: `return-address-${recipient.key}`,
 		});
@@ -751,7 +1309,7 @@ test("immutable workflow authority rejects a default-group attacker that presenc
 
 	sender.send({
 		type: "send",
-		to: `${runId}:reviewer`,
+		to: `workflow:${runId}/reviewer`,
 		message: { id: "after-attacker-first-rejection", timestamp: 1, content: { text: "not attacker-owned" } },
 	});
 	assert.deepEqual(await sender.next("delivery_failed"), {
@@ -786,7 +1344,7 @@ test("immutable workflow authority rejects a default-group attacker that presenc
 	const legitimateValidation = forwardNextLiveMessage(legitimateOwner);
 	sender.send({
 		type: "send",
-		to: `${runId}:reviewer`,
+		to: `workflow:${runId}/reviewer`,
 		message: { id: "after-legitimate-registration", timestamp: 2, content: { text: "legitimate owner only" } },
 	});
 	assert.equal((await legitimateValidation).message.id, "after-legitimate-registration");
@@ -833,7 +1391,7 @@ test("broker rejects cross-group pending-route impersonation before route mutati
 test("broker rejects same-group replacement of an active pending route owner", async () => {
 	const runId = "eaf2d23d-e52f-44a4-95b0-91c2109cbf34";
 	const group = `workflow:${runId}`;
-	const target = `${runId}:reviewer`;
+	const target = `workflow:${runId}/reviewer`;
 	const legitimate = new WireClient();
 	const attacker = new WireClient();
 	const sender = new WireClient();
@@ -888,7 +1446,7 @@ test("broker rejects same-group replacement of an active pending route owner", a
 test("broker rejects an attacker-first live route without the workflow capability", async () => {
 	const runId = "78c47adc-8cab-466f-a902-5d9ca2521c2c";
 	const group = `workflow:${runId}`;
-	const target = `${runId}:reviewer`;
+	const target = `workflow:${runId}/reviewer`;
 	const owner = new WireClient();
 	const attacker = new WireClient();
 	const legitimate = new WireClient();
@@ -1045,10 +1603,266 @@ test("live composite route replacement requires the old owner to disconnect", as
 	const attemptTransitionValidation = forwardNextLiveMessage(owner);
 	sender.send({
 		type: "send",
-		to: `${transitionRunId}:reviewer`,
+		to: `workflow:${transitionRunId}/reviewer`,
 		message: { id: "stage-attempt-transition", timestamp: 3, content: { text: "transition message" } },
 	});
 	assert.equal((await attemptTransitionValidation).message.id, "stage-attempt-transition");
 	await sender.next("delivered", (frame) => frame.messageId === "stage-attempt-transition");
 	assert.equal((await nextAttempt.next("message")).message.content.text, "transition message");
+});
+
+function possibleStageRowsFixture(runId: string) {
+	return [
+		{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 2 },
+		{ target: `workflow:${runId}/child-boundary/reviewer-a`, queuedCount: 0 },
+		{ target: `workflow:${runId}/**`, queuedCount: 1 },
+	];
+}
+
+test("possible future rows are listed inside the invocation, refreshed, and cleared at terminal", async () => {
+	const runId = "d7000001-0000-4000-8000-000000000001";
+	const group = `workflow:${runId}`;
+	const capability = "future-rows-capability";
+	const owner = new IntercomClient();
+	const member = new IntercomClient();
+	const outsider = new IntercomClient();
+	for (const client of [owner, member, outsider]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("future-owner", group));
+	await member.connect(productionRegistration("future-member", group));
+	await outsider.connect(productionRegistration("future-outsider", "other-group"));
+
+	owner.registerPendingStageRoute(runId, group, capability, [], possibleStageRowsFixture(runId));
+	await owner.listSessions();
+
+	// Inside the invocation group: every future row with kind, canonical target, and count.
+	assert.deepEqual((await member.listDirectory()).workflowFutureStages, [
+		{ kind: "workflow-future-stage", runId, target: `workflow:${runId}/orchestrator-*`, queuedCount: 2, group },
+		{
+			kind: "workflow-future-stage",
+			runId,
+			target: `workflow:${runId}/child-boundary/reviewer-a`,
+			queuedCount: 0,
+			group,
+		},
+		{ kind: "workflow-future-stage", runId, target: `workflow:${runId}/**`, queuedCount: 1, group },
+	]);
+	// Outside: nothing new.
+	assert.deepEqual((await outsider.listDirectory()).workflowFutureStages, []);
+
+	// Read-only peek: the invocation group shows the rows; another group does not.
+	assert.equal((await member.listDirectory(group)).workflowFutureStages.length, 3);
+	assert.equal((await member.listDirectory("other-group")).workflowFutureStages.length, 0);
+
+	// Count refresh: a re-registration replaces the stored rows wholesale.
+	owner.registerPendingStageRoute(
+		runId,
+		group,
+		capability,
+		[],
+		[
+			{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 5 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+	await owner.listSessions();
+	assert.deepEqual(
+		(await member.listDirectory()).workflowFutureStages.map(({ target, queuedCount }) => ({ target, queuedCount })),
+		[
+			{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 5 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+
+	// Terminal (D7): an empty announcement drops every future row.
+	owner.registerPendingStageRoute(runId, group, capability, [], []);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowFutureStages, []);
+});
+
+test("a nested run's re-announcement preserves the root's possible-stage rows", async () => {
+	const rootId = "d7000002-0000-4000-8000-000000000002";
+	const childRunId = "d7000003-0000-4000-8000-000000000003";
+	const group = `workflow:${rootId}`;
+	const rootCapability = "future-root-capability";
+	const childCapability = "future-child-capability";
+	const owner = new IntercomClient();
+	const child = new IntercomClient();
+	const member = new IntercomClient();
+	for (const client of [owner, child, member]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("future-root-owner", group));
+	await child.connect(productionRegistration("future-child-owner", group));
+	await member.connect(productionRegistration("future-member-2", group));
+
+	owner.registerPendingStageRoute(
+		rootId,
+		group,
+		rootCapability,
+		[],
+		[
+			{ target: `workflow:${rootId}/child-boundary/reviewer-a`, queuedCount: 1 },
+			{ target: `workflow:${rootId}/**`, queuedCount: 0 },
+		],
+	);
+	await owner.listSessions();
+	// The nested run publishes its own materialized roster without a possibleStages field;
+	// its re-announcement must not clobber the root's rows.
+	child.registerPendingStageRoute(childRunId, group, childCapability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${rootId}/child-boundary/reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await child.listSessions();
+	assert.deepEqual(
+		(await member.listDirectory()).workflowFutureStages.map(({ target, queuedCount }) => ({
+			target,
+			queuedCount,
+		})),
+		[
+			{ target: `workflow:${rootId}/child-boundary/reviewer-a`, queuedCount: 1 },
+			{ target: `workflow:${rootId}/**`, queuedCount: 0 },
+		],
+	);
+});
+
+test("future rows disappear when the owning run's owner disconnects", async () => {
+	const runId = "d7000004-0000-4000-8000-000000000004";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	const member = new IntercomClient();
+	realClients.add(member);
+	member.on("error", () => {});
+	await register(owner, "future-disconnect-owner", group);
+	await member.connect(productionRegistration("future-member-3", group));
+
+	owner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "future-disconnect-capability",
+		possibleStages: [{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 1 }],
+	});
+	// Route registration is fire-and-forget; settle with a list round-trip.
+	await member.listSessions();
+	await new Promise((resolveSettle) => setTimeout(resolveSettle, 50));
+	assert.equal((await member.listDirectory()).workflowFutureStages.length, 1);
+
+	owner.send({ type: "unregister" });
+	// The broker does not end the socket on unregister; mirror the host client, which
+	// destroys its side after writing the frame.
+	owner.socket.destroy();
+	await owner.closed;
+	await member.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowFutureStages, []);
+});
+
+test("an invalid possible-stage roster is refused orderly without registering the route", async () => {
+	const runId = "d7000005-0000-4000-8000-000000000005";
+	const foreignRunId = "d7000006-0000-4000-8000-000000000006";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	const observer = new WireClient();
+	await register(owner, "future-invalid-owner", group);
+	await register(observer, "future-invalid-observer", group);
+
+	owner.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "future-invalid-capability",
+			possibleStages: [{ target: `workflow:${foreignRunId}/orchestrator-*`, queuedCount: 0 }],
+		},
+		{ type: "list", requestId: "must-not-run-after-invalid-possible" },
+	]);
+	assert.deepEqual(await owner.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow possible-stage roster",
+	});
+	await owner.closed;
+	assert.deepEqual(owner.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(owner.closeHadError, false);
+	assert.equal(
+		owner.received.some(
+			(frame) => frame.type === "sessions" && frame.requestId === "must-not-run-after-invalid-possible",
+		),
+		false,
+	);
+
+	observer.send({ type: "list", requestId: "invalid-possible-barrier" });
+	const listed = await observer.next("sessions", (frame) => frame.requestId === "invalid-possible-barrier");
+	assert.deepEqual(listed.workflowFutureStages ?? [], []);
+
+	// Non-integer and negative counts are refused the same way.
+	const owner2 = new WireClient();
+	await register(owner2, "future-invalid-owner-2", group);
+	owner2.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "future-invalid-capability-2",
+			possibleStages: [{ target: `workflow:${runId}/orchestrator-*`, queuedCount: -1 }],
+		},
+		{ type: "list", requestId: "must-not-run-after-negative-count" },
+	]);
+	assert.deepEqual(await owner2.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow possible-stage roster",
+	});
+	await owner2.closed;
+	assert.deepEqual(owner2.rejectionLifecycle, ["registration_failed", "end", "close"]);
+});
+
+test("a member of an owned subgroup sees the invocation's future rows; a lateral member does not", async () => {
+	const runId = "d7000007-0000-4000-8000-000000000007";
+	const subgroup = `workflow:${runId}/reviewers`;
+	const owner = new IntercomClient();
+	const subgroupMember = new IntercomClient();
+	const lateral = new IntercomClient();
+	for (const client of [owner, subgroupMember, lateral]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("subgroup-future-owner", `workflow:${runId}`));
+	await subgroupMember.connect(productionRegistration("subgroup-future-member", subgroup));
+	await lateral.connect(
+		productionRegistration("subgroup-future-lateral", "workflow:d7000008-0000-4000-8000-000000000008"),
+	);
+
+	owner.registerPendingStageRoute(
+		runId,
+		`workflow:${runId}`,
+		"subgroup-future-capability",
+		[],
+		[
+			{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 1 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+	await owner.listSessions();
+
+	// D7: an owned subgroup (`workflow:<root>/<name>`) membership carries visibility.
+	const subgroupDirectory = await subgroupMember.listDirectory();
+	assert.deepEqual(
+		subgroupDirectory.workflowFutureStages.map(({ target, queuedCount }) => ({ target, queuedCount })),
+		[
+			{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 1 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+	// Another invocation's member sees nothing new.
+	assert.deepEqual((await lateral.listDirectory()).workflowFutureStages, []);
+	// Peeking the invocation group from the subgroup keeps the rows visible.
+	assert.equal((await subgroupMember.listDirectory(`workflow:${runId}`)).workflowFutureStages.length, 2);
 });

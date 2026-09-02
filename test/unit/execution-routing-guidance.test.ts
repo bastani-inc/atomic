@@ -25,7 +25,6 @@ const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}\n
 const workflowDocumentationPaths = [
 	"packages/coding-agent/docs/workflows.md",
 	"packages/coding-agent/docs/quickstart.md",
-	"packages/coding-agent/src/core/atomic-guide-command.ts",
 	"packages/workflows/README.md",
 	"docs/workflow-playbook.md",
 	"README.md",
@@ -670,7 +669,7 @@ describe("workflow-first execution routing", () => {
 			"A heartbeat is a periodic alignment check",
 			"continue a progressing run when no intervention is needed",
 			"Send free-form updates through Intercom",
-			"`<runId>:<stageKey>`",
+			"`workflow:<rootRunId>/<segment>[/<segment>...]`",
 			"delivers immediately to live stages",
 			"before their first model turn",
 			"Use `ask` once the target has a live session that can reply",
@@ -736,7 +735,7 @@ describe("workflow-first execution routing", () => {
 			"dynamic fan-out",
 			"adversarial verification",
 			"bounded loop",
-			"@bastani/workflows/builtin",
+			"@bastani/atomic/workflows/builtin",
 			"ctx.workflow(...)",
 			"Nested children",
 			"maxDepth",
@@ -842,32 +841,57 @@ describe("workflow-first execution routing", () => {
 			registered?.description.includes("Workflow invocation groups are named `workflow:<rootRunId>`"),
 			"workflow tool description should document invocation-group names",
 		);
+		expect(registered?.description).toContain("`workflow:<rootRunId>/<segment>[/<segment>...]`");
+		expect(registered?.description).toContain("`*` matches one segment and `**` any depth");
+		expect(registered?.description).toContain("`intercom list` inside the invocation group");
+		expect(registered?.description).toContain("Name and pattern sends remain sticky for every future matching stage");
+		expect(registered?.description).toContain("broadcast one authoritative update to `workflow:<rootRunId>/**`");
+		expect(registered?.description).toContain("`notInKnownSet` warning");
+		expect(registered?.description).toContain("settles undeliverable at terminal only if never delivered");
 		expect(registered?.description).toContain("answer pending prompts");
 		expect(registered?.description).toContain("pause/resume/interrupt/quit runs");
 		expect(registered?.description).not.toMatch(/workflow send|action ['"]send['"]/i);
+
 		const readme = await readRepositoryFile("packages/workflows/README.md");
-		expect(readme).toContain(`"description": ${JSON.stringify(WORKFLOW_TOOL_DESCRIPTION)},`);
+		for (const sharedGuidance of [
+			"`workflow:<rootRunId>/<segment>[/<segment>...]`",
+			"broadcast one authoritative update to `workflow:<rootRunId>/**`",
+			"`notInKnownSet` warning",
+			"use `ask` only on live targets",
+		]) {
+			expect(readme).toContain(sharedGuidance);
+		}
 	});
 
-	test("requires workflow-group discovery and membership before stage steering", async () => {
+	test("documents directional invocation control before workflow-stage steering", async () => {
+		// Regression: #2784
+		// Pin exact sentences rather than bare substrings. A substring like "owned" also matches
+		// "non-owned", so it would pass against guidance stating the opposite of this contract.
 		const routingGuidance = workflowGuidance.join("\n");
-		for (const phrase of [
-			"Before steering a stage, join its invocation group",
-			"Intercom `groups` action to discover it",
-			"Workflow invocation groups are named `workflow:<rootRunId>`",
-		]) {
-			assert.ok(routingGuidance.includes(phrase), `workflow routing guidance should include: ${phrase}`);
-		}
+		assert.ok(
+			routingGuidance.includes("workflow:<rootRunId>"),
+			"workflow routing guidance should name the invocation group",
+		);
+		assert.ok(
+			routingGuidance.includes(
+				"The invocation context may list and exactly send/ask live stages in its owned subgroups and queue send to known pending stages; this authority is directional and does not let subgroup siblings see or reach each other.",
+			),
+			"workflow routing guidance should state the directional invocation-control invariant verbatim",
+		);
 
-		for (const path of ["packages/intercom/skills/intercom/SKILL.md", "packages/coding-agent/docs/intercom.md"]) {
+		const exactGuidance: Record<string, string> = {
+			"packages/intercom/skills/intercom/SKILL.md":
+				"The invocation context can control owned isolated subgroups by exact target, while sibling subgroups and other runs remain isolated.",
+			"packages/coding-agent/docs/intercom.md":
+				"The invocation group has asymmetric exact-target control over its owned subgroups; ownership does not grant reverse or lateral access.",
+		};
+		for (const [path, sentence] of Object.entries(exactGuidance)) {
 			const guidance = await readRepositoryFile(path);
-			for (const phrase of [
-				"Before steering a stage, join its invocation group",
-				"Intercom `groups` action to discover it",
-				"Workflow invocation groups are named `workflow:<rootRunId>`",
-			]) {
-				assert.ok(guidance.includes(phrase), `${path} should include: ${phrase}`);
-			}
+			assert.ok(guidance.includes("workflow:<rootRunId>"), `${path} should name the invocation group`);
+			assert.ok(
+				guidance.includes(sentence),
+				`${path} should state the invocation-control invariant verbatim: ${sentence}`,
+			);
 		}
 	});
 
@@ -904,7 +928,7 @@ describe("workflow-first execution routing", () => {
 		for (const current of [
 			"`answer` responds only to a pending primitive or structured human-input prompt",
 			"Use `workflow resume` only for paused workflow control",
-			"ordinary Intercom to `<runId>:<stageKey>`",
+			"ordinary Intercom to",
 			"delivers immediately to live stages",
 			"delivering them before their first model turn",
 			"Use `ask` once the target has a reply-capable live session",

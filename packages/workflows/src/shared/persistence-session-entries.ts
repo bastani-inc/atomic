@@ -57,6 +57,7 @@ export interface StageStartPayload {
 	readonly name: string;
 	readonly parentIds: readonly string[];
 	readonly model?: string;
+	readonly intercomGroup?: string;
 	readonly pendingStageDeliveryAvailable?: boolean;
 	readonly replayKey?: string;
 	readonly replayedFromStageId?: string;
@@ -182,6 +183,7 @@ export function appendStageStart(api: PersistenceAPI, payload: StageStartPayload
 		name: payload.name,
 		parentIds: [...payload.parentIds],
 		...(payload.model !== undefined ? { model: payload.model } : {}),
+		...(payload.intercomGroup !== undefined ? { intercomGroup: payload.intercomGroup } : {}),
 		...(payload.pendingStageDeliveryAvailable !== undefined
 			? { pendingStageDeliveryAvailable: payload.pendingStageDeliveryAvailable }
 			: {}),

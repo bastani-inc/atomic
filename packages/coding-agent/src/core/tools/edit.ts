@@ -6,7 +6,7 @@ import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { nativeBlockResolver } from "./block-resolver.ts";
 import { EditBatchCoordinator, parallelEditBatchWarning } from "./edit-batch.ts";
 import { generateDiffString, generateUnifiedPatch, normalizeToLF, stripBom } from "./edit-diff.ts";
@@ -41,14 +41,139 @@ const editSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+// Hashline prompt origin: can1357/oh-my-pi packages/hashline/src/prompt.md @ 15b5c1397fc (MIT).
+// This file carries Atomic-maintained local modifications; see ./hashline-engine/PROVENANCE.md and ./hashline-engine/LICENSE.upstream.
 export const editToolSystemPromptContribution = Object.freeze({
 	snippet: "Apply source edits with hashline patch input",
 	guidelines: Object.freeze([
-		"hashline edit format: a header ending in ':' is followed by '+'TEXT body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
-		"Ops: 'replace N..M:' replaces original lines N..M (INCLUSIVE — line M is consumed); 'replace block N:' replaces the whole syntactic block that BEGINS on line N (Atomic resolves the closing line with a brace/indent heuristic; point N at the opener); 'delete N..M' / 'delete block N' delete (no body); 'insert before N:' / 'insert after N:' insert relative to a line; 'insert after block N:' inserts after the END of the block beginning on N; 'insert head:' / 'insert tail:' insert at file start/end. Single line: 'replace N..N:' / 'delete N'. The range is the ORIGINAL lines you touch; body length is irrelevant.",
-		"Body rows appear only under a ':' header. Every row is '+TEXT' (adds a literal line, leading whitespace kept; '+' alone adds a blank line). There is NO other body row kind — never write '-old' or a bare/context line. To keep a line, leave it out of every range. For a literal line starting with '-' or '+', prefix it: '+-x', '++x'.",
+		"hashline edit format: a header ending in ':' is followed by '+TEXT' body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
+		"Ops: 'replace N..M:' replaces original lines N..M (INCLUSIVE — line M is consumed); 'delete N..M' / 'delete block N' delete (no body); 'insert before N:' / 'insert after N:' insert relative to a line; 'insert head:' / 'insert tail:' insert at file start/end. Block ops ('replace block N:', 'delete block N', 'insert after block N:') resolve the exact syntactic node BEGINNING on N through the native Rust tree-sitter `blockRangeAt` primitive in `@bastani/atomic-natives`; the brace/indent heuristic is the fallback only when the native binding is unavailable. Single line: 'replace N..N:' / 'delete N'. The range is the ORIGINAL lines you touch; body length is irrelevant.",
+		"Body rows appear only under a ':' header and start on the NEXT line. Every row is '+TEXT' (adds a literal line, leading whitespace kept; '+' alone adds a blank line). There is NO other body row kind — never write '-old' or a bare/context line. To keep a line, leave it out of every range. For a literal line starting with '-' or '+', prefix it: '+-x', '++x'.",
+		"Block anchors: 'replace block N' resolves the outermost node BEGINNING on N. Where a language folds a decorator/annotation into its construct (Python folds `@dec` and `def` into one node; TypeScript/Java annotations also fold), anchoring at the first decorator sweeps both. Rust `#[attr]` and doc- or line-comments resolve alone; replacing there with a construct body duplicates the construct, so use explicit 'replace N..M:' to take both. Confirm the result echo: 'replace block N → resolved lines A-B (K lines)'. 'insert after block N:' takes the opener, never the closer; insert-after echoes '; body lands after line B'. Resolution fails for an unsupported language, blank/closer line, no node beginning on N, or an unparsable block; use 'replace N..M:' or 'insert after M:' instead.",
 		"Numbers refer to the ORIGINAL file and do not shift as hunks apply; they die with the call — every applied edit mints a fresh #TAG and renumbers, so anchor the next edit on the edit response or a fresh read. Parallel edit calls that share a [path#TAG] are applied as one snapshot batch. Ranges are TIGHT: cover ONLY lines whose content changes; a stale wide range shreds everything it spans. Pure additions use 'insert', never a widened 'replace'. Whole construct → 'replace block N'; lines inside it → 'replace N..M'.",
 		"On a stale-tag rejection or any surprising result: STOP and re-read before further edits. Never start or end a range mid-expression/mid-block, and never span a hunk across an elided ('…') region — read it first. Never use edit to reformat/restyle code; run the project formatter instead.",
+		[
+			"Worked examples. Original (the exact shape `read` returns):",
+			"```text",
+			"[greet.py#A1B2]",
+			"1:@cache",
+			"2:def greet(name):",
+			'3:    msg = "Hello, " + name',
+			"4:    print(msg)",
+			'5:greet("world")',
+			"```",
+			"Replace one original line with one line:",
+			"```text",
+			"[greet.py#A1B2]",
+			"replace 3..3:",
+			'+    msg = f"Hi, {name}"',
+			"```",
+			"Replace the decorated Python block (Python folds `@cache` and `def` into one node; anchoring at line 2 would keep/orphan line 1). For a Rust attribute or doc- or line-comment, use explicit `replace N..M:` to take both it and the construct:",
+			"```text",
+			"[greet.py#A1B2]",
+			"replace block 1:",
+			"+@cache",
+			"+def greet(name):",
+			'+    print(f"Hello, {name}")',
+			"```",
+			"Delete one line (no colon/body):",
+			"```text",
+			"[greet.py#A1B2]",
+			"delete 4",
+			"```",
+			"Delete a range (no colon/body):",
+			"```text",
+			"[greet.py#A1B2]",
+			"delete 3..4",
+			"```",
+			"Delete a whole block (no colon/body):",
+			"```text",
+			"[greet.py#A1B2]",
+			"delete block 2",
+			"```",
+			"Insert before a line:",
+			"```text",
+			"[greet.py#A1B2]",
+			"insert before 5:",
+			"+log()",
+			"```",
+			"Insert after a line:",
+			"```text",
+			"[greet.py#A1B2]",
+			"insert after 3:",
+			"+    print(msg)",
+			"```",
+			"Insert after the block whose opener is line 2:",
+			"```text",
+			"[greet.py#A1B2]",
+			"insert after block 2:",
+			"+audit()",
+			"```",
+			"Insert at both file ends:",
+			"```text",
+			"[greet.py#A1B2]",
+			"insert head:",
+			"+# generated",
+			"insert tail:",
+			'+greet("everyone")',
+			"```",
+			"Multi-file input:",
+			"```text",
+			"[src/a.ts#0A3B]",
+			"replace 1..1:",
+			"+export const enabled = true;",
+			"[src/b.ts#1F7C]",
+			"delete 20",
+			"```",
+		].join("\n"),
+		[
+			"Anti-patterns:",
+			"```text",
+			"# WRONG — `-` rows are rejected; bare context rows are auto-prefixed and inserted as literal content: `-` rows are not valid; the range already names the lines being changed. For a literal `-` line, write `+-…`.",
+			"replace 3..3:",
+			'    msg = "Hello"',
+			"-   print(msg)",
+			"+   return msg",
+			"# RIGHT",
+			"replace 3..3:",
+			"+   return msg",
+			"",
+			"# WRONG — body glued to its header: payload line has no preceding hunk header; body starts on the NEXT line.",
+			"replace block 238:+export const value = 1;",
+			"# RIGHT",
+			"replace block 238:",
+			"+export const value = 1;",
+			"",
+			"# WRONG — `delete N..M` has no colon and no body.",
+			"delete 2..3:",
+			"+replacement",
+			"# RIGHT: delete 2..3",
+			"",
+			"# WRONG — empty `insert` / `replace`: `insert` needs at least one `+TEXT` body row. A bodyless concrete `replace` silently deletes the range.",
+			"insert after 2:",
+			"replace 4..4:",
+			"# RIGHT — give `replace` a body; if deletion is intended, write `delete 4`.",
+			"",
+			"# WRONG — widened replace for a pure insertion can drop retyped keepers.",
+			"replace 2..4:",
+			"+kept()",
+			"+added()",
+			"# RIGHT: insert after 2:",
+			"+added()",
+			"",
+			"# WRONG — block anchor is a closer/last visible line.",
+			"insert after block 3:",
+			"+after()",
+			"# RIGHT: insert after 3:",
+			"+after()",
+			"```",
+		].join("\n"),
+		[
+			"If you remember nothing else:",
+			"1. RE-GROUND AFTER EVERY EDIT. Every apply mints a fresh #TAG and renumbers; use the edit response or a fresh read. Stale tag or surprise? STOP and re-read.",
+			"2. RANGES ARE TIGHT. Cover only lines that change; a stale wide range shreds everything it spans. Whole construct → replace block N.",
+			"3. THE BODY IS THE FINAL CONTENT. Only +TEXT rows; never -old/context lines. The range does the deleting.",
+		].join("\n"),
 	] as const),
 } as const);
 
@@ -207,12 +332,13 @@ function assertUniquePreparedPaths(prepared: readonly PreparedSection[]): void {
 	}
 }
 
-export function createEditToolDefinition(
-	cwd: string,
-	options?: EditToolOptions,
-): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
-	const ops = options?.operations ?? defaultEditOperations;
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+interface EditCwdScope {
+	readonly fs: EditFilesystem;
+	readonly batcher: EditBatchCoordinator<EditToolResultLike>;
+	applySiblingEdits(siblings: readonly { input: string }[], applySignal?: AbortSignal): Promise<EditToolResultLike>;
+}
+
+function createEditCwdScope(cwd: string, ops: EditOperations, hashlineStore: HashlineSnapshotStore): EditCwdScope {
 	const fs = new EditFilesystem(cwd, ops);
 	const patcher = new Patcher({ fs, snapshots: hashlineStore.snapshots, blockResolver: nativeBlockResolver });
 	const noopCounts = new Map<string, number>();
@@ -287,6 +413,29 @@ export function createEditToolDefinition(
 			details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine },
 		};
 	}
+	return { fs, batcher, applySiblingEdits };
+}
+
+export function createEditToolDefinition(
+	cwd: string,
+	options?: EditToolOptions,
+): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
+	const ops = options?.operations ?? defaultEditOperations;
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	// Atomic adaptation of upstream #8627 ("use ctx.cwd for cwd-sensitive tools"). Upstream's edit
+	// tool is a stateless text replacer, so it could resolve `ctx?.cwd || cwd` inline. Atomic's
+	// hashline patcher instead carries per-tool state — the `EditFilesystem`, the `Patcher`, the
+	// repeated-no-op counters, and the parallel-edit batcher — that is all keyed to one cwd.
+	// Mutating a shared cwd field would corrupt concurrent tool calls, so each distinct execution
+	// cwd gets its own scope. Callers that pass no ctx keep the factory cwd's scope unchanged.
+	const scopes = new Map<string, EditCwdScope>();
+	const scopeFor = (executionCwd: string): EditCwdScope => {
+		const existing = scopes.get(executionCwd);
+		if (existing) return existing;
+		const scope = createEditCwdScope(executionCwd, ops, hashlineStore);
+		scopes.set(executionCwd, scope);
+		return scope;
+	};
 	return {
 		name: "edit",
 		label: "edit",
@@ -296,10 +445,12 @@ export function createEditToolDefinition(
 		promptGuidelines: [...editToolSystemPromptContribution.guidelines],
 		...experimentalToolSamplingProperty(),
 		parameters: editSchema,
-		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal) {
+		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			if (typeof input.input !== "string" || input.input.trim() === "")
 				throw new Error("edit input must be a non-empty hashline script with [PATH#TAG] sections.");
-			const patch = Patch.parse(input.input, { cwd });
+			const executionCwd = ctx?.cwd || cwd;
+			const { fs, batcher, applySiblingEdits } = scopeFor(executionCwd);
+			const patch = Patch.parse(input.input, { cwd: executionCwd });
 			const paths = new Map<string, string>();
 			for (const section of patch.sections) {
 				if (section.fileHash === undefined) throw new Error(missingSnapshotTagMessage(section.path));

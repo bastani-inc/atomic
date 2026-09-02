@@ -426,3 +426,152 @@ describe("restoreAnthropicReplayThinkingBlocks", () => {
 		expect(restored).toBe(payload);
 	});
 });
+
+/**
+ * Two emission behaviors this branch added to `@bastani/pi-ai` that the ordinal model here has to
+ * track: foreign signed thinking replayed unchanged when the target model delegates model binding,
+ * and the server-side `fallback` marker serialized in place.
+ *
+ * Both fail closed today — the counts stop matching and repair is abandoned for the whole request,
+ * so no wrong bytes are sent — but the repair that should have run silently stops running.
+ *
+ * Note that a cross-model assistant is never itself repaired: `restoreAnthropicReplayThinkingBlocks`
+ * only rewrites same-model messages. What the cross-model emission predicate decides is the
+ * *ordinal mapping*, so each case below pairs a cross-model turn with a later same-model turn whose
+ * thinking is what actually gets restored.
+ */
+describe("restoreAnthropicReplayThinkingBlocks tracks the new pi-ai emission behaviors", () => {
+	function delegatingModel(): Model<Api> {
+		return { ...anthropicModel(), compat: { delegatesThinkingModelBinding: true } } as Model<Api>;
+	}
+
+	/** Same provider and API, different model — the shape `canReplayForeignThinking` accepts. */
+	function foreignModelAssistant(content: AssistantMessage["content"]): AssistantMessage {
+		return { ...assistantMessage(content), model: "claude-fable-5-1" };
+	}
+
+	const exactThinking = "exact bytes with unpaired surrogate \ud800 preserved";
+
+	function sameModelPayloadAssistant() {
+		return {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "exact bytes with replacement \ufffd preserved", signature: "sig-mine" },
+				{ type: "text", text: "visible" },
+			],
+		};
+	}
+
+	function sameModelSource(): AssistantMessage {
+		return assistantMessage([
+			{ type: "thinking", thinking: exactThinking, thinkingSignature: "sig-mine" },
+			{ type: "text", text: "visible" },
+		]);
+	}
+
+	// Claude Fable 5.1's default `thinking.display` is `"omitted"`, so its signed blocks routinely
+	// carry empty text. A delegating target replays them unchanged, so the provider emits an
+	// assistant message for that turn and the ordinals must account for it.
+	it("counts a foreign signed empty-text turn that a delegating model replays", () => {
+		const sourceMessages: Message[] = [
+			foreignModelAssistant([{ type: "thinking", thinking: "", thinkingSignature: "sig-foreign" }]),
+			sameModelSource(),
+		];
+		const payload = {
+			messages: [
+				{ role: "assistant", content: [{ type: "thinking", thinking: "", signature: "sig-foreign" }] },
+				sameModelPayloadAssistant(),
+			],
+		};
+
+		const restored = restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, delegatingModel());
+
+		const messages = (restored as { messages: Array<{ content: Array<{ thinking?: string }> }> }).messages;
+		expect(messages[1].content[0].thinking).toBe(exactThinking);
+		// The foreign turn is replayed, never rewritten.
+		expect(messages[0]).toEqual(payload.messages[0]);
+	});
+
+	// The control that keeps the fix conditional. Without delegation pi-ai drops the foreign
+	// signed-empty block, so that turn emits nothing and the payload holds one assistant. Accepting
+	// signature-only blocks unconditionally would count two and abandon repair here.
+	it("still ignores a foreign signed empty-text turn on a model that does not delegate binding", () => {
+		const sourceMessages: Message[] = [
+			foreignModelAssistant([{ type: "thinking", thinking: "", thinkingSignature: "sig-foreign" }]),
+			sameModelSource(),
+		];
+		const payload = { messages: [sameModelPayloadAssistant()] };
+
+		const restored = restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, anthropicModel());
+
+		const messages = (restored as { messages: Array<{ content: Array<{ thinking?: string }> }> }).messages;
+		expect(messages).toHaveLength(1);
+		expect(messages[0].content[0].thinking).toBe(exactThinking);
+	});
+
+	// pi-ai keeps the marker "exactly where it appeared" and drops the thinking and client-side
+	// tool calls that precede it. Both sides of the alignment check have to apply the same rule.
+	it("aligns a turn holding a fallback marker and restores only post-boundary thinking", () => {
+		const source = assistantMessage([
+			{ type: "thinking", thinking: "declined-side thinking", thinkingSignature: "sig-pre" },
+			{ type: "toolCall", id: "toolu_pre", name: "read", arguments: { path: "a.ts" } },
+			{ type: "fallback", fromModel: "claude-fable-5-1", toModel: "claude-opus-5" },
+			{ type: "thinking", thinking: exactThinking, thinkingSignature: "sig-post" },
+			{ type: "text", text: "visible" },
+		] as AssistantMessage["content"]);
+		const marker = { type: "fallback", from: { model: "claude-fable-5-1" }, to: { model: "claude-opus-5" } };
+		const payload = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						marker,
+						{ type: "thinking", thinking: "sanitized", signature: "sig-post" },
+						{ type: "text", text: "visible" },
+					],
+				},
+			],
+		};
+
+		const restored = restoreAnthropicReplayThinkingBlocks(payload, [source], delegatingModel());
+
+		expect(restored).toEqual({
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						marker,
+						{ type: "thinking", thinking: exactThinking, signature: "sig-post" },
+						{ type: "text", text: "visible" },
+					],
+				},
+			],
+		});
+	});
+
+	// The control that stops the fallback fix from degenerating into "always attempt repair". A
+	// genuinely misordered payload must still be left alone.
+	it("still fails closed when a fallback turn's payload blocks are out of order", () => {
+		const source = assistantMessage([
+			{ type: "fallback", fromModel: "claude-fable-5-1", toModel: "claude-opus-5" },
+			{ type: "thinking", thinking: exactThinking, thinkingSignature: "sig-post" },
+			{ type: "text", text: "visible" },
+		] as AssistantMessage["content"]);
+		const payload = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "visible" },
+						{ type: "thinking", thinking: "sanitized", signature: "sig-post" },
+						{ type: "fallback", from: { model: "claude-fable-5-1" }, to: { model: "claude-opus-5" } },
+					],
+				},
+			],
+		};
+
+		const restored = restoreAnthropicReplayThinkingBlocks(payload, [source], delegatingModel());
+
+		expect(restored).toBe(payload);
+	});
+});

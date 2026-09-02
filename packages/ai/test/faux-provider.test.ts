@@ -9,7 +9,7 @@ import {
 	stream,
 	Type,
 } from "../src/compat.ts";
-import type { AssistantMessageEvent, Context } from "../src/types.ts";
+import type { AssistantMessage, AssistantMessageEvent, Context } from "../src/types.ts";
 
 async function collectEvents(streamResult: ReturnType<typeof stream>): Promise<AssistantMessageEvent[]> {
 	const events: AssistantMessageEvent[] = [];
@@ -18,6 +18,21 @@ async function collectEvents(streamResult: ReturnType<typeof stream>): Promise<A
 	}
 	return events;
 }
+
+/**
+ * Builds a faux response whose content includes a public `fallback` boundary marker.
+ * `fauxAssistantMessage` only accepts streamable blocks, and `FauxResponseStep` accepts a
+ * whole `AssistantMessage`, so a hand-built content array is the minimal path to a fallback
+ * block without adding unrequested production surface.
+ */
+function fauxMessageWithContent(
+	content: AssistantMessage["content"],
+	stopReason: AssistantMessage["stopReason"] = "stop",
+): AssistantMessage {
+	return { ...fauxAssistantMessage(""), content, stopReason };
+}
+
+const fallbackBlock = { type: "fallback", fromModel: "faux-declines", toModel: "faux-continues" } as const;
 
 const registrations: Array<{ unregister: () => void }> = [];
 
@@ -602,6 +617,80 @@ describe("faux provider", () => {
 		expect(events).toContain("toolcall_delta");
 		expect(events).toContain("error");
 		expect(events).not.toContain("toolcall_end");
+	});
+
+	it("keeps content indices aligned when a fallback block sits between two text blocks", async () => {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		registration.setResponses([
+			fauxMessageWithContent([{ type: "text", text: "before" }, fallbackBlock, { type: "text", text: "after" }]),
+		]);
+
+		const events = await collectEvents(
+			stream(registration.getModel(), { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+		);
+
+		// The stream must complete rather than dying on `partial.content[index]` being undefined.
+		expect(events.map((event) => event.type)).not.toContain("error");
+		expect(events.at(-1)?.type).toBe("done");
+
+		// The fallback occupies source index 1, so the second text block stays at index 2.
+		const textStarts = events.filter((event) => event.type === "text_start");
+		expect(textStarts.map((event) => event.contentIndex)).toEqual([0, 2]);
+
+		// Every event's contentIndex must address its own block inside `partial.content`.
+		for (const event of events) {
+			if (!("contentIndex" in event)) continue;
+			const addressed = event.partial.content[event.contentIndex];
+			expect(addressed).toBeDefined();
+			expect(addressed.type).toBe(event.type.startsWith("text") ? "text" : addressed.type);
+		}
+
+		const done = events.at(-1);
+		if (done?.type !== "done") throw new Error("expected a done event");
+		expect(done.message.content).toEqual([
+			{ type: "text", text: "before" },
+			fallbackBlock,
+			{ type: "text", text: "after" },
+		]);
+	});
+
+	it("keeps tool-call indices aligned after a fallback block", async () => {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		registration.setResponses([
+			fauxMessageWithContent(
+				[
+					{ type: "thinking", thinking: "weighing" },
+					fallbackBlock,
+					{ type: "toolCall", id: "call-1", name: "echo", arguments: { text: "hi" } },
+					{ type: "text", text: "done" },
+				],
+				"toolUse",
+			),
+		]);
+
+		const events = await collectEvents(
+			stream(registration.getModel(), { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+		);
+
+		expect(events.map((event) => event.type)).not.toContain("error");
+		expect(events.at(-1)?.type).toBe("done");
+
+		// `coding-agent/src/modes/json-event.ts` throws when `partial.content[contentIndex]`
+		// is not the tool call the event announces, so assert that exact relationship here.
+		const toolCallStart = events.find((event) => event.type === "toolcall_start");
+		if (toolCallStart?.type !== "toolcall_start") throw new Error("expected a toolcall_start event");
+		expect(toolCallStart.contentIndex).toBe(2);
+		expect(toolCallStart.partial.content[toolCallStart.contentIndex]?.type).toBe("toolCall");
+
+		const textStart = events.find((event) => event.type === "text_start");
+		if (textStart?.type !== "text_start") throw new Error("expected a text_start event");
+		expect(textStart.contentIndex).toBe(3);
+
+		const done = events.at(-1);
+		if (done?.type !== "done") throw new Error("expected a done event");
+		expect(done.message.content.map((block) => block.type)).toEqual(["thinking", "fallback", "toolCall", "text"]);
 	});
 
 	it("unregisters the provider", async () => {

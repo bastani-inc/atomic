@@ -5,7 +5,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
-import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createHashlineSnapshotStore, type HashlineSnapshotStore, recordHashlineSnapshot } from "./hashline.ts";
@@ -509,17 +509,18 @@ export function createSearchToolDefinition(
 		promptSnippet: searchToolSystemPromptContribution.snippet,
 		...experimentalToolSamplingProperty(),
 		parameters: searchSchema,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx?: ExtensionContext) {
 			const resourceCtx = ctx as InternalResourceContext | undefined;
+			const executionCwd = ctx?.cwd || cwd;
 			if (params.pattern.trim() === "") throw new Error("Pattern must not be empty");
-			const targets = normalizeSearchTargets(params.paths, cwd);
+			const targets = normalizeSearchTargets(params.paths, executionCwd);
 			const ignoreCase = params.i === true || params.case === false;
 			const contextBefore = options?.contextBefore ?? 1,
 				contextAfter = options?.contextAfter ?? 3,
 				searchContext = Math.max(contextBefore, contextAfter);
 			const isSingleFileSearch =
 				targets.length === 1 &&
-				(await fsStat(resolveToCwd(targets[0]!.path, cwd))
+				(await fsStat(resolveToCwd(targets[0]!.path, executionCwd))
 					.then((stat) => stat.isFile())
 					.catch(() => false));
 			const limit = isSingleFileSearch ? SINGLE_FILE_MATCHES : DEFAULT_LIMIT;
@@ -530,7 +531,7 @@ export function createSearchToolDefinition(
 				if (target.archive || target.sqlite || target.internal) continue;
 				if (
 					target.lineRanges &&
-					!(await fsStat(resolveToCwd(target.path, cwd))
+					!(await fsStat(resolveToCwd(target.path, executionCwd))
 						.then((stat) => stat.isFile())
 						.catch(() => false))
 				) {
@@ -546,14 +547,14 @@ export function createSearchToolDefinition(
 			let remaining = limit;
 			const targetHasMatch = async (target: SearchTarget): Promise<boolean> => {
 				if (target.archive || target.sqlite || target.internal) {
-					const archive = target.archive ? resolveArchiveSelector(target.archive, cwd) : undefined;
+					const archive = target.archive ? resolveArchiveSelector(target.archive, executionCwd) : undefined;
 					const text = archive
 						? searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite
 							? searchSqliteSelector(target.sqlite, params.pattern, ignoreCase, contextBefore, contextAfter)
 							: await searchInternalSelector(
 									target.internal!,
-									cwd,
+									executionCwd,
 									params.pattern,
 									ignoreCase,
 									false,
@@ -568,7 +569,7 @@ export function createSearchToolDefinition(
 				}
 				const ranged = await searchFileLineRanges(
 					target,
-					cwd,
+					executionCwd,
 					params.pattern,
 					ignoreCase,
 					contextBefore,
@@ -589,7 +590,7 @@ export function createSearchToolDefinition(
 					},
 					signal,
 					undefined,
-					ctx,
+					ctx as never,
 				);
 				return probe.content.some((item) => item.type === "text" && item.text && item.text !== "No matches found");
 			};
@@ -600,7 +601,7 @@ export function createSearchToolDefinition(
 						!target.sqlite &&
 						!target.internal &&
 						targets.length > 1 &&
-						(await fsStat(resolveToCwd(target.path, cwd))
+						(await fsStat(resolveToCwd(target.path, executionCwd))
 							.then(() => false)
 							.catch(() => true))
 					) {
@@ -614,14 +615,14 @@ export function createSearchToolDefinition(
 					continue;
 				}
 				if (target.archive || target.sqlite || target.internal) {
-					const archive = target.archive ? resolveArchiveSelector(target.archive, cwd) : undefined;
+					const archive = target.archive ? resolveArchiveSelector(target.archive, executionCwd) : undefined;
 					let text = archive
 						? searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite
 							? searchSqliteSelector(target.sqlite, params.pattern, ignoreCase, contextBefore, contextAfter)
 							: await searchInternalSelector(
 									target.internal!,
-									cwd,
+									executionCwd,
 									params.pattern,
 									ignoreCase,
 									false,
@@ -661,7 +662,7 @@ export function createSearchToolDefinition(
 				}
 				if (
 					targets.length > 1 &&
-					(await fsStat(resolveToCwd(target.path, cwd))
+					(await fsStat(resolveToCwd(target.path, executionCwd))
 						.then(() => false)
 						.catch(() => true))
 				) {
@@ -671,7 +672,7 @@ export function createSearchToolDefinition(
 				}
 				const rangedText = await searchFileLineRanges(
 					target,
-					cwd,
+					executionCwd,
 					params.pattern,
 					ignoreCase,
 					contextBefore,
@@ -714,7 +715,7 @@ export function createSearchToolDefinition(
 					},
 					signal,
 					onUpdate,
-					ctx,
+					ctx as never,
 				);
 				results.push(result);
 				if (result.details?.matchLimitReached) internalSearchCapped = true;
@@ -759,7 +760,7 @@ export function createSearchToolDefinition(
 						renderedPages.push(
 							item.virtual
 								? raw
-								: await addHashlineHeadersToSearchOutput(raw, cwd, item.targetPath, hashlineStore),
+								: await addHashlineHeadersToSearchOutput(raw, executionCwd, item.targetPath, hashlineStore),
 						);
 				}
 				const hasMorePages = groups.slice(skip + limit).length > 0;
@@ -775,7 +776,7 @@ export function createSearchToolDefinition(
 				}
 				return {
 					content: [{ type: "text", text: content }],
-					details: buildSearchDetails(details, content, cwd, scopePath, skippedMissingPaths),
+					details: buildSearchDetails(details, content, executionCwd, scopePath, skippedMissingPaths),
 				};
 			}
 
@@ -796,7 +797,7 @@ export function createSearchToolDefinition(
 				if (text && text !== "No matches found") {
 					const renderedText = isVirtualSearchTarget(targets[0])
 						? text
-						: await addHashlineHeadersToSearchOutput(text, cwd, targets[0]?.path ?? ".", hashlineStore);
+						: await addHashlineHeadersToSearchOutput(text, executionCwd, targets[0]?.path ?? ".", hashlineStore);
 					const pagedText = `${hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText}${skipNotice}`;
 					const truncation = truncateHead(pagedText, { maxLines: Number.MAX_SAFE_INTEGER });
 					if (truncation.truncated)
@@ -811,7 +812,7 @@ export function createSearchToolDefinition(
 							details: buildSearchDetails(
 								{ ...(result.details ?? {}), truncation },
 								truncation.content,
-								cwd,
+								executionCwd,
 								scopePath,
 								skippedMissingPaths,
 							),
@@ -819,7 +820,7 @@ export function createSearchToolDefinition(
 					return {
 						...result,
 						content: [{ type: "text", text: pagedText }],
-						details: buildSearchDetails(result.details, pagedText, cwd, scopePath, skippedMissingPaths),
+						details: buildSearchDetails(result.details, pagedText, executionCwd, scopePath, skippedMissingPaths),
 					};
 				}
 				return {
@@ -827,7 +828,7 @@ export function createSearchToolDefinition(
 					details: buildSearchDetails(
 						result.details,
 						text || "No matches found",
-						cwd,
+						executionCwd,
 						scopePath,
 						skippedMissingPaths,
 					),
@@ -846,7 +847,12 @@ export function createSearchToolDefinition(
 					if (!text || text === "No matches found") return `# ${targets[index]?.path ?? "."}\n${text}`;
 					return isVirtualSearchTarget(targets[index])
 						? text
-						: await addHashlineHeadersToSearchOutput(text, cwd, targets[index]?.path ?? ".", hashlineStore);
+						: await addHashlineHeadersToSearchOutput(
+								text,
+								executionCwd,
+								targets[index]?.path ?? ".",
+								hashlineStore,
+							);
 				}),
 			);
 			const content = dedupeRenderedSearchOutput(
@@ -861,7 +867,7 @@ export function createSearchToolDefinition(
 			}
 			return {
 				content: [{ type: "text", text: output }],
-				details: buildSearchDetails(details, output, cwd, scopePath, skippedMissingPaths),
+				details: buildSearchDetails(details, output, executionCwd, scopePath, skippedMissingPaths),
 			};
 		},
 		renderCall(args, theme, context) {

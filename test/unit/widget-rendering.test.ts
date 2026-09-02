@@ -32,8 +32,13 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeStage(id: string, name: string, status: StageSnapshot["status"]): StageSnapshot {
-	return { id, name, status, parentIds: [], toolEvents: [] };
+function makeStage(
+	id: string,
+	name: string,
+	status: StageSnapshot["status"],
+	extras: Partial<StageSnapshot> = {},
+): StageSnapshot {
+	return { id, name, status, parentIds: [], toolEvents: [], ...extras };
 }
 
 function makeRun(
@@ -750,6 +755,135 @@ describe("run identity rows", () => {
 		const themedAwaiting = buildThemedWidgetLines(makeSnap([awaiting]), NULL_PI_THEME, 120);
 		assert.ok(themedAwaiting[1]?.includes(hexToAnsi(statusColor("awaiting_input", theme))));
 		assert.ok(themedAwaiting[1]?.includes(statusIcon("awaiting_input")));
+	});
+
+	test("wide widget names projected pending stages and targets while collapsed mode stays aggregate", () => {
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun("widget-run", "publish", "running", [
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+				makeStage("later", "later", "pending", { pendingStageDeliveryAvailable: true }),
+			]),
+		);
+		const snapshot = localStore.graphSnapshot();
+		const wide = renderWidgetLines(snapshot, 160).map(stripAnsi).join("\n");
+		assert.ok(wide.includes("pending: review (review-a) → workflow:widget-run/review-a"));
+		assert.match(wide, /offline \(offline\) · unavailable/);
+		assert.doesNotMatch(wide, /widget-run:offline/);
+		assert.match(wide, /… 1 more/);
+		assert.doesNotMatch(wide, /widget-run:later/);
+		const collapsed = renderWidgetLines(snapshot, 79).map(stripAnsi);
+		assert.equal(collapsed.length, 1);
+		assert.doesNotMatch(collapsed[0]!, /review|offline|widget-run/);
+	});
+
+	test("projected widget cards never advertise pending-stage targets after the run terminates", () => {
+		const runId = "terminated-widget-run";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun(runId, "terminated-widget", "running", [
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			]),
+		);
+		localStore.recordRunEnd(runId, "failed", undefined, "boom");
+
+		const wide = renderWidgetLines(localStore.graphSnapshot(), 160).map(stripAnsi).join("\n");
+
+		assert.match(wide, /failed/);
+		assert.doesNotMatch(wide, new RegExp(`workflow:${runId}/review-a`));
+	});
+	test("uses exact or labelled pending-stage identities with visible width elision", () => {
+		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
+		const run = makeRun(runId, "release-docs", "running", [
+			makeStage("s-build", "build", "completed"),
+			makeStage("s-verify", "verify", "running"),
+			makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+		]);
+		const snapshot = makeSnap([run]);
+
+		const standard = renderWidgetLines(snapshot, 100).map(stripAnsi).join("\n");
+		assert.doesNotMatch(standard, /→ [^\n│,]*…/u);
+		assert.doesNotMatch(standard, /→/u, "a target that cannot fit is omitted rather than shortened");
+		assert.match(standard, /review · stage review-a/u);
+		assert.match(standard, /… 2 more/u);
+
+		assert.deepEqual(renderWidgetLines(snapshot, 70).map(stripAnsi), [" ▾  1 background · 1 ●"]);
+
+		const wide = renderWidgetLines(snapshot, 240).map(stripAnsi).join("\n");
+		assert.match(wide, new RegExp(`workflow:${runId}/review-a`));
+		assert.match(wide, new RegExp(`workflow:${runId}/review-b`));
+		assert.doesNotMatch(wide, /→ [^\n│,]*…/u);
+		assert.match(wide, /… 1 more/u);
+	});
+	test("omits pending metadata when it cannot fit without displacing tool and elapsed labels", () => {
+		const now = 1_000_000;
+		const pendingStages = [
+			makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+		];
+		const run: RunSnapshot = {
+			...makeRun(
+				"aaaaaaaa-1111-4111-8111-111111111111",
+				"publish",
+				"running",
+				[makeStage("build", "build", "running"), ...pendingStages],
+				now - 65_000,
+			),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:fetch-release-notes",
+					name: "fetch-release-notes",
+					argsHash: "fetch-release-notes",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					attachable: false,
+				},
+				{
+					kind: "tool",
+					id: "tool:verify-artifacts",
+					name: "verify-artifacts",
+					argsHash: "verify-artifacts",
+					ordinal: 1,
+					parentIds: [],
+					status: "pending",
+					attachable: false,
+				},
+			],
+		};
+		for (let width = 111; width <= 130; width++) {
+			const rendered = buildThemedWidgetLines(makeSnap([run]), undefined, width, now)
+				.map(stripAnsi)
+				.join("\n");
+			assert.match(rendered, /2 tools · fetch-release-notes · running, verify-artifacts · pending/u);
+			assert.match(rendered, /1m 5s/u);
+			assert.doesNotMatch(rendered, /pending:/u, `pending label must stay within its width budget at ${width}`);
+		}
+	});
+
+	test("omits pending metadata when a long workflow identity leaves no room", () => {
+		const now = 1_000_000;
+		const run = makeRun(
+			"aaaaaaaa-1111-4111-8111-111111111111",
+			"implementation-review-and-release-pipeline",
+			"running",
+			[
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			],
+			now - 65_000,
+		);
+		for (let width = 80; width <= 90; width++) {
+			const rendered = buildThemedWidgetLines(makeSnap([run]), undefined, width, now)
+				.map(stripAnsi)
+				.join("\n");
+			assert.match(rendered, /1m 5s/u);
+			assert.doesNotMatch(rendered, /pending:/u, `pending label must stay within its width budget at ${width}`);
+		}
 	});
 
 	test("keeps every widget border line at the collapsed breakpoint", () => {

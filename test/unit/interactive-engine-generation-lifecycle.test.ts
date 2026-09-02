@@ -20,6 +20,23 @@ import { bunExecutable, moduleDir, sleep } from "../helpers/runtime.js";
  *    `engine_custom_open` would remount exactly the UI teardown just removed.
  */
 
+const RETAINED_GENERATION_END_CAP_MS = 5_000;
+const RETAINED_GENERATION_END_POLL_MS = 10;
+
+async function waitForRetainedGenerationEnd(client: RpcClient): Promise<void> {
+	const deadline = Date.now() + RETAINED_GENERATION_END_CAP_MS;
+	while (Date.now() < deadline) {
+		let replayed = false;
+		const unsubscribe = client.onGenerationEnded(() => {
+			replayed = true;
+		});
+		unsubscribe();
+		if (replayed) return;
+		await sleep(RETAINED_GENERATION_END_POLL_MS);
+	}
+	throw new Error(`generation end was not retained within ${RETAINED_GENERATION_END_CAP_MS} ms`);
+}
+
 function startupCustomUiClient(): RpcClient {
 	return new RpcClient({
 		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
@@ -66,8 +83,10 @@ test.sequential("a child that exits before the host subscribes still reports its
 				break;
 			}
 		}
-		await sleep(50);
-
+		// Process death and Node's child-exit callback are separate observations on
+		// loaded runners. Probe until replay begins; subscriptions do not consume the
+		// retained event, which the independent assertions below verify.
+		await waitForRetainedGenerationEnd(client);
 		const seen: InteractiveEngineGenerationEnded[] = [];
 		const unsubscribe = client.onGenerationEnded((event) => seen.push(event));
 		assert.equal(seen.length, 1, "a death that already happened must replay to a late subscriber");

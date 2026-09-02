@@ -4,6 +4,35 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Workflow-stage targets now accept only root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` paths. The legacy `<runId>:<stageKey>` form is refused with a canonical-path migration hint.
+
+### Added
+
+- Workflow-stage routing now supports literal, run-id, and glob path segments, sticky delivery to every future match, and `workflow:<rootRunId>/**` broadcast to live and future descendants until root termination.
+- `intercom list` now surfaces persisted possible future literals, patterns, and child paths with queued counts. Valid targets outside the known set queue with a `notInKnownSet` warning and produce a terminal undeliverable notification only when never delivered.
+
+### Changed
+
+- Intercom tool guidance, the bundled skill, and workflow-stage discovery documentation now teach canonical path targets, globs, sticky broadcasts, speculative acceptance, terminal settlement, and live-only asks.
+
+## [0.9.18-alpha.5] - 2026-09-01
+
+### Fixed
+
+- A failed background reconnect no longer strands a live Intercom session. The next attempt is now scheduled after reconnect ownership is released, so a session whose broker restarts recovers on its own with bounded backoff instead of staying invisible until the next explicit Intercom call. A failing explicit `intercom` or overlay connection now leaves the same background retry behind rather than cancelling the one already scheduled, and a connection attempt that fails before it suspends can no longer park a settled promise in the reconnect slot and block every later attempt.
+- Running workflow stages regain `intercom list` visibility and live routing on both their `<runId>:<stageName>` and `<runId>:<stageId>` targets after broker churn, instead of returning `Session not found` until something forced the stage session to reconnect.
+- A reconnect that fails *after* the broker accepted the connection now closes that connection before the next attempt is scheduled. Previously the failed client stayed registered, so each retry added another entry for the same session: `intercom list` showed duplicates, and a send addressed to one of the stale entries was reported as delivered while the session never received it.
+
+## [0.9.18-alpha.3] - 2026-09-01
+
+### Fixed
+
+- Recoverable Intercom disconnects during lazy initialization no longer print a misleading error and stack trace in the interactive UI; later calls still retry initialization.
+- Fixed workflow invocation control across isolated workflow-owned subgroups: canonical pending/running roster discovery, queued pending sends, immediate live send/ask with correlated replies, immutable registration-based directory authorization after mutable joins, directional sibling and cross-run isolation, and invocation-unique group names ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
+- Durably queued pending-stage sends are now rendered as successful sends instead of failed sends ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
+
 ## [0.9.17] - 2026-08-29
 
 Cumulative release of the `0.9.17-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

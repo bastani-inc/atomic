@@ -120,6 +120,10 @@ function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, 
 	if (renderer) return renderer(...args);
 	return renderIntercomToolResult(name, args);
 }
+function isRecoverableHeavyInitializationDisconnect(error: unknown): boolean {
+	return error instanceof Error && error.message === "Client disconnected";
+}
+
 export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
   const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
   let heavyAttempt: HeavyAttempt | null = null;
@@ -252,8 +256,10 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			() => undefined,
 			(error: unknown) => {
 				if (heavyAttempt?.promise === promise) heavyAttempt = null;
-				const message = error instanceof Error ? error.message : String(error);
-				console.error(`Intercom heavy initialization failed; a later call will retry: ${message}`, error);
+				if (!isRecoverableHeavyInitializationDisconnect(error)) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.error(`Intercom heavy initialization failed; a later call will retry: ${message}`, error);
+				}
 			},
 		);
 		return promise;
@@ -478,7 +484,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
-For send, live session names and exact full session IDs remain supported. For a known workflow stage, use the exact \`<runId>:<stageKey>\` target; send messages to pending stages queue automatically.
+For send, live session names and exact full session IDs remain supported. Workflow-stage targets use \`workflow:<rootRunId>/<segment>[/<segment>...]\`; \`*\` matches one segment and \`**\` any depth. Use \`intercom list\` inside the invocation group to see live, pending, and possible future targets with queued counts. \`workflow:<rootRunId>/**\` reaches live stages now and remains sticky for every future stage until root termination; valid targets outside the known set queue with a \`notInKnownSet\` warning and settle undeliverable at terminal only if never delivered. Use \`ask\` only on live targets.
 Usage:
   intercom({ action: "list" })                    → List sessions in your group
   intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
@@ -494,7 +500,7 @@ Usage:
 		promptSnippet: "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
 		parameters: Type.Object({
 			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'" }),
-			to: Type.Optional(Type.String({ description: "Live session name, exact full session ID, or exact `<runId>:<stageKey>` for a known workflow stage; send messages to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')" })),
+			to: Type.Optional(Type.String({ description: "Live session name, exact full session ID, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send queues sticky pending/future delivery and `workflow:<rootRunId>/**` broadcasts to live and future stages; use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')" })),
 			message: Type.Optional(Type.String({ description: "Message to send (for 'send', 'ask', or 'reply' action)" })),
 			attachments: Type.Optional(Type.Array(Type.Object({
 				type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),

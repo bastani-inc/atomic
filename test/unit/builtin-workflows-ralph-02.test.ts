@@ -245,6 +245,8 @@ describe("ralph", () => {
 		const reviewerBOptions = ctx.calls.taskOptions["reviewer-b"]?.[0];
 		assert.equal(reviewerBOptions?.model, "openai-codex/gpt-5.6-sol:xhigh");
 		assert.deepEqual(ctx.calls.parallel[0], ["reviewer-a", "reviewer-b"]);
+		// Regression: #2784 — Ralph reviewer isolation is authored and becomes invocation-owned at runtime.
+		assert.equal(ctx.calls.parallelOptions[0]?.group, "ralph-reviewers-iter-1");
 		// Dominated models (benchmark 2026-07-02) must stay out of the chain.
 		const reviewerBFallbacks = reviewerBOptions?.fallbackModels ?? [];
 		assert.equal(reviewerBFallbacks.includes("openrouter/sakana/fugu-ultra:high"), true);

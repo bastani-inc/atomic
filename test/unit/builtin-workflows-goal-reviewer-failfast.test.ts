@@ -37,6 +37,8 @@ describe("goal reviewer failure fail-fast", () => {
 		assert.match(String(result.remaining_work), /Recover reviewer execution/);
 		assert.match(String(result.remaining_work), /github-copilot/);
 
+		// Regression: #2784 — Goal preserves reviewer isolation through an invocation-owned authored subgroup.
+		assert.equal(ctx.calls.parallelOptions[0]?.group, "goal-reviewers-turn-1");
 		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			status: string;
 			receipts: readonly unknown[];

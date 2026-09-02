@@ -120,6 +120,21 @@ Add to `keybindings.json`:
 }
 ```
 
+## Zed (Integrated Terminal)
+
+Add these key bindings to your Zed `keymap.json`:
+
+```json
+{
+  "context": "Terminal",
+  "bindings": {
+    "shift-enter": ["terminal::SendText", "\u001b[13;2u"],
+    "ctrl--": ["terminal::SendText", "\u001b[45;5u"],
+    "ctrl-alt-]": ["terminal::SendText", "\u001b[93;7u"]
+  }
+}
+```
+
 ## Windows Terminal
 
 Add to `settings.json` (CTRL+SHIFT+, or Settings → Open JSON file) to forward the modified Enter keys Atomic uses:

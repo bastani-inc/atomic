@@ -23,7 +23,6 @@ type PromptTurnContext = {
 		resourceLoader: { getThemes: () => { themes: [] } };
 		extensionRunner: Record<string, never>;
 		modelRegistry: { getError: () => string | undefined };
-		_tryExecuteBuiltinSlashCommand: (text: string) => Promise<boolean>;
 		_tryExecuteExtensionCommand: (text: string) => Promise<boolean>;
 	};
 	settingsManager: { getClearOnShrink: () => boolean };
@@ -90,8 +89,7 @@ function createContext(overrides: {
 			resourceLoader: { getThemes: () => ({ themes: [] as [] }) },
 			extensionRunner: {},
 			modelRegistry: { getError: () => undefined },
-			_tryExecuteBuiltinSlashCommand: vi.fn(async () => overrides.slashHandled === true),
-			_tryExecuteExtensionCommand: vi.fn(async () => false),
+			_tryExecuteExtensionCommand: vi.fn(async () => overrides.slashHandled === true),
 		},
 		settingsManager: { getClearOnShrink: () => false },
 		themeController: {

@@ -1,4 +1,6 @@
 import { inspectRun, type RunDetail } from "../runs/background/status.js";
+import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
+import { store } from "../shared/store.js";
 import type { WorkflowInputValues } from "../shared/types.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
 import { renderRunDetail } from "../tui/run-detail.js";
@@ -42,7 +44,20 @@ export function emitTerminalRunDetailSurface(
 ): void {
 	const inspected = inspectRun(result.runId);
 	const detail = inspected.ok ? inspected.detail : fallbackRunDetailFromResult(workflowName, inputs, result);
-	emitChatSurface(pi, { kind: "detail", detail }, { content: renderRunDetail(detail, { width: 100 }) });
+	const graphRuns = store.graphSnapshot().runs;
+	const owningRunStatuses = Object.fromEntries(graphRuns.map((run) => [run.id, run.status] as const));
+	const owningRunStatus = (runId: string) => owningRunStatuses[runId];
+	emitChatSurface(
+		pi,
+		{ kind: "detail", detail, owningRunStatuses },
+		{
+			content: renderRunDetail(detail, {
+				width: 100,
+				owningRunStatus,
+				resolveBoundarySegments: (runId) => workflowBoundarySegments(graphRuns, runId),
+			}),
+		},
+	);
 }
 
 export function formatWorkflowResourceLoadWarning(error: unknown): string {

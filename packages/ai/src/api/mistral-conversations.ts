@@ -837,6 +837,11 @@ function toChatMessages(messages: Message[], supportsImages: boolean): MistralCh
 					}
 					continue;
 				}
+				// Anthropic server-side fallback markers have no Mistral representation and carry no
+				// content; skip them rather than mis-serializing them as a tool call.
+				if (block.type !== "toolCall") {
+					continue;
+				}
 				toolCalls.push({
 					id: block.id,
 					type: "function",

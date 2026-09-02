@@ -21,6 +21,11 @@
  *  - src/tui/run-detail.ts per-run drill-down surface (unchanged)
  */
 
+import type {
+	PendingWorkflowRunStatusResolver,
+	WorkflowBoundarySegmentsResolver,
+} from "../shared/pending-stage-status.js";
+import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
@@ -47,6 +52,10 @@ export interface RenderStatusListOpts {
 	width?: number;
 	/** Point-in-time run collection used to attribute hidden child prompts. */
 	allRuns?: readonly RunSnapshot[];
+	/** Owning-run lifecycle authority for expanded child-run stages. */
+	owningRunStatus?: PendingWorkflowRunStatusResolver;
+	/** Depth-faithful boundary-chain authority for advertised pending-stage targets. */
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver;
 	/**
 	 * Emit-time indicator status per run id, taking precedence over deriving
 	 * from `allRuns`. Lets persisted payloads (e.g. the `/workflow status`
@@ -72,6 +81,8 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	// The list shows active + recently-ended runs together. Sorting:
 	// active first, then ended, each bucket by startedAt desc.
 	const sorted = sortRuns(runs);
+	const resolveBoundarySegments: WorkflowBoundarySegmentsResolver =
+		opts.resolveBoundarySegments ?? ((runId) => workflowBoundarySegments(runs, runId));
 
 	// Header counts span the whole snapshot, not just the display window.
 	const counts = countBuckets(runs);
@@ -86,7 +97,16 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 		for (let i = 0; i < sorted.length; i++) {
 			if (i > 0) body.push("");
 			body.push(
-				...renderRunEntry(sorted[i]!, now, cardWidth, opts.theme, opts.allRuns ?? runs, opts.indicatorStatuses),
+				...renderRunEntry(
+					sorted[i]!,
+					now,
+					cardWidth,
+					opts.theme,
+					opts.allRuns ?? runs,
+					opts.indicatorStatuses,
+					opts.owningRunStatus,
+					resolveBoundarySegments,
+				),
 			);
 		}
 	}
@@ -114,6 +134,8 @@ function renderRunEntry(
 	theme: GraphTheme | undefined,
 	allRuns: readonly RunSnapshot[],
 	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
@@ -159,7 +181,80 @@ function renderRunEntry(
 	const metaSeg = theme ? `${dim}${meta}${reset}` : meta;
 	const metaLine = `   ${modeSeg}    ${strip}${" ".repeat(gap)}${metaSeg} `;
 
-	return [...identityRows, identity, metaLine];
+	return [
+		...identityRows,
+		identity,
+		metaLine,
+		...pendingStageLines(run, interior, theme, resolveOwningRunStatus, resolveBoundarySegments),
+	];
+}
+
+const MAX_PENDING_STAGE_ROWS = 3;
+function pendingStageIdentityLines(
+	stage: { readonly name: string; readonly stageId: string },
+	width: number,
+	suffix = "",
+): string[] {
+	const full = `   pending: ${stage.name} (${stage.stageId})${suffix}`;
+	if (visibleWidth(full) <= width) return [full];
+
+	// At narrow widths, drop the display-name decoration before wrapping the
+	// canonical id. The id is the duplicate-name disambiguator and must never
+	// be replaced by a partial, ellipsized identity.
+	const labelledPrefix = "   pending: ";
+	const prefix = visibleWidth(labelledPrefix) < width ? labelledPrefix : width > 3 ? "   " : "";
+	const continuation = width > 3 ? "   " : "";
+	const rows = wrapIdentifierLines(stage.stageId, width, prefix, continuation).map(
+		({ prefix: rowPrefix, chunk }) => `${rowPrefix}${chunk}`,
+	);
+	if (suffix.length === 0) return rows;
+	const last = rows.at(-1)!;
+	if (visibleWidth(`${last}${suffix}`) <= width) rows[rows.length - 1] = `${last}${suffix}`;
+	else rows.push(`${continuation}${suffix.trim()}`);
+	return rows;
+}
+
+function pendingStageLines(
+	run: RunSnapshot,
+	width: number,
+	theme: GraphTheme | undefined,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
+): string[] {
+	const stages = pendingWorkflowStageStatuses(run, resolveOwningRunStatus, resolveBoundarySegments);
+	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).flatMap((stage) => {
+		const prefix = `   pending: ${stage.name} (${stage.stageId})`;
+		if (stage.target === undefined) {
+			const unavailable = `${prefix} · delivery unavailable`;
+			if (visibleWidth(unavailable) <= width) return [pendingStageLine(unavailable, width, theme)];
+			return [
+				...pendingStageIdentityLines(stage, width).map((line) => pendingStageLine(line, width, theme)),
+				pendingStageLine("   delivery unavailable", width, theme),
+			];
+		}
+
+		const inline = `${prefix} → ${stage.target}`;
+		if (visibleWidth(inline) <= width) return [pendingStageLine(inline, width, theme)];
+
+		const labelRows = pendingStageIdentityLines(stage, width, " →").map((line) =>
+			pendingStageLine(line, width, theme),
+		);
+		const targetRows = wrapIdentifierLines(stage.target, width, "   ", "   ").map(({ prefix, chunk }) =>
+			pendingStageLine(`${prefix}${chunk}`, width, theme),
+		);
+		return [...labelRows, ...targetRows];
+	});
+	if (stages.length > MAX_PENDING_STAGE_ROWS) {
+		const omitted = stages.length - MAX_PENDING_STAGE_ROWS;
+		const line = truncateToWidth(`   … ${omitted} more pending stage${omitted === 1 ? "" : "s"}`, width, ELLIPSIS);
+		visible.push(theme === undefined ? line : `${hexToAnsi(theme.dim)}${line}${RESET}`);
+	}
+	return visible;
+}
+
+function pendingStageLine(line: string, width: number, theme: GraphTheme | undefined): string {
+	const visible = truncateToWidth(line, width, ELLIPSIS);
+	return theme === undefined ? visible : `${hexToAnsi(theme.textMuted)}${visible}${RESET}`;
 }
 
 function runAccent(run: RunSnapshot, theme: GraphTheme | undefined, indicatorStatus: RunIndicatorStatus): string {

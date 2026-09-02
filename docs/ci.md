@@ -17,8 +17,10 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
 └─ publish.yml
    ├─ integrity: tag package version = tag and tag commit subject = `Release <tag>`
    ├─ native-artifacts: eight-platform NAPI matrix
-   ├─ linux-binary-smoke + windows-binary-smoke + alpine-binary-smoke
-   ├─ build: shrinkwrap/package validation, eight archives, ten npm tarballs,
+   ├─ linux-binary-smoke + windows-binary-smoke (also builds both shipped
+   │  Windows archives on the Windows runner) + alpine-binary-smoke
+   ├─ build: shrinkwrap/package validation, six non-Windows archives plus the
+   │  Windows-built pair, ten npm tarballs,
    │  release notes, and SHA256SUMS
    ├─ stage-github-release: create a verified draft and refuse to change a
    │  published release

@@ -3,7 +3,18 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
-import type { SessionInfo, Message, Attachment, GroupSummary, SupervisorRegistration } from "../types.js";
+import type {
+	SessionInfo,
+	Message,
+	Attachment,
+	GroupSummary,
+	SupervisorRegistration,
+	SessionDirectory,
+	WorkflowStageRosterAnnouncement,
+	WorkflowStageRosterEntry,
+	WorkflowFutureStageRosterEntry,
+	WorkflowPossibleStageAnnouncement,
+} from "../types.js";
 import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
@@ -29,20 +40,29 @@ export interface SendResult {
   queued?: boolean;
   reason?: string;
 	reasonCode?: "message_id_conflict";
-  runId?: string;
-  stageKey?: string;
+	target?: string;
   position?: number;
+  /** D4 speculative accept: the sticky target is not in the run's persisted possible-stage set. */
+  notInKnownSet?: true;
 }
 
 export interface PendingStageMessageRequest {
 	readonly requestId: string;
 	readonly from: SessionInfo;
 	readonly runId: string;
-	readonly stageKey: string;
+	readonly target: string;
 	readonly message: Message;
 	readonly senderRegistrationName?: string;
 	readonly senderReturnAddress?: string;
 	readonly live?: boolean;
+}
+
+/** Broker → route owner: the live stage targets a sticky broadcast was actually written to. */
+export interface StickyLiveDeliveredNotice {
+	readonly runId: string;
+	readonly messageId: string;
+	readonly target: string;
+	readonly deliveredTargets: readonly string[];
 }
 
 export interface PendingStageNotificationRequest {
@@ -52,9 +72,14 @@ export interface PendingStageNotificationRequest {
 }
 
 export type PendingStageMessageResult =
-	| { readonly outcome: "queued"; readonly position: number }
+	| {
+			readonly outcome: "queued";
+			readonly position: number;
+			readonly notInKnownSet?: true;
+			readonly forwardTargets?: readonly string[];
+	  }
 	| { readonly outcome: "delivered" }
-	| { readonly outcome: "forward" }
+	| { readonly outcome: "forward"; readonly target: string }
 	| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" };
 export interface PresenceUpdates {
   name?: string;
@@ -74,6 +99,45 @@ function toError(error: unknown): Error {
 }
 
 
+
+function isWorkflowFutureStageRosterEntries(value: unknown): value is WorkflowFutureStageRosterEntry[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				typeof entry === "object" &&
+				entry !== null &&
+				(entry as WorkflowFutureStageRosterEntry).kind === "workflow-future-stage" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).runId === "string" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).target === "string" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).queuedCount === "number" &&
+				Number.isInteger((entry as WorkflowFutureStageRosterEntry).queuedCount) &&
+				(entry as WorkflowFutureStageRosterEntry).queuedCount >= 0 &&
+				typeof (entry as WorkflowFutureStageRosterEntry).group === "string",
+		)
+	);
+}
+function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRosterEntry[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				typeof entry === "object" &&
+				entry !== null &&
+				(entry as WorkflowStageRosterEntry).kind === "workflow-stage" &&
+				typeof (entry as WorkflowStageRosterEntry).runId === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).stageId === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).stageName === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).target === "string" &&
+				((entry as WorkflowStageRosterEntry).lifecycle === "pending" ||
+					(entry as WorkflowStageRosterEntry).lifecycle === "running") &&
+				typeof (entry as WorkflowStageRosterEntry).group === "string" &&
+				((entry as WorkflowStageRosterEntry).sessionId === undefined ||
+					typeof (entry as WorkflowStageRosterEntry).sessionId === "string"),
+		)
+	);
+}
+
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
   private socket: net.Socket | null = null;
@@ -83,7 +147,7 @@ export class IntercomClient extends EventEmitter {
   private _messageSource: Message["source"] | undefined;
   private pendingSends = new PendingSendRegistry();
   private pendingGroupLists = new Map<string, { resolve: (groups: GroupSummary[]) => void; reject: (error: Error) => void }>();
-  private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  private pendingLists = new Map<string, { resolve: (directory: SessionDirectory) => void; reject: (e: Error) => void }>();
   private pendingPresence = new Map<string, {
     resolve: (group: string) => void;
     reject: (error: Error) => void;
@@ -329,19 +393,26 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "sessions": {
-        const { requestId, sessions } = brokerMessage;
-        if (typeof requestId !== "string" || !Array.isArray(sessions) || !sessions.every(isSessionInfo)) {
-          throw new Error("Invalid sessions message");
-        }
-        const pending = this.pendingLists.get(requestId);
-        if (!pending) {
-          // Late list responses can still arrive after the caller has already timed out.
-          return;
-        }
-        this.pendingLists.delete(requestId);
-        pending.resolve(sessions);
-        break;
-      }
+		const { requestId, sessions, workflowStages, workflowFutureStages } = brokerMessage;
+		if (
+			typeof requestId !== "string" ||
+			!Array.isArray(sessions) ||
+			!sessions.every(isSessionInfo) ||
+			(workflowStages !== undefined && !isWorkflowStageRosterEntries(workflowStages)) ||
+			(workflowFutureStages !== undefined && !isWorkflowFutureStageRosterEntries(workflowFutureStages))
+		) {
+			throw new Error("Invalid sessions message");
+		}
+		const pending = this.pendingLists.get(requestId);
+		if (!pending) return;
+		this.pendingLists.delete(requestId);
+		pending.resolve({
+			sessions,
+			workflowStages: workflowStages ?? [],
+			workflowFutureStages: workflowFutureStages ?? [],
+		});
+		break;
+	  }
       case "groups": {
         const { requestId, groups } = brokerMessage;
         if (
@@ -384,14 +455,14 @@ export class IntercomClient extends EventEmitter {
         break;
       }
 		case "pending_stage_message": {
-			const { requestId, from, senderRegistrationName, senderReturnAddress, runId, stageKey, message, live } = brokerMessage;
+			const { requestId, from, senderRegistrationName, senderReturnAddress, runId, target, message, live } = brokerMessage;
 			if (
 				typeof requestId !== "string" ||
 				!isSessionInfo(from) ||
 				(senderRegistrationName !== undefined && typeof senderRegistrationName !== "string") ||
 				(senderReturnAddress !== undefined && typeof senderReturnAddress !== "string") ||
 				typeof runId !== "string" ||
-				typeof stageKey !== "string" ||
+				typeof target !== "string" ||
 				!isMessage(message) ||
 				(live !== undefined && typeof live !== "boolean")
 			) {
@@ -403,7 +474,7 @@ export class IntercomClient extends EventEmitter {
 				...(senderRegistrationName === undefined ? {} : { senderRegistrationName }),
 				...(senderReturnAddress === undefined ? {} : { senderReturnAddress }),
 				runId,
-				stageKey,
+				target,
 				message,
 				...(live === true ? { live: true } : {}),
 			} satisfies PendingStageMessageRequest);
@@ -421,6 +492,25 @@ export class IntercomClient extends EventEmitter {
 			} satisfies PendingStageNotificationRequest);
 			break;
 		}
+		case "sticky_live_delivered": {
+			const { runId, messageId, target, deliveredTargets } = brokerMessage;
+			if (
+				typeof runId !== "string" ||
+				typeof messageId !== "string" ||
+				typeof target !== "string" ||
+				!Array.isArray(deliveredTargets) ||
+				!deliveredTargets.every((entry) => typeof entry === "string")
+			) {
+				throw new Error("Invalid sticky live-delivery event");
+			}
+			this.emit("sticky_live_delivered", {
+				runId,
+				messageId,
+				target,
+				deliveredTargets,
+			} satisfies StickyLiveDeliveredNotice);
+			break;
+		}
       case "live_workflow_stage_route_registered": {
         const { requestId } = brokerMessage;
         if (typeof requestId !== "string") throw new Error("Invalid live workflow-stage route registration");
@@ -431,18 +521,25 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "queued": {
-        const { messageId, attemptId, runId, stageKey, position } = brokerMessage;
+		const { messageId, attemptId, target, position, notInKnownSet } = brokerMessage;
         if (
           typeof messageId !== "string" ||
           (attemptId !== undefined && typeof attemptId !== "string") ||
-          typeof runId !== "string" ||
-          typeof stageKey !== "string" ||
+			typeof target !== "string" ||
           typeof position !== "number" ||
-          position < 1
+          position < 1 ||
+			(notInKnownSet !== undefined && notInKnownSet !== true)
         ) {
           throw new Error("Invalid queued message");
         }
-        const result = { id: messageId, delivered: false, queued: true, runId, stageKey, position } as const;
+		const result = {
+			id: messageId,
+			delivered: false,
+			queued: true,
+			target,
+			position,
+			...(notInKnownSet === true ? { notInKnownSet: true as const } : {}),
+		} as const;
         if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
         else this.pendingSends.resolve(messageId, attemptId, result);
         break;
@@ -602,38 +699,41 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-  listSessions(group?: string): Promise<SessionInfo[]> {
-    let socket: net.Socket;
-    try {
-      socket = this.requireActiveSocket();
-    } catch (error) {
-      return Promise.reject(toError(error));
-    }
-    return new Promise((resolve, reject) => {
-      const requestId = randomUUID();
-      const wrappedResolve = (sessions: SessionInfo[]) => {
-        clearTimeout(timeout);
-        resolve(sessions);
-      };
-      const wrappedReject = (error: Error) => {
-        clearTimeout(timeout);
-        reject(error);
-      };
-      const timeout = setTimeout(() => {
-        if (this.pendingLists.has(requestId)) {
-          this.pendingLists.delete(requestId);
-          wrappedReject(new Error("List sessions timeout"));
-        }
-      }, 5000);
-      this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
-      try {
-        writeMessage(socket, group === undefined ? { type: "list", requestId } : { type: "list", requestId, group });
-      } catch (error) {
-        clearTimeout(timeout);
-        this.pendingLists.delete(requestId);
-        reject(toError(error));
-      }
-    });
+  async listSessions(group?: string): Promise<SessionInfo[]> {
+	return (await this.listDirectory(group)).sessions;
+  }
+
+  listDirectory(group?: string): Promise<SessionDirectory> {
+	let socket: net.Socket;
+	try {
+		socket = this.requireActiveSocket();
+	} catch (error) {
+		return Promise.reject(toError(error));
+	}
+	return new Promise((resolve, reject) => {
+		const requestId = randomUUID();
+		const timeout = setTimeout(() => {
+			if (!this.pendingLists.delete(requestId)) return;
+			reject(new Error("List sessions timeout"));
+		}, 5000);
+		this.pendingLists.set(requestId, {
+			resolve: (directory) => {
+				clearTimeout(timeout);
+				resolve(directory);
+			},
+			reject: (error) => {
+				clearTimeout(timeout);
+				reject(error);
+			},
+		});
+		try {
+			writeMessage(socket, group === undefined ? { type: "list", requestId } : { type: "list", requestId, group });
+		} catch (error) {
+			clearTimeout(timeout);
+			this.pendingLists.delete(requestId);
+			reject(toError(error));
+		}
+	});
   }
   listGroups(): Promise<GroupSummary[]> {
     let socket: net.Socket;
@@ -728,8 +828,21 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-  registerPendingStageRoute(runId: string, group: string, capability: string): void {
-    writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group, capability });
+  registerPendingStageRoute(
+	runId: string,
+	group: string,
+	capability: string,
+	stages?: WorkflowStageRosterAnnouncement[],
+	possibleStages?: WorkflowPossibleStageAnnouncement[],
+  ): void {
+	writeMessage(this.requireActiveSocket(), {
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability,
+		stages,
+		possibleStages,
+	});
   }
 
   registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[], capability: string): Promise<void> {
@@ -762,16 +875,25 @@ export class IntercomClient extends EventEmitter {
 		writeMessage(
 			socket,
 			result.outcome === "queued"
-				? { type: "pending_stage_message_result", requestId, outcome: "queued", position: result.position }
-				: result.outcome === "refused"
-					? {
-							type: "pending_stage_message_result",
-							requestId,
-							outcome: "refused",
-							reason: result.reason,
-							...(result.reasonCode === undefined ? {} : { reasonCode: result.reasonCode }),
-						}
-					: { type: "pending_stage_message_result", requestId, outcome: result.outcome },
+				? {
+						type: "pending_stage_message_result",
+						requestId,
+						outcome: "queued",
+						position: result.position,
+						...(result.notInKnownSet === true ? { notInKnownSet: true as const } : {}),
+						...(result.forwardTargets === undefined ? {} : { forwardTargets: [...result.forwardTargets] }),
+					}
+				: result.outcome === "forward"
+					? { type: "pending_stage_message_result", requestId, outcome: "forward", target: result.target }
+					: result.outcome === "refused"
+						? {
+								type: "pending_stage_message_result",
+								requestId,
+								outcome: "refused",
+								reason: result.reason,
+								...(result.reasonCode === undefined ? {} : { reasonCode: result.reasonCode }),
+							}
+						: { type: "pending_stage_message_result", requestId, outcome: result.outcome },
 		);
 	}
 

@@ -3,6 +3,7 @@ import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../d
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
+import { resolveBuiltinDefinitionSource } from "../shared/possible-stages.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
@@ -264,6 +265,15 @@ export function createWorkflowExtensionRuntimeState(
 
 	const hostStageSessionDir: { current: string | undefined } = { current: undefined };
 	const resolveDefaultStageSessionDir = (): string | undefined => hostStageSessionDir.current;
+	const discoveryRef: { current: DiscoveryResult | null } = { current: null };
+
+	/**
+	 * D1/D10: resolve a workflow definition's source path (discovery filePath,
+	 * else the builtin source probe) for the possible-stage scan at launch.
+	 */
+	const resolvePossibleStageEntry = (normalizedName: string): string | undefined =>
+		discoveryRef.current?.sources.find((source) => source.id === normalizedName)?.filePath ??
+		resolveBuiltinDefinitionSource(normalizedName);
 	const startupDiscovery = discoverStartupWorkflowsSync();
 	const runtimeRef: { current: ExtensionRuntime } = {
 		current: createExtensionRuntime({
@@ -274,11 +284,11 @@ export function createWorkflowExtensionRuntimeState(
 			persistence: persistenceRef.current,
 			mcp: mcpPort,
 			config: runtimeConfigRef.current,
+			resolvePossibleStageEntry,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
 		}),
 	};
-	const discoveryRef: { current: DiscoveryResult | null } = { current: null };
 	const configLoadRef: { current: ConfigLoadResult | null } = { current: null };
 	const runtimeProxy: ExtensionRuntime = {
 		get registry() {
@@ -334,6 +344,7 @@ export function createWorkflowExtensionRuntimeState(
 			persistence: persistenceRef.current,
 			mcp: mcpPort,
 			config: runtimeConfigRef.current,
+			resolvePossibleStageEntry,
 			models,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
@@ -375,6 +386,7 @@ export function createWorkflowExtensionRuntimeState(
 			persistence: persistenceRef.current,
 			mcp: mcpPort,
 			config: runtimeConfigRef.current,
+			resolvePossibleStageEntry,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
 		});

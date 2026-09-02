@@ -3,7 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../../../src/core/keybindings.ts";
 import { ModelSelectorComponent } from "../../../src/modes/interactive/components/model-selector.ts";
 import { ScopedModelsSelectorComponent } from "../../../src/modes/interactive/components/scoped-models-selector.ts";
-import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
 import { createHarness, type Harness } from "../harness.ts";
 
@@ -96,7 +96,7 @@ describe("issue #3217 scoped model ordering", () => {
 			.filter((line) => line.includes(`[${modelOne.provider}]`));
 		const orderedIds = renderedLines.slice(0, 3).map((line) => {
 			const [modelId] = line.trim().replace(/^→\s*/, "").split(" [");
-			return modelId?.trim() ?? "";
+			return modelId?.replace(/^✓\s*/, "").trim() ?? "";
 		});
 
 		expect(orderedIds).toEqual([modelTwo.id, modelOne.id, modelThree.id]);
@@ -119,7 +119,12 @@ describe("issue #3217 scoped model ordering", () => {
 			},
 		);
 
-		expect(stripAnsi(selector.render(120).join("\n"))).toContain(`${unavailableId} [unavailable]`);
+		const rendered = selector.render(120).join("\n");
+		expect(stripAnsi(rendered)).toContain(`${unavailableId} [unavailable]`);
+		// Upstream pi #8900 replaced the trailing " ✗" on unavailable scoped models with a
+		// strikethrough on the id. Atomic never carried upstream's `6949-unavailable-scoped-model`
+		// baseline, so that presentation assertion is folded in here instead.
+		expect(rendered).toContain(theme.strikethrough(unavailableId));
 		selector.handleInput("\r");
 		expect(changes.at(-1)).toEqual([availableId]);
 	});

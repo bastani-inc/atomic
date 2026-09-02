@@ -1,6 +1,7 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { inspectRun } from "../runs/background/status.js";
+import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
@@ -142,17 +143,28 @@ export function makeExecuteWorkflowTool(
 							? { action: "statusDetail", runId: target, detail: durable.detail }
 							: { action: "statusDetail", runId: target, error: durable.message };
 					}
-					const result = inspectRun(resolved.runId, { toolControlRegistry });
-					return result.ok
-						? { action: "statusDetail", runId: result.runId, detail: result.detail }
-						: { action: "statusDetail", runId: target, error: `run not found: ${target}` };
+					const inspected = inspectRun(resolved.runId, { toolControlRegistry });
+					if (!inspected.ok) {
+						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
+					}
+					const detailResult = {
+						action: "statusDetail" as const,
+						runId: inspected.runId,
+						detail: inspected.detail,
+					};
+					setWorkflowStatusRenderRuns(detailResult, store.graphSnapshot().runs);
+					return detailResult;
 				}
+				const capturedRuns = store.graphSnapshot().runs;
+				const statusByRunId = new Map(capturedRuns.map((run) => [run.id, run.status]));
 				const listing = buildWorkflowStatusListing(
 					topLevelExpandedSnapshots(),
 					args.statusFilter ?? "all",
 					Date.now(),
 					{
 						toolControlRegistry,
+						owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
+						resolveBoundarySegments: (runId) => workflowBoundarySegments(capturedRuns, runId),
 					},
 				);
 				const result = {
@@ -161,7 +173,7 @@ export function makeExecuteWorkflowTool(
 					runs: listing.runs,
 					snapshots: listing.snapshots,
 				};
-				setWorkflowStatusRenderRuns(result, store.graphSnapshot().runs);
+				setWorkflowStatusRenderRuns(result, capturedRuns);
 				return result;
 			}
 			case "stages":

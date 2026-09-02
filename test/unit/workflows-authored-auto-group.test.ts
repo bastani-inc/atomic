@@ -11,7 +11,7 @@ interface AuthoredSet {
 function assertSharedUuid(groups: readonly string[]): void {
 	assert.equal(groups.length, 2);
 	assert.equal(groups[0], groups[1]);
-	assert.match(groups[0]!, /^[0-9a-f]{8}-[0-9a-f-]{27}$/i);
+	assert.match(groups[0]!, /^workflow:[^/]+\/[0-9a-f]{8}-[0-9a-f-]{27}$/i);
 }
 
 async function runAuthoredSets(sets: readonly AuthoredSet[]): Promise<string[]> {
@@ -64,11 +64,13 @@ test("separate authored string-auto parallel sets receive different UUIDs", asyn
 	assert.notEqual(groups[0], groups[2]);
 });
 
-test("authored boolean true remains auto while a named group remains literal", async () => {
+// Regression coverage for #2784.
+test("authored boolean and named groups become invocation-owned subgroups", async () => {
 	const booleanGroups = await runAuthoredSets([{ group: true }]);
 	assertSharedUuid(booleanGroups);
 	const namedGroups = await runAuthoredSets([{ group: "reviewers" }]);
-	assert.deepEqual(namedGroups, ["reviewers", "reviewers"]);
+	assert.equal(namedGroups[0], namedGroups[1]);
+	assert.match(namedGroups[0] ?? "", /^workflow:[^/]+\/reviewers$/);
 });
 
 test("authored per-step string sentinels normalize before shared UUID minting", async () => {

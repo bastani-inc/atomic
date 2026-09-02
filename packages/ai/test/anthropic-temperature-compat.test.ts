@@ -89,6 +89,27 @@ describe("Anthropic temperature compatibility", () => {
 		expect(payload.temperature).toBe(0);
 	});
 
+	// "On Claude Fable 5.1, Claude Mythos 5.1, Claude Fable 5, ... non-default `temperature`,
+	// `top_p`, or `top_k` values return a 400 error on every request, regardless of whether
+	// thinking is used." https://platform.claude.com/docs/en/build-with-claude/thinking
+	it("omits temperature for Claude Fable 5.1", async () => {
+		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { temperature: 0 });
+
+		expect(payload.temperature).toBeUndefined();
+	});
+
+	it("omits default temperature for Claude Fable 5.1", async () => {
+		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { temperature: 1 });
+
+		expect(payload.temperature).toBeUndefined();
+	});
+
+	it("omits temperature for Claude Fable 5", async () => {
+		const payload = await capturePayload(getModel("anthropic", "claude-fable-5"), { temperature: 0 });
+
+		expect(payload.temperature).toBeUndefined();
+	});
+
 	it("keeps temperature for Claude Sonnet 4.6", async () => {
 		const payload = await capturePayload(getModel("anthropic", "claude-sonnet-4-6"), { temperature: 0 });
 

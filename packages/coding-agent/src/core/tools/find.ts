@@ -10,7 +10,7 @@ import { parenthesizedKeyHint } from "../../modes/interactive/components/keybind
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
-import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput } from "./render-utils.ts";
@@ -390,7 +390,7 @@ export function createFindToolDefinition(
 		promptSnippet: findToolSystemPromptContribution.snippet,
 		...experimentalToolSamplingProperty(),
 		parameters: findSchema,
-		async execute(_toolCallId, params: FindToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
+		async execute(_toolCallId, params: FindToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			return new Promise((resolve, reject) => {
 				if (signal?.aborted) {
 					reject(new Error("Operation aborted"));
@@ -412,13 +412,14 @@ export function createFindToolDefinition(
 				signal?.addEventListener("abort", onAbort, { once: true });
 				const { limit, hidden, gitignore, timeout } = params;
 				const paths = params.paths;
-				const resourceCtx = _ctx as InternalResourceContext | undefined;
+				const resourceCtx = ctx as InternalResourceContext | undefined;
+				const executionCwd = ctx?.cwd || cwd;
 				(async () => {
 					try {
 						const ops = customOps ?? defaultFindOperations;
 						const targets = normalizeFindTargets(
-							cwd,
-							await expandDelimitedFindPaths(paths, cwd, ops, resourceCtx, !!customOps),
+							executionCwd,
+							await expandDelimitedFindPaths(paths, executionCwd, ops, resourceCtx, !!customOps),
 							!!customOps,
 						);
 						const searchPaths = targets.map((target) => target.searchPath);
@@ -446,7 +447,7 @@ export function createFindToolDefinition(
 							if (target.exactPathInput) {
 								const isFile = typeof stat?.isFile === "function" ? stat.isFile() : stat?.isFile;
 								if (isFile) {
-									exactFileResults.push(formatExactFoundPath(target.searchPath, cwd));
+									exactFileResults.push(formatExactFoundPath(target.searchPath, executionCwd));
 									continue;
 								}
 							}
@@ -533,7 +534,8 @@ export function createFindToolDefinition(
 								}
 								if (target.exactPathInput && results.length === 0) {
 									const stat = await customOps.stat?.(target.searchPath);
-									if (!stat?.isDirectory) relativized.push(formatExactFoundPath(target.searchPath, cwd));
+									if (!stat?.isDirectory)
+										relativized.push(formatExactFoundPath(target.searchPath, executionCwd));
 									continue;
 								}
 								if (signal?.aborted) {
@@ -545,7 +547,7 @@ export function createFindToolDefinition(
 								relativized.push(
 									...visible
 										.slice(0, remaining)
-										.map((p) => formatFoundPath(p, target.searchPath, searchPaths, cwd)),
+										.map((p) => formatFoundPath(p, target.searchPath, searchPaths, executionCwd)),
 								);
 								emitUpdate(relativized);
 								if (customLimitReached) break;
@@ -605,7 +607,7 @@ export function createFindToolDefinition(
 												!match.path.endsWith("/");
 											const matchPath = isDir ? `${match.path}/` : match.path;
 											return {
-												path: formatFoundPath(matchPath, target.searchPath, searchPaths, cwd),
+												path: formatFoundPath(matchPath, target.searchPath, searchPaths, executionCwd),
 												mtime: match.mtime ?? 0,
 											};
 										}),
@@ -731,7 +733,7 @@ export function createFindToolDefinition(
 												})?.isDirectory() && !line.endsWith("/")
 													? `${line}/`
 													: line;
-											relativized.push(formatFoundPath(found, target.searchPath, searchPaths, cwd));
+											relativized.push(formatFoundPath(found, target.searchPath, searchPaths, executionCwd));
 										}
 									}
 									emitUpdate(relativized);

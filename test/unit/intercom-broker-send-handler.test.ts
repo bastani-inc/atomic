@@ -187,7 +187,7 @@ test("broker rejects every malformed durable message field before pending routin
 	for (const malformed of malformedMessages) {
 		handleBrokerSend(
 			senderSocket,
-			{ type: "send", to: "4ac72924-c452-4e5f-9e63-2435722109f7:reviewer", message: malformed },
+			{ type: "send", to: "workflow:4ac72924-c452-4e5f-9e63-2435722109f7/reviewer", message: malformed },
 			"sender",
 			sessions,
 			new DeliveredMessageCache(),

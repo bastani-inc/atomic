@@ -15,6 +15,16 @@ export class PendingQuestionIndex {
     this.questions.set(messageId, routes);
   }
 
+	/** Authorize only the exact reverse route of a broker-recorded live ask. */
+	matchesReply(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
+		return (
+			this.questions
+				.get(replyTo)
+				?.some(
+					(route) => route.targetSessionId === senderSessionId && route.senderSessionId === targetSessionId,
+				) === true
+		);
+	}
   clearReply(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
     const routes = this.questions.get(replyTo);
     const index = routes?.findIndex(

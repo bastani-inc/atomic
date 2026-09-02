@@ -99,7 +99,6 @@ function makeStub(options: {
 			subscribe: options.subscribe ?? (() => () => {}),
 			resumeQueuedMessages: async () => {},
 			prompt: options.prompt,
-			_tryExecuteBuiltinSlashCommand: async () => false,
 			_tryExecuteExtensionCommand: async () => false,
 		},
 		showWorkingLoaderNow: () => {},

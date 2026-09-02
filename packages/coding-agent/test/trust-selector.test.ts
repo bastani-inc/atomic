@@ -15,7 +15,7 @@ describe("TrustSelectorComponent", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	it("marks the saved trusted decision", () => {
+	it("keeps the saved trusted decision marked while browsing", () => {
 		const projectPath = resolve("/project");
 		const selector = new TrustSelectorComponent({
 			cwd: projectPath,
@@ -25,12 +25,16 @@ describe("TrustSelectorComponent", () => {
 			onCancel: () => {},
 		});
 
-		const output = stripAnsi(selector.render(120).join("\n"));
-
+		let output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain(`Saved decision: trusted (${projectPath})`);
 		expect(output).toContain("Current session: trusted");
-		expect(output).toContain("Trust ✓");
-		expect(output).not.toContain("Do not trust ✓");
+		expect(output).toContain("→ ✓ Trust");
+
+		selector.handleInput("\x1b[B");
+		output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("✓ Trust");
+		expect(output).toContain(`→   Trust parent folder (${dirname(projectPath)})`);
+		expect(output).not.toContain("✓ Do not trust");
 	});
 
 	it("selects a trust decision", () => {
@@ -79,7 +83,7 @@ describe("TrustSelectorComponent", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain(`Saved decision: trusted (inherited from ${parentPath})`);
-		expect(output).toContain(`Trust parent folder (${parentPath}) ✓`);
+		expect(output).toContain(`✓ Trust parent folder (${parentPath})`);
 
 		selector.handleInput("\n");
 

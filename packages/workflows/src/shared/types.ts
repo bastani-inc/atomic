@@ -206,6 +206,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	durableAccumulatedDurationMs?: number;
 	/** Internal durable source identity reused when an active stage session is reopened. */
 	durableStageId?: string;
+	/** Internal durable Intercom subgroup identity reused when an active stage session is reopened. */
+	durableIntercomGroup?: string;
 	/** Internal durable source parents reused with `durableStageId`. */
 	durableParentIds?: readonly string[];
 }

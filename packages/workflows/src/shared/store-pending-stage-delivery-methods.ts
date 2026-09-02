@@ -9,19 +9,25 @@ import {
 	type PendingStageQueueResult,
 	pendingStageMessagesFor,
 	queueStageMessage,
+	queueStickyStageMessage,
+	recordPendingStageMessageDeliveries,
+	settleStickyPendingStageMessageDelivered,
 } from "./pending-stage-delivery.js";
 import type { StoreContext } from "./store-internal.js";
 import type { Store } from "./store-public-types.js";
-import type { LiveStageMessageValidationResult } from "./store-types.js";
+import type { LiveStageMessageValidationResult, PendingStickyStageMessageInput } from "./store-types.js";
 
 type PendingStageDeliveryStoreMethods = Pick<
 	Store,
 	| "queueStageMessage"
+	| "queueStickyStageMessage"
 	| "validateLiveStageMessage"
 	| "pendingStageMessagesFor"
 	| "markPendingStageMessageDelivered"
 	| "markPendingStageMessageUndeliverable"
 	| "markPendingStageMessageUndeliverableNotified"
+	| "recordPendingStageMessageDeliveries"
+	| "settleStickyPendingStageMessageDelivered"
 >;
 
 export function createPendingStageDeliveryStoreMethods(context: StoreContext): PendingStageDeliveryStoreMethods {
@@ -181,6 +187,63 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					notificationId,
 					notifiedAt,
 				);
+				if (next === current) return false;
+				await persistTransition(backend, runId, next);
+				run.pendingStageMessages = [...next];
+				context.bumpAndNotify();
+				return true;
+			});
+		},
+		async queueStickyStageMessage(
+			input: PendingStickyStageMessageInput,
+			senderGroup: string | undefined,
+			runGroup: string | undefined,
+			backend: DurableWorkflowBackend,
+		): Promise<PendingStageQueueResult | undefined> {
+			return await serialize(input.runId, async () => {
+				const run = context.findRun(input.runId);
+				if (run === undefined) return undefined;
+				const result = queueStickyStageMessage(run.pendingStageMessages ?? [], input, senderGroup, runGroup);
+				if (result.ok && !result.deduplicated) {
+					await persistTransition(backend, input.runId, result.messages);
+					run.pendingStageMessages = [...result.messages];
+					context.bumpAndNotify();
+				}
+				return result;
+			});
+		},
+
+		async recordPendingStageMessageDeliveries(
+			runId: string,
+			messageId: string,
+			records: readonly { readonly runId: string; readonly stageId: string; readonly stageName?: string }[],
+			deliveredAt: string,
+			backend: DurableWorkflowBackend,
+		): Promise<boolean> {
+			return await serialize(runId, async () => {
+				const run = context.findRun(runId);
+				if (run === undefined) return false;
+				const current = run.pendingStageMessages ?? [];
+				const next = recordPendingStageMessageDeliveries(current, runId, messageId, records, deliveredAt);
+				if (next === current) return false;
+				await persistTransition(backend, runId, next);
+				run.pendingStageMessages = [...next];
+				context.bumpAndNotify();
+				return true;
+			});
+		},
+
+		async settleStickyPendingStageMessageDelivered(
+			runId: string,
+			messageId: string,
+			settledAt: string,
+			backend: DurableWorkflowBackend,
+		): Promise<boolean> {
+			return await serialize(runId, async () => {
+				const run = context.findRun(runId);
+				if (run === undefined) return false;
+				const current = run.pendingStageMessages ?? [];
+				const next = settleStickyPendingStageMessageDelivered(current, runId, messageId, settledAt);
 				if (next === current) return false;
 				await persistTransition(backend, runId, next);
 				run.pendingStageMessages = [...next];

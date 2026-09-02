@@ -142,6 +142,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "get_state": {
+				const extensionResult = session.resourceLoader.getExtensions();
 				const state: RpcSessionState = {
 					model: session.model,
 					modelFallbackMessage: runtimeHost.modelFallbackMessage,
@@ -159,7 +160,12 @@ export function createRpcCommandHandler({
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
-					resourceOverlaps: session.resourceLoader.getExtensions().overlaps ?? [],
+					resourceOverlaps: extensionResult.overlaps ?? [],
+					resourceExtensions: extensionResult.extensions.map((extension) => ({
+						path: extension.path,
+						sourceInfo: extension.sourceInfo,
+						hidden: extension.hidden === true,
+					})),
 				};
 				return createRpcSuccessResponse(id, "get_state", state);
 			}

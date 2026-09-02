@@ -3,6 +3,7 @@ import type {
 	PendingStageMessage,
 	PendingStageMessageInput,
 	PendingStageQueueResult,
+	PendingStickyStageMessageInput,
 } from "./pending-stage-delivery.js";
 import type {
 	LiveStageMessageValidationResult,
@@ -115,6 +116,13 @@ export interface Store {
 		runGroup: string | undefined,
 		backend: DurableWorkflowBackend,
 	): Promise<PendingStageQueueResult | undefined>;
+	/** Persist, then queue, a sticky (D3) intercom message for a path/pattern stage target in the root run's bucket. */
+	queueStickyStageMessage(
+		input: PendingStickyStageMessageInput,
+		senderGroup: string | undefined,
+		runGroup: string | undefined,
+		backend: DurableWorkflowBackend,
+	): Promise<PendingStageQueueResult | undefined>;
 	/** Revalidate a live composite delivery against workflow-owned durable identity without queueing a new ID. */
 	validateLiveStageMessage(input: PendingStageMessageInput): Promise<LiveStageMessageValidationResult | undefined>;
 	/** Read queued entries for an exact run/stage key in FIFO order. */
@@ -139,6 +147,21 @@ export interface Store {
 		messageId: string,
 		notificationId: string,
 		notifiedAt: string,
+		backend: DurableWorkflowBackend,
+	): Promise<boolean>;
+	/** Record exactly-once deliveries of a sticky entry to materialized stages; the entry stays queued. */
+	recordPendingStageMessageDeliveries(
+		runId: string,
+		messageId: string,
+		records: readonly { readonly runId: string; readonly stageId: string; readonly stageName?: string }[],
+		deliveredAt: string,
+		backend: DurableWorkflowBackend,
+	): Promise<boolean>;
+	/** Settle a sticky entry with at least one delivery when its root run terminates (no undeliverable notification). */
+	settleStickyPendingStageMessageDelivered(
+		runId: string,
+		messageId: string,
+		settledAt: string,
 		backend: DurableWorkflowBackend,
 	): Promise<boolean>;
 	/** Compare-and-swap a cached child run's owning boundary during durable replay. */

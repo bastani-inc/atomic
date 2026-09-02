@@ -19,6 +19,12 @@ import {
 	isImpossibleRootLiveness,
 } from "../engine/run-liveness.js";
 import type { ExpandedWorkflowStage } from "../shared/expanded-workflow-graph.js";
+import type {
+	PendingWorkflowRunStatusResolver,
+	PendingWorkflowStageStatus,
+	WorkflowBoundarySegmentsResolver,
+} from "../shared/pending-stage-status.js";
+import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
 	PendingPrompt,
@@ -95,6 +101,8 @@ export interface WorkflowRunStatusSummary {
 	/** Pause-adjusted elapsed milliseconds (prior sessions included). */
 	readonly elapsedMs: number;
 	readonly activeStages: readonly WorkflowStatusActiveStage[];
+	/** Materialized pending stages with canonical identity and truthful pre-start delivery capability. */
+	readonly pendingStages: readonly PendingWorkflowStageStatus[];
 	/** Durable, non-attachable ctx.tool graph nodes in authored order. */
 	readonly tools?: readonly WorkflowStatusToolNode[];
 	readonly awaitingInputCount: number;
@@ -114,6 +122,10 @@ export interface WorkflowStatusControlLookup {
 
 export interface WorkflowStatusSummaryOptions {
 	readonly toolControlRegistry?: WorkflowStatusControlLookup;
+	/** Owning-run lifecycle authority for stages projected from nested child runs. */
+	readonly owningRunStatus?: PendingWorkflowRunStatusResolver;
+	/** Depth-faithful boundary-chain authority for advertised pending-stage targets. */
+	readonly resolveBoundarySegments?: WorkflowBoundarySegmentsResolver;
 }
 
 /** Filtered, ordered status listing: `runs[i]` summarizes `snapshots[i]`. */
@@ -256,6 +268,7 @@ export function summarizeRunSnapshot(
 			name: stage.name,
 			status: stage.status,
 		})),
+		pendingStages: pendingWorkflowStageStatuses(run, options?.owningRunStatus, options?.resolveBoundarySegments),
 		tools: (run.toolNodes ?? []).map((tool) => {
 			const owner = tool as typeof tool & {
 				readonly runId?: string;

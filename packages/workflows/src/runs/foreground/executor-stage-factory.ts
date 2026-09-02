@@ -2,7 +2,7 @@ import { runCallback, runSynchronousCallback } from "@bastani/atomic";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
-import { stageCanUseWorkflowPendingStageRoute } from "../../shared/intercom-group.js";
+import { resolveStageGroup, stageCanUseWorkflowPendingStageRoute } from "../../shared/intercom-group.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
@@ -96,7 +96,7 @@ export function createWorkflowStageFactory(input: {
 		const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
 		const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;
 		const shouldReplay = replaySource !== undefined;
-		const stageOptionsForContext: StageOptions | undefined =
+		const replayStageOptions: StageOptions | undefined =
 			executeReplaySource?.sessionFile === undefined
 				? options
 				: {
@@ -104,6 +104,12 @@ export function createWorkflowStageFactory(input: {
 						context: options?.context ?? "fork",
 						forkFromSessionFile: options?.forkFromSessionFile ?? executeReplaySource.sessionFile,
 					};
+		const intercomGroup =
+			options?.durableIntercomGroup ?? resolveStageGroup(replayStageOptions, input.workflowIntercomGroup);
+		const stageOptionsForContext =
+			replayStageOptions?.group === undefined || intercomGroup === undefined
+				? replayStageOptions
+				: { ...replayStageOptions, group: intercomGroup };
 		const pendingStageDeliveryAvailable = stageCanUseWorkflowPendingStageRoute(
 			stageOptionsForContext,
 			input.workflowIntercomGroup,
@@ -112,6 +118,7 @@ export function createWorkflowStageFactory(input: {
 		const stageSnapshot: StageSnapshot = {
 			id: stageId,
 			name,
+			...(intercomGroup === undefined ? {} : { intercomGroup }),
 			replayKey,
 			status: shouldReplay ? "completed" : "pending",
 			parentIds: Object.freeze(parentIds),
@@ -322,6 +329,7 @@ export function createWorkflowStageFactory(input: {
 				name,
 				parentIds: stageSnapshot.parentIds,
 				...stageReplayFields(stageSnapshot),
+				...(intercomGroup === undefined ? {} : { intercomGroup }),
 				pendingStageDeliveryAvailable,
 				ts: stageSnapshot.startedAt ?? Date.now(),
 			});

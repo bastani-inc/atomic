@@ -183,12 +183,20 @@ interface OpenAICompatCacheControl {
 
 type ResolvedOpenAICompletionsCompat = Omit<
 	Required<OpenAICompletionsCompat>,
-	"cacheControlFormat" | "deferredToolsMode" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField"
+	| "cacheControlFormat"
+	| "deferredToolsMode"
+	| "supportsThinkingTokenBudget"
+	| "thinkingTokenBudgetField"
+	| "supportsTemperature"
+	| "supportsForcedToolChoice"
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
 	deferredToolsMode?: OpenAICompletionsCompat["deferredToolsMode"];
 	supportsThinkingTokenBudget?: OpenAICompletionsCompat["supportsThinkingTokenBudget"];
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
+	/** Optional so callers that build a resolved compat literal need not restate the defaults. */
+	supportsTemperature?: OpenAICompletionsCompat["supportsTemperature"];
+	supportsForcedToolChoice?: OpenAICompletionsCompat["supportsForcedToolChoice"];
 };
 
 type ResolvedChatTemplateKwargValue = string | number | boolean | null;
@@ -862,7 +870,11 @@ function buildParams(
 		}
 	}
 
-	if (options?.temperature !== undefined) {
+	// Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every request,
+	// and OpenRouter's own `supported_parameters` for that model omits `temperature`. Generated
+	// metadata marks such models `supportsTemperature: false`; every other model is unchanged.
+	// https://platform.claude.com/docs/en/build-with-claude/thinking
+	if (options?.temperature !== undefined && compat.supportsTemperature !== false) {
 		params.temperature = options.temperature;
 	}
 
@@ -884,6 +896,40 @@ function buildParams(
 	}
 
 	if (options?.toolChoice) {
+		// Claude Fable 5.1 rejects forced tool use on every request, whichever platform serves it.
+		// Reject rather than sending it: on a gateway that drops unsupported parameters the forced
+		// choice would vanish silently and the caller would get a plausible answer that ignored an
+		// explicit instruction. Mirrors the guards in `anthropic-messages.ts` and
+		// `bedrock-converse-stream.ts`. https://platform.claude.com/docs/en/build-with-claude/thinking
+		//
+		// OpenAI's `ChatCompletionToolChoiceOption` is strictly wider than Anthropic's four-member
+		// union, so all four of its forcing shapes must be tested here: `"required"`, a named
+		// `function`, a named `custom` tool, and `allowed_tools` — but the last one *only* with
+		// `mode: "required"`. The SDK documents `mode: "auto"` as allowing the model "to pick from
+		// among the allowed tools and generate a message", which constrains the candidate set
+		// rather than forcing a call, so that shape must pass through untouched. Re-audit this
+		// predicate whenever the `openai` package widens that union.
+		if (compat.supportsForcedToolChoice === false) {
+			const choice = options.toolChoice;
+			let forcedLabel: string | undefined;
+			if (choice === "required") {
+				forcedLabel = "required";
+			} else if (typeof choice === "object") {
+				if (choice.type === "function") {
+					forcedLabel = `tool "${choice.function.name}"`;
+				} else if (choice.type === "custom") {
+					forcedLabel = `custom tool "${choice.custom.name}"`;
+				} else if (choice.type === "allowed_tools" && choice.allowed_tools?.mode === "required") {
+					forcedLabel = `allowed_tools (mode "required")`;
+				}
+			}
+			if (forcedLabel !== undefined) {
+				throw new Error(
+					`Model ${model.id} does not support forced tool choice (requested: ${forcedLabel}). ` +
+						`Use toolChoice "auto" with strict tool use or structured outputs instead.`,
+				);
+			}
+		}
 		params.tool_choice = options.toolChoice;
 	}
 
@@ -1016,6 +1062,21 @@ function buildParams(
 	// Last so custom keys override the named request fields.
 	if (options?.samplingParams) {
 		Object.assign(params, options.samplingParams);
+	}
+
+	// ...except the sampling parameters a model rejects outright. `samplingParams` is documented
+	// as last-wins, so the strip runs *after* the merge rather than the merge running earlier:
+	// reordering would invert that documented precedence for every model on this adapter, and a
+	// pre-merge guard would also miss `Model.samplingParams`, which `simple-options.ts` folds into
+	// the same object. Claude Fable 5.1 returns a 400 for non-default `temperature`, `top_p`, or
+	// `top_k`; omitting a field yields its default, which is always accepted, so all three are
+	// dropped rather than compared against per-model defaults Atomic does not know. Note that
+	// `top_p` and `top_k` are never set as named fields here, so `samplingParams` is their only
+	// route to the wire. https://platform.claude.com/docs/en/build-with-claude/thinking
+	if (compat.supportsTemperature === false) {
+		for (const key of ["temperature", "top_p", "top_k"] as const) {
+			delete (params as unknown as Record<string, unknown>)[key];
+		}
 	}
 
 	return params;
@@ -1661,6 +1722,9 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		supportsDeveloperRole: isOpenRouterDeveloperRoleModel || (!isNonStandard && !isOpenRouter),
 		supportsReasoningEffort:
 			!isGrok && !isZai && !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia && !isAntLing,
+		// Models are assumed to accept `temperature`; generated metadata opts specific ones out.
+		supportsTemperature: true,
+		supportsForcedToolChoice: true,
 		supportsUsageInStreaming: true,
 		supportsFinishReason: true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
@@ -1714,6 +1778,8 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		supportsStore: model.compat.supportsStore ?? detected.supportsStore,
 		supportsDeveloperRole: model.compat.supportsDeveloperRole ?? detected.supportsDeveloperRole,
 		supportsReasoningEffort: model.compat.supportsReasoningEffort ?? detected.supportsReasoningEffort,
+		supportsTemperature: model.compat.supportsTemperature ?? detected.supportsTemperature,
+		supportsForcedToolChoice: model.compat.supportsForcedToolChoice ?? detected.supportsForcedToolChoice,
 		supportsUsageInStreaming: model.compat.supportsUsageInStreaming ?? detected.supportsUsageInStreaming,
 		supportsFinishReason: model.compat.supportsFinishReason ?? detected.supportsFinishReason,
 		maxTokensField: model.compat.maxTokensField ?? detected.maxTokensField,

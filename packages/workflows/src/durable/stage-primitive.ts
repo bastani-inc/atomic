@@ -148,6 +148,7 @@ export function createDurableStagePrimitive(input: {
 	readonly backend: DurableWorkflowBackend;
 	readonly nextReplayKey: (stageName: string) => string;
 	readonly stage: (name: string, options: StageOptions | undefined, replayKey: string) => StageContext;
+	readonly durableIntercomGroup?: (replayKey: string, stageId: string | undefined) => string | undefined;
 	readonly recordCachedStage?: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint) => void;
 }): (name: string, options?: StageOptions) => StageContext {
 	return (name: string, options?: StageOptions): StageContext => {
@@ -162,11 +163,13 @@ export function createDurableStagePrimitive(input: {
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
 		const durableStageId =
 			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
+		const durableIntercomGroup = topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, durableStageId);
 		const liveOptions: StageOptions | undefined = {
 			...(options ?? {}),
 			durableReplayKey: replayKey,
 			...(durableStageId !== undefined ? { durableStageId } : {}),
 			...(topology !== undefined ? { durableParentIds: [...topology.parentIds] } : {}),
+			...(durableIntercomGroup !== undefined ? { durableIntercomGroup } : {}),
 			...(isMidSessionResume
 				? {
 						resumeFromSessionFile: session.sessionFile,
@@ -197,6 +200,7 @@ export function createDurableTaskPrimitive(input: {
 		options: WorkflowTaskOptions,
 		stageFailFastScope?: ParallelFailFastScope,
 	) => Promise<WorkflowTaskResult>;
+	readonly durableIntercomGroup?: (replayKey: string, stageId: string | undefined) => string | undefined;
 	readonly recordCachedTask?: (
 		name: string,
 		replayKey: string,
@@ -225,6 +229,8 @@ export function createDurableTaskPrimitive(input: {
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
+		const durableIntercomGroup =
+			topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, topology?.stageId);
 		const taskOptions: WorkflowTaskOptions = {
 			...options,
 			durableReplayKey: replayKey,
@@ -234,6 +240,7 @@ export function createDurableTaskPrimitive(input: {
 						durableParentIds: [...topology.parentIds],
 					}
 				: {}),
+			...(durableIntercomGroup !== undefined ? { durableIntercomGroup } : {}),
 			...(session?.sessionFile !== undefined
 				? {
 						resumeFromSessionFile: session.sessionFile,

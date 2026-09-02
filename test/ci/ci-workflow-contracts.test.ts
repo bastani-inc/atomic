@@ -502,6 +502,16 @@ test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asse
 	assert.match(workflow, /npm run check:shrinkwrap/);
 	assert.match(workflow, /Build Linux x64 archive[\s\S]*--platform linux-x64/);
 	assert.match(workflow, /Build Windows x64 archive[\s\S]*--platform windows-x64/);
+	// Bun 1.4.0 Windows bytecode launchers crash unless compiled on a Windows
+	// host, so the Windows runner builds both shipped archives and the Linux
+	// payload build must not compile Windows targets itself.
+	assert.match(workflow, /Build Windows arm64 archive[\s\S]*--platform windows-arm64/);
+	assert.match(workflow, /Build release archives\n\s+run: \.\/scripts\/build-binaries\.sh [^\n]*--skip-windows/);
+	assert.match(workflow, /name: atomic-windows-archives/);
+	assert.match(
+		jobBlock(workflow, "build", "stage-github-release"),
+		/Stage Windows-built release archives[\s\S]*name: atomic-windows-archives[\s\S]*path: packages\/coding-agent\/binaries/,
+	);
 	assert.match(workflow, /Failed to load extension/);
 	assert.match(workflow, /native optionalDependencies must be the eight exact-version platform packages/u);
 	assert.match(workflow, /test .* = 11/u);

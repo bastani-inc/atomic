@@ -32,8 +32,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		// The public facade omits prototype-installed command methods, but the
 		// interactive runtime always owns the concrete AgentSession dispatcher.
 		const handledSlashCommand = await tryExecuteSessionSlashCommand(
-			this.session as typeof this.session &
-				Pick<AgentSessionInternalSurface, "_tryExecuteBuiltinSlashCommand" | "_tryExecuteExtensionCommand">,
+			this.session as typeof this.session & Pick<AgentSessionInternalSurface, "_tryExecuteExtensionCommand">,
 			userInput,
 		);
 		if (!handledSlashCommand) {

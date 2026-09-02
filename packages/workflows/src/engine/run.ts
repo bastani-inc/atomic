@@ -50,6 +50,7 @@ import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
+import { coercePossibleStages } from "../shared/possible-stages.js";
 import { store as defaultStore } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
@@ -219,6 +220,18 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			: sameBudget
 				? continuedBudgetState
 				: { accounting: continuedBudgetState.accounting };
+	// D10: the possible-stage scan is computed by the caller at admission and
+	// persisted with the root run; resume/continuation hydrates it from durable
+	// metadata so later edits to the definition cannot change it. A corrupt or
+	// missing value hydrates as an empty set.
+	const continuationSourceRunId = opts.continuation?.source.id;
+	const persistedPossibleStages =
+		coercePossibleStages(opts.possibleStages) ??
+		(continuationSourceRunId !== undefined
+			? coercePossibleStages(rootBackend.getWorkflow(continuationSourceRunId)?.possibleStages)
+			: undefined);
+	const runPossibleStages =
+		persistedPossibleStages ?? coercePossibleStages(rootBackend.getWorkflow(runId)?.possibleStages) ?? [];
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -229,6 +242,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		pendingStageMessages: [
 			...pendingStageMessagesForDurableRun(rootBackend, runId, opts.parentRun?.rootRunId ?? runId),
 		],
+		...(opts.parentRun === undefined ? { possibleStages: runPossibleStages } : {}),
 		startedAt: Date.now(),
 		...(opts.parentRun !== undefined
 			? {
@@ -506,6 +520,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		hasPersistence: opts.persistence !== undefined,
 		isChildRun: opts.parentRun !== undefined,
 		continuationSourceId: opts.continuation?.source.id,
+		...(persistedPossibleStages === undefined ? {} : { possibleStages: persistedPossibleStages }),
 	});
 	const { tool, admittedTools, abandonInFlightAsCancelled, observedQuitCancellation } = createTrackedToolPrimitive({
 		workflowId: runId,
@@ -585,11 +600,17 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		completedStageReplayKeys,
 		sourceToReplayedNodeIds: sourceToContinuationNodeIds,
 	});
+	const durableIntercomGroup = (replayKey: string, stageId: string | undefined): string | undefined => {
+		const stages = activeStore.runs().find((candidate) => candidate.id === runId)?.stages ?? [];
+		return stages.find((stage) => (stageId !== undefined && stage.id === stageId) || stage.replayKey === replayKey)
+			?.intercomGroup;
+	};
 	let observedTaskTailQuit: WorkflowGracefulQuitSignal | undefined;
 	const durableTask = createDurableTaskPrimitive({
 		workflowId: runId,
 		backend: durableBackend,
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+		durableIntercomGroup,
 		task: taskRunners.task,
 		recordCachedTask: cachedStage.record,
 		signal: ownController.signal,
@@ -641,6 +662,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			workflowId: runId,
 			backend: durableBackend,
 			nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+			durableIntercomGroup,
 			recordCachedStage: cachedStage.record,
 			stage: (name, options, replayKey) => {
 				const stage = runtime.stage(name, options);

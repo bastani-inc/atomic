@@ -1,4 +1,13 @@
-import type { AssistantMessage, Context, ImageContent, Message, TextContent, Tool, Usage } from "../types.ts";
+import type {
+	AssistantMessage,
+	Context,
+	DocumentContent,
+	ImageContent,
+	Message,
+	TextContent,
+	Tool,
+	Usage,
+} from "../types.ts";
 
 export interface ContextUsageEstimate {
 	/** Estimated total context tokens. */
@@ -26,11 +35,23 @@ function safeJsonStringify(value: unknown): string {
 	}
 }
 
-function estimateTextAndImageContentChars(content: string | Array<TextContent | ImageContent>): number {
+function estimateTextAndImageContentChars(
+	content: string | Array<TextContent | ImageContent | DocumentContent>,
+): number {
 	if (typeof content === "string") return content.length;
 
 	let chars = 0;
-	for (const block of content) chars += block.type === "text" ? block.text.length : ESTIMATED_IMAGE_CHARS;
+	for (const block of content) {
+		if (block.type === "text") {
+			chars += block.text.length;
+		} else if (block.type === "document") {
+			// A base64 PDF is far larger than an image and must not be counted as one, or context
+			// accounting under-reports badly. Estimate from the encoded payload actually sent.
+			chars += block.data.length;
+		} else {
+			chars += ESTIMATED_IMAGE_CHARS;
+		}
+	}
 	return chars;
 }
 
@@ -38,7 +59,9 @@ export function estimateTextTokens(text: string): number {
 	return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-export function estimateTextAndImageContentTokens(content: string | Array<TextContent | ImageContent>): number {
+export function estimateTextAndImageContentTokens(
+	content: string | Array<TextContent | ImageContent | DocumentContent>,
+): number {
 	return Math.ceil(estimateTextAndImageContentChars(content) / CHARS_PER_TOKEN);
 }
 
@@ -53,9 +76,10 @@ export function estimateMessageTokens(message: Message): number {
 			chars += block.text.length;
 		} else if (block.type === "thinking") {
 			chars += block.thinking.length;
-		} else {
+		} else if (block.type === "toolCall") {
 			chars += block.name.length + safeJsonStringify(block.arguments).length;
 		}
+		// Fallback boundary markers carry no text and contribute nothing to the estimate.
 	}
 	return Math.ceil(chars / CHARS_PER_TOKEN);
 }

@@ -76,6 +76,8 @@ export interface DurableWorkflowHandle {
 	readonly ownerExecutorId?: string;
 	/** Durable pre-start stage messages owned by this workflow run. */
 	readonly pendingStageMessages?: readonly PendingStageMessage[];
+	/** Possible stage targets from the D1 static scan, frozen at root-run admission (D10). */
+	readonly possibleStages?: readonly string[];
 }
 
 export type DurableWorkflowStatus = "running" | "paused" | "completed" | "failed" | "cancelled" | "blocked";
@@ -207,6 +209,8 @@ export interface DurableStageTopology {
 	readonly version: typeof DURABLE_STAGE_TOPOLOGY_VERSION;
 	readonly stageId: string;
 	readonly parentIds: readonly string[];
+	/** Exact Intercom subgroup identity retained across an active stage resume. */
+	readonly intercomGroup?: string;
 	/** Zero-based source/spawn order within the owning run. */
 	readonly sourceOrder?: number;
 	/** Distinguishes one durable prompt-node occurrence from its logical continuation replay key. */
@@ -307,6 +311,8 @@ export interface DurableWorkflowMetadata {
 	readonly updatedAt: number;
 	/** Optional additive field; legacy metadata hydrates this as an empty collection. */
 	readonly pendingStageMessages?: readonly PendingStageMessage[];
+	/** Possible stage targets from the D1 static scan, frozen at root-run admission (D10). */
+	readonly possibleStages?: readonly string[];
 }
 
 /** Resume catalog entry loaded directly from DBOS metadata. */

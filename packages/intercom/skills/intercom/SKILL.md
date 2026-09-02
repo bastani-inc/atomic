@@ -75,24 +75,24 @@ intercom({ action: "list" })
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
-Live sessions accept an exact full session ID or exact case-insensitive name. Ordinary `send` to a known workflow stage whose session has not initialized uses the exact `<runId>:<stageKey>` identity. Unknown runs and stages retain the ordinary unknown-target failure.
+Live sessions accept an exact full Intercom session ID or exact case-insensitive name. For workflow stages, first join `workflow:<rootRunId>` and use `intercom({ action: "list" })`: materialized stages appear as `PENDING` or `RUNNING` with canonical `workflow:<rootRunId>/<segment>[/<segment>...]` targets and actual groups, followed by possible future targets with queued counts. The invocation context can control owned isolated subgroups by exact target, while sibling subgroups and other runs remain isolated. Use queued `send` for `PENDING` or future targets; `ask` is supported only for `RUNNING`, where an exact correlated reply returns to the invocation asker.
 
 ### Deliver to workflow stages that have not started
 
-Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages for known pending stages and delivers them when their sessions initialize:
-
-Before steering a stage, join its invocation group. Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`.
+Send material updates through Intercom to every affected workflow stage, including stages that have not started. Before steering, join the invocation group `workflow:<rootRunId>` (discover it with the Intercom `groups` action), then use `intercom list` there to see live, pending, and possible future targets.
 
 ```typescript
 intercom({
   action: "send",
-  to: "<runId>:reviewer",
+  to: "workflow:<rootRunId>/reviewer",
   message: "Scope changed: preserve raw amendment text in the verification oracle."
 })
 // → queued, distinct from live-session delivered, with the FIFO position
 ```
 
-The stage receives the ordinary inbound Intercom message before its first model turn under **Messages received before you started**, with real sender identity and a `Sent:` timestamp. Only same-workflow-group sessions may queue messages. Each exact run/stage key holds at most 50 queued messages; the next send is refused rather than evicting one. Resume/replay, broker restart, and stage-attempt restart preserve exactly-once delivery. If the stage is skipped, cancelled, or becomes terminal before its session initializes, the message becomes undeliverable and acknowledgment-requesting senders receive a correlated failure. Do not use `ask`: Atomic returns `pending_stage_ask_unsupported` and recommends ordinary `send` instead of holding an unbounded waiter.
+Each path segment may be a stage name, a run id, or a glob: `*` matches one segment and may be embedded (`reviewer-*`), while `**` matches any depth. When shared scope or acceptance criteria change, broadcast one authoritative update to `workflow:<rootRunId>/**` (or a narrower pattern) rather than enumerating stages. The broadcast reaches every live stage immediately and remains sticky for every future matching stage, including nested children, until the root run terminates. Other name or pattern sends have the same every-future-match behavior.
+
+A syntactically valid target outside the persisted possible-stage set is accepted speculatively: the queued acknowledgment includes `notInKnownSet`. At terminal settlement, an entry that never delivered produces the correlated undeliverable notification; an entry delivered at least once does not. A stage receives queued messages through the ordinary inbound path before its first model turn under **Messages received before you started**, with real sender identity and a `Sent:` timestamp. Only same-workflow-group sessions may queue messages. Each target holds at most 50 queued messages; the next send is refused rather than evicting one. Resume/replay, broker restart, and stage-attempt restart preserve exactly-once delivery per message and materialized stage. Use `ask` only for a live target: pending, future, and pattern asks return `pending_stage_ask_unsupported`.
 
 ### Runtime named groups
 
@@ -251,7 +251,7 @@ In Atomic workflows, each invocation has its own Intercom group, and parallel st
 | `join` | Adds or creates a named membership in place | Sessions need another shared routing group |
 | `leave` | Removes one named membership, or resets to home when omitted | Stop sharing one group or restore startup membership |
 | `groups` | Lists every available group with counts and membership markers | Discover a group instead of guessing its name |
-| `send` | Fire-and-forget to a live session, or durable `queued` delivery to `<runId>:<stageKey>` before a workflow stage starts | You don't need a response |
+| `send` | Fire-and-forget to a live session, or durable sticky delivery to `workflow:<rootRunId>/<segment>[/<segment>...]`; globs and `**` broadcasts cover live and future matches | You don't need a response |
 | `ask` | Blocks until a live recipient replies (10 min timeout); refused for an unstarted stage | You need an answer to continue |
 | `reply` | Responds to the active or pending inbound ask; `to` accepts an exact full session ID or exact session name | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |

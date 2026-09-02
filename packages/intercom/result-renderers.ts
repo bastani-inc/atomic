@@ -9,6 +9,7 @@ type TextContentBlock = Extract<RenderedResult["content"][number], { type: "text
 
 type IntercomResultDetails = {
 	delivered?: boolean;
+	queued?: boolean;
 	error?: boolean;
 	messageId?: string;
 	reason?: string;
@@ -51,7 +52,9 @@ export const renderIntercomResult: ToolResultRenderer = (result, { isPartial }, 
 		return new Text(theme.fg("warning", "Intercom working..."), 0, 0);
 	}
 	const details = result.details as IntercomResultDetails | undefined;
-	const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
+	const failed = Boolean(
+		context.isError || details?.error === true || (details?.delivered === false && details.queued !== true),
+	);
 	let text = failed ? theme.fg("error", "✗ ") : theme.fg("success", "✓ ");
 	text += theme.fg(failed ? "error" : "text", firstTextContent(result));
 	if (details?.messageId && !context.expanded) {

@@ -11,11 +11,11 @@
 </p>
 
 <p align="center">
-  Atomic trades speed for quality. Complex runs can take hours, days, or weeks because Atomic researches, implements, and verifies the work that quick coding-agent passes tend to leave to you.
+  Atomic prioritizes quality over quick responses. Complex runs can take hours, days, or weeks because Atomic researches, implements, and verifies the work that quick coding-agent passes tend to leave to you.
 </p>
 
 <p align="center">
-  Engineers using Atomic tell us this means less babysitting and less stress. The end result is work built and verified for production review, backed by evidence instead of another round of manual prompting.
+  Engineers using Atomic tell us this means less babysitting, less code review comments, and less stress. The end result is work built and verified for production review, backed by evidence instead of another round of manual prompting.
 </p>
 
 <p align="center">
@@ -333,7 +333,7 @@ atomic
 
 Atomic stores provider credentials in `~/.atomic/agent/auth.json` and creates the file with owner-only permissions where the platform supports them. For non-interactive use, `atomic -p "<prompt>"` prints the response and exits.
 
-After authenticating, run `/atomic` for workflow guides, examples, and next steps. A fresh install also shows a one-time workflow-engine introduction.
+After authenticating, type a message or run `/workflow list` to explore built-in workflows. A fresh install also shows a one-time workflow-engine introduction.
 
 > ⚠️ Atomic has no built-in sandbox or command-level shell permission gate. Tools and extensions run with your user permissions. Run autonomous work inside a devcontainer, VM, or remote development machine—not on a host with sensitive data or credentials.
 

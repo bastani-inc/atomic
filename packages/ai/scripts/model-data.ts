@@ -162,7 +162,7 @@ function validateModelValue(
 	if (
 		!Array.isArray(value.input) ||
 		value.input.length === 0 ||
-		value.input.some((entry) => entry !== "text" && entry !== "image")
+		value.input.some((entry) => entry !== "text" && entry !== "image" && entry !== "pdf")
 	) {
 		errors.push(`${label} has invalid input modalities`);
 	}

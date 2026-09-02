@@ -1,0 +1,349 @@
+Issue #2784 real development CLI tmux end-to-end acceptance evidence
+Tested implementation commit: ff4934664552e020f0a3c3feb877ee70e321b56f
+Branch: fix/intercom-workflow-stage-registration
+Date: 2026-08-31
+Worktree: /Users/tonystark/Documents/projects/atomic-issue-2784
+CLI: node packages/coding-agent/dist/cli.js
+Agent directory: /tmp/i2784fix-agent (isolated copy of auth/settings, used to guarantee the broker was spawned from this worktree)
+Broker command observed: node .../node_modules/jiti/lib/jiti-cli.mjs .../packages/intercom/broker/broker.ts
+Fixture: test/evidence/issue-2784/issue-2784-e2e.ts (temporarily copied to .atomic/workflows, then removed)
+tmux: /opt/homebrew/bin/tmux 3.7c; session i2784fix
+Root run: 8452ad66-a1d7-46e8-b76b-4519daa7fa9d
+
+ANNOTATION (not part of captured pane output)
+PASS: list rendered running-isolated [RUNNING] and future-isolated [PENDING] with canonical targets.
+PASS: canonical live send delivered and the running stage quoted LIVE-SEND-PROOF-2784-FINAL-7C91.
+PASS: canonical pending send queued and the future stage received PENDING-PROOF-2784-FINAL-5D82 before its first turn.
+PASS: canonical ask resolved inline with ASK-REPLY-PROOF-2784-OK.
+PASS: both isolated stage lists hid the sibling subgroup.
+PASS: raw workflow SDK sessionId 01a059b8-807a-747e-9f37-423c26b6042a returned Session not found.
+Every line inside the transcript blocks below is verbatim `tmux capture-pane -p` output. No captured line was edited; no ANSI escapes are included.
+
+================ MAIN CHAT TRANSCRIPT ================
+╭ WORKFLOWS  12 registered ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ issue-2784-e2e                                                                                                                                                                                       │
+│   Live acceptance fixture for pending-stage Intercom discovery, delivery, and isolated-group ask/reply.                                                                                              │
+│   inputs    (none)                                                                                                                                                                                   │
+│                                                                                                                                                                                                      │
+│ publish-release                                                                                                                                                                                      │
+│   Prepare, merge, tag, and verify an Atomic release with durable external gates.                                                                                                                     │
+│   inputs    target_version  ·  release_kind  ·  base_ref?                                                                                                                                            │
+│                                                                                                                                                                                                      │
+│ release-docs                                                                                                                                                                                         │
+│   Prepare Atomic release docs updates from the current branch, validate Mintlify docs, and open a PR.                                                                                                │
+│   inputs    (none)                                                                                                                                                                                   │
+│                                                                                                                                                                                                      │
+│ adversarial-verification                                                                                                                                                                             │
+│   Produce a candidate, score independent per-criterion verifier reports, and apply a deterministic mean-and-veto gate with bounded repairs.                                                          │
+│   inputs    task  ·  verifier_count?  ·  max_repairs?  ·  +3 more                                                                                                                                    │
+│                                                                                                                                                                                                      │
+│ classify-and-act                                                                                                                                                                                     │
+│   Classify a task with structured confidence, route deterministically to an isolated category action, and ask for human selection when confidence is low.                                            │
+│   inputs    prompt  ·  categories?  ·  confidence_threshold?                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ fan-out-and-synthesize                                                                                                                                                                               │
+│   Partition a task, run bounded independent artifact branches, then synthesize all evidence at an explicit barrier.                                                                                  │
+│   inputs    prompt  ·  max_branches?  ·  max_concurrency?                                                                                                                                            │
+│                                                                                                                                                                                                      │
+│ generate-and-filter                                                                                                                                                                                  │
+│   Generate more independent candidates than needed, deduplicate and filter them by rubric, optionally judge them, and return a parent-consumable shortlist.                                          │
+│   inputs    prompt  ·  num_candidates?  ·  shortlist_size?  ·  +2 more                                                                                                                               │
+│                                                                                                                                                                                                      │
+│ goal                                                                                                                                                                                                 │
+│   Goal Runner workflow with bounded sub-agent orchestration turns, immutable acceptance criteria, ledger artifacts, parallel reviewers, and reducer-gated completion. When launching follow-up …     │
+│   inputs    objective  ·  acceptance_criteria?  ·  max_turns?  ·  +3 more                                                                                                                            │
+│                                                                                                                                                                                                      │
+│ loop-until-done                                                                                                                                                                                      │
+│   Repeat evidence-producing work and independent completion evaluation against a durable ledger until done or an inspectable iteration-limit failure.                                                │
+│   inputs    prompt  ·  max_iterations?  ·  progress_scoring?  ·  +1 more                                                                                                                             │
+│                                                                                                                                                                                                      │
+│ open-claude-design                                                                                                                                                                                   │
+│   AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → one live review session → rich HTML handoff. The dis…     │
+│   inputs    prompt  ·  discover_references?                                                                                                                                                          │
+│                                                                                                                                                                                                      │
+│ ralph                                                                                                                                                                                                │
+│   Raw prompt → research-prompt-refinement → research → orchestrate → multi-model parallel review loop with bounded iteration and immutable acceptance criteria. When launching follow-up ralph …     │
+│   inputs    prompt  ·  acceptance_criteria?  ·  max_loops?  ·  +3 more                                                                                                                               │
+│                                                                                                                                                                                                      │
+│ tournament                                                                                                                                                                                           │
+│   Run independent whole-task attempts through a soft-scored pivot-pairing schedule and return an auditable ranking.                                                                                  │
+│   inputs    prompt  ·  num_attempts?  ·  max_concurrency?  ·  +5 more                                                                                                                                │
+│                                                                                                                                                                                                      │
+│  ▸ /workflow <name> …  run a workflow                                                                                                                                                                │
+│  ▸ /workflow inputs <name>  inspect input schema                                                                                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...
+
+ Launching the pre-existing zero-input acceptance fixture as-is; I’ll inspect metadata only to obtain exact IDs and will not connect to the graph.
+
+workflow: run "issue-2784-e2e"
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   8452ad66-a1d7-46e8-b76b-4519daa7fa9d                                                                                                                                                               │
+│ ●  issue-2784-e2e  ● running                                                                                                                                                                         │
+│   started in background                                                                                                                                                                              │
+│                                                                                                                                                                                                      │
+│ ▸ /workflow connect 8452ad66-a1d7-46e8-b76b-4519daa7fa9d  see agents working · chat with and steer each stage                                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...
+
+workflow: list stages for "8452ad66-a1d7-46e8-b76b-4519daa7fa9d"
+╭ WORKFLOW STAGES ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 8452ad66-a1d7-46e8-b76b-4519daa7fa9d: all — running-isolated (89b5736c-ba42-44a0-9562-f45bcb8a19e8): running; future-isolated (3b0f4918-9d9f-4df4-81ec-39623656c5ac): pending                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Root run ID: 8452ad66-a1d7-46e8-b76b-4519daa7fa9d
+
+ Stage IDs:
+ - running-isolated: 89b5736c-ba42-44a0-9562-f45bcb8a19e8
+ - future-isolated: 3b0f4918-9d9f-4df4-81ec-39623656c5ac
+
+ Not connected to the graph.
+
+
+ Perform these tools NOW, in this exact order, and show every raw tool result: (1) intercom join group workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d. (2) intercom list. (3) intercom send target
+ 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8 message LIVE-SEND-PROOF-2784-FINAL-7C91. (4) intercom send target
+ 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:3b0f4918-9d9f-4df4-81ec-39623656c5ac message PENDING-PROOF-2784-FINAL-5D82. (5) workflow status format json for this run, identify running raw SDK sessionId,
+ then intercom send to that raw sessionId message RAW-SESSIONID-NEGATIVE-2784-FINAL. (6) intercom ask target 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8 question Reply
+ via intercom with ASK-REPLY-PROOF-2784-FINAL-QUESTION; wait for natural inline resolution. Do not cancel.
+
+
+ Thinking...
+
+
+ intercom join
+ ✓ Joined intercom group "workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d". Memberships: default, workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d.
+
+
+
+ intercom list
+ ✓ Current session (groups: default, workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d):
+ • subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (259e049b-bc92-4457-bda6-3faf665e4b19) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [self, tool:intercom]
+
+ Other visible sessions and workflow stages:
+ • Unnamed session (acd4a089-7e98-421f-8158-ab626180efa8) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [same cwd, idle, group: workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d]
+ - running-isolated — workflow stage [RUNNING] — target: `8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8` — intercom session: 95356b1d-98fc-438c-ae43-bec440f2b32b
+ - future-isolated — workflow stage [PENDING] — target: `8452ad66-a1d7-46e8-b76b-4519daa7fa9d:3b0f4918-9d9f-4df4-81ec-39623656c5ac`
+
+
+
+ intercom send 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8
+ ✓ Message sent to 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8 (01b26066-344f-4231-9096-8ce225af478b)
+
+
+
+ intercom send 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:3b0f4918-9d9f-4df4-81ec-39623656c5ac
+ ✓ Message queued for 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:3b0f4918-9d9f-4df4-81ec-39623656c5ac (5e87b90c-59db-4365-a398-c36555d80650)
+
+
+workflow: list retained runs
+╭ RUN issue-2784-e2e  ● running ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  8452ad66-a1d7-46e8-b76b-4519daa7fa9d                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      issue-2784-e2e                                                                                                                                                                         │
+│ state         ● running                                                                                                                                                                              │
+│ mode          chain · 2 stages                                                                                                                                                                       │
+│ started       21:27:38                                                                                                                                                                               │
+│ elapsed       1m                                                                                                                                                                                     │
+│                                                                                                                                                                                                      │
+│ STAGES                                                                                                                                                                                               │
+│ ● running-isola…  running                   1m                                                                                                                                                       │
+│ ○ future-isolat…  pending                                                                                                                                                                            │
+│                                                                                                                                                                                                      │
+│ ▸ workflow interrupt   id=8452ad66-a1d7-46e8-b76b-4519daa7fa9d    cancel                                                                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...
+
+
+ intercom send 01a059b8-807a-747e-9f37-423c26b6042a
+ ✗ Message to "01a059b8-807a-747e-9f37-423c26b6042a" was not delivered: Session not found (bc883534-011d-4874-bc19-7c8606cc1cf5)
+
+
+
+ intercom ask 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8
+ ✓ Reply from 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8:
+ ASK-REPLY-PROOF-2784-OK
+
+
+ All six operations completed in the requested order. Raw results are shown above. The ask resolved naturally with:
+
+ ASK-REPLY-PROOF-2784-OK
+
+ No cancellation was issued.
+
+╭ WORKFLOW COMPLETE ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ Workflow "issue-2784-e2e" completed                                                                                                                                                                │
+│ workflow  issue-2784-e2e                                                                                                                                                                             │
+│ run       8452ad66-a1d7-46e8-b76b-4519daa7fa9d                                                                                                                                                       │
+│ launched  agent                                                                                                                                                                                      │
+│ duration  2m 53s                                                                                                                                                                                     │
+│ ▸ /workflow status 8452ad66-a1d7-46e8-b76b-4519daa7fa9d                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...
+
+workflow: list retained runs
+╭ RUN issue-2784-e2e  ✓ completed ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  8452ad66-a1d7-46e8-b76b-4519daa7fa9d                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      issue-2784-e2e                                                                                                                                                                         │
+│ state         ✓ completed                                                                                                                                                                            │
+│ mode          chain · 2 stages                                                                                                                                                                       │
+│ started       21:27:38                                                                                                                                                                               │
+│ ended         21:30:31                                                                                                                                                                               │
+│ duration      2m 53s                                                                                                                                                                                 │
+│                                                                                                                                                                                                      │
+│ STAGES                                                                                                                                                                                               │
+│ ✓ running-isola…  completed                 2m 47s                                                                                                                                                   │
+│ ✓ future-isolat…  completed                 5s                                                                                                                                                       │
+│                                                                                                                                                                                                      │
+│ ARTIFACTS                                                                                                                                                                                            │
+│ result        {"result":"issue-2784 live E2E fixture complete"}                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│ ▸ workflow status id=8452ad66-a1d7-46e8-b76b-4519daa7fa9d    inspect retained state                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Workflow completed successfully in 173.126 seconds.
+
+ - running-isolated: received live-send token and replied to the ask.
+ - future-isolated: received the queued pending-stage token.
+ - Sibling subgroup isolation was confirmed in both directions.
+ - Final result: issue-2784 live E2E fixture complete
+
+ Connected to 8452ad66-a1d7-46e8-b76b-4519daa7fa9d. h hide · ctrl+x leave graph · return to main chat · esc close.
+
+                                                                                                                                       ↑42k • ↓1.4k • R346k • CH92.2% • $0.849 (sub) • 11.3%/272k (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • ~/Documents/projects/atomic-issue-2784 (fix/intercom-workflow-stage-registration)
+MCP: 0/1 servers
+================ END MAIN CHAT TRANSCRIPT ================
+
+================ RUNNING STAGE TRANSCRIPT ================
+   STAGE  issue-2784-e2e / running-isolated                                                                                                                session 01a059b8-807a-747e-9f37-423c26b6042a
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ $ sleep 150 (timeout 160s)
+
+ (no output)
+
+
+
+╭ 📨 From: subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────────────────────────╮
+│LIVE-SEND-PROOF-2784-FINAL-7C91                                                                                                                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+╭ 📨 From: subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────────────────────────╮
+│Reply via intercom with ASK-REPLY-PROOF-2784-FINAL-QUESTION                                                                                                                                           │
+│                                                                                                                                                                                                      │
+│ ↩ To reply: intercom({ action: "reply", message: "..." })                                                                                                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Inspecting injected message contexts
+
+
+ intercom pending
+ ✓ Pending asks:
+ - subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 · 7999865e-211d-4e00-a493-77887b3698d9 · 86s ago · Reply via intercom with ASK-REPLY-PROOF-2784-FINAL-QUESTION
+
+
+ Requesting exact message ID
+
+
+ intercom reply
+ ✓ Reply sent to subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (9c1763a1-1712-42c8-a590-8bb050bd2250)
+
+
+ Listing beta subgroup stages
+
+
+ intercom list
+ ✓ Current session (groups: workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d/alpha):
+ • subagent-chat-01a059b8-807a-747e-9f37-423c26b6042a (95356b1d-98fc-438c-ae43-bec440f2b32b) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [self, tool:intercom, group:
+ workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d/alpha]
+
+ Other sessions and workflow stages:
+ No other sessions or workflow stages share any of your groups.
+
+
+ Clarifying unique token quoting
+
+ Normal message token: LIVE-SEND-PROOF-2784-FINAL-7C91
+
+ Replied to the pending ask with ASK-REPLY-PROOF-2784-OK.
+
+ No stage in the beta sibling subgroup was visible in intercom list.
+                                                                                                                                          ↑11k • ↓338 • R31k • CH87.4% • $0.165 (sub) • 3.3%/272k (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • ~/Documents/projects/atomic-issue-2784 (fix/intercom-workflow-stage-registration)
+MCP: 0/1 servers                                                                                                                                                                  ctrl+x return to graph
+================ END RUNNING STAGE TRANSCRIPT ================
+
+================ FUTURE STAGE TRANSCRIPT ================
+   STAGE  issue-2784-e2e / future-isolated                                                                                                                 session 01a059bb-0e93-767c-88de-35df4da12b5f
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+╭ 📨 From: subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────────────────────────╮
+│**Messages received before you started**                                                                                                                                                              │
+│                                                                                                                                                                                                      │
+│Sent: 2026-08-31T21:28:36.753Z                                                                                                                                                                        │
+│                                                                                                                                                                                                      │
+│PENDING-PROOF-2784-FINAL-5D82                                                                                                                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+ ISSUE-2784 LIVE E2E FUTURE STAGE.
+ Before doing anything else, inspect the messages already present in your FIRST TURN context.
+ Quote the complete PENDING-PROOF-2784 token you received before initialization.
+ Then call intercom list and state whether the alpha sibling subgroup's running-isolated stage is visible.
+ Return a concise receipt.
+
+
+ Preparing token completion and intercom call
+
+
+ intercom list
+ ✓ Current session (groups: workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d/beta):
+ • subagent-chat-01a059bb-0e93-767c-88de-35df4da12b5f (8e5ce406-37ec-4dd9-b9a0-23bae9e34b0e) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [self, tool:intercom, group:
+ workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d/beta]
+
+ Other sessions and workflow stages:
+ No other sessions or workflow stages share any of your groups.
+
+
+ Received token: PENDING-PROOF-2784-FINAL-5D82
+
+ Intercom list checked. The alpha sibling subgroup’s running-isolated stage is not visible.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                         ↑1.2k • ↓104 • R15k • CH91.5% • $0.033 (sub) • 3.1%/272k (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • ~/Documents/projects/atomic-issue-2784 (fix/intercom-workflow-stage-registration)
+MCP: 0/1 servers                                                                                                                                                                  ctrl+x return to graph
+================ END FUTURE STAGE TRANSCRIPT ================

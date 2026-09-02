@@ -43,6 +43,7 @@ async function createGenerationRuntime() {
 	let generation = 1;
 	const resources = new Map<number, Deferred<void>>([[1, observedRejectionDeferred<void>()]]);
 	const initializations = new Map<number, Deferred<void>>([[1, deferred<void>()]]);
+	const extensionPaths = new Map<number, string>([[1, "/builtin/engine-1/index.ts"]]);
 	let engineMessageListener: ((message: { type: string; message?: string }) => void) | undefined;
 	let generationEndedListener:
 		| ((event: { generation: number; error: Error; kind: "explicit-stop"; expected: boolean }) => void)
@@ -77,6 +78,7 @@ async function createGenerationRuntime() {
 				messageCount: 0,
 				pendingMessageCount: 0,
 				queuedMessagesPaused: false,
+				resourceExtensions: [{ path: extensionPaths.get(requestedGeneration)!, hidden: false }],
 			};
 		},
 		requestInternal: async () => ({ models: [], scopedModels: [] }),
@@ -113,7 +115,11 @@ async function createGenerationRuntime() {
 		setGeneration(next: number) {
 			generation = next;
 			resources.set(next, observedRejectionDeferred<void>());
+			extensionPaths.set(next, `/builtin/engine-${next}/index.ts`);
 			initializations.set(next, deferred<void>());
+		},
+		setResourceExtension(extensionPath: string) {
+			extensionPaths.set(generation, extensionPath);
 		},
 		retireGeneration(retiredGeneration: number, expected = true) {
 			generationEndedListener?.({
@@ -326,6 +332,24 @@ describe("interactive engine resource readiness", () => {
 				throw new Error("unused runtime factory");
 			},
 		);
+		const extensions = harness.session.resourceLoader.getExtensions();
+		const extensionSource = {
+			path: "/builtin/workflows/index.ts",
+			source: "builtin:workflows",
+			scope: "user" as const,
+			origin: "package" as const,
+		};
+		const getExtensions = vi.spyOn(harness.session.resourceLoader, "getExtensions").mockReturnValue({
+			...extensions,
+			extensions: [
+				{
+					path: extensionSource.path,
+					resolvedPath: extensionSource.path,
+					sourceInfo: extensionSource,
+					hidden: false,
+				},
+			] as never,
+		});
 		const handle = createRpcCommandHandler({
 			runtimeHost: runtime,
 			getSession: () => harness.session,
@@ -335,6 +359,13 @@ describe("interactive engine resource readiness", () => {
 		});
 
 		try {
+			const stateResponse = await handle({ id: "state", type: "get_state" });
+			expect(stateResponse).toMatchObject({
+				success: true,
+				data: {
+					resourceExtensions: [{ path: extensionSource.path, sourceInfo: extensionSource, hidden: false }],
+				},
+			});
 			await handle({ id: "state", type: "get_state" });
 			await handle({ id: "catalog", type: "get_available_models", allowPartialResources: true });
 			expect(waitForResources).not.toHaveBeenCalled();
@@ -342,6 +373,7 @@ describe("interactive engine resource readiness", () => {
 			await handle({ id: "user-catalog", type: "get_available_models" });
 			expect(waitForResources).toHaveBeenCalledTimes(1);
 		} finally {
+			getExtensions.mockRestore();
 			harness.cleanup();
 		}
 	});
@@ -480,6 +512,39 @@ describe("interactive engine resource readiness", () => {
 		}
 	});
 
+	it("clears retired extension inventory and publishes only the replacement generation", async () => {
+		const probe = await createGenerationRuntime();
+		const observedInventories: string[][] = [];
+		const disposeInventoryListener = probe.runtime.onResourceExtensionsChanged((extensions) => {
+			observedInventories.push(extensions.map((extension) => extension.path));
+		});
+		try {
+			probe.initializations.get(1)!.resolve();
+			await probe.runtime.initializeFromEngine();
+			expect(probe.runtime.getResourceExtensions()).toEqual([{ path: "/builtin/engine-1/index.ts", hidden: false }]);
+
+			probe.retireGeneration(1);
+			expect(probe.runtime.getResourceExtensions()).toEqual([]);
+			probe.setGeneration(2);
+			probe.initializations.get(2)!.resolve();
+			await probe.runtime.initializeFromEngine();
+			expect(probe.runtime.getResourceExtensions()).toEqual([{ path: "/builtin/engine-2/index.ts", hidden: false }]);
+
+			probe.setResourceExtension("/builtin/reloaded/index.ts");
+			await probe.runtime.synchronize();
+			expect(probe.runtime.getResourceExtensions()).toEqual([{ path: "/builtin/reloaded/index.ts", hidden: false }]);
+			expect(observedInventories).toEqual([
+				["/builtin/engine-1/index.ts"],
+				[],
+				["/builtin/engine-2/index.ts"],
+				["/builtin/reloaded/index.ts"],
+			]);
+		} finally {
+			disposeInventoryListener();
+			await probe.runtime.dispose();
+			probe.harness.cleanup();
+		}
+	});
 	it("serializes initialization so an old generation cannot overwrite newer host state", async () => {
 		const probe = await createGenerationRuntime();
 		try {

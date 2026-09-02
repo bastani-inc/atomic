@@ -65,7 +65,7 @@ uv run pier run \
   --model openai-codex/gpt-5.6-sol \
   --agent-kwarg thinking=xhigh \
   --agent-kwarg version=0.9.13 \
-  --agent-timeout-multiplier 16 \
+  --agent-timeout-multiplier 8 \
   --job-name atomic-smoke \
   --n-tasks 1 \
   --sample-seed 0 \
@@ -98,7 +98,7 @@ uv run pier run \
   --model openai-codex/gpt-5.6-sol \
   --agent-kwarg thinking=xhigh \
   --agent-kwarg version=0.9.13 \
-  --agent-timeout-multiplier 16 \
+  --agent-timeout-multiplier 8 \
   --job-name atomic-deep-swe \
   --sample-seed 0 \
   --n-concurrent 4 \
@@ -119,7 +119,7 @@ or `uv run pier job resume -p jobs/atomic-deep-swe`.
 |---|---|
 | `--agent-kwarg version=0.9.13` | Installs that exact npm version in the sandbox. Prefer a pinned, current version over `next` or `latest`, which cannot be attributed to a build afterwards. |
 | `--force-build` | Rebuilds the task image so the `npm install -g @bastani/atomic@…` layer re-runs. Without it Docker reuses a cached install and you silently benchmark a stale build. |
-| `--agent-timeout-multiplier 16` | Tasks set a 1.5 h agent timeout; ×16 makes it a day. Pier cannot disable the timeout, so a large multiplier is how you run effectively untimed. |
+| `--agent-timeout-multiplier 8` | Tasks set a 3 h agent timeout; ×8 makes it 24 h, or one day. Pier cannot disable the timeout, so a large multiplier is how you run effectively untimed. |
 | `--agent-kwarg thinking=xhigh` | Atomic's reasoning level, for models that support it. |
 | `--agent-kwarg disallowed_subscriptions=github-copilot` | Excludes providers from the local subscription auth copied into the sandbox. |
 | `--n-tasks`, `--include-task-name` | Choose which tasks run. |

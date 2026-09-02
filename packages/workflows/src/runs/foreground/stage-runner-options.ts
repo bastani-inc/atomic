@@ -56,6 +56,7 @@ export function stripWorkflowOnlyOptions(
 		durableReplayKey: _durableReplayKey,
 		durableAccumulatedDurationMs: _durableAccumulatedDurationMs,
 		durableStageId: _durableStageId,
+		durableIntercomGroup: _durableIntercomGroup,
 		durableParentIds: _durableParentIds,
 		sessionDir,
 		gitWorktreeDir: _gitWorktreeDir,

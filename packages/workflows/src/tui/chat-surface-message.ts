@@ -28,7 +28,7 @@
 import type { ExtensionAPI } from "../extension/index.js";
 import type { RunDetail } from "../runs/background/status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
 import type { WorkflowInputValues } from "../shared/types.js";
 import { renderDispatchConfirm } from "./dispatch-confirm.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -89,6 +89,8 @@ export interface ListPayload {
 export interface DetailPayload {
 	kind: "detail";
 	detail: RunDetail;
+	/** Emit-time owning-run statuses for stages projected from nested child runs. */
+	owningRunStatuses?: Readonly<Record<string, RunStatus | "crashed">>;
 }
 
 export type ChatSurfacePayload = DispatchPayload | StatusPayload | ListPayload | DetailPayload;
@@ -193,7 +195,12 @@ export function renderChatSurfacePlainText(
 			return [rendered, "", ...payload.entries.map(formatWorkflowEntryPlain)].join("\n");
 		}
 		case "detail": {
-			const rendered = renderRunDetail(payload.detail, { width, now, ...themed });
+			const rendered = renderRunDetail(payload.detail, {
+				width,
+				now,
+				...themed,
+				owningRunStatus: (runId) => payload.owningRunStatuses?.[runId],
+			});
 			const lines = [
 				rendered,
 				`run id: ${payload.detail.runId}`,
@@ -314,6 +321,11 @@ function renderPayload(payload: ChatSurfacePayload, theme: GraphTheme, width: nu
 		case "list":
 			return renderWorkflowList(payload.entries, { theme, width });
 		case "detail":
-			return renderRunDetail(payload.detail, { theme, width, now });
+			return renderRunDetail(payload.detail, {
+				theme,
+				width,
+				now,
+				owningRunStatus: (runId) => payload.owningRunStatuses?.[runId],
+			});
 	}
 }

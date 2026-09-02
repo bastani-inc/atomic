@@ -108,3 +108,40 @@ test("selecting the empty-state row closes without mutating overrides", () => {
 	expect(config.modelThinkingLevels).toBeUndefined();
 	expect(done).toHaveBeenCalledWith();
 });
+
+// Upstream pi #8900 keeps the configured per-model thinking level marked with a leading "✓ "
+// while the cursor browses. Upstream marks the level label in a two-stage picker; Atomic
+// flattened that into one model × level list, so the marker lands on the row whose level is the
+// configured override, and the clear-override row is padded to stay aligned.
+test("keeps the configured per-model thinking level marked while browsing", () => {
+	const model = { id: "thinking-model", provider: "anthropic", reasoning: true };
+	const modelKey = `${model.provider}/${model.id}`;
+	const config = settingsConfig({
+		availableDefaultModels: [model],
+		thinkingLevel: "high",
+		modelThinkingLevels: { [modelKey]: "medium" },
+	} as Partial<SettingsConfig>);
+
+	const submenu = openPerModelThinkingSubmenu(config, {} as SettingsCallbacks);
+	const rowFor = (level: string): string => {
+		const row = render(submenu)
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.find((line) => line.includes(`${model.id} [${model.provider}]`) && line.endsWith(level));
+		if (!row) throw new Error(`Expected a rendered row for level ${level}`);
+		return row;
+	};
+
+	// The cursor opens on "off"; the configured level is still the one carrying the marker, and
+	// every unmarked row is padded to the same column so the list stays aligned.
+	expect(rowFor("off").startsWith("→   ")).toBe(true);
+	expect(rowFor("medium · default").startsWith("  ✓ ")).toBe(true);
+	expect(rowFor("high").startsWith("    ")).toBe(true);
+	expect(rowFor("clear override").startsWith("    ")).toBe(true);
+
+	// Browsing away must not move or drop the marker.
+	submenu.handleInput?.("\x1b[B");
+	expect(rowFor("off").startsWith("    ")).toBe(true);
+	expect(rowFor("minimal").startsWith("→   ")).toBe(true);
+	expect(rowFor("medium · default").startsWith("  ✓ ")).toBe(true);
+});

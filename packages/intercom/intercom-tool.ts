@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
-import type { SessionInfo } from "./types.js";
+import type { SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
@@ -18,6 +18,122 @@ import {
 import type { ReplyTracker } from "./reply-tracker.js";
 import { resolveSessionTargetId } from "./session-target.js";
 import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
+import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
+
+async function listDirectory(client: IntercomClient, group?: string): Promise<SessionDirectory> {
+	if (typeof client.listDirectory === "function") return client.listDirectory(group);
+	return { sessions: await client.listSessions(group), workflowStages: [], workflowFutureStages: [] };
+}
+
+type ReplySenderResolution =
+	| { readonly kind: "resolved"; readonly sessionId: string }
+	| { readonly kind: "unresolved" }
+	| { readonly kind: "ambiguous"; readonly reason: string };
+
+/**
+ * Map a canonical workflow-stage target to the live session id its reply will arrive
+ * from. `unresolved` keeps today's behavior of keying the waiter on the send target
+ * (ordinary miss handling); `ambiguous` must refuse the ask — keying on the raw path
+ * string is the #2784 hang-to-timeout class because inbound reply routing only ever
+ * produces the stage session's id or name.
+ */
+async function resolveReplySender(
+	client: IntercomClient,
+	logicalTarget: string,
+	sendTarget: string,
+): Promise<ReplySenderResolution> {
+	if (logicalTarget !== sendTarget) return { kind: "unresolved" };
+	// Only a canonical workflow path needs the roster lookup that maps it to the
+	// stage's live session id. Ordinary name/id asks stay off this directory round-trip.
+	const parsedTarget = parseWorkflowStageTarget(logicalTarget);
+	if (parsedTarget?.kind !== "path") return { kind: "unresolved" };
+	// The roster publishes the depth-faithful id form; live routing also registers the name
+	// form (final segment swapped). Sibling stages can share a boundary name, so more than
+	// one alias may match — that is an ambiguous target, not a first-match wins.
+	const stages = (await listDirectory(client)).workflowStages;
+	const aliasMatches = stages.filter(
+		(candidate) =>
+			candidate.sessionId !== undefined &&
+			(candidate.target === logicalTarget ||
+				withWorkflowStageTargetFinalSegment(candidate.target, candidate.stageName) === logicalTarget),
+	);
+	const aliasSessionIds = new Set(aliasMatches.map((candidate) => candidate.sessionId));
+	if (aliasSessionIds.size > 1) {
+		return {
+			kind: "ambiguous",
+			reason: `multiple live workflow stages share the target "${logicalTarget}"`,
+		};
+	}
+	if (aliasSessionIds.size === 1) {
+		const [onlySessionId] = aliasSessionIds;
+		if (onlySessionId !== undefined) return { kind: "resolved", sessionId: onlySessionId };
+	}
+	// Boundary forms (`workflow:<root>/<boundary...>/<stage>`) match neither alias. Start from
+	// every live nested candidate under the same invocation root whose final segment matches,
+	// then narrow to candidates whose boundary segments agree with the target's (the candidate
+	// target's segment at that depth, or the owning run id at the candidate's own depth).
+	const finalSegment = parsedTarget.segments.at(-1);
+	const middleSegments = parsedTarget.segments.slice(0, -1);
+	const boundaryAgrees = (candidate: WorkflowStageRosterEntry): boolean => {
+		const parsedCandidate = parseWorkflowStageTarget(candidate.target);
+		if (
+			parsedCandidate === undefined ||
+			parsedCandidate.rootRunId !== parsedTarget.rootRunId ||
+			parsedCandidate.segments.length < 2
+		) {
+			return false;
+		}
+		if (middleSegments.length === 0) return true;
+		const candidateMiddles = parsedCandidate.segments.slice(0, -1);
+		return middleSegments.every((segment, index) => {
+			const owningRunIdentity = index === candidateMiddles.length - 1 ? candidate.runId : undefined;
+			return segment === candidateMiddles[index] || segment === owningRunIdentity;
+		});
+	};
+	const looseCandidates = stages.filter((candidate) => {
+		if (candidate.sessionId === undefined) return false;
+		if (candidate.stageId !== finalSegment && candidate.stageName !== finalSegment) return false;
+		const parsedCandidate = parseWorkflowStageTarget(candidate.target);
+		return (
+			parsedCandidate !== undefined &&
+			parsedCandidate.rootRunId === parsedTarget.rootRunId &&
+			parsedCandidate.segments.length >= 2
+		);
+	});
+	const strictMatches = looseCandidates.filter(boundaryAgrees);
+	const strictSessionIds = new Set(strictMatches.map((candidate) => candidate.sessionId));
+	if (strictSessionIds.size === 1) {
+		const [onlySessionId] = strictSessionIds;
+		if (onlySessionId !== undefined) return { kind: "resolved", sessionId: onlySessionId };
+	}
+	// Never key a waiter on the raw path when the final segment names several live stages:
+	// inbound reply routing could never correlate it, so the ask would block to its timeout.
+	const looseSessionIds = new Set(looseCandidates.map((candidate) => candidate.sessionId));
+	if (looseSessionIds.size > 1 || strictSessionIds.size > 1) {
+		return {
+			kind: "ambiguous",
+			reason: `multiple live workflow stages share the final segment "${finalSegment}" under different boundaries`,
+		};
+	}
+	if (looseSessionIds.size === 1) {
+		const [onlySessionId] = looseSessionIds;
+		if (onlySessionId !== undefined) return { kind: "resolved", sessionId: onlySessionId };
+	}
+	return { kind: "unresolved" };
+}
+
+function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {
+	return `- **${stage.stageName}** — workflow stage [${stage.lifecycle.toUpperCase()}] — target: \`${stage.target}\`${
+		stage.sessionId === undefined ? "" : ` — intercom session: ${stage.sessionId}`
+	}`;
+}
+
+/** D7 (slice 4): one possible-future row from the run's persisted scan (or the `**` broadcast row). */
+function formatWorkflowFutureStageRow(stage: WorkflowFutureStageRosterEntry): string {
+	return `- future workflow stage \`${stage.target}\` — ${stage.queuedCount} queued message${
+		stage.queuedCount === 1 ? "" : "s"
+	}`;
+}
 
 interface IntercomToolDeps {
   childOrchestratorMetadata?: ChildOrchestratorMetadata | null | (() => ChildOrchestratorMetadata | null);
@@ -50,9 +166,16 @@ Use this to communicate findings, request help, or coordinate work with other se
 Sessions belong to an intercom group and can ONLY message sessions in the same group;
 cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
 
-For send, live session names and exact full session IDs remain supported. For a known
-workflow stage, use the exact \`<runId>:<stageKey>\` target; send messages to pending stages
-queue automatically.
+For send, live session names and exact full session IDs remain supported. Workflow-stage targets use
+\`workflow:<rootRunId>/<segment>[/<segment>...]\`; a segment may be a stage name, run id, or glob
+(\`*\` matches one segment and may be embedded, while \`**\` matches any depth). Use \`intercom list\`
+inside the invocation group to see live, pending, and possible future targets with queued counts.
+\`workflow:<rootRunId>/**\` reaches every live stage immediately and remains sticky for every future
+stage until the root run terminates; narrower name or pattern sends likewise reach every future match.
+A valid target outside the known set queues speculatively with a \`notInKnownSet\` warning and settles
+undeliverable at terminal only if never delivered. Use \`ask\` only for a live, reply-capable target.
+Stage paths win over same-named owned subgroups for send/ask; \`list\` with \`group\` continues to
+select the group.
 
 Usage:
   intercom({ action: "list" })                    → List sessions visible through your groups
@@ -78,7 +201,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Live session name, exact full session ID, or exact `<runId>:<stageKey>` for a known workflow stage; send messages to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')",
+        description: "Live session name, exact full session ID, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send queues sticky delivery for pending/future matches; `workflow:<rootRunId>/**` broadcasts to live and future stages. Use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -227,7 +350,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         case "list": {
           try {
             const mySessionId = connectedClient.sessionId;
-            const ownSessions = await connectedClient.listSessions();
+            const ownDirectory = await listDirectory(connectedClient);
+			const ownSessions = ownDirectory.sessions;
             const currentSession = ownSessions.find((session) => session.id === mySessionId);
             if (!currentSession) {
               return {
@@ -238,27 +362,54 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             const ownGroups = resolveOwnGroups(ownSessions);
             if (requestedGroup && !isOnlyOwnGroup(requestedGroup, ownGroups)) {
-              const peeked = await connectedClient.listSessions(requestedGroup);
-              const section = peeked.length === 0
-                ? `**Group [${requestedGroup}] (read-only peek):**\nNo sessions in this group.`
-                : `**Group [${requestedGroup}] (read-only peek):**\n${peeked.map((session) => formatSessionListRow(session, currentSession.cwd, session.id === mySessionId)).join("\n")}`;
-              return {
-                content: [{ type: "text", text: `Your groups: ${ownGroups.join(", ")}\n\n${section}` }],
-                isError: false,
-                details: { group: ownGroups.at(-1), groups: ownGroups, peekGroup: requestedGroup },
-              };
+			  const peeked = await listDirectory(connectedClient, requestedGroup);
+			  const rows = [
+				...peeked.sessions.map((session) => formatSessionListRow(session, currentSession.cwd, session.id === mySessionId)),
+				...peeked.workflowStages.map(formatWorkflowStageRow),
+				...(peeked.workflowFutureStages ?? []).map(formatWorkflowFutureStageRow),
+			  ];
+			  const section = rows.length === 0
+				? `**Group [${requestedGroup}] (read-only peek):**\nNo sessions or workflow stages in this group.`
+				: `**Group [${requestedGroup}] (read-only peek):**\n${rows.join("\n")}`;
+			  return {
+				content: [{ type: "text", text: `Your groups: ${ownGroups.join(", ")}\n\n${section}` }],
+				isError: false,
+				details: {
+					group: ownGroups.at(-1),
+					groups: ownGroups,
+					peekGroup: requestedGroup,
+					workflowStages: peeked.workflowStages,
+					...((peeked.workflowFutureStages?.length ?? 0) === 0
+						? {}
+						: { workflowFutureStages: peeked.workflowFutureStages }),
+				},
+			  };
             }
 
-            const otherSessions = ownSessions.filter((session) => session.id !== mySessionId);
-            const currentSection = `**Current session** (groups: ${ownGroups.join(", ")}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
-            const otherSection = otherSessions.length === 0
-              ? "**Other sessions:**\nNo other sessions share any of your groups."
-              : `**Other visible sessions:**\n${otherSessions.map((session) => formatSessionListRow(session, currentSession.cwd, false)).join("\n")}`;
+			const otherSessions = ownSessions.filter((session) => session.id !== mySessionId);
+			const currentSection = `**Current session** (groups: ${ownGroups.join(", ")}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
+			const visibleRows = [
+				...otherSessions.map((session) => formatSessionListRow(session, currentSession.cwd, false)),
+				...ownDirectory.workflowStages.map(formatWorkflowStageRow),
+				...(ownDirectory.workflowFutureStages ?? []).map(formatWorkflowFutureStageRow),
+			];
+			const otherSection = visibleRows.length === 0
+				? "**Other sessions and workflow stages:**\nNo other sessions or workflow stages share any of your groups."
+				: `**Other visible sessions and workflow stages:**\n${visibleRows.join("\n")}`;
 
             return {
               content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
               isError: false,
-              details: { group: ownGroups.at(-1), groups: ownGroups },
+              details: {
+				group: ownGroups.at(-1),
+				groups: ownGroups,
+				...(ownDirectory.workflowStages.length === 0
+					? {}
+					: { workflowStages: ownDirectory.workflowStages }),
+				...((ownDirectory.workflowFutureStages?.length ?? 0) === 0
+					? {}
+					: { workflowFutureStages: ownDirectory.workflowFutureStages }),
+			  },
             };
           } catch (error) {
             return {
@@ -312,16 +463,24 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 messageId: result.id,
                 timestamp: Date.now(),
               });
+              const notInKnownSet = result.notInKnownSet === true;
               return {
-                content: [{ type: "text", text: `Message queued for ${to}` }],
+                content: [
+                  {
+                    type: "text",
+                    text: notInKnownSet
+                      ? `Message queued for ${to} (not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)`
+                      : `Message queued for ${to}`,
+                  },
+                ],
                 isError: false,
                 details: {
                   messageId: result.id,
                   delivered: false,
                   queued: true,
-                  runId: result.runId,
-                  stageKey: result.stageKey,
+					target: result.target,
                   position: result.position,
+                  ...(notInKnownSet ? { notInKnownSet: true } : {}),
                 },
               };
             }
@@ -441,8 +600,23 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true },
               };
             }
-            const questionId = randomUUID();
-            const admission = beginReplyWait(sendTo, questionId, _signal);
+			const questionId = randomUUID();
+			// Canonical workflow targets must remain canonical on the send path so the
+			// broker can authorize invocation-to-subgroup control. The waiter, however,
+			// correlates the actual inbound stage session identity.
+			const replySender = await resolveReplySender(connectedClient, to, sendTo);
+			if (replySender.kind === "ambiguous") {
+				return {
+					content: [{
+						type: "text",
+						text: `Message to "${to}" is ambiguous: ${replySender.reason}. Use the exact target shown by intercom list.`,
+					}],
+					isError: true,
+					details: { error: true },
+				};
+			}
+			const replyFrom = replySender.kind === "resolved" ? replySender.sessionId : sendTo;
+			const admission = beginReplyWait(replyFrom, questionId, _signal);
             if (!admission.ok) {
               const text = admission.reason === "busy"
                 ? `Too many pending asks (${admission.limit}); reply-wait slots are full`

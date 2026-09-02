@@ -14,6 +14,7 @@ import type {
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcModelCatalog,
+	RpcResourceExtension,
 	RpcSlashCommand,
 } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
@@ -26,6 +27,7 @@ import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
 import { InteractiveEngineResourceReadinessError } from "./resource-readiness-error.ts";
 
+type ResourceExtensionsListener = (extensions: readonly RpcResourceExtension[]) => void;
 type QueueSnapshot = { steering: string[]; followUp: string[] };
 
 function applyPersistedModelDefault(session: AgentSession, model: Model<Api>, alreadyInScope: boolean): void {
@@ -99,6 +101,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private disposePromise: Promise<void> | undefined;
 	private readonly remoteModelCatalog: RemoteModelCatalog;
 	private resourceOverlaps: ResourceOverlap[] = [];
+	private readonly resourceExtensionsListeners: ResourceExtensionsListener[] = [];
+	private resourceExtensions: RpcResourceExtension[] = [];
 	private resourcesInitializedGeneration = 0;
 	private resourceInitialization: { generation: number; promise: Promise<void> } | undefined;
 	private readonly retiredResourceGenerations = new Set<number>();
@@ -145,6 +149,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onEvent((event) => this.observeEvent(event));
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
+			if (event.generation === this.client.getGeneration()) this.updateResourceExtensions([]);
 			this.health.handleGenerationEnded(event);
 		});
 		// Production RpcClient instances expose engine lifecycle messages. Keep the
@@ -204,6 +209,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			session.agent.followUpMode = state.followUpMode;
 			this.autoCompactionEnabled = state.autoCompactionEnabled;
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
+			this.updateResourceExtensions(state.resourceExtensions ?? []);
 			this.remoteSessionName = state.sessionName;
 			this.remoteSessionFile = state.sessionFile;
 			this.streaming = state.isStreaming;
@@ -378,11 +384,28 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	getResourceOverlaps(): readonly ResourceOverlap[] {
 		return this.resourceOverlaps;
 	}
+	getResourceExtensions(): readonly RpcResourceExtension[] {
+		return this.resourceExtensions;
+	}
+	onResourceExtensionsChanged(listener: ResourceExtensionsListener): () => void {
+		this.resourceExtensionsListeners.push(listener);
+		return () => {
+			const index = this.resourceExtensionsListeners.indexOf(listener);
+			if (index !== -1) this.resourceExtensionsListeners.splice(index, 1);
+		};
+	}
+	private updateResourceExtensions(extensions: readonly RpcResourceExtension[]): void {
+		this.resourceExtensions = [...extensions];
+		for (const listener of [...this.resourceExtensionsListeners]) listener(this.resourceExtensions);
+	}
 	async synchronize(): Promise<void> {
+		const generation = this.client.getGeneration();
 		const state = await this.client.getState();
+		if (!this.isCurrentResourceGeneration(generation)) return;
 		this.remoteSessionFile = state.sessionFile;
 		this.remoteSessionName = state.sessionName;
 		this.resourceOverlaps = state.resourceOverlaps ?? [];
+		this.updateResourceExtensions(state.resourceExtensions ?? []);
 	}
 
 	setEngineCallbackActive(active: boolean): void {

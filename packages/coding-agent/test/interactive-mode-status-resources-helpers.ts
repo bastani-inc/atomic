@@ -1,4 +1,5 @@
 import { Container } from "@earendil-works/pi-tui";
+import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../src/core/diagnostics.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -11,8 +12,12 @@ export function createShowLoadedResourcesThis(options: {
 	contextFiles?: Array<{ path: string; content?: string }>;
 	extensions?: ExtensionFixture[];
 	skills?: Array<{ filePath: string; name: string }>;
+	promptTemplates?: Array<{ filePath: string; name: string; sourceInfo?: SourceInfo }>;
+	prompts?: Array<{ filePath: string; name: string; sourceInfo?: SourceInfo }>;
+	themes?: Array<{ name?: string; sourcePath?: string; sourceInfo?: SourceInfo }>;
 	skillDiagnostics?: Array<{ type: "warning" | "error" | "collision"; message: string }>;
 	overlaps?: ResourceOverlap[];
+	runtimeHost?: AgentSessionRuntime;
 	systemPromptSource?: { path: string };
 	appendSystemPromptSources?: Array<{ path: string }>;
 	useRealScopeGroups?: boolean;
@@ -21,7 +26,7 @@ export function createShowLoadedResourcesThis(options: {
 		options: { verbose: options.verbose ?? false },
 		toolOutputExpanded: options.toolOutputExpanded ?? false,
 		chatContainer: new Container(),
-		runtimeHost: {},
+		runtimeHost: options.runtimeHost ?? {},
 		settingsManager: {
 			getQuietStartup: () => options.quietStartup,
 		},
@@ -29,7 +34,7 @@ export function createShowLoadedResourcesThis(options: {
 			getCwd: () => options.cwd ?? "/tmp/project",
 		},
 		session: {
-			promptTemplates: [],
+			promptTemplates: options.promptTemplates ?? [],
 			extensionRunner: {
 				getCommandDiagnostics: () => [],
 				getShortcutDiagnostics: () => [],
@@ -43,14 +48,14 @@ export function createShowLoadedResourcesThis(options: {
 					skills: options.skills ?? [],
 					diagnostics: options.skillDiagnostics ?? [],
 				}),
-				getPrompts: () => ({ prompts: [], diagnostics: [] }),
+				getPrompts: () => ({ prompts: options.prompts ?? [], diagnostics: [] }),
 				getExtensions: () => ({
 					extensions: options.extensions ?? [],
 					errors: [],
 					runtime: {},
 					overlaps: options.overlaps ?? [],
 				}),
-				getThemes: () => ({ themes: [], diagnostics: [] }),
+				getThemes: () => ({ themes: options.themes ?? [], diagnostics: [] }),
 			},
 		},
 		formatDisplayPath: (p: string) => (InteractiveMode as any).prototype.formatDisplayPath.call(fakeThis, p),
@@ -81,10 +86,6 @@ export function createShowLoadedResourcesThis(options: {
 			(InteractiveMode as any).prototype.getCompactExtensionLabels.call(fakeThis, extensions),
 		formatDiagnostics: () => "diagnostics",
 		getBuiltInCommandConflictDiagnostics: () => [],
-		getResourceDiagnosticsTotal: (values: Array<{ length: number }[]>) =>
-			values.reduce((total, diagnostics) => total + diagnostics.length, 0),
-		formatResourceCount: (count: number, singular: string, plural?: string) =>
-			(InteractiveMode as any).prototype.formatResourceCount.call(fakeThis, count, singular, plural),
 		addResourceDisclosure: (disclosure: unknown) =>
 			(InteractiveMode as any).prototype.addResourceDisclosure.call(fakeThis, disclosure),
 	};
@@ -110,6 +111,15 @@ export function createSourceInfo(
 		baseDir?: string;
 	},
 ): SourceInfo {
+	if (
+		typeof options !== "object" ||
+		options === null ||
+		typeof options.source !== "string" ||
+		typeof options.scope !== "string" ||
+		typeof options.origin !== "string"
+	) {
+		throw new TypeError("createSourceInfo options must include source, scope, and origin");
+	}
 	return {
 		path: filePath,
 		source: options.source,
