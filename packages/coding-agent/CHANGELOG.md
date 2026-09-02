@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an informational **Keybindings** row to `/settings` that shows the active agent directory's `keybindings.json` path and points to `/hotkeys`, the complete Keybindings documentation, and `/reload` without changing any shortcuts or editor behavior ([#2629](https://github.com/bastani-inc/atomic/issues/2629)).
+
 ## [0.9.18-alpha.5] - 2026-09-01
 
 ### Added

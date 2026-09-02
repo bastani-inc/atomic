@@ -14,6 +14,7 @@ export type DoubleEscapeAction = "fork" | "tree" | "none";
 export type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 
 export interface SettingsConfig {
+	keybindingsPath: string;
 	autoCompact: boolean;
 	showImages: boolean;
 	imageWidthCells: number;

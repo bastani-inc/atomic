@@ -39,6 +39,7 @@ class SelectorTerminal implements Terminal {
 
 function openSettingsSelector() {
 	const settingsManager = SettingsManager.inMemory({});
+	const agentDir = "C:\\Users\\dev\\custom-atomic-agent";
 	let selector: SettingsSelectorComponent | undefined;
 	const renderer = createInteractiveTui({
 		showHardwareCursor: false,
@@ -47,7 +48,7 @@ function openSettingsSelector() {
 	});
 	const mode = Object.assign(Object.create(InteractiveMode.prototype), {
 		runtimeHost: {
-			services: { agentDir: "/tmp" },
+			services: { agentDir },
 			session: {
 				settingsManager,
 				autoCompactionEnabled: true,
@@ -78,7 +79,7 @@ function openSettingsSelector() {
 
 	mode.showSettingsSelector();
 	if (!selector) throw new Error("settings selector was not created");
-	return { mode, selector };
+	return { agentDir, mode, selector };
 }
 
 beforeEach(() => {
@@ -104,5 +105,17 @@ test("settings selector keeps fullscreen scrollbar available", () => {
 	const rendered = stripTerminalSequences(selector.getSettingsList().render(120).join("\n"));
 
 	expect(rendered).toMatch(/Fullscreen scrollbar\s+auto/);
+	mode.ui.stop();
+});
+
+test("/settings renders keybinding guidance for the active agent directory", () => {
+	const { agentDir, mode, selector } = openSettingsSelector();
+	const rendered = stripTerminalSequences(selector.getSettingsList().render(160).join("\n"));
+
+	expect(rendered).toContain("Keybindings");
+	expect(rendered).toContain(`${agentDir}\\keybindings.json`);
+	expect(rendered).toContain("/reload");
+	expect(rendered).toContain("/hotkeys shows common active and extension shortcuts");
+	expect(rendered).toContain("Keybindings documentation is the complete reference");
 	mode.ui.stop();
 });

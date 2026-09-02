@@ -50,7 +50,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
 | `/fast` | Configure fast mode for chat and workflow stages when supported OpenAI or GitHub Copilot models are available |
 | `/workflow` | List/run workflows; manage runs (connect/inspect/pause/interrupt/quit/resume); reload workflow resources |
-| `/settings` | Theme, message delivery, transport, and other preferences |
+| `/settings` | Keybinding configuration, theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
@@ -63,7 +63,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 | `/reload` | Reload keybindings, extensions, skills, prompts, and context files |
-| `/hotkeys` | Show all keyboard shortcuts |
+| `/hotkeys` | Show common active and extension shortcuts; see [Keybindings](/keybindings) for the complete reference |
 | `/changelog` | Display version history |
 | `/exit` | Exit Atomic |
 | `/quit` | Quit Atomic |

@@ -9,6 +9,10 @@ Atomic uses JSON settings files with project settings overriding global settings
 
 Edit directly or use `/settings` for common options. To save startup model defaults interactively, use `/model` and press Ctrl+S on the desired model; to save the startup thinking level, use `/thinking` and press Ctrl+S. Atomic also reads legacy `~/.pi/agent/settings.json` and `.pi/settings.json` as compatibility fallbacks, with `.atomic` paths taking precedence.
 
+## Keybindings
+
+`/settings` shows the active agent directory's `keybindings.json` path in its informational **Keybindings** row. This reflects custom agent directories and Windows paths instead of assuming `~/.atomic/agent/keybindings.json`. Edit that file and run `/reload` to apply the changes. `/hotkeys` shows common active and extension shortcuts; see [Keybindings](/keybindings) for the complete reference and configuration format.
+
 ## Project Trust
 
 On interactive startup, Atomic asks before trusting a project folder that contains trust-gated project inputs and has no saved decision for the folder or a parent folder in `~/.atomic/agent/trust.json`. Trusting a project allows Atomic to load project-local `.atomic/settings.json` and `.atomic` resources, legacy `.pi/settings.json` and `.pi` resources, project-local context files, install missing project packages, and execute project extensions.
