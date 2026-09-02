@@ -61,6 +61,7 @@ async function removeTempDirectory(path: string): Promise<void> {
 interface HarnessReport {
 	type?: string;
 	editorText?: string;
+	inputReady?: boolean;
 	prefix?: string;
 	enginePid?: number;
 	items?: Array<{ value?: string; label?: string }> | null;
@@ -249,7 +250,9 @@ serialTest(
 			ATOMIC_LEGACY_COMMAND_LOG: logFile,
 		});
 		try {
-			await driver.waitFor((report) => report.type === "terminal_ready", INHERITED_REPORT_TIMEOUT_MS);
+			// `terminal_ready` fires before startup input recovery finishes. Wait until
+			// the real input callback is armed before injecting text into the editor.
+			await driver.waitFor((report) => report.type === "heartbeat" && report.inputReady === true);
 			assert.ok((await waitForCommand(driver)).has("legacy-compatible"));
 			driver.send({ type: "input", data: "/legacy-compatible" });
 			await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/legacy-compatible");

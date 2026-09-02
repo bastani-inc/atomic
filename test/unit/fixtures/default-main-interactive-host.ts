@@ -155,6 +155,7 @@ async function runHost(): Promise<void> {
 			type: "heartbeat",
 			at: performance.now(),
 			enginePid: runtime instanceof IsolatedInteractiveRuntime ? runtime.getEnginePid() : undefined,
+			inputReady: mode?.onInputCallback !== undefined,
 			generation: runtime instanceof IsolatedInteractiveRuntime ? runtime.getEngineGeneration() : undefined,
 			recovering: runtime instanceof IsolatedInteractiveRuntime ? runtime.isRecovering() : undefined,
 			editorText: mode?.editor.getText(),
