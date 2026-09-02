@@ -113,10 +113,11 @@ function fetchGitHub(
 	init: RequestInit,
 	timeoutMs: number,
 	signal?: AbortSignal,
-): Promise<Response> {
-	return runBounded(timeoutMs, signal, (boundedSignal) =>
-		runtime.fetchImplementation(input, { ...init, signal: boundedSignal }),
-	);
+): Promise<void> {
+	return runBounded(timeoutMs, signal, async (boundedSignal) => {
+		const response = await runtime.fetchImplementation(input, { ...init, signal: boundedSignal });
+		await response.body?.cancel();
+	});
 }
 interface GitHubResponseWithText {
 	response: Response;
@@ -129,18 +130,25 @@ interface GitHubTextRequest {
 	shouldReadBody: (response: Response) => boolean;
 }
 
+async function fetchGitHubTextWithSignal(
+	runtime: FeedbackPostingRuntime,
+	request: Omit<GitHubTextRequest, "timeoutMs">,
+	signal: AbortSignal,
+): Promise<GitHubResponseWithText> {
+	const response = await runtime.fetchImplementation(request.input, { ...request.init, signal });
+	if (request.shouldReadBody(response)) return { response, text: await response.text() };
+	await response.body?.cancel();
+	return { response };
+}
+
 function fetchGitHubWithText(
 	runtime: FeedbackPostingRuntime,
 	request: GitHubTextRequest,
 	signal?: AbortSignal,
 ): Promise<GitHubResponseWithText> {
-	return runBounded(request.timeoutMs, signal, async (boundedSignal) => {
-		const response = await runtime.fetchImplementation(request.input, {
-			...request.init,
-			signal: boundedSignal,
-		});
-		return request.shouldReadBody(response) ? { response, text: await response.text() } : { response };
-	});
+	return runBounded(request.timeoutMs, signal, (boundedSignal) =>
+		fetchGitHubTextWithSignal(runtime, request, boundedSignal),
+	);
 }
 
 export function feedbackRequestMarker(requestId: string, kind: FeedbackKind): string {
@@ -209,6 +217,19 @@ function reconciledUrl(records: readonly GitHubIssueRecord[], marker: string): s
 	return undefined;
 }
 
+function reconciledGhOutput(value: string, marker: string): FeedbackReconciliation {
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return { status: "absent" };
+	const legacyRecords = issueRecords(trimmed);
+	if (legacyRecords) {
+		const url = reconciledUrl(legacyRecords, marker);
+		return url ? { status: "found", url } : { status: "absent" };
+	}
+	const urls = trimmed.split(/\r?\n/u);
+	if (urls.some((url) => validatedIssueUrl(url) === undefined)) return { status: "unavailable" };
+	return { status: "found", url: urls[0]!.trim() };
+}
+
 function retained(message: string): FeedbackPostResult {
 	return { status: "failure", message: `${message} The complete reviewed draft is retained.` };
 }
@@ -254,30 +275,58 @@ async function reconcileWithGh(
 		const listed = await execGh(
 			runtime,
 			[
-				"issue",
-				"list",
-				"--repo",
-				FEEDBACK_REPOSITORY,
-				"--state",
-				"all",
-				"--author",
-				"@me",
-				"--limit",
-				"100",
-				"--json",
-				"url,body",
+				"api",
+				"--paginate",
+				"--slurp",
+				"-H",
+				"Accept: application/vnd.github+json",
+				`repos/${FEEDBACK_REPOSITORY}/issues?state=all&per_page=100`,
+				"--jq",
+				`[.[][] | select(.body != null and (.body | contains(${JSON.stringify(marker)}))) | .html_url][:2][]`,
 			],
 			runtime.timeouts.ghReconcileMs,
 			signal,
 		);
-		if (listed.code !== 0) return { status: "unavailable" };
-		const records = issueRecords(listed.stdout);
-		if (!records) return { status: "unavailable" };
-		const url = reconciledUrl(records, marker);
-		return url ? { status: "found", url } : { status: "absent" };
+		if (listed.code !== 0 || listed.killed) return { status: "unavailable" };
+		return reconciledGhOutput(listed.stdout, marker);
 	} catch {
 		return { status: "unavailable" };
 	}
+}
+
+const REST_RECONCILIATION_URL = `https://api.github.com/repos/${FEEDBACK_REPOSITORY}/issues?state=all&per_page=100`;
+
+function validatedReconciliationPageUrl(value: string): string | undefined {
+	try {
+		const url = new URL(value);
+		if (
+			url.origin !== "https://api.github.com" ||
+			url.username.length > 0 ||
+			url.password.length > 0 ||
+			url.hash.length > 0 ||
+			url.pathname !== `/repos/${FEEDBACK_REPOSITORY}/issues` ||
+			url.searchParams.get("state") !== "all" ||
+			url.searchParams.get("per_page") !== "100"
+		) {
+			return undefined;
+		}
+		return url.toString();
+	} catch {
+		return undefined;
+	}
+}
+
+function nextReconciliationPage(response: Response): { status: "done" } | { status: "next"; url: string } | undefined {
+	const link = response.headers.get("link");
+	if (!link) return { status: "done" };
+	for (const part of link.split(",")) {
+		const target = /^\s*<([^>]+)>/u.exec(part)?.[1];
+		const relation = /;\s*rel\s*=\s*"?([^";]+)"?/iu.exec(part)?.[1]?.trim().split(/\s+/u) ?? [];
+		if (!relation.includes("next")) continue;
+		const url = target === undefined ? undefined : validatedReconciliationPageUrl(target);
+		return url === undefined ? undefined : { status: "next", url };
+	}
+	return /rel\s*=\s*"?next\b/iu.test(link) ? undefined : { status: "done" };
 }
 
 async function reconcileWithRest(
@@ -287,21 +336,34 @@ async function reconcileWithRest(
 	signal?: AbortSignal,
 ): Promise<FeedbackReconciliation> {
 	try {
-		const { response, text } = await fetchGitHubWithText(
-			runtime,
-			{
-				input: `https://api.github.com/repos/${FEEDBACK_REPOSITORY}/issues?state=all&per_page=100`,
-				init: { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}` } },
-				timeoutMs: runtime.timeouts.restReconcileMs,
-				shouldReadBody: (candidate) => candidate.ok,
-			},
-			signal,
-		);
-		if (!response.ok) return { status: "unavailable" };
-		const records = issueRecords(text ?? "");
-		if (!records) return { status: "unavailable" };
-		const url = reconciledUrl(records, marker);
-		return url ? { status: "found", url } : { status: "absent" };
+		return await runBounded(runtime.timeouts.restReconcileMs, signal, async (boundedSignal) => {
+			let pageUrl = REST_RECONCILIATION_URL;
+			const visited = new Set<string>();
+			while (!visited.has(pageUrl)) {
+				visited.add(pageUrl);
+				const { response, text } = await fetchGitHubTextWithSignal(
+					runtime,
+					{
+						input: pageUrl,
+						init: { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}` } },
+						shouldReadBody: (candidate) => candidate.ok,
+					},
+					boundedSignal,
+				);
+				if (!response.ok) return { status: "unavailable" };
+				const records = issueRecords(text ?? "");
+				if (!records) return { status: "unavailable" };
+				const url = reconciledUrl(records, marker);
+				if (url) return { status: "found", url };
+				const next = nextReconciliationPage(response);
+				if (next === undefined || (next.status === "next" && visited.has(next.url))) {
+					return { status: "unavailable" };
+				}
+				if (next.status === "done") return { status: "absent" };
+				pageUrl = next.url;
+			}
+			return { status: "unavailable" };
+		});
 	} catch {
 		return { status: "unavailable" };
 	}

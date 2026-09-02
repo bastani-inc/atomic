@@ -20,6 +20,12 @@ export interface WorkingTreeSnapshot {
 	trackedPaths: string[];
 }
 
+export function protectedWorkingTreePaths(snapshot: WorkingTreeSnapshot): string[] {
+	return snapshot.entries.flatMap((entry) =>
+		entry.sourcePath === undefined ? [entry.path] : [entry.path, entry.sourcePath],
+	);
+}
+
 export interface WorkingTreeArtifact {
 	path: string;
 	status: string;

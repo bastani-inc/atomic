@@ -16,6 +16,7 @@ import {
 	compareWorkingTreeSnapshots,
 	type FeedbackExec,
 	formatWorkingTreeDisclosure,
+	protectedWorkingTreePaths,
 } from "../src/extensions/feedback/working-tree.ts";
 
 const tempDirectories: string[] = [];
@@ -131,6 +132,19 @@ describe("feedback debugger handoff", () => {
 
 		assert.equal(controller.handleSubagentCall("protected-debugger", input), undefined);
 		assert.deepEqual(input.__atomicProtectedPaths, ["tracked.txt", "user notes.txt"]);
+	});
+
+	test("protects both sides of a pre-existing rename", async () => {
+		// #2799: recreating the source of a dirty rename would overwrite pre-existing work.
+		const directory = createRepository();
+		git(directory, ["mv", "tracked.txt", "renamed.txt"]);
+
+		const snapshot = await captureWorkingTreeSnapshot(directory, execGit);
+		assert.deepEqual(
+			snapshot.entries.map(({ path, sourcePath }) => ({ path, sourcePath })),
+			[{ path: "renamed.txt", sourcePath: "tracked.txt" }],
+		);
+		assert.deepEqual(protectedWorkingTreePaths(snapshot), ["renamed.txt", "tracked.txt"]);
 	});
 
 	test("rejects duplicate, non-debugger, parallel, and enhancement debugger activity", () => {

@@ -163,8 +163,8 @@ export interface ExtensionContext {
 	mode: ExtensionMode;
 	/** Whether dialog-capable UI is available (true in TUI and RPC modes) */
 	hasUI: boolean;
-	/** Whether this session loaded any extension not shipped as an Atomic builtin. */
-	readonly hasNonBuiltinExtensions: boolean;
+	/** Whether this session loaded any extension not shipped as an Atomic builtin. Defaults to false when omitted. */
+	readonly hasNonBuiltinExtensions?: boolean;
 	/** Current working directory */
 	cwd: string;
 	/** Session manager (read-only) */

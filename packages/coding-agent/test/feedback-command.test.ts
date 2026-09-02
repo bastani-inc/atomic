@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { describe, test } from "vitest";
 import type {
 	AgentEndEvent,
@@ -43,6 +43,7 @@ function registerFeedback(
 ): {
 	command: Omit<RegisteredCommand, "name" | "sourceInfo">;
 	tool: ToolDefinition;
+	clarificationTool: ToolDefinition | undefined;
 	sent: Array<string | object[]>;
 	toolCallHandlers: FeedbackToolCallHandler[];
 	toolResultHandlers: FeedbackToolResultHandler[];
@@ -51,6 +52,7 @@ function registerFeedback(
 } {
 	let command: Omit<RegisteredCommand, "name" | "sourceInfo"> | undefined;
 	let tool: ToolDefinition | undefined;
+	let clarificationTool: ToolDefinition | undefined;
 	const sent: Array<string | object[]> = [];
 	const toolCallHandlers: FeedbackToolCallHandler[] = [];
 	const toolResultHandlers: FeedbackToolResultHandler[] = [];
@@ -58,8 +60,9 @@ function registerFeedback(
 	const agentEndHandlers: FeedbackAgentEndHandler[] = [];
 	const pi = {
 		registerTool: (definition: ToolDefinition) => {
-			assert.equal(definition.name, "submit_feedback");
-			tool = definition;
+			if (definition.name === "submit_feedback") tool = definition;
+			else if (definition.name === "request_feedback_clarification") clarificationTool = definition;
+			else assert.fail(`Unexpected feedback tool: ${definition.name}`);
 		},
 		registerCommand: (name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">) => {
 			assert.equal(name, "feedback");
@@ -94,7 +97,16 @@ function registerFeedback(
 	extension(pi);
 	assert.ok(command);
 	assert.ok(tool);
-	return { command, tool, sent, toolCallHandlers, toolResultHandlers, beforeAgentStartHandlers, agentEndHandlers };
+	return {
+		command,
+		tool,
+		clarificationTool,
+		sent,
+		toolCallHandlers,
+		toolResultHandlers,
+		beforeAgentStartHandlers,
+		agentEndHandlers,
+	};
 }
 
 function commandContext(overrides: Partial<ExtensionCommandContext> = {}): ExtensionCommandContext {
@@ -164,6 +176,7 @@ describe("built-in /feedback command", () => {
 				.find((candidate) => candidate.invocationName === "feedback");
 			assert.ok(command);
 			assert.equal(command.description, "Draft and review an Atomic bug report or enhancement");
+			assert.ok(harness.session.getAllTools().some((tool) => tool.name === "request_feedback_clarification"));
 		} finally {
 			harness.cleanup();
 		}
@@ -205,7 +218,8 @@ describe("built-in /feedback command", () => {
 		for (const prompt of ["Atomic crashes after paste", "Please add a keyboard shortcut", "The editor feels wrong"]) {
 			const message = buildFeedbackTurnMessage(prompt, collectFeedbackSessionFacts(commandContext()));
 			assert.match(message, /Classify it as a bug or enhancement\./u);
-			assert.equal(message.match(/Ask one concise clarification/gu)?.length, 1);
+			assert.match(message, /request_feedback_clarification with exactly one concise question/u);
+			assert.match(message, /do not ask through ordinary prose alone/u);
 			assert.match(message, /only if classification or a required issue field is genuinely unresolved/u);
 			assert.match(message, /For a bug, launch exactly one foreground run of the existing bundled debugger/u);
 			assert.match(message, /For an enhancement, do not launch the debugger/u);
@@ -225,7 +239,7 @@ describe("built-in /feedback command", () => {
 		);
 	});
 
-	test("hard-blocks every parent tool except submission and the one admitted debugger", async () => {
+	test("hard-blocks every parent tool except submission, clarification signaling, and one admitted debugger", async () => {
 		const { command, toolCallHandlers } = registerFeedback();
 		const context = commandContext();
 		await command.handler("hard boundary report", context);
@@ -243,12 +257,24 @@ describe("built-in /feedback command", () => {
 				context,
 			);
 			assert.equal(blocked?.block, true, toolName);
-			assert.match(blocked?.reason ?? "", /Only submit_feedback and the admitted foreground debugger/u);
+			assert.match(blocked?.reason ?? "", /Only submit_feedback, request_feedback_clarification/u);
 		}
 
 		assert.equal(
 			await toolCallHandlers[0]?.(
 				{ type: "tool_call", toolCallId: "submit", toolName: "submit_feedback", input: {} },
+				context,
+			),
+			undefined,
+		);
+		assert.equal(
+			await toolCallHandlers[0]?.(
+				{
+					type: "tool_call",
+					toolCallId: "clarification",
+					toolName: "request_feedback_clarification",
+					input: { question: "Which kind?" },
+				},
 				context,
 			),
 			undefined,
@@ -508,21 +534,79 @@ describe("built-in /feedback command", () => {
 		assert.ok((sent[0] as string).endsWith(prompt));
 	});
 
+	test("treats structured foreground interruption as unavailable even without an outer error", async () => {
+		// #2799: foreground interruption is carried in result details, not necessarily isError.
+		const { command, tool, toolCallHandlers, toolResultHandlers } = registerFeedback();
+		const context = commandContext();
+		await command.handler("debugger was interrupted", context);
+		const input: Record<string, unknown> = { agent: "debugger" };
+		await toolCallHandlers[0]?.(
+			{ type: "tool_call", toolCallId: "interrupted-debug", toolName: "subagent", input },
+			context,
+		);
+		const interrupted = await toolResultHandlers[0]?.(
+			{
+				type: "tool_result",
+				toolCallId: "interrupted-debug",
+				toolName: "subagent",
+				input,
+				content: [{ type: "text", text: "unsupported diagnosis must not survive" }],
+				isError: false,
+				details: {
+					mode: "single",
+					results: [{ agent: "debugger", status: "interrupted", interrupted: true }],
+				},
+			},
+			context,
+		);
+		const text = interrupted?.content?.map((part) => (part.type === "text" ? part.text : "")).join("\n") ?? "";
+		assert.match(text, /^Investigation unavailable\nWorking-tree disclosure:/u);
+		assert.doesNotMatch(text, /unsupported diagnosis/u);
+
+		const submitted = await tool.execute(
+			"interrupted-submit",
+			{
+				kind: "bug",
+				title: "Interrupted investigation",
+				whatHappened: "The debugger was interrupted.",
+				stepsToReproduce: "Start and interrupt the debugger.",
+				nonBuiltinExtensionState: "inactive",
+				extensionFreeReproduction: "unknown",
+			},
+			undefined,
+			undefined,
+			{ mode: "json", hasUI: false, ui: {} } as ExtensionContext,
+		);
+		assert.match(submitted.details?.draft.body ?? "", /## Investigation\n\nInvestigation unavailable/u);
+	});
+
 	test("tells the model to retain an honest draft when the debugger tool is disabled", async () => {
 		const { command, sent } = registerFeedback([]);
 		await command.handler("bug while subagents are disabled", commandContext());
 		assert.match(sent[0] as string, /Investigation unavailable/);
 	});
 
-	test("preserves exactly one clarification continuation, consumes it, and then clears", async () => {
-		const { command, tool, beforeAgentStartHandlers, agentEndHandlers } = registerFeedback();
+	test("retains only an explicit one-question clarification signal for one next user turn", async () => {
+		const registered = registerFeedback();
+		const { command, tool, clarificationTool, beforeAgentStartHandlers, agentEndHandlers } = registered;
 		const context = commandContext();
+		assert.ok(clarificationTool);
 		await command.handler("ambiguous feedback", context);
-		assert.equal(beforeAgentStartHandlers.length, 1);
-		assert.equal(agentEndHandlers.length, 1);
 
+		const signal = await clarificationTool.execute(
+			"clarification-signal",
+			{ question: "Is this a bug or an enhancement?" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(
+			signal.content[0]?.type === "text" ? signal.content[0].text : "",
+			"Is this a bug or an enhancement?",
+		);
+		assert.equal(signal.terminate, true);
 		await agentEndHandlers[0]?.(
-			{ type: "agent_end", messages: [fauxAssistantMessage("Is this a bug or enhancement?")] },
+			{ type: "agent_end", messages: [fauxAssistantMessage("Is this a bug or an enhancement?")] },
 			context,
 		);
 		await beforeAgentStartHandlers[0]?.(
@@ -535,6 +619,17 @@ describe("built-in /feedback command", () => {
 			},
 			context,
 		);
+		const duplicate = await registered.toolCallHandlers[0]?.(
+			{
+				type: "tool_call",
+				toolCallId: "duplicate-clarification",
+				toolName: "request_feedback_clarification",
+				input: { question: "A second question?" },
+			},
+			context,
+		);
+		assert.equal(duplicate?.block, true);
+
 		const submitted = await tool.execute(
 			"clarified-submit",
 			{
@@ -548,46 +643,78 @@ describe("built-in /feedback command", () => {
 			{ mode: "json", hasUI: false, ui: {} } as ExtensionContext,
 		);
 		assert.equal(submitted.details?.status, "retained");
+		await assert.rejects(
+			clarificationTool.execute(
+				"late-clarification",
+				{ question: "Can stale state ask again?" },
+				undefined,
+				undefined,
+				context,
+			),
+			/No active \/feedback request/u,
+		);
+	});
 
+	test("clears an unfinished initial turn that omitted both submission and clarification signal", async () => {
+		const { command, tool, toolCallHandlers, agentEndHandlers } = registerFeedback();
+		const context = commandContext();
+		await command.handler("ordinary unfinished turn", context);
+		await agentEndHandlers[0]?.(
+			{ type: "agent_end", messages: [fauxAssistantMessage("I did not call either feedback tool.")] },
+			context,
+		);
+		assert.equal(
+			await toolCallHandlers[0]?.(
+				{ type: "tool_call", toolCallId: "ordinary-next-tool", toolName: "bash", input: { command: "pwd" } },
+				context,
+			),
+			undefined,
+		);
 		await assert.rejects(
 			tool.execute(
-				"late-submit",
-				{
-					kind: "enhancement",
-					title: "Stale",
-					whatToChange: "Must not survive",
-					why: "The clarification was consumed",
-				},
+				"omitted-late-submit",
+				{ kind: "enhancement", title: "Stale", whatToChange: "No", why: "No" },
 				undefined,
 				undefined,
 				{ mode: "json", hasUI: false, ui: {} } as ExtensionContext,
 			),
-			/No active \/feedback request is available for submission\./u,
+			/No active \/feedback request/u,
 		);
+	});
 
-		const second = registerFeedback();
-		await second.command.handler("another ambiguous report", context);
-		await second.agentEndHandlers[0]?.(
-			{ type: "agent_end", messages: [fauxAssistantMessage("Please clarify")] },
+	test("clears an explicit clarification after an unrelated next turn", async () => {
+		const registered = registerFeedback();
+		const context = commandContext();
+		assert.ok(registered.clarificationTool);
+		await registered.command.handler("ambiguous report", context);
+		await registered.clarificationTool.execute(
+			"ask-once",
+			{ question: "Which feedback type is this?" },
+			undefined,
+			undefined,
 			context,
 		);
-		await second.beforeAgentStartHandlers[0]?.(
+		await registered.agentEndHandlers[0]?.(
+			{ type: "agent_end", messages: [fauxAssistantMessage("Which feedback type is this?")] },
+			context,
+		);
+		await registered.beforeAgentStartHandlers[0]?.(
 			{
 				type: "before_agent_start",
-				prompt: "clarification",
+				prompt: "Unrelated next turn",
 				images: undefined,
 				systemPrompt: "",
 				systemPromptOptions: {} as never,
 			},
 			context,
 		);
-		await second.agentEndHandlers[0]?.(
-			{ type: "agent_end", messages: [fauxAssistantMessage("Did not submit")] },
+		await registered.agentEndHandlers[0]?.(
+			{ type: "agent_end", messages: [fauxAssistantMessage("Handled unrelated turn without feedback submission.")] },
 			context,
 		);
 		assert.equal(
-			await second.toolCallHandlers[0]?.(
-				{ type: "tool_call", toolCallId: "unrelated", toolName: "bash", input: { command: "pwd" } },
+			await registered.toolCallHandlers[0]?.(
+				{ type: "tool_call", toolCallId: "after-unrelated", toolName: "bash", input: { command: "pwd" } },
 				context,
 			),
 			undefined,
@@ -724,11 +851,19 @@ describe("built-in /feedback command", () => {
 			[],
 			[{ ...fauxAssistantMessage(""), stopReason: "error" as const }],
 		]) {
-			const { command, tool, toolCallHandlers, agentEndHandlers } = registerFeedback();
+			const { command, tool, clarificationTool, toolCallHandlers, agentEndHandlers } = registerFeedback();
 			const context = commandContext({
 				ui: { notify: () => {}, select: async () => undefined } as ExtensionCommandContext["ui"],
 			});
+			assert.ok(clarificationTool);
 			await command.handler("request that ends before submission", context);
+			await clarificationTool.execute(
+				"cancelled-clarification",
+				{ question: "Which feedback type is this?" },
+				undefined,
+				undefined,
+				context,
+			);
 			await agentEndHandlers[0]?.({ type: "agent_end", messages }, context);
 
 			assert.equal(
@@ -783,6 +918,47 @@ describe("built-in /feedback command", () => {
 			assert.equal(harness.getPendingResponseCount(), 0);
 		} finally {
 			unsubscribe();
+			harness.cleanup();
+		}
+	});
+
+	test("binds the explicit clarification signal through a real model tool turn", async () => {
+		const harness = await createHarness({ extensionFactories: [feedbackExtension] });
+		try {
+			harness.setResponses([
+				fauxAssistantMessage(
+					fauxToolCall("request_feedback_clarification", {
+						question: "Is this a bug or an enhancement?",
+					}),
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("No feedback submission was needed for this unrelated reply."),
+				fauxAssistantMessage(fauxToolCall("bash", { command: "pwd" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("Ordinary tools are available again."),
+			]);
+
+			await harness.session.prompt("/feedback ambiguous report");
+			await harness.session.agent.waitForIdle();
+			const clarification = harness.session.messages.find(
+				(message) => message.role === "toolResult" && message.toolName === "request_feedback_clarification",
+			);
+			assert.ok(clarification);
+			assert.equal(getMessageText(clarification), "Is this a bug or an enhancement?");
+			assert.equal(harness.getPendingResponseCount(), 3);
+
+			await harness.session.prompt("This was an unrelated next turn.");
+			await harness.session.agent.waitForIdle();
+			await harness.session.prompt("Run an ordinary diagnostic.");
+			await harness.session.agent.waitForIdle();
+
+			const bashResult = harness.session.messages.find(
+				(message) => message.role === "toolResult" && message.toolName === "bash",
+			);
+			assert.ok(bashResult);
+			assert.equal(bashResult.isError, false);
+			assert.equal(getMessageText(harness.session.messages.at(-1)), "Ordinary tools are available again.");
+			assert.equal(harness.getPendingResponseCount(), 0);
+		} finally {
 			harness.cleanup();
 		}
 	});

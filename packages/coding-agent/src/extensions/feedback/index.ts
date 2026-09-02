@@ -1,4 +1,5 @@
 import { arch, platform } from "node:os";
+import { Type } from "typebox";
 import { VERSION } from "../../config.js";
 import type {
 	ExtensionAPI,
@@ -18,6 +19,7 @@ import {
 	captureWorkingTreeSnapshot,
 	compareWorkingTreeSnapshots,
 	formatWorkingTreeDisclosure,
+	protectedWorkingTreePaths,
 	type WorkingTreeSnapshot,
 } from "./working-tree.js";
 
@@ -106,7 +108,7 @@ export function collectFeedbackSessionFacts(
 		mode: ctx.mode,
 		provider: ctx.model?.provider ?? "not selected",
 		model: ctx.model?.id ?? "not selected",
-		nonBuiltinExtensionsLoaded: ctx.hasNonBuiltinExtensions,
+		nonBuiltinExtensionsLoaded: ctx.hasNonBuiltinExtensions ?? false,
 		recentFailedOutcomes: failures.outcomes,
 		sessionErrorState: failures.sessionErrorState,
 	};
@@ -126,7 +128,7 @@ export function buildFeedbackTurnMessage(
 		: `The debugger tool is disabled. For a bug, keep the original report in an editable draft marked exactly "${INVESTIGATION_UNAVAILABLE}".`;
 	return `Handle this Atomic feedback request as one ordinary in-session model turn.
 
-Classify it as a bug or enhancement. Ask one concise clarification only if classification or a required issue field is genuinely unresolved. ${debuggerInstruction} For an enhancement, do not launch the debugger. For visual feedback, use only a clearly labelled sanitized textual reconstruction with precise expected-versus-observed text; never claim that reconstruction is a captured screenshot or observed evidence. Do not attach a debugger transcript, raw trace, environment dump, repository file, screenshot, or diagnostic artifact. Do not launch a workflow, create or customize an agent, start a repair loop, or post to GitHub directly. Call submit_feedback with the exact template-shaped fields; it alone owns privacy review, editing, confirmation, and posting.
+Classify it as a bug or enhancement. If and only if classification or a required issue field is genuinely unresolved, call request_feedback_clarification with exactly one concise question instead of submitting; do not ask through ordinary prose alone. ${debuggerInstruction} For an enhancement, do not launch the debugger. For visual feedback, use only a clearly labelled sanitized textual reconstruction with precise expected-versus-observed text; never claim that reconstruction is a captured screenshot or observed evidence. Do not attach a debugger transcript, raw trace, environment dump, repository file, screenshot, or diagnostic artifact. Do not launch a workflow, create or customize an agent, start a repair loop, or post to GitHub directly. Call submit_feedback with the exact template-shaped fields; it alone owns privacy review, editing, confirmation, and posting.
 
 Safe current-session facts:
 - Atomic version: ${facts.version}
@@ -162,6 +164,49 @@ async function showModelUnavailableFallback(
 	const preview = prepareModelUnavailableFallback(request.prompt, request.facts, kind);
 	await runFeedbackInteraction(ctx, preview, post, { createRequestId });
 }
+const FeedbackClarificationParameters = Type.Object({
+	question: Type.String({
+		description: "Exactly one concise clarification question required to complete this feedback report",
+		minLength: 2,
+		maxLength: 240,
+	}),
+});
+
+function feedbackClarificationQuestion(value: string): string {
+	const question = value.trim();
+	if (question.length > 240 || !question.endsWith("?") || question.match(/\?/gu)?.length !== 1) {
+		throw new Error("Feedback clarification must be exactly one concise question ending in a question mark.");
+	}
+	return question;
+}
+
+function registerFeedbackClarificationTool(pi: ExtensionAPI, state: FeedbackExtensionState): void {
+	pi.registerTool({
+		name: "request_feedback_clarification",
+		label: "Request feedback clarification",
+		description:
+			"Request the one allowed clarification for the active /feedback report. This retains only that request for the next user turn.",
+		promptSnippet: "Request at most one concise clarification for an active Atomic feedback report",
+		promptGuidelines: [
+			"Use request_feedback_clarification only when classification or a required issue field is genuinely unresolved.",
+		],
+		parameters: FeedbackClarificationParameters,
+		executionMode: "sequential",
+		async execute(_toolCallId, input) {
+			const active = state.activeInvestigation;
+			if (active === undefined) throw new Error("No active /feedback request is available for clarification.");
+			if (active.phase !== "initial") throw new Error("The one feedback clarification has already been requested.");
+			const question = feedbackClarificationQuestion(input.question);
+			active.phase = "awaiting-clarification";
+			return {
+				content: [{ type: "text", text: question }],
+				details: { question },
+				terminate: true,
+			};
+		},
+	});
+}
+
 function registerFeedbackSubmissionTool(
 	pi: ExtensionAPI,
 	state: FeedbackExtensionState,
@@ -187,14 +232,32 @@ function registerFeedbackSubmissionTool(
 function handleFeedbackToolCall(state: FeedbackExtensionState, event: ToolCallEvent): ToolCallEventResult | undefined {
 	const active = state.activeInvestigation;
 	if (active === undefined || event.toolName === "submit_feedback") return undefined;
+	if (event.toolName === "request_feedback_clarification") {
+		return active.phase === "initial"
+			? undefined
+			: { block: true, reason: "The one feedback clarification has already been requested." };
+	}
 	if (event.toolName === "subagent") {
 		return active.controller.handleSubagentCall(event.toolCallId, event.input);
 	}
 	return {
 		block: true,
 		reason:
-			"Only submit_feedback and the admitted foreground debugger are allowed during an active feedback request.",
+			"Only submit_feedback, request_feedback_clarification, and the admitted foreground debugger are allowed during an active feedback request.",
 	};
+}
+
+function hasInterruptedSubagentResult(details: unknown): boolean {
+	if (typeof details !== "object" || details === null || !("results" in details)) return false;
+	const results = (details as { results?: unknown }).results;
+	if (!Array.isArray(results)) return false;
+	return results.some(
+		(result) =>
+			typeof result === "object" &&
+			result !== null &&
+			((result as { interrupted?: unknown }).interrupted === true ||
+				(result as { status?: unknown }).status === "interrupted"),
+	);
 }
 
 async function handleFeedbackToolResult(
@@ -204,16 +267,18 @@ async function handleFeedbackToolResult(
 ): Promise<ToolResultEventResult | undefined> {
 	const active = state.activeInvestigation;
 	if (event.toolName !== "subagent" || active === undefined) return undefined;
+	const interrupted = hasInterruptedSubagentResult(event.details);
+	const unavailable = event.isError || interrupted;
 	const matchedDebugger = active.controller.handleSubagentResult(
 		event.toolCallId,
-		event.isError ? "failed" : "completed",
+		interrupted ? "interrupted" : event.isError ? "failed" : "completed",
 	);
 	if (!matchedDebugger) return undefined;
 	const after = await captureWorkingTreeSnapshot(active.cwd, pi.exec.bind(pi));
 	const disclosure = compareWorkingTreeSnapshots(active.before, after);
 	active.controller.setWorkingTreeDisclosure(disclosure);
 	const disclosureContent = { type: "text" as const, text: formatWorkingTreeDisclosure(disclosure) };
-	return event.isError
+	return unavailable
 		? {
 				content: [{ type: "text" as const, text: INVESTIGATION_UNAVAILABLE }, disclosureContent],
 				isError: true,
@@ -244,11 +309,10 @@ function registerFeedbackLifecycleHook(
 		const interrupted =
 			assistantMessages.length === 0 || assistantMessages.some((message) => message.stopReason === "aborted");
 		if (active.phase === "retained-uncertain") return;
-		if (modelFailed || interrupted || active.phase === "clarification") {
+		if (modelFailed || interrupted || active.phase === "clarification" || active.phase === "initial") {
 			state.activeInvestigation = undefined;
 		}
 		if (modelFailed) await showModelUnavailableFallback(ctx, active, post, options.createRequestId);
-		else if (!interrupted && active.phase === "initial") active.phase = "awaiting-clarification";
 	});
 }
 
@@ -277,7 +341,7 @@ function registerFeedbackCommand(
 					prompt: args,
 					facts,
 					debuggerToolAvailable,
-					protectedPaths: before.entries.map((entry) => entry.path),
+					protectedPaths: protectedWorkingTreePaths(before),
 				}),
 				phase: "initial",
 			};
@@ -297,6 +361,7 @@ function registerFeedbackCommand(
 function registerFeedbackExtension(pi: ExtensionAPI, options: FeedbackExtensionOptions): void {
 	const state: FeedbackExtensionState = {};
 	const post = options.post ?? createGitHubFeedbackPostHandler({ exec: pi.exec.bind(pi) });
+	registerFeedbackClarificationTool(pi, state);
 	registerFeedbackSubmissionTool(pi, state, post, options);
 	registerFeedbackSubagentHooks(pi, state);
 	registerFeedbackLifecycleHook(pi, state, post, options);

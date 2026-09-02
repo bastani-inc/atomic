@@ -45,12 +45,11 @@ interface ReplacementCandidate {
 }
 
 const API_TOKEN_PATTERN =
-	/(?<![A-Za-z0-9_-])(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{35}|npm_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])/g;
+	/(?<![A-Za-z0-9_-])(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{35}|npm_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9_]{20,})(?![A-Za-z0-9_-])/g;
 const CREDENTIAL_ASSIGNMENT_PATTERN =
 	/\b(?:TOKEN|API_KEY|ACCESS_TOKEN|AUTH_TOKEN|SECRET|PASSWORD|[A-Z][A-Z0-9_]*(?:TOKEN|API_KEY|SECRET|PASSWORD))\b(\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s\r\n]+)/gi;
-const URL_CREDENTIAL_PATTERN = /(https?:\/\/)[^/\s:@]+(?::[^/\s@]*)?@/g;
-const PRIVATE_KEY_PATTERN =
-	/-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g;
+const URL_CREDENTIAL_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+(?::[^/\s@]*)?@/gi;
+const PRIVATE_KEY_HEADER_PATTERN = /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----[ \t]*(?:\r?\n|$)/g;
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -72,6 +71,28 @@ function addPatternCandidates(
 			kind,
 		});
 		if (match[0].length === 0) pattern.lastIndex += 1;
+	}
+}
+
+function privateKeyEnd(text: string, label: string, afterHeader: number): number {
+	const marker = `-----END ${label}-----`;
+	for (let start = text.indexOf(marker, afterHeader); start !== -1; start = text.indexOf(marker, start + 1)) {
+		const atLineStart = start === 0 || text[start - 1] === "\n";
+		const after = start + marker.length;
+		const atLineEnd = after === text.length || text[after] === "\r" || text[after] === "\n";
+		if (atLineStart && atLineEnd) return text[after] === "\r" ? after + 1 : after;
+	}
+	return text.length;
+}
+
+function addPrivateKeyCandidates(text: string, candidates: ReplacementCandidate[]): void {
+	PRIVATE_KEY_HEADER_PATTERN.lastIndex = 0;
+	for (let match = PRIVATE_KEY_HEADER_PATTERN.exec(text); match; match = PRIVATE_KEY_HEADER_PATTERN.exec(text)) {
+		const label = match[1];
+		if (!label) continue;
+		const end = privateKeyEnd(text, label, PRIVATE_KEY_HEADER_PATTERN.lastIndex);
+		candidates.push({ start: match.index, end, replacement: "[REDACTED PRIVATE KEY]", kind: "private-key" });
+		PRIVATE_KEY_HEADER_PATTERN.lastIndex = end;
 	}
 }
 
@@ -118,16 +139,35 @@ function addLongLineRunCandidates(
 	}
 }
 
+function isStackTraceLine(line: string): boolean {
+	return (
+		/^\s+at\b/u.test(line) ||
+		/^\s*File ".+", line \d+\b/u.test(line) ||
+		/^Caused by:/u.test(line) ||
+		/^\s*\d+:\s+(?:(?:0x[\da-f]+\s+-\s+)?\S*::\S+)\s*$/iu.test(line) ||
+		/^\s+at .+\.rs:\d+(?::\d+)?\s*$/u.test(line) ||
+		/^goroutine \d+ \[[^\]]+\]:\s*$/u.test(line) ||
+		/^(?:created by )?[A-Za-z0-9_./<>-]+(?:\.[A-Za-z0-9_<>-]+)+\(.*\)\s*$/u.test(line) ||
+		/^\s+.+\.go:\d+(?:\s+\+0x[\da-f]+)?\s*$/iu.test(line)
+	);
+}
+
+function isJsonDiagnosticLine(line: string): boolean {
+	return /^\s*(?:(?:[{}]|\[|\])[,]?|"(?:[^"\\]|\\.)*"\s*(?::\s*.*)?[,]?|-?\d+(?:\.\d+)?[,]?|true[,]?|false[,]?|null[,]?)\s*$/u.test(
+		line,
+	);
+}
+
 function collectCandidates(text: string, homeDirectories: readonly string[]): ReplacementCandidate[] {
 	const candidates: ReplacementCandidate[] = [];
+	addLongLineRunCandidates(text, "stack-trace", isStackTraceLine, candidates);
 	addLongLineRunCandidates(
 		text,
-		"stack-trace",
-		(line) => /^\s+at\b/.test(line) || /^\s*File ".+", line \d+\b/.test(line) || /^Caused by:/.test(line),
+		"diagnostic-dump",
+		(line) => /^[A-Za-z_][A-Za-z0-9_.-]{2,}=.*$/u.test(line) || isJsonDiagnosticLine(line),
 		candidates,
 	);
-	addLongLineRunCandidates(text, "diagnostic-dump", (line) => /^[A-Z_][A-Z0-9_]{2,}=.*$/.test(line), candidates);
-	addPatternCandidates(text, PRIVATE_KEY_PATTERN, "private-key", () => "[REDACTED PRIVATE KEY]", candidates);
+	addPrivateKeyCandidates(text, candidates);
 	addPatternCandidates(
 		text,
 		CREDENTIAL_ASSIGNMENT_PATTERN,

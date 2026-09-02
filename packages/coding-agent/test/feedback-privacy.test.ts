@@ -43,6 +43,16 @@ describe("feedback final-output privacy review", () => {
 		assert.deepEqual(result.replacements, []);
 	});
 
+	test("preserves long numbered prose that is not a Rust backtrace", () => {
+		const body = Array.from(
+			{ length: 16 },
+			(_, index) => `${index + 1}: ordinary reproduction note ${index + 1}`,
+		).join("\n");
+		const result = scrubFeedbackDraft(draft("Safe", body), { homeDirectories: [] });
+		assert.equal(result.draft.body, body);
+		assert.deepEqual(result.replacements, []);
+	});
+
 	test("scrubs every mandated secret form in title-then-body occurrence order", () => {
 		const githubToken = `ghp_${"A".repeat(36)}`;
 		const assignedOne = "synthetic-assignment-one";
@@ -110,6 +120,31 @@ describe("feedback final-output privacy review", () => {
 		assert.deepEqual(
 			result.replacements.map((replacement) => replacement.kind),
 			["api-token", "api-token", "api-token", "api-token"],
+		);
+	});
+
+	test("redacts common Hugging Face and Stripe keys plus URL userinfo across schemes", () => {
+		const tokens = [
+			`hf_${"a".repeat(34)}`,
+			`sk_live_${"b".repeat(24)}`,
+			`rk_live_${"c".repeat(24)}`,
+			`sk_test_${"d".repeat(24)}`,
+		];
+		const urls = [
+			"HTTPS://synthetic-user:synthetic-pass@example.invalid/path",
+			"postgresql://db-user:db-pass@example.invalid/database",
+			"ssh://git-user:git-pass@example.invalid/repository",
+		];
+		const result = scrubFeedbackDraft(draft("Safe", [...tokens, ...urls].join("\n")), { homeDirectories: [] });
+
+		for (const secret of [...tokens, "synthetic-pass", "db-pass", "git-pass"]) {
+			assert.doesNotMatch(result.draft.body, new RegExp(secret, "u"));
+		}
+		assert.match(result.draft.body, /HTTPS:\/\/\[REDACTED\]@example\.invalid\/path/u);
+		assert.match(result.draft.body, /postgresql:\/\/\[REDACTED\]@example\.invalid\/database/u);
+		assert.deepEqual(
+			result.replacements.map((replacement) => replacement.kind),
+			["api-token", "api-token", "api-token", "api-token", "url-credentials", "url-credentials", "url-credentials"],
 		);
 	});
 
@@ -200,6 +235,38 @@ describe("feedback final-output privacy review", () => {
 		);
 	});
 
+	test("redacts complete PGP and unterminated PEM private-key blocks through end of field", () => {
+		const pgpLabel = ["PGP", "PRIVATE", "KEY", "BLOCK"].join(" ");
+		const pgp = [
+			"before",
+			`-----BEGIN ${pgpLabel}-----`,
+			"synthetic-pgp-private-material",
+			`-----END ${pgpLabel}-----`,
+			"safe prose after complete block",
+		].join("\n");
+		const complete = scrubFeedbackDraft(draft("Safe", pgp), { homeDirectories: [] });
+		assert.equal(complete.draft.body, "before\n[REDACTED PRIVATE KEY]\nsafe prose after complete block");
+		assert.deepEqual(
+			complete.replacements.map((replacement) => replacement.kind),
+			["private-key"],
+		);
+
+		for (const label of ["PRIVATE KEY", "OPENSSH PRIVATE KEY", "EC PRIVATE KEY"]) {
+			const unterminated = [
+				"before",
+				`-----BEGIN ${label}-----`,
+				"synthetic-private-material",
+				"all remaining field text is part of the incomplete block",
+			].join("\n");
+			const result = scrubFeedbackDraft(draft("Safe", unterminated), { homeDirectories: [] });
+			assert.equal(result.draft.body, "before\n[REDACTED PRIVATE KEY]", label);
+			assert.deepEqual(
+				result.replacements.map((replacement) => replacement.kind),
+				["private-key"],
+				label,
+			);
+		}
+	});
 	test("bounds long traces and diagnostic dumps but keeps short actionable excerpts", () => {
 		const shortTrace = "Error: failed\n    at first (app.ts:1:1)\n    at second (app.ts:2:1)";
 		const longTrace = Array.from(
@@ -221,6 +288,39 @@ describe("feedback final-output privacy review", () => {
 		assert.deepEqual(
 			result.replacements.map((replacement) => replacement.kind),
 			["stack-trace", "diagnostic-dump"],
+		);
+	});
+
+	test("bounds long Rust and Go stacks plus structured JSON and environment diagnostics", () => {
+		const rust = Array.from({ length: 16 }, (_, index) =>
+			index % 2 === 0 ? `${index}: atomic::module::frame_${index}` : `             at src/main.rs:${index}:5`,
+		).join("\n");
+		const go = [
+			"goroutine 21 [running]:",
+			...Array.from({ length: 7 }, (_, index) => [
+				`main.frame${index}()`,
+				`\t/tmp/main.go:${index + 1} +0x${index + 10}`,
+			]).flat(),
+		].join("\n");
+		const json = [
+			"{",
+			...Array.from({ length: 14 }, (_, index) => `  "diagnostic_${index}": "synthetic-${index}",`),
+			'  "done": true',
+			"}",
+		].join("\n");
+		const environment = Array.from({ length: 14 }, (_, index) => `runtime_field_${index}=synthetic-${index}`).join(
+			"\n",
+		);
+		const result = scrubFeedbackDraft(draft("Safe", [rust, go, json, environment].join("\n\n")), {
+			homeDirectories: [],
+		});
+
+		assert.doesNotMatch(result.draft.body, /atomic::module|goroutine 21|diagnostic_13|runtime_field_13/u);
+		assert.equal(result.draft.body.match(/stack trace bounded/gu)?.length, 2);
+		assert.equal(result.draft.body.match(/diagnostic dump omitted/gu)?.length, 2);
+		assert.deepEqual(
+			result.replacements.map((replacement) => replacement.kind),
+			["stack-trace", "stack-trace", "diagnostic-dump", "diagnostic-dump"],
 		);
 	});
 

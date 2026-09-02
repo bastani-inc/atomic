@@ -10,6 +10,8 @@
 
 - `pi.sendUserMessage()` now returns `Promise<void>` so extensions can await admission and provider-turn failures. Existing fire-and-forget calls remain valid; use `await` when failure handling matters.
 
+- `ExtensionContext.hasNonBuiltinExtensions` reports whether the session loaded a non-builtin extension. Atomic supplies the authoritative value in production, while the public member remains optional and defaults to `false` for compatibility with existing extension context object literals.
+
 ## [0.9.18-alpha.2] - 2026-08-31
 
 ### Fixed

@@ -1039,6 +1039,10 @@ UI methods for user interaction. See [Custom UI](#custom-ui) for full details.
 
 `false` in print mode (`-p`) and JSON mode. `true` in interactive and RPC mode. In RPC mode, dialog methods (`select`, `confirm`, `input`, `editor`) work via the extension UI sub-protocol, and fire-and-forget methods (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`) emit requests to the client. Some TUI-specific methods are no-ops or return defaults (see [RPC mode](/rpc#extension-ui-protocol)).
 
+### ctx.hasNonBuiltinExtensions
+
+Reports whether the current session loaded an extension that Atomic did not ship as a builtin. Atomic's production contexts always provide the authoritative value. The public member is optional for compatibility with existing `ExtensionContext` object literals; omitted values mean `false`.
+
 ### ctx.cwd
 
 Current working directory.

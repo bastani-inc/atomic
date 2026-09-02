@@ -256,6 +256,41 @@ describe("feedback GitHub posting", () => {
 		assert.equal(labelCalls, 1);
 	});
 
+	test("uses exhaustive bounded gh API pagination and finds a marker after page 100 without another create", async () => {
+		// #2799: `gh issue list --limit 100` could declare an existing uncertain request absent.
+		const payload = request();
+		let creates = 0;
+		let reconciles = 0;
+		const deps = dependencies({
+			exec: async (_command, args) => {
+				deps.calls.push({ command: "gh", args });
+				if (args[0] === "auth") return result();
+				if (args[0] === "issue" && args[1] === "create") {
+					creates += 1;
+					return result("", 1, true);
+				}
+				if (args[0] === "api") {
+					reconciles += 1;
+					assert.ok(args.includes("--paginate"));
+					assert.ok(args.includes("--slurp"));
+					assert.match(args.join(" "), /\[:2\]/u);
+					assert.match(args.join(" "), /atomic-feedback-request:request-123;kind:bug/u);
+					return result("https://github.com/bastani-inc/atomic/issues/9123\n");
+				}
+				return result();
+			},
+		});
+		const post = createGitHubFeedbackPostHandler(deps);
+
+		assert.equal((await post(payload)).status, "uncertain");
+		assert.deepEqual(await post(payload), {
+			status: "success",
+			url: "https://github.com/bastani-inc/atomic/issues/9123",
+		});
+		assert.equal(creates, 1);
+		assert.equal(reconciles, 1);
+	});
+
 	test("does not retry creation when uncertain reconciliation itself is unavailable", async () => {
 		let creates = 0;
 		const deps = dependencies({
@@ -361,6 +396,85 @@ describe("feedback GitHub posting", () => {
 		assert.equal(labels, 1);
 	});
 
+	test("follows REST Link pagination to exhaustion before deciding an uncertain request is absent", async () => {
+		// #2799: the marker may be on any later authoritative page.
+		const payload = request();
+		let posts = 0;
+		const getUrls: string[] = [];
+		const pageTwo = "https://api.github.com/repos/bastani-inc/atomic/issues?state=all&per_page=100&page=2";
+		const deps = dependencies({
+			env: { GH_TOKEN: TOKEN },
+			exec: async () => result("", 1),
+			fetch: async (input, init) => {
+				if (String(input).endsWith("/issues") && init?.method === "POST") {
+					posts += 1;
+					throw new Error("synthetic uncertain create");
+				}
+				if (init?.method === "POST") return new Response(null, { status: 200 });
+				getUrls.push(String(input));
+				if (getUrls.length === 1) {
+					return new Response(
+						JSON.stringify(Array.from({ length: 100 }, (_, index) => ({ body: `unrelated-${index}` }))),
+						{ status: 200, headers: { link: `<${pageTwo}>; rel="next", <${pageTwo}>; rel="last"` } },
+					);
+				}
+				return new Response(
+					JSON.stringify([
+						{ html_url: "https://github.com/bastani-inc/atomic/issues/9234", body: payload.draft.body },
+					]),
+					{ status: 200 },
+				);
+			},
+		});
+		const post = createGitHubFeedbackPostHandler(deps);
+
+		assert.equal((await post(payload)).status, "uncertain");
+		assert.deepEqual(await post(payload), {
+			status: "success",
+			url: "https://github.com/bastani-inc/atomic/issues/9234",
+		});
+		assert.equal(posts, 1);
+		assert.equal(getUrls.length, 2);
+		assert.equal(getUrls[1], pageTwo);
+	});
+
+	test("keeps an uncertain REST request sticky when a later page fails or is malformed", async () => {
+		for (const laterPage of [
+			() => new Response("not-json", { status: 200 }),
+			() => new Response(null, { status: 503 }),
+			() => {
+				throw new Error("synthetic later-page timeout");
+			},
+		]) {
+			let posts = 0;
+			let gets = 0;
+			const pageTwo = "https://api.github.com/repos/bastani-inc/atomic/issues?state=all&per_page=100&page=2";
+			const post = createGitHubFeedbackPostHandler({
+				env: { GH_TOKEN: TOKEN },
+				exec: async () => result("", 1),
+				fetch: async (_input, init) => {
+					if (init?.method === "POST") {
+						posts += 1;
+						throw new Error("synthetic uncertain create");
+					}
+					gets += 1;
+					if (gets === 1) {
+						return new Response(JSON.stringify([{ body: "unrelated" }]), {
+							status: 200,
+							headers: { link: `<${pageTwo}>; rel="next"` },
+						});
+					}
+					return laterPage();
+				},
+			});
+
+			assert.equal((await post(request())).status, "uncertain");
+			assert.equal((await post(request())).status, "uncertain");
+			assert.equal(posts, 1);
+			assert.equal(gets, 2);
+		}
+	});
+
 	test("reconciles an uncertain REST server response before retrying", async () => {
 		// #2799: a server error may arrive after GitHub accepted the issue, so Retry must reconcile first.
 		const payload = request();
@@ -434,12 +548,8 @@ describe("feedback GitHub posting", () => {
 					creates += 1;
 					return creates === 1 ? result("", 1, true) : result("must not create twice", 1);
 				}
-				if (args[0] === "issue" && args[1] === "list") {
-					return result(
-						JSON.stringify([
-							{ url: "https://github.com/bastani-inc/atomic/issues/1240", body: payload.draft.body },
-						]),
-					);
+				if (args[0] === "api") {
+					return result("https://github.com/bastani-inc/atomic/issues/1240\n");
 				}
 				return result();
 			},
@@ -553,6 +663,60 @@ describe("feedback GitHub posting", () => {
 		});
 		assert.equal(posts, 1);
 		assert.equal(gets, 1);
+	});
+
+	test("cancels ignored REST error, reconciliation, and label bodies inside their deadlines", async () => {
+		// #2799: ignored bodies must not retain sockets or authorization-bearing requests.
+		const cancellationLog: string[] = [];
+		const endless = (name: string, status: number): Response =>
+			new Response(
+				new ReadableStream({
+					pull() {},
+					cancel() {
+						cancellationLog.push(name);
+					},
+				}),
+				{ status },
+			);
+
+		const errorPost = createGitHubFeedbackPostHandler({
+			env: { GH_TOKEN: TOKEN },
+			exec: async () => result("", 1),
+			fetch: async () => endless("create-error", 401),
+		});
+		assert.equal((await settleWithin(errorPost(request()))).status, "failure");
+
+		let uncertainPosts = 0;
+		const reconcilePost = createGitHubFeedbackPostHandler({
+			env: { GH_TOKEN: TOKEN },
+			exec: async () => result("", 1),
+			fetch: async (_input, init) => {
+				if (init?.method === "POST") {
+					uncertainPosts += 1;
+					throw new Error("synthetic disconnect");
+				}
+				return endless("reconcile-error", 503);
+			},
+		});
+		assert.equal((await settleWithin(reconcilePost(request()))).status, "uncertain");
+		assert.equal((await settleWithin(reconcilePost(request()))).status, "uncertain");
+		assert.equal(uncertainPosts, 1);
+
+		let calls = 0;
+		const labelPost = createGitHubFeedbackPostHandler({
+			env: { GH_TOKEN: TOKEN },
+			exec: async () => result("", 1),
+			fetch: async () => {
+				calls += 1;
+				return calls === 1
+					? new Response(JSON.stringify({ html_url: "https://github.com/bastani-inc/atomic/issues/9345" }), {
+							status: 201,
+						})
+					: endless("label", 403);
+			},
+		});
+		assert.equal((await settleWithin(labelPost(request()))).status, "success");
+		assert.deepEqual(cancellationLog, ["create-error", "reconcile-error", "label"]);
 	});
 
 	test("bounds a never-closing REST reconciliation body before authoritative-empty same-ID create", async () => {
