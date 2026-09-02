@@ -139,6 +139,13 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 
 	const items: SettingItem[] = [
 		{
+			id: "keybindings",
+			label: "Keybindings",
+			description:
+				"Edit this file, then run /reload. /hotkeys shows common active and extension shortcuts; the Keybindings documentation is the complete reference.",
+			currentValue: config.keybindingsPath,
+		},
+		{
 			id: "autocompact",
 			label: "Auto-compact",
 			description: "Automatically compact context when it gets too large",

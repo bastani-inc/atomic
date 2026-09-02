@@ -146,6 +146,7 @@ describe("Group 5 parity", () => {
 	test("settings place output padding before autocomplete and expose cache notices", () => {
 		const items = buildSettingsItems(
 			{
+				keybindingsPath: "/tmp/custom-agent/keybindings.json",
 				autoCompact: true,
 				showImages: true,
 				imageWidthCells: 60,
