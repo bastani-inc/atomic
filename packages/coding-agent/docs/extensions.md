@@ -1600,24 +1600,24 @@ The batch supports `triggerTurn`, `excludeFromContext`, and `deliverAs: "steer" 
 
 ### pi.sendUserMessage(content, options?)
 
-Send a user message to the agent. Unlike `sendMessage()` which sends custom messages, this sends an actual user message that appears as if typed by the user. Always triggers a turn.
+Send a user message to the agent. Unlike `sendMessage()` which sends custom messages, this sends an actual user message that appears as if typed by the user. Always triggers a turn and returns `Promise<void>`. Await it when the extension must observe admission or delivery failure; an idle call resolves after the resulting turn, while a streaming `steer` or `followUp` call resolves after queue admission.
 
 ```typescript
 // Simple text message
-pi.sendUserMessage("What is 2+2?");
+await pi.sendUserMessage("What is 2+2?");
 
 // With content array (text + images)
-pi.sendUserMessage([
+await pi.sendUserMessage([
   { type: "text", text: "Describe this image:" },
   { type: "image", source: { type: "base64", mediaType: "image/png", data: "..." } },
 ]);
 
 // During streaming - must specify delivery mode
-pi.sendUserMessage("Focus on error handling", { deliverAs: "steer" });
-pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
+await pi.sendUserMessage("Focus on error handling", { deliverAs: "steer" });
+await pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
 
 // Opt in to extension command dispatch and skill/prompt template expansion
-pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
+await pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
 ```
 
 **Options:**
@@ -1627,7 +1627,7 @@ pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
 
 - `expandPromptTemplates` - Dispatch extension commands and expand skill commands and prompt templates instead of sending the text literally. Defaults to `false`, so an extension-authored message is sent as-is unless it opts in; an unknown command falls through to a literal send.
 
-When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
+When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, the returned promise rejects. Admission and provider failures also reject instead of being swallowed by the extension runtime.
 
 See [send-user-message.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/send-user-message.ts) for a complete example.
 

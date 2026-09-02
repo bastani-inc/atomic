@@ -11,6 +11,34 @@ const REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const MARKER_SOURCE = "<!-- atomic-feedback-request:([A-Za-z0-9._:-]{1,128});kind:(bug|enhancement) -->";
 const MARKER = new RegExp(MARKER_SOURCE, "gu");
 
+export const FEEDBACK_GH_AUTH_TIMEOUT_MS = 5_000;
+export const FEEDBACK_GH_CREATE_TIMEOUT_MS = 20_000;
+export const FEEDBACK_GH_RECONCILE_TIMEOUT_MS = 10_000;
+export const FEEDBACK_GH_LABEL_TIMEOUT_MS = 10_000;
+export const FEEDBACK_REST_CREATE_TIMEOUT_MS = 20_000;
+export const FEEDBACK_REST_RECONCILE_TIMEOUT_MS = 10_000;
+export const FEEDBACK_REST_LABEL_TIMEOUT_MS = 10_000;
+
+export interface FeedbackPostingTimeouts {
+	ghAuthMs: number;
+	ghCreateMs: number;
+	ghReconcileMs: number;
+	ghLabelMs: number;
+	restCreateMs: number;
+	restReconcileMs: number;
+	restLabelMs: number;
+}
+
+const DEFAULT_POSTING_TIMEOUTS: FeedbackPostingTimeouts = {
+	ghAuthMs: FEEDBACK_GH_AUTH_TIMEOUT_MS,
+	ghCreateMs: FEEDBACK_GH_CREATE_TIMEOUT_MS,
+	ghReconcileMs: FEEDBACK_GH_RECONCILE_TIMEOUT_MS,
+	ghLabelMs: FEEDBACK_GH_LABEL_TIMEOUT_MS,
+	restCreateMs: FEEDBACK_REST_CREATE_TIMEOUT_MS,
+	restReconcileMs: FEEDBACK_REST_RECONCILE_TIMEOUT_MS,
+	restLabelMs: FEEDBACK_REST_LABEL_TIMEOUT_MS,
+};
+
 export interface FeedbackTemporaryBodyFile {
 	path: string;
 	remove(): Promise<void>;
@@ -21,6 +49,7 @@ export interface FeedbackPostingDependencies {
 	fetch?: typeof globalThis.fetch;
 	env?: Readonly<Record<string, string | undefined>>;
 	writeBodyFile?: (body: string) => Promise<FeedbackTemporaryBodyFile>;
+	timeouts?: Partial<FeedbackPostingTimeouts>;
 }
 
 interface GitHubIssueRecord {
@@ -36,9 +65,82 @@ interface FeedbackPostingRuntime {
 	fetchImplementation: typeof globalThis.fetch;
 	env: Readonly<Record<string, string | undefined>>;
 	bodyWriter: (body: string) => Promise<FeedbackTemporaryBodyFile>;
+	timeouts: FeedbackPostingTimeouts;
 	uncertainRequests: Set<string>;
 	successfulRequests: Map<string, string>;
 	activeRequests: Map<string, Promise<FeedbackPostResult>>;
+}
+
+async function runBounded<T>(
+	timeoutMs: number,
+	externalSignal: AbortSignal | undefined,
+	run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const controller = new AbortController();
+	let rejectOnAbort: ((reason: Error) => void) | undefined;
+	const aborted = new Promise<T>((_resolve, reject) => {
+		rejectOnAbort = reject;
+	});
+	const onAbort = (): void => rejectOnAbort?.(new Error("GitHub feedback request was aborted or timed out."));
+	const forwardAbort = (): void => controller.abort(externalSignal?.reason);
+	controller.signal.addEventListener("abort", onAbort, { once: true });
+	if (externalSignal?.aborted) forwardAbort();
+	else externalSignal?.addEventListener("abort", forwardAbort, { once: true });
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		return await Promise.race([run(controller.signal), aborted]);
+	} finally {
+		clearTimeout(timer);
+		controller.signal.removeEventListener("abort", onAbort);
+		externalSignal?.removeEventListener("abort", forwardAbort);
+	}
+}
+
+function execGh(
+	runtime: FeedbackPostingRuntime,
+	args: string[],
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<ExecResult> {
+	return runBounded(timeoutMs, signal, (boundedSignal) =>
+		runtime.dependencies.exec("gh", args, { signal: boundedSignal, timeout: timeoutMs }),
+	);
+}
+
+function fetchGitHub(
+	runtime: FeedbackPostingRuntime,
+	input: string,
+	init: RequestInit,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<Response> {
+	return runBounded(timeoutMs, signal, (boundedSignal) =>
+		runtime.fetchImplementation(input, { ...init, signal: boundedSignal }),
+	);
+}
+interface GitHubResponseWithText {
+	response: Response;
+	text?: string;
+}
+interface GitHubTextRequest {
+	input: string;
+	init: RequestInit;
+	timeoutMs: number;
+	shouldReadBody: (response: Response) => boolean;
+}
+
+function fetchGitHubWithText(
+	runtime: FeedbackPostingRuntime,
+	request: GitHubTextRequest,
+	signal?: AbortSignal,
+): Promise<GitHubResponseWithText> {
+	return runBounded(request.timeoutMs, signal, async (boundedSignal) => {
+		const response = await runtime.fetchImplementation(request.input, {
+			...request.init,
+			signal: boundedSignal,
+		});
+		return request.shouldReadBody(response) ? { response, text: await response.text() } : { response };
+	});
 }
 
 export function feedbackRequestMarker(requestId: string, kind: FeedbackKind): string {
@@ -134,31 +236,40 @@ function selectToken(env: Readonly<Record<string, string | undefined>>): string 
 	return env.GH_TOKEN || env.GITHUB_TOKEN || undefined;
 }
 
-async function parseRestIssue(response: Response): Promise<GitHubIssueRecord | undefined> {
+function parseRestIssue(text: string | undefined): GitHubIssueRecord | undefined {
 	try {
-		const value: unknown = await response.json();
+		const value: unknown = JSON.parse(text ?? "");
 		return typeof value === "object" && value !== null ? (value as GitHubIssueRecord) : undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-async function reconcileWithGh(runtime: FeedbackPostingRuntime, marker: string): Promise<FeedbackReconciliation> {
+async function reconcileWithGh(
+	runtime: FeedbackPostingRuntime,
+	marker: string,
+	signal?: AbortSignal,
+): Promise<FeedbackReconciliation> {
 	try {
-		const listed = await runtime.dependencies.exec("gh", [
-			"issue",
-			"list",
-			"--repo",
-			FEEDBACK_REPOSITORY,
-			"--state",
-			"all",
-			"--author",
-			"@me",
-			"--limit",
-			"100",
-			"--json",
-			"url,body",
-		]);
+		const listed = await execGh(
+			runtime,
+			[
+				"issue",
+				"list",
+				"--repo",
+				FEEDBACK_REPOSITORY,
+				"--state",
+				"all",
+				"--author",
+				"@me",
+				"--limit",
+				"100",
+				"--json",
+				"url,body",
+			],
+			runtime.timeouts.ghReconcileMs,
+			signal,
+		);
 		if (listed.code !== 0) return { status: "unavailable" };
 		const records = issueRecords(listed.stdout);
 		if (!records) return { status: "unavailable" };
@@ -173,16 +284,21 @@ async function reconcileWithRest(
 	runtime: FeedbackPostingRuntime,
 	token: string,
 	marker: string,
+	signal?: AbortSignal,
 ): Promise<FeedbackReconciliation> {
 	try {
-		const response = await runtime.fetchImplementation(
-			`https://api.github.com/repos/${FEEDBACK_REPOSITORY}/issues?state=all&per_page=100`,
+		const { response, text } = await fetchGitHubWithText(
+			runtime,
 			{
-				headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}` },
+				input: `https://api.github.com/repos/${FEEDBACK_REPOSITORY}/issues?state=all&per_page=100`,
+				init: { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}` } },
+				timeoutMs: runtime.timeouts.restReconcileMs,
+				shouldReadBody: (candidate) => candidate.ok,
 			},
+			signal,
 		);
 		if (!response.ok) return { status: "unavailable" };
-		const records = issueRecords(await response.text());
+		const records = issueRecords(text ?? "");
 		if (!records) return { status: "unavailable" };
 		const url = reconciledUrl(records, marker);
 		return url ? { status: "found", url } : { status: "absent" };
@@ -191,9 +307,14 @@ async function reconcileWithRest(
 	}
 }
 
-async function ghIsReady(runtime: FeedbackPostingRuntime): Promise<boolean> {
+async function ghIsReady(runtime: FeedbackPostingRuntime, signal?: AbortSignal): Promise<boolean> {
 	try {
-		const status = await runtime.dependencies.exec("gh", ["auth", "status", "--hostname", "github.com"]);
+		const status = await execGh(
+			runtime,
+			["auth", "status", "--hostname", "github.com"],
+			runtime.timeouts.ghAuthMs,
+			signal,
+		);
 		return status.code === 0;
 	} catch {
 		return false;
@@ -206,41 +327,51 @@ function issueNumber(url: string): string | undefined {
 	return /^[1-9]\d*$/u.test(number) ? number : undefined;
 }
 
-async function bestEffortLabelWithGh(runtime: FeedbackPostingRuntime, url: string, kind: FeedbackKind): Promise<void> {
+async function bestEffortLabelWithGh(
+	runtime: FeedbackPostingRuntime,
+	url: string,
+	kind: FeedbackKind,
+	signal?: AbortSignal,
+): Promise<void> {
 	const number = issueNumber(url);
 	if (!number) return;
 	try {
-		await runtime.dependencies.exec("gh", [
-			"issue",
-			"edit",
-			number,
-			"--repo",
-			FEEDBACK_REPOSITORY,
-			"--add-label",
-			kind,
-		]);
+		await execGh(
+			runtime,
+			["issue", "edit", number, "--repo", FEEDBACK_REPOSITORY, "--add-label", kind],
+			runtime.timeouts.ghLabelMs,
+			signal,
+		);
 	} catch {
 		// Default-branch automation applies the same label when reporter tokens lack permission.
 	}
 }
+
 async function bestEffortLabelWithRest(
 	runtime: FeedbackPostingRuntime,
 	token: string,
 	url: string,
 	kind: FeedbackKind,
+	signal?: AbortSignal,
 ): Promise<void> {
 	const number = issueNumber(url);
 	if (!number) return;
 	try {
-		await runtime.fetchImplementation(`https://api.github.com/repos/${FEEDBACK_REPOSITORY}/issues/${number}/labels`, {
-			method: "POST",
-			headers: {
-				accept: "application/vnd.github+json",
-				authorization: `Bearer ${token}`,
-				"content-type": "application/json",
+		await fetchGitHub(
+			runtime,
+			`https://api.github.com/repos/${FEEDBACK_REPOSITORY}/issues/${number}/labels`,
+			{
+				method: "POST",
+				headers: {
+					accept: "application/vnd.github+json",
+					authorization: `Bearer ${token}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ labels: [kind] }),
 			},
-			body: JSON.stringify({ labels: [kind] }),
-		});
+			runtime.timeouts.restLabelMs,
+			signal,
+		);
 	} catch {
 		// External reporters can create issues without label permission; workflow automation finishes labeling.
 	}
@@ -255,30 +386,36 @@ async function postWithGh(
 	runtime: FeedbackPostingRuntime,
 	request: FeedbackPostRequest,
 	marker: string,
+	signal?: AbortSignal,
 ): Promise<FeedbackPostResult> {
 	if (runtime.uncertainRequests.has(request.requestId)) {
-		const reconciliation = await reconcileWithGh(runtime, marker);
+		const reconciliation = await reconcileWithGh(runtime, marker, signal);
 		if (reconciliation.status === "found") {
-			await bestEffortLabelWithGh(runtime, reconciliation.url, request.draft.kind);
+			await bestEffortLabelWithGh(runtime, reconciliation.url, request.draft.kind, signal);
 			return { status: "success", url: reconciliation.url };
 		}
 		if (reconciliation.status === "unavailable") return uncertain();
 	}
 	const bodyFile = await runtime.bodyWriter(request.draft.body);
 	try {
-		const created = await runtime.dependencies.exec("gh", [
-			"issue",
-			"create",
-			"--repo",
-			FEEDBACK_REPOSITORY,
-			"--title",
-			request.draft.title,
-			"--body-file",
-			bodyFile.path,
-		]);
+		const created = await execGh(
+			runtime,
+			[
+				"issue",
+				"create",
+				"--repo",
+				FEEDBACK_REPOSITORY,
+				"--title",
+				request.draft.title,
+				"--body-file",
+				bodyFile.path,
+			],
+			runtime.timeouts.ghCreateMs,
+			signal,
+		);
 		const url = created.code === 0 ? validatedIssueUrl(created.stdout) : undefined;
 		if (!url) return markUncertain(runtime, request.requestId);
-		await bestEffortLabelWithGh(runtime, url, request.draft.kind);
+		await bestEffortLabelWithGh(runtime, url, request.draft.kind, signal);
 		return { status: "success", url };
 	} catch {
 		return markUncertain(runtime, request.requestId);
@@ -296,11 +433,12 @@ async function reconcileUncertainRest(
 	request: FeedbackPostRequest,
 	token: string,
 	marker: string,
+	signal?: AbortSignal,
 ): Promise<FeedbackPostResult | undefined> {
 	if (!runtime.uncertainRequests.has(request.requestId)) return undefined;
-	const reconciliation = await reconcileWithRest(runtime, token, marker);
+	const reconciliation = await reconcileWithRest(runtime, token, marker, signal);
 	if (reconciliation.status === "found") {
-		await bestEffortLabelWithRest(runtime, token, reconciliation.url, request.draft.kind);
+		await bestEffortLabelWithRest(runtime, token, reconciliation.url, request.draft.kind, signal);
 		return { status: "success", url: reconciliation.url };
 	}
 	return reconciliation.status === "unavailable" ? uncertain() : undefined;
@@ -311,50 +449,69 @@ async function postWithRest(
 	request: FeedbackPostRequest,
 	marker: string,
 	token: string,
+	signal?: AbortSignal,
 ): Promise<FeedbackPostResult> {
-	const reconciled = await reconcileUncertainRest(runtime, request, token, marker);
+	const reconciled = await reconcileUncertainRest(runtime, request, token, marker, signal);
 	if (reconciled) return reconciled;
 	try {
-		const response = await runtime.fetchImplementation(`https://api.github.com/repos/${FEEDBACK_REPOSITORY}/issues`, {
-			method: "POST",
-			headers: {
-				accept: "application/vnd.github+json",
-				authorization: `Bearer ${token}`,
-				"content-type": "application/json",
+		const { response, text } = await fetchGitHubWithText(
+			runtime,
+			{
+				input: `https://api.github.com/repos/${FEEDBACK_REPOSITORY}/issues`,
+				init: {
+					method: "POST",
+					headers: {
+						accept: "application/vnd.github+json",
+						authorization: `Bearer ${token}`,
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({ title: request.draft.title, body: request.draft.body }),
+				},
+				timeoutMs: runtime.timeouts.restCreateMs,
+				shouldReadBody: (candidate) => candidate.status === 201,
 			},
-			body: JSON.stringify({ title: request.draft.title, body: request.draft.body }),
-		});
+			signal,
+		);
 		if (response.status !== 201) {
 			const failure = restFailure(response);
 			return failure.status === "uncertain" ? markUncertain(runtime, request.requestId) : failure;
 		}
-		const issue = await parseRestIssue(response);
+		const issue = parseRestIssue(text);
 		const url = validatedIssueUrl(issue?.html_url);
 		if (!url) return markUncertain(runtime, request.requestId);
-		await bestEffortLabelWithRest(runtime, token, url, request.draft.kind);
+		await bestEffortLabelWithRest(runtime, token, url, request.draft.kind, signal);
 		return { status: "success", url };
 	} catch {
 		return markUncertain(runtime, request.requestId);
 	}
 }
 
-async function postRequest(runtime: FeedbackPostingRuntime, request: FeedbackPostRequest): Promise<FeedbackPostResult> {
+async function postRequest(
+	runtime: FeedbackPostingRuntime,
+	request: FeedbackPostRequest,
+	signal?: AbortSignal,
+): Promise<FeedbackPostResult> {
 	const marker = requestMarker(request);
 	if (!marker) return retained("The feedback request marker is missing or invalid.");
-	if (await ghIsReady(runtime)) return await postWithGh(runtime, request, marker);
+	if (await ghIsReady(runtime, signal)) return await postWithGh(runtime, request, marker, signal);
 	const token = selectToken(runtime.env);
+	if (!token && runtime.uncertainRequests.has(request.requestId)) return uncertain();
 	if (!token) {
 		return retained("GitHub authentication is required. Run gh auth login or set GH_TOKEN/GITHUB_TOKEN, then Retry.");
 	}
-	return await postWithRest(runtime, request, marker, token);
+	return await postWithRest(runtime, request, marker, token, signal);
 }
 
-function handlePost(runtime: FeedbackPostingRuntime, request: FeedbackPostRequest): Promise<FeedbackPostResult> {
+function handlePost(
+	runtime: FeedbackPostingRuntime,
+	request: FeedbackPostRequest,
+	signal?: AbortSignal,
+): Promise<FeedbackPostResult> {
 	const successful = runtime.successfulRequests.get(request.requestId);
 	if (successful) return Promise.resolve({ status: "success", url: successful });
 	const active = runtime.activeRequests.get(request.requestId);
 	if (active) return active;
-	const pending = postRequest(runtime, request)
+	const pending = postRequest(runtime, request, signal)
 		.catch(() => retained("Issue posting failed."))
 		.then((result) => {
 			if (result.status === "success") runtime.successfulRequests.set(request.requestId, result.url);
@@ -371,9 +528,10 @@ export function createGitHubFeedbackPostHandler(dependencies: FeedbackPostingDep
 		fetchImplementation: dependencies.fetch ?? globalThis.fetch,
 		env: dependencies.env ?? process.env,
 		bodyWriter: dependencies.writeBodyFile ?? writeTemporaryBody,
+		timeouts: { ...DEFAULT_POSTING_TIMEOUTS, ...dependencies.timeouts },
 		uncertainRequests: new Set(),
 		successfulRequests: new Map(),
 		activeRequests: new Map(),
 	};
-	return (request) => handlePost(runtime, request);
+	return (request, signal) => handlePost(runtime, request, signal);
 }

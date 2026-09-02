@@ -50,6 +50,8 @@ export interface FeedbackSubmissionToolDetails {
 	status: "posted" | "cancelled" | "retained";
 	draft: FormattedFeedbackDraft;
 	replacements: FeedbackPrivacyReplacement[];
+	requestId?: string;
+	uncertain?: boolean;
 	url?: string;
 	message?: string;
 }
@@ -58,12 +60,15 @@ export interface FeedbackSubmissionToolOptions {
 	getInvestigation(): FeedbackInvestigationController | undefined;
 	post: FeedbackPostHandler;
 	createRequestId?: () => string;
+	onRetainedUncertainty?(): void;
 	onTerminal(): void;
 }
 
 export interface FeedbackInteractionOutcome {
 	status: "posted" | "cancelled" | "retained";
 	preview: ScrubbedFeedbackDraft;
+	requestId?: string;
+	uncertain?: boolean;
 	url?: string;
 	message?: string;
 }
@@ -175,9 +180,22 @@ async function openEdit(
 
 type FeedbackInteractionStep = { status: "continue"; failureMessage?: string } | FeedbackInteractionOutcome;
 
+function uncertainRetentionMessage(requestId: string): string {
+	return `Issue creation is still uncertain. Request ${requestId} and the complete reviewed draft are retained for reconciliation before Retry.`;
+}
+
 function cancelInteraction(controller: FeedbackSubmissionController): FeedbackInteractionOutcome {
-	controller.cancel();
-	return { status: "cancelled", preview: controller.preview };
+	const uncertain = controller.creationUncertain;
+	if (controller.state !== "retained") controller.cancel();
+	return uncertain
+		? {
+				status: "retained",
+				preview: controller.preview,
+				requestId: controller.requestId,
+				uncertain: true,
+				message: uncertainRetentionMessage(controller.requestId),
+			}
+		: { status: "cancelled", preview: controller.preview, requestId: controller.requestId };
 }
 
 async function applyFeedbackEdits(ctx: ExtensionContext, controller: FeedbackSubmissionController): Promise<boolean> {
@@ -206,9 +224,9 @@ async function handlePreviewState(
 		controller.beginEdit();
 		return (await applyFeedbackEdits(ctx, controller)) ? { status: "continue" } : cancelInteraction(controller);
 	}
-	const outcome = await controller.submit(post);
+	const outcome = await controller.submit(post, signal);
 	return outcome.status === "posted"
-		? { status: "posted", preview: controller.preview, url: outcome.url }
+		? { status: "posted", preview: controller.preview, requestId: controller.requestId, url: outcome.url }
 		: { status: "continue", failureMessage: outcome.message };
 }
 
@@ -221,38 +239,58 @@ async function handleFailureState(
 ): Promise<FeedbackInteractionStep> {
 	const action = await openFailure(ctx, failureMessage ?? "Issue posting failed.", signal);
 	if (action === "retry") {
-		const outcome = await controller.submit(post);
+		const outcome = await controller.submit(post, signal);
 		return outcome.status === "posted"
-			? { status: "posted", preview: controller.preview, url: outcome.url }
+			? { status: "posted", preview: controller.preview, requestId: controller.requestId, url: outcome.url }
 			: { status: "continue", failureMessage: outcome.message };
 	}
 	if (action === "copy") {
 		ctx.ui.setEditorText(formatFeedbackDraftForCopy(controller.preview));
-		controller.retain();
+		const uncertain = controller.creationUncertain;
+		if (controller.state !== "retained") controller.retain();
 		return {
 			status: "retained",
 			preview: controller.preview,
-			message: "The complete reviewed draft was copied to the editor.",
+			requestId: controller.requestId,
+			...(uncertain ? { uncertain: true } : {}),
+			message: uncertain
+				? `${uncertainRetentionMessage(controller.requestId)} The draft was copied to the editor.`
+				: "The complete reviewed draft was copied to the editor.",
 		};
 	}
 	return cancelInteraction(controller);
+}
+
+interface FeedbackInteractionOptions {
+	signal?: AbortSignal;
+	createRequestId?: () => string;
+	controller?: FeedbackSubmissionController;
+	failureMessage?: string;
 }
 
 export async function runFeedbackInteraction(
 	ctx: ExtensionContext,
 	initial: ScrubbedFeedbackDraft,
 	post: FeedbackPostHandler,
-	options: { signal?: AbortSignal; createRequestId?: () => string } = {},
+	options: FeedbackInteractionOptions = {},
 ): Promise<FeedbackInteractionOutcome> {
 	if (!ctx.hasUI) {
-		return {
-			status: "retained",
-			preview: initial,
-			message: "Interactive feedback review is unavailable. The complete scrubbed draft is retained.",
-		};
+		return options.controller?.creationUncertain
+			? {
+					status: "retained",
+					preview: options.controller.preview,
+					requestId: options.controller.requestId,
+					uncertain: true,
+					message: uncertainRetentionMessage(options.controller.requestId),
+				}
+			: {
+					status: "retained",
+					preview: initial,
+					message: "Interactive feedback review is unavailable. The complete scrubbed draft is retained.",
+				};
 	}
-	const controller = new FeedbackSubmissionController(initial, options.createRequestId);
-	let failureMessage: string | undefined;
+	const controller = options.controller ?? new FeedbackSubmissionController(initial, options.createRequestId);
+	let failureMessage = options.failureMessage;
 	while (true) {
 		const step =
 			controller.state === "preview"
@@ -263,9 +301,49 @@ export async function runFeedbackInteraction(
 	}
 }
 
+interface RetainedFeedbackSubmission {
+	controller: FeedbackSubmissionController;
+	failureMessage?: string;
+}
+function createSubmissionController(
+	input: FeedbackSubmissionToolInput,
+	options: FeedbackSubmissionToolOptions,
+): FeedbackSubmissionController {
+	const investigation = options.getInvestigation();
+	if (investigation === undefined) throw new Error("No active /feedback request is available for submission.");
+	const assessment = investigation.assess(input.kind);
+	return new FeedbackSubmissionController(prepareFeedbackSubmission(input, assessment), options.createRequestId);
+}
+
+function retainedSubmissionAfter(
+	outcome: FeedbackInteractionOutcome,
+	controller: FeedbackSubmissionController,
+	options: FeedbackSubmissionToolOptions,
+): RetainedFeedbackSubmission | undefined {
+	if (outcome.status === "retained" && outcome.uncertain) {
+		options.onRetainedUncertainty?.();
+		return { controller, failureMessage: outcome.message };
+	}
+	options.onTerminal();
+	return undefined;
+}
+
+function feedbackSubmissionDetails(outcome: FeedbackInteractionOutcome): FeedbackSubmissionToolDetails {
+	return {
+		status: outcome.status,
+		draft: outcome.preview.draft,
+		replacements: outcome.preview.replacements,
+		...(outcome.requestId === undefined ? {} : { requestId: outcome.requestId }),
+		...(outcome.uncertain === undefined ? {} : { uncertain: outcome.uncertain }),
+		...(outcome.url === undefined ? {} : { url: outcome.url }),
+		...(outcome.message === undefined ? {} : { message: outcome.message }),
+	};
+}
+
 export function createFeedbackSubmissionTool(
 	options: FeedbackSubmissionToolOptions,
 ): ToolDefinition<typeof FeedbackSubmissionParameters, FeedbackSubmissionToolDetails> {
+	let retainedSubmission: RetainedFeedbackSubmission | undefined;
 	return {
 		name: "submit_feedback",
 		label: "Submit feedback",
@@ -278,29 +356,21 @@ export function createFeedbackSubmissionTool(
 		parameters: FeedbackSubmissionParameters,
 		executionMode: "sequential",
 		async execute(_toolCallId, input, signal, _onUpdate, ctx) {
-			const investigation = options.getInvestigation();
-			if (investigation === undefined) throw new Error("No active /feedback request is available for submission.");
-			const assessment = investigation.assess(input.kind);
-			const preview = prepareFeedbackSubmission(input, assessment);
-			const outcome = await runFeedbackInteraction(ctx, preview, options.post, {
+			const controller = retainedSubmission?.controller ?? createSubmissionController(input, options);
+			const outcome = await runFeedbackInteraction(ctx, controller.preview, options.post, {
 				signal,
-				createRequestId: options.createRequestId,
+				controller,
+				failureMessage: retainedSubmission?.failureMessage,
 			});
-			options.onTerminal();
-			const details: FeedbackSubmissionToolDetails = {
-				status: outcome.status,
-				draft: outcome.preview.draft,
-				replacements: outcome.preview.replacements,
-				...(outcome.url === undefined ? {} : { url: outcome.url }),
-				...(outcome.message === undefined ? {} : { message: outcome.message }),
-			};
+			retainedSubmission = retainedSubmissionAfter(outcome, controller, options);
+			const details = feedbackSubmissionDetails(outcome);
 			if (outcome.status === "posted" && outcome.url) {
 				return { content: [{ type: "text", text: outcome.url }], details, terminate: true };
 			}
 			const text =
 				outcome.status === "cancelled"
 					? "Feedback cancelled. No issue was created."
-					: (outcome.message ?? "Feedback draft retained. No issue was created.");
+					: (outcome.message ?? "The complete reviewed feedback draft is retained.");
 			return { content: [{ type: "text", text }], details, terminate: true };
 		},
 	};

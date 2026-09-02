@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { SUBAGENT_PROTECTED_PATHS_INPUT } from "@bastani/atomic";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
@@ -208,6 +209,7 @@ export async function runSinglePath(
 			outputMode: effectiveOutputMode,
 			parentDepth: data.parentDepth,
 			workflowStageSubagentGuard,
+			protectedPaths: params[SUBAGENT_PROTECTED_PATHS_INPUT],
 			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
 			onUpdate: forwardSingleUpdate,
 			controlConfig,

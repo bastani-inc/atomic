@@ -103,6 +103,7 @@ export interface ChildSpec {
 	readonly mcpDirectTools?: string[];
 	readonly skills?: string[];
 	readonly customTools?: CreateAgentSessionOptions["customTools"];
+	readonly protectedPaths?: readonly string[];
 	readonly model?: Model<Api>;
 	readonly thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
 	readonly parent?: ParentContext;
@@ -802,6 +803,7 @@ export class SubagentControlRuntime {
 					mcpDirectTools: spec.mcpDirectTools ?? spec.agent.mcpDirectTools,
 					skills: [...(spec.skills ?? spec.agent.skills ?? [])],
 					customTools: spec.customTools,
+					protectedPaths: spec.protectedPaths,
 					model: spec.model,
 					thinkingLevel: spec.thinkingLevel ?? (spec.agent.thinking as ChildPolicy["thinkingLevel"]),
 					intercomGroup: parent.intercomGroup,

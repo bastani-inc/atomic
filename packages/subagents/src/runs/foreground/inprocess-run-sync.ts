@@ -276,6 +276,7 @@ export async function runSingleInProcess(
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,
+		protectedPaths: options.protectedPaths,
 		model: resolvedCandidate?.model,
 		thinkingLevel: (resolvedCandidate?.thinkingLevel ??
 			agent.thinking ??

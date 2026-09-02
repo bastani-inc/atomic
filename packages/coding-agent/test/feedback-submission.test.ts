@@ -287,6 +287,115 @@ describe("feedback submission tool", () => {
 		assert.equal(outcome.url, undefined);
 	});
 
+	test("keeps uncertain Cancel resumable until the same controller posts successfully", async () => {
+		// #2799: dismissing failure UI retains the active tool request across a later Retry.
+		let customCalls = 0;
+		let terminals = 0;
+		let investigation: FeedbackInvestigationController | undefined = new FeedbackInvestigationController({
+			prompt: "add keyboard hints",
+			facts: facts(),
+			debuggerToolAvailable: true,
+		});
+		const requests: Array<{ requestId: string; title: string; body: string }> = [];
+		const tool = createFeedbackSubmissionTool({
+			getInvestigation: () => investigation,
+			post: async (request) => {
+				requests.push({ requestId: request.requestId, title: request.draft.title, body: request.draft.body });
+				return requests.length === 1
+					? {
+							status: "uncertain",
+							message: "GitHub may have created the issue. Retry must reconcile first.",
+						}
+					: { status: "success", url: "https://github.com/bastani-inc/atomic/issues/999991" };
+			},
+			createRequestId: () => "uncertain-request",
+			onTerminal: () => {
+				terminals += 1;
+				investigation = undefined;
+			},
+		});
+		const dismissContext = {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				custom: async (factory: Parameters<ExtensionContext["ui"]["custom"]>[0]) =>
+					await new Promise((resolve) => {
+						const component = factory(
+							{ requestRender: () => {} } as never,
+							plainTheme as never,
+							{} as never,
+							resolve,
+						);
+						if (customCalls === 0) component.handleInput?.("\x1b[B");
+						component.handleInput?.(customCalls === 0 ? "\r" : "\x1b");
+						customCalls += 1;
+					}),
+				notify: () => {},
+				setEditorText: () => {},
+			} as ExtensionContext["ui"],
+		} as ExtensionContext;
+
+		const retained = await tool.execute(
+			"uncertain-call",
+			{
+				kind: "enhancement",
+				title: "Keyboard hints",
+				whatToChange: "Show the shortcuts.",
+				why: "Users should discover the controls.",
+			},
+			undefined,
+			undefined,
+			dismissContext,
+		);
+
+		const retainedDetails = retained.details as FeedbackSubmissionToolDetails;
+		assert.equal(retainedDetails.status, "retained");
+		assert.equal(retainedDetails.requestId, "uncertain-request");
+		assert.equal(retainedDetails.uncertain, true);
+		const text = retained.content[0]?.type === "text" ? retained.content[0].text : "";
+		assert.match(text, /creation is still uncertain|may have created/iu);
+		assert.match(text, /uncertain-request/u);
+		assert.doesNotMatch(text, /No issue was created/iu);
+		assert.equal(terminals, 0);
+		assert.ok(investigation);
+
+		const retryContext = {
+			...dismissContext,
+			ui: {
+				...dismissContext.ui,
+				custom: async (factory: Parameters<ExtensionContext["ui"]["custom"]>[0]) =>
+					await new Promise((resolve) => {
+						const component = factory(
+							{ requestRender: () => {} } as never,
+							plainTheme as never,
+							{} as never,
+							resolve,
+						);
+						component.handleInput?.("\r");
+					}),
+			} as ExtensionContext["ui"],
+		} as ExtensionContext;
+		const posted = await tool.execute(
+			"retry-call",
+			{
+				kind: "enhancement",
+				title: "A model-generated replacement must be ignored",
+				whatToChange: "Do not replace the retained draft.",
+				why: "Retry owns the existing request.",
+			},
+			undefined,
+			undefined,
+			retryContext,
+		);
+
+		assert.equal(posted.details?.status, "posted");
+		assert.equal(posted.details?.requestId, "uncertain-request");
+		assert.equal(terminals, 1);
+		assert.equal(investigation, undefined);
+		assert.deepEqual(requests, [requests[0], requests[0]]);
+		assert.equal(requests[0]?.title, "Keyboard hints");
+	});
+
 	test("retains the scrubbed draft without opening UI in non-interactive mode", async () => {
 		let posts = 0;
 		const outcome = await runFeedbackInteraction(

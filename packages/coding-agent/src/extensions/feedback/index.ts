@@ -1,6 +1,14 @@
 import { arch, platform } from "node:os";
 import { VERSION } from "../../config.js";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../core/extensions/index.ts";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ToolCallEvent,
+	ToolCallEventResult,
+	ToolResultEvent,
+	ToolResultEventResult,
+} from "../../core/extensions/index.ts";
 import type { SessionEntry } from "../../core/session-manager-types.ts";
 import { FeedbackInvestigationController, INVESTIGATION_UNAVAILABLE } from "./investigation.js";
 import { createGitHubFeedbackPostHandler } from "./posting.js";
@@ -37,6 +45,7 @@ interface ActiveFeedbackInvestigation {
 	controller: FeedbackInvestigationController;
 	prompt: string;
 	facts: FeedbackSessionFacts;
+	phase: "initial" | "awaiting-clarification" | "clarification" | "retained-uncertain";
 }
 
 interface FeedbackExtensionState {
@@ -164,6 +173,10 @@ function registerFeedbackSubmissionTool(
 			getInvestigation: () => state.activeInvestigation?.controller,
 			post,
 			createRequestId: options.createRequestId,
+			onRetainedUncertainty: () => {
+				const active = state.activeInvestigation;
+				if (active !== undefined) active.phase = "retained-uncertain";
+			},
 			onTerminal: () => {
 				state.activeInvestigation = undefined;
 			},
@@ -171,30 +184,46 @@ function registerFeedbackSubmissionTool(
 	);
 }
 
+function handleFeedbackToolCall(state: FeedbackExtensionState, event: ToolCallEvent): ToolCallEventResult | undefined {
+	const active = state.activeInvestigation;
+	if (active === undefined || event.toolName === "submit_feedback") return undefined;
+	if (event.toolName === "subagent") {
+		return active.controller.handleSubagentCall(event.toolCallId, event.input);
+	}
+	return {
+		block: true,
+		reason:
+			"Only submit_feedback and the admitted foreground debugger are allowed during an active feedback request.",
+	};
+}
+
+async function handleFeedbackToolResult(
+	pi: ExtensionAPI,
+	state: FeedbackExtensionState,
+	event: ToolResultEvent,
+): Promise<ToolResultEventResult | undefined> {
+	const active = state.activeInvestigation;
+	if (event.toolName !== "subagent" || active === undefined) return undefined;
+	const matchedDebugger = active.controller.handleSubagentResult(
+		event.toolCallId,
+		event.isError ? "failed" : "completed",
+	);
+	if (!matchedDebugger) return undefined;
+	const after = await captureWorkingTreeSnapshot(active.cwd, pi.exec.bind(pi));
+	const disclosure = compareWorkingTreeSnapshots(active.before, after);
+	active.controller.setWorkingTreeDisclosure(disclosure);
+	const disclosureContent = { type: "text" as const, text: formatWorkingTreeDisclosure(disclosure) };
+	return event.isError
+		? {
+				content: [{ type: "text" as const, text: INVESTIGATION_UNAVAILABLE }, disclosureContent],
+				isError: true,
+			}
+		: { content: [...event.content, disclosureContent] };
+}
+
 function registerFeedbackSubagentHooks(pi: ExtensionAPI, state: FeedbackExtensionState): void {
-	pi.on("tool_call", (event) => {
-		if (event.toolName !== "subagent" || state.activeInvestigation === undefined) return;
-		return state.activeInvestigation.controller.handleSubagentCall(event.toolCallId, event.input);
-	});
-	pi.on("tool_result", async (event) => {
-		const active = state.activeInvestigation;
-		if (event.toolName !== "subagent" || active === undefined) return;
-		const matchedDebugger = active.controller.handleSubagentResult(
-			event.toolCallId,
-			event.isError ? "failed" : "completed",
-		);
-		if (!matchedDebugger) return;
-		const after = await captureWorkingTreeSnapshot(active.cwd, pi.exec.bind(pi));
-		const disclosure = compareWorkingTreeSnapshots(active.before, after);
-		active.controller.setWorkingTreeDisclosure(disclosure);
-		const disclosureContent = { type: "text" as const, text: formatWorkingTreeDisclosure(disclosure) };
-		return event.isError
-			? {
-					content: [{ type: "text" as const, text: INVESTIGATION_UNAVAILABLE }, disclosureContent],
-					isError: true,
-				}
-			: { content: [...event.content, disclosureContent] };
-	});
+	pi.on("tool_call", (event) => handleFeedbackToolCall(state, event));
+	pi.on("tool_result", (event) => handleFeedbackToolResult(pi, state, event));
 }
 
 function registerFeedbackLifecycleHook(
@@ -203,14 +232,23 @@ function registerFeedbackLifecycleHook(
 	post: FeedbackPostHandler,
 	options: FeedbackExtensionOptions,
 ): void {
+	pi.on("before_agent_start", () => {
+		const active = state.activeInvestigation;
+		if (active?.phase === "awaiting-clarification") active.phase = "clarification";
+	});
 	pi.on("agent_end", async (event, ctx) => {
 		const active = state.activeInvestigation;
 		if (active === undefined) return;
-		state.activeInvestigation = undefined;
-		const modelFailed = event.messages.some(
-			(message) => message.role === "assistant" && message.stopReason === "error",
-		);
+		const assistantMessages = event.messages.filter((message) => message.role === "assistant");
+		const modelFailed = assistantMessages.some((message) => message.stopReason === "error");
+		const interrupted =
+			assistantMessages.length === 0 || assistantMessages.some((message) => message.stopReason === "aborted");
+		if (active.phase === "retained-uncertain") return;
+		if (modelFailed || interrupted || active.phase === "clarification") {
+			state.activeInvestigation = undefined;
+		}
 		if (modelFailed) await showModelUnavailableFallback(ctx, active, post, options.createRequestId);
+		else if (!interrupted && active.phase === "initial") active.phase = "awaiting-clarification";
 	});
 }
 
@@ -239,7 +277,9 @@ function registerFeedbackCommand(
 					prompt: args,
 					facts,
 					debuggerToolAvailable,
+					protectedPaths: before.entries.map((entry) => entry.path),
 				}),
+				phase: "initial",
 			};
 			try {
 				await pi.sendUserMessage(buildFeedbackTurnMessage(args, facts, debuggerToolAvailable));

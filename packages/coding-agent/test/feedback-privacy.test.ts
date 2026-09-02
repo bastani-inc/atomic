@@ -113,6 +113,93 @@ describe("feedback final-output privacy review", () => {
 		);
 	});
 
+	test("redacts Google, npm, and GitLab token formats with conservative boundaries", () => {
+		const tokens = [`AIza${"A".repeat(35)}`, `npm_${"b".repeat(36)}`, `glpat-${"C".repeat(20)}`];
+		const safeText = [
+			`prefix${tokens[0]}`,
+			`prefix${tokens[1]}`,
+			`prefix${tokens[2]}`,
+			"AIza-short",
+			"npm_package_name",
+			"glpat-short",
+		].join("\n");
+		const result = scrubFeedbackDraft(draft("Safe", `${tokens.join("\n")}\n${safeText}`), {
+			homeDirectories: [],
+		});
+
+		for (const token of tokens) assert.equal(result.draft.body.split(token).length - 1, 1);
+		assert.match(result.draft.body, /AIza-short/u);
+		assert.match(result.draft.body, /npm_package_name/u);
+		assert.match(result.draft.body, /glpat-short/u);
+		assert.deepEqual(
+			result.replacements.map((replacement) => replacement.kind),
+			["api-token", "api-token", "api-token"],
+		);
+	});
+
+	test("redacts credential assignment names case-insensitively", () => {
+		const result = scrubFeedbackDraft(
+			draft("Safe", "token=synthetic-lower-token\napi_key=synthetic-lower-key\nPassword = ordinary-secret"),
+			{ homeDirectories: [] },
+		);
+
+		assert.equal(result.draft.body, "token=[REDACTED]\napi_key=[REDACTED]\nPassword =[REDACTED]");
+		assert.deepEqual(
+			result.replacements.map((replacement) => replacement.kind),
+			["credential-assignment", "credential-assignment", "credential-assignment"],
+		);
+	});
+
+	test("matches Windows home prefixes across slash styles without crossing path boundaries", () => {
+		const result = scrubFeedbackDraft(
+			draft(
+				"Safe",
+				[
+					"C:/Users/Alice/project/one.log",
+					"C:\\Users\\Alice\\project\\two.log",
+					"C:/Users/Aliceville/safe.log",
+					"XC:/Users/Alice/safe.log",
+				].join("\n"),
+			),
+			{ homeDirectories: ["C:\\Users\\Alice"] },
+		);
+
+		assert.equal(
+			result.draft.body,
+			"~/project/one.log\n~\\project\\two.log\nC:/Users/Aliceville/safe.log\nXC:/Users/Alice/safe.log",
+		);
+		assert.deepEqual(
+			result.replacements.map((replacement) => replacement.kind),
+			["home-directory", "home-directory"],
+		);
+
+		const forwardHome = scrubFeedbackDraft(draft("Safe", "c:\\users\\alice\\project\\three.log"), {
+			homeDirectories: ["C:/Users/Alice"],
+		});
+		assert.equal(forwardHome.draft.body, "~\\project\\three.log");
+	});
+
+	test("redacts a complete private-key block before truncating output", () => {
+		const privateMaterial = "synthetic-private-material-".repeat(30);
+		const privateKeyLabel = ["PRIVATE", "KEY"].join(" ");
+		const block = [`-----BEGIN ${privateKeyLabel}-----`, privateMaterial, `-----END ${privateKeyLabel}-----`].join(
+			"\n",
+		);
+		const result = scrubFeedbackDraft(draft("Safe", `${"x".repeat(15_950)}${block}`), {
+			homeDirectories: [],
+		});
+
+		assert.ok(result.draft.body.length <= FEEDBACK_BODY_MAX_CHARACTERS);
+		assert.doesNotMatch(
+			result.draft.body,
+			new RegExp(`BEGIN ${privateKeyLabel}|synthetic-private-material|END ${privateKeyLabel}`, "u"),
+		);
+		assert.deepEqual(
+			result.replacements.map((replacement) => replacement.kind),
+			["private-key"],
+		);
+	});
+
 	test("bounds long traces and diagnostic dumps but keeps short actionable excerpts", () => {
 		const shortTrace = "Error: failed\n    at first (app.ts:1:1)\n    at second (app.ts:2:1)";
 		const longTrace = Array.from(
@@ -145,8 +232,9 @@ describe("feedback final-output privacy review", () => {
 
 		assert.ok(result.draft.title.length <= FEEDBACK_TITLE_MAX_CHARACTERS);
 		assert.ok(result.draft.body.length <= FEEDBACK_BODY_MAX_CHARACTERS);
-		assert.match(result.draft.title, /truncated/);
-		assert.match(result.draft.body, /truncated/);
+		assert.match(result.draft.title, /truncated.*privacy-reviewed length/u);
+		assert.match(result.draft.body, /truncated.*privacy-reviewed length/u);
+		assert.doesNotMatch(`${result.draft.title}\n${result.draft.body}`, /original length/u);
 		assert.deepEqual(
 			result.replacements.map(({ field, kind }) => ({ field, kind })),
 			[
@@ -154,5 +242,27 @@ describe("feedback final-output privacy review", () => {
 				{ field: "body", kind: "size-limit" },
 			],
 		);
+	});
+
+	test("enforces final limits after redaction expansion and keeps occurrence disclosures ordered", () => {
+		const title = `${"t".repeat(FEEDBACK_TITLE_MAX_CHARACTERS - " TOKEN=x".length)} TOKEN=x`;
+		const body = `${"b".repeat(FEEDBACK_BODY_MAX_CHARACTERS - " token=x".length)} token=x`;
+		const result = scrubFeedbackDraft(draft(title, body), { homeDirectories: [] });
+
+		assert.ok(result.draft.title.length <= FEEDBACK_TITLE_MAX_CHARACTERS);
+		assert.ok(result.draft.body.length <= FEEDBACK_BODY_MAX_CHARACTERS);
+		assert.doesNotMatch(`${result.draft.title}\n${result.draft.body}`, /TOKEN=x|token=x/u);
+		assert.deepEqual(
+			result.replacements.map(({ field, kind }) => ({ field, kind })),
+			[
+				{ field: "title", kind: "credential-assignment" },
+				{ field: "title", kind: "size-limit" },
+				{ field: "body", kind: "credential-assignment" },
+				{ field: "body", kind: "size-limit" },
+			],
+		);
+		for (const replacement of result.replacements) {
+			assert.doesNotMatch(replacement.description, /TOKEN=x|token=x/u);
+		}
 	});
 });

@@ -131,6 +131,8 @@ export interface RunSyncOptions {
 	/** Current session depth passed to the in-process admission door. */
 	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
+	/** Runtime-injected paths protected by the foreground child admission policy. */
+	protectedPaths?: readonly string[];
 	workflowSessionMetadata?: SessionWorkflowMetadata;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;

@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
+import { SUBAGENT_PROTECTED_PATHS_INPUT, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { afterAll, beforeEach, describe, test, vi } from "vitest";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 
 interface MinimalRunSyncOptions {
 	workflowStageSubagentGuard?: boolean;
 	parentDepth?: number;
+	protectedPaths?: readonly string[];
 }
 
 interface CapturedRunSyncCall {
@@ -206,5 +207,25 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		);
 		assertNoErrorFlag(result);
 		assertGuardedRunSyncCalls(["alpha"]);
+	});
+
+	test("passes runtime-injected protected paths through foreground child admission", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-single-protected-"));
+		const executor = makeExecutor([makeAgent("alpha")]);
+		const protectedPaths = ["tracked.txt", "user notes.txt"];
+		const result = await executor.execute(
+			"subagent",
+			{
+				agent: "alpha",
+				task: "inspect without mutation",
+				[SUBAGENT_PROTECTED_PATHS_INPUT]: protectedPaths,
+			},
+			new AbortController().signal,
+			undefined,
+			makeWorkflowStageContext(cwd),
+		);
+
+		assertNoErrorFlag(result);
+		assert.deepEqual(runSyncCalls[0]?.options.protectedPaths, protectedPaths);
 	});
 });

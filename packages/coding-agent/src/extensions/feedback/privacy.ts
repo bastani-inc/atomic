@@ -45,9 +45,9 @@ interface ReplacementCandidate {
 }
 
 const API_TOKEN_PATTERN =
-	/(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16})/g;
+	/(?<![A-Za-z0-9_-])(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{35}|npm_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])/g;
 const CREDENTIAL_ASSIGNMENT_PATTERN =
-	/\b(?:TOKEN|API_KEY|ACCESS_TOKEN|AUTH_TOKEN|SECRET|PASSWORD|[A-Z][A-Z0-9_]*(?:TOKEN|API_KEY|SECRET|PASSWORD))\b(\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s\r\n]+)/g;
+	/\b(?:TOKEN|API_KEY|ACCESS_TOKEN|AUTH_TOKEN|SECRET|PASSWORD|[A-Z][A-Z0-9_]*(?:TOKEN|API_KEY|SECRET|PASSWORD))\b(\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s\r\n]+)/gi;
 const URL_CREDENTIAL_PATTERN = /(https?:\/\/)[^/\s:@]+(?::[^/\s@]*)?@/g;
 const PRIVATE_KEY_PATTERN =
 	/-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g;
@@ -148,10 +148,12 @@ function collectCandidates(text: string, homeDirectories: readonly string[]): Re
 	addPatternCandidates(text, API_TOKEN_PATTERN, "api-token", () => "[REDACTED API TOKEN]", candidates);
 	for (const homeDirectory of homeDirectories) {
 		if (homeDirectory.length === 0) continue;
-		const pattern = new RegExp(
-			`${escapeRegExp(homeDirectory)}(?=$|[\\\\/])`,
-			homeDirectory.includes("\\") ? "gi" : "g",
-		);
+		const pathPattern = homeDirectory
+			.split(/[\\/]+/u)
+			.map(escapeRegExp)
+			.join("[\\\\/]");
+		const caseInsensitive = /^[A-Za-z]:[\\/]/u.test(homeDirectory);
+		const pattern = new RegExp(`(?<![A-Za-z0-9_])${pathPattern}(?=$|[\\\\/])`, caseInsensitive ? "gi" : "g");
 		addPatternCandidates(text, pattern, "home-directory", () => "~", candidates);
 	}
 	return candidates.sort((left, right) => left.start - right.start || right.end - left.end);
@@ -203,7 +205,7 @@ interface BoundedText {
 function boundText(text: string, field: FeedbackPrivacyField, limit: number): BoundedText {
 	if (text.length <= limit) return { text };
 	const separator = field === "body" ? "\n\n" : " ";
-	const marker = `${separator}[truncated by Atomic feedback privacy review; original length ${text.length} characters]`;
+	const marker = `${separator}[truncated by Atomic feedback privacy review; privacy-reviewed length ${text.length} characters]`;
 	const retainedLength = Math.max(0, limit - marker.length);
 	return {
 		text: `${text.slice(0, retainedLength)}${marker}`,
@@ -217,8 +219,8 @@ function scrubField(
 	limit: number,
 	homeDirectories: readonly string[],
 ): { text: string; replacements: FeedbackPrivacyReplacement[] } {
-	const bounded = boundText(text, field, limit);
-	const scrubbed = applyCandidates(bounded.text, field, collectCandidates(bounded.text, homeDirectories));
+	const scrubbed = applyCandidates(text, field, collectCandidates(text, homeDirectories));
+	const bounded = boundText(scrubbed.text, field, limit);
 	if (bounded.truncation) {
 		scrubbed.replacements.push({
 			field,
@@ -228,7 +230,7 @@ function scrubField(
 			start: bounded.truncation.start,
 		});
 	}
-	return scrubbed;
+	return { text: bounded.text, replacements: scrubbed.replacements };
 }
 
 export function scrubFeedbackDraft(

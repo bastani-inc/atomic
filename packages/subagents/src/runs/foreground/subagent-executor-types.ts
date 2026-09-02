@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import { type ExtensionAPI, type ExtensionContext, SUBAGENT_PROTECTED_PATHS_INPUT } from "@bastani/atomic";
 import type { AgentConfig, AgentScope } from "../../agents/agents.js";
 import type { IntercomBridgeState } from "../../intercom/intercom-bridge.js";
 import type { ModelInfo } from "../../shared/model-info.js";
@@ -60,6 +60,8 @@ export interface SubagentParamsLike {
 	reads?: string[] | false;
 	progress?: boolean;
 	agentScope?: string;
+	/** Runtime-injected paths protected by the foreground child admission policy. */
+	[SUBAGENT_PROTECTED_PATHS_INPUT]?: string[];
 }
 
 export interface SubagentExecutorRuntimeDeps {

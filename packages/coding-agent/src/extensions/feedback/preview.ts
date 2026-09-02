@@ -33,7 +33,7 @@ export type FeedbackPostResult =
 	| { status: "failure"; message: string }
 	| { status: "uncertain"; message: string };
 
-export type FeedbackPostHandler = (request: FeedbackPostRequest) => Promise<FeedbackPostResult>;
+export type FeedbackPostHandler = (request: FeedbackPostRequest, signal?: AbortSignal) => Promise<FeedbackPostResult>;
 
 export type FeedbackSubmitOutcome =
 	| { status: "posted"; url: string }
@@ -88,6 +88,7 @@ export class FeedbackSubmissionController {
 	#state: FeedbackSubmissionState = "preview";
 	#preview: ScrubbedFeedbackDraft;
 	#activeSubmission: Promise<FeedbackSubmitOutcome> | undefined;
+	#creationUncertain = false;
 
 	constructor(preview: ScrubbedFeedbackDraft, createRequestId: () => string = randomUUID) {
 		validateFeedbackPreview(preview.draft);
@@ -102,6 +103,10 @@ export class FeedbackSubmissionController {
 
 	get preview(): ScrubbedFeedbackDraft {
 		return this.#preview;
+	}
+
+	get creationUncertain(): boolean {
+		return this.#creationUncertain;
 	}
 
 	beginEdit(): void {
@@ -136,7 +141,7 @@ export class FeedbackSubmissionController {
 		if (this.#state === "submitting") {
 			throw new FeedbackSubmissionTransitionError("Cannot cancel while feedback submission is active.");
 		}
-		this.#state = "cancelled";
+		this.#state = this.#creationUncertain ? "retained" : "cancelled";
 	}
 
 	retain(): void {
@@ -146,35 +151,49 @@ export class FeedbackSubmissionController {
 		this.#state = "retained";
 	}
 
-	submit(post: FeedbackPostHandler): Promise<FeedbackSubmitOutcome> {
+	submit(post: FeedbackPostHandler, signal?: AbortSignal): Promise<FeedbackSubmitOutcome> {
 		if (this.#state === "submitting" && this.#activeSubmission) return this.#activeSubmission;
-		if (this.#state !== "preview" && this.#state !== "failed") {
+		const resumesUncertainRequest = this.#state === "retained" && this.#creationUncertain;
+		if (this.#state !== "preview" && this.#state !== "failed" && !resumesUncertainRequest) {
 			throw new FeedbackSubmissionTransitionError(`Cannot post feedback from ${this.#state}.`);
 		}
 		this.#state = "submitting";
 		const request: FeedbackPostRequest = { requestId: this.requestId, draft: this.#preview.draft };
-		const pending = this.#runSubmission(post, request);
+		const pending = this.#runSubmission(post, request, signal);
 		this.#activeSubmission = pending;
 		return pending;
 	}
 
-	async #runSubmission(post: FeedbackPostHandler, request: FeedbackPostRequest): Promise<FeedbackSubmitOutcome> {
+	async #runSubmission(
+		post: FeedbackPostHandler,
+		request: FeedbackPostRequest,
+		signal?: AbortSignal,
+	): Promise<FeedbackSubmitOutcome> {
 		try {
-			const result: FeedbackPostResult = await post(request);
+			const result: FeedbackPostResult = await post(request, signal);
 			if (result.status === "success" && FEEDBACK_ISSUE_URL.test(result.url)) {
 				this.#state = "posted";
 				return { status: "posted", url: result.url };
 			}
 			this.#state = "failed";
-			if (result.status === "failure") return { status: "failed", message: result.message, uncertain: false };
-			if (result.status === "uncertain") return { status: "failed", message: result.message, uncertain: true };
-			return { status: "failed", message: "GitHub returned an invalid issue response.", uncertain: false };
+			if (result.status === "failure") {
+				return { status: "failed", message: result.message, uncertain: this.#creationUncertain };
+			}
+			if (result.status === "uncertain") {
+				this.#creationUncertain = true;
+				return { status: "failed", message: result.message, uncertain: true };
+			}
+			return {
+				status: "failed",
+				message: "GitHub returned an invalid issue response.",
+				uncertain: this.#creationUncertain,
+			};
 		} catch {
 			this.#state = "failed";
 			return {
 				status: "failed",
 				message: "Issue posting failed. The complete reviewed draft is retained.",
-				uncertain: false,
+				uncertain: this.#creationUncertain,
 			};
 		} finally {
 			this.#activeSubmission = undefined;

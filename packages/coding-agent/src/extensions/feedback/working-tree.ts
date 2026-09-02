@@ -16,6 +16,8 @@ export interface WorkingTreeSnapshot {
 	cwd: string;
 	status: "available" | "unavailable";
 	entries: WorkingTreeEntry[];
+	/** Tracked paths, including files that were clean and absent from porcelain status. */
+	trackedPaths: string[];
 }
 
 export interface WorkingTreeArtifact {
@@ -72,8 +74,45 @@ export async function captureWorkingTreeSnapshot(cwd: string, exec: FeedbackExec
 		cwd,
 		timeout: 5_000,
 	});
-	if (result.code !== 0 || result.killed) return { cwd, status: "unavailable", entries: [] };
-	return { cwd, status: "available", entries: await parseWorkingTreeEntries(cwd, result.stdout) };
+	if (result.code !== 0 || result.killed) return { cwd, status: "unavailable", entries: [], trackedPaths: [] };
+	const tracked = await exec("git", ["ls-files", "-z"], { cwd, timeout: 5_000 });
+	if (tracked.code !== 0 || tracked.killed) return { cwd, status: "unavailable", entries: [], trackedPaths: [] };
+	const trackedPaths = tracked.stdout.split("\0").filter((path) => path.length > 0);
+	return {
+		cwd,
+		status: "available",
+		entries: await parseWorkingTreeEntries(cwd, result.stdout),
+		trackedPaths,
+	};
+}
+
+function afterArtifacts(before: WorkingTreeSnapshot, after: WorkingTreeSnapshot): WorkingTreeArtifact[] {
+	const beforeByPath = new Map(before.entries.map((entry) => [entry.path, entry]));
+	const initiallyTracked = new Set(before.trackedPaths);
+	const artifacts: WorkingTreeArtifact[] = [];
+	for (const entry of after.entries) {
+		const previous = beforeByPath.get(entry.path);
+		if (previous?.fingerprint === entry.fingerprint) continue;
+		const change = entry.status.includes("D")
+			? "removed"
+			: previous !== undefined || initiallyTracked.has(entry.path)
+				? "changed"
+				: "created";
+		artifacts.push({ path: entry.path, status: entry.status, change });
+	}
+	return artifacts;
+}
+
+function removedBeforeArtifacts(before: WorkingTreeSnapshot, after: WorkingTreeSnapshot): WorkingTreeArtifact[] {
+	const afterPaths = new Set(after.entries.map((entry) => entry.path));
+	const stillTracked = new Set(after.trackedPaths);
+	return before.entries
+		.filter((entry) => !afterPaths.has(entry.path))
+		.map((entry) => ({
+			path: entry.path,
+			status: entry.status,
+			change: stillTracked.has(entry.path) ? "changed" : "removed",
+		}));
 }
 
 export function compareWorkingTreeSnapshots(
@@ -84,22 +123,8 @@ export function compareWorkingTreeSnapshots(
 		return { status: "unavailable", preExistingChangesPreserved: undefined, artifacts: [] };
 	}
 
-	const beforeByPath = new Map(before.entries.map((entry) => [entry.path, entry]));
 	const afterByPath = new Map(after.entries.map((entry) => [entry.path, entry]));
-	const artifacts: WorkingTreeArtifact[] = [];
-	for (const entry of after.entries) {
-		const previous = beforeByPath.get(entry.path);
-		if (previous?.fingerprint === entry.fingerprint) continue;
-		artifacts.push({
-			path: entry.path,
-			status: entry.status,
-			change: previous === undefined ? "created" : "changed",
-		});
-	}
-	for (const entry of before.entries) {
-		if (afterByPath.has(entry.path)) continue;
-		artifacts.push({ path: entry.path, status: entry.status, change: "removed" });
-	}
+	const artifacts = [...afterArtifacts(before, after), ...removedBeforeArtifacts(before, after)];
 
 	const preExistingChangesPreserved = before.entries.every(
 		(entry) => afterByPath.get(entry.path)?.fingerprint === entry.fingerprint,

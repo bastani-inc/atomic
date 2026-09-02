@@ -3,10 +3,16 @@ import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-work
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
+import { guardSubagentProtectedPaths } from "./subagent-protected-paths.ts";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 
 export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.beforeToolCall = async ({ toolCall, args }) => {
+		const protectedPathBlock = guardSubagentProtectedPaths(this._subagentPolicy, this._cwd, {
+			toolName: toolCall.name,
+			input: args as Record<string, unknown>,
+		});
+		if (protectedPathBlock) return protectedPathBlock;
 		const runner = this._extensionRunner;
 		if (!runner.hasHandlers("tool_call")) {
 			return undefined;

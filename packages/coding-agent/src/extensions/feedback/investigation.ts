@@ -1,4 +1,5 @@
 import type { ToolCallEventResult } from "../../core/extensions/index.ts";
+import { SUBAGENT_PROTECTED_PATHS_INPUT } from "../../core/subagent-protected-paths.ts";
 import type { FeedbackSessionFacts } from "./index.js";
 import type { FeedbackKind } from "./templates.js";
 import type { WorkingTreeDisclosure } from "./working-tree.js";
@@ -9,6 +10,7 @@ export interface FeedbackInvestigationControllerOptions {
 	prompt: string;
 	facts: FeedbackSessionFacts;
 	debuggerToolAvailable: boolean;
+	protectedPaths?: readonly string[];
 }
 
 export type FeedbackInvestigationAssessment =
@@ -74,6 +76,7 @@ export class FeedbackInvestigationController {
 	readonly #objective: string;
 	readonly #debuggerToolAvailable: boolean;
 	readonly #nonBuiltinExtensionsLoaded: boolean;
+	readonly #protectedPaths: readonly string[];
 	#debuggerCallId: string | undefined;
 	#debuggerOutcome: "pending" | "available" | "unavailable" | undefined;
 	#protocolViolation: string | undefined;
@@ -84,6 +87,7 @@ export class FeedbackInvestigationController {
 		this.#objective = buildFeedbackDebuggerObjective(options.prompt, options.facts);
 		this.#debuggerToolAvailable = options.debuggerToolAvailable;
 		this.#nonBuiltinExtensionsLoaded = options.facts.nonBuiltinExtensionsLoaded;
+		this.#protectedPaths = [...(options.protectedPaths ?? [])];
 	}
 
 	handleSubagentCall(toolCallId: string, input: Record<string, unknown>): ToolCallEventResult | undefined {
@@ -104,6 +108,7 @@ export class FeedbackInvestigationController {
 		for (const key of Object.keys(input)) delete input[key];
 		input.agent = "debugger";
 		input.task = this.#objective;
+		if (this.#protectedPaths.length > 0) input[SUBAGENT_PROTECTED_PATHS_INPUT] = [...this.#protectedPaths];
 		this.#debuggerCallId = toolCallId;
 		this.#debuggerOutcome = "pending";
 		return undefined;

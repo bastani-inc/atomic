@@ -77,6 +77,7 @@ function createRepository(): string {
 	git(directory, ["init", "-q"]);
 	git(directory, ["config", "user.name", "Feedback Test"]);
 	git(directory, ["config", "user.email", "feedback@example.invalid"]);
+	git(directory, ["config", "--local", "commit.gpgsign", "false"]);
 	writeFileSync(join(directory, "tracked.txt"), "base\n");
 	git(directory, ["add", "tracked.txt"]);
 	git(directory, ["commit", "-qm", "fixture"]);
@@ -117,6 +118,19 @@ describe("feedback debugger handoff", () => {
 
 		controller.handleSubagentResult("debug-call", "completed");
 		assert.equal(controller.assess("bug").status, "available");
+	});
+
+	test("injects pre-existing dirty paths into the admitted foreground child policy", () => {
+		const controller = new FeedbackInvestigationController({
+			prompt: "bug",
+			facts: facts(),
+			debuggerToolAvailable: true,
+			protectedPaths: ["tracked.txt", "user notes.txt"],
+		});
+		const input: Record<string, unknown> = { agent: "debugger", task: "replace" };
+
+		assert.equal(controller.handleSubagentCall("protected-debugger", input), undefined);
+		assert.deepEqual(input.__atomicProtectedPaths, ["tracked.txt", "user notes.txt"]);
 	});
 
 	test("rejects duplicate, non-debugger, parallel, and enhancement debugger activity", () => {
@@ -228,6 +242,34 @@ describe("feedback working-tree disclosure", () => {
 		);
 	});
 
+	test("reports modifications and deletions of initially clean tracked files accurately", async () => {
+		const modifiedDirectory = createRepository();
+		const modifiedBefore = await captureWorkingTreeSnapshot(modifiedDirectory, execGit);
+		writeFileSync(join(modifiedDirectory, "tracked.txt"), "debugger changed clean tracked file\n");
+		const modified = compareWorkingTreeSnapshots(
+			modifiedBefore,
+			await captureWorkingTreeSnapshot(modifiedDirectory, execGit),
+		);
+		assert.deepEqual(
+			modified.artifacts.map(({ path, change }) => ({ path, change })),
+			[{ path: "tracked.txt", change: "changed" }],
+		);
+		assert.equal(modified.preExistingChangesPreserved, true);
+
+		const deletedDirectory = createRepository();
+		const deletedBefore = await captureWorkingTreeSnapshot(deletedDirectory, execGit);
+		rmSync(join(deletedDirectory, "tracked.txt"));
+		const deleted = compareWorkingTreeSnapshots(
+			deletedBefore,
+			await captureWorkingTreeSnapshot(deletedDirectory, execGit),
+		);
+		assert.deepEqual(
+			deleted.artifacts.map(({ path, change }) => ({ path, change })),
+			[{ path: "tracked.txt", change: "removed" }],
+		);
+		assert.equal(deleted.preExistingChangesPreserved, true);
+	});
+
 	test("degrades without assuming the cwd is an Atomic checkout", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-feedback-installed-"));
 		tempDirectories.push(directory);
@@ -239,6 +281,7 @@ describe("feedback working-tree disclosure", () => {
 			cwd: directory,
 			status: "unavailable",
 			entries: [],
+			trackedPaths: [],
 		});
 		assert.deepEqual(compareWorkingTreeSnapshots(before, after), {
 			status: "unavailable",
@@ -247,7 +290,7 @@ describe("feedback working-tree disclosure", () => {
 		});
 	});
 
-	test("captures state with a read-only Git command and never resets, cleans, or stashes", async () => {
+	test("captures state with read-only Git commands and never resets, cleans, or stashes", async () => {
 		const calls: Array<{ command: string; args: string[] }> = [];
 		const exec: FeedbackExec = async (command, args) => {
 			calls.push({ command, args });
@@ -259,6 +302,10 @@ describe("feedback working-tree disclosure", () => {
 			{
 				command: "git",
 				args: ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+			},
+			{
+				command: "git",
+				args: ["ls-files", "-z"],
 			},
 		]);
 	});

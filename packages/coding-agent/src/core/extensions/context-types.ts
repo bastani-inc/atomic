@@ -141,6 +141,8 @@ export interface SubagentChildPolicy {
 	readonly intercom?: SubagentIntercomIdentity;
 	/** Resolved intercom group for this admitted child, when one was assigned. */
 	readonly intercomGroup?: string;
+	/** Paths that were dirty before this foreground child started and must remain byte-identical. */
+	readonly protectedPaths?: readonly string[];
 }
 // Union alias kept for forward-compatible orchestration context variants.
 export type OrchestrationContext = WorkflowStageOrchestrationContext;

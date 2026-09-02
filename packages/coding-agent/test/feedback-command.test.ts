@@ -3,6 +3,7 @@ import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { describe, test } from "vitest";
 import type {
 	AgentEndEvent,
+	BeforeAgentStartEvent,
 	ExecOptions,
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -21,6 +22,7 @@ import feedbackExtension, {
 	createFeedbackExtension,
 	FEEDBACK_USAGE,
 } from "../src/extensions/feedback/index.ts";
+import { createGitHubFeedbackPostHandler } from "../src/extensions/feedback/posting.ts";
 import { builtInExtensions } from "../src/extensions/index.ts";
 import { createHarness, getMessageText } from "./suite/harness.ts";
 
@@ -33,13 +35,18 @@ type FeedbackToolResultHandler = (
 	ctx: ExtensionContext,
 ) => Promise<ToolResultEventResult | undefined> | ToolResultEventResult | undefined;
 type FeedbackAgentEndHandler = (event: AgentEndEvent, ctx: ExtensionContext) => Promise<void> | void;
+type FeedbackBeforeAgentStartHandler = (event: BeforeAgentStartEvent, ctx: ExtensionContext) => Promise<void> | void;
 
-function registerFeedback(activeTools: string[] = ["subagent"]): {
+function registerFeedback(
+	activeTools: string[] = ["subagent"],
+	extension: (pi: ExtensionAPI) => void = feedbackExtension,
+): {
 	command: Omit<RegisteredCommand, "name" | "sourceInfo">;
 	tool: ToolDefinition;
 	sent: Array<string | object[]>;
 	toolCallHandlers: FeedbackToolCallHandler[];
 	toolResultHandlers: FeedbackToolResultHandler[];
+	beforeAgentStartHandlers: FeedbackBeforeAgentStartHandler[];
 	agentEndHandlers: FeedbackAgentEndHandler[];
 } {
 	let command: Omit<RegisteredCommand, "name" | "sourceInfo"> | undefined;
@@ -47,6 +54,7 @@ function registerFeedback(activeTools: string[] = ["subagent"]): {
 	const sent: Array<string | object[]> = [];
 	const toolCallHandlers: FeedbackToolCallHandler[] = [];
 	const toolResultHandlers: FeedbackToolResultHandler[] = [];
+	const beforeAgentStartHandlers: FeedbackBeforeAgentStartHandler[] = [];
 	const agentEndHandlers: FeedbackAgentEndHandler[] = [];
 	const pi = {
 		registerTool: (definition: ToolDefinition) => {
@@ -69,17 +77,24 @@ function registerFeedback(activeTools: string[] = ["subagent"]): {
 		}),
 		on: ((
 			eventName: string,
-			handler: FeedbackToolCallHandler | FeedbackToolResultHandler | FeedbackAgentEndHandler,
+			handler:
+				| FeedbackToolCallHandler
+				| FeedbackToolResultHandler
+				| FeedbackBeforeAgentStartHandler
+				| FeedbackAgentEndHandler,
 		) => {
 			if (eventName === "tool_call") toolCallHandlers.push(handler as FeedbackToolCallHandler);
 			if (eventName === "tool_result") toolResultHandlers.push(handler as FeedbackToolResultHandler);
+			if (eventName === "before_agent_start") {
+				beforeAgentStartHandlers.push(handler as FeedbackBeforeAgentStartHandler);
+			}
 			if (eventName === "agent_end") agentEndHandlers.push(handler as FeedbackAgentEndHandler);
 		}) as ExtensionAPI["on"],
 	} as ExtensionAPI;
-	feedbackExtension(pi);
+	extension(pi);
 	assert.ok(command);
 	assert.ok(tool);
-	return { command, tool, sent, toolCallHandlers, toolResultHandlers, agentEndHandlers };
+	return { command, tool, sent, toolCallHandlers, toolResultHandlers, beforeAgentStartHandlers, agentEndHandlers };
 }
 
 function commandContext(overrides: Partial<ExtensionCommandContext> = {}): ExtensionCommandContext {
@@ -100,6 +115,28 @@ function commandContext(overrides: Partial<ExtensionCommandContext> = {}): Exten
 		} as ExtensionCommandContext["ui"],
 		...overrides,
 	} as ExtensionCommandContext;
+}
+function feedbackInteractionContext(inputsByView: readonly (readonly string[])[]): ExtensionContext {
+	let view = 0;
+	return {
+		mode: "tui",
+		hasUI: true,
+		ui: {
+			custom: async (factory: Parameters<ExtensionContext["ui"]["custom"]>[0]) =>
+				await new Promise((resolve) => {
+					const component = factory(
+						{ requestRender: () => {} } as never,
+						{ fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+						{} as never,
+						resolve,
+					);
+					for (const input of inputsByView[view] ?? []) component.handleInput?.(input);
+					view += 1;
+				}),
+			notify: () => {},
+			setEditorText: () => {},
+		} as ExtensionContext["ui"],
+	} as ExtensionContext;
 }
 
 describe("built-in /feedback command", () => {
@@ -185,6 +222,43 @@ describe("built-in /feedback command", () => {
 		assert.match(
 			message,
 			/Do not attach.*transcript.*raw trace.*environment dump.*repository file.*screenshot.*artifact/u,
+		);
+	});
+
+	test("hard-blocks every parent tool except submission and the one admitted debugger", async () => {
+		const { command, toolCallHandlers } = registerFeedback();
+		const context = commandContext();
+		await command.handler("hard boundary report", context);
+
+		for (const [toolName, input] of [
+			["workflow", { action: "run", workflow: "repair" }],
+			["bash", { command: "gh issue create --title bypass" }],
+			["write", { path: "mutated.txt", content: "bypass" }],
+			["edit", { path: "existing.txt", oldText: "a", newText: "b" }],
+			["read", { path: "private.txt" }],
+			["intercom", { action: "list" }],
+		] as const) {
+			const blocked = await toolCallHandlers[0]?.(
+				{ type: "tool_call", toolCallId: `blocked-${toolName}`, toolName, input },
+				context,
+			);
+			assert.equal(blocked?.block, true, toolName);
+			assert.match(blocked?.reason ?? "", /Only submit_feedback and the admitted foreground debugger/u);
+		}
+
+		assert.equal(
+			await toolCallHandlers[0]?.(
+				{ type: "tool_call", toolCallId: "submit", toolName: "submit_feedback", input: {} },
+				context,
+			),
+			undefined,
+		);
+		assert.equal(
+			await toolCallHandlers[0]?.(
+				{ type: "tool_call", toolCallId: "debugger", toolName: "subagent", input: { agent: "debugger" } },
+				context,
+			),
+			undefined,
 		);
 	});
 
@@ -440,30 +514,49 @@ describe("built-in /feedback command", () => {
 		assert.match(sent[0] as string, /Investigation unavailable/);
 	});
 
-	test("clears a normal completed feedback turn before unrelated tools can reach its controller", async () => {
-		// #2799: a turn that never calls submit_feedback must not leave request-scoped hooks active.
-		const { command, tool, toolCallHandlers, agentEndHandlers } = registerFeedback();
+	test("preserves exactly one clarification continuation, consumes it, and then clears", async () => {
+		const { command, tool, beforeAgentStartHandlers, agentEndHandlers } = registerFeedback();
 		const context = commandContext();
-		await command.handler("stale bug request", context);
+		await command.handler("ambiguous feedback", context);
+		assert.equal(beforeAgentStartHandlers.length, 1);
 		assert.equal(agentEndHandlers.length, 1);
 
 		await agentEndHandlers[0]?.(
-			{ type: "agent_end", messages: [fauxAssistantMessage("drafted without submission")] },
+			{ type: "agent_end", messages: [fauxAssistantMessage("Is this a bug or enhancement?")] },
 			context,
 		);
-		const unrelated = await toolCallHandlers[0]?.(
-			{ type: "tool_call", toolCallId: "later", toolName: "subagent", input: { agent: "worker" } },
+		await beforeAgentStartHandlers[0]?.(
+			{
+				type: "before_agent_start",
+				prompt: "It is an enhancement",
+				images: undefined,
+				systemPrompt: "",
+				systemPromptOptions: {} as never,
+			},
 			context,
 		);
-		assert.equal(unrelated, undefined);
+		const submitted = await tool.execute(
+			"clarified-submit",
+			{
+				kind: "enhancement",
+				title: "Clarified enhancement",
+				whatToChange: "Add the requested behavior.",
+				why: "The clarification identifies it as an enhancement.",
+			},
+			undefined,
+			undefined,
+			{ mode: "json", hasUI: false, ui: {} } as ExtensionContext,
+		);
+		assert.equal(submitted.details?.status, "retained");
+
 		await assert.rejects(
 			tool.execute(
 				"late-submit",
 				{
 					kind: "enhancement",
-					title: "Unrelated",
-					whatToChange: "Must not revive stale request",
-					why: "The old turn ended",
+					title: "Stale",
+					whatToChange: "Must not survive",
+					why: "The clarification was consumed",
 				},
 				undefined,
 				undefined,
@@ -471,8 +564,160 @@ describe("built-in /feedback command", () => {
 			),
 			/No active \/feedback request is available for submission\./u,
 		);
+
+		const second = registerFeedback();
+		await second.command.handler("another ambiguous report", context);
+		await second.agentEndHandlers[0]?.(
+			{ type: "agent_end", messages: [fauxAssistantMessage("Please clarify")] },
+			context,
+		);
+		await second.beforeAgentStartHandlers[0]?.(
+			{
+				type: "before_agent_start",
+				prompt: "clarification",
+				images: undefined,
+				systemPrompt: "",
+				systemPromptOptions: {} as never,
+			},
+			context,
+		);
+		await second.agentEndHandlers[0]?.(
+			{ type: "agent_end", messages: [fauxAssistantMessage("Did not submit")] },
+			context,
+		);
+		assert.equal(
+			await second.toolCallHandlers[0]?.(
+				{ type: "tool_call", toolCallId: "unrelated", toolName: "bash", input: { command: "pwd" } },
+				context,
+			),
+			undefined,
+		);
 	});
 
+	test("retains the same uncertain request through agent turns until reconciliation finds it", async () => {
+		// #2799: Cancel dismisses uncertain failure UI without clearing the active request or controller.
+		let posts = 0;
+		let gets = 0;
+		let labels = 0;
+		const postedBodies: string[] = [];
+		const post = createGitHubFeedbackPostHandler({
+			env: { GH_TOKEN: "synthetic-token" },
+			exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+			fetch: async (input, init) => {
+				if (String(input).endsWith("/issues") && init?.method === "POST") {
+					posts += 1;
+					postedBodies.push(String(init.body));
+					return new Response(null, { status: 500 });
+				}
+				if (init?.method === "POST") {
+					labels += 1;
+					return new Response(null, { status: 200 });
+				}
+				gets += 1;
+				if (gets === 1) return new Response(null, { status: 503 });
+				const firstDraft = JSON.parse(postedBodies[0] ?? "{}") as { body?: string };
+				return new Response(
+					JSON.stringify([
+						{
+							html_url: "https://github.com/bastani-inc/atomic/issues/999988",
+							body: firstDraft.body,
+						},
+					]),
+					{ status: 200 },
+				);
+			},
+		});
+		const registered = registerFeedback(
+			["subagent"],
+			createFeedbackExtension({ post, createRequestId: () => "turn-stable-request" }),
+		);
+		const context = commandContext();
+		await registered.command.handler("retain this exact enhancement", context);
+		const retained = await registered.tool.execute(
+			"initial-submit",
+			{
+				kind: "enhancement",
+				title: "Stable retained title",
+				whatToChange: "Keep this exact body.",
+				why: "Retry must not regenerate it.",
+			},
+			undefined,
+			undefined,
+			feedbackInteractionContext([["\x1b[B", "\r"], ["\x1b"]]),
+		);
+		assert.equal(retained.details?.status, "retained");
+		assert.equal(retained.details?.requestId, "turn-stable-request");
+		assert.equal(retained.details?.uncertain, true);
+
+		const startNextTurn = async (turn: number): Promise<void> => {
+			await registered.agentEndHandlers[0]?.(
+				{ type: "agent_end", messages: [fauxAssistantMessage("uncertain request retained")] },
+				context,
+			);
+			const blocked = await registered.toolCallHandlers[0]?.(
+				{ type: "tool_call", toolCallId: `blocked-${turn}`, toolName: "bash", input: { command: "pwd" } },
+				context,
+			);
+			assert.equal(blocked?.block, true);
+			await registered.beforeAgentStartHandlers[0]?.(
+				{
+					type: "before_agent_start",
+					prompt: "Retry",
+					images: undefined,
+					systemPrompt: "",
+					systemPromptOptions: {} as never,
+				},
+				context,
+			);
+		};
+
+		await startNextTurn(1);
+		const stillUncertain = await registered.tool.execute(
+			"retry-unavailable",
+			{
+				kind: "enhancement",
+				title: "Replacement title must be ignored",
+				whatToChange: "Replacement body must be ignored.",
+				why: "The retained controller owns Retry.",
+			},
+			undefined,
+			undefined,
+			feedbackInteractionContext([["\r"], ["\x1b"]]),
+		);
+		assert.equal(stillUncertain.details?.status, "retained");
+		assert.equal(stillUncertain.details?.requestId, "turn-stable-request");
+		assert.equal(stillUncertain.details?.uncertain, true);
+		assert.equal(posts, 1);
+
+		await startNextTurn(2);
+		const posted = await registered.tool.execute(
+			"retry-found",
+			{
+				kind: "enhancement",
+				title: "Another ignored replacement",
+				whatToChange: "Do not replace the retained body.",
+				why: "Retry must reconcile the existing request.",
+			},
+			undefined,
+			undefined,
+			feedbackInteractionContext([["\r"]]),
+		);
+		assert.equal(posted.details?.status, "posted");
+		assert.equal(posted.details?.requestId, "turn-stable-request");
+		assert.equal(posts, 1);
+		assert.equal(gets, 2);
+		assert.equal(labels, 1);
+		const submitted = JSON.parse(postedBodies[0] ?? "{}") as { title?: string; body?: string };
+		assert.equal(submitted.title, "Stable retained title");
+		assert.match(submitted.body ?? "", /atomic-feedback-request:turn-stable-request/u);
+		assert.equal(
+			await registered.toolCallHandlers[0]?.(
+				{ type: "tool_call", toolCallId: "after-terminal", toolName: "bash", input: { command: "pwd" } },
+				context,
+			),
+			undefined,
+		);
+	});
 	test("clears interrupted, cancelled, and error turns without reviving their request", async () => {
 		for (const messages of [
 			[{ ...fauxAssistantMessage(""), stopReason: "aborted" as const }],
@@ -704,6 +949,37 @@ describe("built-in /feedback command", () => {
 		assert.equal(posts, 0);
 	});
 
+	test("routes a production binding admission rejection into the editable fallback", async () => {
+		let fallbackSelections = 0;
+		const harness = await createHarness({ extensionFactories: [createFeedbackExtension()] });
+		try {
+			const command = harness.session.extensionRunner
+				.getRegisteredCommands()
+				.find((candidate) => candidate.invocationName === "feedback");
+			assert.ok(command);
+			harness.session.sendUserMessage = async () => {
+				throw new Error("synthetic production binding admission failure");
+			};
+
+			await command.handler(
+				"production binding report",
+				commandContext({
+					cwd: harness.tempDir,
+					ui: {
+						notify: () => {},
+						select: async () => {
+							fallbackSelections += 1;
+							return undefined;
+						},
+					} as ExtensionCommandContext["ui"],
+				}),
+			);
+
+			assert.equal(fallbackSelections, 1);
+		} finally {
+			harness.cleanup();
+		}
+	});
 	test("opens the same honest fallback when the admitted model turn ends in provider error", async () => {
 		let command: Omit<RegisteredCommand, "name" | "sourceInfo"> | undefined;
 		let agentEnd: ((event: AgentEndEvent, ctx: ExtensionContext) => Promise<void> | void) | undefined;

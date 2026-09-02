@@ -258,16 +258,20 @@ export function _bindExtensionCore(
 				return delivery;
 			},
 			sendUserMessage: (content, options) => {
-				const send = () =>
-					this.sendUserMessage(content, options).catch((err) => {
+				const send = (): Promise<void> => {
+					const delivery = this.sendUserMessage(content, options);
+					void delivery.catch((err) => {
 						runner.emitError({
 							extensionPath: "<runtime>",
 							event: "send_user_message",
 							error: err instanceof Error ? err.message : String(err),
 						});
 					});
-				if (publication) publication.defer(send);
-				else void send();
+					return delivery;
+				};
+				if (!publication) return send();
+				publication.defer(send);
+				return Promise.resolve();
 			},
 			appendEntry: (customType, data) => {
 				const append = () => {

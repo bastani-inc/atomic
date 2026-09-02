@@ -3,6 +3,13 @@ import { describe, test } from "vitest";
 import {
 	applyFeedbackRequestMarker,
 	createGitHubFeedbackPostHandler,
+	FEEDBACK_GH_AUTH_TIMEOUT_MS,
+	FEEDBACK_GH_CREATE_TIMEOUT_MS,
+	FEEDBACK_GH_LABEL_TIMEOUT_MS,
+	FEEDBACK_GH_RECONCILE_TIMEOUT_MS,
+	FEEDBACK_REST_CREATE_TIMEOUT_MS,
+	FEEDBACK_REST_LABEL_TIMEOUT_MS,
+	FEEDBACK_REST_RECONCILE_TIMEOUT_MS,
 	type FeedbackPostingDependencies,
 	feedbackRequestMarker,
 	prepareFeedbackRequestPreview,
@@ -52,6 +59,14 @@ function dependencies(
 		},
 		...overrides,
 	};
+}
+async function settleWithin<T>(promise: Promise<T>, timeoutMs = 250): Promise<T> {
+	return await Promise.race([
+		promise,
+		new Promise<T>((_resolve, reject) => {
+			setTimeout(() => reject(new Error(`Feedback posting did not settle within ${timeoutMs} ms.`)), timeoutMs);
+		}),
+	]);
 }
 
 describe("feedback GitHub posting", () => {
@@ -404,6 +419,219 @@ describe("feedback GitHub posting", () => {
 		assert.deepEqual(await first, await duplicate);
 		assert.equal((await post(request())).status, "success");
 		assert.equal(creates, 1);
+	});
+
+	test("bounds every gh auth, create, reconcile, and label operation with its named timeout", async () => {
+		const calls: Array<{ args: string[]; timeout?: number; signal?: AbortSignal }> = [];
+		let creates = 0;
+		const payload = request();
+		const post = createGitHubFeedbackPostHandler({
+			env: {},
+			exec: async (_command, args, options) => {
+				calls.push({ args, timeout: options?.timeout, signal: options?.signal });
+				if (args[0] === "auth") return result();
+				if (args[0] === "issue" && args[1] === "create") {
+					creates += 1;
+					return creates === 1 ? result("", 1, true) : result("must not create twice", 1);
+				}
+				if (args[0] === "issue" && args[1] === "list") {
+					return result(
+						JSON.stringify([
+							{ url: "https://github.com/bastani-inc/atomic/issues/1240", body: payload.draft.body },
+						]),
+					);
+				}
+				return result();
+			},
+			writeBodyFile: async () => ({ path: "/tmp/body", remove: async () => {} }),
+		});
+
+		assert.equal((await post(payload)).status, "uncertain");
+		assert.equal((await post(payload)).status, "success");
+		assert.deepEqual(
+			calls.map((call) => call.timeout),
+			[
+				FEEDBACK_GH_AUTH_TIMEOUT_MS,
+				FEEDBACK_GH_CREATE_TIMEOUT_MS,
+				FEEDBACK_GH_AUTH_TIMEOUT_MS,
+				FEEDBACK_GH_RECONCILE_TIMEOUT_MS,
+				FEEDBACK_GH_LABEL_TIMEOUT_MS,
+			],
+		);
+		assert.ok(calls.every((call) => call.signal instanceof AbortSignal));
+		assert.equal(creates, 1);
+	});
+
+	test("keeps reconciliation identity uncertain when retry authentication is unavailable", async () => {
+		let authChecks = 0;
+		let creates = 0;
+		const post = createGitHubFeedbackPostHandler({
+			env: {},
+			exec: async (_command, args) => {
+				if (args[0] === "auth") {
+					authChecks += 1;
+					return result("", authChecks === 1 ? 0 : 1);
+				}
+				if (args[0] === "issue" && args[1] === "create") {
+					creates += 1;
+					return result("", 1, true);
+				}
+				return result("unexpected", 1);
+			},
+			writeBodyFile: async () => ({ path: "/tmp/body", remove: async () => {} }),
+		});
+
+		assert.equal((await post(request())).status, "uncertain");
+		const retry = await post(request());
+		assert.equal(retry.status, "uncertain");
+		assert.match(retry.status === "uncertain" ? retry.message : "", /reconcile.*Retry/u);
+		assert.equal(creates, 1);
+	});
+
+	test("aborts stalled REST creation and reconciliation while retaining at-most-once uncertainty", async () => {
+		const methods: string[] = [];
+		const signals: AbortSignal[] = [];
+		const post = createGitHubFeedbackPostHandler({
+			env: { GH_TOKEN: TOKEN },
+			timeouts: { restCreateMs: 10, restReconcileMs: 10 },
+			exec: async (_command, _args, options) => {
+				assert.equal(options?.timeout, FEEDBACK_GH_AUTH_TIMEOUT_MS);
+				assert.ok(options?.signal instanceof AbortSignal);
+				return result("", 1);
+			},
+			fetch: async (_input, init) => {
+				methods.push(init?.method ?? "GET");
+				const signal = init?.signal;
+				assert.ok(signal instanceof AbortSignal);
+				signals.push(signal);
+				return await new Promise<Response>((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			},
+		});
+
+		assert.equal((await post(request())).status, "uncertain");
+		assert.equal((await post(request())).status, "uncertain");
+		assert.deepEqual(methods, ["POST", "GET"]);
+		assert.ok(signals.every((signal) => signal.aborted));
+	});
+
+	test("bounds a never-closing REST create body and reconciles the same request before another create", async () => {
+		// #2799: the create deadline covers response headers and the complete response body.
+		const payload = request();
+		const signals: AbortSignal[] = [];
+		let posts = 0;
+		let gets = 0;
+		const post = createGitHubFeedbackPostHandler({
+			env: { GH_TOKEN: TOKEN },
+			timeouts: { restCreateMs: 10, restReconcileMs: 10 },
+			exec: async () => result("", 1),
+			fetch: async (input, init) => {
+				const signal = init?.signal;
+				assert.ok(signal instanceof AbortSignal);
+				signals.push(signal);
+				if (String(input).endsWith("/issues") && init?.method === "POST") {
+					posts += 1;
+					return new Response(new ReadableStream({ pull() {} }), { status: 201 });
+				}
+				if (init?.method === "POST") return new Response(null, { status: 200 });
+				gets += 1;
+				return new Response(
+					JSON.stringify([
+						{ html_url: "https://github.com/bastani-inc/atomic/issues/999987", body: payload.draft.body },
+					]),
+					{ status: 200 },
+				);
+			},
+		});
+
+		assert.equal((await settleWithin(post(payload))).status, "uncertain");
+		assert.equal(signals[0]?.aborted, true);
+		assert.deepEqual(await settleWithin(post(payload)), {
+			status: "success",
+			url: "https://github.com/bastani-inc/atomic/issues/999987",
+		});
+		assert.equal(posts, 1);
+		assert.equal(gets, 1);
+	});
+
+	test("bounds a never-closing REST reconciliation body before authoritative-empty same-ID create", async () => {
+		// #2799: a stalled reconciliation body remains uncertain; only a later complete empty result permits create.
+		const payload = request();
+		const getSignals: AbortSignal[] = [];
+		const postedBodies: string[] = [];
+		let posts = 0;
+		let gets = 0;
+		const post = createGitHubFeedbackPostHandler({
+			env: { GH_TOKEN: TOKEN },
+			timeouts: { restCreateMs: 10, restReconcileMs: 10 },
+			exec: async () => result("", 1),
+			fetch: async (input, init) => {
+				if (String(input).endsWith("/issues") && init?.method === "POST") {
+					posts += 1;
+					postedBodies.push(String(init.body));
+					if (posts === 1) throw new Error("synthetic create disconnect");
+					return new Response(
+						JSON.stringify({ html_url: "https://github.com/bastani-inc/atomic/issues/999986" }),
+						{ status: 201 },
+					);
+				}
+				if (init?.method === "POST") return new Response(null, { status: 200 });
+				gets += 1;
+				const signal = init?.signal;
+				assert.ok(signal instanceof AbortSignal);
+				getSignals.push(signal);
+				return gets === 1
+					? new Response(new ReadableStream({ pull() {} }), { status: 200 })
+					: new Response("[]", { status: 200 });
+			},
+		});
+
+		assert.equal((await settleWithin(post(payload))).status, "uncertain");
+		assert.equal((await settleWithin(post(payload))).status, "uncertain");
+		assert.equal(getSignals[0]?.aborted, true);
+		assert.deepEqual(await settleWithin(post(payload)), {
+			status: "success",
+			url: "https://github.com/bastani-inc/atomic/issues/999986",
+		});
+		assert.equal(gets, 2);
+		assert.equal(posts, 2);
+		assert.equal(postedBodies[0], postedBodies[1]);
+		assert.match(postedBodies[1] ?? "", /atomic-feedback-request:request-123/u);
+	});
+	test("propagates caller cancellation into creation and retains uncertainty for reconciliation", async () => {
+		const transportSignals: AbortSignal[] = [];
+		const methods: string[] = [];
+		const post = createGitHubFeedbackPostHandler({
+			env: { GH_TOKEN: TOKEN },
+			exec: async () => result("", 1),
+			fetch: async (_input, init) => {
+				methods.push(init?.method ?? "GET");
+				const signal = init?.signal;
+				assert.ok(signal instanceof AbortSignal);
+				transportSignals.push(signal);
+				return await new Promise<Response>((_resolve, reject) => {
+					if (signal.aborted) reject(signal.reason);
+					else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			},
+		});
+		const cancellation = new AbortController();
+		const pending = post(request(), cancellation.signal);
+		while (transportSignals.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+		cancellation.abort(new Error("user interrupted feedback"));
+
+		assert.equal((await pending).status, "uncertain");
+		assert.equal(transportSignals[0]?.aborted, true);
+		const retry = await post(request(), AbortSignal.timeout(10));
+		assert.equal(retry.status, "uncertain");
+		assert.deepEqual(methods, ["POST", "GET"]);
+	});
+
+	test("uses named REST create, reconcile, and label timeout defaults", async () => {
+		assert.ok(FEEDBACK_REST_CREATE_TIMEOUT_MS > 0);
+		assert.ok(FEEDBACK_REST_RECONCILE_TIMEOUT_MS > 0);
+		assert.ok(FEEDBACK_REST_LABEL_TIMEOUT_MS > 0);
 	});
 });
 

@@ -250,6 +250,75 @@ describe("feedback submission state", () => {
 		}
 	});
 
+	test("resumes an uncertain request after Cancel with the same controller, draft, and reconciliation identity", async () => {
+		// #2799: dismissing uncertain failure UI must not make its retained request terminal.
+		const controller = new FeedbackSubmissionController(scrubbedDraft(), () => "uncertain-request");
+		const preview = controller.preview;
+		const requestIds: string[] = [];
+		const uncertain = await controller.submit(async (request) => {
+			requestIds.push(request.requestId);
+			return {
+				status: "uncertain",
+				message: "GitHub may have created this issue. Retry must reconcile first.",
+			};
+		});
+
+		assert.deepEqual(uncertain, {
+			status: "failed",
+			message: "GitHub may have created this issue. Retry must reconcile first.",
+			uncertain: true,
+		});
+		controller.cancel();
+		assert.equal(controller.state, "retained");
+		assert.equal(controller.creationUncertain, true);
+		assert.equal(controller.requestId, "uncertain-request");
+		assert.equal(controller.preview, preview);
+
+		const posted = await controller.submit(async (request) => {
+			requestIds.push(request.requestId);
+			assert.equal(request.draft, preview.draft);
+			return { status: "success", url: "https://github.com/bastani-inc/atomic/issues/999992" };
+		});
+		assert.deepEqual(posted, {
+			status: "posted",
+			url: "https://github.com/bastani-inc/atomic/issues/999992",
+		});
+		assert.deepEqual(requestIds, ["uncertain-request", "uncertain-request"]);
+	});
+
+	test("keeps uncertainty sticky across a later transport failure until reconciliation succeeds", async () => {
+		const controller = new FeedbackSubmissionController(scrubbedDraft(), () => "sticky-uncertain-request");
+		await controller.submit(async () => ({ status: "uncertain", message: "Reconcile before retry." }));
+		const failed = await controller.submit(async () => ({
+			status: "failure",
+			message: "Authentication unavailable.",
+		}));
+
+		assert.deepEqual(failed, {
+			status: "failed",
+			message: "Authentication unavailable.",
+			uncertain: true,
+		});
+		assert.equal(controller.creationUncertain, true);
+		controller.cancel();
+		assert.equal(controller.state, "retained");
+	});
+
+	test("retries an uncertain request with the same reconciliation identity", async () => {
+		const controller = new FeedbackSubmissionController(scrubbedDraft(), () => "reconcile-request");
+		const requestIds: string[] = [];
+		const post: FeedbackPostHandler = async (request) => {
+			requestIds.push(request.requestId);
+			return requestIds.length === 1
+				? { status: "uncertain", message: "Reconcile before retry." }
+				: { status: "success", url: "https://github.com/bastani-inc/atomic/issues/999993" };
+		};
+
+		assert.equal((await controller.submit(post)).status, "failed");
+		assert.equal((await controller.submit(post)).status, "posted");
+		assert.deepEqual(requestIds, ["reconcile-request", "reconcile-request"]);
+	});
+
 	test("rejects illegal transitions without invoking the posting seam", async () => {
 		let posts = 0;
 		const post: FeedbackPostHandler = async () => {
