@@ -4,6 +4,7 @@ import type { Api, Model } from "../src/types.ts";
 
 const EXPECTED_CURRENT_ADAPTIVE_THINKING_MODELS = [
 	"anthropic/claude-fable-5",
+	"anthropic/claude-fable-5-1",
 	"anthropic/claude-opus-4-8",
 	"anthropic/claude-opus-5",
 	"anthropic/claude-sonnet-5",

@@ -1,12 +1,15 @@
 import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, expect, test } from "vitest";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ThinkingSelectorComponent } from "../src/modes/interactive/components/thinking-selector.ts";
 import {
 	resolveSessionThinkingDefault,
 	resolveThinkingSelectorDefault,
 } from "../src/modes/interactive/interactive-model-routing.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 beforeAll(() => {
 	initTheme("dark");
@@ -112,4 +115,27 @@ test("falls back to the per-model override, then the global default", () => {
 	expect(resolveSessionThinkingDefault(model, [], savedLevels("medium", "low"))).toBe("medium");
 	expect(resolveSessionThinkingDefault(model, [], savedLevels(undefined, "low"))).toBe("low");
 	expect(resolveSessionThinkingDefault(model, [{ model }], savedLevels(undefined, "low"))).toBe("low");
+});
+
+// Upstream pi #8900 adds these as a standalone `test/thinking-selector.test.ts`; Atomic already
+// owns a thinking-selector rendering suite, so the case is folded in here rather than duplicating
+// the fixture file.
+test("keeps the current thinking level marked while browsing", () => {
+	setKeybindings(new KeybindingsManager());
+	const selector = new ThinkingSelectorComponent(
+		"medium",
+		["medium", "high"],
+		() => {},
+		() => {},
+	);
+	const getLevelRow = (level: string): string | undefined =>
+		renderedLines(selector)
+			.map((line) => stripAnsi(line))
+			.find((line) => line.includes(level));
+
+	expect(selector.getSelectList().getSelectedItem()?.label).toBe("✓ medium");
+	expect(getLevelRow("medium")?.startsWith("→ ✓ medium")).toBe(true);
+	selector.handleInput("\x1b[B");
+	expect(getLevelRow("medium")?.startsWith("  ✓ medium")).toBe(true);
+	expect(getLevelRow("high")?.startsWith("→   high")).toBe(true);
 });

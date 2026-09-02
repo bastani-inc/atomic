@@ -1,6 +1,6 @@
 # @bastani/pi-ai
 
-Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); upstream Pi AI fixes and the generated image catalog are synced through [`5ce4afbd95ec10104c0e73866a745f602b592392`](https://github.com/earendil-works/pi/commit/5ce4afbd95ec10104c0e73866a745f602b592392), the audited Pi `main` sync point. `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
+Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); upstream Pi AI fixes and the generated image catalog are synced through [`b8b873b9872db04a938fb4357b5e8e824ddc051c`](https://github.com/earendil-works/pi/commit/b8b873b9872db04a938fb4357b5e8e824ddc051c), the audited Pi `main` sync point. `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
 
 The public API is a drop-in replacement: install `@bastani/pi-ai` and import from `@bastani/pi-ai` instead of `@earendil-works/pi-ai`. See [NOTICE.md](NOTICE.md). This package lives in the Atomic monorepo and publishes from `.github/workflows/publish.yml`. The first npm version must be published by hand so trusted publishing can be attached.
 
@@ -1202,6 +1202,7 @@ interface OpenAIResponsesCompat {
   supportsLongCacheRetention?: boolean; // Whether provider supports `prompt_cache_retention: "24h"` (default: true)
   supportsStrictMode?: boolean;      // Whether provider supports strict JSON-schema function tools (default: false; enabled in metadata for built-in OpenAI models)
   supportsOpenAIGrammarTools?: boolean; // Whether to emit OpenAI custom Lark/regex grammar tools; false falls back to normal function tools (default: false; the generated catalog enables it for capable models)
+  supportsMaxOutputTokens?: boolean; // Whether provider accepts `max_output_tokens`; false omits the parameter for Codex-protocol gateways that reject it with a 400 (default: true)
 }
 ```
 
@@ -1210,6 +1211,7 @@ If `compat` is not set, the library falls back to URL-based detection. If `compa
 - **LiteLLM proxies**: May not support `store` field
 - **Custom inference servers**: May use non-standard field names
 - **Self-hosted endpoints**: May have different feature support
+- **Codex-protocol gateways**: May reject the `max_output_tokens` parameter
 
 ## Faux Provider for Tests
 

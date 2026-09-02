@@ -1047,6 +1047,8 @@ Reports whether the current session loaded an extension that Atomic did not ship
 
 Current working directory.
 
+Built-in cwd-sensitive tools (`read`, `write`, `edit`, `search`, `find`, `ls`, `bash`, `powershell`) resolve relative paths against `ctx.cwd` when an extension invokes them, falling back to the cwd captured when the tool was created. An extension that registers a tool and forwards its own context therefore gets paths resolved against the live session cwd rather than a stale one.
+
 Use `CONFIG_DIR_NAME` instead of hardcoding `.atomic` (or legacy `.pi`) when constructing project-local config paths. Rebranded distributions can use a different config directory name.
 
 ```typescript

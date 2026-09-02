@@ -451,7 +451,7 @@ graph TB
     B2 <-->|Local Socket/Pipe| B3
 ```
 
-The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first session that invokes Intercom needs it and exits after 5 seconds when it last has no registered sessions, including brokers that never received a connection and sockets that close before register. Clients now reconnect automatically if the broker disappears and later comes back.
+The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first session that invokes Intercom needs it and exits after 5 seconds when it last has no registered sessions, including brokers that never received a connection and sockets that close before register. Clients reconnect automatically if the broker disappears and later comes back. A failed reconnect schedules the next attempt on a bounded backoff (1s, 2s, 5s, 10s, then 30s) once it releases reconnect ownership, so a transient failure never leaves a live session with nothing owning recovery; a failed explicit tool or overlay connection still returns its error to the caller and leaves the retry behind. A reconnect that fails after the broker already accepted it closes that connection first, so a session never appears twice in `intercom list`.
 
 Messages use length-prefixed JSON over a local socket/pipe transport (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages.
 

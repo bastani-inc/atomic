@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { streamSimple } from "../src/compat.ts";
+import { getModel, streamSimple } from "../src/compat.ts";
 import type { Api, Context, Model, SimpleStreamOptions } from "../src/types.ts";
 
 interface SamplingPayload {
@@ -122,6 +122,85 @@ describe("sampling params", () => {
 			samplingParams: { top_p: 0.9, top_k: 40 },
 		});
 
+		expect(payload.top_p).toBeUndefined();
+		expect(payload.top_k).toBeUndefined();
+	});
+});
+
+/**
+ * Claude Fable 5.1 returns a 400 for non-default `temperature`, `top_p`, or `top_k` on every
+ * request. https://platform.claude.com/docs/en/build-with-claude/thinking
+ *
+ * `samplingParams` is documented as merged last so its keys override the named request fields,
+ * which means it reopened the very parameters the named-field guard closes. The strip therefore
+ * runs *after* the merge: reordering would invert the documented precedence for every model on
+ * this adapter, and a pre-merge guard would miss `Model.samplingParams`, which `simple-options`
+ * folds into the same object. `top_p` and `top_k` are never named fields on this adapter, so
+ * `samplingParams` is their only route to the wire.
+ */
+describe("restricted sampling params on models that reject them", () => {
+	const restrictedModel = () => makeCompletionsModel({ compat: { supportsTemperature: false } });
+
+	it("strips temperature, top_p, and top_k from stream-option samplingParams", async () => {
+		const payload = await capturePayload(restrictedModel(), {
+			samplingParams: { temperature: 1, top_p: 0.9, top_k: 5, min_p: 0.1 },
+		});
+
+		expect(payload.temperature).toBeUndefined();
+		expect(payload.top_p).toBeUndefined();
+		expect(payload.top_k).toBeUndefined();
+		// Only the three restricted keys are dropped; the escape hatch still works for the rest.
+		expect(payload.min_p).toBe(0.1);
+	});
+
+	// `Model.samplingParams` reaches the request through the same merged object, so a guard placed
+	// before the merge would have missed this path entirely.
+	it("strips them when they come from Model.samplingParams", async () => {
+		const payload = await capturePayload(
+			makeCompletionsModel({
+				compat: { supportsTemperature: false },
+				samplingParams: { temperature: 0.7, top_p: 0.5, top_k: 40 },
+			}),
+		);
+
+		expect(payload.temperature).toBeUndefined();
+		expect(payload.top_p).toBeUndefined();
+		expect(payload.top_k).toBeUndefined();
+	});
+
+	it("strips a named temperature that samplingParams tried to reopen", async () => {
+		const payload = await capturePayload(restrictedModel(), {
+			temperature: 0,
+			samplingParams: { temperature: 1 },
+		});
+
+		expect(payload.temperature).toBeUndefined();
+	});
+
+	// Positive control: precedence and the escape hatch are unchanged for every other model.
+	it("leaves samplingParams alone on a model without the restriction", async () => {
+		const payload = await capturePayload(makeCompletionsModel(), {
+			temperature: 0,
+			samplingParams: { temperature: 1, top_p: 0.9, top_k: 5 },
+		});
+
+		expect(payload.temperature).toBe(1);
+		expect(payload.top_p).toBe(0.9);
+		expect(payload.top_k).toBe(5);
+	});
+
+	it("strips them for the generated OpenRouter Claude Fable 5.1 entry", async () => {
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+		expect(model.compat?.supportsTemperature).toBe(false);
+
+		const payload = await capturePayload(
+			{ ...model, baseUrl: "http://127.0.0.1:9/v1" },
+			{
+				samplingParams: { temperature: 1, top_p: 0.9, top_k: 5 },
+			},
+		);
+
+		expect(payload.temperature).toBeUndefined();
 		expect(payload.top_p).toBeUndefined();
 		expect(payload.top_k).toBeUndefined();
 	});

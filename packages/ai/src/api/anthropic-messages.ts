@@ -28,8 +28,11 @@ import type {
 	Tool,
 	ToolCall,
 	ToolResultMessage,
+	Usage,
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
+import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
+import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
@@ -79,7 +82,15 @@ function getCacheControl(
 }
 
 // Stealth mode: Mimic Claude Code's tool naming exactly
-const claudeCodeVersion = "2.1.75";
+//
+// Anthropic gates newer models on the `claude-cli/<version>` user agent alone and rejects an
+// older one with `claude_code_version_too_old`. `claude-fable-5-1` requires >= 2.1.251, bisected
+// against the live API: 2.1.250 -> 400, 2.1.251 -> 200. This is pinned to that exact published
+// minimum rather than the newest release, and it is a strict superset of the previous 2.1.75 --
+// every model this provider ships answers 200 at 2.1.251. Raise it only when a model rejects
+// this value; a caller can override it for one client through the `headers` option, whose
+// lowercase `user-agent` key is merged last.
+const claudeCodeVersion = "2.1.251";
 
 // Claude Code 2.x tool names (canonical casing)
 // Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
@@ -118,7 +129,10 @@ const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
 };
 
 /**
- * Convert content blocks to Anthropic API format
+ * Convert tool-result content blocks to Anthropic API format.
+ *
+ * Tool results carry text and images only. `DocumentContent` appears exclusively in user
+ * messages, which `convertMessages` serializes on its own path.
  */
 function convertContentBlocks(content: (TextContent | ImageContent)[]):
 	| string
@@ -180,14 +194,155 @@ type MessageCreateParamsStreamingWithFallbacks = MessageCreateParamsStreaming & 
 const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
 const SERVER_SIDE_FALLBACK_BETA = "server-side-fallback-2026-07-01";
+const THINKING_BINDING_CONTROLS_BETA = "thinking-binding-controls-2026-08-01";
 
 function shouldUseServerSideFallbackBeta(model: Model<"anthropic-messages">): boolean {
 	return (model.compat?.allowedFallbackModels?.length ?? 0) > 0;
 }
 
+/**
+ * Claude Fable 5.1 binds each thinking block to the conversation prefix that produced it and,
+ * for Anthropic accounts created on or after 2026-08-31, rejects a replay behind a changed
+ * `system` prompt, `tools` array, or earlier message with a 400 `invalid_request_error`.
+ * Atomic rebuilds those inputs between turns (dynamic system prompt, tool availability changes,
+ * model switches), so it opts into `prefix_mismatch_behavior: "drop_block"`: the API discards
+ * the affected thinking blocks and answers the turn instead of failing the session.
+ *
+ * This covers live prefix mismatches *between* compaction boundaries. It is not what handles
+ * compaction itself: Atomic's client-side `preserve_recent` tail compaction serializes the
+ * protected tail into a single boundary message, so no signed thinking block survives a
+ * boundary to be replayed behind it. That is Anthropic's documented keep-tail remedy applied
+ * structurally rather than a case `drop_block` has to catch.
+ * https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+ */
+function shouldUseThinkingBindingControlsBeta(model: Model<"anthropic-messages">): boolean {
+	return model.compat?.enforcesPreservedThinkingBinding === true;
+}
+
+/** One entry of the `input_transformations` array the block-binding controls beta adds. */
+interface AnthropicInputTransformation {
+	type?: string;
+	path?: string;
+	reason?: string;
+}
+
+/**
+ * Record thinking blocks the API dropped from this request.
+ *
+ * With the block-binding controls beta, `message_start` carries a top-level
+ * `input_transformations` array naming each dropped block and why: `model_binding_mismatch` when
+ * the conversation moved to a model that cannot read an earlier model's blocks (expected on a
+ * downward model switch), or `prefix_binding_mismatch` when something before the block changed.
+ * The drop is otherwise silent, so surface it on the existing diagnostics channel rather than
+ * losing it. Not an error: the request succeeded without those blocks.
+ */
+function recordInputTransformations(output: AssistantMessage, message: unknown): void {
+	const transformations = (message as { input_transformations?: AnthropicInputTransformation[] })
+		?.input_transformations;
+	if (!Array.isArray(transformations) || transformations.length === 0) return;
+
+	appendAssistantMessageDiagnostic(output, {
+		type: "anthropic_input_transformations",
+		timestamp: Date.now(),
+		details: {
+			droppedBlockCount: transformations.length,
+			reasons: [...new Set(transformations.map((entry) => entry.reason).filter((r): r is string => !!r))],
+			paths: transformations.map((entry) => entry.path).filter((p): p is string => !!p),
+		},
+	});
+}
+
+/** One entry of the per-attempt `usage.iterations` array a server-side fallback response carries. */
+interface AnthropicUsageIteration {
+	type?: string;
+	model?: string;
+	input_tokens?: number;
+	output_tokens?: number;
+	cache_read_input_tokens?: number;
+	/** The aggregate cache-write count. `cache_creation` splits the same tokens by TTL. */
+	cache_creation_input_tokens?: number;
+	/** "Breakdown of cached tokens by TTL", per `BetaMessageIterationUsage`. */
+	cache_creation?: { ephemeral_1h_input_tokens?: number; ephemeral_5m_input_tokens?: number } | null;
+}
+
+/**
+ * Bill the attempts that ran *before* the one which produced the returned message.
+ *
+ * "Every attempt that produced output, including one that declined partway through its response,
+ * is billed separately at the rates of the model that ran it. The `usage.iterations` array is the
+ * per-attempt record of what you're billed. The top-level `usage` counts describe only the attempt
+ * that produced the returned message. Tokens from different models are never summed into one
+ * field." https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+ *
+ * Two rules follow, and both matter for not double-counting:
+ *
+ * - Only `type: "message"` entries are added. The `fallback_message` entry *is* the serving
+ *   attempt, and its tokens are already in the top-level usage that `calculateCost` just priced.
+ * - Only entries with output are added: "An attempt that declined before producing any output is
+ *   not billed: its tokens are reported on its `usage.iterations` entry but not charged."
+ *
+ * Token counts are deliberately left alone — the docs forbid summing across models and `Usage` has
+ * no per-attempt shape — so this contributes to `usage.cost` only.
+ */
+function addEarlierAttemptCosts(
+	output: AssistantMessage,
+	model: Model<"anthropic-messages">,
+	servingModel: Model<"anthropic-messages">,
+	event: unknown,
+): void {
+	const iterations = (event as { usage?: { iterations?: AnthropicUsageIteration[] } })?.usage?.iterations;
+	if (!Array.isArray(iterations) || iterations.length === 0) return;
+
+	for (const iteration of iterations) {
+		if (iteration.type !== "message") continue;
+		if (!iteration.output_tokens) continue;
+
+		// Price at the rates of the model that ran the attempt, which is not the serving model.
+		const attemptCost =
+			iteration.model === model.id
+				? model.cost
+				: iteration.model === servingModel.id
+					? servingModel.cost
+					: model.compat?.allowedFallbackModels?.find(
+							(fallback) => fallback.provider === model.provider && fallback.model === iteration.model,
+						)?.cost;
+		if (!attemptCost) continue;
+
+		const attemptUsage: Usage = {
+			input: iteration.input_tokens ?? 0,
+			output: iteration.output_tokens,
+			cacheRead: iteration.cache_read_input_tokens ?? 0,
+			// `cacheWrite` stays the aggregate: `calculateCost` derives the 5-minute share by
+			// subtracting `cacheWrite1h` from it, so setting this to the 5-minute count instead
+			// would under-charge and adding the two together would double-charge. Without the 1h
+			// split, an hour-long write bills at the 5-minute rate rather than 2x base input.
+			cacheWrite: iteration.cache_creation_input_tokens ?? 0,
+			cacheWrite1h: iteration.cache_creation?.ephemeral_1h_input_tokens ?? 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		calculateCost({ ...model, id: iteration.model ?? model.id, cost: attemptCost }, attemptUsage);
+
+		output.usage.cost.input += attemptUsage.cost.input;
+		output.usage.cost.output += attemptUsage.cost.output;
+		output.usage.cost.cacheRead += attemptUsage.cost.cacheRead;
+		output.usage.cost.cacheWrite += attemptUsage.cost.cacheWrite;
+		output.usage.cost.total += attemptUsage.cost.total;
+	}
+}
+
 function getAnthropicCompat(
 	model: Model<"anthropic-messages">,
-): Required<Omit<AnthropicMessagesCompat, "forceAdaptiveThinking" | "allowedFallbackModels">> {
+): Required<
+	Omit<
+		AnthropicMessagesCompat,
+		| "forceAdaptiveThinking"
+		| "allowedFallbackModels"
+		| "enforcesPreservedThinkingBinding"
+		| "delegatesThinkingModelBinding"
+		| "supportsForcedToolChoice"
+	>
+> {
 	return {
 		supportsEagerToolInputStreaming: model.compat?.supportsEagerToolInputStreaming ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
@@ -631,6 +786,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
+					recordInputTransformations(output, event.message);
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
 						const block: Block = {
@@ -672,6 +828,35 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						};
 						output.content.push(block);
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+					} else if ((event.content_block as { type?: string }).type === "fallback") {
+						// Server-side fallback boundary: "the `fallback` block (an ordinary
+						// `content_block_start` and `content_block_stop` pair with no deltas) marks the
+						// boundary", and clients must "Keep it exactly where it appeared. The API uses
+						// its position to validate the thinking blocks around it".
+						// https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+						//
+						// The SDK types lag this block, so read it through a narrow cast.
+						const fallbackBlock = event.content_block as unknown as {
+							from?: { model?: string };
+							to?: { model?: string };
+						};
+						const toModel = fallbackBlock.to?.model;
+						output.content.push({
+							type: "fallback",
+							fromModel: fallbackBlock.from?.model ?? output.model,
+							toModel: toModel ?? output.model,
+						});
+						// `message_start` named the requested model, so on a mid-output fallback the
+						// serving model is only knowable here. Re-derive pricing the same way the
+						// `message_start` branch does, so the returned message is costed at the rates
+						// of the model that actually produced it.
+						if (toModel && toModel !== output.model) {
+							output.model = toModel;
+							const fallbackCost = model.compat?.allowedFallbackModels?.find(
+								(fallback) => fallback.provider === model.provider && fallback.model === toModel,
+							)?.cost;
+							usageModel = fallbackCost ? { ...model, id: toModel, cost: fallbackCost } : model;
+						}
 					}
 				} else if (event.type === "content_block_delta") {
 					if (event.delta.type === "text_delta") {
@@ -788,6 +973,17 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
+					// "After a mid-stream server-side fallback, the final `message_delta` event carries
+					// the array again with the serving model's entries."
+					// https://platform.claude.com/docs/en/build-with-claude/thinking
+					// This is a configured path for Claude Fable 5.1, whose generated metadata supplies
+					// `fallbacks`, so without this call the serving model's report would be dropped.
+					// No de-duplication is needed: the array is absent on an ordinary turn and empty
+					// when nothing was dropped, and `recordInputTransformations` returns early on both.
+					// The delta's entries describe the serving model, so they are distinct from
+					// `message_start`'s rather than a repeat of them.
+					recordInputTransformations(output, event);
+					addEarlierAttemptCosts(output, model, usageModel, event);
 				}
 			}
 
@@ -825,7 +1021,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 /**
  * Map ThinkingLevel to Anthropic effort levels for adaptive thinking.
  * Note: effort "max" is available on all adaptive-thinking Claude models, while native
- * "xhigh" is only available on Opus 4.7/4.8, Sonnet 5, and Fable 5.
+ * "xhigh" is available on Opus 4.7, Opus 4.8, Opus 5, Sonnet 5, Fable 5, and Fable 5.1 —
+ * the models the generator merges an `xhigh` mapping onto.
  */
 function mapThinkingLevelToEffort(
 	model: Model<"anthropic-messages">,
@@ -921,6 +1118,9 @@ function createClient(
 	}
 	if (useServerSideFallbackBeta) {
 		betaFeatures.push(SERVER_SIDE_FALLBACK_BETA);
+	}
+	if (shouldUseThinkingBindingControlsBeta(model)) {
+		betaFeatures.push(THINKING_BINDING_CONTROLS_BETA);
 	}
 
 	// Copilot: Bearer auth, selective betas.
@@ -1112,6 +1312,31 @@ function buildParams(
 		} else if (options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null) {
 			params.thinking = { type: "disabled" };
 		}
+
+		// `block_binding` must accompany the beta header on *every* request for a model that
+		// enforces the conversation check, not only on reasoning turns. The header alone leaves
+		// `prefix_mismatch_behavior` at its `"error"` default, which is the 400 this opts out of.
+		// `streamSimple` sets `thinkingEnabled: false` whenever no reasoning level is requested,
+		// and Claude Fable 5.1 denies thinking-off (`thinkingLevelMap.off === null`), so without
+		// this the no-reasoning path would send the header with no field at all.
+		if (shouldUseThinkingBindingControlsBeta(model)) {
+			const blockBinding = { block_binding: { prefix_mismatch_behavior: "drop_block" } };
+			// The Anthropic SDK types lag the `thinking-binding-controls-2026-08-01` beta.
+			if (params.thinking?.type === "adaptive" || params.thinking?.type === "enabled") {
+				// Accepted alongside both thinking types. It only changes what happens to a block
+				// replayed behind a changed prefix; the model check always drops regardless.
+				params.thinking = { ...params.thinking, ...blockBinding } as unknown as NonNullable<
+					MessageCreateParamsStreaming["thinking"]
+				>;
+			} else if (!params.thinking && model.compat?.forceAdaptiveThinking === true) {
+				// Adaptive thinking is always on for these models, so omitting `thinking` and
+				// sending `{type: "adaptive"}` are equivalent. `display` stays absent to keep the
+				// API's `"omitted"` default, which is exactly what omitting `thinking` produced.
+				params.thinking = { type: "adaptive", ...blockBinding } as unknown as NonNullable<
+					MessageCreateParamsStreaming["thinking"]
+				>;
+			}
+		}
 	}
 
 	if (options?.metadata) {
@@ -1122,10 +1347,32 @@ function buildParams(
 	}
 
 	if (options?.toolChoice) {
-		if (typeof options.toolChoice === "string") {
-			params.tool_choice = { type: options.toolChoice };
+		const requested = options.toolChoice;
+		const isForced = requested === "any" || (typeof requested !== "string" && requested.type === "tool");
+		if (isForced && model.compat?.supportsForcedToolChoice === false) {
+			// "The exceptions are Claude Fable 5.1 and Claude Mythos 5.1, which reject forced tool
+			// use on every request with a 400 error. On those models, use
+			// `tool_choice: {"type": "auto"}` with strict tool use or structured outputs instead."
+			// https://platform.claude.com/docs/en/build-with-claude/thinking
+			//
+			// Reject the request rather than rewriting it. Silently substituting `auto` would
+			// discard an explicit caller instruction and make `AnthropicOptions.toolChoice`'s
+			// declared shape a lie; the caller asked the model to call a tool, and quietly asking
+			// it to decide instead is a different request. Failing here matches how this package
+			// handles other explicitly requested capabilities a model cannot honor, and surfaces
+			// the remedy before a round trip that would 400 anyway. Callers that want the
+			// substitution can make it themselves, and can branch on
+			// `model.compat.supportsForcedToolChoice` to decide.
+			const requestedLabel = typeof requested === "string" ? requested : `tool "${requested.name}"`;
+			throw new Error(
+				`Model ${model.id} does not support forced tool choice (requested: ${requestedLabel}). ` +
+					`Use toolChoice "auto" with strict tool use or structured outputs instead.`,
+			);
+		}
+		if (typeof requested === "string") {
+			params.tool_choice = { type: requested };
 		} else {
-			params.tool_choice = options.toolChoice;
+			params.tool_choice = requested;
 		}
 	}
 
@@ -1206,16 +1453,31 @@ function convertMessages(
 							type: "text",
 							text: sanitizeSurrogates(item.text),
 						};
-					} else {
+					}
+					if (item.type === "document") {
+						// `BetaBase64PDFSource`. PDFs ride Claude's vision path, so no beta header.
+						// The media type is a fixed literal in that SDK type, so it is hardcoded here
+						// and the block's own field is verified rather than read.
+						// https://platform.claude.com/docs/en/build-with-claude/pdf-support
+						assertSupportedDocumentMimeType(item);
 						return {
-							type: "image",
+							type: "document",
 							source: {
 								type: "base64",
-								media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+								media_type: "application/pdf",
 								data: item.data,
 							},
+							...(item.name ? { title: item.name } : {}),
 						};
 					}
+					return {
+						type: "image",
+						source: {
+							type: "base64",
+							media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+							data: item.data,
+						},
+					};
 				});
 				const filteredBlocks = blocks.filter((b) => {
 					if (b.type === "text") {
@@ -1281,6 +1543,21 @@ function convertMessages(
 						name: isOAuthToken ? toClaudeCodeName(block.name) : block.name,
 						input: block.arguments ?? {},
 					});
+				} else if (block.type === "fallback") {
+					// The server-side fallback boundary must go back on the wire at the position it
+					// arrived: "Keep it exactly where it appeared. The API uses its position to
+					// validate the thinking blocks around it, so a request that echoes thinking
+					// blocks from both sides of the boundary is rejected if the block is omitted or
+					// moved." `transformMessages` drops the pre-boundary thinking; without this
+					// branch the marker would be dropped too, which is the failure that rule names.
+					// https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+					//
+					// The SDK types lag this block, matching the cast on the stream side.
+					blocks.push({
+						type: "fallback",
+						from: { model: block.fromModel },
+						to: { model: block.toModel },
+					} as unknown as ContentBlockParam);
 				}
 			}
 			if (blocks.length === 0) continue;

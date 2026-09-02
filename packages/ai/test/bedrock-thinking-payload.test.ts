@@ -132,6 +132,47 @@ describe("Bedrock thinking payload", () => {
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "xhigh" });
 	});
 
+	// Atomic generates three Bedrock inference-profile variants for Claude Fable 5.1, matching the
+	// live models.dev catalog and Anthropic's Bedrock model-ID table. Each must send adaptive
+	// thinking and honour the documented effort set. No `eu.` variant is published for this model.
+	it.each([
+		"anthropic.claude-fable-5-1",
+		"global.anthropic.claude-fable-5-1",
+		"us.anthropic.claude-fable-5-1",
+	] as const)("uses adaptive thinking for Bedrock %s when reasoning is enabled", async (modelId) => {
+		const model = getModel("amazon-bedrock", modelId);
+
+		const payload = await capturePayload(model);
+
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
+		expect(payload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
+	});
+
+	it.each([
+		["low", "low"],
+		["medium", "medium"],
+		["high", "high"],
+		["xhigh", "xhigh"],
+		["max", "max"],
+	] as const)("maps %s reasoning to effort=%s for Bedrock Claude Fable 5.1", async (reasoning, effort) => {
+		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
+
+		const payload = await capturePayload(model, { reasoning });
+
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort });
+	});
+
+	it("never sends a thinking budget for Bedrock Claude Fable 5.1", async () => {
+		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
+
+		const payload = await capturePayload(model, { reasoning: "max" });
+
+		expect(payload.additionalModelRequestFields?.thinking?.type).toBe("adaptive");
+		expect(payload.additionalModelRequestFields?.thinking?.budget_tokens).toBeUndefined();
+	});
+
 	it("omits display for GovCloud model ids on non-adaptive Claude thinking", async () => {
 		const baseModel = getModel("amazon-bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0");
 		const model: Model<"bedrock-converse-stream"> = {

@@ -38,7 +38,7 @@ DeepSWE's August 21, 2026 changelog says these DeepSeek costs use peak rates and
 
 - **deepseek-v4-pro [max]**: GLM-5.3 Flash has a higher unrounded score, costs $1.43 less, and averages 123 steps instead of 155.
 - **deepseek-v4-flash [max]**: GLM-5.3 Flash is ten rounded points more accurate and costs $0.22 less.
-- **claude-fable-5 [max]**: Sol is more accurate and much cheaper; GLM-5.3 comes within a point for less than one fifth of the task cost.
+- **claude-fable-5 [max]**: Sol is more accurate and much cheaper; GLM-5.3 comes within a point for less than one fifth of the task cost. This row is Fable 5 only; `claude-fable-5-1` released after this snapshot and has no measured position on the frontier.
 - **kimi-k3 [max]**: GLM-5.3 matches its rounded score and is $0.66 cheaper; Kimi remains useful for Moonshot-family diversity.
 - **gpt-5.5 [xhigh]** and **grok-4.6 [xhigh]**: Luna matches their rounded 67% for $0.61.
 - **gemini-3.7-flash [high]**: Luna is two points more accurate and costs less than one third as much.
@@ -58,6 +58,7 @@ Efficiency is not the only axis. A dominated model can still earn a slot when it
 - **kimi-k3** remains a Moonshot-family provider-diversity option despite GLM-5.3's strict DeepSWE dominance.
 - **claude-opus-4.8 [max]** remains useful where Anthropic diversity or its long-context behavior has separate value.
 - **claude-fable-5** remains useful where Anthropic-family behavior is specifically wanted, such as the quality-first, unbenchmarked design chain.
+- **claude-fable-5-1** is available in Atomic's catalog but released September 1, 2026, after the August 26 snapshot, so it is unmeasured here and holds no frontier position. Its published cache-read price is $0.25 per million tokens against Fable 5's $1.00, which can change the economics of a long cached-prefix session, but that is a price fact and not an accuracy result. Evaluate it before substituting it for a measured configuration.
 - **Unmeasured models** may remain operational defaults when a family lacks current DeepSWE or Artificial Analysis coverage, but they should not inherit a predecessor's score.
 
 ## How to use this

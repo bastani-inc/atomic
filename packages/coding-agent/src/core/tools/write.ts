@@ -13,7 +13,7 @@ import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
-import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { type ConflictBlock, getRegisteredConflictBlocks, parseConflictBlocks } from "./conflict-registry.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import {
@@ -331,9 +331,10 @@ export function createWriteToolDefinition(
 			{ path, content }: { path: string; content: string },
 			signal?: AbortSignal,
 			_onUpdate?,
-			_ctx?,
+			ctx?: ExtensionContext,
 		) {
-			const resourceCtx = _ctx as InternalResourceContext | undefined;
+			const resourceCtx = ctx as InternalResourceContext | undefined;
+			const executionCwd = ctx?.cwd || cwd;
 			const archive = parseArchiveSelector(path);
 			const parsedSqlite = parseSqliteSelector(path);
 			if (parsedSqlite?.table && path.includes("?"))
@@ -349,10 +350,10 @@ export function createWriteToolDefinition(
 					parsedSqlite.query)
 			)
 				throw new Error("SQLite write selectors must not include query parameters.");
-			const sqlite = sqliteSelectorForPath(path, cwd);
+			const sqlite = sqliteSelectorForPath(path, executionCwd);
 			if (!sqlite && parsedSqlite?.table) throw new Error(`SQLite database not found or is not SQLite: ${path}`);
 			if (sqlite) {
-				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", cwd, hashlineStore);
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore);
 				const message = writeSqliteSelector(sqlite, stripped.content);
 				return {
 					content: [{ type: "text", text: `${message}${strippedHashlineNote(stripped.stripped)}` }],
@@ -360,8 +361,8 @@ export function createWriteToolDefinition(
 				};
 			}
 			if (archive) {
-				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", cwd, hashlineStore);
-				const resolvedArchive = resolveArchiveSelector(archive, cwd);
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore);
+				const resolvedArchive = resolveArchiveSelector(archive, executionCwd);
 				writeArchiveSelector(resolvedArchive, stripped.content);
 				return {
 					content: [
@@ -374,18 +375,18 @@ export function createWriteToolDefinition(
 				};
 			}
 			if (path.startsWith("conflict://")) {
-				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
+				const writeContent = stripKnownHashlineCopiedContent(content, "", executionCwd, hashlineStore);
 				const target = decodeURIComponent(path.slice("conflict://".length));
 				if (!target) throw new Error("conflict:// target is required.");
 				if (target.includes("/"))
 					throw new Error("Scoped conflict resources are read-only; write conflict://<id> or conflict://*.");
-				const liveBlocks = await findConflictBlocks(cwd);
+				const liveBlocks = await findConflictBlocks(executionCwd);
 				if (liveBlocks.length === 0) throw new Error("No conflict markers found.");
-				const blocks = reconcileConflictBlocks(liveBlocks, cwd);
+				const blocks = reconcileConflictBlocks(liveBlocks, executionCwd);
 				if (target === "*") {
 					const headers = await conflictSnapshotHeaders(
 						await resolveConflictBlocks(blocks, writeContent),
-						cwd,
+						executionCwd,
 						hashlineStore,
 					);
 					return {
@@ -404,7 +405,7 @@ export function createWriteToolDefinition(
 				if (!block) throw new Error(`Conflict id not found: ${target}`);
 				const headers = await conflictSnapshotHeaders(
 					await resolveConflictBlocks([block], writeContent),
-					cwd,
+					executionCwd,
 					hashlineStore,
 				);
 				return {
@@ -413,17 +414,17 @@ export function createWriteToolDefinition(
 				};
 			}
 			if (/^[a-z]+:\/\//i.test(path)) {
-				const sourcePath = path.startsWith("local://") ? resolveInternalSelector(path, cwd) : undefined;
+				const sourcePath = path.startsWith("local://") ? resolveInternalSelector(path, executionCwd) : undefined;
 				if (sourcePath)
-					return createWriteToolDefinition(cwd, options).execute(
+					return createWriteToolDefinition(executionCwd, options).execute(
 						_toolCallId,
 						{ path: sourcePath, content },
 						signal,
 						_onUpdate,
-						_ctx as never,
+						ctx as never,
 					);
-				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", cwd, hashlineStore);
-				await writeInternalSelector(path, cwd, stripped.content, resourceCtx);
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore);
+				await writeInternalSelector(path, executionCwd, stripped.content, resourceCtx);
 				return {
 					content: [
 						{
@@ -434,7 +435,7 @@ export function createWriteToolDefinition(
 					details: {},
 				};
 			}
-			const absolutePath = resolveToCwd(path, cwd);
+			const absolutePath = resolveToCwd(path, executionCwd);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the
@@ -453,7 +454,12 @@ export function createWriteToolDefinition(
 				const existing = await fsReadFile(absolutePath, "utf8").catch(() => undefined);
 				if (existing !== undefined && hasGeneratedMarker(existing))
 					throw new Error(`Refusing to overwrite generated file: ${path}`);
-				const stripped = stripKnownHashlineCopiedContentWithMeta(content, absolutePath, cwd, hashlineStore);
+				const stripped = stripKnownHashlineCopiedContentWithMeta(
+					content,
+					absolutePath,
+					executionCwd,
+					hashlineStore,
+				);
 				const writeContent = stripped.content;
 				await ops.writeFile(absolutePath, writeContent);
 				invalidateNativeSearchCache(absolutePath);
@@ -469,7 +475,7 @@ export function createWriteToolDefinition(
 				}
 				throwIfAborted();
 
-				const header = hashlineHeaderForWrite(absolutePath, cwd, writeContent, hashlineStore);
+				const header = hashlineHeaderForWrite(absolutePath, executionCwd, writeContent, hashlineStore);
 				return {
 					content: [
 						{

@@ -721,6 +721,7 @@ interface ProviderModelConfig {
     sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter";
     supportsLongCacheRetention?: boolean;
     supportsToolSearch?: boolean;
+    supportsMaxOutputTokens?: boolean;
   };
 }
 ```
@@ -733,4 +734,4 @@ The `cost` shape is equivalent to `Model<Api>["cost"]`. Base rates and every tie
 
 Capability flags are enforcement claims, not preferences. `supportsStrictMode` controls strict JSON-schema tools for OpenAI-compatible APIs; Anthropic/Bedrock use `supportsStrictTools`; `supportsOpenAIGrammarTools` controls OpenAI Lark/regex custom tools. Atomic also accepts `supportsGrammarTools` as a compatibility alias and synchronizes it to the canonical OpenAI name; when both disagree, the canonical field wins. Leave these fields unset/false unless the endpoint and selected model actually preserve and enforce the corresponding request shape. See [Extensions](/extensions#constrained-sampling) for exact `constrainedSampling` modes.
 
-For `openai-responses` providers, set `compat.sessionAffinityFormat` to `"openai"` for `session_id` plus `x-client-request-id`, `"openai-nosession"` to omit `session_id` while retaining `x-client-request-id`, or `"openrouter"` for `x-session-id`. Responses-compatible providers may also set `supportsToolSearch` when they support deferred tool loading.
+For `openai-responses` providers, set `compat.sessionAffinityFormat` to `"openai"` for `session_id` plus `x-client-request-id`, `"openai-nosession"` to omit `session_id` while retaining `x-client-request-id`, or `"openrouter"` for `x-session-id`. Responses-compatible providers may also set `supportsToolSearch` when they support deferred tool loading. `supportsMaxOutputTokens` defaults to `true`; set it to `false` for OpenAI Responses-compatible gateways such as Codex-protocol proxies that reject `max_output_tokens` with a 400, and Atomic omits the parameter from those requests.

@@ -25,6 +25,38 @@ function isSameModelAssistant(message: AssistantMessage, model: Model<Api>): boo
 	return message.provider === model.provider && message.api === model.api && message.model === model.id;
 }
 
+/**
+ * Mirrors `canReplayForeignThinking` in @bastani/pi-ai's `transformMessages`: a *different* model
+ * on the same provider and API whose API adjudicates thinking model binding itself. Its signed
+ * blocks replay unchanged — including redacted ones and signed blocks whose text is empty, which
+ * is Claude Fable 5.1's default shape because `thinking.display` defaults to `"omitted"`.
+ *
+ * This must stay conditional. For a model that does not delegate binding, pi-ai still drops or
+ * flattens foreign thinking, so accepting signature-only blocks unconditionally would misalign
+ * the ordinals in the opposite direction.
+ */
+function delegatesForeignThinkingBinding(message: AssistantMessage, model: Model<Api>): boolean {
+	if (message.provider !== model.provider || message.api !== model.api) return false;
+	return isObject(model.compat) && model.compat.delegatesThinkingModelBinding === true;
+}
+
+/**
+ * Index of the last server-side fallback marker, or -1.
+ *
+ * pi-ai drops `thinking`, `redacted_thinking`, and client-side `tool_use` that precede the final
+ * marker, because "a request that echoes thinking blocks from both sides of the boundary is
+ * rejected". Both the alignment check and the repair pass must apply the same rule, or repair
+ * would splice pre-boundary thinking back into a request the API rejects.
+ * https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+ */
+function finalFallbackBoundaryIndex(content: readonly unknown[]): number {
+	for (let index = content.length - 1; index >= 0; index -= 1) {
+		const block = content[index];
+		if (isObject(block) && block.type === "fallback") return index;
+	}
+	return -1;
+}
+
 function readReplayThinkingBlock(block: unknown, allowEmptySignature = false): ReplayThinkingBlock | undefined {
 	if (!isObject(block) || typeof block.type !== "string") return undefined;
 
@@ -79,7 +111,12 @@ function legacyProviderWouldEmitAssistant(message: AssistantMessage, model: Mode
 	// This mirrors the relevant same-model branch in @bastani/pi-ai's
 	// transformMessages() + Anthropic convertMessages() pipeline closely enough
 	// to keep assistant ordinal mapping aligned with the provider payload.
-	if (isSameModelAssistant(message, model)) {
+	//
+	// A cross-model turn on a model that delegates binding follows the *same* rule: pi-ai replays
+	// its foreign signed thinking unchanged, so a redacted or empty-text signed block is emitted
+	// there too. Without this branch, a Fable 5.1 turn whose thinking display is `"omitted"` looks
+	// non-emitting here, the ordinals desynchronise, and repair is abandoned for the whole request.
+	if (isSameModelAssistant(message, model) || delegatesForeignThinkingBinding(message, model)) {
 		return message.content.some((block) => legacyProviderWouldEmitAssistantBlock(block));
 	}
 
@@ -117,10 +154,17 @@ function takeProviderBlock(
 }
 
 function nonThinkingBlocksAlign(message: AssistantMessage, providerBlocks: readonly AnthropicContentBlock[]): boolean {
-	const sourceTypes = message.content.flatMap((block) => {
+	const boundaryIndex = finalFallbackBoundaryIndex(message.content);
+	const sourceTypes = message.content.flatMap((block, index) => {
 		if (!isObject(block) || typeof block.type !== "string") return [];
 		if (block.type === "text") return typeof block.text === "string" && block.text.trim().length > 0 ? ["text"] : [];
-		return block.type === "toolCall" ? ["tool_use"] : [];
+		// The marker is replayed in place and is not thinking-like, so it survives the provider-side
+		// filter below and both sides must count it.
+		if (block.type === "fallback") return ["fallback"];
+		if (block.type !== "toolCall") return [];
+		// A client-side tool call before the final marker was never executed by the model that
+		// continued the turn, so pi-ai drops it along with its tool result.
+		return boundaryIndex >= 0 && index < boundaryIndex ? [] : ["tool_use"];
 	});
 	const providerTypes = providerBlocks
 		.filter((block) => !isThinkingLikeAnthropicBlock(block))
@@ -138,8 +182,15 @@ function repairAssistantContent(
 	const repaired: AnthropicContentBlock[] = [];
 	let providerIndex = 0;
 
-	for (const originalBlock of originalMessage.content) {
-		const replayBlock = readReplayThinkingBlock(originalBlock, allowEmptySignature);
+	// `fallbackTextBlock`/`fallbackToolUseBlock` below mean "fallback value"; `boundaryIndex` is the
+	// unrelated Anthropic server-side fallback marker.
+	const boundaryIndex = finalFallbackBoundaryIndex(originalMessage.content);
+
+	for (const [index, originalBlock] of originalMessage.content.entries()) {
+		const precedesBoundary = boundaryIndex >= 0 && index < boundaryIndex;
+		// Thinking before the final marker is not in the payload and must not be restored into it:
+		// echoing thinking from both sides of the boundary is rejected outright.
+		const replayBlock = precedesBoundary ? undefined : readReplayThinkingBlock(originalBlock, allowEmptySignature);
 		if (replayBlock) {
 			if (isThinkingLikeAnthropicBlock(providerBlocks[providerIndex])) {
 				providerIndex += 1;
@@ -149,6 +200,17 @@ function repairAssistantContent(
 		}
 
 		if (!isObject(originalBlock) || typeof originalBlock.type !== "string") continue;
+
+		if (originalBlock.type === "fallback") {
+			// Replayed in place, straight from the payload: this guard only restores thinking, and
+			// the marker's position is what the API validates the surrounding thinking against.
+			const providerMarker = takeProviderBlock(providerBlocks, providerIndex, "fallback");
+			if (providerMarker.block) {
+				repaired.push(providerMarker.block);
+				providerIndex = providerMarker.nextProviderIndex;
+			}
+			continue;
+		}
 
 		if (originalBlock.type === "text") {
 			const providerText = takeProviderBlock(providerBlocks, providerIndex, "text");
@@ -163,6 +225,9 @@ function repairAssistantContent(
 		}
 
 		if (originalBlock.type === "toolCall") {
+			// Dropped by pi-ai alongside its tool result, because the declining model's call was
+			// never executed by the model that continued.
+			if (precedesBoundary) continue;
 			const providerToolUse = takeProviderBlock(providerBlocks, providerIndex, "tool_use");
 			if (providerToolUse.block) {
 				repaired.push(providerToolUse.block);

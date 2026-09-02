@@ -608,7 +608,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     });
   }
   function scheduleReconnect(): void {
-    if (disposed || shuttingDown || reconnectTimer || reconnectPromise || !getLiveContext()) {
+    if (disposed || shuttingDown || reconnectTimer || reconnectPromise || client?.isConnected() || !getLiveContext()) {
       return;
     }
     const scheduledGeneration = runtimeGeneration;
@@ -619,7 +619,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       reconnectAttempt += 1;
       void ensureConnected("background").catch(() => {
-        // ensureConnected("background") already queued the next retry.
+        // ensureConnected queues the next retry from its `finally`, once it has released
+        // ownership of `reconnectPromise`.
       });
     }, reconnectDelayMs(reconnectAttempt));
   }
@@ -786,12 +787,22 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (reconnectPromise && reconnectPromiseGeneration === generationAtStart) {
       return reconnectPromise;
     }
+    // Ownership has to be recorded before the connect body can settle. A body that rejects
+    // before its first suspension point runs its `finally` while `reconnectPromise` is still
+    // unassigned, and the assignment below then parks an already-settled promise there for
+    // good: every later `scheduleReconnect()` reads that dead promise as an owner and returns,
+    // and every later `ensureConnected` hands the same stale rejection back instead of
+    // attempting a connection.
+    const ownershipRecorded = Promise.withResolvers<void>();
     const nextReconnectPromise = (async () => {
+      let connectFailed = false;
+      await ownershipRecorded.promise;
 		const nextClient = new IntercomClient(currentSessionId);
       const registration = buildRegistration();
       client = nextClient;
       attachClientHandlers(nextClient);
       try {
+        await testOverrides.beforeConnectAttempt?.(reason);
         await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
         const childMetadata = currentChildOrchestratorMetadata();
         await nextClient.connect(
@@ -828,19 +839,40 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           client = null;
           clientRegistrationGroup = null;
         }
-        if (reason === "background" && getLiveContext(contextAtStart, generationAtStart)) {
-          scheduleReconnect();
-        }
+        connectFailed = true;
+        // A step after `connect()` succeeded — supervisor-authorization restore, pending-route
+        // re-registration, live stage-route registration — leaves `nextClient` registered at the
+        // broker. Dropping the reference without closing the socket leaves a phantom roster row
+        // that the retry then duplicates: the broker still answers `delivered: true` for it while
+        // `attachClientHandlers` swallows the message on `client === nextClient`. This is the
+        // ordering `ensurePendingStageRouteClient` already uses. `connectFailed` is set above, so
+        // the `finally` reschedules however this disconnect behaves.
+        try { await nextClient.disconnect(); } catch {}
         throw toError(error);
       } finally {
         if (reconnectPromiseGeneration === generationAtStart) {
           reconnectPromise = null;
           reconnectPromiseGeneration = null;
         }
+        // Schedule only after ownership of `reconnectPromise` is released above. Scheduling from
+        // `catch` short-circuited on this very promise (`scheduleReconnect()` returns early while
+        // `reconnectPromise` is non-null), which left a live runtime with no client, no timer and
+        // no promise owning the next attempt. `ensurePendingStageRouteClient` already orders it
+        // this way; this is the same ordering. Every failing reason reschedules, not just
+        // "background": `clearReconnectTimer()` above drops any pending timer before the attempt,
+        // so a failed "tool" or "overlay" attempt would otherwise destroy the recovery a
+        // background timer already owned. The timer armed for a failed "startup" attempt does not
+        // survive: that reason is reachable only from the lazy wrapper's first heavy load, whose
+        // rejection path disposes the whole candidate (`index.ts` `cleanupCandidate`), and
+        // `cleanupRuntime` clears the timer with it. Do not advertise a startup retry.
+        if (connectFailed && getLiveContext(contextAtStart, generationAtStart)) {
+          scheduleReconnect();
+        }
       }
     })();
     reconnectPromise = nextReconnectPromise;
     reconnectPromiseGeneration = generationAtStart;
+    ownershipRecorded.resolve();
     return nextReconnectPromise;
   }
   pi.events.on(PENDING_STAGE_ROUTE_EVENT, (payload) => {

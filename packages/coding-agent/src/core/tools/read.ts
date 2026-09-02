@@ -12,7 +12,7 @@ import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
-import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { parseConflictBlocks, registerConflictBlocks } from "./conflict-registry.ts";
 import {
 	buildDirectoryTree,
@@ -320,13 +320,14 @@ export function createReadToolDefinition(
 		...experimentalToolSamplingProperty(),
 		parameters: readSchema,
 		maxResultSizeChars: Infinity,
-		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?) {
+		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			const resourceCtx = ctx as InternalResourceContext | undefined;
+			const executionCwd = ctx?.cwd || cwd;
 			const splitSelector = splitReadLineSelector(path),
 				markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
-				sqliteOriginal = sqliteSelectorForPath(markerless, cwd),
-				sqliteDirect = sqliteSelectorForPath(path, cwd);
-			const selector = archiveSelectorMemberExists(path, cwd)
+				sqliteOriginal = sqliteSelectorForPath(markerless, executionCwd),
+				sqliteDirect = sqliteSelectorForPath(path, executionCwd);
+			const selector = archiveSelectorMemberExists(path, executionCwd)
 				? { path }
 				: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
 					? { path }
@@ -358,7 +359,7 @@ export function createReadToolDefinition(
 					(async () => {
 						try {
 							const archive = parseArchiveSelector(effectivePath);
-							const sqlite = sqliteSelectorForPath(effectivePath, cwd);
+							const sqlite = sqliteSelectorForPath(effectivePath, executionCwd);
 							if (isReadableUrlPath(effectivePath)) {
 								resolve(
 									await readUrlBranch({
@@ -367,7 +368,7 @@ export function createReadToolDefinition(
 										effectiveRanges,
 										effectiveOffset,
 										effectiveLimit,
-										cwd,
+										cwd: executionCwd,
 										ctx,
 										signal,
 										maxChars: READ_TOOL_MAX_RESULT_CHARS,
@@ -426,7 +427,7 @@ export function createReadToolDefinition(
 								return;
 							}
 							if (archive) {
-								const resolvedArchive = resolveArchiveSelector(archive, cwd);
+								const resolvedArchive = resolveArchiveSelector(archive, executionCwd);
 								const textContent = readArchiveSelector(resolvedArchive);
 								let allLines = textContent.split("\n");
 								if (conflictsOnly) {
@@ -506,11 +507,11 @@ export function createReadToolDefinition(
 								)
 							) {
 								const sourcePath = effectivePath.startsWith("local://")
-									? resolveInternalSelector(effectivePath, cwd)
+									? resolveInternalSelector(effectivePath, executionCwd)
 									: undefined;
 								if (sourcePath) {
 									resolve(
-										await createReadToolDefinition(cwd, options).execute(
+										await createReadToolDefinition(executionCwd, options).execute(
 											_toolCallId,
 											{ path: appendReadSelectors(sourcePath, selector) },
 											signal,
@@ -520,7 +521,9 @@ export function createReadToolDefinition(
 									);
 									return;
 								}
-								const allLines = (await readInternalSelector(effectivePath, cwd, resourceCtx)).split("\n");
+								const allLines = (await readInternalSelector(effectivePath, executionCwd, resourceCtx)).split(
+									"\n",
+								);
 								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
 									allLines,
 									effectiveRanges,
@@ -579,7 +582,7 @@ export function createReadToolDefinition(
 								throw new Error(
 									`Read resource selectors are not supported by this filesystem backend: ${path}`,
 								);
-							const absolutePath = await resolveReadPathAsync(effectivePath, cwd);
+							const absolutePath = await resolveReadPathAsync(effectivePath, executionCwd);
 							if (aborted) return;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
@@ -719,7 +722,7 @@ export function createReadToolDefinition(
 									rawOutput || !numberedTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
 								let conflictLineNumbers: number[] | undefined;
 								if (conflictsOnly) {
-									registerConflictBlocks(cwd, parseConflictBlocks(absolutePath, textContent));
+									registerConflictBlocks(executionCwd, parseConflictBlocks(absolutePath, textContent));
 									const conflictLines: string[] = [];
 									conflictLineNumbers = [];
 									let inConflict = false;
@@ -834,7 +837,12 @@ export function createReadToolDefinition(
 									}
 									if (truncation.firstLineExceedsLimit) content = [{ type: "text", text: outputText }];
 									else {
-										const snapshot = recordHashlineSnapshot(absolutePath, cwd, textContent, hashlineStore);
+										const snapshot = recordHashlineSnapshot(
+											absolutePath,
+											executionCwd,
+											textContent,
+											hashlineStore,
+										);
 										const visibleContent = truncation.truncated ? truncation.content : selectedContent;
 										const header = `[${snapshot.displayPath}#${snapshot.tag}]`;
 										const selectedConflictLineNumbers =

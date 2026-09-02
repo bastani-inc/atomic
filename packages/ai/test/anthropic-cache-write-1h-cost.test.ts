@@ -83,4 +83,27 @@ describe("Anthropic 1h cache write cost", () => {
 		// 1M * 6.25/Mtok = 6.25
 		expect(result.usage.cost.cacheWrite).toBeCloseTo(6.25, 10);
 	});
+
+	// Claude Fable 5.1 published rates: $10 input, $12.50 5m write, $20 1h write, $0.25 read.
+	// https://platform.claude.com/docs/en/models/fable-5-1/overview
+	it("prices the full 1h cache write at $20/MTok for Claude Fable 5.1", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		expect(model.cost.input).toBe(10);
+		expect(model.cost.cacheWrite).toBe(12.5);
+		const response = createSseResponse(eventsWithCacheCreation({ ephemeral_1h_input_tokens: 1_000_000 }));
+		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
+
+		expect(result.usage.cacheWrite1h).toBe(1_000_000);
+		// 1M * (2 x $10 input) = $20.00
+		expect(result.usage.cost.cacheWrite).toBeCloseTo(20, 10);
+	});
+
+	it("prices the 5m cache write at $12.50/MTok for Claude Fable 5.1", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const response = createSseResponse(eventsWithCacheCreation({ ephemeral_5m_input_tokens: 1_000_000 }));
+		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
+
+		expect(result.usage.cacheWrite1h ?? 0).toBe(0);
+		expect(result.usage.cost.cacheWrite).toBeCloseTo(12.5, 10);
+	});
 });

@@ -24,6 +24,8 @@ const compat = {
 	supportsStore: true,
 	supportsDeveloperRole: true,
 	supportsReasoningEffort: false,
+	supportsTemperature: true,
+	supportsForcedToolChoice: true,
 	supportsUsageInStreaming: true,
 	supportsFinishReason: true,
 	maxTokensField: "max_completion_tokens",

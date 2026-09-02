@@ -376,10 +376,61 @@ export interface ThinkingContent {
 	redacted?: boolean;
 }
 
+/**
+ * Boundary marker emitted by Anthropic server-side fallback, where one model's output gives way
+ * to the next after a classifier refusal.
+ *
+ * This is public content rather than a stream-only event because it must survive the round trip:
+ * "Keep it exactly where it appeared. The API uses its position to validate the thinking blocks
+ * around it, so a request that echoes thinking blocks from both sides of the boundary is rejected
+ * if the block is omitted or moved."
+ * https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+ */
+export interface FallbackContent {
+	type: "fallback";
+	/** The model that declined. Echoes the model string sent when the declining hop is the request's own model. */
+	fromModel: string;
+	/** Resolved id of the model that continues. Always present. */
+	toModel: string;
+}
+
 export interface ImageContent {
 	type: "image";
 	data: string; // base64 encoded image data
 	mimeType: string; // e.g., "image/jpeg", "image/png"
+}
+
+/**
+ * A document sent as model input, currently PDF only.
+ *
+ * Anthropic documents PDF as a platform capability — "All active models support PDF processing" —
+ * routed through the same vision path as images, so it is not a per-model modality. A model
+ * advertises it through `Model.input` containing `"pdf"`, which generated metadata sets only for
+ * the runtimes that can actually serialize a document block. Providers that cannot are sent a
+ * visible placeholder instead, exactly as they are for images they cannot accept.
+ * https://platform.claude.com/docs/en/build-with-claude/pdf-support
+ */
+export interface DocumentContent {
+	type: "document";
+	/** Base64-encoded document bytes. Amazon Bedrock takes raw bytes and decodes this itself. */
+	data: string;
+	/**
+	 * The only media type either serializer implements. It is a literal rather than `string`
+	 * because both paths hardcode PDF — the Anthropic block emits `BetaBase64PDFSource`, whose
+	 * `media_type` is itself a fixed literal, and Bedrock emits `DocumentFormat.PDF` — so a wider
+	 * type would let a caller label arbitrary bytes as a PDF. Widening this union later is
+	 * non-breaking; narrowing it after release would not be. Note that adding a format is not a
+	 * media-type swap on the Anthropic side: plain text needs a structurally different source
+	 * variant (`BetaPlainTextSource`, `type: "text"`), and Bedrock's `doc`/`docx`/`xls`/`xlsx`/
+	 * `csv`/`html`/`md` formats have no Anthropic source variant at all.
+	 */
+	mimeType: "application/pdf";
+	/**
+	 * Optional caller-supplied label. Amazon Bedrock requires a name and warns that it "is
+	 * vulnerable to prompt injections", so the Bedrock path sanitizes this to the characters AWS
+	 * permits and falls back to a neutral generated name.
+	 */
+	name?: string;
 }
 
 export interface ToolCall {
@@ -433,13 +484,13 @@ export interface DeferredHandle {
 
 export interface UserMessage {
 	role: "user";
-	content: string | (TextContent | ImageContent)[];
+	content: string | (TextContent | ImageContent | DocumentContent)[];
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
 export interface AssistantMessage {
 	role: "assistant";
-	content: (TextContent | ThinkingContent | ToolCall)[];
+	content: (TextContent | ThinkingContent | ToolCall | FallbackContent)[];
 	api: Api;
 	provider: ProviderId;
 	model: string;
@@ -574,6 +625,24 @@ export interface OpenAICompletionsCompat {
 	supportsDeveloperRole?: boolean;
 	/** Whether the provider supports `reasoning_effort`. Default: auto-detected from URL. */
 	supportsReasoningEffort?: boolean;
+	/**
+	 * Whether the model accepts the `temperature` request field. Claude Fable 5.1 rejects
+	 * non-default `temperature`, `top_p`, and `top_k` on every request, and OpenRouter's own
+	 * `supported_parameters` for that model omits `temperature`. When false, the provider
+	 * omits `temperature` and also strips `temperature`, `top_p`, and `top_k` from
+	 * `samplingParams`, which is otherwise merged last and would reopen them.
+	 * Default: true.
+	 */
+	supportsTemperature?: boolean;
+	/**
+	 * Whether the model accepts forced tool use (`tool_choice` `"required"` or
+	 * `{ type: "function", ... }`). Claude Fable 5.1 rejects it on every request, whichever
+	 * platform serves the model. When false, the provider rejects a forced choice with an error
+	 * rather than sending a request the model cannot honor. `"auto"` and `"none"` are never
+	 * altered. https://platform.claude.com/docs/en/build-with-claude/thinking
+	 * Default: true.
+	 */
+	supportsForcedToolChoice?: boolean;
 	/** Whether the provider supports `stream_options: { include_usage: true }` for token usage in streaming responses. Default: true. */
 	supportsUsageInStreaming?: boolean;
 	/** Whether streamed responses include `finish_reason`. When false, pi infers `stop` or `toolUse` when the stream ends. Default: true. */
@@ -655,6 +724,8 @@ export interface OpenAIResponsesCompat {
 	supportsToolSearch?: boolean;
 	/** Whether the model accepts `prompt_cache_options` (OpenAI GPT-5.6+ explicit prompt caching). Older OpenAI models reject the parameter. Default: false. */
 	supportsExplicitPromptCacheMode?: boolean;
+	/** Whether the provider accepts the `max_output_tokens` parameter. Some Codex-protocol gateways reject it. Default: true. */
+	supportsMaxOutputTokens?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */
@@ -718,12 +789,60 @@ export interface AnthropicMessagesCompat {
 	 * except Haiku and models older than Claude 4.5; false for other providers.
 	 */
 	supportsToolReferences?: boolean;
+	/**
+	 * Whether the model runs Anthropic's preserved-thinking *conversation* check, which
+	 * rejects a request whose `system` prompt, `tools`, or earlier messages changed since a
+	 * replayed thinking block was produced. When true the provider sends the
+	 * `thinking-binding-controls-2026-08-01` beta header and
+	 * `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`, so a changed prefix
+	 * drops the affected thinking blocks instead of failing the request with a 400.
+	 * Enforced by default for Anthropic accounts created on or after 2026-08-31.
+	 * Default: false.
+	 */
+	enforcesPreservedThinkingBinding?: boolean;
+	/**
+	 * Whether the API adjudicates thinking-block *model* binding itself, always dropping a
+	 * block the target model cannot read. When true, an assistant turn produced by a
+	 * different model on the same provider and API replays its signed `thinking` and
+	 * `redacted_thinking` blocks unchanged rather than being rewritten into plain text, so a
+	 * mid-conversation model switch keeps reasoning the target model is allowed to read.
+	 * Default: false.
+	 */
+	delegatesThinkingModelBinding?: boolean;
+	/**
+	 * Whether the model accepts forced tool use (`tool_choice: {"type": "any"}` or
+	 * `{"type": "tool", ...}`). Claude Fable 5.1 and Claude Mythos 5.1 reject it on every
+	 * request with a 400; Anthropic's guidance for those models is to use
+	 * `tool_choice: {"type": "auto"}` with strict tool use or structured outputs instead.
+	 * When false, the provider rejects a forced choice with an error rather than sending a
+	 * request the model is guaranteed to refuse, or silently substituting a different one.
+	 * `auto` and `none` are never altered.
+	 * https://platform.claude.com/docs/en/build-with-claude/thinking
+	 * Default: true.
+	 */
+	supportsForcedToolChoice?: boolean;
 }
 
 /** Compatibility settings for Amazon Bedrock models. */
 export interface BedrockCompat {
 	/** Whether the model supports Bedrock strict tool schemas. Default: false. */
 	supportsStrictMode?: boolean;
+	/**
+	 * Whether the model accepts forced tool use (`toolChoice` `"any"` or `{ type: "tool" }`).
+	 * Claude Fable 5.1 rejects it on every request with a 400, whichever platform serves the
+	 * model. When false, the provider rejects a forced choice with an error rather than sending
+	 * a request that is guaranteed to fail. `auto` and `none` are never altered.
+	 * https://platform.claude.com/docs/en/build-with-claude/thinking
+	 * Default: true.
+	 */
+	supportsForcedToolChoice?: boolean;
+	/**
+	 * Whether the model accepts `inferenceConfig.temperature`. Claude Fable 5.1 rejects
+	 * non-default `temperature`, `top_p`, and `top_k` on every request. When false, the
+	 * provider omits the field.
+	 * Default: true.
+	 */
+	supportsTemperature?: boolean;
 }
 
 /**
@@ -843,7 +962,12 @@ export interface Model<TApi extends Api> {
 	 * Missing keys use provider defaults. null marks a level as unsupported.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
-	input: ("text" | "image")[];
+	/**
+	 * Modalities Atomic can send to this model. `"pdf"` is set only where a runtime can serialize
+	 * a document block — the Anthropic Messages and Amazon Bedrock Converse paths — so a provider
+	 * that publishes PDF support but has no such path here stays at `["text", "image"]`.
+	 */
+	input: ("text" | "image" | "pdf")[];
 	cost: ModelCost;
 	contextWindow: number;
 	maxTokens: number;

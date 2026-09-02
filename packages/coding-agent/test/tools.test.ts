@@ -5,3 +5,4 @@ import "./tools-04-01.suite.js";
 import "./tools-05-01.suite.js";
 import "./tools-06-01.suite.js";
 import "./tools-07-01.suite.js";
+import "./tools-08-01.suite.ts";

@@ -8,7 +8,7 @@ import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
-import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { loadNativeSearchBinding, type NativeGrepMatch } from "./search-native.ts";
@@ -198,7 +198,7 @@ export function createGrepToolDefinition(
 			}: GrepToolInput,
 			signal?: AbortSignal,
 			_onUpdate?,
-			_ctx?,
+			ctx?: ExtensionContext,
 		) {
 			return new Promise((resolve, reject) => {
 				if (signal?.aborted) {
@@ -215,7 +215,8 @@ export function createGrepToolDefinition(
 
 				(async () => {
 					try {
-						const searchPath = resolveToCwd(searchDir || ".", cwd);
+						const executionCwd = ctx?.cwd || cwd;
+						const searchPath = resolveToCwd(searchDir || ".", executionCwd);
 						const ops = customOps ?? defaultGrepOperations;
 						let isDirectory: boolean;
 						try {
@@ -245,7 +246,7 @@ export function createGrepToolDefinition(
 								const nativeResult = await nativeBinding.grep({
 									pattern,
 									path: searchPath,
-									cwd,
+									cwd: executionCwd,
 									glob,
 									ignoreCase,
 									hidden: hidden ?? true,

@@ -179,18 +179,21 @@ export class SelectSubmenu extends Container {
 	}
 }
 
-export function themeItems(availableThemes: string[]): SelectItem[] {
-	return availableThemes.map((name) => ({ value: name, label: name }));
+export function themeItems(availableThemes: string[], currentTheme: string): SelectItem[] {
+	return availableThemes.map((name) => ({
+		value: name,
+		label: `${name === currentTheme ? "✓ " : "  "}${name}`,
+	}));
 }
 
-function singleModeThemeItems(availableThemes: string[]): SelectItem[] {
+function singleModeThemeItems(availableThemes: string[], currentTheme: string): SelectItem[] {
 	return [
 		{
 			value: AUTOMATIC_THEME_VALUE,
-			label: "Automatic",
+			label: "  Automatic",
 			description: "Use separate themes for light and dark terminal appearance",
 		},
-		...themeItems(availableThemes),
+		...themeItems(availableThemes, currentTheme),
 	];
 }
 
@@ -273,7 +276,7 @@ export class ThemeSubmenu extends Container {
 		const menu = new SelectSubmenu(
 			"Theme",
 			"Select a theme, or choose Automatic to follow terminal appearance.",
-			singleModeThemeItems(this.availableThemes),
+			singleModeThemeItems(this.availableThemes, this.singleTheme),
 			this.singleTheme,
 			(value) => {
 				if (value === AUTOMATIC_THEME_VALUE) {
@@ -389,7 +392,7 @@ export class ThemeSubmenu extends Container {
 		return new SelectSubmenu(
 			title,
 			description,
-			themeItems(this.availableThemes),
+			themeItems(this.availableThemes, currentValue),
 			currentValue,
 			onSelect,
 			() => {

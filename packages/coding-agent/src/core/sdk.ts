@@ -243,7 +243,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return converted;
 		}
 		// Filter out ImageContent from all messages, replacing with text placeholder
-		const filtered = converted.map((msg) => {
+		const filtered = converted.map((msg): Message => {
 			if (msg.role === "user" || msg.role === "toolResult") {
 				const content = msg.content;
 				if (Array.isArray(content)) {
@@ -269,7 +269,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 										(arr[i - 1] as { type: "text"; text: string }).text === "Image reading is disabled."
 									),
 							);
-						return { ...msg, content: filteredContent };
+						// `user` and `toolResult` carry different content unions, and mapping them in one
+						// branch widens both to their union. Only image blocks are rewritten here, so each
+						// message keeps its own shape at runtime.
+						return { ...msg, content: filteredContent } as Message;
 					}
 				}
 			}

@@ -70,8 +70,8 @@ export interface ProviderModelConfig {
 	reasoning: boolean;
 	/** Maps pi thinking levels to provider/model-specific values; null marks a level unsupported. */
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
-	/** Supported input types. */
-	input: ("text" | "image")[];
+	/** Supported input types. `"pdf"` only on runtimes that can serialize a document block. */
+	input: Model<Api>["input"];
 	/** Request pricing, including optional request-wide long-context tiers. */
 	cost: Model<Api>["cost"];
 	/** Default/effective context window size in tokens. */

@@ -14,6 +14,7 @@ import {
 	ConversationRole,
 	ConverseStreamCommand,
 	type ConverseStreamMetadataEvent,
+	DocumentFormat,
 	ImageFormat,
 	type Message,
 	type SystemContentBlock,
@@ -32,6 +33,7 @@ import type {
 	AssistantMessage,
 	CacheRetention,
 	Context,
+	DocumentContent,
 	ImageContent,
 	Model,
 	ProviderEnv,
@@ -49,6 +51,7 @@ import type {
 	ToolResultMessage,
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
+import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
@@ -254,9 +257,14 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				system: buildSystemPrompt(context.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
-					...(options.temperature !== undefined && { temperature: options.temperature }),
+					// Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every
+					// request. Generated metadata marks such models `supportsTemperature: false`; every
+					// other model keeps sending the field exactly as before.
+					// https://platform.claude.com/docs/en/build-with-claude/thinking
+					...(options.temperature !== undefined &&
+						model.compat?.supportsTemperature !== false && { temperature: options.temperature }),
 				},
-				toolConfig: convertToolConfig(context.tools, options.toolChoice, supportsStrictMode),
+				toolConfig: convertToolConfig(context.tools, options.toolChoice, supportsStrictMode, model),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
@@ -953,6 +961,9 @@ function convertMessages(
 							case "image":
 								content.push({ image: createImageBlock(c.mimeType, c.data) });
 								break;
+							case "document":
+								content.push({ document: createDocumentBlock(c, content.length) });
+								break;
 							default:
 								continue;
 						}
@@ -1103,8 +1114,30 @@ function convertToolConfig(
 	tools: Tool[] | undefined,
 	toolChoice: BedrockOptions["toolChoice"],
 	supportsStrictMode: boolean,
+	model: Model<"bedrock-converse-stream">,
 ): ToolConfiguration | undefined {
+	// Validate the requested choice before any early return. A forced choice on a model that
+	// rejects it is an error regardless of whether tools were supplied: returning `undefined` for
+	// an empty or absent tool list would discard the caller's instruction silently, which is the
+	// behavior this guard exists to prevent.
+	//
+	// Claude Fable 5.1 rejects forced tool use on every request with a 400, whichever platform
+	// serves it. Reject rather than rewriting to `auto`, which would discard an explicit caller
+	// instruction. Mirrors the guards in `anthropic-messages.ts` and `openai-completions.ts`.
+	// https://platform.claude.com/docs/en/build-with-claude/thinking
+	if (model.compat?.supportsForcedToolChoice === false) {
+		const isForced = toolChoice === "any" || (typeof toolChoice === "object" && toolChoice.type === "tool");
+		if (isForced) {
+			const requestedLabel = typeof toolChoice === "string" ? toolChoice : `tool "${toolChoice.name}"`;
+			throw new Error(
+				`Model ${model.id} does not support forced tool choice (requested: ${requestedLabel}). ` +
+					`Use toolChoice "auto" with strict tool use or structured outputs instead.`,
+			);
+		}
+	}
+
 	if (!tools?.length) return undefined;
+	// `none` is never a forced choice, so this return can never skip a rejection above.
 	if (toolChoice === "none") return undefined;
 
 	const bedrockTools: BedrockTool[] = tools.map((tool) => {
@@ -1261,6 +1294,38 @@ function buildAdditionalModelRequestFields(
 	}
 
 	return undefined;
+}
+
+/**
+ * Build a Bedrock `DocumentBlock`. Three things differ from the Anthropic path:
+ *
+ * - `name` is **required**, and AWS restricts it to alphanumerics, single whitespace runs,
+ *   hyphens, parentheses, and square brackets — then warns the field "is vulnerable to prompt
+ *   injections… we recommend that you specify a neutral name." Any caller-supplied name is
+ *   sanitized to that character set, and anything left empty falls back to a generated label.
+ * - `source` takes **raw bytes**, not base64: "If you use an Amazon Web Services SDK, you don't
+ *   need to encode the bytes in base64." So the base64 payload is decoded here, the opposite of
+ *   what the Anthropic converter does.
+ * - Without citations enabled, Converse degrades to plain text extraction rather than full visual
+ *   PDF understanding. That limitation is documented rather than worked around here.
+ *   https://platform.claude.com/docs/en/build-with-claude/pdf-support
+ *
+ * `DocumentFormat` also has eight non-PDF members, but `format` is hardcoded to PDF because that
+ * is the only media type `DocumentContent` declares — and the seven office/markup formats have no
+ * Anthropic source variant to map onto. The block's own media type is therefore verified rather
+ * than read.
+ */
+function createDocumentBlock(block: DocumentContent, index: number) {
+	assertSupportedDocumentMimeType(block);
+	const sanitized = (block.name ?? "")
+		.replace(/[^a-zA-Z0-9\s\-()[\]]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return {
+		format: DocumentFormat.PDF,
+		name: sanitized.length > 0 ? sanitized : `document ${index + 1}`,
+		source: { bytes: base64ToBytes(block.data) },
+	};
 }
 
 function createImageBlock(mimeType: string, data: string) {

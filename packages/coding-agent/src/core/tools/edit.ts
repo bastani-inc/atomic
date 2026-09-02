@@ -6,7 +6,7 @@ import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { nativeBlockResolver } from "./block-resolver.ts";
 import { EditBatchCoordinator, parallelEditBatchWarning } from "./edit-batch.ts";
 import { generateDiffString, generateUnifiedPatch, normalizeToLF, stripBom } from "./edit-diff.ts";
@@ -207,12 +207,13 @@ function assertUniquePreparedPaths(prepared: readonly PreparedSection[]): void {
 	}
 }
 
-export function createEditToolDefinition(
-	cwd: string,
-	options?: EditToolOptions,
-): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
-	const ops = options?.operations ?? defaultEditOperations;
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+interface EditCwdScope {
+	readonly fs: EditFilesystem;
+	readonly batcher: EditBatchCoordinator<EditToolResultLike>;
+	applySiblingEdits(siblings: readonly { input: string }[], applySignal?: AbortSignal): Promise<EditToolResultLike>;
+}
+
+function createEditCwdScope(cwd: string, ops: EditOperations, hashlineStore: HashlineSnapshotStore): EditCwdScope {
 	const fs = new EditFilesystem(cwd, ops);
 	const patcher = new Patcher({ fs, snapshots: hashlineStore.snapshots, blockResolver: nativeBlockResolver });
 	const noopCounts = new Map<string, number>();
@@ -287,6 +288,29 @@ export function createEditToolDefinition(
 			details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine },
 		};
 	}
+	return { fs, batcher, applySiblingEdits };
+}
+
+export function createEditToolDefinition(
+	cwd: string,
+	options?: EditToolOptions,
+): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
+	const ops = options?.operations ?? defaultEditOperations;
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	// Atomic adaptation of upstream #8627 ("use ctx.cwd for cwd-sensitive tools"). Upstream's edit
+	// tool is a stateless text replacer, so it could resolve `ctx?.cwd || cwd` inline. Atomic's
+	// hashline patcher instead carries per-tool state — the `EditFilesystem`, the `Patcher`, the
+	// repeated-no-op counters, and the parallel-edit batcher — that is all keyed to one cwd.
+	// Mutating a shared cwd field would corrupt concurrent tool calls, so each distinct execution
+	// cwd gets its own scope. Callers that pass no ctx keep the factory cwd's scope unchanged.
+	const scopes = new Map<string, EditCwdScope>();
+	const scopeFor = (executionCwd: string): EditCwdScope => {
+		const existing = scopes.get(executionCwd);
+		if (existing) return existing;
+		const scope = createEditCwdScope(executionCwd, ops, hashlineStore);
+		scopes.set(executionCwd, scope);
+		return scope;
+	};
 	return {
 		name: "edit",
 		label: "edit",
@@ -296,10 +320,12 @@ export function createEditToolDefinition(
 		promptGuidelines: [...editToolSystemPromptContribution.guidelines],
 		...experimentalToolSamplingProperty(),
 		parameters: editSchema,
-		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal) {
+		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			if (typeof input.input !== "string" || input.input.trim() === "")
 				throw new Error("edit input must be a non-empty hashline script with [PATH#TAG] sections.");
-			const patch = Patch.parse(input.input, { cwd });
+			const executionCwd = ctx?.cwd || cwd;
+			const { fs, batcher, applySiblingEdits } = scopeFor(executionCwd);
+			const patch = Patch.parse(input.input, { cwd: executionCwd });
 			const paths = new Map<string, string>();
 			for (const section of patch.sections) {
 				if (section.fileHash === undefined) throw new Error(missingSnapshotTagMessage(section.path));

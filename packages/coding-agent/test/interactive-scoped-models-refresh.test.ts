@@ -164,6 +164,10 @@ describe("scoped models cache-first refresh", () => {
 		const refreshed = model("refreshed", "Refreshed");
 		const refresh = await openSelector([cached, otherCached]);
 
+		// Upstream pi #8900 changed what confirming an item means from the all-enabled state: it
+		// now disables that one model rather than enabling only it. Clear-all first, then confirm,
+		// to reach the "only `cached` is scoped" state this test is actually about.
+		refresh.selector.handleInput("\x18");
 		refresh.selector.handleInput("\r");
 		expect(refresh.setScopedModels).toHaveBeenLastCalledWith([{ model: cached, thinkingLevel: undefined }]);
 
@@ -174,7 +178,8 @@ describe("scoped models cache-first refresh", () => {
 			expect(rendered).toContain("refreshed");
 		});
 
-		expect(refresh.setScopedModels).toHaveBeenCalledTimes(1);
+		// Two user interactions, and the refresh completing added no third call.
+		expect(refresh.setScopedModels).toHaveBeenCalledTimes(2);
 	});
 
 	it("does not report a cancelled model-runtime refresh as successful", async () => {

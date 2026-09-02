@@ -277,15 +277,20 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 				const options = (config.availableDefaultModels ?? []).flatMap((model) => {
 					const key = `${model.provider}/${model.id}`;
 					const available = model.reasoning ? levels : (["off"] as ThinkingLevel[]);
+					// Upstream pi #8900 marks the active option with a leading "✓ " so it stays
+					// visible while the cursor browses elsewhere. Upstream marks the level label;
+					// Atomic flattened the two-stage picker into one model × level list, so the
+					// marker goes on the row whose level is the configured override.
+					const activeLevel = config.modelThinkingLevels?.[key];
 					const items = available.map((level) => ({
 						value: `${key}\0${level}`,
-						label: `${model.id} [${model.provider}]`,
-						description: `${level}${config.modelThinkingLevels?.[key] === level ? " · default" : ""}`,
+						label: `${level === activeLevel ? "✓ " : "  "}${model.id} [${model.provider}]`,
+						description: `${level}${activeLevel === level ? " · default" : ""}`,
 					}));
-					if (config.modelThinkingLevels?.[key] !== undefined)
+					if (activeLevel !== undefined)
 						items.push({
 							value: `${key}\0`,
-							label: `${model.id} [${model.provider}]`,
+							label: `  ${model.id} [${model.provider}]`,
 							description: "clear override",
 						});
 					return items;

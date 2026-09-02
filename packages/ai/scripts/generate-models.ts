@@ -17,6 +17,7 @@ import {
 import type {
 	AnthropicMessagesCompat,
 	Api,
+	BedrockCompat,
 	KnownProvider,
 	Model,
 	ModelCost,
@@ -283,8 +284,12 @@ const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 	"github-copilot:claude-sonnet-4",
 	"github-copilot:claude-sonnet-4.5",
 ]);
+// Anthropic publishes the permitted server-side `fallbacks` targets per model. Claude Fable 5.1:
+// "The permitted fallback targets for Claude Fable 5.1 are Claude Opus 4.8 and Claude Opus 5."
+// https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
 const ANTHROPIC_ALLOWED_FALLBACK_MODELS = {
 	"claude-fable-5": ["claude-opus-4-8", "claude-opus-5"],
+	"claude-fable-5-1": ["claude-opus-4-8", "claude-opus-5"],
 	"claude-opus-5": ["claude-opus-4-8"],
 } satisfies Record<string, string[]>;
 
@@ -589,6 +594,10 @@ function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
 	);
 }
 
+// Models that reject non-default `temperature`, `top_p`, or `top_k` with a 400 on every request,
+// whether or not thinking is on. The list is published in "Limits and feature compatibility >
+// Sampling parameters": https://platform.claude.com/docs/en/build-with-claude/thinking
+// The `fable-5` clause covers Claude Fable 5 and Claude Fable 5.1, which the same sentence names.
 function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 	const id = modelId.toLowerCase();
 	return (
@@ -597,7 +606,8 @@ function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 		id.includes("opus-4-8") ||
 		id.includes("opus-4.8") ||
 		id.includes("opus-5") ||
-		id.includes("opus.5")
+		id.includes("opus.5") ||
+		id.includes("fable-5")
 	);
 }
 
@@ -798,6 +808,82 @@ function applyAnthropicAllowedFallbackModelMetadata(models: readonly Model<"anth
 	}
 }
 
+// Anthropic's preserved-thinking rules: "A block that fails the model check is always dropped"
+// before the prompt reaches the model, and callers should "Send every assistant turn exactly as
+// you received it, thinking blocks included, and let the API decide which blocks the model can
+// use." That makes the first-party Anthropic Messages API the authority on model binding, so its
+// models replay another Claude model's signed thinking blocks instead of flattening them to text.
+// Scoped to `provider === "anthropic"`: third-party Anthropic-compatible proxies are not
+// documented to adjudicate signatures the same way.
+// https://platform.claude.com/docs/en/build-with-claude/thinking#preserved-thinking
+function applyPreservedThinkingCompatMetadata(model: Model<Api>): void {
+	if (model.provider !== "anthropic" || model.api !== "anthropic-messages") return;
+	mergeAnthropicMessagesCompat(model, { delegatesThinkingModelBinding: true });
+
+	// Only Claude Fable 5.1 runs the *conversation* check. Claude Mythos 5.1 records the same
+	// signature but does not run it, and no earlier model records the condition at all.
+	// https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+	if (model.id.includes("fable-5-1")) {
+		mergeAnthropicMessagesCompat(model, { enforcesPreservedThinkingBinding: true });
+	}
+
+}
+
+// "The exceptions are Claude Fable 5.1 and Claude Mythos 5.1, which reject forced tool use on
+// every request with a 400 error. On those models, use `tool_choice: {"type": "auto"}`."
+// https://platform.claude.com/docs/en/build-with-claude/thinking
+//
+// Unlike the preserved-thinking flags above, this is a property of the *model*, not of Anthropic's
+// first-party endpoint: every mirror routes to the same model and receives the same 400. So this
+// rule is gated on the API that can express a forced choice, not on the provider. Mythos 5.1 is
+// named by the docs but is invite-only and absent from the live catalog, so its id test is
+// forward-safe rather than inventing a catalog entry.
+//
+// Deliberately version-scoped, unlike the Fable-family match used for `temperature` below. The
+// two restrictions are not symmetric: the sampling sentence names Claude Fable 5 alongside
+// Claude Fable 5.1, but this one names Fable 5.1 and Mythos 5.1 as *exceptions* to behavior that
+// otherwise works. OpenRouter's live metadata agrees — `anthropic/claude-fable-5` lists
+// `tool_choice` in `supported_parameters` while `anthropic/claude-fable-5.1` does not. Widening
+// this to the family would assert a restriction on Fable 5 that both sources contradict.
+//
+// The same reasoning leaves `~anthropic/claude-fable-latest` uncovered: an id naming no version
+// cannot keep such a claim true if the alias re-points at a model that accepts forced tool use.
+function applyForcedToolChoiceCompatMetadata(model: Model<Api>): void {
+	if (!/fable-5[-.]1|mythos-5[-.]1/.test(model.id)) return;
+	if (model.api === "anthropic-messages") {
+		mergeAnthropicMessagesCompat(model, { supportsForcedToolChoice: false });
+	} else if (model.api === "bedrock-converse-stream") {
+		model.compat = { ...(model.compat as BedrockCompat | undefined), supportsForcedToolChoice: false };
+	} else if (model.api === "openai-completions") {
+		model.compat = { ...(model.compat as OpenAICompletionsCompat | undefined), supportsForcedToolChoice: false };
+	}
+}
+
+// Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every request, and
+// OpenRouter's own `supported_parameters` for `anthropic/claude-fable-5.1` omits `temperature`.
+// The Anthropic Messages path already suppresses it via `isAnthropicTemperatureUnsupportedModel`,
+// which matches the whole Fable family; the Bedrock Converse and OpenAI-completions paths emitted
+// it unconditionally. https://platform.claude.com/docs/en/build-with-claude/thinking
+//
+// Matched on the Fable family rather than on Fable 5.1 alone, for three reasons: the same doc
+// sentence names Claude Fable 5 alongside Claude Fable 5.1; the Anthropic Messages path already
+// covers both, so a narrower rule here would leave the three APIs inconsistent; and a version-
+// scoped id test cannot reach OpenRouter's `~anthropic/claude-fable-latest` alias, which names no
+// version yet carries Fable 5.1's pricing and omits `temperature` from its own
+// `supported_parameters`. Every matched entry is covered by that one documented sentence.
+//
+// Deliberately *not* driven from provider metadata: 79 of OpenRouter's 419 models omit
+// `temperature` from `supported_parameters`, including the GPT-5 family, and OpenRouter reports it
+// as supported for Opus 5 and Opus 4.8 in contradiction of Anthropic's own docs.
+function applyFableTemperatureCompatMetadata(model: Model<Api>): void {
+	if (!/claude-fable/.test(model.id)) return;
+	if (model.api === "bedrock-converse-stream") {
+		model.compat = { ...(model.compat as BedrockCompat | undefined), supportsTemperature: false };
+	} else if (model.api === "openai-completions") {
+		model.compat = { ...(model.compat as OpenAICompletionsCompat | undefined), supportsTemperature: false };
+	}
+}
+
 function applyStrictToolCompatMetadata(model: Model<Api>): void {
 	if (
 		(model.provider === "openai" || model.provider === "cloudflare-ai-gateway") &&
@@ -933,6 +1019,16 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("fable-5")) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
 	}
+	// Anthropic publishes exactly five efforts for Claude Fable 5.1 — low, medium, high, xhigh,
+	// max — and no `minimal`. `getSupportedThinkingLevels` includes any level the map leaves
+	// undefined, so on the sparse Anthropic-side maps `minimal` was offered as a sixth option.
+	// It is not an API error (`mapThinkingLevelToEffort` collapses it to `low`), but it is not a
+	// level the model publishes, so deny it explicitly. The OpenRouter entries already carry a
+	// full map with `minimal: null` from models.dev `reasoning_options`, so this is a no-op there.
+	// https://platform.claude.com/docs/en/models/fable-5-1/overview
+	if (/fable-5[-.]1/.test(model.id)) {
+		mergeThinkingLevelMap(model, { minimal: null });
+	}
 	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { forceAdaptiveThinking: true });
 	}
@@ -1019,6 +1115,23 @@ function getAnthropicMessagesCompat(provider: string, modelId: string): Anthropi
 		compat.allowEmptySignature = true;
 	}
 	return Object.keys(compat).length > 0 ? compat : undefined;
+}
+
+/**
+ * Input modalities for the two runtimes that can serialize a document block: the Anthropic
+ * Messages path and the Amazon Bedrock Converse path.
+ *
+ * PDF is a platform capability rather than a per-model one — "All active models support PDF
+ * processing" — so upstream metadata publishes it for every Claude entry. Gating on the *API*
+ * rather than the model is what keeps that honest: a provider that advertises PDF but has no
+ * document serializer here keeps `["text", "image"]`, so `Model.input` continues to describe what
+ * Atomic can actually send rather than what the upstream model would accept.
+ * https://platform.claude.com/docs/en/build-with-claude/pdf-support
+ */
+function resolveDocumentCapableInput(m: ModelsDevModel): ("text" | "image" | "pdf")[] {
+	const modalities = m.modalities?.input;
+	if (!modalities?.includes("image")) return ["text"];
+	return modalities.includes("pdf") ? ["text", "image", "pdf"] : ["text", "image"];
 }
 
 function getBedrockBaseUrl(modelId: string): string {
@@ -1473,7 +1586,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: "amazon-bedrock" as const,
 					baseUrl: getBedrockBaseUrl(id),
 					reasoning: m.reasoning === true,
-					input: (m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"]) as ("text" | "image")[],
+					input: resolveDocumentCapableInput(m) as ("text" | "image" | "pdf")[],
 					cost: {
 						input: m.cost?.input || 0,
 						output: m.cost?.output || 0,
@@ -1501,7 +1614,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: "anthropic",
 					baseUrl: "https://api.anthropic.com",
 					reasoning: m.reasoning === true,
-					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					input: resolveDocumentCapableInput(m),
 					cost: {
 						input: m.cost?.input || 0,
 						output: m.cost?.output || 0,
@@ -2907,6 +3020,9 @@ async function generateModels() {
 		applyModelsDevReasoningOptionMetadata(model);
 		applyThinkingLevelMetadata(model);
 		applyStrictToolCompatMetadata(model);
+		applyPreservedThinkingCompatMetadata(model);
+		applyForcedToolChoiceCompatMetadata(model);
+		applyFableTemperatureCompatMetadata(model);
 		applyOpenAIGrammarToolCompatMetadata(model);
 		applyOpenAIToolSearchMetadata(model);
 		applyOpenAIExplicitPromptCacheMetadata(model);

@@ -19,7 +19,7 @@ import {
 } from "../../utils/shell.ts";
 import type { BashResult } from "../bash-executor.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
-import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import {
 	type BashInterceptorRule,
 	checkBashInterceptionCandidates,
@@ -380,19 +380,22 @@ export function createBashToolDefinition(
 		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
 		parameters: bashSchema,
 		maxResultSizeChars: Infinity,
-		async execute(_toolCallId, bashCommand: BashToolInput, signal?: AbortSignal, onUpdate?, _ctx?) {
+		async execute(_toolCallId, bashCommand: BashToolInput, signal?: AbortSignal, onUpdate?, ctx?: ExtensionContext) {
 			const { command } = bashCommand;
 			const timeout = normalizeTimeoutSeconds(bashCommand.timeout);
-			const sessionEnvironment = snapshotBashSessionEnvironment(_ctx, exposeSessionEnvironment);
-			const resourceCtx = _ctx as InternalResourceContext | undefined;
+			const sessionEnvironment = snapshotBashSessionEnvironment(ctx, exposeSessionEnvironment);
+			const resourceCtx = ctx as InternalResourceContext | undefined;
+			const executionCwd = ctx?.cwd || cwd;
 			const hasExplicitCwd = typeof bashCommand.cwd === "string";
-			const rawStrippedContext = hasExplicitCwd ? undefined : stripLeadingCdCommand(command, cwd);
+			const rawStrippedContext = hasExplicitCwd ? undefined : stripLeadingCdCommand(command, executionCwd);
 			const interceptorEnabled = isInterceptorEnabled();
 			if (interceptorEnabled)
 				checkBashInterceptionCandidates([command, rawStrippedContext?.command], availableTools, interceptorRules);
-			const cwdInput = hasExplicitCwd ? await expandShellInternalUrls(bashCommand.cwd!, cwd, resourceCtx) : cwd,
-				requestedCwd = resolvePath(cwd, cwdInput);
-			const expandedCommand = await expandShellInternalUrls(command, cwd, resourceCtx, true);
+			const cwdInput = hasExplicitCwd
+					? await expandShellInternalUrls(bashCommand.cwd!, executionCwd, resourceCtx)
+					: executionCwd,
+				requestedCwd = resolvePath(executionCwd, cwdInput);
+			const expandedCommand = await expandShellInternalUrls(command, executionCwd, resourceCtx, true);
 			const strippedExpandedContext = hasExplicitCwd
 				? undefined
 				: stripLeadingCdCommand(expandedCommand, requestedCwd);
@@ -425,7 +428,7 @@ export function createBashToolDefinition(
 				expandedEnv = {};
 				for (const [key, value] of Object.entries(bashCommand.env)) {
 					if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid bash env name: ${key}`);
-					expandedEnv[key] = await expandShellInternalUrls(value, cwd, resourceCtx);
+					expandedEnv[key] = await expandShellInternalUrls(value, executionCwd, resourceCtx);
 				}
 				spawnContext.env = { ...spawnContext.env, ...expandedEnv };
 			}

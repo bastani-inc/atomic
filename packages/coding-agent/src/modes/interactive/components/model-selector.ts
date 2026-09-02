@@ -276,19 +276,12 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 			const isDefault = `${item.provider}/${item.id}` === this.defaultModelKey;
 
-			let line = "";
-			if (isSelected) {
-				const prefix = theme.fg("accent", "→ ");
-				const modelText = `${item.id}`;
-				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : isDefault ? theme.fg("muted", " · default") : "";
-				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
-			} else {
-				const modelText = `  ${item.id}`;
-				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : isDefault ? theme.fg("muted", " · default") : "";
-				line = `${modelText} ${providerBadge}${checkmark}`;
-			}
+			const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
+			const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
+			const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
+			const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
+			const providerBadge = theme.fg("muted", `[${item.provider}]`);
+			const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
 
 			this.listContainer.addChild(new Text(line, 0, 0));
 		}
