@@ -406,11 +406,11 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		return result;
 	}
 
-	private handleScrollToEndIndicatorMouseInput(data: string): boolean {
+	private handleScrollToEndIndicatorMouseInput(data: string): string | undefined {
 		const rect = this.scrollToEndIndicatorRect;
-		if (!rect) return false;
+		if (!rect) return undefined;
 		const sequences = parseMouseSequences(data);
-		const pressed = sequences?.some(
+		const pressedIndex = sequences?.findIndex(
 			(sequence) =>
 				!sequence.isRelease &&
 				(sequence.button & 32) === 0 &&
@@ -419,11 +419,14 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 				sequence.x >= rect.column &&
 				sequence.x < rect.column + rect.width,
 		);
-		if (!pressed) return false;
+		if (pressedIndex === undefined || pressedIndex < 0 || !sequences) return undefined;
 
 		this.scrollToEndIndicatorRect = undefined;
 		this.scrollToBottom();
-		return true;
+		return sequences
+			.filter((_, index) => index !== pressedIndex)
+			.map((sequence) => sequence.data)
+			.join("");
 	}
 
 	protected override compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
@@ -511,7 +514,11 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 				const gate = viewportInputGates.get(this);
 				const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
 				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay(), false)) return undefined;
-				if (this.handleScrollToEndIndicatorMouseInput(data)) return { consume: true };
+				const remainingInput = this.handleScrollToEndIndicatorMouseInput(data);
+				if (remainingInput !== undefined) {
+					if (remainingInput.length > 0) listener(remainingInput);
+					return { consume: true };
+				}
 				return listener(data);
 			});
 			subscription.routeUnsubscribe = super.addInputListener(subscription.routeListener);

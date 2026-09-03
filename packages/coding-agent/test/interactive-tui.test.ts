@@ -344,9 +344,9 @@ describe("interactive TUI renderer", () => {
 			const indicatorRow = scrolledTranscript.rect.y + scrolledTranscript.rect.height - 1;
 			const handleIndicatorInput = Reflect.get(tui, "handleScrollToEndIndicatorMouseInput") as (
 				data: string,
-			) => boolean;
+			) => string | undefined;
 			const motion = `\x1b[<32;${indicatorColumn + 1};${indicatorRow + 1}M`;
-			expect(handleIndicatorInput.call(tui, motion)).toBe(false);
+			expect(handleIndicatorInput.call(tui, motion)).toBeUndefined();
 			terminal.input(motion);
 			expect(transcript.isFollowingEnd).toBe(false);
 
@@ -365,6 +365,12 @@ describe("interactive TUI renderer", () => {
 			expect(overlayInput).toHaveBeenCalledWith(overlayPress);
 			expect(transcript.isFollowingEnd).toBe(false);
 			overlay.hide();
+			tui.renderNow();
+
+			const indicatorPress = `\x1b[<0;${indicatorColumn + 1};${indicatorRow + 1}M`;
+			const coalescedWheel = `\x1b[<64;1;${terminal.rows}M`;
+			terminal.input(indicatorPress + coalescedWheel);
+			expect(transcript.isFollowingEnd).toBe(false);
 			tui.renderNow();
 
 			terminal.input(`\x1b[<0;${indicatorColumn + 1};${indicatorRow + 1}M`);

@@ -51,6 +51,7 @@
 - Restricted synthetic fast aliases and first-party Codex routing identity to the explicit OpenAI/OpenAI Codex model route, suppressed aliases over native extension transports, and prevented Copilot from restoring an advertised fast ID without its base catalog model.
 - Fixed signal-killed child processes reporting a null exit code that callers could mistake for success; Unix signals now use the shell convention `128 + signal`, with unknown signal names falling back to the non-zero status 128 ([#8994](https://github.com/earendil-works/pi/pull/8994)).
 - Fixed Linux managed-tool downloads to use statically linked musl archives for fd and ripgrep on both x64 and ARM64 ([#9070](https://github.com/earendil-works/pi/pull/9070) by [@charlesisworkinghard](https://github.com/charlesisworkinghard)).
+- Fixed a jump-to-latest click discarding other mouse reports delivered in the same terminal input chunk.
 
 ## [0.9.18-alpha.5] - 2026-09-01
 
