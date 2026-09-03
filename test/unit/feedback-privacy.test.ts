@@ -45,16 +45,16 @@ describe("feedback privacy core", () => {
 
 	test("scrubs every platform's home paths without disclosing account names or rewriting URLs", () => {
 		const body =
-			"/Users/synthetic-account and /home/synthetic-account/project and C:\\Users\\synthetic-account\\app and https://ex.invalid/Users/docs/readme";
+			"/Users/synthetic-account and /home/synthetic-account/project and C:\\Users\\synthetic-account\\app and c:\\users\\synthetic-account\\app and https://ex.invalid/Users/docs/readme";
 		const result = scrubFeedback(homedir(), body);
 		assert.equal(result.title, "~");
-		assert.equal(result.body, "~ and ~/project and ~\\app and https://ex.invalid/Users/docs/readme");
+		assert.equal(result.body, "~ and ~/project and ~\\app and ~\\app and https://ex.invalid/Users/docs/readme");
 		const displayed = JSON.stringify(result);
 		assert.doesNotMatch(displayed, /synthetic-account/u);
 		assert.equal(displayed.includes(homedir()), false);
 		const accountName = homedir().split("/").at(-1) ?? homedir();
 		assert.equal(displayed.includes(accountName), false);
-		assert.deepEqual(result.replacements, [{ category: "home-directory", count: 4 }]);
+		assert.deepEqual(result.replacements, [{ category: "home-directory", count: 5 }]);
 	});
 
 	test("scrubs prefixed and suffixed credential names and credentials in any URL scheme", () => {
@@ -63,21 +63,21 @@ describe("feedback privacy core", () => {
 			"j".repeat(40),
 			"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEX",
 			"s".repeat(24),
-			"dbsecret",
+			`${"q".repeat(16)}.${"r".repeat(16)}`,
 			"onlypass",
 			"tokensecret",
 		];
-		const body = `{"apiKey": "${secrets[1]}"}\nAWS_SECRET_ACCESS_KEY=${secrets[2]}\naws:\n  secret_access_key: ${secrets[3]}\ntokenizer: HuggingFaceTokenizerFast\npostgres://u:${secrets[4]}@db:5432/a\nredis://:${secrets[5]}@c:6379\ngit+ssh://git:${secrets[6]}@github.com/x.git`;
+		const body = `{"apiKey": "${secrets[1]}"}\nAWS_SECRET_ACCESS_KEY=${secrets[2]}\naws:\n  secret_access_key: ${secrets[3]}\ntokenizer: HuggingFaceTokenizerFast\npostgres://u:${secrets[4]}@db:5432/a\nredis://:${secrets[5]}@c:6379\ngit+ssh://git:${secrets[6]}@github.com/x.git\napi_key=${secrets[4]}`;
 		const result = scrubFeedback(`GEMINI_API_KEY=${secrets[0]}`, body);
 		const displayed = `${result.title}\n${result.body}\n${JSON.stringify(result.replacements)}`;
 		for (const secret of secrets) assert.equal(displayed.includes(secret), false);
 		assert.equal(result.title, "GEMINI_API_KEY=[REDACTED]");
 		assert.match(result.body, /\{"apiKey": "\[REDACTED\]"\}/u);
 		assert.match(result.body, /secret_access_key: \[REDACTED\]/u);
-		assert.match(result.body, /tokenizer: HuggingFaceTokenizerFast/u);
+		assert.match(result.body, /tokenizer: HuggingFaceTokenizerFast[\s\S]*api_key=\[REDACTED\]/u);
 		assert.equal(
 			JSON.stringify(result.replacements),
-			'[{"category":"url-credentials","count":3},{"category":"credential-assignment","count":4}]',
+			'[{"category":"url-credentials","count":3},{"category":"credential-assignment","count":5}]',
 		);
 	});
 
