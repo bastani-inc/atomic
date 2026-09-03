@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `createGatewayBindingFetch` now uses the Workers AI binding's native `fetch()` whenever it is available and forwards requests verbatim. On that path, the `baseUrl` and `gateway` options are inert, and the configured-prefix, method, and body rejection guarantees apply only to the legacy `gateway().run()` fallback. Existing Workers must point each model's `baseUrl` at `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}` instead of the previous `https://gateway.ai.cloudflare.com/v1/{account}/{gateway}` prefix. `AiGatewayBinding.gateway` is now optional because current bindings need only `fetch()`; consumers that call `gateway(id)` directly must narrow or check it first.
+
 ### Added
 
 - Added Anthropic per-turn effort persistence, deterministic historical effort markers, and signed-thinking mismatch recovery for supported Claude models across Anthropic Messages transports, including OpenRouter.
@@ -19,6 +23,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - **Breaking:** the OpenAI Responses and ChatGPT Codex Responses adapters now serialize `model` as `model.fastRoute?.upstreamModelId ?? model.id`. A fast variant therefore routes to its base upstream model while the model object — and so the assistant message the adapter emits, its `model` field, and everything downstream that reads it — keeps the canonical `-fast` identity. Callers that previously handed these adapters a pre-substituted model should hand them the canonical model instead.
 - **Breaking:** the `service_tier` cost multiplier in both adapters now keys on `model.fastRoute?.baseModelId ?? model.id`. Without this, `gpt-5.5-fast` would have been priced at the generic 2x priority rate instead of gpt-5.5's 2.5x once the adapters started receiving the canonical model.
 - **Breaking:** `githubCopilotProvider().filterModels` no longer strips every model ID ending in `-fast` from the selectable list. It now exposes a model carrying `fastRoute` only when the OAuth credential's `fastModelIds` advertises that exact ID, and treats a Copilot-owned model that merely ends in `-fast` as an ordinary picker model gated by `availableModelIds`.
+- Qwen3.8 Max and Qwen3.8 Flash no longer offer the `off` thinking level on the `qwen-token-plan`, `qwen-token-plan-cn`, and `qwen-token-plan-individual` providers. Their selectable effort levels now follow models.dev metadata: `low`, `medium`, and `xhigh`.
 
 ### Fixed
 
@@ -26,7 +31,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed GitHub Copilot Claude Fable requests to use the Anthropic Messages adapter so selected reasoning levels are sent. The generated Copilot catalog now routes `claude-fable-*` alongside the other Claude 4.x/5.x entries ([#8961](https://github.com/earendil-works/pi/issues/8961)).
 - Fixed the generated Fireworks catalog to serve every GLM model through the OpenAI-compatible completions API. Previously only the `glm-5p2` family took that route and newer GLM entries such as `glm-5p3` were generated against the Anthropic-compatible endpoint ([#8978](https://github.com/earendil-works/pi/issues/8978)).
 - Fast-route payload enforcement now rejects `null`, array, and primitive hook replacements before they can reach the OpenAI Responses or ChatGPT Codex transport.
-- Fixed the Workers AI binding transport to use the binding's plain `fetch` passthrough, preserving request methods, headers, query strings, and streaming bodies instead of translating requests through the universal-endpoint shim ([#8287](https://github.com/earendil-works/pi/pull/8287)).
+- Fixed the Workers AI binding transport to use the binding's plain `fetch` passthrough for models migrated to the `workers-binding.ai` base URL, preserving request methods, headers, query strings, and streaming bodies instead of translating requests through the universal-endpoint shim. See **Breaking Changes** for the required base-URL and binding-type migration ([#8287](https://github.com/earendil-works/pi/pull/8287)).
 - Fixed OpenAI Codex SSE parsing to process terminal events that are not followed by a blank line ([#9047](https://github.com/earendil-works/pi/issues/9047)).
 - Fixed the Qwen Token Plan Individual catalog to include Qwen3.8 Flash ([#9021](https://github.com/earendil-works/pi/issues/9021)).
 
