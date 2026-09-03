@@ -38,34 +38,34 @@ describe("managed tool downloads", () => {
 	});
 
 	it("retries transient release metadata errors before downloading a managed tool", async () => {
-		const releaseUrl = "https://github.com/BurntSushi/ripgrep/releases/latest";
+		const releaseUrl = "https://github.com/sharkdp/fd/releases/latest";
 		let releaseAttempts = 0;
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 			if (String(input) === releaseUrl) {
 				releaseAttempts += 1;
 				return releaseAttempts < 3
 					? new Response("busy", { status: 503 })
-					: new Response(null, { status: 302, headers: { location: "/BurntSushi/ripgrep/releases/tag/14.1.1" } });
+					: new Response(null, { status: 302, headers: { location: "/sharkdp/fd/releases/tag/v10.2.0" } });
 			}
 			return new Response("download unavailable", { status: 404 });
 		});
 
-		await expect(ensureTool("rg")).resolves.toBeUndefined();
+		await expect(ensureTool("fd")).resolves.toBeUndefined();
 
 		expect(releaseAttempts).toBe(3);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(3);
 	});
 
 	it("retries transient archive download errors after release metadata succeeds", async () => {
-		const releaseUrl = "https://github.com/BurntSushi/ripgrep/releases/latest";
-		const archiveUrlPrefix = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/";
+		const releaseUrl = "https://github.com/sharkdp/fd/releases/latest";
+		const archiveUrlPrefix = "https://github.com/sharkdp/fd/releases/download/v10.2.0/";
 		let archiveAttempts = 0;
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 			const url = String(input);
 			if (url === releaseUrl)
 				return new Response(null, {
 					status: 302,
-					headers: { location: "/BurntSushi/ripgrep/releases/tag/14.1.1" },
+					headers: { location: "/sharkdp/fd/releases/tag/v10.2.0" },
 				});
 			if (url.startsWith(archiveUrlPrefix)) {
 				archiveAttempts += 1;
@@ -73,7 +73,7 @@ describe("managed tool downloads", () => {
 			}
 			return new Response("unexpected request", { status: 404 });
 		});
-		await expect(ensureTool("rg")).resolves.toBeUndefined();
+		await expect(ensureTool("fd")).resolves.toBeUndefined();
 
 		expect(archiveAttempts).toBe(3);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(1);
