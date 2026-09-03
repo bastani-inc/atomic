@@ -42,12 +42,12 @@ const rules = [
 	{
 		category: "credential-assignment",
 		pattern:
-			/(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)(?:(['"])(?!\[REDACTED\]\2)(?:(?:\\[^\r\n])|(?!\2)[^\r\n\\])+\2|([A-Za-z0-9+/=_-]{16,}))/giu,
+			/(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)(?:(['"])(?!\[REDACTED\]\2)(?:(?:\\[^\r\n])|(?!\2)[^\r\n\\])+\2|([A-Za-z0-9+/=_-]{16,}(?:\.[A-Za-z0-9+/=_-]+)*))/giu,
 		replacement: `$1$2${REDACTION_PLACEHOLDER}$2`,
 	},
 	{
 		category: "home-directory",
-		pattern: new RegExp(`(?<!\\w)(?:${escaped(homedir())}|(?:\\w:)?[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+)`, "gu"),
+		pattern: new RegExp(`(?<!\\w)(?:${escaped(homedir())}|(?:\\w:)?[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+)`, "giu"),
 		replacement: "~",
 	},
 ] as const satisfies readonly { category: string; pattern: RegExp; replacement: string }[];
