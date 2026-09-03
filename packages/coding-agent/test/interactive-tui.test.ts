@@ -1,6 +1,7 @@
 import { crc32, deflateSync } from "node:zlib";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
+	Container,
 	getCapabilities,
 	type Image,
 	isViewportTUI,
@@ -17,6 +18,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { registerContentTools } from "../../web-access/content-tools.ts";
 import type { ExtensionAPI } from "../src/core/extensions/api-types.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import { AtomicWorkingLoader } from "../src/modes/interactive/components/atomic-working-status.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import {
 	createInteractiveTui,
@@ -602,5 +604,96 @@ describe("InteractiveMode /copy confirmation", () => {
 			await copyCommandPrototype.handleCopyCommand.call(context, { preferSelection: true });
 			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
 		}
+	});
+});
+
+type WorkingLoaderStopContext = {
+	loadingAnimation: { stop(): void } | undefined;
+	workingIndicatorEmbedded: boolean;
+	setEditorWorkingStatusIndicator(indicator: undefined): boolean;
+	statusContainer: Container;
+	settingsManager: { getClearOnShrink(): boolean };
+};
+
+type WorkingLoaderPrototype = {
+	stopWorkingLoader(this: WorkingLoaderStopContext): void;
+	setCustomEditorComponent(this: Record<string, unknown>, factory: ((...args: never[]) => unknown) | undefined): void;
+};
+
+const workingLoaderPrototype = InteractiveMode.prototype as unknown as WorkingLoaderPrototype;
+
+describe("clear-on-shrink working status spacing", () => {
+	test("an embedded working indicator does not reserve standalone status height", () => {
+		const stop = vi.fn();
+		const clearEditorIndicator = vi.fn(() => true);
+		const context: WorkingLoaderStopContext = {
+			loadingAnimation: { stop },
+			workingIndicatorEmbedded: true,
+			setEditorWorkingStatusIndicator: clearEditorIndicator,
+			statusContainer: new Container(),
+			settingsManager: { getClearOnShrink: () => true },
+		};
+
+		workingLoaderPrototype.stopWorkingLoader.call(context);
+
+		expect(stop).toHaveBeenCalledOnce();
+		expect(clearEditorIndicator).toHaveBeenCalledWith(undefined);
+		expect(context.statusContainer.children).toHaveLength(0);
+	});
+
+	test("a standalone working indicator reserves clear-on-shrink status height", () => {
+		const context: WorkingLoaderStopContext = {
+			loadingAnimation: { stop: vi.fn() },
+			workingIndicatorEmbedded: false,
+			setEditorWorkingStatusIndicator: vi.fn(() => false),
+			statusContainer: new Container(),
+			settingsManager: { getClearOnShrink: () => true },
+		};
+
+		workingLoaderPrototype.stopWorkingLoader.call(context);
+
+		expect(context.statusContainer.children).toHaveLength(1);
+	});
+
+	test("switching to a non-opting custom editor remounts an active loader as a standalone row", () => {
+		const loader = Object.create(AtomicWorkingLoader.prototype) as AtomicWorkingLoader;
+		const statusContainer = new Container();
+		const setEditorWorkingStatusIndicator = vi.fn(() => false);
+		const defaultEditor = {
+			onSubmit: undefined,
+			onChange: undefined,
+			borderColor: String,
+			getPaddingX: () => 0,
+			getAutocompleteMaxVisible: () => 10,
+			actionHandlers: new Map<string, () => void>(),
+		};
+		const newEditor = {
+			setText: vi.fn(),
+			render: () => [],
+			invalidate: () => {},
+		};
+		const context = {
+			editorComponentFactory: undefined,
+			editor: { getText: () => "draft" },
+			defaultEditor,
+			disposeActiveSelector: vi.fn(),
+			editorContainer: new Container(),
+			keybindings: {},
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			autocompleteProvider: undefined,
+			loadingAnimation: loader,
+			statusContainer,
+			workingIndicatorEmbedded: true,
+			setEditorWorkingStatusIndicator,
+		};
+
+		workingLoaderPrototype.setCustomEditorComponent.call(
+			context as unknown as Record<string, unknown>,
+			(() => newEditor) as (...args: never[]) => unknown,
+		);
+
+		expect(setEditorWorkingStatusIndicator).toHaveBeenCalledWith(loader);
+		expect(context.workingIndicatorEmbedded).toBe(false);
+		expect(statusContainer.children).toEqual([loader]);
 	});
 });

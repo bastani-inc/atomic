@@ -2638,8 +2638,8 @@ ctx.ui.setStatus("my-ext", undefined);  // Clear
 // Working loader customization (active from accepted prompt startup through the agent turn)
 ctx.ui.setWorkingMessage("Thinking deeply...");
 ctx.ui.setWorkingMessage();  // Restore default
-ctx.ui.setWorkingVisible(false);  // Hide the built-in working loader row entirely
-ctx.ui.setWorkingVisible(true);   // Show the built-in working loader row
+ctx.ui.setWorkingVisible(false);  // Hide the built-in working indicator entirely
+ctx.ui.setWorkingVisible(true);   // Show the built-in working indicator
 
 // Working indicator customization (same lifecycle; see TUI Pattern 4b)
 ctx.ui.setWorkingIndicator({ frames: [ctx.ui.theme.fg("accent", "●")] });  // Static dot
@@ -2654,6 +2654,8 @@ ctx.ui.setWorkingIndicator({
 });
 ctx.ui.setWorkingIndicator({ frames: [] });  // Hide indicator
 ctx.ui.setWorkingIndicator();  // Restore the default one-cell ∀ luminance ramp
+// The default editor embeds this status in one border line. Newlines and
+// terminal controls remain stored verbatim but are collapsed there safely.
 
 // Widget above editor (default)
 ctx.ui.setWidget("my-widget", ["Line 1", "Line 2"]);

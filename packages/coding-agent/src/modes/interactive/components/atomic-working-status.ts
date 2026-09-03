@@ -200,25 +200,33 @@ export class AtomicWorkingLoader implements Component {
 		);
 	}
 
-	private renderUnwrappedLine(): string {
-		let width = Math.max(16, this.message.length + 4);
-		let lines = this.render(width);
-		while (lines.length > 2) {
-			width *= 2;
-			lines = this.render(width);
-		}
-		return lines.at(-1) ?? "";
+	private sanitizeBorderLine(line: string): string {
+		// Preserve ANSI escape sequences (including Atomic's animation colors),
+		// while making extension-controlled text safe for a single terminal row.
+		return line.replaceAll("\t", " ").replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f-\x9f]/g, "");
 	}
 
-	renderInBorder(width: number, colorFn: (text: string) => string): string {
-		const plain = stripTerminalSequences(this.renderUnwrappedLine()).trim();
-		return colorFn(truncateToWidth(plain, width, ""));
+	private renderSingleBorderLine(width: number): string {
+		// Border status is a single-line presentation. Keep the stored extension
+		// message/frames verbatim, but collapse rendered rows here so embedded
+		// newlines cannot make an unbounded width-search loop.
+		return this.render(Math.max(16, width + 2))
+			.slice(1)
+			.map((line) => this.sanitizeBorderLine(line).trim())
+			.filter((line) => stripTerminalSequences(line).length > 0)
+			.join(" ");
 	}
 
-	renderSpinnerInBorder(width: number, colorFn: (text: string) => string): string {
-		const plain = stripTerminalSequences(this.renderUnwrappedLine()).trim();
-		const spinner = plain.endsWith(this.message) ? plain.slice(0, -this.message.length).trimEnd() : plain;
-		return colorFn(truncateToWidth(spinner, width, ""));
+	renderInBorder(width: number): string {
+		// Keep the loader's ANSI styling: Atomic's ten frames share the same `∀`
+		// glyph and animate entirely through their color/bold phase.
+		return truncateToWidth(this.renderSingleBorderLine(width).trim(), width, "");
+	}
+
+	renderSpinnerInBorder(width: number): string {
+		// The spinner is always the first rendered cell. Extract it by visible
+		// width rather than reverse-matching an extension-controlled message.
+		return truncateToWidth(this.renderSingleBorderLine(width).trimStart(), Math.min(1, width), "");
 	}
 
 	start(): void {

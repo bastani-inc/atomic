@@ -121,38 +121,37 @@ export class CustomEditor extends Editor {
 		if (!this.embedWorkingStatus || !indicator || width <= 0) return this.extendBorderLine(line, width);
 
 		const plainLine = line.replace(ANSI_ESCAPE_PATTERN, "");
-		const hiddenLineCount = /↑ (\d+) more/.exec(plainLine)?.[1];
-		let status = indicator.renderInBorder(Math.max(1, width - 5), this.borderColor);
+		const overflowMatch = /↑ (\d+) more/.exec(plainLine);
+		let status = indicator.renderInBorder(Math.max(1, width - 5));
 		let statusWidth = visibleWidth(status);
 		if (statusWidth === 0) return this.extendBorderLine(line, width);
 
-		const overflowLabel = hiddenLineCount ? ` ↑ ${hiddenLineCount} more ` : undefined;
-		const overflowLabelWidth = overflowLabel ? visibleWidth(overflowLabel) : 0;
-		const overflowStart = Math.floor((width - overflowLabelWidth) / 2);
-		const canFitOverflow = () =>
-			overflowLabel !== undefined && overflowLabelWidth + 2 <= width && overflowStart - (3 + statusWidth + 1) >= 1;
-
-		if (overflowLabel && !canFitOverflow()) {
-			status = indicator.renderSpinnerInBorder(width, this.borderColor);
-			statusWidth = visibleWidth(status);
-		}
-
-		if (canFitOverflow()) {
-			const leftBlockWidth = 3 + statusWidth + 1;
-			return (
-				this.borderColor("── ") +
-				status +
-				this.borderColor(
-					` ${"─".repeat(overflowStart - leftBlockWidth)}${overflowLabel}${"─".repeat(width - overflowStart - overflowLabelWidth)}`,
-				)
-			);
+		if (overflowMatch) {
+			const label = overflowMatch[0];
+			const labelStart = overflowMatch.index;
+			const remainingWidth = width - labelStart - visibleWidth(label);
+			if (remainingWidth < statusWidth + 3) {
+				status = indicator.renderSpinnerInBorder(width);
+				statusWidth = visibleWidth(status);
+			}
+			if (remainingWidth >= statusWidth + 3) {
+				const middleWidth = remainingWidth - statusWidth - 3;
+				return (
+					this.borderColor(`${"─".repeat(Math.max(0, labelStart - 1))} ${label} ${"─".repeat(middleWidth)} `) +
+					status +
+					this.borderColor("─")
+				);
+			}
+			// At widths that cannot carry both, preserve pi-tui's overflow label
+			// and its stable left-aligned position instead of shifting it.
+			return this.extendBorderLine(line, width);
 		}
 
 		if (width >= statusWidth + 5) {
 			return this.borderColor("── ") + status + this.borderColor(` ${"─".repeat(width - statusWidth - 4)}`);
 		}
 
-		status = indicator.renderSpinnerInBorder(width, this.borderColor);
+		status = indicator.renderSpinnerInBorder(width);
 		statusWidth = visibleWidth(status);
 		const prefixWidth = Math.min(3, Math.max(0, width - statusWidth));
 		return (
