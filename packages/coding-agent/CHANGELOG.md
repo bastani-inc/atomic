@@ -39,6 +39,7 @@
 - Fixed the `write` tool reporting UTF-16 code-unit counts as byte counts by removing the misleading count. Every write confirmation now reads `Successfully wrote to <path>` ([#8979](https://github.com/earendil-works/pi/issues/8979)).
 - Fixed the `write` tool mistaking user-authored lines beginning with `Successfully wrote to` for copied tool confirmation text and silently discarding them. A copied confirmation is now recognized only when it names the complete path the write was asked for, its resolved or cwd-relative form, or the copied snapshot's own path, so prose that merely shares a prefix or a basename is written through unchanged.
 - Restricted synthetic fast aliases and first-party Codex routing identity to the explicit OpenAI/OpenAI Codex model route, suppressed aliases over native extension transports, and prevented Copilot from restoring an advertised fast ID without its base catalog model.
+- Fixed Linux managed-tool downloads to use statically linked musl archives for fd and ripgrep on both x64 and ARM64 ([#9070](https://github.com/earendil-works/pi/pull/9070) by [@charlesisworkinghard](https://github.com/charlesisworkinghard)).
 
 ## [0.9.18-alpha.5] - 2026-09-01
 

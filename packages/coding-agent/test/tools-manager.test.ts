@@ -6,8 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, ENV_OFFLINE } from "../src/config.ts";
 
 const mocks = vi.hoisted(() => ({
+	arch: vi.fn<typeof import("node:os").arch>(),
+	platform: vi.fn<typeof import("node:os").platform>(),
 	spawnSync: vi.fn<(command: string, args?: readonly string[]) => SpawnSyncReturns<Buffer>>(),
 }));
+
+vi.mock("os", async () => {
+	const actual = await vi.importActual<typeof import("os")>("os");
+	return { ...actual, arch: mocks.arch, platform: mocks.platform };
+});
 
 vi.mock("child_process", async () => {
 	const actual = await vi.importActual<typeof import("child_process")>("child_process");
@@ -23,6 +30,10 @@ describe("managed tool downloads", () => {
 		vi.stubEnv(ENV_AGENT_DIR, join(tempDir, "agent"));
 		vi.stubEnv(ENV_OFFLINE, "");
 		vi.stubEnv("PI_OFFLINE", "");
+		mocks.arch.mockReset();
+		mocks.arch.mockReturnValue(process.arch);
+		mocks.platform.mockReset();
+		mocks.platform.mockReturnValue(process.platform);
 		mocks.spawnSync.mockReset();
 		mocks.spawnSync.mockReturnValue({ error: new Error("not found") } as SpawnSyncReturns<Buffer>);
 		vi.resetModules();
@@ -70,6 +81,31 @@ describe("managed tool downloads", () => {
 		expect(archiveAttempts).toBe(3);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(1);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith(archiveUrlPrefix))).toHaveLength(3);
+	});
+
+	it.each([
+		["fd", "x64", "fd-v10.2.0-x86_64-unknown-linux-musl.tar.gz"],
+		["fd", "arm64", "fd-v10.2.0-aarch64-unknown-linux-musl.tar.gz"],
+		["rg", "x64", "ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"],
+		["rg", "arm64", "ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz"],
+	] as const)("downloads the %s %s musl archive on Linux", async (tool, architecture, assetName) => {
+		mocks.platform.mockReturnValue("linux");
+		mocks.arch.mockReturnValue(architecture);
+		const repo = tool === "fd" ? "sharkdp/fd" : "BurntSushi/ripgrep";
+		const version = tool === "fd" ? "10.2.0" : "15.2.0";
+		const tagPrefix = tool === "fd" ? "v" : "";
+		const releaseUrl = `https://api.github.com/repos/${repo}/releases/latest`;
+		const archiveUrl = `https://github.com/${repo}/releases/download/${tagPrefix}${version}/${assetName}`;
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			if (String(input) === releaseUrl) {
+				return Response.json({ tag_name: `${tagPrefix}${version}` });
+			}
+			return new Response("download unavailable", { status: 404 });
+		});
+
+		await expect(ensureTool(tool)).resolves.toBeUndefined();
+
+		expect(fetchMock.mock.calls.some(([input]) => String(input) === archiveUrl)).toBe(true);
 	});
 
 	it("reports an offline skip through onStatus and never writes to the console", async () => {
