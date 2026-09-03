@@ -26,6 +26,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed GitHub Copilot Claude Fable requests to use the Anthropic Messages adapter so selected reasoning levels are sent. The generated Copilot catalog now routes `claude-fable-*` alongside the other Claude 4.x/5.x entries ([#8961](https://github.com/earendil-works/pi/issues/8961)).
 - Fixed the generated Fireworks catalog to serve every GLM model through the OpenAI-compatible completions API. Previously only the `glm-5p2` family took that route and newer GLM entries such as `glm-5p3` were generated against the Anthropic-compatible endpoint ([#8978](https://github.com/earendil-works/pi/issues/8978)).
 - Fast-route payload enforcement now rejects `null`, array, and primitive hook replacements before they can reach the OpenAI Responses or ChatGPT Codex transport.
+
 ## [0.9.18-alpha.5] - 2026-09-01
 
 ### Added
