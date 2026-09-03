@@ -1,5 +1,6 @@
 import {
 	type Component,
+	compositeTuiLine,
 	isKeyRelease,
 	ProcessTerminal,
 	type Terminal,
@@ -7,12 +8,16 @@ import {
 	TuiAltScreen,
 	type TuiInputListener,
 	TuiMainScreen,
+	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.ts";
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
+import { keyDisplayText } from "./components/keybinding-hints.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
+import { theme } from "./theme/theme.ts";
 
 interface TuiOverlayEntry {
 	component: Component;
@@ -198,14 +203,43 @@ interface ViewportInputSubscription {
 
 const viewportInputSubscriptions = new WeakMap<AtomicTuiAltScreen, ViewportInputSubscription>();
 
-/** A complete SGR or X10 mouse report extracted from an input chunk. */
 interface ParsedMouseSequence {
 	readonly data: string;
 	readonly button: number;
+	readonly x: number;
+	readonly y: number;
 	readonly isRelease: boolean;
 }
 
-const SGR_MOUSE_SEQUENCE = /^\x1b\[<(\d+);\d+;\d+([Mm])/;
+interface ScrollToEndIndicatorRect {
+	readonly row: number;
+	readonly column: number;
+	readonly width: number;
+}
+
+interface ScrollViewLayoutState {
+	readonly followEnd?: boolean;
+	readonly isFollowingEnd: boolean;
+}
+
+interface TuiLayoutBox {
+	readonly clip: { x: number; y: number; width: number; height: number };
+	readonly children: readonly TuiLayoutBox[];
+	readonly scrollView?: ScrollViewLayoutState;
+}
+
+interface TuiLayoutFrame {
+	readonly root: TuiLayoutBox;
+	readonly width: number;
+	readonly height: number;
+	readonly primaryScrollView?: ScrollViewLayoutState;
+}
+
+interface TuiAltScreenLayoutInternals {
+	readonly currentLayout?: TuiLayoutFrame;
+}
+
+const SGR_MOUSE_SEQUENCE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
 const LEFT_MOUSE_MODIFIER_MASK = 4 | 8 | 16;
 
 function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
@@ -217,13 +251,25 @@ function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
 		const sgr = SGR_MOUSE_SEQUENCE.exec(remaining);
 		if (sgr) {
 			const sequence = sgr[0]!;
-			sequences.push({ data: sequence, button: Number.parseInt(sgr[1]!, 10), isRelease: sgr[2] === "m" });
+			sequences.push({
+				data: sequence,
+				button: Number.parseInt(sgr[1]!, 10),
+				x: Number.parseInt(sgr[2]!, 10) - 1,
+				y: Number.parseInt(sgr[3]!, 10) - 1,
+				isRelease: sgr[4] === "m",
+			});
 			offset += sequence.length;
 			continue;
 		}
 		if (remaining.startsWith("\x1b[M") && remaining.length >= 6) {
 			const sequence = remaining.slice(0, 6);
-			sequences.push({ data: sequence, button: sequence.charCodeAt(3) - 32, isRelease: false });
+			sequences.push({
+				data: sequence,
+				button: sequence.charCodeAt(3) - 32,
+				x: sequence.charCodeAt(4) - 33,
+				y: sequence.charCodeAt(5) - 33,
+				isRelease: false,
+			});
 			offset += 6;
 			continue;
 		}
@@ -232,6 +278,14 @@ function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
 	return sequences;
 }
 
+function findScrollViewBox(box: TuiLayoutBox, scrollView: ScrollViewLayoutState): TuiLayoutBox | undefined {
+	if (box.scrollView === scrollView) return box;
+	for (const child of box.children) {
+		const found = findScrollViewBox(child, scrollView);
+		if (found) return found;
+	}
+	return undefined;
+}
 /** Whether every report in a mouse chunk is a vertical wheel event. */
 export function isMouseWheelInput(data: string): boolean {
 	const sequences = parseMouseSequences(data);
@@ -301,6 +355,71 @@ function replayMouseInput(viewportListener: TuiInputListener, data: string): voi
  * route last so application listeners still receive deferred viewport keys.
  */
 class AtomicTuiAltScreen extends TuiAltScreen {
+	private scrollToEndIndicatorRect: ScrollToEndIndicatorRect | undefined;
+
+	private renderScrollToEndIndicator(): string {
+		const shortcut = keyDisplayText("tui.altScreen.bottom");
+		const label = ` ↓ Jump to latest message${shortcut ? ` · ${shortcut}` : ""} `;
+		return theme.bg("selectedBg", theme.fg("text", label));
+	}
+
+	private compositeScrollToEndIndicator(screen: string[], width: number, height: number): string[] {
+		const previousRect = this.scrollToEndIndicatorRect;
+		this.scrollToEndIndicatorRect = undefined;
+		const layout = (this as unknown as TuiAltScreenLayoutInternals).currentLayout;
+		if (!layout || layout.width !== width || layout.height !== height) {
+			// pi-tui assigns currentLayout after compositing. If a detached view was
+			// visible before its geometry changed, render once more with the new frame.
+			if (previousRect) this.requestRender();
+			return screen;
+		}
+		const scrollView = layout.primaryScrollView;
+		if (!scrollView || scrollView.followEnd === false || scrollView.isFollowingEnd) return screen;
+
+		const clip = findScrollViewBox(layout.root, scrollView)?.clip;
+		if (!clip || clip.width <= 0 || clip.height <= 0) return screen;
+		const row = clip.y + clip.height - 1;
+		if (row < 0 || row >= screen.length) return screen;
+
+		const text = truncateToWidth(this.renderScrollToEndIndicator(), clip.width, "");
+		const textWidth = visibleWidth(text);
+		if (textWidth === 0) return screen;
+		const column = clip.x + Math.floor((clip.width - textWidth) / 2);
+		const result = [...screen];
+		result[row] = compositeTuiLine(result[row] ?? "", text, column, textWidth, width);
+		if (result[row] === screen[row]) return screen;
+
+		this.scrollToEndIndicatorRect = { row, column, width: textWidth };
+		return result;
+	}
+
+	private handleScrollToEndIndicatorMouseInput(data: string): boolean {
+		const rect = this.scrollToEndIndicatorRect;
+		if (!rect) return false;
+		const sequences = parseMouseSequences(data);
+		const pressed = sequences?.some(
+			(sequence) =>
+				!sequence.isRelease &&
+				isLeftMouseButton(sequence) &&
+				sequence.y === rect.row &&
+				sequence.x >= rect.column &&
+				sequence.x < rect.column + rect.width,
+		);
+		if (!pressed) return false;
+
+		this.scrollToEndIndicatorRect = undefined;
+		this.scrollToBottom();
+		return true;
+	}
+
+	protected override compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
+		return super.compositeOverlays(
+			this.compositeScrollToEndIndicator(lines, termWidth, termHeight),
+			termWidth,
+			termHeight,
+		);
+	}
+
 	constructor(
 		terminal: Terminal,
 		showHardwareCursor: boolean,
@@ -375,6 +494,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			};
 			viewportInputSubscriptions.set(this, subscription);
 			subscription.viewportUnsubscribe = super.addInputListener((data) => {
+				if (this.handleScrollToEndIndicatorMouseInput(data)) return { consume: true };
 				const gate = viewportInputGates.get(this);
 				const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
 				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay(), false)) return undefined;

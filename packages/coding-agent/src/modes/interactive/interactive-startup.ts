@@ -10,7 +10,6 @@ import {
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
-import { TranscriptFollowIndicator } from "./components/transcript-follow-indicator.ts";
 import { bindInitialEagerSession } from "./interactive-initial-session-binding.ts";
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import {
@@ -206,12 +205,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		scrollbar: this.settingsManager.getFullscreenScrollbar(),
 		scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
 	});
-	const transcriptFollowIndicator = new TranscriptFollowIndicator({
-		isFollowing: () => this.transcriptScrollView?.isFollowingEnd ?? true,
-		keyLabel: () => this.getEditorKeyDisplay("tui.altScreen.bottom"),
-	});
 	const dock = new VStack([
-		{ component: transcriptFollowIndicator, shrink: 1, minSize: 0 },
 		{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
 		{ component: this.statusContainer, shrink: 1, minSize: 0 },
 		{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },

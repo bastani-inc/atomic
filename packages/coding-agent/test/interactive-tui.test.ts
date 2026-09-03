@@ -4,6 +4,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	Container,
 	getCapabilities,
+	getKeybindings,
 	type Image,
 	isViewportTUI,
 	resetCapabilitiesCache,
@@ -287,9 +288,11 @@ describe("interactive TUI renderer", () => {
 		expect([terminal.startCount, terminal.stopCount]).toEqual([1, 1]);
 		expect(terminal.cursorVisible).toBe(true);
 	});
-	test("keeps the fullscreen dock fixed while the transcript scrolls and resizes", async () => {
+	test("keeps the fullscreen dock fixed and offers a clickable jump to latest while scrolled up", async () => {
+		const previousKeybindings = getKeybindings();
+		setKeybindings(new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+j" }));
 		const { context, terminal, tui, initPromise, resolveTheme, restoreOffline } = createProductionFullscreenContext({
-			columns: 24,
+			columns: 50,
 			rows: 12,
 		});
 
@@ -301,9 +304,10 @@ describe("interactive TUI renderer", () => {
 			if (!transcript) throw new Error("production transcript did not mount");
 			const getFrame = () => getLayoutFrame(tui);
 			const initial = getFrame();
+			const initialTranscript = initial.root.children[0];
 			const initialDock = initial.root.children[1];
 			const dock = context.fullscreenLayoutRoot?.children[1];
-			if (!dock) throw new Error("fullscreen dock did not render");
+			if (!initialTranscript || !dock) throw new Error("fullscreen layout did not render");
 			expect(initialDock.component).toBe(dock);
 			expect(initialDock.rect.height).toBe(dock.render(terminal.columns).length);
 			expect(initialDock.rect.y).toBe(terminal.rows - initialDock.rect.height);
@@ -318,29 +322,32 @@ describe("interactive TUI renderer", () => {
 			tui.renderNow();
 			expect(transcript.scrollTop).toBe(initialScrollTop - 1);
 			const scrolled = getFrame();
+			const scrolledTranscript = scrolled.root.children[0];
 			const scrolledDock = scrolled.root.children[1];
-			if (!scrolledDock) throw new Error("fullscreen dock disappeared after scrolling");
-			expect(scrolledDock.rect.height).toBe(initialDock.rect.height + 1);
-			expect(scrolledDock.rect.y).toBe(terminal.rows - scrolledDock.rect.height);
+			if (!scrolledTranscript || !scrolledDock) throw new Error("fullscreen layout disappeared after scrolling");
+			expect(scrolledDock.rect).toEqual(initialDock.rect);
 			const scrolledDockLines = scrolled.lines.slice(
 				scrolledDock.rect.y,
 				scrolledDock.rect.y + scrolledDock.rect.height,
 			);
-			expect(scrolledDockLines.some((line) => line.includes("Jump to bottom"))).toBe(true);
-			expect(scrolledDockLines.some((line) => line.includes("Jump to bottom") && line.includes("\x1b]8;;"))).toBe(
-				true,
+			expect(scrolledDockLines.some((line) => line.includes("Jump to latest message"))).toBe(false);
+			expect(terminal.writes.at(-1)).toContain("↓ Jump to latest message · ctrl+j");
+			expect(terminal.writes.at(-1)).toContain(
+				`\x1b[${scrolledTranscript.rect.y + scrolledTranscript.rect.height};1H`,
 			);
-			expect(scrolledDockLines.at(-1)).toContain("footer");
 
-			context.jumpToTranscriptEnd();
+			const indicator = " ↓ Jump to latest message · ctrl+j ";
+			const indicatorColumn =
+				scrolledTranscript.rect.x + Math.floor((scrolledTranscript.rect.width - indicator.length) / 2);
+			const indicatorRow = scrolledTranscript.rect.y + scrolledTranscript.rect.height - 1;
+			terminal.input(`\x1b[<0;${indicatorColumn + 1};${indicatorRow + 1}M`);
 			tui.renderNow();
 			const jumped = getFrame();
 			const jumpedDock = jumped.root.children[1];
 			if (!jumpedDock) throw new Error("fullscreen dock disappeared after jumping to the transcript end");
 			expect(transcript.isFollowingEnd).toBe(true);
 			expect(jumpedDock.rect).toEqual(initialDock.rect);
-			const jumpedDockLines = jumped.lines.slice(jumpedDock.rect.y, jumpedDock.rect.y + jumpedDock.rect.height);
-			expect(jumpedDockLines.some((line) => line.includes("Jump to bottom"))).toBe(false);
+			expect(terminal.writes.at(-1)).not.toContain("Jump to latest message");
 
 			terminal.resize(30, 8);
 			tui.renderNow();
@@ -358,6 +365,7 @@ describe("interactive TUI renderer", () => {
 			await initPromise;
 			tui.stop();
 			restoreOffline();
+			setKeybindings(previousKeybindings);
 		}
 	});
 	test.sequential("clips a real fetch_content Kitty image at the sticky dock and reuses its upload", async () => {

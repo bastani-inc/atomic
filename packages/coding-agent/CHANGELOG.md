@@ -18,6 +18,7 @@
 - A `models.json` `modelOverrides` entry keyed on a derived `-fast` model ID now applies to that derived entry, after derivation. Overriding the base model still flows through by inheritance; a fast-specific override wins over the inherited value, and the entry's routing metadata survives the override.
 - New `core/fast-model-variants.ts` exports (`deriveFastModelVariants`, `withFastModelVariants`, `fastModelId`, `usesOpenAIFastServiceTier`, `isNativeFastRouteApi`, `copilotAdvertisedFastModelIds`, `FAST_MODEL_ID_SUFFIX`, `FAST_MODEL_SERVICE_TIER`, and the `FastModelVariantDiagnostic`/`FastModelVariantDerivation`/`FastModelVariantsOptions` types), plus `ModelRuntime.getFastModelVariantDiagnostics()` and `ModelRuntime.getWarning()`.
 - A provider, `models.json` custom model, or extension that already owns an exact `-fast` model ID wins: Atomic keeps that model exactly as declared, suppresses the derived duplicate, and reports an actionable warning in the interactive startup notices and from `--list-models`. The interactive notice renders on every launch, and is re-read after deferred extension loading so a collision an extension provider introduces is reported too. Fast behavior comes only from explicit route metadata, never from the `-fast` suffix.
+- Added a clickable "Jump to latest message" label with the `tui.altScreen.bottom` shortcut to the fullscreen transcript while it is scrolled up ([#9080](https://github.com/earendil-works/pi/pull/9080) by [@rwachtler](https://github.com/rwachtler)).
 
 ### Changed
 
