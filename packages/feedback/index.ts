@@ -90,8 +90,7 @@ export default function feedback(pi: ExtensionAPI): void {
 						};
 			const validation = validateFeedbackDraft(draft);
 			if (!validation.ok) {
-				const details = { errors: validation.errors };
-				return { content: [{ type: "text", text: validation.errors.map(({ message }) => message).join("; ") }], details };
+				throw new Error(validation.errors.map(({ message }) => message).join("; "));
 			}
 			const scrubbed = scrubFeedback(draft.title, formatIssueBody(draft));
 			const details = {
@@ -101,7 +100,10 @@ export default function feedback(pi: ExtensionAPI): void {
 				body: scrubbed.body,
 				privacySummary: scrubbed.replacements,
 			};
-			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+			const privacyNote = scrubbed.replacements.length
+				? `Privacy scrubbed: ${scrubbed.replacements.map(({ category, count }) => `${category} (${count})`).join(", ")}.`
+				: "Privacy scrubbed: no replacements needed.";
+			return { content: [{ type: "text", text: `${details.title}\n\n${details.body}\n\n${privacyNote}` }], details };
 		},
 	});
 }
