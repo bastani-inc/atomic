@@ -61,7 +61,7 @@ describe("feedback draft core", () => {
 			formatIssueBody(enhancement),
 			"### What do you want to change?\n\nAdd a compact status view.\n\n### Why?\n\nIt leaves more room for conversation.\n\n### How? (optional)\n\nReuse the existing status data.",
 		);
-		const minimal = formatIssueBody({ ...bug, description: "  kept  ", expected: undefined, version: undefined });
+		const minimal = formatIssueBody({ ...bug, description: "  kept  ", expected: "", version: "   " });
 		assert.match(minimal, /What happened\?\n\n {2}kept {2}\n\n### Steps/u);
 		assert.doesNotMatch(minimal, /Expected behavior|Version/u);
 	});

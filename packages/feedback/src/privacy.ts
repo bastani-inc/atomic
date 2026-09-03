@@ -42,7 +42,7 @@ const rules = [
 	{
 		category: "credential-assignment",
 		pattern:
-			/(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)(?:(['"])(?!\[REDACTED\]\2)(?:(?:\\[^\r\n])|(?!\2)[^\r\n])+\2|([A-Za-z0-9+/=_-]{16,}))/giu,
+			/(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)(?:(['"])(?!\[REDACTED\]\2)(?:(?:\\[^\r\n])|(?!\2)[^\r\n\\])+\2|([A-Za-z0-9+/=_-]{16,}))/giu,
 		replacement: `$1$2${REDACTION_PLACEHOLDER}$2`,
 	},
 	{

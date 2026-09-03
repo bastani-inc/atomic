@@ -25,7 +25,7 @@ describe("feedback issue-form contract", () => {
 			};
 			assert.deepEqual(
 				form.body
-					.filter(({ type }) => type === "textarea" || type === "input")
+					.filter(({ type }) => type !== "markdown")
 					.map(({ id = "", attributes, validations }) => ({
 						id,
 						label: attributes.label ?? "",

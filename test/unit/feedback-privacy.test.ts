@@ -120,6 +120,6 @@ describe("feedback privacy core", () => {
 		const diagnostic = boundDiagnostic("x".repeat(MAX_DIAGNOSTIC_CHARS + 100));
 		assert.equal(diagnostic.length, MAX_DIAGNOSTIC_CHARS);
 		assert.match(diagnostic, /Truncated \d+ diagnostic characters/u);
-		assert.equal(diagnostic.includes("x".repeat(MAX_DIAGNOSTIC_CHARS)), false);
+		assert.equal(scrubFeedback("safe", boundDiagnostic(`apiKey="${"\\".repeat(64)}`)).replacements.length, 0);
 	});
 });
