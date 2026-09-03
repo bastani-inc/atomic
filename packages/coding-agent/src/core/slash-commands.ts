@@ -344,7 +344,6 @@ export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand
 	{
 		name: "feedback",
 		description: "Draft a private, reviewable bug report or enhancement request",
-		argumentHint: "<what happened or what to change>",
 	},
 	{ name: "mcp", description: "Show MCP server status" },
 	{ name: "mcp-auth", description: "Authenticate with an MCP server (OAuth)" },

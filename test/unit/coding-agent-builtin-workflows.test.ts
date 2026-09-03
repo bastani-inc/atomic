@@ -231,6 +231,7 @@ describe("coding-agent builtin resources", () => {
 				"packages/mcp/index.ts",
 				"packages/web-access/index.ts",
 				"packages/intercom/index.ts",
+				"packages/feedback/index.ts",
 			]) {
 				assert.ok(
 					extensionPaths.some((extensionPath) => extensionPath.endsWith(suffix)),
@@ -282,6 +283,7 @@ describe("coding-agent builtin resources", () => {
 			for (const skillName of [
 				"bro",
 				"create-spec",
+				"feedback",
 				"how",
 				"impeccable",
 				"intercom",

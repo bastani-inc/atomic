@@ -159,7 +159,7 @@ describe("feedback command conversation entry", () => {
 		await harness.session.prompt("It improves accessibility");
 
 		expect(harness.session.messages.filter((message) => message.role === "toolResult")).toHaveLength(1);
-		expect(messageText(harness)).toContain("### What do you want to change?\\n\\nAdd keyboard navigation");
+		expect(messageText(harness)).toContain("### What do you want to change?\n\nAdd keyboard navigation");
 		expect(messageText(harness)).toContain("Would you like edits or approval?");
 	});
 
@@ -175,6 +175,7 @@ describe("feedback command conversation entry", () => {
 		]);
 		await harness.session.prompt("prepare incomplete feedback");
 		const invalid = harness.session.messages.find((message) => message.role === "toolResult");
+		expect(invalid?.isError).toBe(true);
 		expect(getMessageText(invalid)).toBe("Why? is required");
 
 		harness.setResponses([
