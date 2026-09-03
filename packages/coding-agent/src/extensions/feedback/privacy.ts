@@ -49,6 +49,7 @@ const API_TOKEN_PATTERN =
 	/(?<![A-Za-z0-9_-])(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{35}|npm_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9_]{20,})(?![A-Za-z0-9_-])/g;
 const CREDENTIAL_ASSIGNMENT_PATTERN =
 	/\b(?:TOKEN|API_KEY|ACCESS_TOKEN|AUTH_TOKEN|SECRET|PASSWORD|[A-Z][A-Z0-9_]*(?:TOKEN|API_KEY|SECRET|PASSWORD))\b(\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s\r\n]+)/gi;
+const QUOTED_AUTHORIZATION_HEADER_PATTERN = /(["'])(Authorization[ \t]*:[ \t]*)(?:\\.|(?!\1)[^\\\r\n])+\1/gim;
 const AUTHORIZATION_HEADER_PATTERN = /^([ \t]*Authorization[ \t]*:[ \t]*)[^\s\r\n][^\r\n]*/gim;
 const URL_CREDENTIAL_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+(?::[^/\s@]*)?@/gi;
 const PRIVATE_KEY_HEADER_PATTERN = /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----[ \t]*(?:\r?\n|$)/g;
@@ -178,6 +179,13 @@ function collectCandidates(text: string, homeDirectories: readonly string[]): Re
 			const equals = match[0].indexOf("=");
 			return `${match[0].slice(0, equals + 1)}[REDACTED]`;
 		},
+		candidates,
+	);
+	addPatternCandidates(
+		text,
+		QUOTED_AUTHORIZATION_HEADER_PATTERN,
+		"authorization-header",
+		(match) => `${match[1]}${match[2]}[REDACTED]${match[1]}`,
 		candidates,
 	);
 	addPatternCandidates(

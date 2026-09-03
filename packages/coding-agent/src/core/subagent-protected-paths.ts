@@ -143,17 +143,28 @@ function isReadOnlyNodeCheck(words: readonly string[]): boolean {
 }
 
 const MUTATION_COMMAND_OPTIONS: Readonly<Record<string, RegExp>> = {
-	mkdir: /^(?:-p|--parents|--)$/u,
-	touch: /^(?:-c|--no-create|--)$/u,
-	rm: /^(?:--|--force|--recursive|--dir|-[frd]+)$/u,
+	mkdir: /^(?:-p|--parents)$/u,
+	touch: /^(?:-c|--no-create)$/u,
+	rm: /^(?:--force|--recursive|--dir|-[frd]+)$/u,
 };
 
 function explicitMutationPaths(words: readonly string[]): string[] | undefined {
 	const allowedOptions = MUTATION_COMMAND_OPTIONS[words[0]?.toLowerCase() ?? ""];
 	if (!allowedOptions) return undefined;
-	const arguments_ = words.slice(1);
-	if (arguments_.some((word) => word.startsWith("-") && !allowedOptions.test(word))) return undefined;
-	return arguments_.filter((word) => !word.startsWith("-"));
+	const paths: string[] = [];
+	let optionsTerminated = false;
+	for (const word of words.slice(1)) {
+		if (optionsTerminated) {
+			paths.push(word);
+		} else if (word === "--") {
+			optionsTerminated = true;
+		} else if (word.startsWith("-")) {
+			if (!allowedOptions.test(word)) return undefined;
+		} else {
+			paths.push(word);
+		}
+	}
+	return paths;
 }
 
 function pathContainsProtected(path: string, cwd: string, protectedPaths: ReadonlySet<string>): boolean {

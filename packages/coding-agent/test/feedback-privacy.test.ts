@@ -4,6 +4,7 @@ import {
 	FEEDBACK_BODY_MAX_CHARACTERS,
 	FEEDBACK_DIAGNOSTIC_MAX_LINES,
 	FEEDBACK_TITLE_MAX_CHARACTERS,
+	rescrubFeedbackDraft,
 	scrubFeedbackDraft,
 } from "../src/extensions/feedback/privacy.ts";
 import type { FormattedFeedbackDraft } from "../src/extensions/feedback/templates.ts";
@@ -201,6 +202,46 @@ describe("feedback final-output privacy review", () => {
 		assert.deepEqual(
 			result.replacements.map((replacement) => replacement.kind),
 			["authorization-header", "authorization-header"],
+		);
+	});
+
+	test("redacts quoted inline authorization values during initial and edited-draft review", () => {
+		const bearerCredential = "synthetic-inline-bearer";
+		const basicCredential = "synthetic-inline-basic";
+		const digestCredential = "synthetic-inline-digest";
+		const initialBody = [
+			`curl -H "Authorization: Bearer ${bearerCredential}" https://example.invalid/one`,
+			`curl --header 'authorization: Basic ${basicCredential}' https://example.invalid/two`,
+		].join("\n");
+		const initial = scrubFeedbackDraft(draft("Safe", initialBody), { homeDirectories: [] });
+
+		assert.equal(
+			initial.draft.body,
+			[
+				'curl -H "Authorization: [REDACTED]" https://example.invalid/one',
+				"curl --header 'authorization: [REDACTED]' https://example.invalid/two",
+			].join("\n"),
+		);
+		assert.deepEqual(
+			initial.replacements.map((replacement) => replacement.kind),
+			["authorization-header", "authorization-header"],
+		);
+
+		const editedBody = `${initial.draft.body}\ncurl -H "Authorization: Digest ${digestCredential}" https://example.invalid/three`;
+		const edited = rescrubFeedbackDraft({ ...initial.draft, body: editedBody }, initial.replacements, {
+			homeDirectories: [],
+		});
+		assert.equal(
+			edited.draft.body,
+			`${initial.draft.body}\ncurl -H "Authorization: [REDACTED]" https://example.invalid/three`,
+		);
+		assert.doesNotMatch(
+			`${initial.draft.body}\n${edited.draft.body}`,
+			new RegExp(`${bearerCredential}|${basicCredential}|${digestCredential}`, "u"),
+		);
+		assert.deepEqual(
+			edited.replacements.map((replacement) => replacement.kind),
+			["authorization-header", "authorization-header", "authorization-header"],
 		);
 	});
 

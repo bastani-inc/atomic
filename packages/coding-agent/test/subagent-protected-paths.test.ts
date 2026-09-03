@@ -113,6 +113,33 @@ describe("foreground subagent protected-path policy", () => {
 		}
 	});
 
+	test("treats dash-prefixed arguments after an option terminator as mutation paths", async () => {
+		// #2799: -- ends option parsing, so later dash-prefixed arguments are filenames.
+		const harness = await createHarness({
+			subagentPolicy: {
+				managementActions: "restricted",
+				fanoutAuthorized: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+				protectedPaths: ["-f"],
+			},
+		});
+		try {
+			writeFileSync(join(harness.tempDir, "-f"), "user bytes\n");
+			const beforeToolCall = harness.session.agent.beforeToolCall;
+			assert.ok(beforeToolCall);
+			const result = (await beforeToolCall({
+				toolCall: { id: "option-terminator-path", name: "bash" },
+				args: { command: "rm -- -f safe-file" },
+			})) as ToolCallEventResult | undefined;
+
+			assert.deepEqual(result, { block: true, reason: SUBAGENT_PROTECTED_BASH_REFUSAL });
+			assert.equal(readFileSync(join(harness.tempDir, "-f"), "utf8"), "user bytes\n");
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	test("allows proven read-only diagnostics and safe artifacts while blocking direct and indirect shell mutation", async () => {
 		// #2799: keep ordinary debugger diagnostics without risking pre-existing work.
 		const harness = await createHarness({
