@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,10 +32,38 @@ function runOpenRouterRetryFixture(
 		"qwen3.6-flash",
 		"qwen3.7-max",
 		"qwen3.7-plus",
+		"qwen3.8-flash",
 		"qwen3.8-max",
 	];
-	const sourceModels = Object.fromEntries(modelIds.map((id) => [id, { id, name: id, tool_call: true }]));
-	const catalog = { "alibaba-token-plan": { models: sourceModels } };
+	const sourceModels = Object.fromEntries(
+		modelIds.map((id) => [
+			id,
+			{
+				id,
+				name: id,
+				tool_call: true,
+				...(id.startsWith("qwen3.8-")
+					? { reasoning: true, reasoning_options: [{ type: "effort", values: ["low", "medium", "xhigh"] }] }
+					: {}),
+			},
+		]),
+	);
+	const basetenModels = Object.fromEntries(
+		["zai-org/GLM-5.2", "zai-org/GLM-5.2-Fast"].map((id) => [
+			id,
+			{
+				id,
+				name: id,
+				tool_call: true,
+				modalities: { input: ["text", "image"] },
+				limit: { context: 1_048_576, output: 262_144 },
+			},
+		]),
+	);
+	const catalog = {
+		"alibaba-token-plan": { models: sourceModels },
+		baseten: { models: basetenModels },
+	};
 	const preloadPath = join(fixtureRoot, "mock-model-catalogs.mjs");
 	writeFileSync(
 		preloadPath,
@@ -76,7 +105,8 @@ function runOpenRouterRetryFixture(
 			`};\n`,
 	);
 
-	return spawnSync(
+	const outputPath = join(fixtureRoot, "catalog");
+	const result = spawnSync(
 		process.execPath,
 		[
 			"--import",
@@ -85,7 +115,7 @@ function runOpenRouterRetryFixture(
 			"--strict",
 			"--json-only",
 			"--json-output",
-			join(fixtureRoot, "catalog"),
+			outputPath,
 		],
 		{
 			cwd: isolatedPackageRoot,
@@ -93,6 +123,7 @@ function runOpenRouterRetryFixture(
 			timeout: 10_000,
 		},
 	);
+	return Object.assign(result, { outputPath });
 }
 
 describe("strict model generation", () => {
@@ -104,6 +135,23 @@ describe("strict model generation", () => {
 			"Model fetch from https://openrouter.ai/api/v1/models failed transiently; retrying (attempt 2/2)",
 		);
 		expect(result.stdout).toContain("Fetched 0 tool-capable models from OpenRouter");
+		const individualCatalog = JSON.parse(
+			readFileSync(join(result.outputPath, "providers/qwen-token-plan-individual.json"), "utf8"),
+		) as Record<string, { thinkingLevelMap?: Record<string, string | null> }>;
+		assert.deepEqual(individualCatalog["qwen3.8-flash"]?.thinkingLevelMap, {
+			off: null,
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: null,
+			xhigh: "xhigh",
+			max: null,
+		});
+		const basetenCatalog = JSON.parse(
+			readFileSync(join(result.outputPath, "providers/baseten.json"), "utf8"),
+		) as Record<string, { input?: string[] }>;
+		assert.deepEqual(basetenCatalog["zai-org/GLM-5.2"]?.input, ["text"]);
+		assert.deepEqual(basetenCatalog["zai-org/GLM-5.2-Fast"]?.input, ["text"]);
 	});
 
 	it("still fails strict mode after exhausting transient model-catalog fetch retries", () => {
@@ -166,6 +214,7 @@ describe("strict model generation", () => {
 			"qwen3.6-flash",
 			"qwen3.7-max",
 			"qwen3.7-plus",
+			"qwen3.8-flash",
 			"qwen3.8-max",
 			"qwen3.8-max-preview",
 		];

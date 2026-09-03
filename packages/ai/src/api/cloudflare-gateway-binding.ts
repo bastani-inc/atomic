@@ -6,18 +6,15 @@
  * which needs a Cloudflare API token even when the caller is a Worker in the gateway's own
  * account.
  *
- * In order to solve for this problem, `createGatewayBindingFetch` returns a {@link FetchFunction}
- * that translates requests under a gateway HTTPS prefix into calls to the Workers AI binding's
- * universal endpoint, `env.AI.gateway(id).run({provider, endpoint, headers, query})`.
- * Binding calls are pre-authenticated in-account and return the provider's native wire format as a
- * regular (streaming) `Response`, so API implementations behave identically over either
- * transport.
+ * `createGatewayBindingFetch` returns a {@link FetchFunction} backed by the binding's plain
+ * `env.AI.fetch()` passthrough. Requests are forwarded untouched, so methods, headers, query
+ * strings, non-JSON bodies, and streaming bodies retain native fetch semantics. Models using
+ * that route should point their `baseUrl` at
+ * `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}`.
  *
- * The result is the transport for one gateway-bound client, not a general-purpose fetch:
- * requests it cannot serve — URLs outside the prefix, or in-prefix requests the universal
- * endpoint cannot express (non-POST, non-JSON body) — reject with a descriptive error.
- * Transport selection is the caller's job, per client: route such traffic over HTTPS with
- * real gateway auth instead of through this shim.
+ * For compatibility with older Workers runtimes and Atomic consumers whose structural binding
+ * exposes only `gateway(id).run(...)`, the established universal-endpoint translation remains a
+ * fallback. Current bindings with `fetch()` never use that shim.
  */
 
 import type { FetchFunction } from "../types.ts";
@@ -27,7 +24,12 @@ import type { FetchFunction } from "../types.ts";
  * module does not depend on `@cloudflare/workers-types`. Any real `Ai` binding satisfies it.
  */
 export interface AiGatewayBinding {
-	gateway(id: string): AiGatewayBindingGateway;
+	/** Unique member of the Workers AI binding. */
+	aiGatewayLogId?: string | null;
+	/** Present at runtime but not yet declared by `@cloudflare/workers-types`. */
+	fetch?(input: Request | string | URL, init?: RequestInit): Promise<Response>;
+	/** Legacy universal-endpoint surface retained for source compatibility. */
+	gateway?(id: string): AiGatewayBindingGateway;
 }
 
 export interface AiGatewayBindingGateway {
@@ -78,6 +80,14 @@ type FetchInput = Parameters<FetchFunction>[0];
  */
 export function createGatewayBindingFetch(options: GatewayBindingFetchOptions): FetchFunction {
 	const { binding, gateway } = options;
+	if (typeof binding.fetch === "function") {
+		const bindingFetch = binding.fetch.bind(binding);
+		return (input, init) => bindingFetch(input, init);
+	}
+	const legacyGateway = binding.gateway?.bind(binding);
+	if (!legacyGateway) {
+		throw new TypeError("createGatewayBindingFetch: the AI binding does not expose fetch()");
+	}
 	// Prefix matching runs on URL-normalized components (origin + pathname), not raw strings:
 	// dot segments resolve away and fragments drop, matching what real fetch would put on the
 	// wire, so a lexical variant can't split provider/endpoint differently than HTTPS would.
@@ -138,7 +148,7 @@ export function createGatewayBindingFetch(options: GatewayBindingFetchOptions): 
 		const headers = collectHeaders(request, init);
 		// Per the fetch spec an explicit `signal: null` in init clears a Request input's signal.
 		const signal = init?.signal ?? (init && "signal" in init && init.signal === null ? undefined : request?.signal);
-		return binding.gateway(gateway).run({ provider, endpoint, headers, query }, signal ? { signal } : {});
+		return legacyGateway(gateway).run({ provider, endpoint, headers, query }, signal ? { signal } : {});
 	};
 }
 

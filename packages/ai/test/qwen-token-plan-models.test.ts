@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { getModels, streamSimple } from "../src/compat.ts";
 import { findEnvKeys } from "../src/env-api-keys.ts";
@@ -54,6 +55,7 @@ const TEXT_MODELS = [
 	"qwen3.6-plus",
 	"qwen3.7-max",
 	"qwen3.7-plus",
+	"qwen3.8-flash",
 	"qwen3.8-max",
 ];
 
@@ -65,6 +67,7 @@ const INDIVIDUAL_TEXT_MODELS = [
 	"qwen3.6-flash",
 	"qwen3.7-max",
 	"qwen3.7-plus",
+	"qwen3.8-flash",
 	"qwen3.8-max",
 ];
 
@@ -84,6 +87,7 @@ const QWEN_THINKING_MODELS = [
 	"qwen3.6-plus",
 	"qwen3.7-max",
 	"qwen3.7-plus",
+	"qwen3.8-flash",
 	"qwen3.8-max",
 ] as const;
 
@@ -98,6 +102,7 @@ const QWEN_THINKING_MODEL_CASES: QwenTokenPlanModelCase[] = [
 ];
 
 const QWEN_REASONING_EFFORT_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5", "glm-5.1", "glm-5.2"] as const;
+const QWEN38_MODELS = ["qwen3.8-flash", "qwen3.8-max"] as const;
 
 const QWEN_REASONING_EFFORT_MODEL_CASES: QwenTokenPlanModelCase[] = [
 	...(["qwen-token-plan", "qwen-token-plan-cn"] as const).flatMap((provider) =>
@@ -109,13 +114,18 @@ const QWEN_REASONING_EFFORT_MODEL_CASES: QwenTokenPlanModelCase[] = [
 	})),
 ];
 
+const QWEN38_MODEL_CASES: QwenTokenPlanModelCase[] = (
+	["qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual"] as const
+).flatMap((provider) => QWEN38_MODELS.map((modelId) => ({ provider, modelId })));
+
 describe("Qwen Token Plan models", () => {
+	// #9021
 	it("exposes exactly the documented Individual text models", () => {
 		const modelIds = getModels("qwen-token-plan-individual")
 			.map((model) => model.id)
 			.sort();
 
-		expect(modelIds).toEqual([...INDIVIDUAL_TEXT_MODELS].sort());
+		assert.deepEqual(modelIds, [...INDIVIDUAL_TEXT_MODELS].sort());
 	});
 
 	it("reuses the international Token Plan environment variable", () => {
@@ -190,21 +200,19 @@ describe("Qwen Token Plan models", () => {
 		},
 	);
 
-	it.each(["qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual"] as const)(
-		"exposes qwen3.8 reasoning_effort levels on %s",
-		(provider) => {
-			const model = getModels(provider).find((candidate) => candidate.id === "qwen3.8-max");
-			expect(model).toBeDefined();
-			if (!model) throw new Error(`Missing model: ${provider}/qwen3.8-max`);
+	it.each(QWEN38_MODEL_CASES)(
+		"exposes qwen3.8 reasoning_effort levels for $provider/$modelId",
+		({ provider, modelId }) => {
+			const model = getModels(provider).find((candidate) => candidate.id === modelId);
+			assert.ok(model, `Missing model: ${provider}/${modelId}`);
+			if (!model) throw new Error(`Missing model: ${provider}/${modelId}`);
 
-			expect(model.thinkingLevelMap).toMatchObject({
-				minimal: null,
-				low: "low",
-				medium: "medium",
-				high: null,
-				xhigh: "xhigh",
-				max: null,
-			});
+			assert.equal(model.thinkingLevelMap?.minimal, null);
+			assert.equal(model.thinkingLevelMap?.low, "low");
+			assert.equal(model.thinkingLevelMap?.medium, "medium");
+			assert.equal(model.thinkingLevelMap?.high, null);
+			assert.equal(model.thinkingLevelMap?.xhigh, "xhigh");
+			assert.equal(model.thinkingLevelMap?.max, null);
 		},
 	);
 
@@ -248,12 +256,12 @@ describe("Qwen Token Plan models", () => {
 		},
 	);
 
-	it.each(["qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual"] as const)(
-		"sends qwen3.8 max reasoning_effort on %s",
-		async (provider) => {
-			const model = getModels(provider).find((candidate) => candidate.id === "qwen3.8-max");
-			expect(model).toBeDefined();
-			if (!model) throw new Error(`Missing model: ${provider}/qwen3.8-max`);
+	it.each(QWEN38_MODEL_CASES)(
+		"sends qwen3.8 xhigh reasoning_effort for $provider/$modelId",
+		async ({ provider, modelId }) => {
+			const model = getModels(provider).find((candidate) => candidate.id === modelId);
+			assert.ok(model, `Missing model: ${provider}/${modelId}`);
+			if (!model) throw new Error(`Missing model: ${provider}/${modelId}`);
 
 			let payload: unknown;
 			await streamSimple(
@@ -276,9 +284,11 @@ describe("Qwen Token Plan models", () => {
 				},
 			).result();
 
-			expect(payload).toHaveProperty("enable_thinking", true);
-			expect(payload).toHaveProperty("reasoning_effort", "xhigh");
-			expect(payload).not.toHaveProperty("thinking");
+			assert.ok(typeof payload === "object" && payload !== null);
+			const payloadRecord = payload as Record<string, unknown>;
+			assert.equal(payloadRecord.enable_thinking, true);
+			assert.equal(payloadRecord.reasoning_effort, "xhigh");
+			assert.equal("thinking" in payloadRecord, false);
 		},
 	);
 });

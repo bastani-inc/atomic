@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { arch, platform, release, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -323,6 +324,37 @@ describe("openai-codex streaming", () => {
 
 		expect(sawTextDelta).toBe(true);
 		expect(sawDone).toBe(true);
+	});
+
+	// Regression test for https://github.com/earendil-works/pi/issues/9047
+	it("processes a terminal SSE event without a trailing blank line", async () => {
+		const token = mockToken();
+		const sse = buildSSEPayload({ status: "completed" }).trimEnd();
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const context: Context = {
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		};
+		const resultStream = streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			transport: "sse",
+			fetch: async () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }),
+		});
+		const result = await resultStream.result();
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(result.content.find((content) => content.type === "text")?.text, "Hello");
 	});
 
 	it("completes after response.completed even when the SSE body stays open", async () => {

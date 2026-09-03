@@ -45,7 +45,7 @@ test("workflow models action reports Baseten and Qwen Individual thinking levels
 		const baseten = result.models.find((model) => model.fullId === "baseten/zai-org/GLM-5.2");
 		const qwen = result.models.find((model) => model.fullId === "qwen-token-plan-individual/qwen3.8-max");
 		assert.deepEqual(baseten?.availableThinkingLevels, ["off", "high", "max"]);
-		assert.deepEqual(qwen?.availableThinkingLevels, ["off", "low", "medium", "xhigh"]);
+		assert.deepEqual(qwen?.availableThinkingLevels, ["low", "medium", "xhigh"]);
 		assert.equal(baseten?.isCurrent, true);
 		assert.equal(qwen?.isCurrent, false);
 	} finally {
