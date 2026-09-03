@@ -49,7 +49,7 @@ afterEach(() => {
 	while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-test("trusts exactly the five identity-verified installed builtin entries", () => {
+test("trusts exactly the six identity-verified installed builtin entries", () => {
 	const packageDir = createInstall();
 	const expected = BUILTIN_PACKAGE_DIR_NAMES.map((dirName) =>
 		resolve(packageDir, "builtin", dirName, INSTALLED_EXTENSION_ENTRIES[dirName]),
@@ -77,7 +77,7 @@ test("rejects an installed-looking entry when the package identity is not Atomic
 	const spoofedEntry = resolve(packageDir, "builtin", "workflows", INSTALLED_EXTENSION_ENTRIES.workflows);
 
 	expect(isNativeBuiltinExtensionPath(spoofedEntry)).toBe(false);
-	expect(getNativeBuiltinExtensionEntries().size).toBe(4);
+	expect(getNativeBuiltinExtensionEntries().size).toBe(5);
 });
 
 test("does not retain installed builtin factories in the native cache under Node", async () => {

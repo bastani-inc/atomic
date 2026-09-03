@@ -20,6 +20,7 @@ const expectedBuiltinPackages = [
 	resolve("packages/mcp"),
 	resolve("packages/web-access"),
 	resolve("packages/intercom"),
+	resolve("packages/feedback"),
 ];
 
 const builtinPackageFixtures = [
@@ -28,6 +29,7 @@ const builtinPackageFixtures = [
 	{ packageName: "@bastani/mcp", dirname: "mcp", requiredEntry: "index.ts" },
 	{ packageName: "@bastani/web-access", dirname: "web-access", requiredEntry: "index.ts" },
 	{ packageName: "@bastani/intercom", dirname: "intercom", requiredEntry: "index.ts" },
+	{ packageName: "@bastani/feedback", dirname: "feedback", requiredEntry: "index.ts" },
 ] as const;
 
 const REAL_BUILTIN_RESOURCE_LOADER_TIMEOUT_MS = 120_000;

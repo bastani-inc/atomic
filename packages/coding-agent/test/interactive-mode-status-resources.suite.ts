@@ -25,7 +25,7 @@ function createBuiltinExtensionFixtures(entryKind: "source" | "installed" = "sou
 	}));
 }
 
-const BUILTIN_EXTENSION_LABELS = ["intercom", "mcp", "subagents", "web-access", "workflows"];
+const BUILTIN_EXTENSION_LABELS = ["feedback", "intercom", "mcp", "subagents", "web-access", "workflows"];
 
 function createLocalExtensionFixture(
 	extensionPath: string,
@@ -405,6 +405,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			{ path: "/builtin/mcp/index.ts", hidden: false },
 			{ path: "/builtin/web-access/index.ts", hidden: false },
 			{ path: "/builtin/intercom/index.ts", hidden: false },
+			{ path: "/builtin/feedback/index.ts", hidden: false },
 			{ path: "/builtin/internal/index.ts", hidden: true },
 			{ path: "/builtin/host-hidden/index.ts", hidden: false },
 			{ path: "/builtin/engine-hidden/index.ts", hidden: true },
@@ -424,7 +425,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 
 			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
 			const output = normalizeRenderedOutput(fakeThis.chatContainer);
-			for (const name of ["workflows", "subagents", "mcp", "web-access", "intercom"]) {
+			for (const name of ["workflows", "subagents", "mcp", "web-access", "intercom", "feedback"]) {
 				expect(output).toContain(name);
 			}
 			expect(output.match(/intercom/g)).toHaveLength(1);

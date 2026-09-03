@@ -1,4 +1,11 @@
-export const BUILTIN_PACKAGE_DIR_NAMES = ["workflows", "subagents", "mcp", "web-access", "intercom"] as const;
+export const BUILTIN_PACKAGE_DIR_NAMES = [
+	"workflows",
+	"subagents",
+	"mcp",
+	"web-access",
+	"intercom",
+	"feedback",
+] as const;
 
 export type BuiltinPackageDirName = (typeof BUILTIN_PACKAGE_DIR_NAMES)[number];
 
@@ -9,6 +16,7 @@ export const SOURCE_EXTENSION_ENTRIES = {
 	mcp: "index.ts",
 	"web-access": "index.ts",
 	intercom: "index.ts",
+	feedback: "index.ts",
 } as const satisfies Record<BuiltinPackageDirName, string>;
 
 /** Installed/npm extension entries after copy-builtin-packages prebundles them. */
@@ -18,6 +26,7 @@ export const INSTALLED_EXTENSION_ENTRIES = {
 	mcp: "index.bundle.mjs",
 	"web-access": "index.bundle.mjs",
 	intercom: "index.bundle.mjs",
+	feedback: "index.bundle.mjs",
 } as const satisfies Record<BuiltinPackageDirName, string>;
 
 export const WORKFLOWS_SDK_BUNDLE_ENTRY = "src/index.js";

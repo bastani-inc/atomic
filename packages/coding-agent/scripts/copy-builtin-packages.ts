@@ -113,6 +113,7 @@ const WORKSPACE_BUILTINS = [
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access" },
 	{ packageName: "@bastani/intercom", workspaceDirName: "intercom" },
+	{ packageName: "@bastani/feedback", workspaceDirName: "feedback" },
 ] as const;
 
 const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> = {
@@ -160,6 +161,13 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"LICENSE",
 		INSTALLED_EXTENSION_ENTRIES.intercom,
 		"broker/",
+		"skills/",
+	],
+	feedback: [
+		"package.json",
+		"README.md",
+		"CHANGELOG.md",
+		INSTALLED_EXTENSION_ENTRIES.feedback,
 		"skills/",
 	],
 };
@@ -460,6 +468,11 @@ await bundleEntrypoint(
 	join(distBuiltinDir, "intercom", INSTALLED_EXTENSION_ENTRIES.intercom),
 	"@bastani/intercom extension",
 );
+await bundleEntrypoint(
+	join(distBuiltinDir, "feedback", "index.ts"),
+	join(distBuiltinDir, "feedback", INSTALLED_EXTENSION_ENTRIES.feedback),
+	"@bastani/feedback extension",
+);
 
 const workflowsManifestPath = join(workflowsDistDir, "package.json");
 const workflowsManifest = readManifest(workflowsManifestPath);
@@ -467,7 +480,7 @@ setManifestExtensions(workflowsManifest, `./${INSTALLED_EXTENSION_ENTRIES.workfl
 pointWorkflowsSdkAtBundle(workflowsManifest);
 writeManifest(workflowsManifestPath, workflowsManifest);
 
-for (const dirName of ["subagents", "mcp", "web-access", "intercom"] as const) {
+for (const dirName of ["subagents", "mcp", "web-access", "intercom", "feedback"] as const) {
 	const manifestPath = join(distBuiltinDir, dirName, "package.json");
 	const manifest = readManifest(manifestPath);
 	setManifestExtensions(manifest, `./${INSTALLED_EXTENSION_ENTRIES[dirName]}`);

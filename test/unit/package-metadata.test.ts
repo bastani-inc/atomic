@@ -6,6 +6,7 @@ import { globSync } from "tinyglobby";
 import { describe, test } from "vitest";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
 import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.ts";
+import feedbackPackageJson from "../../packages/feedback/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
 import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json" };
 import nativesPackageJson from "../../packages/natives/package.json" with { type: "json" };
@@ -76,6 +77,7 @@ const BUNDLED_PACKAGE_MANIFESTS: readonly PackageDependencySections[] = [
 	mcpPackageJson,
 	webAccessPackageJson,
 	intercomPackageJson,
+	feedbackPackageJson,
 ];
 
 const ATOMIC_RUNTIME_DEPENDENCIES: DependencyMap = {
@@ -172,6 +174,7 @@ describe("package metadata", () => {
 		assert.deepEqual(Object.values(INSTALLED_EXTENSION_ENTRIES), [
 			"src/extension/index.bundle.mjs",
 			"src/extension/index.bundle.mjs",
+			"index.bundle.mjs",
 			"index.bundle.mjs",
 			"index.bundle.mjs",
 			"index.bundle.mjs",

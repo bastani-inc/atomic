@@ -34,7 +34,7 @@ Editable user, project, and package extensions and user workflows are loaded thr
 
 Imports from Atomic's supplied core packages keep the running host's classes and shared state across `/reload`, including on Windows. The supported `@earendil-works/pi-coding-agent` compatibility import shares those exports with `@bastani/atomic`, so class comparisons and `instanceof` checks work across both names after reload. Edits to your extension and its imported local helpers still take effect; restart Atomic after updating Atomic itself.
 
-In Bun compiled or bundled single-file builds, Atomic's five fixed installed builtin extension bundles (workflows, subagents, MCP, web access, and Intercom) take a separate startup path. Atomic installs its live host-module bridge, imports each precompiled bundle natively once, and reuses the evaluated factory across `/reload`. This avoids jiti source reads, transforms, hashing, and graph manifests for immutable shipped code. A builtin bundle's module-scoped state is therefore **not** re-evaluated by `/reload` in those builds. This optimization is limited to exact installed entries of identity-verified Atomic packages; editable extensions and workflows retain the dynamic behavior above.
+In Bun compiled or bundled single-file builds, Atomic's six fixed installed builtin extension bundles (workflows, subagents, MCP, web access, Intercom, and feedback) take a separate startup path. Atomic installs its live host-module bridge, imports each precompiled bundle natively once, and reuses the evaluated factory across `/reload`. This avoids jiti source reads, transforms, hashing, and graph manifests for immutable shipped code. A builtin bundle's module-scoped state is therefore **not** re-evaluated by `/reload` in those builds. This optimization is limited to exact installed entries of identity-verified Atomic packages; editable extensions and workflows retain the dynamic behavior above.
 
 If the factory returns a `Promise`, Atomic awaits it before continuing startup. That means async initialization completes before `session_start`, before `resources_discover`, and before provider registrations queued via `pi.registerProvider()` are flushed.
 
@@ -136,7 +136,7 @@ Choose the store that matches the lifetime you need:
 - **`pi.appendEntry()`** — durable custom entries that survive process restart. They do not enter model context.
 - **`sessionScopedExtensionState()`** — in-memory objects that survive `/reload` for the current process. They do not survive process restart.
 
-In Bun single-file builds, an editable file extension whose imported graph is unchanged can reuse its evaluated factory, so its module-scoped variables may survive `/reload`. An edit anywhere in that graph re-evaluates its modules and resets those singletons. The five fixed installed builtin bundles always reuse their evaluated factories and module state across `/reload`, as described above.
+In Bun single-file builds, an editable file extension whose imported graph is unchanged can reuse its evaluated factory, so its module-scoped variables may survive `/reload`. An edit anywhere in that graph re-evaluates its modules and resets those singletons. The six fixed installed builtin bundles always reuse their evaluated factories and module state across `/reload`, as described above.
 
 Extensions with state that must follow conversation branches should store it in tool result `details`:
 
