@@ -53,11 +53,11 @@ test("preserves a null signal exit code on Windows", async () => {
 	expect(await wait).toBeNull();
 });
 
-test("preserves a null exit code for an unknown Unix signal", async () => {
+test("maps an unknown Unix signal to a non-zero fallback exit code", async () => {
 	const child = createSyntheticChildProcess();
 	const wait = waitForChildProcess(child, { platform: "linux" });
 
 	child.emit("exit", null, "SIGUNKNOWN" as NodeJS.Signals);
 
-	expect(await wait).toBeNull();
+	expect(await wait).toBe(128);
 });

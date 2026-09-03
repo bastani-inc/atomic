@@ -91,8 +91,8 @@ function mapSignalExitCode(
 	platform: NodeJS.Platform,
 ): number | null {
 	if (code !== null || signal === null || platform === "win32") return code;
-	const signalNumber = osConstants.signals[signal];
-	return signalNumber === undefined ? code : 128 + signalNumber;
+	const signalNumber = osConstants.signals[signal] ?? 0;
+	return 128 + signalNumber;
 }
 
 /**
