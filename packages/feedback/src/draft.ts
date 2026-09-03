@@ -75,7 +75,7 @@ export function formatIssueBody(draft: FeedbackDraft): string {
 	return formFields(draft)
 		.flatMap(({ id, label }) => {
 			const value = formValue(draft, id);
-			return value === undefined ? [] : [section(label, value)];
+			return value?.trim() ? [section(label, value)] : [];
 		})
 		.join("\n\n");
 }
