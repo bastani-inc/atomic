@@ -4,6 +4,7 @@
 
 ### Added
 
+- `--session` and `--fork` now accept unique 8-character hexadecimal prefixes for UUID-backed sessions, preserve exact custom-ID and project-local precedence, and report colliding full UUIDs instead of selecting the first match. Workflow and Intercom selectors expose the same fixed prefix contract within their own visibility scopes ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
 - Added `supportsMidConvoEffort` to custom Anthropic Messages model compatibility settings.
 - Added transcript notices for Anthropic thinking blocks dropped during provider recovery when cache miss notices are enabled.
 - `models.json` now accepts `compat.vllmPriority` on `openai-completions` models. Atomic sends it as the top-level `priority` request field, which vLLM uses to order queued requests when it runs with `--scheduling-policy priority`; lower values are handled earlier and the server default is `0`. Set it on a background or batch model so its long prefills queue behind interactive sessions ([#9004](https://github.com/earendil-works/pi/pull/9004)).

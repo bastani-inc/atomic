@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 /**
  * Deterministic run/stage id for fixtures.
  *
- * Resolvers now accept only a full 36-character UUID, so a fixture id like
+ * Resolvers accept a full 36-character UUID or unique 8-hex prefix, so a fixture id like
  * `"run-1"` is rejected as malformed before any lookup happens. Deriving the id
  * from a seed keeps each fixture's intent readable at the call site
  * (`testRunId("terminal-send-race")`) while producing a value the resolver

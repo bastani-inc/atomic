@@ -12,7 +12,12 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
-import { isWorkflowStageToolContext, resolveRunId, topLevelExpandedSnapshots } from "./workflow-targets.js";
+import {
+	isResolvedRunId,
+	isWorkflowStageToolContext,
+	resolveRunId,
+	topLevelExpandedSnapshots,
+} from "./workflow-targets.js";
 import { workflowAnswerAction } from "./workflow-tool-answer.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
@@ -134,7 +139,7 @@ export function makeExecuteWorkflowTool(
 				const target = args.runId;
 				if (target !== undefined) {
 					const resolved = resolveRunId(target);
-					if (resolved.kind === "malformed") {
+					if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 						return { action: "statusDetail", runId: target, error: resolved.message };
 					}
 					if (resolved.kind === "not_found") {
@@ -142,6 +147,9 @@ export function makeExecuteWorkflowTool(
 						return durable.kind === "found"
 							? { action: "statusDetail", runId: target, detail: durable.detail }
 							: { action: "statusDetail", runId: target, error: durable.message };
+					}
+					if (!isResolvedRunId(resolved)) {
+						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
 					}
 					const inspected = inspectRun(resolved.runId, { toolControlRegistry });
 					if (!inspected.ok) {

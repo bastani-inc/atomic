@@ -10,6 +10,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Added
 
+- Intercom session targets now accept a unique 8-character hexadecimal UUID prefix within the sender's authorized group scope; collisions report every matching full UUID instead of selecting a session by ordering ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
 - Workflow-stage routing now supports literal, run-id, and glob path segments, sticky delivery to every future match, and `workflow:<rootRunId>/**` broadcast to live and future descendants until root termination.
 - `intercom list` now surfaces persisted possible future literals, patterns, and child paths with queued counts. Valid targets outside the known set queue with a `notInKnownSet` warning and produce a terminal undeliverable notification only when never delivered.
 

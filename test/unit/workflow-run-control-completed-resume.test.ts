@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	installWorkflowLifecycleNotifications,
@@ -119,6 +120,32 @@ async function resume(
 	return { messages, errors };
 }
 
+test("resume target detects UUID prefix collisions across durable and completed catalogs", () => {
+	// Regression: #2603 — ambiguity is decided after the live/durable/completed namespace is merged.
+	const durableId = "2603abcd-1111-4222-8333-123456789abc";
+	const completedId = "2603abcd-9999-4222-8333-123456789abc";
+	const entry = (workflowId: string, status: ResumableWorkflowEntry["status"]): ResumableWorkflowEntry => ({
+		workflowId,
+		name: workflowId,
+		status,
+		completedCheckpoints: 1,
+		pendingPrompts: 0,
+		createdAt: 1,
+		updatedAt: 2,
+	});
+	const resolution = resolveWorkflowResumeTarget(
+		"2603abcd",
+		[],
+		[entry(durableId, "paused")],
+		[entry(completedId, "completed")],
+	);
+	assert.equal(resolution.kind, "ambiguous");
+	if (resolution.kind === "ambiguous") {
+		assert.match(resolution.message, new RegExp(durableId));
+		assert.match(resolution.message, new RegExp(completedId));
+	}
+});
+
 describe("/workflow resume completed target", () => {
 	test("opens an exact completed id without invoking durable resume dispatch", async () => {
 		const backend = new InMemoryDurableBackend();
@@ -199,7 +226,7 @@ describe("/workflow resume completed target", () => {
 		}
 	});
 
-	test("opens an exact completed id and rejects a completed-id prefix", async () => {
+	test("opens a completed workflow by exact id or unique 8-hex prefix", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		registerCompleted(backend, testRunId("completed-exact-alpha"));
@@ -209,11 +236,12 @@ describe("/workflow resume completed target", () => {
 
 		const exact = await resume(testRunId("completed-exact-alpha"), runtime, opened);
 		store.clear();
-		const malformed = await resume("completed-exact-", runtime);
+		// Regression: #2603 — completed history shares the fixed UUID-prefix selector contract.
+		const prefixed = await resume(testRunId("completed-exact-alpha").slice(0, 8), runtime, opened);
 
-		assert.deepEqual(opened, [testRunId("completed-exact-alpha")]);
+		assert.deepEqual(opened, [testRunId("completed-exact-alpha"), testRunId("completed-exact-alpha")]);
 		assert.match(exact.messages.join("\n"), /Opened completed durable workflow/);
-		assert.match(malformed.errors.join("\n"), /Run id must be a full 36-character UUID/);
+		assert.match(prefixed.messages.join("\n"), /Opened completed durable workflow/);
 	});
 
 	test("reports a clear missing target without dispatching completed inspection", async () => {
@@ -323,12 +351,14 @@ describe("/workflow resume completed target", () => {
 		assert.match(result.errors.join("\n"), /stale or missing durable checkpoint\/session data/);
 	});
 
-	test("rejects a shared run-id prefix across live and completed workflows", async () => {
+	test("rejects a shared 8-hex run-id prefix across live and completed workflows", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		registerCompleted(backend, testRunId("shared-completed"));
+		const completedId = testRunId("shared-completed");
+		const liveId = `${completedId.slice(0, 8)}-${testRunId("shared-live").slice(9)}`;
+		registerCompleted(backend, completedId);
 		store.recordRunStart({
-			id: testRunId("shared-live"),
+			id: liveId,
 			name: "live-flow",
 			inputs: {},
 			status: "paused",
@@ -336,9 +366,12 @@ describe("/workflow resume completed target", () => {
 			startedAt: 1,
 			resumable: true,
 		});
-		const result = await resume("shared-", createExtensionRuntime({ store }));
+		// Regression: #2603 — merged live/completed collisions require the full UUID.
+		const result = await resume(completedId.slice(0, 8), createExtensionRuntime({ store }));
 
-		assert.match(result.errors.join("\n"), /Run id must be a full 36-character UUID/);
+		assert.match(result.errors.join("\n"), /ambiguous/);
+		assert.match(result.errors.join("\n"), new RegExp(completedId));
+		assert.match(result.errors.join("\n"), new RegExp(liveId));
 	});
 
 	test("excludes cancelled, killed, and non-resumable failed locals from exact-id resolution", async () => {

@@ -268,7 +268,7 @@ test("broker routes the exact full session ID", () => {
 	);
 });
 
-test("broker rejects an 8-character session ID prefix", () => {
+test("broker routes a unique 8-character session UUID prefix", () => {
 	const sender = {} as net.Socket;
 	const recipient = {} as net.Socket;
 	const recipientId = "aa56071e-1111-4222-8333-123456789abc";
@@ -287,13 +287,52 @@ test("broker rejects an 8-character session ID prefix", () => {
 		(socket, value) => writes.push({ socket, message: value }),
 	);
 
+	// Regression: #2603 — broker-side targeting uses the same fixed prefix contract.
 	assert.equal(
-		writes.some((entry) => entry.message.type === "message"),
+		writes.some((entry) => entry.socket === recipient && entry.message.type === "message"),
+		true,
+	);
+	assert.equal(
+		writes.some((entry) => entry.socket === sender && entry.message.type === "delivered"),
+		true,
+	);
+});
+
+test("broker UUID prefix collisions remain isolated to the sender's intercom group", () => {
+	// Regression: #2603 — an unreachable same-prefix session must not create ambiguity or expand routing scope.
+	const senderSocket = {} as net.Socket;
+	const reachableSocket = {} as net.Socket;
+	const isolatedSocket = {} as net.Socket;
+	const sender = session("sender", "sender", senderSocket);
+	const reachable = session("2603abcd-1111-4222-8333-123456789abc", "reachable", reachableSocket);
+	const isolated = session("2603abcd-9999-4222-8333-123456789abc", "isolated", isolatedSocket);
+	sender.info.groups = ["alpha"];
+	reachable.info.groups = ["alpha"];
+	isolated.info.groups = ["beta"];
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[sender.info.id, sender],
+		[reachable.info.id, reachable],
+		[isolated.info.id, isolated],
+	]);
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: "2603abcd", message: message("group-prefix") },
+		sender.info.id,
+		sessions,
+		new DeliveredMessageCache(),
+		(socket, value) => writes.push({ socket, message: value }),
+	);
+
+	assert.equal(
+		writes.some((entry) => entry.socket === reachableSocket && entry.message.type === "message"),
+		true,
+	);
+	assert.equal(
+		writes.some((entry) => entry.socket === isolatedSocket && entry.message.type === "message"),
 		false,
 	);
-	const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
-	assert.equal(failure?.type, "delivery_failed");
-	assert.match(failure?.reason ?? "", /Session not found/);
 });
 
 test("broker rejects an exact self session ID", () => {
@@ -320,7 +359,7 @@ test("broker rejects an exact self session ID", () => {
 	assert.match(failure?.reason ?? "", /current session/i);
 });
 
-test("broker rejects an 8-character self ID prefix as not found", () => {
+test("broker resolves an 8-character self UUID prefix before rejecting self-delivery", () => {
 	const sender = {} as net.Socket;
 	const senderId = "aa56071e-1111-4222-8333-123456789abc";
 	const sessions = new Map<string, BrokerConnectedSession>([[senderId, session(senderId, "sender", sender)]]);
@@ -341,7 +380,8 @@ test("broker rejects an 8-character self ID prefix as not found", () => {
 	);
 	const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
 	assert.equal(failure?.type, "delivery_failed");
-	assert.match(failure?.reason ?? "", /Session not found/);
+	// Regression: #2603 — prefix resolution must not bypass the existing self-send guard.
+	assert.match(failure?.reason ?? "", /current session/i);
 });
 
 test("broker records delivered questions and clears them only after routing the exact reply", () => {

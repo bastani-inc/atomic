@@ -35,6 +35,55 @@ afterEach(() => {
 });
 
 describe("targeted durable workflow inspection", () => {
+	test("rejects malformed truncations before loading the durable catalog", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.prepareWorkflowCatalog = async () => {
+			throw new Error("malformed selectors must not load the durable catalog");
+		};
+
+		const result = await inspectTargetedDurableWorkflow(backend, "2603abcd-1111");
+		assert.equal(result.kind, "malformed");
+		assert.match(result.message, /full 36-character UUID or a unique 8-character hexadecimal prefix/);
+	});
+
+	test("resolves a unique 8-hex durable prefix and reports catalog collisions", async () => {
+		// Regression: #2603 — status/stage/transcript durable inspection shares the UUID-prefix contract.
+		const backend = new InMemoryDurableBackend();
+		const firstId = "2603abcd-1111-4222-8333-123456789abc";
+		const secondId = "2603abcd-9999-4222-8333-123456789abc";
+		const seed = (workflowId: string) => {
+			backend.registerWorkflow({
+				workflowId,
+				name: workflowId,
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+				completedCheckpoints: 1,
+			});
+			backend.recordCheckpoint({
+				kind: "tool",
+				workflowId,
+				checkpointId: `tool:${workflowId}`,
+				name: "proof",
+				argsHash: `proof:${workflowId}`,
+				output: true,
+				completedAt: 2,
+			});
+		};
+		seed(firstId);
+
+		const unique = await inspectTargetedDurableWorkflow(backend, "2603abcd");
+		assert.equal(unique.kind, "found");
+		if (unique.kind === "found") assert.equal(unique.detail.runId, firstId);
+
+		seed(secondId);
+		const ambiguous = await inspectTargetedDurableWorkflow(backend, "2603abcd");
+		assert.equal(ambiguous.kind, "malformed");
+		assert.match(ambiguous.message, /ambiguous/);
+		assert.match(ambiguous.message, new RegExp(firstId));
+		assert.match(ambiguous.message, new RegExp(secondId));
+	});
+
 	test("hydrates a stale running DBOS root on exact-id status without resuming or entering session status", async () => {
 		const sdk = createMockSdk();
 		const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;

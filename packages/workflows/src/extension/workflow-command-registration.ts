@@ -153,7 +153,7 @@ async function workflowSlashHandler(
 		const target = parts[1];
 		if (target && !target.startsWith("--")) {
 			const resolved = resolveRunId(target);
-			if (resolved.kind === "malformed") return fail(resolved.message);
+			if (resolved.kind === "malformed" || resolved.kind === "ambiguous") return fail(resolved.message);
 			if (resolved.kind === "not_found") {
 				const durable = await deps.runtimeForContext(ctx).inspectDurableWorkflow(target);
 				if (durable.kind !== "found") return fail(durable.message);

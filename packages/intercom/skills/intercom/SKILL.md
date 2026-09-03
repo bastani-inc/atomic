@@ -67,15 +67,15 @@ intercom({
 
 ### Pattern 2: Quick Status Check
 
-Before sending, verify who's connected. The full session ID printed by `list` is directly usable by `send`, `ask`, and targeted `reply`:
+Before sending, verify who's connected. The full session ID printed by `list`, or its unique 8-hex UUID prefix, is directly usable by `send`, `ask`, and targeted `reply`:
 
 ```typescript
 intercom({ action: "list" })
 // → • planner (6332faab-1111-4222-8333-123456789abc) — /workspace (model) [idle]
-intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
+intercom({ action: "ask", to: "6332faab", message: "Which option should I use?" })
 ```
 
-Live sessions accept an exact full Intercom session ID or exact case-insensitive name. For workflow stages, first join `workflow:<rootRunId>` and use `intercom({ action: "list" })`: materialized stages appear as `PENDING` or `RUNNING` with canonical `workflow:<rootRunId>/<segment>[/<segment>...]` targets and actual groups, followed by possible future targets with queued counts. The invocation context can control owned isolated subgroups by exact target, while sibling subgroups and other runs remain isolated. Use queued `send` for `PENDING` or future targets; `ask` is supported only for `RUNNING`, where an exact correlated reply returns to the invocation asker.
+Live sessions accept an exact full Intercom session ID, a unique 8-hex prefix of a visible UUID-backed session, or an exact case-insensitive name. Ambiguous prefixes require a listed full UUID. For workflow stages, first join `workflow:<rootRunId>` and use `intercom({ action: "list" })`: materialized stages appear as `PENDING` or `RUNNING` with canonical `workflow:<rootRunId>/<segment>[/<segment>...]` targets and actual groups, followed by possible future targets with queued counts. The invocation context can control owned isolated subgroups by exact target, while sibling subgroups and other runs remain isolated. Use queued `send` for `PENDING` or future targets; `ask` is supported only for `RUNNING`, where an exact correlated reply returns to the invocation asker.
 
 ### Deliver to workflow stages that have not started
 
@@ -253,7 +253,7 @@ In Atomic workflows, each invocation has its own Intercom group, and parallel st
 | `groups` | Lists every available group with counts and membership markers | Discover a group instead of guessing its name |
 | `send` | Fire-and-forget to a live session, or durable sticky delivery to `workflow:<rootRunId>/<segment>[/<segment>...]`; globs and `**` broadcasts cover live and future matches | You don't need a response |
 | `ask` | Blocks until a live recipient replies (10 min timeout); refused for an unstarted stage | You need an answer to continue |
-| `reply` | Responds to the active or pending inbound ask; `to` accepts an exact full session ID or exact session name | You were asked something and need to answer naturally |
+| `reply` | Responds to the active or pending inbound ask; `to` accepts an exact name/full session ID or unique 8-hex session UUID prefix | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
 | `list` | Returns all sessions sharing any membership, with full IDs and live status | Discover targets or choose an idle peer |
 | `status` | Returns connection state and every current membership | Troubleshooting |

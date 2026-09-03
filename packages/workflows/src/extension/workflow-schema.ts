@@ -85,7 +85,7 @@ export const WorkflowParametersSchema = Type.Object(
 		runId: Type.Optional(
 			Type.String({
 				description:
-					"Full 36-character run UUID for status/stages/stage/transcript/answer/pause/resume/interrupt/quit. Prefixes are not accepted; pass the id exactly as displayed. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
+					"Full 36-character run UUID or unique 8-character hexadecimal UUID prefix for status/stages/stage/transcript/answer/pause/resume/interrupt/quit. Other truncated forms are rejected; ambiguous prefixes require the full UUID. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
 			}),
 		),
 		all: Type.Optional(

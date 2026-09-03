@@ -19,6 +19,7 @@ import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { WorkflowBudget } from "../shared/budget.js";
+import { resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
@@ -170,5 +171,10 @@ function resolveCatalogEntry(
 	workflowId: string,
 	catalog: readonly ResumableWorkflowEntry[],
 ): ResumableWorkflowEntry | undefined {
-	return catalog.find((entry) => entry.workflowId === workflowId);
+	const resolution = resolveRunIdTarget(
+		workflowId,
+		catalog.map((entry) => entry.workflowId),
+	);
+	if (resolution.kind !== "exact" && resolution.kind !== "unique_prefix") return undefined;
+	return catalog.find((entry) => entry.workflowId === resolution.runId);
 }

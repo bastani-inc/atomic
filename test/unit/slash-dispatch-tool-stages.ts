@@ -183,7 +183,7 @@ describe("tool run-control actions", () => {
 		);
 	});
 
-	test.sequential("workflow status rejects run prefixes while full ids remain independently addressable", async () => {
+	test.sequential("workflow status reports colliding 8-hex prefixes while full ids remain addressable", async () => {
 		const anchor = testRunId("status-shared-prefix");
 		const firstId = `${anchor.slice(0, 24)}111111111111`;
 		const secondId = `${anchor.slice(0, 24)}222222222222`;
@@ -197,11 +197,14 @@ describe("tool run-control actions", () => {
 		assert.ok(rendered.includes(secondId));
 
 		const prefix = anchor.slice(0, 8);
-		const malformed = await handler({ action: "status", runId: prefix }, {} as never);
-		assert.equal(malformed.action, "statusDetail");
-		const malformedDetail = malformed as { action: string; runId: string; error?: string };
-		assert.equal(malformedDetail.runId, prefix);
-		assert.match(malformedDetail.error ?? "", /Run id must be a full 36-character UUID/);
+		// Regression: #2603 — a valid 8-hex collision is ambiguity, not malformed input.
+		const ambiguous = await handler({ action: "status", runId: prefix }, {} as never);
+		assert.equal(ambiguous.action, "statusDetail");
+		const ambiguousDetail = ambiguous as { action: string; runId: string; error?: string };
+		assert.equal(ambiguousDetail.runId, prefix);
+		assert.match(ambiguousDetail.error ?? "", /ambiguous/);
+		assert.match(ambiguousDetail.error ?? "", new RegExp(firstId));
+		assert.match(ambiguousDetail.error ?? "", new RegExp(secondId));
 
 		for (const fullId of [firstId, secondId]) {
 			const detail = await handler({ action: "status", runId: fullId }, {} as never);

@@ -5,7 +5,14 @@ import {
 	expandWorkflowGraph,
 	stageMatchesExpandedIdentifier,
 } from "../shared/expanded-workflow-graph.js";
-import { isFullRunId, malformedRunIdMessage, RUN_ID_LENGTH } from "../shared/run-id.js";
+import {
+	isFullRunId,
+	isResolvedRunId,
+	malformedRunIdMessage,
+	RUN_ID_LENGTH,
+	RUN_ID_PREFIX_LENGTH,
+	resolveRunIdTarget,
+} from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
@@ -80,18 +87,15 @@ export function isRunStatus(value: string): value is RunStatus {
 	}
 }
 
-export { isFullRunId, malformedRunIdMessage, RUN_ID_LENGTH };
+export { isFullRunId, isResolvedRunId, malformedRunIdMessage, RUN_ID_LENGTH, RUN_ID_PREFIX_LENGTH };
 
-export type RunIdResolution =
-	| { kind: "exact"; runId: string }
-	| { kind: "malformed"; message: string }
-	| { kind: "not_found" };
+export type RunIdResolution = ReturnType<typeof resolveRunIdTarget>;
 
 export function resolveRunId(target: string, activeStore: Store = store): RunIdResolution {
-	if (!isFullRunId(target)) return { kind: "malformed", message: malformedRunIdMessage(target) };
-	const exact = activeStore.runs().find((r) => r.id === target);
-	if (exact) return { kind: "exact", runId: exact.id };
-	return { kind: "not_found" };
+	return resolveRunIdTarget(
+		target,
+		activeStore.runs().map((run) => run.id),
+	);
 }
 
 export type ToolRunTarget =
@@ -110,8 +114,10 @@ export function resolveToolRunTarget(
 	const target = rawTarget || activeStore.activeRunId() || "";
 	if (!target) return { kind: "not_found", target: rawTarget, message: emptyMessage };
 	const resolved = resolveRunId(target, activeStore);
-	if (resolved.kind === "exact") return { kind: "run", runId: resolved.runId };
-	if (resolved.kind === "malformed") return { kind: "malformed", target, message: resolved.message };
+	if (isResolvedRunId(resolved)) return { kind: "run", runId: resolved.runId };
+	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
+		return { kind: "malformed", target, message: resolved.message };
+	}
 	return { kind: "not_found", target, message: `Run not found: ${target}` };
 }
 

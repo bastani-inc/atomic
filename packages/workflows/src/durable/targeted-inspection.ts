@@ -1,4 +1,5 @@
 import { inspectRun, type RunDetail } from "../runs/background/run-inspect.js";
+import { isFullRunId, isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
@@ -16,7 +17,7 @@ export type TargetedDurableInspection =
 	| { readonly kind: "absent" | "deleted" | "malformed"; readonly message: string };
 
 /**
- * Hydrate and reconstruct one exact durable root for inspection only.
+ * Hydrate and reconstruct one exact or uniquely-prefixed durable root for inspection only.
  *
  * This path never claims ownership, changes durable status, starts execution,
  * or restores snapshots into the current session store.
@@ -26,36 +27,53 @@ export async function inspectTargetedDurableWorkflow(
 	workflowId: string,
 	now: number = Date.now(),
 ): Promise<TargetedDurableInspection> {
+	let resolvedWorkflowId = workflowId;
+	if (!isFullRunId(workflowId)) {
+		if (!isRunIdPrefix(workflowId)) {
+			const resolution = resolveRunIdTarget(workflowId, []);
+			if (resolution.kind === "malformed") return { kind: "malformed", message: resolution.message };
+		}
+		const catalog = await backend.prepareWorkflowCatalog();
+		const resolution = resolveRunIdTarget(workflowId, [
+			...catalog.resumable.map((entry) => entry.workflowId),
+			...catalog.completed.map((entry) => entry.workflowId),
+		]);
+		if (resolution.kind === "not_found") return hydrationFailure(workflowId, "absent");
+		if (resolution.kind === "malformed" || resolution.kind === "ambiguous") {
+			return { kind: "malformed", message: resolution.message };
+		}
+		resolvedWorkflowId = resolution.runId;
+	}
 	const hydrated = backend.hydrateWorkflowForInspection
-		? await backend.hydrateWorkflowForInspection(workflowId)
-		: await hydrateWithoutClassification(backend, workflowId);
-	if (hydrated.kind !== "current") return hydrationFailure(workflowId, hydrated.kind);
+		? await backend.hydrateWorkflowForInspection(resolvedWorkflowId)
+		: await hydrateWithoutClassification(backend, resolvedWorkflowId);
+	if (hydrated.kind !== "current") return hydrationFailure(resolvedWorkflowId, hydrated.kind);
 	const handle = hydrated.handle;
 	if (handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== handle.workflowId) {
-		return malformed(workflowId, "the requested id belongs to a nested workflow rather than a durable root");
+		return malformed(resolvedWorkflowId, "the requested id belongs to a nested workflow rather than a durable root");
 	}
 	const reconstructed = durableWorkflowRunSnapshots(backend, handle);
 	if (reconstructed.length === 0)
-		return malformed(workflowId, "durable checkpoint topology is malformed or incomplete");
+		return malformed(resolvedWorkflowId, "durable checkpoint topology is malformed or incomplete");
 	const runs = structuredClone(reconstructed);
 
 	const inspectionStore = createStore();
 	for (const run of runs) inspectionStore.recordRunStart(structuredClone(run));
-	const inspected = inspectRun(workflowId, { store: inspectionStore });
-	if (!inspected.ok) return malformed(workflowId, "the durable checkpoint graph has no reciprocal root");
+	const inspected = inspectRun(resolvedWorkflowId, { store: inspectionStore });
+	if (!inspected.ok) return malformed(resolvedWorkflowId, "the durable checkpoint graph has no reciprocal root");
 
 	const foreignLive = isForeignLiveWorkflow(handle, getAtomicExecutorId(), now);
 	const live = isLiveRunningWorkflow(handle, now);
 	const crashed = handle.status === "running" && !live;
 	const resumeGuidance = crashed
 		? inspected.detail.resumable === true
-			? `This workflow appears to have crashed and is resumable. Resume it explicitly with /workflow resume ${workflowId}.`
+			? `This workflow appears to have crashed and is resumable. Resume it explicitly with /workflow resume ${resolvedWorkflowId}.`
 			: "This workflow appears to have crashed, but its retained state is not resumable."
 		: foreignLive
 			? "This workflow is actively running in another Atomic session. Inspect it here, but control it from its owner session."
 			: live
 				? "This workflow still has a fresh durable heartbeat. Inspect it here without starting another executor."
-				: terminalGuidance(handle.status, workflowId, inspected.detail.resumable === true);
+				: terminalGuidance(handle.status, resolvedWorkflowId, inspected.detail.resumable === true);
 	return {
 		kind: "found",
 		runs,
