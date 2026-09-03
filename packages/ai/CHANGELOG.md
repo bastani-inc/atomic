@@ -1,6 +1,6 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`1d9787c11fb91ecf7c892050f4c0607a995dd15b`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/1d9787c11fb91ecf7c892050f4c0607a995dd15b/packages/ai/CHANGELOG.md).
+This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`79680533c6b898894f2d2421c7f640b212d3dfdd`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/79680533c6b898894f2d2421c7f640b212d3dfdd/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
 
