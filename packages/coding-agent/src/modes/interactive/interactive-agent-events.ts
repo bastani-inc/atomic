@@ -89,8 +89,10 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			}
 			this.stopWorkingLoader();
 			if (this.workingVisible) {
-				this.loadingAnimation = this.createWorkingLoader();
-				this.statusContainer.addChild(this.loadingAnimation);
+				const loader = this.createWorkingLoader();
+				this.loadingAnimation = loader;
+				this.workingIndicatorEmbedded = this.setEditorWorkingStatusIndicator?.(loader) ?? false;
+				if (!this.workingIndicatorEmbedded) this.statusContainer.addChild(loader);
 			}
 			this.ui.requestRender();
 			break;

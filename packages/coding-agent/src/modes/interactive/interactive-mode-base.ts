@@ -186,6 +186,20 @@ export interface InteractiveTuiInputSubscription {
 	unsubscribe: () => void;
 }
 
+interface WorkingStatusEditor extends EditorComponent {
+	readonly embedWorkingStatus: boolean;
+	setWorkingStatusIndicator(indicator: AtomicWorkingLoader | undefined): void;
+}
+
+function isWorkingStatusEditor(editor: EditorComponent): editor is WorkingStatusEditor {
+	return (
+		"embedWorkingStatus" in editor &&
+		editor.embedWorkingStatus === true &&
+		"setWorkingStatusIndicator" in editor &&
+		typeof editor.setWorkingStatusIndicator === "function"
+	);
+}
+
 export class InteractiveModeBase {
 	runtimeHost: AgentSessionRuntime;
 
@@ -298,6 +312,7 @@ export class InteractiveModeBase {
 	startupReplayActiveInput: string | undefined = undefined;
 
 	startupDraftText: string | undefined = undefined;
+	workingIndicatorEmbedded = false;
 
 	startupCookedInputRecovered = false;
 
@@ -313,7 +328,7 @@ export class InteractiveModeBase {
 
 	workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
 
-	readonly defaultWorkingMessage = "Working...";
+	readonly defaultWorkingMessage = "Working";
 
 	readonly defaultHiddenThinkingLabel = "Thinking...";
 
@@ -575,6 +590,13 @@ export class InteractiveModeBase {
 
 	declare options: InteractiveModeOptions;
 
+	setEditorWorkingStatusIndicator(indicator: AtomicWorkingLoader | undefined): boolean {
+		this.defaultEditor.setWorkingStatusIndicator(undefined);
+		if (!isWorkingStatusEditor(this.editor)) return false;
+		this.editor.setWorkingStatusIndicator(indicator);
+		return true;
+	}
+
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
 		this.options = options;
@@ -631,6 +653,7 @@ export class InteractiveModeBase {
 		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
+			embedWorkingStatus: true,
 		});
 
 		this.editor = this.defaultEditor;

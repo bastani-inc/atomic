@@ -1,4 +1,12 @@
-import { type Component, Loader, type LoaderIndicatorOptions, Text, type TUI } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Loader,
+	type LoaderIndicatorOptions,
+	stripTerminalSequences,
+	Text,
+	type TUI,
+	truncateToWidth,
+} from "@earendil-works/pi-tui";
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -190,6 +198,27 @@ export class AtomicWorkingLoader implements Component {
 				messageColor: this.messageColor,
 			}).render(width)
 		);
+	}
+
+	private renderUnwrappedLine(): string {
+		let width = Math.max(16, this.message.length + 4);
+		let lines = this.render(width);
+		while (lines.length > 2) {
+			width *= 2;
+			lines = this.render(width);
+		}
+		return lines.at(-1) ?? "";
+	}
+
+	renderInBorder(width: number, colorFn: (text: string) => string): string {
+		const plain = stripTerminalSequences(this.renderUnwrappedLine()).trim();
+		return colorFn(truncateToWidth(plain, width, ""));
+	}
+
+	renderSpinnerInBorder(width: number, colorFn: (text: string) => string): string {
+		const plain = stripTerminalSequences(this.renderUnwrappedLine()).trim();
+		const spinner = plain.endsWith(this.message) ? plain.slice(0, -this.message.length).trimEnd() : plain;
+		return colorFn(truncateToWidth(spinner, width, ""));
 	}
 
 	start(): void {

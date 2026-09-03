@@ -33,7 +33,7 @@ export {
 	ScrollableComponentViewport,
 } from "./chat-transcript.ts";
 export { CompactionBoundaryMessageComponent } from "./compaction-boundary-message.ts";
-export { CustomEditor } from "./custom-editor.ts";
+export { CustomEditor, type CustomEditorOptions } from "./custom-editor.ts";
 export { CustomEntryComponent } from "./custom-entry.ts";
 export { CustomMessageComponent } from "./custom-message.ts";
 export { DaxnutsComponent } from "./daxnuts.ts";

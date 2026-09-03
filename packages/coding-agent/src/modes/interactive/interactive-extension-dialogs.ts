@@ -1,3 +1,4 @@
+import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
@@ -282,6 +283,11 @@ InteractiveModeBase.prototype.setCustomEditorComponent = function (
 	}
 
 	this.editorContainer.addChild(this.editor as Component);
+	if (this.loadingAnimation instanceof AtomicWorkingLoader) {
+		this.statusContainer.clear();
+		this.workingIndicatorEmbedded = this.setEditorWorkingStatusIndicator(this.loadingAnimation);
+		if (!this.workingIndicatorEmbedded) this.statusContainer.addChild(this.loadingAnimation);
+	}
 	this.ui.setFocus(this.editor as Component);
 	this.ui.requestRender();
 };

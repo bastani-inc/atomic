@@ -33,7 +33,6 @@ import type {
 	HostCustomUiStateListener,
 	Keybinding,
 	KeybindingsManager,
-	Loader,
 	LoaderIndicatorOptions,
 	LoginDialogComponent,
 	MarkdownTheme,
@@ -157,7 +156,7 @@ declare module "./interactive-mode-base.ts" {
 		setupExtensionShortcuts(extensionRunner: ExtensionRunner): void;
 		setExtensionStatus(key: string, text: string | undefined): void;
 		getWorkingLoaderMessage(): string;
-		createWorkingLoader(): Loader | AtomicWorkingLoader;
+		createWorkingLoader(): AtomicWorkingLoader;
 		stopWorkingLoader(): void;
 		showWorkingLoaderNow(): void;
 		setWorkingVisible(visible: boolean): void;

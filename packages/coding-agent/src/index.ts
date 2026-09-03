@@ -414,6 +414,7 @@ export {
 	type ChatTranscriptRenderer,
 	type ChatTranscriptRole,
 	CustomEditor,
+	type CustomEditorOptions,
 	CustomEntryComponent,
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
