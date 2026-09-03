@@ -524,6 +524,52 @@ describe("openai-responses provider defaults", () => {
 		expect(result.usage.cost.output).toBe(model.cost.output * multiplier * tokenScale);
 		expect(result.usage.cost.total).toBe((model.cost.input + model.cost.output) * multiplier * tokenScale);
 	});
+
+	it("routes a fast variant to its base upstream model and prices it against that base", async () => {
+		const base = getModel("openai", "gpt-5.5");
+		// A fast variant keeps its canonical `-fast` id; `fastRoute` names the upstream model.
+		const fast: Model<"openai-responses"> = {
+			...base,
+			id: "gpt-5.5-fast",
+			fastRoute: { baseModelId: "gpt-5.5", upstreamModelId: "gpt-5.5", serviceTier: "priority" },
+		};
+		const tokenCount = 100_000;
+		const tokenScale = tokenCount / 1_000_000;
+		let capturedPayload: { model?: string; service_tier?: string } | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+			const sse = `data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					service_tier: "priority",
+					usage: {
+						input_tokens: tokenCount,
+						output_tokens: tokenCount,
+						total_tokens: tokenCount * 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`;
+			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+		});
+
+		const stream = streamOpenAIResponses(
+			fast,
+			{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{ apiKey: "test-key", serviceTier: "priority" },
+		);
+		const result = await stream.result();
+
+		// The wire carries the base upstream model plus the tier.
+		expect(capturedPayload?.model).toBe("gpt-5.5");
+		expect(capturedPayload?.service_tier).toBe("priority");
+		// The recorded assistant message keeps the canonical `-fast` identity.
+		expect(result.model).toBe("gpt-5.5-fast");
+		// Pricing keys on the base model, so gpt-5.5's 2.5x rate survives the rename.
+		expect(result.usage.cost.input).toBe(base.cost.input * 2.5 * tokenScale);
+		expect(result.usage.cost.total).toBe((base.cost.input + base.cost.output) * 2.5 * tokenScale);
+	});
 });
 
 describe("openai-responses max_output_tokens compat", () => {

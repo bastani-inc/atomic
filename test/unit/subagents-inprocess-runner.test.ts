@@ -209,7 +209,7 @@ test("native child identities stay terminal after ok, error, and interrupted att
 	}
 });
 
-test("launch metadata uses the session's effective thinking level", async () => {
+test("launch metadata preserves the canonical fast model ID and effective thinking level", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-metadata-"));
 	const gate = Promise.withResolvers<void>();
 	try {
@@ -220,7 +220,7 @@ test("launch metadata uses the session's effective thinking level", async () => 
 				...sampleSpec(root),
 				testSession: {
 					promptGate: gate.promise,
-					sessionModel: "anthropic/non-reasoning-fixture",
+					sessionModel: "openai-codex/gpt-5.6-sol-fast",
 					sessionThinkingLevel: "off",
 				},
 			},
@@ -230,18 +230,15 @@ test("launch metadata uses the session's effective thinking level", async () => 
 		const neverAbort = new AbortController().signal;
 		const running = control.startAttempt(
 			admitted,
-			{ modelId: "anthropic/non-reasoning-fixture", thinkingLevel: "xhigh" },
+			{ modelId: "openai-codex/gpt-5.6-sol-fast", thinkingLevel: "xhigh" },
 			{ abort: neverAbort, interrupt: neverAbort },
-			{ fastModeForModel: () => false },
 		);
 
-		assert.equal(running.currentModel, "anthropic/non-reasoning-fixture");
+		assert.equal(running.currentModel, "openai-codex/gpt-5.6-sol-fast");
 		assert.equal(running.currentThinking, "off");
-		assert.equal(running.currentFastMode, false);
 		assert.deepEqual(control.getChildMetadata(admitted.identity.path), {
-			model: "anthropic/non-reasoning-fixture",
+			model: "openai-codex/gpt-5.6-sol-fast",
 			thinking: "off",
-			fastMode: false,
 		});
 
 		gate.resolve();
@@ -268,7 +265,6 @@ test("launch metadata does not invent a default thinking level", async () => {
 			admitted,
 			{ modelId: "anthropic/non-reasoning-fixture" },
 			{ abort: neverAbort, interrupt: neverAbort },
-			{ fastModeForModel: () => false },
 		);
 
 		assert.equal(running.currentThinking, undefined);
@@ -297,12 +293,7 @@ test("launch metadata preserves configured thinking without a model", async () =
 		).admitted;
 		assert.ok(admitted);
 		const neverAbort = new AbortController().signal;
-		const running = control.startAttempt(
-			admitted,
-			{},
-			{ abort: neverAbort, interrupt: neverAbort },
-			{ fastModeForModel: () => false },
-		);
+		const running = control.startAttempt(admitted, {}, { abort: neverAbort, interrupt: neverAbort });
 
 		assert.equal(running.currentModel, undefined);
 		assert.equal(running.currentThinking, "high");

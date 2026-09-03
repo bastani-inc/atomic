@@ -59,17 +59,11 @@ export {
 	getDocsPath,
 	getEnvValue,
 	getShareViewerUrl,
-	setCodexFastModeEnvironmentSettings,
 	VERSION,
 } from "../../config.js";
 export { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 export { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 export { formatNoModelsAvailableMessage } from "../../core/auth-guidance.ts";
-export {
-	formatCodexFastModeModelLabel,
-	hasSupportedCodexFastModeModel,
-	shouldApplyCodexFastMode,
-} from "../../core/codex-fast-mode.ts";
 export type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 export type {
 	AutocompleteProviderFactory,
@@ -154,7 +148,6 @@ export { EarendilAnnouncementComponent } from "./components/earendil-announcemen
 export { ExtensionEditorComponent } from "./components/extension-editor.ts";
 export { ExtensionInputComponent } from "./components/extension-input.ts";
 export { ExtensionSelectorComponent } from "./components/extension-selector.ts";
-export { FastModeSelectorComponent } from "./components/fast-mode-selector.ts";
 export { FooterComponent, UsageMeterComponent } from "./components/footer.ts";
 export { formatKeyText, keyDisplayText, keyHintIfBound, keyText } from "./components/keybinding-hints.ts";
 export { LoginDialogComponent } from "./components/login-dialog.ts";

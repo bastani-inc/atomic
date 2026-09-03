@@ -31,6 +31,10 @@ export async function listModels(modelRuntime: ModelRuntime, searchPattern?: str
 	if (loadError) {
 		console.error(chalk.yellow(`Warning: errors loading models.json:\n${loadError}`));
 	}
+	const catalogWarning = modelRuntime.getWarning();
+	if (catalogWarning) {
+		console.error(chalk.yellow(`Warning: ${catalogWarning}`));
+	}
 
 	const models = modelRuntime.getAvailableSnapshot();
 

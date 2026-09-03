@@ -7,7 +7,6 @@ export {
 	APP_TITLE,
 	CONFIG_DIR_NAME,
 	CONFIG_DIR_NAMES,
-	ENV_CODEX_FAST_MODE,
 	getAgentConfigPaths,
 	getAgentDir,
 	getAgentDirs,
@@ -73,27 +72,6 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
-export {
-	CODEX_FAST_MODE_SERVICE_TIER,
-	type CodexFastModeResolvedSettings,
-	type CodexFastModeScope,
-	formatCodexFastModeModelLabel,
-	getCodexFastModeScope,
-	hasSupportedCodexFastModeModel,
-	isCodexFastModeCandidateModelId,
-	isCodexFastModeEnabledForScope,
-	isCodexFastModeSupportedModel,
-	isCodexFastModeSupportedProvider,
-	shouldApplyCodexFastMode,
-	shouldApplyCodexFastModeForScope,
-	usesChatGptCodexTransport,
-	usesFirstPartyCodexRouting,
-	withCodexFastModeHeaders,
-} from "./core/codex-fast-mode.ts";
-export {
-	CODEX_FAST_MODE_ORIGINATOR,
-	CODEX_FAST_MODE_ROUTING_HEADER,
-} from "./core/codex-fast-mode-transport.ts";
 // Compaction
 export {
 	type BranchPreparation,
@@ -134,6 +112,31 @@ export {
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 export { sessionScopedExtensionState } from "./core/extension-session-state.ts";
+export {
+	getModelFastRoute,
+	resolveUpstreamModelId,
+	usesChatGptCodexTransport,
+	usesFirstPartyCodexRouting,
+	withCodexFastRouteHeaders,
+	withFastRouteStreamOptions,
+} from "./core/fast-model-routing.ts";
+export {
+	CODEX_FAST_ROUTE_HEADER,
+	CODEX_FAST_ROUTE_ORIGINATOR,
+} from "./core/fast-model-routing-transport.ts";
+export {
+	copilotAdvertisedFastModelIds,
+	deriveFastModelVariants,
+	FAST_MODEL_ID_SUFFIX,
+	FAST_MODEL_SERVICE_TIER,
+	type FastModelVariantDerivation,
+	type FastModelVariantDiagnostic,
+	type FastModelVariantsOptions,
+	fastModelId,
+	isNativeFastRouteApi,
+	usesOpenAIFastServiceTier,
+	withFastModelVariants,
+} from "./core/fast-model-variants.ts";
 export {
 	parseFlattenedKeyPath,
 	reconstructFlattenedKeys,

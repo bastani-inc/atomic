@@ -17,6 +17,7 @@ A complete `defaultProvider`/`defaultModel` pair in `settings.json` is resolved 
 - [Request-wide Cost Tiers](#request-wide-cost-tiers)
 - [Overriding Built-in Providers](#overriding-built-in-providers)
 - [Per-model Overrides](#per-model-overrides)
+- [Derived Fast Model Variants](#derived-fast-model-variants)
 - [Anthropic Messages Compatibility](#anthropic-messages-compatibility)
 - [OpenAI Compatibility](#openai-compatibility)
 
@@ -458,6 +459,17 @@ Behavior notes:
 - Provider-level request headers remain a separate provider layer and are combined at request time.
 - Unknown model IDs are ignored unless a matching model is subsequently registered by an extension.
 - If `models` is also defined for a provider in `models.json`, those custom models are merged after built-in overrides. A custom model with the same `id` replaces the overridden built-in model entry.
+
+## Derived Fast Model Variants
+
+For providers that support fast inference, Atomic adds a second selectable model whose ID is the base model ID plus `-fast` (for example `openai-codex/gpt-5.6-sol-fast`). Derivation runs **after** built-in composition, `models.json` custom models, extension model lists, and `modelOverrides` on those models, so it sees the final catalog. A `modelOverrides` entry keyed on a derived `-fast` ID is then applied to the derived entry itself. See [Providers](/providers#fast-models) for eligibility and what each provider sends upstream.
+
+Two rules matter when you write `models.json`:
+
+- **Your exact ID wins.** If a provider, a custom model in `models`, or an extension already defines that exact `<base>-fast` ID, Atomic keeps yours untouched, does not derive a duplicate, and prints a warning naming the model to rename or remove if you wanted the derived variant instead. A model you define is an ordinary model: the `-fast` suffix alone never gives it fast routing behavior.
+- **`modelOverrides` applies to derived variants.** A derived entry is a real catalog model, so `modelOverrides["gpt-5.6-sol-fast"]` customizes it exactly like any other model, and its routing metadata survives the override. Overriding the *base* model still flows through to the derived entry by inheritance; a fast-specific override wins over that inherited value.
+
+A derived variant inherits the base model's `cost`. The provider adapter applies the fast-tier multiplier at request time, so do not pre-multiply cost in an override.
 
 ## Anthropic Messages Compatibility
 

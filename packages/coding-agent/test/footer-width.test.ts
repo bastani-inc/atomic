@@ -91,9 +91,6 @@ function createSession(options: {
 		modelRuntime: {
 			isUsingOAuth: () => false,
 		},
-		settingsManager: {
-			getCodexFastModeSettings: () => ({ enabled: false }),
-		},
 	};
 
 	return session as unknown as AgentSession;

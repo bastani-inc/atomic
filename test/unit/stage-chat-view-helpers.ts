@@ -251,9 +251,6 @@ export function fakeFooterAgentSession(isStreaming = false): AgentSession {
 		modelRuntime: {
 			isUsingOAuth: () => false,
 		},
-		settingsManager: {
-			getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
-		},
 		getContextUsage: () => ({
 			tokens: 46800,
 			contextWindow: 200000,

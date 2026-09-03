@@ -4,7 +4,6 @@ import {
 	convertToLlm,
 	type PromptOptions,
 	type StructuredOutputCapture,
-	shouldApplyCodexFastModeForScope,
 } from "@bastani/atomic";
 import type {
 	StageContext,
@@ -59,8 +58,8 @@ import type {
 	StageSessionEvent,
 	StageSessionRuntime,
 	StageUserMessagePreparation,
-	WorkflowFastModeSettingsManager,
 	WorkflowRetrySettings,
+	WorkflowSettingsManager,
 } from "./stage-runner-types.js";
 import {
 	isUnresolvedContextOverflowFailure,
@@ -160,14 +159,12 @@ function stageUserMessageText(message: StageSessionRuntime["messages"][number]):
 		.map((part) => part.text)
 		.join("");
 }
-function retrySettingsManagerFromError(error: unknown): WorkflowFastModeSettingsManager | undefined {
+function retrySettingsManagerFromError(error: unknown): WorkflowSettingsManager | undefined {
 	if (error === null || typeof error !== "object") return undefined;
 	const manager = (error as { readonly settingsManager?: unknown }).settingsManager;
 	if (manager === null || typeof manager !== "object") return undefined;
-	const candidate = manager as Partial<WorkflowFastModeSettingsManager>;
-	return typeof candidate.getCodexFastModeSettings === "function"
-		? (candidate as WorkflowFastModeSettingsManager)
-		: undefined;
+	const candidate = manager as Partial<WorkflowSettingsManager>;
+	return typeof candidate.getRetrySettings === "function" ? (candidate as WorkflowSettingsManager) : undefined;
 }
 
 type RetryableAgentSession = AgentSession & {
@@ -251,7 +248,7 @@ export class StageSessionController {
 	private readonly modelWarnings: string[] = [];
 	private readonly pendingFallbackWarnings: string[] = [];
 	private readonly modelCatalog: WorkflowModelCatalogPort | undefined;
-	private sessionSettingsManager: WorkflowFastModeSettingsManager | undefined;
+	private sessionSettingsManager: WorkflowSettingsManager | undefined;
 	private readonly thrownErrorRetryStates = new Set<ThrownErrorRetryState>();
 	private readonly creationPauseObservers = new Set<CreationPauseObserver>();
 	private readonly replacement = new StageSessionReplacement();
@@ -588,10 +585,8 @@ export class StageSessionController {
 	currentModelFallbackMeta(): StageModelFallbackMeta {
 		const attemptedModels = this.modelAttempts.map((attempt) => attempt.model);
 		const model = this.selectedModel ?? workflowModelId(this.session?.model);
-		const fastMode = this.isWorkflowFastModeEnabled();
 		return {
 			...(model !== undefined ? { model } : {}),
-			...(fastMode !== undefined ? { fastMode } : {}),
 			...(attemptedModels.length > 0 ? { attemptedModels } : {}),
 			...(this.modelAttempts.length > 0 ? { modelAttempts: [...this.modelAttempts] } : {}),
 			...(this.modelWarnings.length > 0 ? { warnings: [...this.modelWarnings] } : {}),
@@ -1297,11 +1292,11 @@ export class StageSessionController {
 		if (this.generationSealed) result.session.sealWorkflowStageGeneration?.();
 		this.replacement.adopt(result.session);
 		this.session = result.session;
+		this.sessionSettingsManager = result.settingsManager ?? result.session.settingsManager;
 		if (this.sharedModelRuntime === undefined) {
 			const withRegistry = result.session as Partial<Pick<AgentSession, "modelRuntime">>;
 			if (withRegistry.modelRuntime !== undefined) this.sharedModelRuntime = withRegistry.modelRuntime;
 		}
-		this.sessionSettingsManager = result.settingsManager ?? result.session.settingsManager;
 		if (this.pendingThinkingLevel !== undefined) result.session.setThinkingLevel(this.pendingThinkingLevel);
 		for (const listener of this.pendingListeners) {
 			this.listenerUnsubscribes.set(listener, result.session.subscribe(listener));
@@ -1553,13 +1548,6 @@ export class StageSessionController {
 			candidate === undefined
 				? this.effectiveStageOptions?.thinkingLevel
 				: effectiveCandidateReasoning(candidate, this.effectiveStageOptions?.thinkingLevel);
-	}
-	private isWorkflowFastModeEnabled(): boolean | undefined {
-		const model = this.session?.model;
-		const settingsManager = this.sessionSettingsManager ?? this.effectiveStageOptions?.settingsManager;
-		return model === undefined || settingsManager === undefined
-			? undefined
-			: shouldApplyCodexFastModeForScope(model, settingsManager.getCodexFastModeSettings(), "workflow");
 	}
 	private throwUnresolvedContextOverflowIfPresent(): void {
 		const message = this.unresolvedContextOverflowMessage;

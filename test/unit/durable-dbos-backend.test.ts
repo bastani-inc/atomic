@@ -131,7 +131,6 @@ describe("DbosDurableBackend (mock SDK)", () => {
 			sessionId: "sid",
 			sessionFile: "/tmp/review.jsonl",
 			model: "gpt-test",
-			fastMode: true,
 			attemptedModels: ["gpt-test"],
 			modelAttempts: [{ model: "gpt-test", success: true, usage }],
 			structured: { verdict: "pass", confidence: 0.9 },
@@ -158,7 +157,6 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		assert.equal(decoded.durationMs, 2000);
 		assert.equal(decoded.result, "review passed");
 		assert.equal(decoded.model, "gpt-test");
-		assert.equal(decoded.fastMode, true);
 		assert.deepEqual(decoded.attemptedModels, ["gpt-test"]);
 		assert.equal(decoded.modelAttempts?.[0]?.success, true);
 		assert.deepEqual(decoded.modelAttempts?.[0]?.usage, usage);

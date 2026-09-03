@@ -18,14 +18,9 @@ type WorkflowPendingStageDelivery = NonNullable<
 type AgentStageSessionEvent = Parameters<AgentSession["subscribe"]>[0] extends (event: infer T) => void ? T : never;
 export type StageSessionEvent = AgentStageSessionEvent & { readonly turnId?: string | number };
 
-export type WorkflowFastModeSettings = {
-	readonly chat: boolean;
-	readonly workflow: boolean;
-};
 export type WorkflowRetrySettings = ReturnType<SettingsManager["getRetrySettings"]>;
 
-export type WorkflowFastModeSettingsManager = {
-	getCodexFastModeSettings(): WorkflowFastModeSettings;
+export type WorkflowSettingsManager = {
 	getRetrySettings?(): WorkflowRetrySettings;
 };
 
@@ -85,7 +80,7 @@ export interface StageSessionRuntime {
 	getSteeringMessages?(): readonly string[];
 	getFollowUpMessages?(): readonly string[];
 	/** Settings manager supplied by the Atomic SDK when the adapter did not pre-create one. */
-	readonly settingsManager?: WorkflowFastModeSettingsManager;
+	readonly settingsManager?: WorkflowSettingsManager;
 	navigateTree: AgentSession["navigateTree"];
 	compact: AgentSession["compact"];
 	abortCompaction(): void;
@@ -99,7 +94,7 @@ export type StageSessionCreateOptions = CreateAgentSessionOptions &
 
 export interface StageSessionCreateResult {
 	readonly session: StageSessionRuntime;
-	readonly settingsManager?: WorkflowFastModeSettingsManager;
+	readonly settingsManager?: WorkflowSettingsManager;
 }
 
 export interface AgentSessionAdapter {
@@ -111,7 +106,6 @@ export interface AgentSessionAdapter {
 
 export interface StageModelFallbackMeta {
 	readonly model?: string;
-	readonly fastMode?: boolean;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly warnings?: readonly string[];
@@ -149,7 +143,7 @@ export interface StageRunnerOpts {
 	executionMode?: WorkflowExecutionMode;
 	/** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
 	defaultSessionDir?: string;
-	/** Internal: notifies the executor when an in-flight fallback changes model/fast metadata. */
+	/** Internal: notifies the executor when an in-flight fallback changes model metadata. */
 	onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
 	/** Internal: persist stage-session identity once the SDK has created its path. */
 	onSessionReady?: () => void | Promise<void>;

@@ -8,7 +8,6 @@ import type {
 } from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import { raceAbort } from "./executor-abort.js";
-import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
 import {
 	askReadinessViaStageBroker,
 	RESUME_CONTINUATION_PROMPT,
@@ -189,16 +188,7 @@ export function createTrackedStageCaller(input: {
 				const hasNoExplicitModelConfig =
 					input.options?.model === undefined && input.options?.fallbackModels === undefined;
 				const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
-				if (
-					callOptions.eagerSession &&
-					!promptAdapterHandlesInitialPrompt &&
-					(hasNoExplicitModelConfig ||
-						(await hasExplicitFastModeCandidate({
-							model: input.options?.model,
-							fallbackModels: input.options?.fallbackModels,
-							models: runtime.opts.models,
-						})))
-				) {
+				if (callOptions.eagerSession && !promptAdapterHandlesInitialPrompt && hasNoExplicitModelConfig) {
 					try {
 						await runtime.innerCtx.__ensureSession();
 					} catch (err) {

@@ -134,8 +134,6 @@ export interface AgentProgress {
 	model?: string;
 	/** Effective thinking level for this live attempt. */
 	thinking?: string;
-	/** Whether Codex fast mode applies to this attempt. */
-	fastMode?: boolean;
 	skills?: string[];
 	lastActivityAt?: number;
 	currentTool?: string;
@@ -195,7 +193,6 @@ export interface SingleResult {
 	usage: Usage;
 	model?: string;
 	thinking?: string;
-	fastMode?: boolean;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
 	controlEvents?: ControlEvent[];

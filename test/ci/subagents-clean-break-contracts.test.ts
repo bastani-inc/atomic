@@ -198,8 +198,16 @@ test("the clean-break env bridge and CLI-child protocol stay absent", () => {
 	for (const relative of files.filter(scanPath)) {
 		assert.equal(existsSync(join(root, relative)), true, `${relative} listed by git but missing from disk`);
 		const source = guardedSource(relative);
-		for (const envName of deletedEnvNames()) {
-			assert.equal(source.includes(envName), false, `${relative} reintroduced deleted environment key ${envName}`);
+		// A changelog entry that announces a removed environment key by name is exactly what release
+		// notes are for, so only shipped source, scripts, and docs are scanned for the deleted keys.
+		if (!isChangelogPath(relative)) {
+			for (const envName of deletedEnvNames()) {
+				assert.equal(
+					source.includes(envName),
+					false,
+					`${relative} reintroduced deleted environment key ${envName}`,
+				);
+			}
 		}
 		assert.equal(
 			source.includes(["build", "Pi", "Args"].join("")),

@@ -16,6 +16,15 @@ const models: AvailableModelInfo[] = [
 ];
 
 describe("subagent model fallback helpers", () => {
+	test("keeps canonical fast and normal fallback IDs distinct and ordered", () => {
+		const candidates = buildModelCandidates(
+			"openai-codex/gpt-5.6-sol-fast:medium",
+			["openai-codex/gpt-5.6-sol:medium"],
+			models,
+		);
+		assert.deepEqual(candidates, ["openai-codex/gpt-5.6-sol-fast:medium", "openai-codex/gpt-5.6-sol:medium"]);
+	});
+
 	test("appends the current selected model after configured fallbacks", () => {
 		assert.deepEqual(
 			buildModelCandidates(

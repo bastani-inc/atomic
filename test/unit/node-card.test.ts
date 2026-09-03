@@ -50,7 +50,6 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
 		model: opts.model,
 		workflowChild: opts.workflowChild,
 		workflowChildRun: opts.workflowChildRun,
-		fastMode: opts.fastMode,
 	};
 }
 
@@ -433,7 +432,7 @@ describe("renderNodeCard — metadata line", () => {
 	});
 
 	test("labels legacy reconstructed topology as unavailable rather than root", () => {
-		const lines = renderNodeCard(makeStage({ status: "completed", topologyState: "unavailable", fastMode: true }), {
+		const lines = renderNodeCard(makeStage({ status: "completed", topologyState: "unavailable" }), {
 			theme,
 		});
 		const metadata = stripAnsi(lines[3]!).slice(1, -1).trim();
@@ -547,13 +546,13 @@ describe("renderNodeCard — metadata line", () => {
 		}
 	});
 
-	test("stages omit the fast mode marker from dependency metadata", () => {
-		const lines = renderNodeCard(makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }), {
+	test("stages do not append a separate fast badge to model identity", () => {
+		const lines = renderNodeCard(makeStage({ status: "completed", model: "openai/gpt-5.1-codex-fast" }), {
 			theme,
 		});
 		const rendered = stripAnsi(lines.join("\n"));
 
-		assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex fast/);
+		assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex-fast fast/);
 		assert.equal(stripAnsi(lines[3]!).slice(1, -1).trim(), "root");
 	});
 });

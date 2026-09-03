@@ -7,13 +7,18 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Added
 
 - Added Anthropic per-turn effort persistence, deterministic historical effort markers, and signed-thinking mismatch recovery for supported Claude models across Anthropic Messages transports, including OpenRouter.
-
 - Added `compat.vllmPriority` to the OpenAI Completions compatibility options. When set, it is sent as the top-level `priority` request field; lower values are handled earlier and the vLLM server default is `0`, so it only takes effect when vLLM runs with `--scheduling-policy priority`. Setting it on a background or batch model defers that model's long prefills behind interactive sessions. Off by default and never set on the generated catalog ([#9004](https://github.com/earendil-works/pi/pull/9004)).
+- `Model.fastRoute` and the `ModelFastRoute` type. This optional field marks a model as the fast-inference variant of another model and carries the upstream routing it needs: the base model it pairs with, the model ID to send upstream, and an optional OpenAI-style `serviceTier`. Presence of this field — never a `-fast` name suffix — is what gives a model fast semantics.
+
+### Changed
+
+- **Breaking:** the OpenAI Responses and ChatGPT Codex Responses adapters now serialize `model` as `model.fastRoute?.upstreamModelId ?? model.id`. A fast variant therefore routes to its base upstream model while the model object — and so the assistant message the adapter emits, its `model` field, and everything downstream that reads it — keeps the canonical `-fast` identity. Callers that previously handed these adapters a pre-substituted model should hand them the canonical model instead.
+- **Breaking:** the `service_tier` cost multiplier in both adapters now keys on `model.fastRoute?.baseModelId ?? model.id`. Without this, `gpt-5.5-fast` would have been priced at the generic 2x priority rate instead of gpt-5.5's 2.5x once the adapters started receiving the canonical model.
+- **Breaking:** `githubCopilotProvider().filterModels` no longer strips every model ID ending in `-fast` from the selectable list. It now exposes a model carrying `fastRoute` only when the OAuth credential's `fastModelIds` advertises that exact ID, and treats a Copilot-owned model that merely ends in `-fast` as an ordinary picker model gated by `availableModelIds`.
 
 ### Fixed
 
 - Fixed native Anthropic Messages requests sending the interleaved-thinking beta when thinking was disabled, and preserved request-start thinking-drop diagnostics when a later provider report is empty or the stream fails.
-
 - Fixed GitHub Copilot Claude Fable requests to use the Anthropic Messages adapter so selected reasoning levels are sent. The generated Copilot catalog now routes `claude-fable-*` alongside the other Claude 4.x/5.x entries ([#8961](https://github.com/earendil-works/pi/issues/8961)).
 - Fixed the generated Fireworks catalog to serve every GLM model through the OpenAI-compatible completions API. Previously only the `glm-5p2` family took that route and newer GLM entries such as `glm-5p3` were generated against the Anthropic-compatible endpoint ([#8978](https://github.com/earendil-works/pi/issues/8978)).
 

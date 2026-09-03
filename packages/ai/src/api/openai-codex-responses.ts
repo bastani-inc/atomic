@@ -552,7 +552,9 @@ function buildRequestBody(
 	});
 
 	const body: RequestBody = {
-		model: model.id,
+		// A fast variant keeps its canonical `-fast` id on the model object — that is the identity the
+		// caller selected and records — while routing to the base upstream model plus a service tier.
+		model: model.fastRoute?.upstreamModelId ?? model.id,
 		store: false,
 		stream: true,
 		instructions: context.systemPrompt || "You are a helpful assistant.",
@@ -597,14 +599,17 @@ function buildRequestBody(
 }
 
 function getServiceTierCostMultiplier(
-	model: Pick<Model<"openai-codex-responses">, "id">,
+	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
 	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 ): number {
+	// Price against the model that was actually billed upstream, so a `-fast` variant of a
+	// per-model rate (gpt-5.5) is not silently charged the generic multiplier.
+	const pricedModelId = model.fastRoute?.baseModelId ?? model.id;
 	switch (serviceTier) {
 		case "flex":
 			return 0.5;
 		case "priority":
-			return model.id === "gpt-5.5" ? 2.5 : 2;
+			return pricedModelId === "gpt-5.5" ? 2.5 : 2;
 		default:
 			return 1;
 	}
@@ -613,7 +618,7 @@ function getServiceTierCostMultiplier(
 function applyServiceTierPricing(
 	usage: Usage,
 	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-	model: Pick<Model<"openai-codex-responses">, "id">,
+	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
 ) {
 	const multiplier = getServiceTierCostMultiplier(model, serviceTier);
 	if (multiplier === 1) return;

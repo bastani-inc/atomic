@@ -48,7 +48,6 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/model` | Switch models; Ctrl+S in the picker saves the startup default |
 | `/thinking` | Switch thinking level; Ctrl+S in the picker saves the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/fast` | Configure fast mode for chat and workflow stages when supported OpenAI or GitHub Copilot models are available |
 | `/workflow` | List/run workflows; manage runs (connect/inspect/pause/interrupt/quit/resume); reload workflow resources |
 | `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |

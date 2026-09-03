@@ -28,7 +28,6 @@ export interface ParallelTaskResult {
 	error?: string;
 	cause?: string;
 	model?: string;
-	fastMode?: boolean;
 	attemptedModels?: string[];
 	outputTargetPath?: string;
 	outputTargetExists?: boolean;

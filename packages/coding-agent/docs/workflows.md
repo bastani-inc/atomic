@@ -2871,7 +2871,6 @@ interface WorkflowTaskResult extends WorkflowTaskContext {
   readonly sessionFile?: string;
   readonly artifacts?: readonly WorkflowArtifact[];
   readonly model?: string;
-  readonly fastMode?: boolean;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
   readonly warnings?: readonly string[];
@@ -4054,17 +4053,22 @@ Each export is a workflow definition. All nine definitions are available through
 
 ## Fast inference for workflow stages
 
-Workflow stages can use faster inference on supported OpenAI and GitHub Copilot models so multi-stage runs finish sooner.
+Stages select faster inference the same way they select any other model: by naming it. Where a provider publishes a fast variant, its canonical selectable ID is the base model ID plus `-fast`, so a stage pins `openai-codex/gpt-5.6-sol-fast` — with an optional thinking suffix, `openai-codex/gpt-5.6-sol-fast:medium` — in its `model` field, and lists fast and normal IDs in its fallback model fields in whatever order it wants:
 
-### Fast mode
+```ts
+await ctx.task({
+  name: "triage",
+  model: "openai-codex/gpt-5.6-sol-fast:medium",
+  fallbackModels: ["openai-codex/gpt-5.6-sol:medium"],
+  prompt: "…",
+});
+```
 
-Use `/fast` to manage fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; main-chat subagents use the chat scope, while workflow stages use the workflow scope. A stage inside a nested `ctx.workflow(...)` call keeps that workflow scope, and subagents launched by the stage inherit it.
+There is no fast-mode setting, no scope inheritance, and no separate `fast` marker. Normal and fast IDs are distinct fallback candidates and distinct `modelAttempts` entries, and stage model metadata carries the exact selected ID, so a run's records show precisely which one served each attempt. Graph node cards keep their dependency metadata focused on topology.
 
-Fast mode is eligible for supported `openai/*` and `openai-codex/*` providers, provider aliases that use the shared `openai-codex-responses` transport, and GitHub Copilot models whose OAuth account catalog advertises a fast variant. OpenAI requests use the priority service tier. GitHub Copilot requests use the account-supported fast variant without adding the OpenAI service-tier field. Azure OpenAI, OpenRouter, and generic OpenAI-compatible providers are not eligible.
+`workflow({ action: "models" })` lists fast variants alongside their normal siblings, so a workflow can discover them at runtime. See [Providers](/providers#fast-models) for which providers publish fast variants and what each one sends upstream.
 
-Atomic resolves eligibility for the effective model on every fallback attempt. A supported fallback can use fast mode even when the primary failed, while an unsupported fallback keeps its normal request behavior. Workflow stage model labels and all subagent result labels keep the raw model ID and append a separate `fast` marker; for an entitled Copilot child, the marker appears exactly when the request uses the account-advertised `<model-id>-fast` variant. Graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
-
-Enable workflow fast mode deliberately for broad workflows. Parallel fan-out and fallback attempts can multiply fast provider requests and usage.
+Pin fast variants deliberately in broad workflows. Parallel fan-out and fallback attempts multiply provider requests, and priority-tier requests are billed at a higher rate.
 
 ## Context Engineering
 

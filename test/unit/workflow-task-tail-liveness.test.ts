@@ -800,7 +800,6 @@ describe("ctx.task tail liveness", () => {
 			sessionId: "sess-review",
 			sessionFile: "/tmp/review.jsonl",
 			model: "openai/gpt-test",
-			fastMode: false,
 			attemptedModels,
 			modelAttempts,
 			structured: { approved: true, score: 4 },
@@ -824,7 +823,6 @@ describe("ctx.task tail liveness", () => {
 						sessionId: review.sessionId,
 						sessionFile: review.sessionFile,
 						model: review.model,
-						fastMode: review.fastMode,
 						attemptedModels: review.attemptedModels,
 						modelAttempts: review.modelAttempts,
 					}),
@@ -857,7 +855,6 @@ describe("ctx.task tail liveness", () => {
 			sessionId: "sess-review",
 			sessionFile: "/tmp/review.jsonl",
 			model: "openai/gpt-test",
-			fastMode: false,
 			attemptedModels,
 			modelAttempts,
 		});

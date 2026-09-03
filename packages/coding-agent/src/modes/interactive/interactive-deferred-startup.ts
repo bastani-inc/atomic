@@ -80,6 +80,10 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		if (modelsJsonError) {
 			this.showError(`models.json error: ${modelsJsonError}`);
 		}
+		const modelCatalogWarning = this.session.modelRuntime.getWarning();
+		if (modelCatalogWarning) {
+			this.showWarning(modelCatalogWarning);
+		}
 		void this.updateAvailableProviderCount().catch(() => {});
 		this.updateEditorBorderColor();
 		this.ui.requestRender();

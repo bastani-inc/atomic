@@ -148,12 +148,7 @@ function _makeFakeAtomicSdk(
 		SettingsManager: {
 			create(cwd?: string, agentDir?: string, options?: { projectTrusted?: boolean }): PiSdkSettingsManager {
 				settingsCalls.push({ cwd, agentDir, options });
-				return {
-					getCodexFastModeSettings: () => ({
-						chat: false,
-						workflow: false,
-					}),
-				};
+				return {};
 			},
 		},
 		DefaultResourceLoader: FakeResourceLoader,
@@ -219,9 +214,9 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		assert.equal(calls[0]?.cwd, "/tmp/project");
 	});
 
-	test("agentSession.create returns the SDK-prepared settings manager for workflow metadata", async () => {
+	test("agentSession.create returns the SDK-prepared settings manager for retry metadata", async () => {
 		const settingsManager = {
-			getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+			getRetrySettings: () => ({ enabled: false, maxRetries: 0, baseDelayMs: 0 }),
 		};
 		const adapters = buildRuntimeAdapters(
 			{},

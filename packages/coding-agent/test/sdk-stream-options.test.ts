@@ -10,7 +10,6 @@ import {
 	type SimpleStreamOptions,
 } from "@bastani/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -22,12 +21,9 @@ describe("createAgentSession stream options", () => {
 	let tempDir: string;
 	let cwd: string;
 	let agentDir: string;
-	let previousCodexFastModeEnv: string | undefined;
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "pi-sdk-stream-options-"));
-		previousCodexFastModeEnv = process.env[ENV_CODEX_FAST_MODE];
-		delete process.env[ENV_CODEX_FAST_MODE];
 		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
 		mkdirSync(cwd, { recursive: true });
@@ -37,8 +33,6 @@ describe("createAgentSession stream options", () => {
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
-		if (previousCodexFastModeEnv === undefined) delete process.env[ENV_CODEX_FAST_MODE];
-		else process.env[ENV_CODEX_FAST_MODE] = previousCodexFastModeEnv;
 	});
 	function createModel(api: Api): Model<Api> {
 		return {
@@ -53,6 +47,16 @@ describe("createAgentSession stream options", () => {
 			contextWindow: 128000,
 			maxTokens: 4096,
 			headers: { "x-model": "model" },
+		};
+	}
+
+	/** A selected model whose explicit route metadata puts it on the OpenAI priority fast route. */
+	function fastRouteModel(): Model<Api> {
+		const base = createModel("openai-responses");
+		return {
+			...base,
+			id: `${base.id}-fast`,
+			fastRoute: { baseModelId: base.id, upstreamModelId: base.id, serviceTier: "priority" },
 		};
 	}
 
@@ -277,8 +281,8 @@ describe("createAgentSession stream options", () => {
 		expect(options?.env).toEqual({ HTTPS_PROXY: "https://credential-proxy.example" });
 	});
 
-	it("uses a credential-derived baseUrl for native Codex fast-mode dispatch", async () => {
-		const model: Model<Api> = { ...createModel("openai-responses"), provider: "openai" };
+	it("uses a credential-derived baseUrl for native Codex fast-route dispatch", async () => {
+		const model: Model<Api> = { ...fastRouteModel(), provider: "openai" };
 		const modelRuntime = getModelRuntime(
 			await createModelRegistry(AuthStorage.inMemory(), join(agentDir, "models.json")),
 		);
@@ -314,7 +318,7 @@ describe("createAgentSession stream options", () => {
 			agentDir,
 			model,
 			modelRuntime,
-			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
+			settingsManager: SettingsManager.inMemory({}),
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 
@@ -327,8 +331,8 @@ describe("createAgentSession stream options", () => {
 		}
 	});
 
-	it("rejects authHeader providers before Codex fast-mode dispatch when credentials are missing", async () => {
-		const model: Model<Api> = { ...createModel("openai-responses"), provider: "openai" };
+	it("rejects authHeader providers before Codex fast-route dispatch when credentials are missing", async () => {
+		const model: Model<Api> = { ...fastRouteModel(), provider: "openai" };
 		const modelRuntime = getModelRuntime(
 			await createModelRegistry(AuthStorage.inMemory(), join(agentDir, "models.json")),
 		);
@@ -345,7 +349,7 @@ describe("createAgentSession stream options", () => {
 			agentDir,
 			model,
 			modelRuntime,
-			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
+			settingsManager: SettingsManager.inMemory({}),
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 
@@ -360,8 +364,8 @@ describe("createAgentSession stream options", () => {
 		}
 	});
 
-	it("rejects native Codex fast-mode dispatch when provider auth is unresolved", async () => {
-		const model: Model<Api> = { ...createModel("openai-responses"), provider: "openai" };
+	it("rejects native Codex fast-route dispatch when provider auth is unresolved", async () => {
+		const model: Model<Api> = { ...fastRouteModel(), provider: "openai" };
 		const modelRuntime = getModelRuntime(
 			await createModelRegistry(AuthStorage.inMemory(), join(agentDir, "models.json")),
 		);
@@ -371,7 +375,7 @@ describe("createAgentSession stream options", () => {
 			agentDir,
 			model,
 			modelRuntime,
-			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
+			settingsManager: SettingsManager.inMemory({}),
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 

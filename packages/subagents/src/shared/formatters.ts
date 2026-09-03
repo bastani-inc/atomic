@@ -12,7 +12,7 @@ export function formatTokens(n: number): string {
 	return n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
 }
 
-export function formatModelThinking(model?: string, thinking?: string, fastMode?: boolean): string {
+export function formatModelThinking(model?: string, thinking?: string): string {
 	const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
 	// Keep the full `provider/model` id so subagent lines read exactly like the
 	// main chat's model display; only a known thinking suffix is split off.
@@ -20,7 +20,6 @@ export function formatModelThinking(model?: string, thinking?: string, fastMode?
 	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
 	const displayThinking = parsed?.thinkingSuffix ? parsed.thinkingSuffix.slice(1) : explicitThinking;
 	const parts = [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined].filter(Boolean);
-	if (fastMode && parts.length > 0) parts.push("fast");
 	return parts.join(" · ");
 }
 

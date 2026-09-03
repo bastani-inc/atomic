@@ -6,42 +6,32 @@ import {
 	type Context,
 	createAssistantMessageEventStream,
 	type Model,
+	type ModelFastRoute,
 	type OpenAICodexResponsesOptions,
 	type OpenAIResponsesOptions,
 	type SimpleStreamOptions,
 } from "@bastani/pi-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import {
-	buildOpenAIResponsesCodexFastModeOptions,
-	CODEX_FAST_MODE_SERVICE_TIER,
-	type CodexFastModeStreamers,
-	getCodexFastModeScope,
-	hasSupportedCodexFastModeModel,
-	isCodexFastModeCandidateModelId,
-	isCodexFastModeEnabledForScope,
-	isCodexFastModeEnabledForSession,
-	isCodexFastModeSupportedProvider,
-	isGitHubCopilotFastModeSupportedModel,
-	shouldApplyCodexFastModeForScope,
-	streamWithCodexFastMode,
+	buildOpenAIResponsesFastRouteOptions,
+	type FastRouteStreamers,
+	getModelFastRoute,
+	resolveUpstreamModelId,
+	streamWithFastRoute,
+	usesChatGptCodexTransport,
 	usesFirstPartyCodexRouting,
 	withChatGptCodexTransportRouting,
-	withCodexFastModeHeaders,
-	withCodexFastModePayload,
-	withCodexFastModeStreamOptions,
-} from "../src/core/codex-fast-mode.ts";
+	withCodexFastRouteHeaders,
+	withFastRouteStreamOptions,
+} from "../src/core/fast-model-routing.ts";
 import {
-	CODEX_FAST_MODE_ORIGINATOR,
-	CODEX_FAST_MODE_ROUTING_HEADER,
-	forceCodexFastModeOriginator,
-	wrapCodexFastModeFetch,
-	wrapCodexFastModeWebSocket,
-} from "../src/core/codex-fast-mode-transport.ts";
-import type { OrchestrationContext } from "../src/core/extensions/index.ts";
-
-function providerModel(provider: string): Pick<Model<Api>, "provider"> {
-	return { provider };
-}
+	CODEX_FAST_ROUTE_HEADER,
+	CODEX_FAST_ROUTE_ORIGINATOR,
+	forceCodexFastRouteOriginator,
+	wrapCodexFastRouteFetch,
+	wrapCodexFastRouteWebSocket,
+} from "../src/core/fast-model-routing-transport.ts";
+import { FAST_MODEL_SERVICE_TIER } from "../src/core/fast-model-variants.ts";
 
 function fullModel(partial: Partial<Model<Api>>): Model<Api> {
 	return {
@@ -59,8 +49,14 @@ function fullModel(partial: Partial<Model<Api>>): Model<Api> {
 	};
 }
 
+const serviceTierRoute: ModelFastRoute = {
+	baseModelId: "gpt-5.1-codex",
+	upstreamModelId: "gpt-5.1-codex",
+	serviceTier: FAST_MODEL_SERVICE_TIER,
+};
+
 interface CapturedStreamCall {
-	name: keyof CodexFastModeStreamers;
+	name: keyof FastRouteStreamers;
 	model: Model<Api>;
 	options?: SimpleStreamOptions | OpenAIResponsesOptions | OpenAICodexResponsesOptions;
 }
@@ -71,7 +67,7 @@ function doneStream(): AssistantMessageEventStream {
 	return stream;
 }
 
-function makeStreamers(calls: CapturedStreamCall[]): CodexFastModeStreamers {
+function makeStreamers(calls: CapturedStreamCall[]): FastRouteStreamers {
 	return {
 		streamSimple: (streamModel, _context, options) => {
 			calls.push({ name: "streamSimple", model: streamModel, options });
@@ -90,105 +86,65 @@ function makeStreamers(calls: CapturedStreamCall[]): CodexFastModeStreamers {
 
 const emptyContext: Context = { messages: [] };
 
-const workflowContext: OrchestrationContext = {
-	kind: "workflow-stage",
-	workflowRunId: "run-1",
-	workflowStageId: "stage-1",
-	workflowStageName: "Stage 1",
-	constraints: {
-		disableWorkflowTool: true,
-	},
-};
-
-describe("codex fast mode helpers", () => {
-	it("supports only OpenAI and OpenAI Codex providers", () => {
-		expect(isCodexFastModeSupportedProvider("openai")).toBe(true);
-		expect(isCodexFastModeSupportedProvider("openai-codex")).toBe(true);
-		expect(isCodexFastModeSupportedProvider("github-copilot")).toBe(false);
-		expect(isCodexFastModeSupportedProvider("azure-openai-responses")).toBe(false);
+describe("fast model route resolution", () => {
+	it("reads fast semantics only from explicit route metadata", () => {
+		const derived = fullModel({ id: "gpt-5.1-codex-fast", fastRoute: serviceTierRoute });
+		assert.deepEqual(getModelFastRoute(derived), serviceTierRoute);
+		// An exact provider/models.json/extension-owned `-fast` ID with no metadata is an ordinary model.
+		assert.equal(getModelFastRoute(fullModel({ id: "gpt-5.1-codex-fast" })), undefined);
+		assert.equal(getModelFastRoute(fullModel({})), undefined);
 	});
 
-	it("detects supported models from provider IDs and the shared Codex transport", () => {
-		expect(hasSupportedCodexFastModeModel([providerModel("github-copilot")])).toBe(false);
-		expect(hasSupportedCodexFastModeModel([providerModel("github-copilot"), providerModel("openai")])).toBe(true);
-		expect(hasSupportedCodexFastModeModel([providerModel("openai-codex")])).toBe(true);
-		expect(
-			hasSupportedCodexFastModeModel([fullModel({ provider: "codex-proxy", api: "openai-codex-responses" })]),
-		).toBe(true);
+	it("names the base upstream model ID for an OpenAI-style service-tier route", () => {
+		const selected = fullModel({ id: "gpt-5.1-codex-fast", fastRoute: serviceTierRoute });
+		assert.equal(resolveUpstreamModelId(selected), "gpt-5.1-codex");
+		// Only the serialized request differs; the selected model object is untouched, so everything
+		// Atomic records keeps the canonical `-fast` identity.
+		assert.equal(selected.id, "gpt-5.1-codex-fast");
 	});
 
-	it("recognizes only the exact entitled Copilot fast sibling", () => {
-		const model = fullModel({ provider: "github-copilot", id: "claude-opus-4.8", api: "anthropic-messages" });
-		const entitledCredential = {
-			type: "oauth" as const,
-			access: "token",
-			refresh: "refresh",
-			expires: Number.MAX_SAFE_INTEGER,
-			fastModelIds: ["claude-opus-4.8-fast"],
-		};
+	it("names the provider's own advertised fast ID when the route names one", () => {
+		const copilotFast = fullModel({
+			provider: "github-copilot",
+			api: "anthropic-messages",
+			id: "claude-opus-4.8-fast",
+			fastRoute: { baseModelId: "claude-opus-4.8", upstreamModelId: "claude-opus-4.8-fast" },
+		});
+		assert.equal(resolveUpstreamModelId(copilotFast), "claude-opus-4.8-fast");
+	});
 
-		assert.equal(isGitHubCopilotFastModeSupportedModel(model, entitledCredential), true);
-		assert.equal(hasSupportedCodexFastModeModel([model], entitledCredential), true);
+	it("names a normal model's own ID", () => {
+		assert.equal(resolveUpstreamModelId(fullModel({})), "gpt-5.1-codex");
+	});
+
+	it("identifies the shared ChatGPT Codex transport by API, including renamed providers", () => {
+		assert.equal(usesChatGptCodexTransport(fullModel({ api: "openai-codex-responses" })), true);
 		assert.equal(
-			isGitHubCopilotFastModeSupportedModel(model, { ...entitledCredential, fastModelIds: ["other-fast"] }),
-			false,
+			usesChatGptCodexTransport(fullModel({ provider: "codex-proxy", api: "openai-codex-responses" })),
+			true,
 		);
-		assert.equal(isGitHubCopilotFastModeSupportedModel(model, undefined), false);
-		assert.equal(
-			isGitHubCopilotFastModeSupportedModel(fullModel({ provider: "anthropic" }), entitledCredential),
-			false,
+		assert.equal(usesChatGptCodexTransport(fullModel({ api: "openai-responses" })), false);
+		assert.equal(usesChatGptCodexTransport(fullModel({ api: "azure-openai-responses" })), false);
+	});
+
+	it("adds serviceTier to stream options only for a service-tier route", () => {
+		assert.equal(withFastRouteStreamOptions(undefined, undefined), undefined);
+		assert.deepEqual(withFastRouteStreamOptions(undefined, { temperature: 0.2 }), { temperature: 0.2 });
+		assert.deepEqual(
+			withFastRouteStreamOptions({ baseModelId: "m", upstreamModelId: "m-fast" }, { temperature: 0.2 }),
+			{ temperature: 0.2 },
 		);
-	});
-
-	it("detects candidate model ids with the shared provider policy", () => {
-		expect(isCodexFastModeCandidateModelId("openai/gpt-5.1-codex")).toBe(true);
-		expect(isCodexFastModeCandidateModelId("openai-codex/gpt-5.1-codex")).toBe(true);
-		expect(isCodexFastModeCandidateModelId("anthropic/claude-sonnet-4")).toBe(false);
-		expect(isCodexFastModeCandidateModelId("gpt-5.1-codex")).toBe(false);
-		expect(isCodexFastModeCandidateModelId(undefined)).toBe(false);
-	});
-
-	it("selects chat versus workflow scope from orchestration context", () => {
-		expect(getCodexFastModeScope(undefined)).toBe("chat");
-		expect(getCodexFastModeScope(workflowContext)).toBe("workflow");
-		expect(isCodexFastModeEnabledForScope({ chat: true, workflow: false }, "chat")).toBe(true);
-		expect(isCodexFastModeEnabledForScope({ chat: true, workflow: false }, "workflow")).toBe(false);
-		expect(isCodexFastModeEnabledForSession({ chat: true, workflow: false }, undefined)).toBe(true);
-		expect(isCodexFastModeEnabledForSession({ chat: true, workflow: false }, workflowContext)).toBe(false);
-		expect(isCodexFastModeEnabledForSession({ chat: false, workflow: true }, workflowContext)).toBe(true);
-		expect(
-			shouldApplyCodexFastModeForScope(providerModel("openai"), { chat: false, workflow: true }, "workflow"),
-		).toBe(true);
-		expect(
-			shouldApplyCodexFastModeForScope(providerModel("github-copilot"), { chat: false, workflow: true }, "workflow"),
-		).toBe(false);
-	});
-
-	it("applies fast mode to renamed providers on the shared Codex transport", () => {
-		expect(
-			shouldApplyCodexFastModeForScope(
-				fullModel({ provider: "codex-alias", api: "openai-codex-responses" }),
-				{ chat: true, workflow: false },
-				"chat",
-			),
-		).toBe(true);
-	});
-
-	it("adds serviceTier to stream options only when enabled", () => {
-		const model = fullModel({});
-		expect(withCodexFastModeStreamOptions(model, undefined, false)).toBeUndefined();
-		expect(withCodexFastModeStreamOptions(model, { temperature: 0.2 }, false)).toEqual({ temperature: 0.2 });
-		expect(withCodexFastModeStreamOptions(model, { temperature: 0.2 }, true)).toEqual({
+		assert.deepEqual(withFastRouteStreamOptions(serviceTierRoute, { temperature: 0.2 }), {
 			temperature: 0.2,
 			headers: undefined,
-			serviceTier: CODEX_FAST_MODE_SERVICE_TIER,
+			serviceTier: FAST_MODEL_SERVICE_TIER,
 		});
 	});
 
 	it("preserves the configured stream deadline through native option reconstruction", () => {
 		const model = fullModel({});
-		expect(buildOpenAIResponsesCodexFastModeOptions(model, { streamDeadlineMs: 1234 }).streamDeadlineMs).toBe(1234);
-		expect(buildOpenAIResponsesCodexFastModeOptions(model, { streamDeadlineMs: 0 }).streamDeadlineMs).toBe(0);
+		expect(buildOpenAIResponsesFastRouteOptions(model, { streamDeadlineMs: 1234 }).streamDeadlineMs).toBe(1234);
+		expect(buildOpenAIResponsesFastRouteOptions(model, { streamDeadlineMs: 0 }).streamDeadlineMs).toBe(0);
 	});
 
 	it("defers the Codex harness identity until the final provider payload", () => {
@@ -198,16 +154,14 @@ describe("codex fast mode helpers", () => {
 			baseUrl: "https://chatgpt.com/backend-api",
 			id: "gpt-5.6-sol",
 		});
-		const enabled = withCodexFastModeStreamOptions(codexModel, { headers: { "x-test": "yes" } }, true);
+		const enabled = withFastRouteStreamOptions(serviceTierRoute, { headers: { "x-test": "yes" } });
 		const enabledHeaders = new Headers(enabled?.headers as HeadersInit);
 
-		expect(enabled?.serviceTier).toBe(CODEX_FAST_MODE_SERVICE_TIER);
+		expect(enabled?.serviceTier).toBe(FAST_MODEL_SERVICE_TIER);
 		expect(enabledHeaders.get("originator")).toBeNull();
-		expect(enabledHeaders.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBeNull();
+		expect(enabledHeaders.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 		expect(enabledHeaders.get("x-test")).toBe("yes");
-
-		const disabled = withCodexFastModeStreamOptions(codexModel, { headers: { "x-test": "yes" } }, false);
-		expect(new Headers(disabled?.headers as HeadersInit).get("originator")).toBeNull();
+		expect(usesFirstPartyCodexRouting(codexModel)).toBe(true);
 	});
 
 	it("replaces a stale identity header and leaves other endpoints alone", () => {
@@ -216,14 +170,14 @@ describe("codex fast mode helpers", () => {
 			api: "openai-codex-responses",
 			baseUrl: "https://chatgpt.com/backend-api/codex/responses",
 		});
-		const replaced = withCodexFastModeHeaders(
+		const replaced = withCodexFastRouteHeaders(
 			firstParty,
 			{ Originator: "pi", "X-Codex-Routing-Hint": "stale" },
 			true,
 		);
 		const replacedHeaders = new Headers(replaced as HeadersInit);
-		expect(replacedHeaders.get("originator")).toBe(CODEX_FAST_MODE_ORIGINATOR);
-		expect(replacedHeaders.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBe("model=gpt-5.1-codex;tier=priority");
+		expect(replacedHeaders.get("originator")).toBe(CODEX_FAST_ROUTE_ORIGINATOR);
+		expect(replacedHeaders.get(CODEX_FAST_ROUTE_HEADER)).toBe("model=gpt-5.1-codex;tier=priority");
 
 		expect(usesFirstPartyCodexRouting(firstParty)).toBe(true);
 		expect(usesFirstPartyCodexRouting(fullModel({ provider: "openai" }))).toBe(false);
@@ -232,40 +186,23 @@ describe("codex fast mode helpers", () => {
 				fullModel({ provider: "openai-codex", baseUrl: "https://proxy.example/backend-api" }),
 			),
 		).toBe(false);
-		expect(withCodexFastModeHeaders(fullModel({ provider: "openai" }), { "x-test": "yes" }, true)).toEqual({
+		expect(withCodexFastRouteHeaders(fullModel({ provider: "openai" }), { "x-test": "yes" }, true)).toEqual({
 			"x-test": "yes",
 		});
 	});
 
-	it("adds service_tier to object payloads without overwriting existing values", () => {
-		expect(withCodexFastModePayload("not-object", true)).toBe("not-object");
-		expect(withCodexFastModePayload(["array"], true)).toEqual(["array"]);
-		expect(withCodexFastModePayload({ model: "gpt" }, false)).toEqual({ model: "gpt" });
-		expect(withCodexFastModePayload({ model: "gpt" }, true)).toEqual({
-			model: "gpt",
-			service_tier: CODEX_FAST_MODE_SERVICE_TIER,
-		});
-		expect(withCodexFastModePayload({ service_tier: "default" }, true)).toEqual({ service_tier: "default" });
-		expect(withCodexFastModePayload({ service_tier: undefined }, true)).toEqual({
-			service_tier: CODEX_FAST_MODE_SERVICE_TIER,
-		});
-	});
-
-	it("uses native OpenAI Responses streaming when fast mode is active", () => {
+	it("uses native OpenAI Responses streaming for a service-tier route", () => {
 		const calls: CapturedStreamCall[] = [];
 		const streamers = makeStreamers(calls);
-		const options = withCodexFastModeStreamOptions(
-			fullModel({}),
-			{ apiKey: "key", reasoning: "medium", sessionId: "session-1", samplingParams: { top_p: 0.5 } },
-			true,
-		);
+		const options = withFastRouteStreamOptions(serviceTierRoute, {
+			apiKey: "key",
+			reasoning: "medium",
+			sessionId: "session-1",
+			samplingParams: { top_p: 0.5 },
+		});
 
-		streamWithCodexFastMode(
-			fullModel({
-				api: "openai-responses",
-				provider: "openai",
-				samplingParams: { top_p: 0.95, min_p: 0.1 },
-			}),
+		streamWithFastRoute(
+			fullModel({ api: "openai-responses", provider: "openai", samplingParams: { top_p: 0.95, min_p: 0.1 } }),
 			emptyContext,
 			options,
 			streamers,
@@ -274,23 +211,24 @@ describe("codex fast mode helpers", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.name).toBe("streamOpenAIResponses");
 		const providerOptions = calls[0]?.options as OpenAIResponsesOptions | undefined;
-		expect(providerOptions?.serviceTier).toBe(CODEX_FAST_MODE_SERVICE_TIER);
+		expect(providerOptions?.serviceTier).toBe(FAST_MODEL_SERVICE_TIER);
 		expect(providerOptions?.reasoningEffort).toBe("medium");
 		expect(providerOptions?.apiKey).toBe("key");
 		expect(providerOptions?.sessionId).toBe("session-1");
 		expect(providerOptions?.samplingParams).toEqual({ top_p: 0.5, min_p: 0.1 });
 	});
 
-	it("uses native OpenAI Codex Responses streaming when fast mode is active", () => {
+	it("uses native OpenAI Codex Responses streaming for a service-tier route", () => {
 		const calls: CapturedStreamCall[] = [];
 		const streamers = makeStreamers(calls);
-		const options = withCodexFastModeStreamOptions(
-			fullModel({ api: "openai-codex-responses", provider: "openai-codex" }),
-			{ apiKey: "key", env: { HTTPS_PROXY: "https://proxy.example" }, reasoning: "xhigh", transport: "sse" },
-			true,
-		);
+		const options = withFastRouteStreamOptions(serviceTierRoute, {
+			apiKey: "key",
+			env: { HTTPS_PROXY: "https://proxy.example" },
+			reasoning: "xhigh",
+			transport: "sse",
+		});
 
-		streamWithCodexFastMode(
+		streamWithFastRoute(
 			fullModel({
 				api: "openai-codex-responses",
 				provider: "openai-codex",
@@ -305,34 +243,37 @@ describe("codex fast mode helpers", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.name).toBe("streamOpenAICodexResponses");
 		const providerOptions = calls[0]?.options as OpenAICodexResponsesOptions | undefined;
-		expect(providerOptions?.serviceTier).toBe(CODEX_FAST_MODE_SERVICE_TIER);
+		expect(providerOptions?.serviceTier).toBe(FAST_MODEL_SERVICE_TIER);
 		expect(providerOptions?.reasoningEffort).toBe("xhigh");
 		expect(providerOptions?.env).toEqual({ HTTPS_PROXY: "https://proxy.example" });
 		expect(providerOptions?.transport).toBe("sse");
 	});
 
-	it("falls back to the normal simple streamer when native fast mode should not apply", () => {
+	it("falls back to the simple streamer without a service-tier route", () => {
 		const calls: CapturedStreamCall[] = [];
 		const streamers = makeStreamers(calls);
 
-		streamWithCodexFastMode(
+		streamWithFastRoute(
 			fullModel({ api: "openai-responses", provider: "openai" }),
 			emptyContext,
-			withCodexFastModeStreamOptions(fullModel({}), { apiKey: "key" }, false),
+			{ apiKey: "key" },
 			streamers,
 		);
-		streamWithCodexFastMode(
-			fullModel({ api: "openai-responses", provider: "github-copilot" }),
+		// A Copilot fast route names its own upstream ID and never carries a service tier.
+		streamWithFastRoute(
+			fullModel({ api: "openai-responses", provider: "github-copilot", id: "gpt-5.4-fast" }),
 			emptyContext,
-			withCodexFastModeStreamOptions({ apiKey: "key" }, true),
+			withFastRouteStreamOptions({ baseModelId: "gpt-5.4", upstreamModelId: "gpt-5.4-fast" }, { apiKey: "key" }),
 			streamers,
 		);
 
 		expect(calls.map((call) => call.name)).toEqual(["streamSimple", "streamSimple"]);
+		expect(calls[1]?.model.id).toBe("gpt-5.4-fast");
+		expect((calls[1]?.options as { serviceTier?: string } | undefined)?.serviceTier).toBeUndefined();
 	});
 });
 
-describe("codex fast mode first-party transport", () => {
+describe("codex fast-route first-party transport", () => {
 	const codexModel = fullModel({
 		api: "openai-codex-responses",
 		provider: "openai-codex",
@@ -341,13 +282,13 @@ describe("codex fast mode first-party transport", () => {
 	});
 	const priorityHeaders = {
 		originator: "pi",
-		[CODEX_FAST_MODE_ROUTING_HEADER]: "model=gpt-5.6-sol;tier=priority",
-		"x-atomic-codex-fast-mode": "priority",
+		[CODEX_FAST_ROUTE_HEADER]: "model=gpt-5.6-sol;tier=priority",
+		"x-atomic-codex-fast-route": "priority",
 	};
 
 	it("repairs the HTTP originator pi-ai sets after its own header merge", async () => {
 		const captured: Array<string | null> = [];
-		const fastFetch = wrapCodexFastModeFetch(
+		const fastFetch = wrapCodexFastRouteFetch(
 			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
 				captured.push(new Headers(init?.headers).get("originator"));
 				return new Response(null, { status: 200 });
@@ -357,11 +298,11 @@ describe("codex fast mode first-party transport", () => {
 		await fastFetch("https://chatgpt.com/backend-api/codex/responses", { headers: priorityHeaders });
 		await fastFetch("https://proxy.example/v1/responses", { headers: priorityHeaders });
 		await fastFetch("https://chatgpt.com/backend-api/codex/responses", {
-			headers: { originator: "pi", [CODEX_FAST_MODE_ROUTING_HEADER]: "model=stale;tier=priority" },
+			headers: { originator: "pi", [CODEX_FAST_ROUTE_HEADER]: "model=stale;tier=priority" },
 		});
 		await fastFetch("https://chatgpt.com/backend-api/codex/responses", { headers: { originator: "pi" } });
 
-		expect(captured).toEqual([CODEX_FAST_MODE_ORIGINATOR, CODEX_FAST_MODE_ORIGINATOR, "pi", "pi"]);
+		expect(captured).toEqual([CODEX_FAST_ROUTE_ORIGINATOR, CODEX_FAST_ROUTE_ORIGINATOR, "pi", "pi"]);
 	});
 
 	it("repairs the WebSocket handshake originator and wraps each constructor once", () => {
@@ -371,28 +312,28 @@ describe("codex fast mode first-party transport", () => {
 				captured.push(new Headers(options?.headers).get("originator"));
 			}
 		}
-		const FastWebSocket = wrapCodexFastModeWebSocket(MockWebSocket as never);
-		expect(wrapCodexFastModeWebSocket(MockWebSocket as never)).toBe(FastWebSocket);
-		expect(wrapCodexFastModeWebSocket(FastWebSocket)).toBe(FastWebSocket);
+		const FastWebSocket = wrapCodexFastRouteWebSocket(MockWebSocket as never);
+		expect(wrapCodexFastRouteWebSocket(MockWebSocket as never)).toBe(FastWebSocket);
+		expect(wrapCodexFastRouteWebSocket(FastWebSocket)).toBe(FastWebSocket);
 
 		new FastWebSocket("wss://chatgpt.com/backend-api/codex/responses", { headers: priorityHeaders } as never);
 		new FastWebSocket("wss://proxy.example/v1/responses", { headers: priorityHeaders } as never);
 		new FastWebSocket("wss://chatgpt.com/backend-api/codex/responses", {
-			headers: { originator: "pi", [CODEX_FAST_MODE_ROUTING_HEADER]: "model=stale;tier=priority" },
+			headers: { originator: "pi", [CODEX_FAST_ROUTE_HEADER]: "model=stale;tier=priority" },
 		} as never);
 
-		expect(captured).toEqual([CODEX_FAST_MODE_ORIGINATOR, CODEX_FAST_MODE_ORIGINATOR, "pi"]);
+		expect(captured).toEqual([CODEX_FAST_ROUTE_ORIGINATOR, CODEX_FAST_ROUTE_ORIGINATOR, "pi"]);
 	});
 
 	it("repairs marked monitoring-proxy requests on HTTP retries and WebSocket reconnects", async () => {
 		const markedHeaders = priorityHeaders;
 		const httpCaptured: Array<{ originator: string | null; marker: string | null }> = [];
-		const fastFetch = wrapCodexFastModeFetch(
+		const fastFetch = wrapCodexFastRouteFetch(
 			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
 				const headers = new Headers(init?.headers);
 				httpCaptured.push({
 					originator: headers.get("originator"),
-					marker: headers.get("x-atomic-codex-fast-mode"),
+					marker: headers.get("x-atomic-codex-fast-route"),
 				});
 				return new Response(null, { status: 200 });
 			}) as typeof globalThis.fetch,
@@ -407,17 +348,17 @@ describe("codex fast mode first-party transport", () => {
 				const headers = new Headers(options?.headers);
 				websocketCaptured.push({
 					originator: headers.get("originator"),
-					marker: headers.get("x-atomic-codex-fast-mode"),
+					marker: headers.get("x-atomic-codex-fast-route"),
 				});
 			}
 		}
-		const FastWebSocket = wrapCodexFastModeWebSocket(MockWebSocket as never);
+		const FastWebSocket = wrapCodexFastRouteWebSocket(MockWebSocket as never);
 		new FastWebSocket("wss://monitor.example/backend-api/codex/responses", { headers: markedHeaders } as never);
 		new FastWebSocket("wss://monitor.example/backend-api/codex/responses", { headers: markedHeaders } as never);
 
 		expect(httpCaptured).toEqual([
-			{ originator: CODEX_FAST_MODE_ORIGINATOR, marker: null },
-			{ originator: CODEX_FAST_MODE_ORIGINATOR, marker: null },
+			{ originator: CODEX_FAST_ROUTE_ORIGINATOR, marker: null },
+			{ originator: CODEX_FAST_ROUTE_ORIGINATOR, marker: null },
 		]);
 		expect(websocketCaptured).toEqual(httpCaptured);
 	});
@@ -426,10 +367,7 @@ describe("codex fast mode first-party transport", () => {
 		const closeSessions = vi.fn<(sessionId?: string) => void>();
 		const sessionId = `fast-routing-${Date.now()}-${Math.random()}`;
 		const priorityOptions = withChatGptCodexTransportRouting(codexModel, { sessionId }, true, closeSessions);
-		await priorityOptions.onPayload?.(
-			{ model: codexModel.id, service_tier: CODEX_FAST_MODE_SERVICE_TIER },
-			codexModel,
-		);
+		await priorityOptions.onPayload?.({ model: codexModel.id, service_tier: FAST_MODEL_SERVICE_TIER }, codexModel);
 		expect(closeSessions).not.toHaveBeenCalled();
 		const normalOptions = withChatGptCodexTransportRouting(codexModel, { sessionId }, true, closeSessions);
 		await normalOptions.onPayload?.({ model: codexModel.id }, codexModel);
@@ -443,12 +381,12 @@ describe("codex fast mode first-party transport", () => {
 			codexModel,
 			{
 				headers: {
-					originator: CODEX_FAST_MODE_ORIGINATOR,
-					[CODEX_FAST_MODE_ROUTING_HEADER]: "model=stale;tier=priority",
+					originator: CODEX_FAST_ROUTE_ORIGINATOR,
+					[CODEX_FAST_ROUTE_HEADER]: "model=stale;tier=priority",
 				},
 				onPayload: (payload) => ({
 					...(payload as Record<string, unknown>),
-					service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+					service_tier: FAST_MODEL_SERVICE_TIER,
 				}),
 			},
 			false,
@@ -456,16 +394,16 @@ describe("codex fast mode first-party transport", () => {
 		const payload = await options.onPayload?.({ model: codexModel.id }, codexModel);
 		const preparedHeaders = new Headers(options.headers as HeadersInit);
 		preparedHeaders.set("originator", "pi");
-		preparedHeaders.set(CODEX_FAST_MODE_ROUTING_HEADER, "model=stale;tier=priority");
-		const headers = forceCodexFastModeOriginator(
+		preparedHeaders.set(CODEX_FAST_ROUTE_HEADER, "model=stale;tier=priority");
+		const headers = forceCodexFastRouteOriginator(
 			"https://monitor.example/backend-api/codex/responses",
 			preparedHeaders,
 		);
 
-		expect(payload).toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
+		expect(payload).toMatchObject({ service_tier: FAST_MODEL_SERVICE_TIER });
 		expect(headers.get("originator")).toBe("pi");
-		expect(headers.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBeNull();
-		expect(headers.get("x-atomic-codex-fast-mode")).toBeNull();
+		expect(headers.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
+		expect(headers.get("x-atomic-codex-fast-route")).toBeNull();
 	});
 
 	it("sends tier, identity, and routing hint through the real Codex SSE transport", async () => {
@@ -487,7 +425,7 @@ describe("codex fast mode first-party transport", () => {
 				response: {
 					id: "resp_fast",
 					status: "completed",
-					service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+					service_tier: FAST_MODEL_SERVICE_TIER,
 					usage: {
 						input_tokens: 0,
 						input_tokens_details: { cached_tokens: 0 },
@@ -502,24 +440,23 @@ describe("codex fast mode first-party transport", () => {
 			});
 		});
 
-		const stream = streamWithCodexFastMode(
+		const stream = streamWithFastRoute(
 			codexModel,
 			emptyContext,
-			withCodexFastModeStreamOptions(
-				codexModel,
+			withFastRouteStreamOptions(
+				{ baseModelId: codexModel.id, upstreamModelId: codexModel.id, serviceTier: FAST_MODEL_SERVICE_TIER },
 				{
 					apiKey: `header.${tokenPayload}.signature`,
 					fetch: fetchImplementation as typeof globalThis.fetch,
 					transport: "sse",
 				},
-				true,
 			),
 		);
 		await stream.result();
 
-		expect(capturedPayload?.service_tier).toBe(CODEX_FAST_MODE_SERVICE_TIER);
-		expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_MODE_ORIGINATOR);
-		expect(capturedHeaders?.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
+		expect(capturedPayload?.service_tier).toBe(FAST_MODEL_SERVICE_TIER);
+		expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_ROUTE_ORIGINATOR);
+		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
 	});
 
 	it("routes a renamed provider through a monitoring proxy", async () => {
@@ -542,7 +479,7 @@ describe("codex fast mode first-party transport", () => {
 				response: {
 					id: "resp_alias_fast",
 					status: "completed",
-					service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+					service_tier: FAST_MODEL_SERVICE_TIER,
 					usage: {
 						input_tokens: 0,
 						input_tokens_details: { cached_tokens: 0 },
@@ -556,25 +493,24 @@ describe("codex fast mode first-party transport", () => {
 				headers: { "content-type": "text/event-stream" },
 			});
 		});
-		const stream = streamWithCodexFastMode(
+		const stream = streamWithFastRoute(
 			aliasModel,
 			emptyContext,
-			withCodexFastModeStreamOptions(
-				aliasModel,
+			withFastRouteStreamOptions(
+				{ baseModelId: aliasModel.id, upstreamModelId: aliasModel.id, serviceTier: FAST_MODEL_SERVICE_TIER },
 				{
 					apiKey: `header.${tokenPayload}.signature`,
 					fetch: fetchImplementation as typeof globalThis.fetch,
 					transport: "sse",
 				},
-				true,
 			),
 		);
 		await stream.result();
 
 		expect(capturedUrl).toBe("https://monitor.example/backend-api/codex/responses");
-		expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_MODE_ORIGINATOR);
-		expect(capturedHeaders?.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
-		expect(capturedHeaders?.get("x-atomic-codex-fast-mode")).toBeNull();
+		expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_ROUTE_ORIGINATOR);
+		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
+		expect(capturedHeaders?.get("x-atomic-codex-fast-route")).toBeNull();
 	});
 
 	it("keeps normal identity when the final request payload is not priority", async () => {
@@ -611,26 +547,25 @@ describe("codex fast mode first-party transport", () => {
 			});
 		});
 
-		const stream = streamWithCodexFastMode(
+		const stream = streamWithFastRoute(
 			codexModel,
 			emptyContext,
-			withCodexFastModeStreamOptions(
-				codexModel,
+			withFastRouteStreamOptions(
+				{ baseModelId: codexModel.id, upstreamModelId: codexModel.id, serviceTier: FAST_MODEL_SERVICE_TIER },
 				{
 					apiKey: `header.${tokenPayload}.signature`,
 					fetch: fetchImplementation as typeof globalThis.fetch,
 					transport: "sse",
 					onPayload: (payload) => ({ ...(payload as Record<string, unknown>), service_tier: "default" }),
 				},
-				true,
 			),
 		);
 		await stream.result();
 
 		expect(capturedPayload?.service_tier).toBe("default");
 		expect(capturedHeaders?.get("originator")).toBe("pi");
-		expect(capturedHeaders?.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBeNull();
-		expect(capturedHeaders?.get("x-atomic-codex-fast-mode")).toBeNull();
+		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
+		expect(capturedHeaders?.get("x-atomic-codex-fast-route")).toBeNull();
 	});
 
 	it("keeps pi's identity on the same transport when fast mode is disabled", async () => {
@@ -659,7 +594,7 @@ describe("codex fast mode first-party transport", () => {
 			});
 		});
 
-		const stream = streamWithCodexFastMode(codexModel, emptyContext, {
+		const stream = streamWithFastRoute(codexModel, emptyContext, {
 			apiKey: `header.${tokenPayload}.signature`,
 			fetch: fetchImplementation as typeof globalThis.fetch,
 			transport: "sse",
@@ -667,6 +602,6 @@ describe("codex fast mode first-party transport", () => {
 		await stream.result();
 
 		expect(capturedHeaders?.get("originator")).toBe("pi");
-		expect(capturedHeaders?.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBeNull();
+		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 	});
 });

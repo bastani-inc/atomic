@@ -330,7 +330,7 @@ function makeFakeAtomicSdk(defaultAgentDir: string): PiCodingAgentSdk {
 		getBuiltinPackagePaths: () => [],
 		SettingsManager: {
 			create(): PiSdkSettingsManager {
-				return { getCodexFastModeSettings: () => ({ chat: false, workflow: false }) };
+				return {};
 			},
 		},
 		DefaultResourceLoader: FakeResourceLoader,

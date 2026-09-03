@@ -23,7 +23,6 @@ import {
 	DynamicBorder,
 	ENV_OFFLINE,
 	ensureTool,
-	formatCodexFastModeModelLabel,
 	getAgentDir,
 	getChangelogPath,
 	getCwdRelativePath,
@@ -42,7 +41,6 @@ import {
 	path,
 	recordTimeSinceReset,
 	Spacer,
-	shouldApplyCodexFastMode,
 	spawn,
 	Text,
 	theme,
@@ -561,17 +559,7 @@ InteractiveModeBase.prototype.getStartupModelLabel = function (this: Interactive
 		modelLabel = `${modelLabel} ${this.session.thinkingLevel || "off"}`;
 	}
 
-	if (!model) {
-		return modelLabel;
-	}
-
-	const fastModeEnabled = shouldApplyCodexFastMode(
-		model,
-		this.session.settingsManager.getCodexFastModeSettings(),
-		this.session.orchestrationContext,
-		this.session.modelRuntime.getCredentialSnapshot?.("github-copilot"),
-	);
-	return formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
+	return modelLabel;
 };
 
 InteractiveModeBase.prototype.getStartupIdentityText = function (

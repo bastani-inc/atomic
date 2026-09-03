@@ -69,7 +69,15 @@ describe("extension provider model lifecycle", () => {
 
 		runtime.registerNativeProvider(provider);
 		const registry = new ModelRegistry(runtime);
-		expect(registry.getProvider("extension-native")).toBe(provider);
+		// `getProvider` returns the published catalog provider, which is the registered provider behind
+		// the fast-variant overlay: same id, same auth, same stream functions, plus derived `-fast`
+		// entries. `getRegisteredNativeProvider` still hands back the exact registered object.
+		const published = registry.getProvider("extension-native");
+		expect(published).toBeDefined();
+		expect(published?.id).toBe("extension-native");
+		expect(published?.auth).toBe(provider.auth);
+		expect(published?.streamSimple).toBe(provider.streamSimple);
+		expect(published?.getModels().map((entry) => entry.id)).toEqual(provider.getModels().map((entry) => entry.id));
 		expect(registry.getRegisteredNativeProvider("extension-native")).toBe(provider);
 		expect(registry.getRegisteredProviderIds()).toContain("extension-native");
 		expect(registry.find("extension-native", "native")).toBeDefined();

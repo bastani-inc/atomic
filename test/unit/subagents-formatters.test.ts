@@ -3,26 +3,10 @@ import { describe, test } from "vitest";
 import { formatDuration, formatModelThinking } from "../../packages/subagents/src/shared/formatters.js";
 
 describe("subagent formatModelThinking", () => {
-	test("appends fast after model and inferred thinking suffix", () => {
-		assert.equal(
-			formatModelThinking("openai/gpt-5.1-codex:medium", undefined, true),
-			"openai/gpt-5.1-codex · thinking medium · fast",
-		);
-	});
-
-	test("omits fast when fast mode metadata is missing or disabled", () => {
-		assert.equal(formatModelThinking("openai/gpt-5.1-codex:medium"), "openai/gpt-5.1-codex · thinking medium");
-		assert.equal(
-			formatModelThinking("openai/gpt-5.1-codex:medium", undefined, false),
-			"openai/gpt-5.1-codex · thinking medium",
-		);
-	});
-
-	test("appends fast after explicit thinking metadata", () => {
-		assert.equal(
-			formatModelThinking("openai/gpt-5.1-codex", "high", true),
-			"openai/gpt-5.1-codex · thinking high · fast",
-		);
+	test("renders the canonical fast model identity with no separate fast badge", () => {
+		const label = `codebase-analyzer (${formatModelThinking("openai-codex/gpt-5.6-sol-fast", "medium")})`;
+		assert.equal(label, "codebase-analyzer (openai-codex/gpt-5.6-sol-fast · thinking medium)");
+		assert.doesNotMatch(label, / · fast(?: ·|\))/u);
 	});
 
 	test("keeps the provider prefix so the line matches the main chat model display", () => {

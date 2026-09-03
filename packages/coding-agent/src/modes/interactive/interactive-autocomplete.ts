@@ -5,7 +5,6 @@ import {
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
-	type Api,
 	type AutocompleteItem,
 	type AutocompleteProvider,
 	type AutocompleteSuggestions,
@@ -15,8 +14,6 @@ import {
 	type ExtensionRunner,
 	fuzzyFilter,
 	getModelSearchText,
-	hasSupportedCodexFastModeModel,
-	type Model,
 	parseGitUrl,
 	type ResourceDiagnostic,
 	type SlashCommand,
@@ -184,23 +181,6 @@ InteractiveModeBase.prototype.getBuiltInCommandConflictDiagnostics = function (
 		}));
 };
 
-InteractiveModeBase.prototype.getCodexFastModeCandidateModels = function (this: InteractiveModeBase): Model<Api>[] {
-	if (this.session.scopedModels.length > 0) {
-		return this.session.scopedModels
-			.map((scoped) => scoped.model)
-			.filter((model) => this.session.modelRuntime.hasConfiguredAuth(model.provider));
-	}
-
-	return [...this.session.modelRuntime.getAvailableSnapshot()];
-};
-
-InteractiveModeBase.prototype.hasCodexFastModeSupportedModels = function (this: InteractiveModeBase): boolean {
-	return hasSupportedCodexFastModeModel(
-		this.getCodexFastModeCandidateModels(),
-		this.session.modelRuntime.getCredentialSnapshot?.("github-copilot"),
-	);
-};
-
 InteractiveModeBase.prototype.buildRemoteSlashCommands = function (
 	this: InteractiveModeBase,
 	localCommands: SlashCommand[],
@@ -250,9 +230,7 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 	this: InteractiveModeBase,
 ): AutocompleteProvider {
 	// Define commands for autocomplete
-	const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.filter(
-		(command) => command.name !== "fast" || this.hasCodexFastModeSupportedModels(),
-	).map((command) => ({
+	const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
 		name: command.name,
 		argumentHint: command.argumentHint,
 		description: command.description,
@@ -314,9 +292,9 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 	}));
 
 	// Convert extension commands to SlashCommand format. Built-in command names
-	// stay reserved even when a built-in is contextually hidden (for example,
-	// /fast without a supported OpenAI model) so extension visibility cannot
-	// change as auth/model state changes. While extension loading is deferred,
+	// stay reserved even when a built-in is contextually hidden, so extension
+	// visibility cannot change as auth/model state changes. While extension
+	// loading is deferred,
 	// expose lightweight bundled command metadata without importing heavy
 	// implementations; the submit path loads the implementation on demand.
 	const registeredExtensionCommands = this.session.extensionRunner

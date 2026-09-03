@@ -424,8 +424,6 @@ export interface StageSnapshot {
 	sessionFile?: string;
 	/** Effective model id selected for this stage after fallback resolution. */
 	model?: string;
-	/** True when Codex fast mode applied to this workflow stage. */
-	fastMode?: boolean;
 	/** Ordered model ids attempted by fallback orchestration. */
 	attemptedModels?: readonly string[];
 	/** Per-model fallback attempt outcomes. */

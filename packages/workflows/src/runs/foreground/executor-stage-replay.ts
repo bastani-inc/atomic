@@ -144,7 +144,6 @@ export function createReplayStageContext(input: {
 		__pendingMessageCount: () => 0,
 		__modelFallbackMeta: () => ({
 			...(replaySource.model !== undefined ? { model: replaySource.model } : {}),
-			...(replaySource.fastMode === true ? { fastMode: replaySource.fastMode } : {}),
 			...(replaySource.attemptedModels !== undefined ? { attemptedModels: replaySource.attemptedModels } : {}),
 			...(replaySource.modelAttempts !== undefined ? { modelAttempts: replaySource.modelAttempts } : {}),
 		}),

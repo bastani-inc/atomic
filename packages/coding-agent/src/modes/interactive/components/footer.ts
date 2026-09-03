@@ -1,7 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.ts";
-import { formatCodexFastModeModelLabel, shouldApplyCodexFastMode } from "../../../core/codex-fast-mode.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
@@ -229,21 +228,11 @@ export class FooterComponent implements Component {
 		if (sessionName) pwd += ` • ${sessionName}`;
 
 		const modelName = state.model?.id || "no-model";
-		const fastModeSettings = this.session.settingsManager.getCodexFastModeSettings();
-		const fastModeEnabled = state.model
-			? shouldApplyCodexFastMode(
-					state.model,
-					fastModeSettings,
-					this.session.orchestrationContext,
-					this.session.modelRuntime.getCredentialSnapshot?.("github-copilot"),
-				)
-			: false;
 		let modelLabel = modelName;
 		if (state.model?.reasoning) {
 			const thinkingLevel = state.thinkingLevel || "off";
 			modelLabel = thinkingLevel === "off" ? modelLabel : `${modelLabel} ${thinkingLevel}`;
 		}
-		modelLabel = formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
 		if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
 			modelLabel = `(${state.model.provider}) ${modelLabel}`;
 		}

@@ -16,18 +16,18 @@ import {
 } from "./executor-shared.js";
 
 describe("executor.run", () => {
-	test("bare explicit model stage publishes running fast-mode metadata after catalog resolution", async () => {
+	test("bare explicit fast model stage publishes its canonical identity after catalog resolution", async () => {
 		const promptGate = deferred<string | undefined>();
 		const st = createStore();
 		const def = workflow({
-			name: "bare-explicit-model-running-fast-metadata",
+			name: "bare-explicit-fast-model-running-metadata",
 			description: "",
 			inputs: {},
 			outputs: {
 				ok: Type.Boolean(),
 			},
 			run: async (ctx) => {
-				await ctx.stage("scout", { model: "gpt-5.1-codex" }).prompt("inspect");
+				await ctx.stage("scout", { model: "gpt-5.1-codex-fast" }).prompt("inspect");
 				return { ok: true };
 			},
 		});
@@ -40,31 +40,25 @@ describe("executor.run", () => {
 					listModels: async () => [
 						{
 							provider: "openai",
-							id: "gpt-5.1-codex",
-							fullId: "openai/gpt-5.1-codex",
+							id: "gpt-5.1-codex-fast",
+							fullId: "openai/gpt-5.1-codex-fast",
 						},
 					],
 				},
 				adapters: {
 					agentSession: {
 						async create(options) {
-							assert.equal((options as { readonly model?: string }).model, "openai/gpt-5.1-codex");
+							assert.equal((options as { readonly model?: string }).model, "openai/gpt-5.1-codex-fast");
 							return {
 								session: {
 									...mockSession(),
 									model: {
 										provider: "openai",
-										id: "gpt-5.1-codex",
+										id: "gpt-5.1-codex-fast",
 									} as AgentSession["model"],
 									async prompt() {
 										await promptGate.promise;
 									},
-								},
-								settingsManager: {
-									getCodexFastModeSettings: () => ({
-										chat: false,
-										workflow: true,
-									}),
 								},
 							};
 						},
@@ -86,15 +80,14 @@ describe("executor.run", () => {
 				await sleep(5);
 			}
 
-			assert.equal(runningStage?.model, "openai/gpt-5.1-codex");
-			assert.equal(runningStage?.fastMode, true);
+			assert.equal(runningStage?.model, "openai/gpt-5.1-codex-fast");
 		} finally {
 			promptGate.resolve(undefined);
 			await runPromise;
 		}
 	});
 
-	test("prompt adapter stages do not eagerly create SDK sessions for fast metadata", async () => {
+	test("prompt adapter stages do not eagerly create SDK sessions for model metadata", async () => {
 		const st = createStore();
 		const def = workflow({
 			name: "prompt-adapter-no-eager-session",
@@ -131,7 +124,7 @@ describe("executor.run", () => {
 		assert.equal(result.stages[0]?.result, "adapter ok");
 	});
 
-	test("workflow fallback refreshes running fast metadata when switching to an eligible model", async () => {
+	test("workflow fallback refreshes running model metadata when switching candidates", async () => {
 		const fallbackGate = deferred<string | undefined>();
 		const st = createStore();
 		const def = workflow({
@@ -181,12 +174,6 @@ describe("executor.run", () => {
 										throw new Error("anthropic/primary timed out");
 									},
 								},
-								settingsManager: {
-									getCodexFastModeSettings: () => ({
-										chat: false,
-										workflow: true,
-									}),
-								},
 							};
 						},
 					},
@@ -205,22 +192,21 @@ describe("executor.run", () => {
 					.find(
 						(stage) => stage.name === "scout" && stage.status === "running" && stage.model === "openai/fallback",
 					);
-				if (runningStage?.fastMode === true) break;
+				if (runningStage !== undefined) break;
 				await sleep(5);
 			}
 
 			assert.equal(runningStage?.model, "openai/fallback");
-			assert.equal(runningStage?.fastMode, true);
 		} finally {
 			fallbackGate.resolve(undefined);
 			await runPromise;
 		}
 	});
 
-	test("workflow fallback clears fast metadata when final model is not eligible", async () => {
+	test("workflow fallback records the final model after switching providers", async () => {
 		const st = createStore();
 		const def = workflow({
-			name: "fallback-clears-fast-metadata",
+			name: "fallback-records-final-model",
 			description: "",
 			inputs: {},
 			outputs: {
@@ -263,12 +249,6 @@ describe("executor.run", () => {
 										throw new Error("openai/gpt-5.1-codex timed out");
 									},
 								},
-								settingsManager: {
-									getCodexFastModeSettings: () => ({
-										chat: false,
-										workflow: true,
-									}),
-								},
 							};
 						},
 					},
@@ -279,7 +259,6 @@ describe("executor.run", () => {
 
 		assert.equal(result.status, "completed");
 		assert.equal(result.stages[0]?.model, "anthropic/claude-sonnet-4");
-		assert.equal(result.stages[0]?.fastMode, undefined);
 	});
 
 	test("invalid dynamic stage model fails before SDK session creation", async () => {

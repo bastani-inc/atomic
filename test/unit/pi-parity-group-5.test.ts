@@ -219,7 +219,6 @@ describe("Group 5 parity", () => {
 			state: { model: undefined, thinkingLevel: "off" },
 			isStreaming: false,
 			sessionManager: { getCwd: () => "/tmp/project", getSessionName: () => "demo" },
-			settingsManager: { getCodexFastModeSettings: () => ({ chat: false, workflow: false }) },
 		} as never as AgentSession;
 		const footerData = {
 			getGitBranch: () => "feature",
@@ -244,7 +243,6 @@ describe("Group 5 parity", () => {
 			state: { model: undefined, thinkingLevel: "off" },
 			isStreaming: false,
 			sessionManager: { getCwd: () => "/tmp/project", getSessionName: () => undefined },
-			settingsManager: { getCodexFastModeSettings: () => ({ chat: false, workflow: false }) },
 		} as never as AgentSession;
 		const colored = "\u001b[38;2;137;180;250mMCP: 0/1 servers\u001b[39m";
 		const footerData = {

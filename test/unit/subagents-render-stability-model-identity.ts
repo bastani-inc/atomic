@@ -3,8 +3,8 @@ import { describe, test } from "vitest";
 import { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
 import { type AgentToolResult, type Details, theme } from "./subagents-render-stability-helpers.js";
 
-describe("subagent fast-mode UI labels (issue #1153)", () => {
-	test("foreground compact result renders fast after thinking", () => {
+describe("subagent explicit fast-model UI labels", () => {
+	test("foreground compact result renders the fast model identity without a separate badge", () => {
 		const result: AgentToolResult<Details> = {
 			content: [{ type: "text", text: "done" }],
 			details: {
@@ -22,9 +22,8 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
 							cost: 0,
 							turns: 0,
 						},
-						model: "openai/gpt-5.1-codex",
+						model: "openai-codex/gpt-5.6-sol-fast",
 						thinking: "medium",
-						fastMode: true,
 						finalOutput: "done",
 					},
 				],
@@ -33,13 +32,13 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
 
 		const text = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
 
-		assert.match(text, /gpt-5\.1-codex · thinking medium · fast/);
+		assert.match(text, /openai-codex\/gpt-5\.6-sol-fast · thinking medium/);
 		const expanded = renderSubagentResult(result, { expanded: true }, theme).render(120).join("\n");
-		assert.match(expanded, /gpt-5\.1-codex · thinking medium · fast/);
-		assert.equal(expanded.match(/gpt-5\.1-codex/g)?.length, 1);
+		assert.match(expanded, /openai-codex\/gpt-5\.6-sol-fast · thinking medium/);
+		assert.equal(expanded.match(/gpt-5\.6-sol-fast/g)?.length, 1);
 	});
 
-	test("foreground result omits fast when metadata is missing", () => {
+	test("foreground result renders a normal model without a fast badge", () => {
 		const result: AgentToolResult<Details> = {
 			content: [{ type: "text", text: "done" }],
 			details: {
@@ -70,7 +69,7 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
 		assert.doesNotMatch(text, / · fast/);
 	});
 
-	test("running multi-result rows render thinking and fast metadata", () => {
+	test("running multi-result rows render thinking and the canonical fast model ID", () => {
 		const result: AgentToolResult<Details> = {
 			content: [{ type: "text", text: "running" }],
 			details: {
@@ -82,9 +81,8 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
 						agent: "worker",
 						status: "running",
 						task: "do work",
-						model: "openai/gpt-5.1-codex",
+						model: "openai-codex/gpt-5.6-sol-fast",
 						thinking: "high",
-						fastMode: true,
 						recentTools: [],
 						recentOutput: [],
 						toolCount: 0,
@@ -109,7 +107,7 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
 		};
 
 		const text = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
-		assert.match(text, /gpt-5\.1-codex · thinking high · fast/);
+		assert.match(text, /openai-codex\/gpt-5\.6-sol-fast · thinking high/);
 		assert.match(text, /claude-sonnet-4 · thinking low/);
 		assert.doesNotMatch(text, /claude-sonnet-4 · thinking low · fast/);
 	});

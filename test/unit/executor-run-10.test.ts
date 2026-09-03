@@ -342,18 +342,18 @@ describe("executor.run", () => {
 		);
 	});
 
-	test("explicit model stage publishes running fast-mode metadata before prompt resolves", async () => {
+	test("explicit fast model stage publishes its canonical model identity before prompt resolves", async () => {
 		const promptGate = deferred<string | undefined>();
 		const st = createStore();
 		const def = workflow({
-			name: "explicit-model-running-fast-metadata",
+			name: "explicit-fast-model-running-metadata",
 			description: "",
 			inputs: {},
 			outputs: {
 				ok: Type.Boolean(),
 			},
 			run: async (ctx) => {
-				await ctx.stage("scout", { model: "openai/gpt-5.1-codex" }).prompt("inspect");
+				await ctx.stage("scout", { model: "openai/gpt-5.1-codex-fast" }).prompt("inspect");
 				return { ok: true };
 			},
 		});
@@ -370,17 +370,11 @@ describe("executor.run", () => {
 									...mockSession(),
 									model: {
 										provider: "openai",
-										id: "gpt-5.1-codex",
+										id: "gpt-5.1-codex-fast",
 									} as AgentSession["model"],
 									async prompt() {
 										await promptGate.promise;
 									},
-								},
-								settingsManager: {
-									getCodexFastModeSettings: () => ({
-										chat: false,
-										workflow: true,
-									}),
 								},
 							};
 						},
@@ -402,8 +396,7 @@ describe("executor.run", () => {
 				await sleep(5);
 			}
 
-			assert.equal(runningStage?.model, "openai/gpt-5.1-codex");
-			assert.equal(runningStage?.fastMode, true);
+			assert.equal(runningStage?.model, "openai/gpt-5.1-codex-fast");
 		} finally {
 			promptGate.resolve(undefined);
 			await runPromise;

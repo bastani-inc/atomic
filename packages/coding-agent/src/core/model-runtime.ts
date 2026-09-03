@@ -32,6 +32,11 @@ import { getAgentDir } from "../config.js";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
+import {
+	copilotAdvertisedFastModelIds,
+	type FastModelVariantDiagnostic,
+	withFastModelVariants,
+} from "./fast-model-variants.ts";
 import { ModelConfig } from "./model-config.ts";
 import { POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS } from "./model-refresh-timeout.ts";
 import {
@@ -124,6 +129,7 @@ export class ModelRuntime implements Models {
 	private readonly nativeExtensionProviders = new Map<string, Provider>();
 	private readonly extensionProviders = new Map<string, ProviderConfigInput>();
 	private readonly compositionErrors = new Map<string, string>();
+	private readonly fastModelVariantDiagnostics = new Map<string, readonly FastModelVariantDiagnostic[]>();
 	private readonly modelsPath: string | undefined;
 	private readonly modelNetworkEnabled: boolean;
 	private config: ModelConfig;
@@ -211,32 +217,57 @@ export class ModelRuntime implements Models {
 			...this.extensionProviders.keys(),
 		]);
 	}
+	/**
+	 * Overlay derived selectable `-fast` model variants. Applied last so exact `-fast` IDs owned by the
+	 * provider, models.json, or an extension are already present and win the collision.
+	 */
+	private withDerivedFastModels(provider: Provider): Provider {
+		return withFastModelVariants(provider, {
+			getCopilotFastModelIds: () => copilotAdvertisedFastModelIds(this.credentials.peek("github-copilot")),
+			getModelOverrides: () => this.config.getProvider(provider.id)?.modelOverrides,
+			onDiagnostics: (id, diagnostics) => {
+				if (diagnostics.length === 0) this.fastModelVariantDiagnostics.delete(id);
+				else this.fastModelVariantDiagnostics.set(id, diagnostics);
+			},
+		});
+	}
+	/**
+	 * Publish a provider through the fast-variant overlay. Every catalog accessor — `getProvider`,
+	 * `getProviders`, `getModel`, `getModels`, `getAvailable` — then reports the same list. The overlay
+	 * is `{ ...provider, getModels }`, so `auth`, `login`, `stream`, and `streamSimple` stay the same
+	 * function references the caller registered.
+	 */
+	private publishProvider(provider: Provider): void {
+		this.models.setProvider(this.withDerivedFastModels(provider));
+	}
 	private recomposeProvider(providerId: string): void {
 		const base = this.nativeExtensionProviders.get(providerId) ?? this.builtins.get(providerId);
 		const extension = this.extensionProviders.get(providerId);
 		if (!base && !this.config.getProvider(providerId) && !extension) {
 			this.models.deleteProvider(providerId);
 			this.compositionErrors.delete(providerId);
+			this.fastModelVariantDiagnostics.delete(providerId);
 			return;
 		}
 		if (base && !this.config.getProvider(providerId) && !extension) {
-			// No overlays: use the builtin untouched so its auth/login/stream behavior is exact.
-			this.models.setProvider(base);
+			// No overlays: keep the builtin's auth/login/stream behavior exact and only add fast variants.
+			this.publishProvider(base);
 			this.compositionErrors.delete(providerId);
 			return;
 		}
 		try {
-			this.models.setProvider(composeModelProvider(providerId, base, this.config, extension));
+			this.publishProvider(composeModelProvider(providerId, base, this.config, extension));
 			this.compositionErrors.delete(providerId);
 		} catch (error) {
 			this.compositionErrors.set(providerId, error instanceof Error ? error.message : String(error));
-			if (base) this.models.setProvider(base);
+			if (base) this.publishProvider(base);
 			else this.models.deleteProvider(providerId);
 		}
 	}
 	private rebuildProviders(): void {
 		this.models.clearProviders();
 		this.compositionErrors.clear();
+		this.fastModelVariantDiagnostics.clear();
 		for (const providerId of this.providerIds()) this.recomposeProvider(providerId);
 		this.updateModelSnapshot();
 	}
@@ -385,6 +416,20 @@ export class ModelRuntime implements Models {
 		}
 		if (this.availabilityError) errors.push(`Availability refresh: ${this.availabilityError}`);
 		return errors.length > 0 ? errors.join("\n\n") : undefined;
+	}
+
+	/**
+	 * Derived fast model variants that were suppressed because a provider, models.json custom model, or
+	 * extension already owns the exact `-fast` model ID. Reported as warnings, not composition errors.
+	 */
+	getFastModelVariantDiagnostics(): readonly FastModelVariantDiagnostic[] {
+		return [...this.fastModelVariantDiagnostics.values()].flat();
+	}
+
+	/** Non-fatal catalog warnings, joined for display. */
+	getWarning(): string | undefined {
+		const warnings = this.getFastModelVariantDiagnostics().map((diagnostic) => diagnostic.message);
+		return warnings.length > 0 ? warnings.join("\n\n") : undefined;
 	}
 
 	getRegisteredProviderConfig(providerId: string): ProviderConfigInput | undefined {
