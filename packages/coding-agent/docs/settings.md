@@ -195,7 +195,7 @@ The model emits numbered line ranges only; Atomic reconstructs retained text mec
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `branchSummary.reserveTokens` | number | `16384` | Tokens reserved for branch summarization |
+| `branchSummary.reserveTokens` | number | `16384` | Tokens withheld from branch-summary input so the prompt and uncapped response have context-window headroom |
 | `branchSummary.skipPrompt` | boolean | `false` | Skip "Summarize branch?" prompt on `/tree` navigation (defaults to no summary) |
 
 ### Session Summary
