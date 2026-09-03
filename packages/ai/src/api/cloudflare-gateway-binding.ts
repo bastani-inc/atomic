@@ -49,7 +49,8 @@ export interface AiGatewayUniversalRequestLike {
  * require an API key or a recognized auth header (`authorization`, `x-api-key`,
  * `cf-aig-authorization`) before dispatch; binding calls are pre-authenticated, so pass
  * `cf-aig-authorization: Bearer ${CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL}` to satisfy
- * the check. The shim strips `cf-aig-authorization` before calling the binding. Pair it with
+ * the check. On the plain `fetch()` path, the gateway recognizes and strips the sentinel; the
+ * legacy `gateway().run()` fallback strips it before calling the binding. Pair it with
  * `Authorization: null` / `x-api-key: null` so the SDKs' placeholder auth headers never reach
  * the gateway, which would treat a request-supplied auth header as a BYOK provider key that
  * overrides its stored keys — the same as it would over HTTPS.
@@ -60,16 +61,17 @@ export interface GatewayBindingFetchOptions {
 	/** The Workers AI binding (e.g. `env.AI`). */
 	binding: AiGatewayBinding;
 	/**
-	 * Gateway HTTPS prefix every request must fall under, without a trailing slash:
-	 * `https://gateway.ai.cloudflare.com/v1/{accountId}/{gatewayName}`.
+	 * Request prefix used only by the legacy `gateway().run()` fallback, without a trailing slash.
+	 * A binding with `fetch()` forwards requests untouched and ignores this option.
 	 */
 	baseUrl: string;
-	/** Gateway name passed to `binding.gateway()`. Must match the `baseUrl` gateway. */
+	/** Gateway name used only by the legacy `gateway().run()` fallback. */
 	gateway: string;
 }
 
-// Never forwarded to the binding: hop-by-hop/derived headers, and gateway auth
-// (binding calls are pre-authenticated; the sentinel must not reach the wire).
+// Removed only by the legacy gateway().run() fallback: hop-by-hop/derived headers and
+// gateway auth. The plain binding.fetch() path forwards headers untouched; Cloudflare handles
+// its sentinel there.
 const STRIP_HEADERS = new Set(["content-length", "host", "cf-aig-authorization"]);
 
 type FetchInput = Parameters<FetchFunction>[0];

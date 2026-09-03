@@ -344,7 +344,7 @@ For normal Atomic usage, prefer unified billing or stored BYOK. Inline BYOK requ
 
 When Atomic's engine runs inside a Cloudflare Worker in the gateway's own account, requests can route through the [Workers AI binding](https://developers.cloudflare.com/ai-gateway/usage/workers-ai-binding/) (`env.AI`) instead of HTTPS. Binding calls are pre-authenticated in-account, so this path needs **no `CLOUDFLARE_API_KEY` at all**. Atomic re-exports the transport as `createGatewayBindingFetch` from `@bastani/atomic`.
 
-Declare the binding and the endpoint vars (the vars also satisfy the account/gateway resolution the gateway prefix needs):
+Declare the binding and gateway slug. The binding channel carries the account identity, so this route does not need an account ID:
 
 ```toml
 # wrangler.toml
@@ -352,7 +352,6 @@ Declare the binding and the endpoint vars (the vars also satisfy the account/gat
 binding = "AI"
 
 [vars]
-CLOUDFLARE_ACCOUNT_ID = "your-account-id"
 CLOUDFLARE_GATEWAY_ID = "your-gateway-slug"   # dash.cloudflare.com → AI → AI Gateway
 ```
 
@@ -372,13 +371,12 @@ import { streamSimple as anthropicStreamSimple } from "@bastani/pi-ai/api/anthro
 // so the snippet needs no `@cloudflare/workers-types` dependency.
 interface Env {
   AI: AiGatewayBinding;
-  CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_GATEWAY_ID: string;
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const gatewayPrefix = `https://gateway.ai.cloudflare.com/v1/${env.CLOUDFLARE_ACCOUNT_ID}/${env.CLOUDFLARE_GATEWAY_ID}`;
+    const bindingPrefix = `https://workers-binding.ai/ai-gateway/gateways/${env.CLOUDFLARE_GATEWAY_ID}`;
     const loader = new DefaultResourceLoader({
       cwd: "/workspace",
       agentDir: "/workspace/.atomic/agent",
@@ -388,17 +386,15 @@ export default {
           factory: (pi) => {
             pi.registerProvider("cloudflare-ai-gateway", {
               // Placeholder credential: it marks the provider configured and becomes
-              // `cf-aig-authorization: Bearer cloudflare-gateway-binding`, which the
-              // transport strips before the binding call. Never sent to the gateway.
+              // `cf-aig-authorization: Bearer cloudflare-gateway-binding`. On the plain
+              // binding fetch path, Cloudflare's gateway recognizes and strips it.
               apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
               api: "anthropic-messages",
               streamSimple: (model, context, options) =>
                 anthropicStreamSimple(
                   {
                     ...model,
-                    baseUrl: (model.baseUrl ?? gatewayPrefix)
-                      .replaceAll("{CLOUDFLARE_ACCOUNT_ID}", env.CLOUDFLARE_ACCOUNT_ID)
-                      .replaceAll("{CLOUDFLARE_GATEWAY_ID}", env.CLOUDFLARE_GATEWAY_ID)
+                    baseUrl: `${bindingPrefix}/anthropic`
                   },
                   context,
                   {
@@ -406,7 +402,9 @@ export default {
                     fetch: createGatewayBindingFetch({
                       binding: env.AI,
                       gateway: env.CLOUDFLARE_GATEWAY_ID,
-                      baseUrl: gatewayPrefix
+                      // Used only by the legacy gateway().run() fallback. The current
+                      // binding.fetch() path forwards the model URL untouched.
+                      baseUrl: bindingPrefix
                     })
                   }
                 )
@@ -427,7 +425,9 @@ export default {
 };
 ```
 
-Every request under the gateway prefix becomes one `env.AI.gateway(id).run({ provider, endpoint, headers, query })` call in the provider's native wire format, so streaming behaves identically to the HTTPS route. The transport serves only its gateway-bound client: URLs outside the prefix, and in-prefix requests the universal endpoint cannot express (non-POST, non-JSON body), reject with a descriptive error rather than being forwarded. Repeat the same pattern with `@bastani/pi-ai/api/openai-completions` (or `openai-responses`) to cover the `/openai` and `/compat` passthrough models of the same provider.
+Current Workers AI bindings expose `fetch()`. On that default path, the request is forwarded untouched to `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}/...`: `baseUrl` and `gateway` in `createGatewayBindingFetch` are compatibility options and do not filter, rewrite, or reject requests. Methods, headers (including the auth sentinel), query strings, non-JSON bodies, request streams, and response streams retain native fetch semantics; Cloudflare's gateway recognizes and strips the sentinel.
+
+For an older or structural binding that exposes only `gateway(id).run(...)`, the same helper falls back to Atomic's universal-endpoint translator. On that fallback only, `baseUrl` is the required request prefix and `gateway` selects the gateway: URLs outside the prefix, non-POST requests, missing or non-JSON bodies, and paths without both provider and endpoint reject with descriptive errors. The fallback strips the auth sentinel and derived transport headers before calling `run()`. Repeat the same pattern with `@bastani/pi-ai/api/openai-completions` (or `openai-responses`), setting the model `baseUrl` to `${bindingPrefix}/openai` (or `${bindingPrefix}/compat`) for those provider routes.
 
 ### Cloudflare Workers AI
 
