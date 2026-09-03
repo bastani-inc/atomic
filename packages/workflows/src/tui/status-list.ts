@@ -21,8 +21,11 @@
  *  - src/tui/run-detail.ts per-run drill-down surface (unchanged)
  */
 
-import type { PendingWorkflowRunStatusResolver } from "../shared/pending-stage-status.js";
-import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
+import type {
+	PendingWorkflowRunStatusResolver,
+	WorkflowBoundarySegmentsResolver,
+} from "../shared/pending-stage-status.js";
+import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
@@ -51,6 +54,8 @@ export interface RenderStatusListOpts {
 	allRuns?: readonly RunSnapshot[];
 	/** Owning-run lifecycle authority for expanded child-run stages. */
 	owningRunStatus?: PendingWorkflowRunStatusResolver;
+	/** Depth-faithful boundary-chain authority for advertised pending-stage targets. */
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver;
 	/**
 	 * Emit-time indicator status per run id, taking precedence over deriving
 	 * from `allRuns`. Lets persisted payloads (e.g. the `/workflow status`
@@ -76,6 +81,8 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	// The list shows active + recently-ended runs together. Sorting:
 	// active first, then ended, each bucket by startedAt desc.
 	const sorted = sortRuns(runs);
+	const resolveBoundarySegments: WorkflowBoundarySegmentsResolver =
+		opts.resolveBoundarySegments ?? ((runId) => workflowBoundarySegments(runs, runId));
 
 	// Header counts span the whole snapshot, not just the display window.
 	const counts = countBuckets(runs);
@@ -98,6 +105,7 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 					opts.allRuns ?? runs,
 					opts.indicatorStatuses,
 					opts.owningRunStatus,
+					resolveBoundarySegments,
 				),
 			);
 		}
@@ -127,6 +135,7 @@ function renderRunEntry(
 	allRuns: readonly RunSnapshot[],
 	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
@@ -172,7 +181,12 @@ function renderRunEntry(
 	const metaSeg = theme ? `${dim}${meta}${reset}` : meta;
 	const metaLine = `   ${modeSeg}    ${strip}${" ".repeat(gap)}${metaSeg} `;
 
-	return [...identityRows, identity, metaLine, ...pendingStageLines(run, interior, theme, resolveOwningRunStatus)];
+	return [
+		...identityRows,
+		identity,
+		metaLine,
+		...pendingStageLines(run, interior, theme, resolveOwningRunStatus, resolveBoundarySegments),
+	];
 }
 
 const MAX_PENDING_STAGE_ROWS = 3;
@@ -205,8 +219,9 @@ function pendingStageLines(
 	width: number,
 	theme: GraphTheme | undefined,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
-	const stages = pendingWorkflowStageStatuses(run, resolveOwningRunStatus);
+	const stages = pendingWorkflowStageStatuses(run, resolveOwningRunStatus, resolveBoundarySegments);
 	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).flatMap((stage) => {
 		const prefix = `   pending: ${stage.name} (${stage.stageId})`;
 		if (stage.target === undefined) {

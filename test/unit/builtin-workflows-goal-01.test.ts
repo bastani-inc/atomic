@@ -228,6 +228,13 @@ describe("goal", () => {
 			const prompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
 			assert.ok(prompt.includes("git diff origin/main"), baseBranch);
 			assert.ok(prompt.includes("baseline branch for comparison is `origin/main`"), baseBranch);
+			if (baseBranch === "..") {
+				// The path-grammar guidance line contains `...`, so only the dangerous
+				// embeddings of `..` can be asserted.
+				assert.equal(prompt.includes("git diff .."), false, baseBranch);
+				assert.equal(prompt.includes("`..`"), false, baseBranch);
+				continue;
+			}
 			assert.equal(prompt.includes(baseBranch), false, baseBranch);
 		}
 

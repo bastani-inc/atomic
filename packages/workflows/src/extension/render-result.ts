@@ -13,6 +13,7 @@
 
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { RunDetail } from "../runs/background/status.js";
+import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import type {
 	PendingPrompt,
@@ -350,6 +351,7 @@ export function renderResult(result: WorkflowRegisteredToolResult | null | undef
 				now: opts?.now,
 				allRuns,
 				owningRunStatus: (runId) => statusByRunId.get(runId),
+				resolveBoundarySegments: (runId) => workflowBoundarySegments(allRuns, runId),
 			});
 		}
 
@@ -366,6 +368,9 @@ export function renderResult(result: WorkflowRegisteredToolResult | null | undef
 				width: opts?.width,
 				now: opts?.now,
 				owningRunStatus: (runId) => statusByRunId.get(runId),
+				...(allRuns === undefined
+					? {}
+					: { resolveBoundarySegments: (runId) => workflowBoundarySegments(allRuns, runId) }),
 			});
 		}
 

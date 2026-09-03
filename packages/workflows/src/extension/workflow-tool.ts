@@ -1,6 +1,7 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { inspectRun } from "../runs/background/status.js";
+import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
@@ -171,6 +172,7 @@ export function makeExecuteWorkflowTool(
 					{
 						toolControlRegistry,
 						owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
+						resolveBoundarySegments: (runId) => workflowBoundarySegments(capturedRuns, runId),
 					},
 				);
 				const result = {

@@ -129,7 +129,7 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 		}
 	});
 	lines.push(
-		"hint: status with runId returns full run detail; workflow answer answers pending prompts using runId/stageId/promptId; workflow resume controls paused runs; pause/interrupt/quit also accept runId. Ordinary Intercom handles free-form workflow-stage communication at <runId>:<stageKey>: live stage delivery is immediate; a known pending stage `send` queues before its first model turn; `ask` requires a live reply-capable stage.",
+		"hint: status with runId returns full run detail; workflow answer answers pending prompts using runId/stageId/promptId; workflow resume controls paused runs; pause/interrupt/quit also accept runId. Ordinary Intercom handles free-form workflow-stage communication at workflow:<rootRunId>/<segment>[/<segment>...]: live stage delivery is immediate; a known pending stage `send` queues before its first model turn; `ask` requires a live reply-capable stage.",
 	);
 	return lines.join("\n");
 }

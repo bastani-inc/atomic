@@ -145,8 +145,10 @@ const context = {
 test("heavy tool guidance teaches exact known workflow-stage targets without replacing live sessions", () => {
 	const { tool } = fixture();
 	const guidance = `${tool.description}\n${tool.parameters.properties?.to?.description ?? ""}`;
-	assert.match(guidance, /`<runId>:<stageKey>`/);
-	assert.match(guidance, /pending stage.*queue automatically/i);
+	assert.ok(guidance.includes("`workflow:<rootRunId>/<segment>[/<segment>...]`"));
+	assert.match(guidance, /sticky for every future\s+stage/i);
+	assert.ok(guidance.includes("`workflow:<rootRunId>/**`"));
+	assert.match(guidance, /notInKnownSet/);
 	assert.match(guidance, /live session/i);
 });
 

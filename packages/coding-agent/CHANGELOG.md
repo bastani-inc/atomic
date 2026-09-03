@@ -6,6 +6,10 @@
 
 - `--session` and `--fork` now accept unique 8-character hexadecimal prefixes for UUID-backed sessions, preserve exact custom-ID and project-local precedence, and report colliding full UUIDs instead of selecting the first match. Workflow and Intercom selectors expose the same fixed prefix contract within their own visibility scopes ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
 
+### Changed
+
+- The `edit` tool's model-facing hashline guidance now includes compact worked examples and anti-patterns for commonly rejected patch shapes, and correctly identifies native Rust tree-sitter block resolution as primary with the brace/indent heuristic as its fallback. The hashline reference documentation is now a specification covering inputs, verified tolerated shapes, outputs, worked examples, limits, literal error messages, and warnings.
+
 ## [0.9.18-alpha.5] - 2026-09-01
 
 ### Added

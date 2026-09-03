@@ -13,16 +13,18 @@ import type {
 	SupervisorRegistration,
 	WorkflowStageRosterAnnouncement,
 	WorkflowStageRosterEntry,
+	WorkflowPossibleStageAnnouncement,
+	WorkflowFutureStageRosterEntry,
 } from "../types.js";
+import {
+	formatWorkflowStageTarget,
+	parseWorkflowStageTarget,
+	withWorkflowStageTargetFinalSegment,
+} from "../workflow-stage-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { isMessage } from "./client-message-validation.js";
 import { buildMessageSendSignature } from "./send-signature.js";
-import {
-  handleBrokerSend,
-  parsePendingStageTarget,
-  type BrokerConnectedSession,
-  type PendingStageRoute,
-} from "./send-handler.js";
+import { handleBrokerSend, type BrokerConnectedSession, type PendingStageRoute } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -34,6 +36,7 @@ import {
 	setSessionGroups,
 } from "./group-membership.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
+import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -51,6 +54,7 @@ interface WorkflowRosterRegistration {
 	readonly ownerSessionId: string;
 	readonly group: string;
 	readonly stages: WorkflowStageRosterAnnouncement[];
+	readonly possibleStages?: readonly WorkflowPossibleStageAnnouncement[];
 }
 
 
@@ -59,8 +63,8 @@ interface PendingStageAcknowledgment {
   readonly senderSocket: net.Socket;
   readonly messageId: string;
   readonly attemptId?: string;
-  readonly runId: string;
-  readonly stageKey: string;
+	readonly runId: string;
+	readonly target: string;
 	readonly senderSessionId: string;
 	readonly sender: SessionInfo;
 	readonly message: Message;
@@ -82,6 +86,8 @@ interface PendingStageNotificationAcknowledgment {
 interface LiveWorkflowStageRouteRegistration {
   readonly sessionId: string;
   readonly capability: string;
+  /** Run whose route registration authorized this alias; capabilities are per run. */
+  readonly runId: string;
 }
 
 interface LiveWorkflowStageRouteActivation {
@@ -136,22 +142,61 @@ function invocationOwnsGroup(invocationGroup: string, candidateGroup: string): b
 	return candidate === owner || candidate.startsWith(`${owner}/`);
 }
 
-function isWorkflowStageRosterAnnouncements(value: unknown, runId: string): value is WorkflowStageRosterAnnouncement[] {
+function isWorkflowStageRosterAnnouncements(
+	value: unknown,
+	runId: string,
+	invocationGroup: string,
+): value is WorkflowStageRosterAnnouncement[] {
+	const groupRootRunId = invocationGroup.startsWith("workflow:")
+		? invocationGroup.slice("workflow:".length)
+		: undefined;
 	return (
 		Array.isArray(value) &&
-		value.every(
-			(stage) =>
-				typeof stage === "object" &&
-				stage !== null &&
-				typeof (stage as WorkflowStageRosterAnnouncement).stageId === "string" &&
-				typeof (stage as WorkflowStageRosterAnnouncement).stageName === "string" &&
-				(stage as WorkflowStageRosterAnnouncement).target ===
-					`${runId}:${(stage as WorkflowStageRosterAnnouncement).stageId}` &&
-				((stage as WorkflowStageRosterAnnouncement).lifecycle === "pending" ||
-					(stage as WorkflowStageRosterAnnouncement).lifecycle === "running") &&
-				typeof (stage as WorkflowStageRosterAnnouncement).routeEligible === "boolean" &&
-				typeof (stage as WorkflowStageRosterAnnouncement).group === "string"
-		)
+		value.every((stage) => {
+			if (typeof stage !== "object" || stage === null) return false;
+			const announcement = stage as WorkflowStageRosterAnnouncement;
+			const parsed = parseWorkflowStageTarget(announcement.target);
+			return (
+				typeof announcement.stageId === "string" &&
+				typeof announcement.stageName === "string" &&
+				parsed?.kind === "path" &&
+				parsed.segments.at(-1) === announcement.stageId &&
+				// Depth-faithful targets are anchored at the invocation root even when the
+				// announcing run is a nested descendant whose run id appears in no segment
+				// position (boundary-name segments). The runId conditions keep the flat
+				// shortcut form valid for hosts that have not adopted the clarified form.
+				((groupRootRunId !== undefined && groupRootRunId === parsed.rootRunId) ||
+					runId === parsed.rootRunId ||
+					parsed.segments.slice(0, -1).includes(runId)) &&
+				(announcement.lifecycle === "pending" || announcement.lifecycle === "running") &&
+				typeof announcement.routeEligible === "boolean" &&
+				typeof announcement.group === "string"
+			);
+		})
+	);
+}
+function isWorkflowPossibleStageAnnouncements(
+	value: unknown,
+	runId: string,
+	invocationGroup: string,
+): value is WorkflowPossibleStageAnnouncement[] {
+	const groupRootRunId = invocationGroup.startsWith("workflow:")
+		? invocationGroup.slice("workflow:".length)
+		: undefined;
+	return (
+		Array.isArray(value) &&
+		value.every((row) => {
+			if (typeof row !== "object" || row === null) return false;
+			const announcement = row as WorkflowPossibleStageAnnouncement;
+			const parsed = parseWorkflowStageTarget(announcement.target);
+			return (
+				parsed !== undefined &&
+				((groupRootRunId !== undefined && groupRootRunId === parsed.rootRunId) || runId === parsed.rootRunId) &&
+				typeof announcement.queuedCount === "number" &&
+				Number.isInteger(announcement.queuedCount) &&
+				announcement.queuedCount >= 0
+			);
+		})
 	);
 }
 
@@ -227,21 +272,65 @@ class IntercomBroker {
       }
     }, 5000);
   }
-  private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
-    const registration = this.liveWorkflowStageRoutes.get(target);
-    if (registration === undefined) return undefined;
-		const parsedTarget = parsePendingStageTarget(target);
-		const currentOwner = parsedTarget === undefined ? undefined : this.pendingStageRoutes.get(parsedTarget.runId);
-		if (currentOwner === undefined) return undefined;
-		if (currentOwner.capability !== registration.capability) {
+	private pendingStageOwnerForTarget(
+		target: string,
+	): { readonly runId: string; readonly registration: PendingStageRouteRegistration } | undefined {
+		const parsed = parseWorkflowStageTarget(target);
+		if (parsed === undefined) return undefined;
+		const invocationGroup = normalizeGroup(`workflow:${parsed.rootRunId}`);
+		// Slice 3 (D3/D6): pattern and `**` targets are anchored at the invocation root
+		// registration — glob segments name no nested run, and the sticky entry lives in
+		// the root run's durable bucket.
+		if (parsed.kind !== "path") {
+			const rootRegistration = this.pendingStageRoutes.get(parsed.rootRunId);
+			return rootRegistration !== undefined && normalizeGroup(rootRegistration.group) === invocationGroup
+				? { runId: parsed.rootRunId, registration: rootRegistration }
+				: undefined;
+		}
+		let ownerRunId = parsed.rootRunId;
+		let registration = this.pendingStageRoutes.get(ownerRunId);
+		for (const segment of parsed.segments.slice(0, -1)) {
+			const candidate = this.pendingStageRoutes.get(segment);
+			if (candidate !== undefined && normalizeGroup(candidate.group) === invocationGroup) {
+				ownerRunId = segment;
+				registration = candidate;
+			}
+		}
+		return registration === undefined ? undefined : { runId: ownerRunId, registration };
+	}
+
+	private resolveLegacyWorkflowStageTarget = (runId: string, stageKey: string): string | undefined => {
+		const route = this.pendingStageRoutes.get(runId);
+		const roster = this.workflowRosters.get(runId);
+		if (route === undefined || roster === undefined || !route.group.startsWith("workflow:")) return undefined;
+		const matches = roster.stages.filter((stage) => stage.stageId === stageKey || stage.stageName === stageKey);
+		return matches.length === 1 ? matches[0]!.target : undefined;
+	};
+
+	private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
+		const registration = this.liveWorkflowStageRoutes.get(target);
+		if (registration === undefined) return undefined;
+		// The alias is owned by the run that registered it: route capabilities are per run,
+		// and for boundary-form targets the depth-first owner resolution selects the root
+		// registration, whose capability legitimately differs from the nested stage's own.
+		// Validate staleness against the alias's own run registration and require the alias
+		// to stay anchored inside the target's invocation.
+		const ownRegistration = this.pendingStageRoutes.get(registration.runId);
+		const parsed = parseWorkflowStageTarget(target);
+		if (
+			ownRegistration === undefined ||
+			ownRegistration.capability !== registration.capability ||
+			parsed === undefined ||
+			normalizeGroup(ownRegistration.group) !== normalizeGroup(`workflow:${parsed.rootRunId}`)
+		) {
 			this.liveWorkflowStageRoutes.delete(target);
 			return undefined;
 		}
-    const session = this.sessions.get(registration.sessionId);
-    if (session !== undefined) return session;
-    this.liveWorkflowStageRoutes.delete(target);
-    return undefined;
-  };
+		const session = this.sessions.get(registration.sessionId);
+		if (session !== undefined) return session;
+		this.liveWorkflowStageRoutes.delete(target);
+		return undefined;
+	};
 
 	private canInspectSelectedGroup(requester: ConnectedSession, selectedGroup: string): boolean {
 		const selected = normalizeGroup(selectedGroup);
@@ -270,13 +359,15 @@ class IntercomBroker {
 		target: ConnectedSession,
 		logicalTarget: string,
 	): boolean => {
-		const parsed = parsePendingStageTarget(logicalTarget);
-		const owner = parsed === undefined ? undefined : this.pendingStageRoutes.get(parsed.runId);
+		const owner = this.pendingStageOwnerForTarget(logicalTarget)?.registration;
 		const live = this.liveWorkflowStageRoutes.get(logicalTarget);
 		if (owner === undefined || live?.sessionId !== target.info.id) return false;
 		const targetGroup = target.registrationGroup ?? target.info.group ?? "default";
 		return this.canControlWorkflowInvocation(sender, owner.group) && invocationOwnsGroup(owner.group, targetGroup);
 	};
+
+	// `send`/`ask` always resolve this namespace as a stage target. `list({ group })`
+	// remains the only operation that interprets the same path as an owned subgroup.
 
 	private workflowStagesVisibleTo(requester: ConnectedSession, selectedGroup?: string): WorkflowStageRosterEntry[] {
 	const requesterGroups = sessionGroups(requester.info);
@@ -311,6 +402,36 @@ class IntercomBroker {
 	return entries;
   }
 
+	/**
+	 * D7 (slice 4): possible-future rows published with the run's persisted scan. Visible
+	 * only from inside the invocation — a membership in `workflow:<rootRunId>` or in an
+	 * owned subgroup (`workflow:<rootRunId>/…`). The read-only peek filter keeps the
+	 * invocation-group rows out of every other group's view.
+	 */
+	private workflowFutureStagesVisibleTo(
+		requester: ConnectedSession,
+		selectedGroup?: string,
+	): WorkflowFutureStageRosterEntry[] {
+		const requesterGroups = sessionGroups(requester.info);
+		const selected = selectedGroup === undefined ? undefined : normalizeGroup(selectedGroup);
+		const entries: WorkflowFutureStageRosterEntry[] = [];
+		for (const [runId, roster] of this.workflowRosters) {
+			if (roster.possibleStages === undefined || roster.possibleStages.length === 0) continue;
+			if (![...requesterGroups].some((group) => invocationOwnsGroup(roster.group, group))) continue;
+			if (selected !== undefined && selected !== roster.group) continue;
+			for (const row of roster.possibleStages) {
+				entries.push({
+					kind: "workflow-future-stage",
+					runId,
+					target: row.target,
+					queuedCount: row.queuedCount,
+					group: roster.group,
+				});
+			}
+		}
+		return entries;
+	}
+
   private acknowledgeLiveWorkflowStageRoute(requestId: string): void {
     const activation = this.liveWorkflowStageRouteActivations.get(requestId);
     if (activation === undefined || activation.pendingRequestIds.size > 0) return;
@@ -333,10 +454,29 @@ class IntercomBroker {
     stageKeys: readonly string[],
     capability: string,
   ): boolean {
-    const uniqueStageKeys = [...new Set(stageKeys)];
-    const targets = uniqueStageKeys.map((stageKey) => `${runId}:${stageKey}`);
-    for (const target of targets) {
-      const existing = this.liveWorkflowStageRoutes.get(target);
+		const uniqueStageKeys = [...new Set(stageKeys)];
+		const owner = this.pendingStageRoutes.get(runId);
+		if (owner === undefined || !owner.group.startsWith("workflow:")) return false;
+		const rootRunId = owner.group.slice("workflow:".length);
+		// D8 clarification: advertised targets are depth-faithful, so the live aliases must be
+		// depth-faithful too. The roster publishes the id-form target per stage; the name form
+		// swaps its final segment. Without a roster entry, fall back to the flat run-id prefix
+		// (still an accepted resolver input).
+		const roster = this.workflowRosters.get(runId);
+		const targets = uniqueStageKeys.map((stageKey) => {
+			const entry = roster?.stages.find((stage) => stage.stageId === stageKey || stage.stageName === stageKey);
+			const entryTarget = entry === undefined ? undefined : parseWorkflowStageTarget(entry.target);
+			if (entry !== undefined && entryTarget?.kind === "path") {
+				if (stageKey !== entry.stageName) return entry.target;
+				return (
+					withWorkflowStageTargetFinalSegment(entry.target, entry.stageName) ?? entry.target
+				);
+			}
+			const prefix = runId === rootRunId ? [] : [runId];
+			return formatWorkflowStageTarget(rootRunId, ...prefix, stageKey);
+		});
+		for (const target of targets) {
+			const existing = this.liveWorkflowStageRoutes.get(target);
       if (
         existing !== undefined &&
         existing.sessionId !== currentId &&
@@ -346,11 +486,32 @@ class IntercomBroker {
       }
     }
     for (const target of targets) {
-      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId, capability });
+      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId, capability, runId });
     }
     const pendingRequestIds = new Set(
       [...this.pendingStageAcknowledgments]
-        .filter(([, pending]) => pending.runId === runId && uniqueStageKeys.includes(pending.stageKey))
+				.filter(([, pending]) => {
+					// Match in-flight pendings of the whole invocation, not just this run's own:
+					// boundary-form pendings settle on the root registration while the going-live
+					// stage may register under its nested child run.
+					const parsedPending = parseWorkflowStageTarget(pending.target);
+					if (parsedPending === undefined || parsedPending.rootRunId !== rootRunId) return false;
+					if (parsedPending.kind !== "path") {
+						// Slice 3: sticky pattern pendings hold the going-live barrier when the
+						// stage's advertised depth-faithful target matches the pattern.
+						return uniqueStageKeys.some((stageKey) => {
+							const entry = roster?.stages.find(
+								(candidate) => candidate.stageId === stageKey || candidate.stageName === stageKey,
+							);
+							const parsedEntry = entry === undefined ? undefined : parseWorkflowStageTarget(entry.target);
+							if (parsedEntry === undefined) {
+								return matchStagePathSegments(parsedPending.segments, parsedPending.segments);
+							}
+							return matchStagePathSegments(parsedPending.segments, parsedEntry.segments);
+						});
+					}
+					return uniqueStageKeys.includes(parsedPending.segments.at(-1) ?? "");
+				})
         .map(([pendingRequestId]) => pendingRequestId),
     );
     this.liveWorkflowStageRouteActivations.set(requestId, { sessionId: currentId, pendingRequestIds });
@@ -358,14 +519,15 @@ class IntercomBroker {
     return true;
   }
 
-  private routePendingStage = (route: PendingStageRoute): boolean => {
-    const ownerRegistration = this.pendingStageRoutes.get(route.runId);
-    if (ownerRegistration === undefined) return false;
-    const owner = this.sessions.get(ownerRegistration.sessionId);
-    if (owner === undefined) {
-      this.pendingStageRoutes.delete(route.runId);
-      return false;
-    }
+	private routePendingStage = (route: PendingStageRoute): boolean => {
+		const ownerMatch = this.pendingStageOwnerForTarget(route.target);
+		if (ownerMatch === undefined) return false;
+		const { runId, registration: ownerRegistration } = ownerMatch;
+		const owner = this.sessions.get(ownerRegistration.sessionId);
+		if (owner === undefined) {
+			this.pendingStageRoutes.delete(runId);
+			return false;
+		}
     if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
       writeMessage(route.socket, {
         type: "delivery_failed",
@@ -393,8 +555,8 @@ class IntercomBroker {
       senderSocket: route.socket,
       messageId: route.message.id,
       ...(route.attemptId ? { attemptId: route.attemptId } : {}),
-      runId: route.runId,
-      stageKey: route.stageKey,
+			runId,
+			target: route.target,
 		senderSessionId: route.from.info.id,
 		sender: { ...route.from.info },
 		message: route.message,
@@ -410,8 +572,8 @@ class IntercomBroker {
 		...(route.from.registrationReturnAddress === undefined
 			? {}
 			: { senderReturnAddress: route.from.registrationReturnAddress }),
-      runId: route.runId,
-      stageKey: route.stageKey,
+			runId,
+			target: route.target,
       message: route.message,
 		...(route.liveTargetId === undefined ? {} : { live: true }),
     });
@@ -423,8 +585,11 @@ class IntercomBroker {
 		requestId: string,
 		outcome: "queued" | "delivered" | "forward" | "refused",
 		position: number | undefined,
+		forwardTarget: string | undefined,
 		reason: string | undefined,
 		reasonCode: "message_id_conflict" | undefined,
+		notInKnownSet?: true,
+		forwardTargets?: readonly string[],
 	): void {
 		const pending = this.pendingStageAcknowledgments.get(requestId);
 		if (pending === undefined || pending.ownerSessionId !== currentId) return;
@@ -432,7 +597,7 @@ class IntercomBroker {
 		this.pendingStageAcknowledgments.delete(requestId);
 		this.releasePendingStageAcknowledgment(requestId);
 		if (outcome === "forward") {
-			this.forwardValidatedLiveStageMessage(pending);
+			this.forwardValidatedLiveStageMessage(pending, forwardTarget);
 			return;
 		}
 		if (outcome === "delivered") {
@@ -444,13 +609,30 @@ class IntercomBroker {
 			return;
 		}
 		if (outcome === "queued" && typeof position === "number" && position > 0) {
+			// Slice 3 (D6/D9): a sticky pattern entry answers `queued` once while any
+			// matching live stages receive the message now, as ordinary inbound
+			// messages with the original sender identity. The owner records a live
+			// delivery only for the targets this write actually reached, so a stage
+			// that dropped between the owner's answer and this write is not marked
+			// delivered and a retried send re-forwards to it.
+			const deliveredTargets = this.deliverStickyBroadcast(pending, forwardTargets);
+			const ownerSocket = this.sessions.get(currentId)?.socket;
+			if (deliveredTargets.length > 0 && ownerSocket !== undefined) {
+				writeMessage(ownerSocket, {
+					type: "sticky_live_delivered",
+					runId: pending.runId,
+					messageId: pending.messageId,
+					target: pending.target,
+					deliveredTargets,
+				});
+			}
 			writeMessage(pending.senderSocket, {
 				type: "queued",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				runId: pending.runId,
-				stageKey: pending.stageKey,
+				target: pending.target,
 				position,
+				...(notInKnownSet === true ? { notInKnownSet: true } : {}),
 			});
 			return;
 		}
@@ -463,13 +645,24 @@ class IntercomBroker {
 		});
 	}
 
-	private forwardValidatedLiveStageMessage(pending: PendingStageAcknowledgment): void {
+	private forwardValidatedLiveStageMessage(pending: PendingStageAcknowledgment, forwardTarget?: string): void {
 		const from = this.sessions.get(pending.senderSessionId);
-		const target = this.resolveLiveWorkflowStage(`${pending.runId}:${pending.stageKey}`);
+		// The route owner chooses the live alias for boundary-form targets, so bind its
+		// forward answer to the sender's own invocation: a target under any other rootRunId
+		// could deliver a sender's message into a different invocation, bypassing the
+		// sender's group authorization on the ordinary send path.
+		const destination = forwardTarget ?? pending.target;
+		const parsedDestination = parseWorkflowStageTarget(destination);
+		const parsedPending = parseWorkflowStageTarget(pending.target);
+		const crossInvocation =
+			parsedDestination === undefined ||
+			parsedPending === undefined ||
+			parsedDestination.rootRunId !== parsedPending.rootRunId;
+		const target = crossInvocation ? undefined : this.resolveLiveWorkflowStage(destination);
 		if (
 			from === undefined ||
 			target === undefined ||
-			target.info.id !== pending.liveTargetId ||
+			(pending.liveTargetId !== undefined && target.info.id !== pending.liveTargetId) ||
 			pending.signature === undefined
 		) {
 			writeMessage(pending.senderSocket, {
@@ -508,6 +701,35 @@ class IntercomBroker {
 		});
 	}
 
+
+	/**
+	 * Slice 3 (D6/D9): deliver a sticky broadcast to the live stages the host validated,
+	 * each as an ordinary inbound message frame carrying the original sender identity.
+	 */
+	private deliverStickyBroadcast(
+		pending: PendingStageAcknowledgment,
+		forwardTargets: readonly string[] | undefined,
+	): string[] {
+		if (forwardTargets === undefined || forwardTargets.length === 0) return [];
+		const parsedPending = parseWorkflowStageTarget(pending.target);
+		if (parsedPending === undefined) return [];
+		const invocationGroup = normalizeGroup(`workflow:${parsedPending.rootRunId}`);
+		const delivered: string[] = [];
+		for (const target of forwardTargets) {
+			const targetSession = this.resolveLiveWorkflowStage(target);
+			if (targetSession === undefined) continue;
+			const targetGroup = targetSession.registrationGroup ?? targetSession.info.group ?? "default";
+			if (!invocationOwnsGroup(invocationGroup, normalizeGroup(targetGroup))) continue;
+			if (targetSession.socket.destroyed || targetSession.socket.writableEnded) continue;
+			writeMessage(targetSession.socket, { type: "message", from: pending.sender, message: pending.message });
+			delivered.push(target);
+		}
+		// Deliberately NOT recorded in the delivered-message cache (round-1 review): the
+		// sticky ledger in the workflow host is the durable dedupe authority, so a retry
+		// re-routes to the host, dedupes there, and the sender's ack stays `queued`
+		// instead of flipping to `delivered` between attempts.
+		return delivered;
+	}
 
 	private failPendingStageNotification(
 		socket: net.Socket,
@@ -778,6 +1000,7 @@ class IntercomBroker {
 			requestId: clientMessage.requestId,
 			sessions,
 			workflowStages: this.workflowStagesVisibleTo(requester, clientMessage.group),
+			workflowFutureStages: this.workflowFutureStagesVisibleTo(requester, clientMessage.group),
 		});
         break;
       }
@@ -844,22 +1067,46 @@ class IntercomBroker {
         }
         if (
           clientMessage.stages !== undefined &&
-          (!isWorkflowStageRosterAnnouncements(clientMessage.stages, clientMessage.runId) ||
+          (!isWorkflowStageRosterAnnouncements(
+            clientMessage.stages,
+            clientMessage.runId,
+            normalizeGroup(clientMessage.group),
+          ) ||
             !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group)))
         ) {
           writeMessage(socket, { type: "registration_failed", reason: "Invalid workflow-stage roster" });
           socket.end();
           return;
         }
+        if (
+          clientMessage.possibleStages !== undefined &&
+          !isWorkflowPossibleStageAnnouncements(
+            clientMessage.possibleStages,
+            clientMessage.runId,
+            normalizeGroup(clientMessage.group),
+          )
+        ) {
+          writeMessage(socket, { type: "registration_failed", reason: "Invalid workflow possible-stage roster" });
+          socket.end();
+          return;
+        }
+        // D7 (slice 4): presence replaces, absence keeps — a terminal root publishes `[]`
+        // so the broker drops every future row, while nested runs' re-announcements (which
+        // never carry the field) preserve the root's rows.
+        const possibleStages =
+          clientMessage.possibleStages !== undefined
+            ? clientMessage.possibleStages
+            : this.workflowRosters.get(clientMessage.runId)?.possibleStages;
         if (activeExisting !== undefined && activeExisting.sessionId !== currentId) {
           // A stage replays the process-shared owner announcement before registering its live aliases.
           // It may publish the materialized roster, but the original workflow owner must continue to
           // handle pending delivery and own roster cleanup.
-          if (clientMessage.stages !== undefined) {
+          if (clientMessage.stages !== undefined || possibleStages !== undefined) {
             this.workflowRosters.set(clientMessage.runId, {
               ownerSessionId: activeExisting.sessionId,
               group: ownerGroup,
-              stages: clientMessage.stages,
+              stages: clientMessage.stages ?? [],
+              ...(possibleStages === undefined ? {} : { possibleStages }),
             });
           }
           break;
@@ -869,11 +1116,12 @@ class IntercomBroker {
           group: ownerGroup,
           capability: clientMessage.capability,
         });
-        if (clientMessage.stages !== undefined) {
+        if (clientMessage.stages !== undefined || possibleStages !== undefined) {
           this.workflowRosters.set(clientMessage.runId, {
             ownerSessionId: currentId,
             group: ownerGroup,
-            stages: clientMessage.stages,
+            stages: clientMessage.stages ?? [],
+            ...(possibleStages === undefined ? {} : { possibleStages }),
           });
         }
         break;
@@ -888,14 +1136,21 @@ class IntercomBroker {
           !Array.isArray(clientMessage.stageKeys) ||
           clientMessage.stageKeys.length < 1 ||
           clientMessage.stageKeys.length > 2 ||
-          !clientMessage.stageKeys.every(
-            (stageKey) =>
-              typeof stageKey === "string" &&
-              stageKey.length > 0 &&
-              parsePendingStageTarget(`${clientMessage.runId}:${stageKey}`) !== undefined,
-          )
+          !clientMessage.stageKeys.every((stageKey) => typeof stageKey === "string" && stageKey.length > 0)
         ) {
           throw new Error("Invalid live workflow-stage route registration");
+        }
+        if (!clientMessage.stageKeys.every((stageKey) => !stageKey.includes("/") && !stageKey.includes("*"))) {
+          // A stage name containing "/" or "*" cannot be a canonical path segment, but throwing
+          // here reaches the framing reader's onError and destroys the stage session's whole
+          // broker connection. Refuse orderly like every neighbouring rejection; host clients
+          // filter such name keys and register the stage-id key instead.
+          writeMessage(socket, {
+            type: "registration_failed",
+            reason: "Live workflow-stage route keys must be single path segments",
+          });
+          socket.end();
+          return;
         }
         const ownerRegistration = this.pendingStageRoutes.get(clientMessage.runId);
         const registeringSession = this.sessions.get(currentId);
@@ -933,8 +1188,14 @@ class IntercomBroker {
 				clientMessage.outcome !== "forward" &&
 				clientMessage.outcome !== "refused") ||
 			(clientMessage.position !== undefined && typeof clientMessage.position !== "number") ||
+			(clientMessage.target !== undefined && typeof clientMessage.target !== "string") ||
+			(clientMessage.outcome === "forward" && typeof clientMessage.target !== "string") ||
 			(clientMessage.reason !== undefined && typeof clientMessage.reason !== "string") ||
-			(clientMessage.reasonCode !== undefined && clientMessage.reasonCode !== "message_id_conflict")
+			(clientMessage.reasonCode !== undefined && clientMessage.reasonCode !== "message_id_conflict") ||
+			(clientMessage.notInKnownSet !== undefined && clientMessage.notInKnownSet !== true) ||
+			(clientMessage.forwardTargets !== undefined &&
+				(!Array.isArray(clientMessage.forwardTargets) ||
+					!clientMessage.forwardTargets.every((entry) => typeof entry === "string")))
         ) {
           throw new Error("Invalid pending-stage message result");
         }
@@ -943,8 +1204,11 @@ class IntercomBroker {
           clientMessage.requestId,
           clientMessage.outcome,
           clientMessage.position,
+			clientMessage.target,
 			clientMessage.reason,
 			clientMessage.reasonCode,
+			clientMessage.notInKnownSet === true ? true : undefined,
+			Array.isArray(clientMessage.forwardTargets) ? [...clientMessage.forwardTargets] : undefined,
         );
         break;
       }
@@ -963,6 +1227,7 @@ class IntercomBroker {
 				this.routePendingStage,
 				this.resolveLiveWorkflowStage,
 				this.canControlLiveWorkflowStage,
+				this.resolveLegacyWorkflowStageTarget,
 			);
 			break;
 		}

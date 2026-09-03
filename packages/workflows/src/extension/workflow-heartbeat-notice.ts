@@ -29,11 +29,15 @@ export function formatWorkflowHeartbeatNoticeText(details: WorkflowHeartbeatEven
 		"When steering or communication is useful, use Intercom. Before steering a stage, join its invocation group. " +
 		"Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`. " +
 		"Consider the expanded workflow topology and match each update's reach to its impact: send a local update to " +
-		"its affected stage; when shared scope or acceptance " +
-		"criteria change, send the same authoritative Intercom update to every relevant live and known unstarted " +
-		"`<runId>:<stageKey>`, including each worker-to-reviewer loop. Intercom delivers immediately to live stages and " +
-		"queues updates for known stages that have not started, delivering them before their first model turn, so workers " +
-		"and reviewers begin with one consistent contract. " +
+		"its affected stage; when shared scope or acceptance criteria change, broadcast one authoritative Intercom update " +
+		"to `workflow:<rootRunId>/**` (or a narrower path pattern such as `workflow:<rootRunId>/review-*`) rather than " +
+		"enumerating stages, including each worker-to-reviewer loop. `**` reaches every live stage now and remains sticky " +
+		"for every future stage, including nested children, until the root run terminates. Use `intercom list` inside the " +
+		"invocation group to see live, pending, and possible future targets. Targets use " +
+		"`workflow:<rootRunId>/<segment>[/<segment>...]`; `*` matches one segment and `**` any depth. Intercom delivers " +
+		"immediately to live stages and queues updates for known stages that have not started, delivering them before their " +
+		"first model turn, so workers and reviewers begin with one consistent contract. A valid target outside the known set " +
+		"queues with a `notInKnownSet` warning and settles undeliverable at terminal only if never delivered. " +
 		"Use `ask` once the target has a live session that can reply. " +
 		"Use workflow pause, resume, interrupt, or quit for run control. " +
 		"Continue the progressing run when no intervention is needed, or ask the user when a decision is needed. " +

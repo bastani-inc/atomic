@@ -1,5 +1,10 @@
 import type net from "node:net";
 import type { BrokerMessage, Message, SessionInfo } from "../types.js";
+import {
+	legacyWorkflowStageTargetMigrationHint,
+	parseLegacyWorkflowStageTarget,
+	parseWorkflowStageTarget,
+} from "../workflow-stage-target.js";
 import { isMessage } from "./client-message-validation.js";
 import { resolveSessionTarget, sessionTargetFailureReason } from "../session-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
@@ -31,8 +36,7 @@ export interface BrokerConnectedSession {
 export interface PendingStageRoute {
   readonly socket: net.Socket;
   readonly from: BrokerConnectedSession;
-  readonly runId: string;
-  readonly stageKey: string;
+	readonly target: string;
   readonly message: Message;
   readonly attemptId?: string;
 	readonly liveTargetId?: string;
@@ -48,15 +52,7 @@ export type LiveWorkflowStageController = (
 	logicalTarget: string,
 ) => boolean;
 
-const WORKFLOW_RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-export function parsePendingStageTarget(target: string): { runId: string; stageKey: string } | undefined {
-  const separator = target.indexOf(":");
-  if (separator < 0) return undefined;
-  const runId = target.slice(0, separator);
-  const stageKey = target.slice(separator + 1);
-  return WORKFLOW_RUN_ID_PATTERN.test(runId) && stageKey.length > 0 ? { runId, stageKey } : undefined;
-}
+export type LegacyWorkflowStageTargetResolver = (runId: string, stageKey: string) => string | undefined;
 export const PENDING_STAGE_ASK_REFUSAL =
   "Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
@@ -86,6 +82,7 @@ export function handleBrokerSend(
 	routePendingStage?: PendingStageRouter,
 	resolveLiveWorkflowStage?: LiveWorkflowStageResolver,
 	canControlLiveWorkflowStage?: LiveWorkflowStageController,
+	resolveLegacyWorkflowStageTarget?: LegacyWorkflowStageTargetResolver,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -140,6 +137,30 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor target does not match the authorized relationship" });
     return;
   }
+	const workflowTarget = parseWorkflowStageTarget(trimmedTo);
+	// Slice 3 (D3): asks to pattern/future stage targets stay refused; `send` is queued
+	// sticky by the workflow host, so the refusal must happen before any live delivery.
+	if (workflowTarget !== undefined && workflowTarget.kind !== "path" && message.expectsReply === true) {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			...(attemptId ? { attemptId } : {}),
+			reason: PENDING_STAGE_ASK_REFUSAL,
+		});
+		return;
+	}
+	const legacyTarget = parseLegacyWorkflowStageTarget(trimmedTo);
+	if (legacyTarget !== undefined) {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			...(attemptId ? { attemptId } : {}),
+			reason: legacyWorkflowStageTargetMigrationHint(
+				resolveLegacyWorkflowStageTarget?.(legacyTarget.runId, legacyTarget.stageKey),
+			),
+		});
+		return;
+	}
 
 
   // Exact-id targeting always resolves against the full pool so a cross-group id
@@ -188,14 +209,13 @@ export function handleBrokerSend(
       });
       return;
     }
-		const liveTarget = parsePendingStageTarget(trimmedTo);
 		if (
 			liveWorkflowTarget !== undefined &&
-			liveTarget !== undefined &&
+			workflowTarget !== undefined &&
 			routePendingStage?.({
 				socket,
 				from: fromSession,
-				...liveTarget,
+				target: trimmedTo,
 				message,
 				...(attemptId ? { attemptId } : {}),
 				liveTargetId: target.info.id,
@@ -218,15 +238,22 @@ export function handleBrokerSend(
     write(socket, { type: "delivered", messageId: message.id, attemptId });
     return;
   }
-  if (resolution.kind === "not_found" && !supervisorSend && routePendingStage !== undefined) {
-    const pendingTarget = parsePendingStageTarget(trimmedTo);
-    if (
-      pendingTarget !== undefined &&
-      routePendingStage({ socket, from: fromSession, ...pendingTarget, message, ...(attemptId ? { attemptId } : {}) })
-    ) {
-      return;
-    }
-  }
+	if (
+		resolution.kind === "not_found" &&
+		!supervisorSend &&
+		routePendingStage !== undefined &&
+		workflowTarget !== undefined &&
+		routePendingStage({
+			socket,
+			from: fromSession,
+			target: trimmedTo,
+			message,
+			...(attemptId ? { attemptId } : {}),
+			signature,
+		})
+	) {
+		return;
+	}
   write(socket, {
     type: "delivery_failed",
     messageId: message.id,

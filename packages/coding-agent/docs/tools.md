@@ -4,7 +4,7 @@ Atomic enables these coding tools in normal sessions by default: `read`, `write`
 
 ## Hashline editing anchors
 
-`read`, `search`, `write`, and successful `edit` results for local text files emit an editable hashline header:
+`read`, `search`, `write`, and successful `edit` results for local text files emit an editable, session-scoped hashline header:
 
 ```text
 [src/example.ts#A1B2]
@@ -12,7 +12,7 @@ Atomic enables these coding tools in normal sessions by default: `read`, `write`
 2:console.log(value);
 ```
 
-The four-character tag is a snapshot of the file content seen by the model. The `edit` tool accepts hashline scripts anchored to that tag:
+Use that header and the original line numbers to edit the existing file:
 
 ```text
 [src/example.ts#A1B2]
@@ -22,11 +22,7 @@ insert tail:
 +// done
 ```
 
-Supported hashline operations include `replace N..M:`, `replace block N:`, `delete N..M`, `delete block N`, `insert before N:`, `insert after N:`, `insert after block N:`, `insert head:`, and `insert tail:`. Safe lenient variants such as `replace N`, `replace N-M:`, `replace N M:`, `replace N…M:`, bare body rows, and `*** Begin Patch` envelopes are accepted. Bare body rows are auto-prefixed and reported as warnings. `*** Abort` stops parsing the remaining input, while apply-patch sentinels, `@@` hunk headers, bare numeric hunk headers, `delete` bodies, empty `replace`/`insert` bodies, and `-` diff rows are rejected with guidance instead of silently deleting content. Line numbers refer to the original tagged snapshot and do not shift within a call. Parallel `edit` calls that share a `[path#TAG]` are applied as one snapshot-anchored batch (the same merge as multiple hunks under one header), so a later sibling does not fail just because the first write minted a new tag. A follow-up `edit` that arrives after that batch has already committed still uses snapshot recovery for provably non-overlapping drift.
-
-Before writing, Atomic verifies the current file against the tagged snapshot. If the file drifted, `edit` first attempts a snapshot-based recovery for provably non-overlapping external changes and appends a warning when it preserves those changes; unknown tags, overlapping stale edits, and unrecoverable drift fail clearly with the current file hash (and anchor context for drifted files) and leave the file unchanged. Byte-identical no-op edits return a no-op warning without writing, and repeated identical no-ops escalate to an error to stop looped retries. Hashline snapshots are scoped to the active tool/session store, so tags emitted in another session or stale context do not authorize edits. One `edit` input may contain multiple `[PATH#TAG]` sections; Atomic preflights every section before writing, but this is preflight atomicity rather than transactional rollback, so a mid-batch filesystem write failure can leave earlier sections already written. Each successful `write` or `edit` returns a fresh tag for follow-up edits; hashline edit success output is compact and includes the refreshed header plus block-resolution/change metadata while the full diff remains in tool details. Plain `write` success output is likewise compact (`[path#TAG]` plus a byte-count summary), not a full reprint of the file. `write` strips copied hashline headers and `LINE:`/`*LINE:` display prefixes only when the pasted content matches a known current-store snapshot and notes when stripping occurred; complete copied output preserves whether that snapshot had a terminal newline. Literal or unknown hashline-looking content is preserved instead of being stripped.
-
-Hashline anchors must be positive safe integers. Inclusive numeric ranges are limited to 100,000 lines before expansion. An explicit `+TEXT` row that looks like a valid hunk header remains literal and emits a warning. Across whole-file, truncated, and range/offset reads of LF or CRLF text, numbered hashline output treats a terminal newline as a separator rather than an additional synthetic row; genuine blank lines, including one immediately before that newline, remain visible. Truncation totals and continuation selectors count real lines. Files using bare CR line endings retain their existing compatibility behavior and are outside this newline guarantee.
+Block operations resolve through Atomic's native Rust tree-sitter primitive, with the brace/indent heuristic only as a fallback when the native binding is unavailable. See the [`edit` hashline specification](/tools/edit) for every operation, verified tolerated input shape, output and recovery behavior, limits, worked examples, literal error messages, and warnings.
 
 ## `bash` and `bashInterceptor`
 

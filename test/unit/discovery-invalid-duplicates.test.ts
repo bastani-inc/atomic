@@ -133,7 +133,17 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
 		});
 
 		assert.equal(registry.has("side-effect-workflow"), true);
-		assert.equal(errors.length, 0);
+		// The D10 zero-stage lint warns for this fixture (its run body creates
+		// no stage call sites), and nothing else is diagnosed.
+		assert.deepEqual(
+			errors.filter((diagnostic) => diagnostic.code !== "ZERO_STAGES"),
+			[],
+		);
+		const zeroStages = errors.filter((diagnostic) => diagnostic.code === "ZERO_STAGES");
+		assert.deepEqual(
+			zeroStages.map((diagnostic) => diagnostic.source?.endsWith("side-effect.js")),
+			[true],
+		);
 		assert.equal(existsSync(sideEffectPath), false);
 	});
 

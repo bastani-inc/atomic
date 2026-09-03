@@ -14,7 +14,7 @@ import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
-const TARGET = `${RUN_ID}:reviewer`;
+const TARGET = `workflow:${RUN_ID}/reviewer`;
 const BROKER_FRAME_TIMEOUT_MS = 5_000;
 const BROKER_STARTUP_TIMEOUT_MS = 10_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -82,6 +82,7 @@ interface ToolResult {
 		delivered?: boolean;
 		position?: number;
 		queued?: boolean;
+		notInKnownSet?: true;
 		group?: string;
 		runId?: string;
 		stageKey?: string;
@@ -603,7 +604,7 @@ test("the production owner route preserves pending delivery through tool restric
 			const messageId = `${scenario.name}-message`;
 			raw.send({
 				type: "send",
-				to: `${scenario.runId}:reviewer`,
+				to: `workflow:${scenario.runId}/reviewer`,
 				message: { id: messageId, timestamp: 1, content: { text: scenario.name } },
 			});
 			const acknowledgment = await raw.nextDeliveryAcknowledgment(messageId);
@@ -611,8 +612,7 @@ test("the production owner route preserves pending delivery through tool restric
 				assert.deepEqual(acknowledgment, {
 					type: "queued",
 					messageId,
-					runId: scenario.runId,
-					stageKey: "reviewer",
+					target: `workflow:${scenario.runId}/reviewer`,
 					position: 1,
 				});
 				assert.equal(store.pendingStageMessagesFor(scenario.runId, "reviewer").length, 1);
@@ -621,7 +621,7 @@ test("the production owner route preserves pending delivery through tool restric
 				assert.deepEqual(acknowledgment, {
 					type: "delivery_failed",
 					messageId,
-					reason: `Workflow stage ${scenario.runId}:reviewer cannot receive Intercom messages before startup`,
+					reason: `Workflow stage workflow:${scenario.runId}/reviewer cannot receive Intercom messages before startup`,
 				});
 				assert.deepEqual(store.runs()[0]?.pendingStageMessages ?? [], []);
 				assert.deepEqual(backend.getWorkflow(scenario.runId)?.pendingStageMessages, []);
@@ -782,7 +782,7 @@ test("an invocation controls pending and live delivery into an owned isolated st
 		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		const queued = await executeIntercom(workflowSender, {
 			action: "send",
-			to: `${runId}:reviewer`,
+			to: `workflow:${runId}/reviewer`,
 			message: "queued invocation control",
 		});
 		assert.equal(queued.isError, false);
@@ -794,12 +794,12 @@ test("an invocation controls pending and live delivery into an owned isolated st
 		let roster: Array<{ target: string; group: string }> = [];
 		for (let attempt = 0; attempt < 20 && roster.length === 0; attempt += 1) {
 			const listed = await executeIntercom(workflowSender, { action: "list" });
-			if ((listed.content[0]?.text ?? "").includes(`target: \`${runId}:`)) {
-				roster = [{ target: `${runId}:${store.runs()[0]?.stages[0]?.id}`, group: isolatedGroup }];
+			if ((listed.content[0]?.text ?? "").includes(`target: \`workflow:${runId}/`)) {
+				roster = [{ target: `workflow:${runId}/${store.runs()[0]?.stages[0]?.id}`, group: isolatedGroup }];
 			}
 			if (roster.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
 		}
-		const stageTarget = `${runId}:${store.runs()[0]?.stages[0]?.id}`;
+		const stageTarget = `workflow:${runId}/${store.runs()[0]?.stages[0]?.id}`;
 		assert.deepEqual(roster, [{ target: stageTarget, group: isolatedGroup }]);
 
 		releaseStageInitialization.resolve();
@@ -891,19 +891,34 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await sender.start();
 
+		// Slice 3 (D3/D4): an unresolved path target is accepted speculatively as a sticky
+		// entry in the root run's durable bucket and acknowledged with notInKnownSet.
 		const unknown = await executeIntercom(sender, {
 			action: "send",
-			to: `${RUN_ID}:unknown-stage`,
+			to: `workflow:${RUN_ID}/unknown-stage`,
 			message: "This target does not exist.",
 		});
-		assert.match(unknown.content[0]?.text ?? "", /Session not found/);
+		assert.match(unknown.content[0]?.text ?? "", /queued/i);
+		assert.match(unknown.content[0]?.text ?? "", /not in the workflow's known stage set/);
 		assert.equal(unknown.details.delivered, false);
+		assert.equal(unknown.details.queued, true);
+		assert.equal(unknown.details.notInKnownSet, true);
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.sticky, true);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.targetPath, `workflow:${RUN_ID}/unknown-stage`);
 
-		for (const stageKey of ["unknown-stage", "completed-stage", "late-stage", "closed-stage"]) {
+		// A future-stage target refuses the ask through the sticky flow; materialized
+		// stages that cannot take pre-start delivery keep today's unknown failure.
+		const futureAskFailure = await executeIntercom(sender, {
+			action: "ask",
+			to: `workflow:${RUN_ID}/unknown-stage`,
+			message: "Lifecycle validation for unknown-stage",
+		});
+		assert.equal(futureAskFailure.details.refusal, "pending_stage_ask_unsupported");
+		for (const stageKey of ["completed-stage", "late-stage", "closed-stage"]) {
 			const ordinaryAskFailure = await executeIntercom(sender, {
 				action: "ask",
-				to: `${RUN_ID}:${stageKey}`,
+				to: `workflow:${RUN_ID}/${stageKey}`,
 				message: `Lifecycle validation for ${stageKey}`,
 			});
 			assert.match(ordinaryAskFailure.content[0]?.text ?? "", /Session not found/);
@@ -943,8 +958,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			messageId: result.details.messageId,
 			delivered: false,
 			queued: true,
-			runId: RUN_ID,
-			stageKey: "reviewer",
+			target: TARGET,
 			position: 1,
 		});
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1);
@@ -1053,8 +1067,10 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			),
 			true,
 		);
-		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 1);
-		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.status, "delivered");
+		const durableEntries = store.runs()[0]?.pendingStageMessages ?? [];
+		assert.equal(durableEntries.length, 2);
+		assert.equal(durableEntries.find((entry) => entry.sticky === true)?.status, "queued");
+		assert.equal(durableEntries.find((entry) => entry.stageId === "reviewer-id")?.status, "delivered");
 
 		const live = await executeIntercom(sender, {
 			action: "send",
@@ -1070,15 +1086,19 @@ test("one composite workflow-stage target transitions atomically from durable qu
 				.length,
 			1,
 		);
-		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 1);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 2);
 
+		// A second unresolved send for the same target joins the same sticky queue with
+		// the next position; exact lookups stay empty (D3).
 		const unknownAfterInitialization = await executeIntercom(sender, {
 			action: "send",
-			to: `${RUN_ID}:unknown-stage`,
+			to: `workflow:${RUN_ID}/unknown-stage`,
 			message: "This target still does not exist.",
 		});
-		assert.match(unknownAfterInitialization.content[0]?.text ?? "", /Session not found/);
-		assert.equal(unknownAfterInitialization.details.delivered, false);
+		assert.equal(unknownAfterInitialization.isError, false);
+		assert.equal(unknownAfterInitialization.details.queued, true);
+		assert.equal(unknownAfterInitialization.details.position, 2);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 3);
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
 	} finally {
 		if (reviewer !== undefined) await reviewer.shutdown();
@@ -1357,12 +1377,11 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 		disposeFirstBridge = registerPendingStageIntercomBridge(firstOwner.pi as never, store);
 		await firstOwner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await raw.register("delivered-retry-sender", group);
-		raw.send({ type: "send", to: `${runId}:reviewer`, message });
+		raw.send({ type: "send", to: `workflow:${runId}/reviewer`, message });
 		assert.deepEqual(await raw.nextDeliveryAcknowledgment(message.id), {
 			type: "queued",
 			messageId: message.id,
-			runId,
-			stageKey: "reviewer",
+			target: `workflow:${runId}/reviewer`,
 			position: 1,
 		});
 		assert.equal(
@@ -1407,7 +1426,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 		disposeSecondBridge = registerPendingStageIntercomBridge(secondOwner.pi as never, reloadedStore);
 		await secondOwner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 
-		raw.send({ type: "send", to: `${runId}:reviewer-id`, message });
+		raw.send({ type: "send", to: `workflow:${runId}/reviewer-id`, message });
 		assert.deepEqual(await raw.nextDeliveryAcknowledgment(message.id), {
 			type: "delivered",
 			messageId: message.id,
@@ -1428,7 +1447,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 test("a drained message ID is revalidated by its durable owner after a broker restart", async () => {
 	const runId = "a9f23cf8-10c1-4b72-9cc6-9f6677961fd1";
 	const group = `workflow:${runId}`;
-	const target = `${runId}:reviewer`;
+	const target = `workflow:${runId}/reviewer`;
 	const messageId = "drained-live-conflict";
 	const sdk = createMockSdk();
 	const writer = new DbosDurableBackend(sdk, { executorId: "live-conflict-writer" });
@@ -1482,8 +1501,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 			id: messageId,
 			delivered: false,
 			queued: true,
-			runId,
-			stageKey: "reviewer",
+			target: `workflow:${runId}/reviewer`,
 			position: 1,
 		});
 		const durableControl = {
@@ -1558,7 +1576,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 		});
 		await conflictingSender.register("changed-control-sender", group);
 		const conflicts = [
-			{ to: `${runId}:other`, message: durableControl },
+			{ to: `workflow:${runId}/other`, message: durableControl },
 			{ to: target, message: { ...durableControl, content: { ...durableControl.content, text: "changed text" } } },
 			{
 				to: target,
@@ -1726,7 +1744,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 test("raw malformed messages are rejected before durable mutation and valid optional fields survive DBOS reload", async () => {
 	const runId = "2f34ff35-9813-4a60-b7a3-24698cd01592";
 	const group = `workflow:${runId}`;
-	const target = `${runId}:reviewer`;
+	const target = `workflow:${runId}/reviewer`;
 	const sdk = createMockSdk();
 	const writer = new DbosDurableBackend(sdk, { executorId: "wire-validation-writer" });
 	writer.registerWorkflow({ workflowId: runId, name: "wire-validation", inputs: {}, status: "running", createdAt: 1 });
@@ -1796,30 +1814,30 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 		raw.send({ type: "send", to: target, message: validMessage });
 		const queued = await raw.next("queued", (frame) => frame.messageId === validMessage.id);
 		assert.equal(queued.position, 1);
-		raw.send({ type: "send", to: `${runId}:reviewer-id`, message: validMessage });
+		raw.send({ type: "send", to: `workflow:${runId}/reviewer-id`, message: validMessage });
 		assert.equal((await raw.next("queued", (frame) => frame.messageId === validMessage.id)).position, 1);
 		raw.send({
 			type: "send",
-			to: `${runId}:reviewer-id`,
+			to: `workflow:${runId}/reviewer-id`,
 			message: { ...validMessage, content: { ...validMessage.content, text: "conflicting reuse" } },
 		});
 		assert.deepEqual(await raw.next("delivery_failed", (frame) => frame.messageId === validMessage.id), {
 			type: "delivery_failed",
 			messageId: validMessage.id,
-			reason: `Intercom message ID '${validMessage.id}' was already queued for ${runId}:reviewer-id with a different target, sender, or payload`,
+			reason: `Intercom message ID '${validMessage.id}' was already queued for workflow:${runId}/reviewer-id with a different target, sender, or payload`,
 		});
 		for (let position = 2; position <= 50; position++) {
 			const message = { id: `capacity-${position}`, timestamp: position + 4, content: { text: String(position) } };
 			raw.send({
 				type: "send",
-				to: `${runId}:${position % 2 === 0 ? "reviewer-id" : "reviewer"}`,
+				to: `workflow:${runId}/${position % 2 === 0 ? "reviewer-id" : "reviewer"}`,
 				message,
 			});
 			assert.equal((await raw.next("queued", (frame) => frame.messageId === message.id)).position, position);
 		}
 		raw.send({
 			type: "send",
-			to: `${runId}:reviewer`,
+			to: `workflow:${runId}/reviewer`,
 			message: { id: "capacity-51", timestamp: 55, content: { text: "refused" } },
 		});
 		assert.match(
@@ -1879,7 +1897,7 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 		await sender.start();
 		const queued = await executeIntercom(sender, {
 			action: "send",
-			to: `${runId}:reviewer`,
+			to: `workflow:${runId}/reviewer`,
 			message: "ordinary handoff",
 		});
 		assert.equal(queued.details.queued, true);
@@ -1910,6 +1928,79 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 	} finally {
 		disposeBridge();
 		await sender.shutdown();
+		await owner.shutdown();
+	}
+});
+
+test("the workflow owner session receives its own undeliverable notice when it is the sender", async () => {
+	// The launching session commonly joins its own invocation group and steers a stage from
+	// there. Its undeliverable notice then targets the very session that owns the pending
+	// route, which the broker refuses as a self-send; the host must admit it locally instead.
+	const runId = "5d2c9a1e-6f3b-4c8d-9e0f-1a2b3c4d5e6f";
+	const group = `workflow:${runId}`;
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const owner = extensionFixture("self-notice-owner", "self-notice-owner", undefined, group);
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	try {
+		await owner.start();
+		store.recordRunStart({
+			id: runId,
+			name: "self-notice",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+		});
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "self-notice",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		const queued = await executeIntercom(owner, {
+			action: "send",
+			to: `workflow:${runId}/reviewer`,
+			message: "self-steer before the reviewer exists",
+		});
+		assert.equal(queued.details.queued, true);
+		assert.ok(queued.details.messageId);
+
+		const failureVisible = owner.waitForInjectedCount(1);
+		const notified = waitForStoreState(
+			store,
+			() => store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt !== undefined,
+		);
+		store.recordStageEnd(runId, {
+			id: "reviewer-id",
+			name: "reviewer",
+			status: "skipped",
+			parentIds: [],
+			toolEvents: [],
+			skippedReason: "fail-fast",
+		});
+		await failureVisible;
+		await notified;
+		const failure = owner.injectedMessages[0];
+		assert.match(failure?.content ?? "", /could not receive intercom message:.*skipped.*fail-fast/i);
+		assert.equal(failure?.details?.message?.replyTo, queued.details.messageId);
+		assert.equal(typeof store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt, "string");
+		assert.equal(owner.injectedMessages.length, 1);
+	} finally {
+		disposeBridge();
 		await owner.shutdown();
 	}
 });
@@ -1980,7 +2071,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		await ownerBefore.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		const queued = await executeIntercom(senderBefore, {
 			action: "send",
-			to: `${runId}:reviewer`,
+			to: `workflow:${runId}/reviewer`,
 			message: "scope changed before the broker restart",
 		});
 		assert.equal(queued.details.queued, true);
@@ -2126,5 +2217,204 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		await senderBefore.shutdown();
 		await ownerBefore.shutdown();
 		if (broker === undefined) await startBroker();
+	}
+});
+
+// Slice 3 (D3/D4/D5/D6/D9) end-to-end: the real broker routes pattern and `**` targets
+// through the real pending-stage bridge; live stages receive ordinary inbound messages
+// with the sender identity while future iterations receive the pre-start prelude.
+test("a sticky pattern preludes every materializing iteration and ** broadcasts live stages", async () => {
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const owner = extensionFixture("sticky-owner-session", "workflow-owner", undefined, "default");
+	const sender = extensionFixture("sticky-sender-session", "stage-a");
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	intercom(sender.pi as never);
+	let liveStage: ReturnType<typeof extensionFixture> | undefined;
+	let raw: RawBrokerClient | undefined;
+
+	try {
+		await owner.start();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			possibleStages: ["orchestrator-*", "pull-request"],
+			stages: [
+				{
+					id: "orchestrator-2-id",
+					name: "orchestrator-2",
+					status: "running",
+					sessionId: "sticky-live-orchestrator",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+		});
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		await sender.start();
+		raw = new RawBrokerClient();
+		rawClients.add(raw);
+		await raw.register("sticky-raw-sender", GROUP);
+
+		// A live iteration registered under the depth-faithful live aliases.
+		const liveDelivery = createWorkflowPendingStageDelivery(store, RUN_ID, "orchestrator-2-id", "orchestrator-2");
+		liveStage = extensionFixture("sticky-live-stage-session", "orchestrator-2", liveDelivery, GROUP, {
+			intercomGroup: GROUP,
+			kind: "workflow-stage",
+			workflowRunId: RUN_ID,
+			workflowStageId: "orchestrator-2-id",
+			workflowStageName: "orchestrator-2",
+			pendingStageDelivery: liveDelivery,
+		});
+		intercom(liveStage.pi as never);
+		await liveStage.start();
+
+		// D6/D9: `**` reaches the live stage now, through the ordinary inbound admission
+		// path, carrying the original sender identity.
+		const broadcast = await executeIntercom(sender, {
+			action: "send",
+			to: `workflow:${RUN_ID}/**`,
+			message: "Broadcast to the whole invocation.",
+		});
+		assert.equal(broadcast.isError, false);
+		assert.equal(broadcast.details.queued, true);
+		assert.equal(broadcast.details.position, 1);
+		assert.equal(broadcast.details.notInKnownSet, undefined);
+		await liveStage.waitForInjectedCount(1);
+		assert.match(liveStage.injectedMessages[0]?.content ?? "", /Broadcast to the whole invocation\./);
+		assert.match(liveStage.injectedMessages[0]?.content ?? "", /\*\*📨 From stage-a\*\*/);
+
+		// Round-1 review, finding 8: a retried sticky broadcast (same message id) re-routes
+		// to the host ledger and acks `queued` again — never `delivered` from the broker's
+		// in-memory delivered-message cache — without re-broadcasting to the live stage.
+		const rawBroadcastId = "sticky-raw-broadcast";
+		const rawBroadcast = {
+			type: "send",
+			to: `workflow:${RUN_ID}/**`,
+			message: { id: rawBroadcastId, timestamp: 5, content: { text: "Raw broadcast to the invocation." } },
+		};
+		raw.send(rawBroadcast);
+		assert.deepEqual(await raw.nextDeliveryAcknowledgment(rawBroadcastId), {
+			type: "queued",
+			messageId: rawBroadcastId,
+			target: `workflow:${RUN_ID}/**`,
+			position: 2,
+		});
+		await liveStage.waitForInjectedCount(2);
+		assert.equal(
+			liveStage.injectedMessages.filter(({ content }) => content?.includes("Raw broadcast to the invocation."))
+				.length,
+			1,
+		);
+		raw.send(rawBroadcast);
+		assert.deepEqual(await raw.nextDeliveryAcknowledgment(rawBroadcastId), {
+			type: "queued",
+			messageId: rawBroadcastId,
+			target: `workflow:${RUN_ID}/**`,
+			position: 2,
+		});
+		await new Promise<void>((resolve) => setTimeout(resolve, 100));
+		assert.equal(
+			liveStage.injectedMessages.filter(({ content }) => content?.includes("Raw broadcast to the invocation."))
+				.length,
+			1,
+		);
+
+		// D3: a pattern send is queued sticky for every future matching iteration.
+		const pattern = await executeIntercom(sender, {
+			action: "send",
+			to: `workflow:${RUN_ID}/orchestrator-*`,
+			message: "Steer all orchestrator iterations.",
+		});
+		assert.equal(pattern.isError, false);
+		assert.equal(pattern.details.queued, true);
+		assert.equal(pattern.details.position, 1);
+		assert.equal(pattern.details.notInKnownSet, undefined);
+
+		// D4: a target outside the persisted scan is accepted speculatively with the warning.
+		const speculative = await executeIntercom(sender, {
+			action: "send",
+			to: `workflow:${RUN_ID}/slice-9/writer`,
+			message: "Speculative future target.",
+		});
+		assert.equal(speculative.isError, false);
+		assert.equal(speculative.details.queued, true);
+		assert.equal(speculative.details.notInKnownSet, true);
+
+		// Asks to pattern targets stay refused.
+		const patternAsk = await executeIntercom(sender, {
+			action: "ask",
+			to: `workflow:${RUN_ID}/orchestrator-*`,
+			message: "Any orchestrator there?",
+		});
+		assert.equal(patternAsk.details.refusal, "pending_stage_ask_unsupported");
+
+		// Iteration 3 materializes and drains both sticky entries as the pre-start prelude,
+		// in durable admission order.
+		const prelude: string[] = [];
+		const iterationDelivery = createWorkflowPendingStageDelivery(
+			store,
+			RUN_ID,
+			"orchestrator-3-id",
+			"orchestrator-3",
+		);
+		await iterationDelivery.deliverPending((_from, message) => {
+			prelude.push(message.content.text);
+		});
+		assert.deepEqual(prelude, [
+			"Broadcast to the whole invocation.",
+			"Raw broadcast to the invocation.",
+			"Steer all orchestrator iterations.",
+		]);
+
+		const entries = () => store.runs()[0]?.pendingStageMessages ?? [];
+		const broadcastEntries = entries().filter((entry) => entry.targetPath === `workflow:${RUN_ID}/**`);
+		assert.equal(broadcastEntries.length, 2);
+		const patternEntry = entries().find((entry) => entry.targetPath === `workflow:${RUN_ID}/orchestrator-*`);
+		assert.ok(broadcastEntries.every((entry) => entry.deliveryCount === 2));
+		assert.ok(broadcastEntries.every((entry) => entry.status === "queued"));
+		// The pattern also matched the live orchestrator-2 at send time (D6: patterns
+		// deliver immediately to live matches), so its ledger holds two deliveries.
+		assert.equal(patternEntry?.deliveryCount, 2);
+		assert.equal(patternEntry?.status, "queued");
+
+		// Exactly-once per (entry, materialized stage): a redelivery attempt adds nothing.
+		await iterationDelivery.deliverPending((_from, message) => {
+			prelude.push(`repeat:${message.content.text}`);
+		});
+		assert.equal(prelude.length, 3);
+
+		// Iteration 4 receives both entries again: sticky delivery is per future stage.
+		await createWorkflowPendingStageDelivery(store, RUN_ID, "orchestrator-4-id", "orchestrator-4").deliverPending(
+			(_from, message) => {
+				prelude.push(`orchestrator-4:${message.content.text}`);
+			},
+		);
+		assert.deepEqual(prelude.slice(-3), [
+			"orchestrator-4:Broadcast to the whole invocation.",
+			"orchestrator-4:Raw broadcast to the invocation.",
+			"orchestrator-4:Steer all orchestrator iterations.",
+		]);
+		assert.ok(
+			entries()
+				.filter((entry) => entry.targetPath === `workflow:${RUN_ID}/**`)
+				.every((entry) => entry.deliveryCount === 3),
+		);
+	} finally {
+		if (liveStage !== undefined) await liveStage.shutdown();
+		disposeBridge();
+		await sender.shutdown();
+		await owner.shutdown();
+		if (raw !== undefined) {
+			await raw.close();
+			rawClients.delete(raw);
+		}
 	}
 });

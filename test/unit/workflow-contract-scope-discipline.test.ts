@@ -37,6 +37,10 @@ describe("workflow contract discipline", () => {
 		assert.match(STEERING_PROPAGATION_CONTRACT, /Send material updates through Intercom/);
 		assert.match(STEERING_PROPAGATION_CONTRACT, /including stages that have not started/);
 		assert.match(STEERING_PROPAGATION_CONTRACT, /known pending stages/);
+		assert.match(STEERING_PROPAGATION_CONTRACT, /workflow:<rootRunId>\/\*\*/);
+		assert.match(STEERING_PROPAGATION_CONTRACT, /rather than enumerating stages/);
+		assert.match(STEERING_PROPAGATION_CONTRACT, /live, pending, and possible future targets/);
+		assert.match(STEERING_PROPAGATION_CONTRACT, /use `ask` only on live targets/);
 		assert.match(STEERING_PROPAGATION_CONTRACT, /Propagate nothing else this way/);
 	});
 

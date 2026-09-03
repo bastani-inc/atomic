@@ -464,8 +464,8 @@ test("a running workflow stage regains list visibility and both route aliases af
 	});
 	intercomHeavy(stage.pi as never, forced.overrides);
 
-	const stageTarget = `${runId}:${stageId}`;
-	const stageNameTarget = `${runId}:${stageName}`;
+	const stageTarget = `workflow:${runId}/${stageId}`;
+	const stageNameTarget = `workflow:${runId}/${stageName}`;
 	const stageIsRunning = (): boolean => store.runs()[0]?.stages[0]?.status === "running";
 
 	try {

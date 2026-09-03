@@ -1,10 +1,18 @@
-import type { PendingStageMessage, PendingStageMessageInput, PendingStageQueueResult } from "./store-types.js";
+import type {
+	PendingStageMessage,
+	PendingStageMessageDelivery,
+	PendingStageMessageInput,
+	PendingStageQueueResult,
+	PendingStickyStageMessageInput,
+} from "./store-types.js";
 
 export type {
 	PendingStageMessage,
+	PendingStageMessageDelivery,
 	PendingStageMessageInput,
 	PendingStageQueueResult,
 	PendingStageSender,
+	PendingStickyStageMessageInput,
 } from "./store-types.js";
 
 /** Maximum queued messages retained for one canonical workflow stage. */
@@ -88,6 +96,139 @@ export function queueStageMessage(
 	};
 }
 
+/**
+ * Add one sticky (D3) entry for a path/pattern target without mutating the supplied
+ * collection. The entry lives in the ROOT run's durable bucket, is keyed by the verbatim
+ * `targetPath`, and is delivered to every future stage whose depth-faithful path matches
+ * until the root run reaches a terminal status. Capacity is counted per target path.
+ */
+export function queueStickyStageMessage(
+	messages: readonly PendingStageMessage[],
+	input: PendingStickyStageMessageInput,
+	senderGroup: string | undefined,
+	runGroup: string | undefined,
+): PendingStageQueueResult {
+	if (normalizeDeliveryGroup(senderGroup) !== normalizeDeliveryGroup(runGroup)) {
+		return { ok: false, reason: "group_mismatch", runId: input.runId, stageKey: input.targetPath };
+	}
+
+	const messageId = input.message.id;
+	const existing = messages.find((entry) => entry.runId === input.runId && entry.id === messageId);
+	if (existing !== undefined) {
+		if (pendingStageMessageSignature(existing) !== pendingStageMessageSignature(input)) {
+			return {
+				ok: false,
+				reason: "message_id_conflict",
+				runId: input.runId,
+				stageKey: input.targetPath,
+				messageId,
+			};
+		}
+		const queuedForTarget = queuedStickyCount(messages, input.runId, input.targetPath);
+		return {
+			ok: true,
+			messages,
+			entry: existing,
+			...(existing.status === "queued" ? { position: queuedForTarget } : {}),
+			deduplicated: true,
+		};
+	}
+
+	if (queuedStickyCount(messages, input.runId, input.targetPath) >= PENDING_STAGE_MESSAGE_LIMIT) {
+		return {
+			ok: false,
+			reason: "capacity",
+			limit: PENDING_STAGE_MESSAGE_LIMIT,
+			runId: input.runId,
+			stageKey: input.targetPath,
+		};
+	}
+
+	const entry: PendingStageMessage = {
+		...input,
+		id: messageId,
+		stageKey: input.targetPath,
+		sticky: true,
+		deliveries: [],
+		deliveryCount: 0,
+		admissionOrder: nextAdmissionOrder(messages, input.runId),
+		status: "queued",
+	};
+	return {
+		ok: true,
+		messages: [...messages, entry],
+		entry,
+		position: queuedStickyCount(messages, input.runId, input.targetPath) + 1,
+		deduplicated: false,
+	};
+}
+
+function queuedStickyCount(messages: readonly PendingStageMessage[], runId: string, targetPath: string): number {
+	return messages.filter(
+		(entry) =>
+			entry.runId === runId && entry.sticky === true && entry.targetPath === targetPath && entry.status === "queued",
+	).length;
+}
+
+/**
+ * Record exactly-once deliveries of a sticky entry to materialized stages (D3). Entries
+ * for (runId, stageId) pairs that already have a record are ignored; the entry itself
+ * stays queued so future matching stages keep receiving it.
+ */
+export function recordPendingStageMessageDeliveries(
+	messages: readonly PendingStageMessage[],
+	runId: string,
+	messageId: string,
+	records: readonly { readonly runId: string; readonly stageId: string; readonly stageName?: string }[],
+	deliveredAt: string,
+): readonly PendingStageMessage[] {
+	const index = messages.findIndex(
+		(entry) => entry.runId === runId && entry.id === messageId && entry.sticky === true && entry.status === "queued",
+	);
+	if (index < 0) return messages;
+	const entry = messages[index]!;
+	const recorded = new Set((entry.deliveries ?? []).map((delivery) => `${delivery.runId}\u0000${delivery.stageId}`));
+	const additions: PendingStageMessageDelivery[] = [];
+	for (const record of records) {
+		const key = `${record.runId}\u0000${record.stageId}`;
+		if (recorded.has(key)) continue;
+		recorded.add(key);
+		additions.push({
+			runId: record.runId,
+			stageId: record.stageId,
+			...(record.stageName === undefined ? {} : { stageName: record.stageName }),
+			deliveredAt,
+		});
+	}
+	if (additions.length === 0) return messages;
+	const deliveries = [...(entry.deliveries ?? []), ...additions];
+	const next: PendingStageMessage = { ...entry, deliveries, deliveryCount: deliveries.length };
+	const result = [...messages];
+	result[index] = next;
+	return result;
+}
+
+/** Settle a sticky entry that delivered at least once when its root run terminates (D4: no notification). */
+export function settleStickyPendingStageMessageDelivered(
+	messages: readonly PendingStageMessage[],
+	runId: string,
+	messageId: string,
+	settledAt: string,
+): readonly PendingStageMessage[] {
+	const index = messages.findIndex(
+		(entry) =>
+			entry.runId === runId &&
+			entry.id === messageId &&
+			entry.sticky === true &&
+			entry.status === "queued" &&
+			(entry.deliveryCount ?? 0) > 0,
+	);
+	if (index < 0) return messages;
+	const next = [...messages];
+	next[index] = { ...next[index]!, status: "delivered", deliveredAt: settledAt };
+	return next;
+}
+
 /** Read one canonical stage's queued entries in durable workflow admission order. */
 export function pendingStageMessagesFor(
 	messages: readonly PendingStageMessage[],
@@ -156,7 +297,7 @@ export function markPendingStageMessageUndeliverableNotified(
 ): readonly PendingStageMessage[] {
 	const index = messages.findIndex(
 		(entry) =>
-			matchesPendingStage(entry, runId, stageKey) &&
+			(entry.sticky === true ? entry.runId === runId : matchesPendingStage(entry, runId, stageKey)) &&
 			entry.id === messageId &&
 			entry.status === "undeliverable" &&
 			entry.undeliverableNotificationId === notificationId &&
@@ -188,16 +329,23 @@ function updateQueuedPendingStageMessage(
 	stageIdentity: PendingStageIdentity | undefined,
 	update: (entry: PendingStageMessage) => PendingStageMessage,
 ): readonly PendingStageMessage[] {
-	const index = messages.findIndex(
-		(entry) =>
-			matchesPendingStage(entry, runId, stageKey, stageIdentity) &&
-			entry.id === messageId &&
-			entry.status === "queued",
-	);
+	const index = messages.findIndex((entry) => queuedEntryMatches(entry, runId, stageKey, messageId, stageIdentity));
 	if (index < 0) return messages;
 	const next = [...messages];
 	next[index] = update(next[index]!);
 	return next;
+}
+
+/** Sticky entries are unique per (runId, messageId); exact entries keep stage-key matching. */
+function queuedEntryMatches(
+	entry: PendingStageMessage,
+	runId: string,
+	stageKey: string,
+	messageId: string,
+	stageIdentity: PendingStageIdentity | undefined,
+): boolean {
+	if (entry.runId !== runId || entry.id !== messageId || entry.status !== "queued") return false;
+	return entry.sticky === true || matchesPendingStage(entry, runId, stageKey, stageIdentity);
 }
 
 function matchesPendingStage(
@@ -206,6 +354,9 @@ function matchesPendingStage(
 	stageKey: string,
 	stageIdentity?: PendingStageIdentity,
 ): boolean {
+	// Sticky (D3) entries target paths/patterns, never one exact stage; they are matched
+	// separately by depth-faithful path matching and must not leak into exact lookups.
+	if (entry.sticky === true) return false;
 	if (entry.runId !== runId) return false;
 	if (stageIdentity === undefined) return entry.stageKey === stageKey;
 	return (

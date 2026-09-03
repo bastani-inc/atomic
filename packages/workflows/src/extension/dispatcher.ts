@@ -14,6 +14,7 @@ import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../ru
 import { resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { resolve_budget } from "../shared/budget.js";
+import { scanPossibleStagesFromSource } from "../shared/possible-stages.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
 import { store as defaultStore, type Store } from "../shared/store.js";
@@ -68,6 +69,12 @@ export interface DispatcherOpts {
 	adapters?: StageAdapters;
 	/** Store override (defaults to executor's singleton). */
 	store?: Store;
+	/**
+	 * Resolves a workflow's definition source path for the D1 possible-stage
+	 * scan (discovery filePath, else the builtin source probe). When absent,
+	 * launch skips the scan and the run simply has no known set.
+	 */
+	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
 	/** Cancellation registry forwarded to the detached runner. */
 	cancellation?: CancellationRegistry;
 	/** Job tracker forwarded to runDetached() for background run management. */
@@ -180,6 +187,30 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			}
 
 			const runId = crypto.randomUUID();
+			// D1/D10: derive the possible-stage set from the definition source at
+			// admission; a missing entry or scan failure is fine (undefined),
+			// the scan itself never blocks launch.
+			const entryPath = opts.resolvePossibleStageEntry?.(def.normalizedName);
+			let possibleStages: readonly string[] | undefined;
+			if (entryPath !== undefined) {
+				// Belt-and-braces around the scanner's never-throw discipline:
+				// a discovery failure must never block launch (D1).
+				try {
+					const scan = scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth });
+					possibleStages = scan.stages;
+					// D1: scan warnings surface at launch as one aggregate line,
+					// bounded so builtin-internal partials do not spam stderr.
+					if (scan.warnings.length > 0) {
+						const shown = scan.warnings.slice(0, 3).join(" | ");
+						const suffix = scan.warnings.length > 3 ? " | ..." : "";
+						console.warn(
+							`atomic-workflows: possible-stages scan produced ${scan.warnings.length} warning(s): ${shown}${suffix}`,
+						);
+					}
+				} catch {
+					possibleStages = undefined;
+				}
+			}
 			let launch: ReturnType<typeof launchDetachedUntilStartup>;
 			try {
 				launch = launchDetachedUntilStartup(def, inputs, {
@@ -197,6 +228,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					cwd: opts.cwd,
 					defaultSessionDir: opts.defaultSessionDir,
 					...(opts.origin === undefined ? {} : { origin: opts.origin }),
+					...(possibleStages === undefined ? {} : { possibleStages }),
 					runId,
 				});
 			} catch (error) {

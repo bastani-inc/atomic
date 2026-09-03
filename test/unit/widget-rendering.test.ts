@@ -768,7 +768,7 @@ describe("run identity rows", () => {
 		);
 		const snapshot = localStore.graphSnapshot();
 		const wide = renderWidgetLines(snapshot, 160).map(stripAnsi).join("\n");
-		assert.match(wide, /pending: review \(review-a\) → widget-run:review-a/);
+		assert.ok(wide.includes("pending: review (review-a) → workflow:widget-run/review-a"));
 		assert.match(wide, /offline \(offline\) · unavailable/);
 		assert.doesNotMatch(wide, /widget-run:offline/);
 		assert.match(wide, /… 1 more/);
@@ -791,7 +791,7 @@ describe("run identity rows", () => {
 		const wide = renderWidgetLines(localStore.graphSnapshot(), 160).map(stripAnsi).join("\n");
 
 		assert.match(wide, /failed/);
-		assert.doesNotMatch(wide, new RegExp(`${runId}:review-a`));
+		assert.doesNotMatch(wide, new RegExp(`workflow:${runId}/review-a`));
 	});
 	test("uses exact or labelled pending-stage identities with visible width elision", () => {
 		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
@@ -813,8 +813,8 @@ describe("run identity rows", () => {
 		assert.deepEqual(renderWidgetLines(snapshot, 70).map(stripAnsi), [" ▾  1 background · 1 ●"]);
 
 		const wide = renderWidgetLines(snapshot, 240).map(stripAnsi).join("\n");
-		assert.match(wide, new RegExp(`${runId}:review-a`));
-		assert.match(wide, new RegExp(`${runId}:review-b`));
+		assert.match(wide, new RegExp(`workflow:${runId}/review-a`));
+		assert.match(wide, new RegExp(`workflow:${runId}/review-b`));
 		assert.doesNotMatch(wide, /→ [^\n│,]*…/u);
 		assert.match(wide, /… 1 more/u);
 	});

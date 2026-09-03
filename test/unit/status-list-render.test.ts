@@ -593,8 +593,8 @@ describe("renderStatusList — populated", () => {
 			],
 		});
 		const plain = renderStatusList([run], { width: 120, showDetailHint: false });
-		assert.match(plain, /pending: review \(review-a\) → pending-run:review-a/);
-		assert.match(plain, /pending: review \(review-b\) → pending-run:review-b/);
+		assert.ok(plain.includes("pending: review (review-a) → workflow:pending-run/review-a"));
+		assert.ok(plain.includes("pending: review (review-b) → workflow:pending-run/review-b"));
 		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
 		assert.doesNotMatch(plain, /pending-run:offline/);
 		assert.match(plain, /… 1 more pending stage/);
@@ -622,8 +622,9 @@ describe("renderStatusList — populated", () => {
 			renderResult({ action: "status", filter: "all", runs: [], snapshots: [run] }, { plain: true, width: 60, now }),
 		);
 
-		assert.match(plain, new RegExp(`${runId}:review-a`));
-		assert.match(plain, new RegExp(`${runId}:review-b`));
+		const compact = plain.replace(/[\s│]/gu, "");
+		assert.ok(compact.includes(`workflow:${runId}/review-a`));
+		assert.ok(compact.includes(`workflow:${runId}/review-b`));
 		assert.doesNotMatch(plain, /→ [^\n│]*…/u);
 		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
 		for (const line of plain.split("\n")) assert.equal(visibleWidth(line), 60);
@@ -645,8 +646,8 @@ describe("renderStatusList — populated", () => {
 
 		const plain = renderStatusList(localStore.graphSnapshot().runs, { width: 120, showDetailHint: false });
 
-		assert.match(plain, new RegExp(`${runId}:review-a`));
-		assert.match(plain, new RegExp(`${runId}:review-b`));
+		assert.match(plain, new RegExp(`workflow:${runId}/review-a`));
+		assert.match(plain, new RegExp(`workflow:${runId}/review-b`));
 		assert.doesNotMatch(plain, /delivery unavailable/);
 	});
 	test("keeps projected pending-stage canonical IDs exact at narrow card widths", () => {
@@ -686,7 +687,7 @@ describe("renderStatusList — populated", () => {
 
 		assert.match(plain, /✗ failed/);
 		assert.match(plain, /pending: review \(review-a\) · delivery unavailable/);
-		assert.doesNotMatch(plain, new RegExp(`${runId}:review-a`));
+		assert.doesNotMatch(plain, new RegExp(`workflow:${runId}/review-a`));
 	});
 	test("themes every wrapped run-id row in the workflow status hint", () => {
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";

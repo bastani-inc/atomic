@@ -72,7 +72,7 @@ test("session-list overlay keeps full IDs accessible while fitting every rendere
 test("session-list overlay labels discoverable workflow stages with exact targets", () => {
 	// Regression: #2784
 	const current = session(CURRENT_ID, "planner");
-	const target = "27840000-3528-413e-84c4-87a43e5037a2:reviewer-id";
+	const target = "workflow:27840000-3528-413e-84c4-87a43e5037a2/reviewer-id";
 	const overlay = new SessionListOverlay(theme, new KeybindingsManager(), current, [], () => {}, [
 		{
 			kind: "workflow-stage",
@@ -99,7 +99,7 @@ test("session-list overlay bounds the workflow-stage block like the session regi
 		runId,
 		stageId: `stage-${index}`,
 		stageName: `stage-${index}`,
-		target: `${runId}:stage-${index}`,
+		target: `workflow:${runId}/stage-${index}`,
 		lifecycle: "pending" as const,
 		group: `workflow:${runId}`,
 	}));

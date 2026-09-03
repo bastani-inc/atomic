@@ -6,9 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Workflow-stage Intercom targets now accept only root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` paths. The legacy `<runId>:<stageKey>` form is refused with a canonical-path migration hint.
+
 ### Added
 
 - Workflow run selectors now accept a unique 8-character hexadecimal UUID prefix across live, resumable, and completed runs, with explicit ambiguity errors that list collisions and require the full UUID ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+- Workflow launch now scans and persists possible literal, patterned, and nested-child stage paths. Sticky name and glob sends deliver to every future matching stage, while `workflow:<rootRunId>/**` broadcasts to live stages and remains queued for future descendants until root termination.
+- Possible future targets and their queued counts now appear in `intercom list`. Valid paths outside the scanned set are accepted with a `notInKnownSet` warning and settle as undeliverable at terminal only when they never matched.
+
+### Changed
+
+- Heartbeat, workflow-tool, and builtin stage guidance now directs shared scope and acceptance-criteria amendments through one authoritative path broadcast rather than enumerating known stages, and teaches path discovery, globs, sticky delivery, and live-only asks.
+
+### Fixed
+
+- Tool-only workflows no longer emit a `ZERO_STAGES` discovery warning. The static scan now recognizes `ctx.tool()` as tracked graph work without advertising tool nodes as future chat-stage targets.
 
 ## [0.9.18-alpha.3] - 2026-09-01
 
