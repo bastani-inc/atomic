@@ -10,6 +10,7 @@ import {
 	type StdioNull,
 	type StdioPipe,
 } from "node:child_process";
+import { constants as osConstants } from "node:os";
 import { basename } from "node:path";
 import type { Readable } from "node:stream";
 import crossSpawn from "cross-spawn";
@@ -82,6 +83,16 @@ function isWindowsProcessAlive(pid: number): boolean {
 	});
 	if (result.status !== 0) return true;
 	return new RegExp(`\\b${pid}\\b`).test(result.stdout);
+}
+
+function mapSignalExitCode(
+	code: number | null,
+	signal: NodeJS.Signals | null,
+	platform: NodeJS.Platform,
+): number | null {
+	if (code !== null || signal === null || platform === "win32") return code;
+	const signalNumber = osConstants.signals[signal];
+	return signalNumber === undefined ? code : 128 + signalNumber;
 }
 
 /**
@@ -190,14 +201,13 @@ export function waitForChildProcess(
 			cleanup();
 			reject(err);
 		};
-
-		const onExit = (code: number | null) => {
+		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
 			if (windowsExitCodeGraceTimer) {
 				clearTimeout(windowsExitCodeGraceTimer);
 				windowsExitCodeGraceTimer = undefined;
 			}
 			exited = true;
-			exitCode = code;
+			exitCode = mapSignalExitCode(code, signal, platform);
 			maybeFinalizeAfterExit();
 			if (!settled) {
 				armActiveDrainHardCapTimer();
@@ -213,7 +223,7 @@ export function waitForChildProcess(
 			}
 			windowsExitCodeGraceTimer = setTimeout(() => {
 				windowsExitCodeGraceTimer = undefined;
-				onExit(child.exitCode ?? 0);
+				onExit(child.exitCode ?? 0, null);
 			}, windowsExitCodeGraceMs);
 		};
 
@@ -221,15 +231,15 @@ export function waitForChildProcess(
 			if (platform !== "win32" || !child.pid || exited || settled) return;
 			if (!processAlive(child.pid)) {
 				if (child.exitCode !== null) {
-					onExit(child.exitCode);
+					onExit(child.exitCode, null);
 				} else {
 					armWindowsExitCodeGraceTimer();
 				}
 			}
 		};
 
-		const onClose = (code: number | null) => {
-			finalize(code);
+		const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+			finalize(mapSignalExitCode(code, signal, platform));
 		};
 
 		if (platform === "win32" && child.pid) {
