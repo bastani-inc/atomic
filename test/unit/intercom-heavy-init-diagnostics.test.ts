@@ -3,6 +3,7 @@ import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import intercom from "../../packages/intercom/index.js";
+import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
 
 type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
 type ConsoleErrorCall = [message?: unknown, ...optionalParams: unknown[]];
@@ -73,7 +74,7 @@ function successfulHeavyModule(): HeavyModule {
 
 describe("Intercom lazy heavy-initialization diagnostics", () => {
 	test("keeps a recoverable client disconnect out of console output while rejecting the caller", async () => {
-		const disconnectError = new Error("Client disconnected");
+		const disconnectError = new IntercomClientDisconnectedError();
 		const current = fixture([{ error: disconnectError }]);
 
 		await assert.rejects(current.executeIntercom(), disconnectError);
@@ -83,7 +84,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 	});
 
 	test("retries successfully after a silent recoverable client disconnect", async () => {
-		const disconnectError = new Error("Client disconnected");
+		const disconnectError = new IntercomClientDisconnectedError();
 		const current = fixture([{ error: disconnectError }, { module: successfulHeavyModule() }]);
 
 		await assert.rejects(current.executeIntercom(), disconnectError);
@@ -122,9 +123,12 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 		]);
 	});
 
-	test("keeps ambiguous and non-Error failures actionable", async () => {
+	test("keeps ambiguous, look-alike, and non-Error failures actionable", async () => {
 		const failures: unknown[] = [
 			new Error("Configuration failed after Client disconnected unexpectedly"),
+			// Same wording, raised outside the broker client: classification is by
+			// construction, so this stays actionable.
+			new Error("Client disconnected"),
 			"Client disconnected",
 			{ reason: "Client disconnected" },
 			undefined,

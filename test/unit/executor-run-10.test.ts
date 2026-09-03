@@ -2,12 +2,14 @@ import { describe } from "vitest";
 import {
 	type AgentSession,
 	assert,
+	type CreateAgentSessionOptions,
 	createStore,
 	deferred,
 	mockSession,
 	run,
 	type StageSnapshot,
 	sleep,
+	type ToolDefinition,
 	Type,
 	test,
 	workflow,
@@ -406,5 +408,99 @@ describe("executor.run", () => {
 			promptGate.resolve(undefined);
 			await runPromise;
 		}
+	});
+
+	// Issue #2812: the successful attempt has to be on the *running* stage
+	// snapshot that the durable checkpoint, the status writer, and every other
+	// store subscriber read — not only on the terminal completion record. Store
+	// notifications are synchronous, so subscribing captures the exact ordering:
+	// the last running snapshot must already carry the fallback success.
+	test("a fallback success reaches the running stage snapshot before the completed one", async () => {
+		const st = createStore();
+		const schema = Type.Object({ ok: Type.Boolean() }, { additionalProperties: false });
+		const observed: Array<{ status: string; attempts: Array<{ model: string; success: boolean }> }> = [];
+		const unsubscribe = st.subscribe((snapshot) => {
+			for (const runSnapshot of snapshot.runs) {
+				for (const stage of runSnapshot.stages) {
+					if (stage.name !== "scout") continue;
+					observed.push({
+						status: stage.status,
+						attempts: (stage.modelAttempts ?? []).map((attempt) => ({
+							model: attempt.model,
+							success: attempt.success,
+						})),
+					});
+				}
+			}
+		});
+		const def = workflow({
+			name: "running-fallback-attempt-metadata",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Boolean() },
+			run: async (ctx) => {
+				await ctx
+					.stage("scout", {
+						model: "anthropic/primary",
+						fallbackModels: ["openai/fallback"],
+						schema,
+					})
+					.prompt("partition the work");
+				return { ok: true };
+			},
+		});
+
+		const result = await run(
+			def,
+			{},
+			{
+				adapters: {
+					agentSession: {
+						async create(options: CreateAgentSessionOptions) {
+							const modelValue = (options as { readonly model?: string }).model;
+							const model = typeof modelValue === "string" ? modelValue : "object-model";
+							const structuredTool = options.customTools?.find(
+								(tool): tool is ToolDefinition => tool.name === "structured_output",
+							);
+							return {
+								...mockSession(),
+								async prompt() {
+									// The primary burns its whole correction budget on clean
+									// turns that never call the tool; the fallback answers.
+									if (model === "anthropic/primary" || structuredTool === undefined) return;
+									await structuredTool.execute(
+										"structured-call-fallback",
+										{ ok: true } as Parameters<ToolDefinition["execute"]>[1],
+										undefined,
+										undefined,
+										{} as Parameters<ToolDefinition["execute"]>[4],
+									);
+								},
+							};
+						},
+					},
+				},
+				store: st,
+			},
+		);
+		unsubscribe();
+
+		assert.equal(result.status, "completed");
+		const expected = [
+			{ model: "anthropic/primary", success: false },
+			{ model: "anthropic/primary", success: false },
+			{ model: "anthropic/primary", success: false },
+			{ model: "anthropic/primary", success: false },
+			{ model: "openai/fallback", success: true },
+		];
+		const firstTerminalIndex = observed.findIndex((entry) => entry.status === "completed");
+		assert.notEqual(firstTerminalIndex, -1);
+		const lastRunning = observed
+			.slice(0, firstTerminalIndex)
+			.filter((entry) => entry.status === "running")
+			.at(-1);
+		// Before the fix this snapshot held only the four failed primary attempts.
+		assert.deepEqual(lastRunning?.attempts, expected);
+		assert.deepEqual(observed[firstTerminalIndex]?.attempts, expected);
 	});
 });

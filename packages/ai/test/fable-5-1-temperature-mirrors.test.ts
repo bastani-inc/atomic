@@ -142,8 +142,8 @@ describe("Bedrock temperature suppression for Claude Fable 5.1", () => {
 });
 
 describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () => {
-	it("omits temperature for openrouter/anthropic/claude-fable-5.1", async () => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+	it("omits temperature for openrouter/anthropic/claude-fable-5.1:batch", async () => {
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
 		expect(model.compat?.supportsTemperature).toBe(false);
 
 		expect((await captureCompletionsPayload(model, 0)).temperature).toBeUndefined();
@@ -153,7 +153,7 @@ describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () =
 	// The `~anthropic/claude-fable-latest` alias names no version, so a version-scoped rule could
 	// not reach it — yet it carries Fable 5.1's $0.25 cache read and OpenRouter's own
 	// `supported_parameters` for it omits `temperature`. The family match covers it.
-	it.each(["anthropic/claude-fable-5", "anthropic/claude-fable-5:batch", "~anthropic/claude-fable-latest"] as const)(
+	it.each(["anthropic/claude-fable-5:batch", "~anthropic/claude-fable-latest"] as const)(
 		"omits temperature for openrouter/%s",
 		async (modelId) => {
 			const model = getModel("openrouter", modelId);
@@ -163,7 +163,7 @@ describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () =
 		},
 	);
 
-	it.each(["anthropic/claude-opus-5", "anthropic/claude-sonnet-5"] as const)(
+	it.each(["anthropic/claude-opus-5:batch", "anthropic/claude-sonnet-5:batch"] as const)(
 		"keeps temperature for openrouter/%s",
 		async (modelId) => {
 			const model = getModel("openrouter", modelId);
@@ -202,7 +202,7 @@ describe("temperature suppression is scoped to the Claude Fable family", () => {
 		expect(
 			getModel("amazon-bedrock", "global.anthropic.claude-opus-4-8").compat?.supportsTemperature,
 		).toBeUndefined();
-		expect(getModel("openrouter", "anthropic/claude-opus-4.8").compat?.supportsTemperature).toBeUndefined();
+		expect(getModel("openrouter", "anthropic/claude-opus-4.8:batch").compat?.supportsTemperature).toBeUndefined();
 	});
 
 	it("leaves the already-guarded Anthropic Messages entries as they were", () => {

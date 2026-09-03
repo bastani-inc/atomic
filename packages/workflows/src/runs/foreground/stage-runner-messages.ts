@@ -36,6 +36,31 @@ export function lastAssistantTextFromMessages(messages: AgentSession["messages"]
 }
 
 /**
+ * Name the shape of the turn a schema-backed prompt produced (issue #2812).
+ *
+ * A candidate that burns its whole structured-output correction budget looks
+ * clean to every other observer: the turns return without an error and without
+ * a terminal stop reason. Recording *which* clean shape it produced — no
+ * assistant message at all, an assistant message whose text is empty, or
+ * ordinary text that never called the tool — is what makes the external cause
+ * attributable the next time it happens.
+ *
+ * The detail carries no closing period: it is appended to the contract error
+ * and that error is interpolated into the standard `[fallback] … failed: <error>.
+ * Retrying with …` warning, which supplies the sentence break itself.
+ */
+export function structuredOutputTurnDetail(messages: AgentSession["messages"], startIndex: number): string {
+	for (let index = messages.length - 1; index >= Math.max(startIndex, 0); index -= 1) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		return extractMessageText(message).trim().length > 0
+			? "The model produced assistant text but never called structured_output"
+			: "The model produced an assistant message with empty text";
+	}
+	return "The model produced no assistant message after the prompt";
+}
+
+/**
  * Artifact text for a successful `structured_output` call (issue #2198).
  *
  * Primary: the ordinary text of the exact assistant message that carried the

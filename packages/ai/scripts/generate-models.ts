@@ -85,6 +85,58 @@ function readGeneratorOptions(args: string[]): {
 
 const generatorOptions = readGeneratorOptions(process.argv.slice(2));
 
+const MODEL_FETCH_ATTEMPTS = 2;
+const MODEL_FETCH_RETRY_DELAY_MS = 250;
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+	"EAI_AGAIN",
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"EHOSTUNREACH",
+	"ENETUNREACH",
+	"ENOTFOUND",
+	"EPIPE",
+	"ETIMEDOUT",
+	"UND_ERR_BODY_TIMEOUT",
+	"UND_ERR_CONNECT_TIMEOUT",
+	"UND_ERR_HEADERS_TIMEOUT",
+]);
+
+function isTransientNetworkError(error: unknown, visited = new Set<Error>()): boolean {
+	if (!(error instanceof Error) || visited.has(error)) return false;
+	visited.add(error);
+	if (error.name === "AbortError" || error.name === "TimeoutError") return true;
+	if (error instanceof TypeError && error.message === "fetch failed") return true;
+
+	const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+	if (code && TRANSIENT_NETWORK_ERROR_CODES.has(code)) return true;
+	return "cause" in error && isTransientNetworkError(error.cause, visited);
+}
+
+function isRetryableHttpStatus(status: number): boolean {
+	return status === 429 || status >= 500;
+}
+
+async function fetchModelCatalog(url: string): Promise<Response> {
+	for (let attempt = 1; attempt <= MODEL_FETCH_ATTEMPTS; attempt++) {
+		try {
+			const response = await fetch(url);
+			if (!isRetryableHttpStatus(response.status) || attempt === MODEL_FETCH_ATTEMPTS) return response;
+			console.warn(
+				`Model fetch from ${url} returned ${response.status}; retrying (attempt ${attempt + 1}/${MODEL_FETCH_ATTEMPTS})`,
+			);
+		} catch (error) {
+			if (!isTransientNetworkError(error) || attempt === MODEL_FETCH_ATTEMPTS) throw error;
+			console.warn(
+				`Model fetch from ${url} failed transiently; retrying (attempt ${attempt + 1}/${MODEL_FETCH_ATTEMPTS})`,
+			);
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, MODEL_FETCH_RETRY_DELAY_MS));
+	}
+
+	throw new Error("Unreachable model fetch retry state");
+}
+
 interface ModelsDevModel {
 	id: string;
 	name: string;
@@ -576,6 +628,16 @@ function isGoogleThinkingApi(model: Model<any>): boolean {
 	return model.api === "google-generative-ai" || model.api === "google-vertex";
 }
 
+const VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS = new Set(["anthropic", "openrouter"]);
+
+function supportsAnthropicMidConvoEffort(modelId: string): boolean {
+	const id = modelId.toLowerCase().replace(/^~?anthropic\//, "");
+	return (
+		/^claude-opus-5(?:-\d{8})?$/.test(id) ||
+		/^claude-(?:fable|mythos)-5(?:[.-]1)(?:-\d{8})?$/.test(id)
+	);
+}
+
 function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
 	return (
 		modelId.includes("opus-4-6") ||
@@ -590,7 +652,8 @@ function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
 		modelId.includes("sonnet-4.6") ||
 		modelId.includes("sonnet-5") ||
 		modelId.includes("sonnet.5") ||
-		modelId.includes("fable-5")
+		modelId.includes("fable-5") ||
+		modelId.includes("mythos-5")
 	);
 }
 
@@ -779,6 +842,7 @@ function applyAnthropicMessagesCompatMetadata(model: Model<Api>): void {
 	const compat = getAnthropicMessagesCompat(model.provider, model.id);
 	if (compat) {
 		mergeAnthropicMessagesCompat(model, compat);
+		if (compat.supportsMidConvoEffort) mergeThinkingLevelMap(model, { off: null });
 	}
 }
 
@@ -796,7 +860,10 @@ function applyAnthropicAllowedFallbackModelMetadata(models: readonly Model<"anth
 		const model = modelsById.get(modelId);
 		if (!model) continue;
 
-		const allowedFallbackModels = fallbackModelIds.flatMap((fallbackModelId) => {
+		const compatibleFallbackModelIds = model.compat?.supportsMidConvoEffort
+			? fallbackModelIds.filter(supportsAnthropicMidConvoEffort)
+			: fallbackModelIds;
+		const allowedFallbackModels = compatibleFallbackModelIds.flatMap((fallbackModelId) => {
 			const fallbackModel = modelsById.get(fallbackModelId);
 			return fallbackModel
 				? [{ provider: fallbackModel.provider, model: fallbackModel.id, cost: fallbackModel.cost }]
@@ -1108,6 +1175,12 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 
 function getAnthropicMessagesCompat(provider: string, modelId: string): AnthropicMessagesCompat | undefined {
 	const compat: AnthropicMessagesCompat = {};
+	if (
+		VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS.has(provider) &&
+		supportsAnthropicMidConvoEffort(modelId)
+	) {
+		compat.supportsMidConvoEffort = true;
+	}
 	if (EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS.has(`${provider}:${modelId}`)) {
 		compat.supportsEagerToolInputStreaming = false;
 	}
@@ -1175,7 +1248,7 @@ function getModelsDevCost(cost: ModelsDevModel["cost"]): ModelCost {
 async function fetchNvidiaNimModelIds(): Promise<Map<string, string>> {
 	try {
 		console.log("Fetching models from NVIDIA NIM API...");
-		const response = await fetch(`${NVIDIA_BASE_URL}/models`);
+		const response = await fetchModelCatalog(`${NVIDIA_BASE_URL}/models`);
 		if (!response.ok) throw new Error(`NVIDIA NIM API returned ${response.status}`);
 		const data = (await response.json()) as { data?: NvidiaNimModelListItem[] };
 		const modelIds = new Map<string, string>();
@@ -1197,7 +1270,7 @@ async function fetchNvidiaNimModelIds(): Promise<Map<string, string>> {
 async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from OpenRouter API...");
-		const response = await fetch("https://openrouter.ai/api/v1/models");
+		const response = await fetchModelCatalog("https://openrouter.ai/api/v1/models");
 		if (!response.ok) throw new Error(`OpenRouter API returned ${response.status}`);
 		const data = (await response.json()) as { data?: OpenRouterModelListItem[] };
 
@@ -1228,11 +1301,12 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 			const contextWindow = model.top_provider?.context_length || model.context_length || 4096;
 			const thinkingLevelMap = getOpenRouterThinkingLevelMap(model.reasoning);
 
+			const useAnthropicMessages = /^anthropic\//.test(modelKey) && !modelKey.endsWith(":batch");
 			const normalizedModel: Model<any> = {
 				id: modelKey,
 				name: model.name,
-				api: "openai-completions",
-				baseUrl: "https://openrouter.ai/api/v1",
+				api: useAnthropicMessages ? "anthropic-messages" : "openai-completions",
+				baseUrl: useAnthropicMessages ? "https://openrouter.ai/api" : "https://openrouter.ai/api/v1",
 				provider,
 				reasoning: model.supported_parameters?.includes("reasoning") || false,
 				...(thinkingLevelMap && { thinkingLevelMap }),
@@ -1261,7 +1335,7 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from Vercel AI Gateway API...");
-		const response = await fetch(`${AI_GATEWAY_MODELS_URL}/models`);
+		const response = await fetchModelCatalog(`${AI_GATEWAY_MODELS_URL}/models`);
 		if (!response.ok) throw new Error(`Vercel AI Gateway API returned ${response.status}`);
 		const data = await response.json();
 		const models: Model<any>[] = [];
@@ -1517,7 +1591,7 @@ function processFireworksModels(provider: ModelsDevProvider | undefined): Model<
 			maxTokens: model.limit?.output || 4096,
 		};
 
-		if (modelId.includes("glm-5p2")) {
+		if (modelId.includes("glm-")) {
 			models.push({
 				...common,
 				api: "openai-completions",
@@ -1553,7 +1627,7 @@ function processFireworksModels(provider: ModelsDevProvider | undefined): Model<
 async function loadModelsDevData(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from models.dev API...");
-		const response = await fetch("https://models.dev/api.json");
+		const response = await fetchModelCatalog("https://models.dev/api.json");
 		if (!response.ok) throw new Error(`models.dev API returned ${response.status}`);
 		const data = (await response.json()) as ModelsDevCatalog;
 
@@ -2194,7 +2268,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				if (m.status === "deprecated") continue;
 
 				// Claude 4.x and 5.x models route to Anthropic Messages API
-				const isCopilotClaude = /^claude-(haiku|sonnet|opus)-[45]([.\-]|$)/.test(modelId);
+				const isCopilotClaude = /^claude-(haiku|sonnet|opus|fable)-[45]([.\-]|$)/.test(modelId);
 				// Grok, gpt-5, oswe, and MAI-Code models are only served through
 				// the Copilot /responses endpoint.
 				const needsResponsesApi =

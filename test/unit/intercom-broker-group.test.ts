@@ -52,7 +52,10 @@ function harness(defs: Array<[id: string, name: string, group: string | undefine
 				fromId,
 				sessions,
 				cache,
-				(socket, value) => writes.push({ socket, message: value }),
+				(socket, value) => {
+					writes.push({ socket, message: value });
+					return true;
+				},
 				supervisorCache,
 			),
 	};

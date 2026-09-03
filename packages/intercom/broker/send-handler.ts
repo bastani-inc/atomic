@@ -44,6 +44,11 @@ export interface PendingStageRoute {
 }
 
 export type PendingStageRouter = (route: PendingStageRoute) => boolean;
+export type ConfirmedMessageWriter = (
+	target: net.Socket,
+	message: BrokerMessage,
+	onSettled: (written: boolean) => void,
+) => void;
 
 export type LiveWorkflowStageResolver = (target: string) => BrokerConnectedSession | undefined;
 export type LiveWorkflowStageController = (
@@ -76,13 +81,20 @@ export function handleBrokerSend(
 	currentId: string | null,
 	sessions: Map<string, BrokerConnectedSession>,
 	deliveredMessages: DeliveredMessageCache,
-	write: (target: net.Socket, message: BrokerMessage) => void,
+	/**
+	 * Hand one frame to a socket. Returns whether the frame was actually written:
+	 * the broker's `writeMessageIfOpen` answers `false` for a socket whose
+	 * writable side has already ended, and a target delivery may only be recorded
+	 * and acknowledged when the answer is `true`.
+	 */
+	write: (target: net.Socket, message: BrokerMessage) => boolean,
 	supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
 	pendingQuestions: PendingQuestionIndex = new PendingQuestionIndex(),
 	routePendingStage?: PendingStageRouter,
 	resolveLiveWorkflowStage?: LiveWorkflowStageResolver,
 	canControlLiveWorkflowStage?: LiveWorkflowStageController,
 	resolveLegacyWorkflowStageTarget?: LegacyWorkflowStageTargetResolver,
+	writeConfirmed?: ConfirmedMessageWriter,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -224,18 +236,37 @@ export function handleBrokerSend(
 		) {
 			return;
 		}
-    write(target.socket, supervisorSend
-      ? { type: "message", from: fromSession.info, message, channel: "supervisor" }
-      : { type: "message", from: fromSession.info, message });
-    deliveredMessages.record(message.id, signature);
-    if (message.expectsReply === true) {
-      pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+    const outbound = supervisorSend
+      ? ({ type: "message", from: fromSession.info, message, channel: "supervisor" } as const)
+      : ({ type: "message", from: fromSession.info, message } as const);
+    const failDelivery = (): void => {
+      write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
+    };
+    const finishDelivery = (): void => {
+      deliveredMessages.record(message.id, signature);
+      if (message.expectsReply === true) {
+        pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+      }
+      if (message.replyTo !== undefined) {
+        pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo);
+      }
+      if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
+      write(socket, { type: "delivered", messageId: message.id, attemptId });
+    };
+    if (writeConfirmed !== undefined) {
+      writeConfirmed(target.socket, outbound, (written) => {
+        if (written) finishDelivery();
+        else failDelivery();
+      });
+      return;
     }
-    if (message.replyTo !== undefined) {
-      pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo);
+    if (!write(target.socket, outbound)) {
+      // Nothing was written, so the message id and reply authorization remain
+      // available for an honest retry.
+      failDelivery();
+      return;
     }
-    if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
-    write(socket, { type: "delivered", messageId: message.id, attemptId });
+    finishDelivery();
     return;
   }
 	if (

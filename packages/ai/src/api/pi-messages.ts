@@ -72,6 +72,7 @@ export type PiMessagesEvent =
 			reason: Extract<PiMessagesStopReason, "stop" | "length" | "toolUse">;
 			usage: PiMessagesUsage;
 			responseId?: string;
+			providerThinkingLevel?: string;
 			rewrite?: PiMessagesRewriteImpact;
 	  }
 	| {
@@ -80,6 +81,7 @@ export type PiMessagesEvent =
 			usage: PiMessagesUsage;
 			errorMessage?: string;
 			responseId?: string;
+			providerThinkingLevel?: string;
 			rewrite?: PiMessagesRewriteImpact;
 	  };
 
@@ -195,6 +197,9 @@ function createEventConverter(model: Model<"pi-messages">) {
 					usage: event.usage,
 					responseId: event.responseId,
 				});
+				if (event.providerThinkingLevel !== undefined) {
+					partial.providerThinkingLevel = event.providerThinkingLevel;
+				}
 				appendRewriteDiagnostic(partial, event.rewrite);
 				return { type: "done", reason: event.reason, message: partial };
 			case "error":
@@ -204,6 +209,9 @@ function createEventConverter(model: Model<"pi-messages">) {
 					errorMessage: event.errorMessage,
 					responseId: event.responseId,
 				});
+				if (event.providerThinkingLevel !== undefined) {
+					partial.providerThinkingLevel = event.providerThinkingLevel;
+				}
 				appendRewriteDiagnostic(partial, event.rewrite);
 				return { type: "error", reason: event.reason, error: partial };
 			case "start":

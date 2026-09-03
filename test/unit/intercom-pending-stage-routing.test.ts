@@ -68,7 +68,10 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 		"sender-id",
 		sessions,
 		new DeliveredMessageCache(),
-		(_target, value) => writes.push(value),
+		(_target, value) => {
+			writes.push(value);
+			return true;
+		},
 		undefined,
 		undefined,
 		route,
@@ -82,7 +85,10 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 		"sender-id",
 		sessions,
 		new DeliveredMessageCache(),
-		(_target, value) => writes.push(value),
+		(_target, value) => {
+			writes.push(value);
+			return true;
+		},
 		undefined,
 		undefined,
 		route,
@@ -101,7 +107,10 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 		"sender-id",
 		sessions,
 		new DeliveredMessageCache(),
-		(_target, value) => writes.push(value),
+		(_target, value) => {
+			writes.push(value);
+			return true;
+		},
 		undefined,
 		undefined,
 		route,
@@ -123,7 +132,10 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 		"sender-id",
 		sessions,
 		new DeliveredMessageCache(),
-		(_target, value) => writes.push(value),
+		(_target, value) => {
+			writes.push(value);
+			return true;
+		},
 		undefined,
 		undefined,
 		route,
@@ -156,7 +168,10 @@ test("live workflow stage targets still deliver immediately before pending-stage
 		"sender-id",
 		sessions,
 		new DeliveredMessageCache(),
-		(socket, value) => writes.push({ socket, message: value }),
+		(socket, value) => {
+			writes.push({ socket, message: value });
+			return true;
+		},
 		undefined,
 		undefined,
 		() => {

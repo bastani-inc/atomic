@@ -77,7 +77,10 @@ describe("pattern stage targets route through the pending-stage bridge", () => {
 			"sender-id",
 			sessions,
 			new DeliveredMessageCache(),
-			(_target, value) => writes.push(value),
+			(_target, value) => {
+				writes.push(value);
+				return true;
+			},
 			undefined,
 			undefined,
 			(input) => {
@@ -99,7 +102,7 @@ describe("pattern stage targets route through the pending-stage bridge", () => {
 			"sender-id",
 			sessions,
 			new DeliveredMessageCache(),
-			() => {},
+			() => true,
 			undefined,
 			undefined,
 			(input) => {
@@ -121,7 +124,10 @@ describe("pattern stage targets route through the pending-stage bridge", () => {
 			"sender-id",
 			sessions,
 			new DeliveredMessageCache(),
-			(_target, value) => writes.push(value),
+			(_target, value) => {
+				writes.push(value);
+				return true;
+			},
 			undefined,
 			undefined,
 			(input) => {
@@ -150,7 +156,10 @@ describe("pattern stage targets route through the pending-stage bridge", () => {
 			"sender-id",
 			sessions,
 			new DeliveredMessageCache(),
-			(_target, value) => writes.push(value),
+			(_target, value) => {
+				writes.push(value);
+				return true;
+			},
 			undefined,
 			undefined,
 			() => false,
@@ -185,7 +194,10 @@ describe("pattern stage targets route through the pending-stage bridge", () => {
 			"sender-id",
 			sessions,
 			new DeliveredMessageCache(),
-			(target, value) => writes.push({ socket: target, message: value }),
+			(target, value) => {
+				writes.push({ socket: target, message: value });
+				return true;
+			},
 			undefined,
 			undefined,
 			(input) => {

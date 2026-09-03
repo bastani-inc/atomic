@@ -19,6 +19,7 @@ import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { normalizeGroups } from "../group.js";
+import { IntercomClientDisconnectedError } from "../recoverable-disconnect.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
@@ -215,7 +216,7 @@ export class IntercomClient extends EventEmitter {
     }
 
     if (socket.destroyed || socket.writableEnded || !socket.writable) {
-      throw new Error("Client disconnected");
+      throw new IntercomClientDisconnectedError();
     }
 
     return socket;
@@ -274,7 +275,7 @@ export class IntercomClient extends EventEmitter {
       const onClose = () => {
         const wasConnecting = !settled && !this._sessionId;
         const wasDisconnecting = this.disconnecting;
-        const disconnectError = this.disconnectError ?? new Error("Client disconnected");
+        const disconnectError = this.disconnectError ?? new IntercomClientDisconnectedError();
         this.disconnecting = false;
         cleanupConnectionAttempt();
         cleanupSocketListeners();
@@ -296,7 +297,21 @@ export class IntercomClient extends EventEmitter {
 
       const onSocketError = (err: Error) => {
         if (connectionEstablished) {
-          this.disconnectError = err;
+          // A transport error on an already-registered socket (ECONNRESET, EPIPE,
+          // ETIMEDOUT, or a write-after-end from our own write) is a *recoverable*
+          // disconnect: the broker connection is gone, and the lightweight wrapper
+          // re-imports and reconnects on the next call. Record it as the typed
+          // recoverable error so `onClose` rejects pending work and emits
+          // `disconnected` with something the classifier recognizes, and keep the
+          // raw transport error as `cause` so the code is still diagnosable.
+          //
+          // `??=`, not `=`: `onReaderError` records a protocol error and then
+          // destroys the socket, and a socket 'error' can still follow. Overwriting
+          // would silently downgrade a non-recoverable protocol failure into a
+          // recoverable one. First error recorded wins.
+          this.disconnectError ??= new IntercomClientDisconnectedError({ cause: err });
+          // The raw error keeps flowing to `error` listeners: that channel exists for
+          // diagnosis, and the transport code is what a debugger wants to see.
           this.emit("error", err);
         }
       };
@@ -668,7 +683,7 @@ export class IntercomClient extends EventEmitter {
     }
     this.disconnecting = true;
     this.disconnectError = null;
-    this.failPending(new Error("Client disconnected"));
+    this.failPending(new IntercomClientDisconnectedError());
     await new Promise<void>((resolve) => {
       let settled = false;
       const finish = () => {

@@ -4,12 +4,14 @@ import type { Socket } from "net";
  * Write a length-prefixed message to a socket.
  * Format: 4-byte big-endian length + JSON payload
  */
-export function writeMessage(socket: Socket, msg: unknown): void {
+export function writeMessage(socket: Socket, msg: unknown, callback?: (error?: Error | null) => void): void {
   const json = JSON.stringify(msg);
   const payload = Buffer.from(json, "utf-8");
   const header = Buffer.alloc(4);
   header.writeUInt32BE(payload.length, 0);
-  socket.write(Buffer.concat([header, payload]));
+  const frame = Buffer.concat([header, payload]);
+  if (callback === undefined) socket.write(frame);
+  else socket.write(frame, callback);
 }
 
 /**

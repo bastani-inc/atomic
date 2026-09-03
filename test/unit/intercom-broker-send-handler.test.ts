@@ -36,7 +36,10 @@ test("broker wire send dedupes identical retries and rejects target, payload, or
 	]);
 	const cache = new DeliveredMessageCache();
 	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
-	const write = (socket: net.Socket, value: BrokerMessage) => writes.push({ socket, message: value });
+	const write = (socket: net.Socket, value: BrokerMessage) => {
+		writes.push({ socket, message: value });
+		return true;
+	};
 
 	handleBrokerSend(
 		senderOne,
@@ -120,7 +123,10 @@ test("broker wire send keeps absent attemptId compatibility but rejects malforme
 		["recipient", session("recipient", "recipient", recipient)],
 	]);
 	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
-	const write = (socket: net.Socket, value: BrokerMessage) => writes.push({ socket, message: value });
+	const write = (socket: net.Socket, value: BrokerMessage) => {
+		writes.push({ socket, message: value });
+		return true;
+	};
 	const cache = new DeliveredMessageCache();
 
 	handleBrokerSend(
@@ -191,7 +197,10 @@ test("broker rejects every malformed durable message field before pending routin
 			"sender",
 			sessions,
 			new DeliveredMessageCache(),
-			(_socket, value) => writes.push(value),
+			(_socket, value) => {
+				writes.push(value);
+				return true;
+			},
 			undefined,
 			undefined,
 			() => {
@@ -233,7 +242,10 @@ test("broker preserves all valid optional durable message fields verbatim", () =
 		"sender",
 		sessions,
 		new DeliveredMessageCache(),
-		(socket, value) => writes.push({ socket, message: value }),
+		(socket, value) => {
+			writes.push({ socket, message: value });
+			return true;
+		},
 	);
 	const delivered = writes.find(({ socket, message }) => socket === recipientSocket && message.type === "message");
 	assert.equal(delivered?.message.type, "message");
@@ -255,7 +267,10 @@ test("broker routes the exact full session ID", () => {
 		"sender",
 		sessions,
 		new DeliveredMessageCache(),
-		(socket, value) => writes.push({ socket, message: value }),
+		(socket, value) => {
+			writes.push({ socket, message: value });
+			return true;
+		},
 	);
 
 	assert.equal(
@@ -284,7 +299,10 @@ test("broker rejects an 8-character session ID prefix", () => {
 		"sender",
 		sessions,
 		new DeliveredMessageCache(),
-		(socket, value) => writes.push({ socket, message: value }),
+		(socket, value) => {
+			writes.push({ socket, message: value });
+			return true;
+		},
 	);
 
 	assert.equal(
@@ -308,7 +326,10 @@ test("broker rejects an exact self session ID", () => {
 		senderId,
 		sessions,
 		new DeliveredMessageCache(),
-		(socket, value) => writes.push({ socket, message: value }),
+		(socket, value) => {
+			writes.push({ socket, message: value });
+			return true;
+		},
 	);
 
 	assert.equal(
@@ -332,7 +353,10 @@ test("broker rejects an 8-character self ID prefix as not found", () => {
 		senderId,
 		sessions,
 		new DeliveredMessageCache(),
-		(socket, value) => writes.push({ socket, message: value }),
+		(socket, value) => {
+			writes.push({ socket, message: value });
+			return true;
+		},
 	);
 
 	assert.equal(
@@ -353,7 +377,7 @@ test("broker records delivered questions and clears them only after routing the 
 	]);
 	const pending = new PendingQuestionIndex();
 	const cache = new DeliveredMessageCache();
-	const write = () => {};
+	const write = () => true;
 
 	handleBrokerSend(
 		asker,

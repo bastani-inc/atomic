@@ -87,6 +87,8 @@ export function createHttpDispatcherOptions(
 ): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {
 	return {
 		allowH2: false,
+		// Keep HTTP origins on CONNECT tunnels as they were before Undici 8.7.
+		proxyTunnel: true,
 		// Undici defaults to a 10s connect timeout; disable it so slow
 		// policy/proxy CONNECT establishment follows provider retry handling.
 		connectTimeout: 0,

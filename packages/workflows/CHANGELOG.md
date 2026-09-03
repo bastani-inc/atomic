@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Tool-only workflows no longer emit a `ZERO_STAGES` discovery warning. The static scan now recognizes `ctx.tool()` as tracked graph work without advertising tool nodes as future chat-stage targets.
+- A schema-backed stage that exhausts its structured-output correction budget now advances the model fallback chain instead of failing the whole stage on its first candidate. Each candidate gets the stage prompt plus three corrective follow-ups; a candidate that never produces a valid `structured_output` call fails over exactly like a rate-limited one, recording its attempts as failures with an error naming what the turn looked like (no assistant message, empty assistant text, or the validation error), emitting a `[fallback]` warning, and re-sending the original stage prompt to the next candidate with a fresh budget. With no candidate left the stage still fails with the existing contract error. A model attempt that succeeds is now recorded in the running stage's durable metadata at the moment it succeeds rather than only when the stage ends, so mid-run status and a run resumed after an interruption both report the model that actually produced the result instead of showing only the attempts that failed. ([#2812](https://github.com/bastani-inc/atomic/issues/2812))
 
 ## [0.9.18-alpha.3] - 2026-09-01
 

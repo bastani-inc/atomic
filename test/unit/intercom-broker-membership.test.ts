@@ -51,8 +51,9 @@ function setup(definitions: Array<[string, string[]]>): {
 		sessions.set(id, connected(id, groups, socket));
 	}
 	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
-	const write = (socket: net.Socket, message: BrokerMessage): void => {
+	const write = (socket: net.Socket, message: BrokerMessage): boolean => {
 		writes.push({ socket, message });
+		return true;
 	};
 	return {
 		sessions,

@@ -102,6 +102,14 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			readFileSync(resolve(repoRoot, "packages/intercom/lazy-heavy-proxy.ts"), "utf-8"),
 		);
 		writeFileSync(
+			join(tempDir, "recoverable-disconnect.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/recoverable-disconnect.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "reconnect-backoff.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/reconnect-backoff.ts"), "utf-8"),
+		);
+		writeFileSync(
 			join(tempDir, "result-renderers.ts"),
 			"export function renderIntercomToolResult() { return undefined; }\n",
 		);

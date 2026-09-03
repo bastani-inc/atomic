@@ -97,23 +97,33 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				return lastAssistantText;
 			}
 			if (structuredOutputCapture) {
-				let nextPrompt = promptText;
-				let correctiveAttempts = 0;
 				let structuredOutputError = STRUCTURED_OUTPUT_MISSING_ERROR;
+				// One correction budget per model candidate. A candidate that spends
+				// the whole budget without capturing a structured result has failed,
+				// however clean its turns looked, so it fails over on the same chain
+				// rate limits use and the next candidate starts again from the
+				// original stage prompt (issue #2812).
 				while (!structuredOutputCapture.called) {
-					controller.resetStructuredOutputToolError();
-					await controller.promptWithFallback(nextPrompt, sdkOptions);
+					let nextPrompt = promptText;
+					let correctiveAttempts = 0;
+					controller.beginStructuredOutputCandidateCycle();
+					while (!structuredOutputCapture.called) {
+						controller.resetStructuredOutputToolError();
+						await controller.promptWithFallback(nextPrompt, sdkOptions);
+						if (structuredOutputCapture.called) break;
+						structuredOutputError = controller.structuredOutputFailureReason();
+						if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) break;
+						correctiveAttempts += 1;
+						nextPrompt = formatStructuredOutputCorrectionPrompt(
+							structuredOutputError,
+							correctiveAttempts,
+							hasOutputArtifact,
+						);
+					}
 					if (structuredOutputCapture.called) break;
-					structuredOutputError = controller.latestStructuredOutputToolError ?? STRUCTURED_OUTPUT_MISSING_ERROR;
-					if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) {
+					if (!(await controller.failCandidateForStructuredOutputExhaustion(structuredOutputError))) {
 						throw new Error(structuredOutputError);
 					}
-					correctiveAttempts += 1;
-					nextPrompt = formatStructuredOutputCorrectionPrompt(
-						structuredOutputError,
-						correctiveAttempts,
-						hasOutputArtifact,
-					);
 				}
 				const sessionMessages = controller.currentSession?.messages;
 				const executionSnapshot = structuredOutputExecutionCapture?.snapshot;

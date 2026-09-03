@@ -2,9 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `supportsMidConvoEffort` to custom Anthropic Messages model compatibility settings.
+- Added transcript notices for Anthropic thinking blocks dropped during provider recovery when cache miss notices are enabled.
+- `models.json` now accepts `compat.vllmPriority` on `openai-completions` models. Atomic sends it as the top-level `priority` request field, which vLLM uses to order queued requests when it runs with `--scheduling-policy priority`; lower values are handled earlier and the server default is `0`. Set it on a background or batch model so its long prefills queue behind interactive sessions ([#9004](https://github.com/earendil-works/pi/pull/9004)).
+
 ### Changed
 
 - The `edit` tool's model-facing hashline guidance now includes compact worked examples and anti-patterns for commonly rejected patch shapes, and correctly identifies native Rust tree-sitter block resolution as primary with the brace/indent heuristic as its fallback. The hashline reference documentation is now a specification covering inputs, verified tolerated shapes, outputs, worked examples, limits, literal error messages, and warnings.
+
+### Fixed
+
+- Fixed resumed sessions omitting persisted notices for Anthropic thinking blocks dropped during provider recovery.
+
+- Fixed proxied plain-HTTP provider requests hanging after a tool call by tunneling them with CONNECT ([#8134](https://github.com/earendil-works/pi/issues/8134)).
+- Fixed GitHub Copilot Claude Fable models to run through the Anthropic Messages adapter, so a selected thinking level reaches the provider instead of being dropped ([#8961](https://github.com/earendil-works/pi/issues/8961)).
+- Fixed every Fireworks GLM model to use the OpenAI-compatible completions endpoint. Previously only the `glm-5p2` family did, so newer entries such as `glm-5p3` were served over the Anthropic-compatible endpoint ([#8978](https://github.com/earendil-works/pi/issues/8978)).
+- Fixed the `write` tool reporting UTF-16 code-unit counts as byte counts by removing the misleading count. Every write confirmation now reads `Successfully wrote to <path>` ([#8979](https://github.com/earendil-works/pi/issues/8979)).
+- Fixed the `write` tool mistaking user-authored lines beginning with `Successfully wrote to` for copied tool confirmation text and silently discarding them. A copied confirmation is now recognized only when it names the complete path the write was asked for, its resolved or cwd-relative form, or the copied snapshot's own path, so prose that merely shares a prefix or a basename is written through unchanged.
 
 ## [0.9.18-alpha.5] - 2026-09-01
 

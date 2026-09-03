@@ -118,7 +118,7 @@ export interface Settings {
 	theme?: string;
 	enableAnalytics?: boolean; // storage only; no analytics transmission is performed
 	trackingId?: string; // stable UUID generated on first analytics opt-in
-	showCacheMissNotices?: boolean; // default: false
+	showCacheMissNotices?: boolean; // default: false - show cache costs and provider recovery diagnostics
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
 	sessionSummary?: SessionSummarySettings;

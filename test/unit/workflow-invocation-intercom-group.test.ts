@@ -551,7 +551,10 @@ test("ordinary workflow traffic cannot reach an unrelated shared-default main ch
 		"stage",
 		sessions,
 		new DeliveredMessageCache(),
-		(socket, brokerMessage) => writes.push({ socket, message: brokerMessage }),
+		(socket, brokerMessage) => {
+			writes.push({ socket, message: brokerMessage });
+			return true;
+		},
 		new SupervisorChannelCache(),
 	);
 

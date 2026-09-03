@@ -4,7 +4,8 @@ import "./bounded-stderr-install.js";
 import net from "net";
 import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
-import { writeMessage, createMessageReader } from "./framing.js";
+import { createMessageReader } from "./framing.js";
+import { writeMessageIfOpen, writeMessageWithOutcome } from "./socket-writes.js";
 import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
 import type {
 	SessionInfo,
@@ -251,13 +252,38 @@ class IntercomBroker {
 
     socket.on("data", reader);
 
+    // Retire the session as soon as its socket stops being able to accept a
+    // frame, not only on 'close'. A peer that half-closes -- or one whose
+    // writable side the broker itself ended after refusing a registration --
+    // can keep its read side open indefinitely, so 'close' may never arrive
+    // while the session is still in the fan-out map and every broadcast, ack
+    // and delivery targets a socket whose writable side is already gone.
+    //
+    // 'end' is a safe retirement point: Node runs its automatic end() after the
+    // user listeners, so the socket is still writable here and no final frame
+    // is lost. disconnectSession is idempotent, so 'end', 'error' and 'close'
+    // may each fire without duplicating the departure broadcast.
+    const retire = () => {
+      const departing = sessionId;
+      if (departing === null) return;
+      sessionId = null;
+      this.disconnectSession(departing);
+    };
+
+    socket.on("end", () => {
+      retire();
+      this.scheduleShutdownCheck();
+    });
+
     socket.on("close", () => {
-      if (sessionId) this.disconnectSession(sessionId);
+      retire();
       this.scheduleShutdownCheck();
     });
 
     socket.on("error", (error) => {
       console.error("Socket error:", error);
+      retire();
+      this.scheduleShutdownCheck();
     });
   }
 
@@ -271,6 +297,28 @@ class IntercomBroker {
         this.shutdown();
       }
     }, 5000);
+  }
+
+  /**
+   * End a connection the broker itself is refusing, and retire its session first.
+   *
+   * `socket.end()` only sends FIN. A peer opened with `allowHalfOpen` — or one
+   * that simply has not read yet — never has to close in response, so without
+   * this the refused session would stay in the fan-out map indefinitely: still
+   * advertised by `list`, still acked as `delivered`, and still written to by
+   * every broadcast even though its writable side is gone.
+   */
+  private endRefusedConnection(
+    socket: net.Socket,
+    currentId: string | null,
+    setId: (id: string | null) => void,
+  ): void {
+    if (currentId !== null) {
+      this.disconnectSession(currentId);
+      setId(null);
+    }
+    socket.end();
+    this.scheduleShutdownCheck();
   }
 	private pendingStageOwnerForTarget(
 		target: string,
@@ -437,7 +485,7 @@ class IntercomBroker {
     if (activation === undefined || activation.pendingRequestIds.size > 0) return;
     this.liveWorkflowStageRouteActivations.delete(requestId);
     const stage = this.sessions.get(activation.sessionId);
-    if (stage !== undefined) writeMessage(stage.socket, { type: "live_workflow_stage_route_registered", requestId });
+    if (stage !== undefined) writeMessageIfOpen(stage.socket, { type: "live_workflow_stage_route_registered", requestId });
   }
 
   private releasePendingStageAcknowledgment(requestId: string): void {
@@ -529,7 +577,7 @@ class IntercomBroker {
 			return false;
 		}
     if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
-      writeMessage(route.socket, {
+      writeMessageIfOpen(route.socket, {
         type: "delivery_failed",
         messageId: route.message.id,
         ...(route.attemptId ? { attemptId: route.attemptId } : {}),
@@ -543,7 +591,7 @@ class IntercomBroker {
       if (pending === undefined) return;
       this.pendingStageAcknowledgments.delete(requestId);
       this.releasePendingStageAcknowledgment(requestId);
-      writeMessage(pending.senderSocket, {
+      writeMessageIfOpen(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
         ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -564,19 +612,31 @@ class IntercomBroker {
 		...(route.signature === undefined ? {} : { signature: route.signature }),
       timeout,
     });
-    writeMessage(owner.socket, {
-      type: "pending_stage_message",
-      requestId,
-      from: route.from.info,
+    if (
+      !writeMessageIfOpen(owner.socket, {
+        type: "pending_stage_message",
+        requestId,
+        from: route.from.info,
 		...(route.from.registrationName === undefined ? {} : { senderRegistrationName: route.from.registrationName }),
 		...(route.from.registrationReturnAddress === undefined
 			? {}
 			: { senderReturnAddress: route.from.registrationReturnAddress }),
 			runId,
 			target: route.target,
-      message: route.message,
+        message: route.message,
 		...(route.liveTargetId === undefined ? {} : { live: true }),
-    });
+      })
+    ) {
+      // The owner's socket stopped accepting frames between resolving the route
+      // and this write. Unwind the acknowledgment just armed and report the
+      // route as not handled, so the caller answers with an honest
+      // delivery_failed now instead of stalling the sender for the full
+      // acknowledgment timeout on a message nobody ever received.
+      clearTimeout(timeout);
+      this.pendingStageAcknowledgments.delete(requestId);
+      this.releasePendingStageAcknowledgment(requestId);
+      return false;
+    }
     return true;
   };
 
@@ -601,7 +661,7 @@ class IntercomBroker {
 			return;
 		}
 		if (outcome === "delivered") {
-			writeMessage(pending.senderSocket, {
+			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivered",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -618,7 +678,7 @@ class IntercomBroker {
 			const deliveredTargets = this.deliverStickyBroadcast(pending, forwardTargets);
 			const ownerSocket = this.sessions.get(currentId)?.socket;
 			if (deliveredTargets.length > 0 && ownerSocket !== undefined) {
-				writeMessage(ownerSocket, {
+				writeMessageIfOpen(ownerSocket, {
 					type: "sticky_live_delivered",
 					runId: pending.runId,
 					messageId: pending.messageId,
@@ -626,7 +686,7 @@ class IntercomBroker {
 					deliveredTargets,
 				});
 			}
-			writeMessage(pending.senderSocket, {
+			writeMessageIfOpen(pending.senderSocket, {
 				type: "queued",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -636,7 +696,7 @@ class IntercomBroker {
 			});
 			return;
 		}
-		writeMessage(pending.senderSocket, {
+		writeMessageIfOpen(pending.senderSocket, {
 			type: "delivery_failed",
 			messageId: pending.messageId,
 			...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -665,7 +725,7 @@ class IntercomBroker {
 			(pending.liveTargetId !== undefined && target.info.id !== pending.liveTargetId) ||
 			pending.signature === undefined
 		) {
-			writeMessage(pending.senderSocket, {
+			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivery_failed",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -675,7 +735,7 @@ class IntercomBroker {
 		}
 		const deliveredMatch = this.deliveredMessages.lookup(pending.messageId, pending.signature);
 		if (deliveredMatch === "conflict") {
-			writeMessage(pending.senderSocket, {
+			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivery_failed",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -685,7 +745,20 @@ class IntercomBroker {
 			return;
 		}
 		if (deliveredMatch === "miss") {
-			writeMessage(target.socket, { type: "message", from: pending.sender, message: pending.message });
+			if (
+				!writeMessageIfOpen(target.socket, { type: "message", from: pending.sender, message: pending.message })
+			) {
+				// Nothing reached the stage, so nothing may be recorded as delivered and no
+				// reply authorization may be opened for a conversation that never happened.
+				// The sender keeps the message id and can retry it truthfully.
+				writeMessageIfOpen(pending.senderSocket, {
+					type: "delivery_failed",
+					messageId: pending.messageId,
+					...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+					reason: "Session not found",
+				});
+				return;
+			}
 			this.deliveredMessages.record(pending.messageId, pending.signature);
 			if (pending.message.expectsReply === true) {
 				this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
@@ -694,7 +767,7 @@ class IntercomBroker {
 				this.pendingQuestions.clearReply(from.info.id, target.info.id, pending.message.replyTo);
 			}
 		}
-		writeMessage(pending.senderSocket, {
+		writeMessageIfOpen(pending.senderSocket, {
 			type: "delivered",
 			messageId: pending.messageId,
 			...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -720,8 +793,11 @@ class IntercomBroker {
 			if (targetSession === undefined) continue;
 			const targetGroup = targetSession.registrationGroup ?? targetSession.info.group ?? "default";
 			if (!invocationOwnsGroup(invocationGroup, normalizeGroup(targetGroup))) continue;
-			if (targetSession.socket.destroyed || targetSession.socket.writableEnded) continue;
-			writeMessage(targetSession.socket, { type: "message", from: pending.sender, message: pending.message });
+			// The write itself is the writability check, so a stage that dropped between
+			// the owner's answer and this loop is not reported as delivered and a retried
+			// send re-forwards to it.
+			if (!writeMessageIfOpen(targetSession.socket, { type: "message", from: pending.sender, message: pending.message }))
+				continue;
 			delivered.push(target);
 		}
 		// Deliberately NOT recorded in the delivered-message cache (round-1 review): the
@@ -738,7 +814,7 @@ class IntercomBroker {
 		reason: string,
 		reasonCode?: "message_id_conflict",
 	): void {
-		writeMessage(socket, {
+		writeMessageIfOpen(socket, {
 			type: "delivery_failed",
 			messageId,
 			...(attemptId === undefined ? {} : { attemptId }),
@@ -793,7 +869,7 @@ class IntercomBroker {
 		const signature = buildMessageSendSignature(logicalTarget, message, clientMessage.capability);
 		const deliveredMatch = this.deliveredMessages.lookup(message.id, signature);
 		if (deliveredMatch === "match") {
-			writeMessage(socket, { type: "delivered", messageId: message.id, ...(attemptId === undefined ? {} : { attemptId }) });
+			writeMessageIfOpen(socket, { type: "delivered", messageId: message.id, ...(attemptId === undefined ? {} : { attemptId }) });
 			return;
 		}
 		if (deliveredMatch === "conflict") {
@@ -858,7 +934,21 @@ class IntercomBroker {
 			signature,
 			timeout,
 		});
-		writeMessage(target.socket, { type: "pending_stage_notification", requestId, from: owner.info, message });
+		if (
+			!writeMessageIfOpen(target.socket, {
+				type: "pending_stage_notification",
+				requestId,
+				from: owner.info,
+				message,
+			})
+		) {
+			// The recipient's socket stopped accepting frames between resolving it and
+			// this write. Release the acknowledgment and fail now, so the owner retries a
+			// message that was never handed over rather than waiting out the ack timeout.
+			clearTimeout(timeout);
+			this.pendingStageNotificationAcknowledgments.delete(requestId);
+			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
+		}
 	}
 
 	private settlePendingStageNotification(
@@ -880,7 +970,7 @@ class IntercomBroker {
 			return;
 		}
 		this.deliveredMessages.record(pending.messageId, pending.signature);
-		writeMessage(pending.senderSocket, {
+		writeMessageIfOpen(pending.senderSocket, {
 			type: "delivered",
 			messageId: pending.messageId,
 			...(pending.attemptId === undefined ? {} : { attemptId: pending.attemptId }),
@@ -928,8 +1018,8 @@ class IntercomBroker {
             ? this.supervisorChannel.claim(clientMessage.supervisor.capability, childName)
             : undefined;
           if (!claimedSupervisorId || !this.sessions.has(claimedSupervisorId)) {
-            writeMessage(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
-            socket.end();
+            writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
+            this.endRefusedConnection(socket, currentId, setId);
             return;
           }
           supervisorId = claimedSupervisorId;
@@ -965,7 +1055,7 @@ class IntercomBroker {
           this.shutdownTimer = null;
         }
 
-        writeMessage(socket, supervisorId
+        writeMessageIfOpen(socket, supervisorId
           ? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
           : { type: "registered", sessionId: id });
         this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
@@ -995,7 +1085,7 @@ class IntercomBroker {
 					? sessionsInGroup(this.sessions, clientMessage.group)
 					: []
 				: sessionsVisibleTo(this.sessions, requester.info);
-        writeMessage(socket, {
+        writeMessageIfOpen(socket, {
 			type: "sessions",
 			requestId: clientMessage.requestId,
 			sessions,
@@ -1009,7 +1099,7 @@ class IntercomBroker {
 		if (typeof clientMessage.requestId !== "string") throw new Error("Invalid list_groups message");
 		const requester = currentId ? this.sessions.get(currentId) : undefined;
 		if (requester === undefined) throw new Error("Session not found");
-		writeMessage(socket, {
+		writeMessageIfOpen(socket, {
 			type: "groups",
 			requestId: clientMessage.requestId,
 			groups: knownGroupSummaries(this.sessions, requester.info),
@@ -1031,7 +1121,7 @@ class IntercomBroker {
           childName,
           typeof clientMessage.capability === "string" ? clientMessage.capability : undefined,
         );
-        writeMessage(socket, {
+        writeMessageIfOpen(socket, {
           type: "supervisor_authorized",
           requestId: clientMessage.requestId,
           capability,
@@ -1061,8 +1151,8 @@ class IntercomBroker {
           (activeExisting !== undefined &&
             (activeExisting.capability !== clientMessage.capability || activeExisting.group !== ownerGroup))
         ) {
-          writeMessage(socket, { type: "registration_failed", reason: "Pending-stage route is not authorized" });
-          socket.end();
+          writeMessageIfOpen(socket, { type: "registration_failed", reason: "Pending-stage route is not authorized" });
+          this.endRefusedConnection(socket, currentId, setId);
           return;
         }
         if (
@@ -1074,8 +1164,8 @@ class IntercomBroker {
           ) ||
             !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group)))
         ) {
-          writeMessage(socket, { type: "registration_failed", reason: "Invalid workflow-stage roster" });
-          socket.end();
+          writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid workflow-stage roster" });
+          this.endRefusedConnection(socket, currentId, setId);
           return;
         }
         if (
@@ -1086,8 +1176,8 @@ class IntercomBroker {
             normalizeGroup(clientMessage.group),
           )
         ) {
-          writeMessage(socket, { type: "registration_failed", reason: "Invalid workflow possible-stage roster" });
-          socket.end();
+          writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid workflow possible-stage roster" });
+          this.endRefusedConnection(socket, currentId, setId);
           return;
         }
         // D7 (slice 4): presence replaces, absence keeps — a terminal root publishes `[]`
@@ -1145,11 +1235,11 @@ class IntercomBroker {
           // here reaches the framing reader's onError and destroys the stage session's whole
           // broker connection. Refuse orderly like every neighbouring rejection; host clients
           // filter such name keys and register the stage-id key instead.
-          writeMessage(socket, {
+          writeMessageIfOpen(socket, {
             type: "registration_failed",
             reason: "Live workflow-stage route keys must be single path segments",
           });
-          socket.end();
+          this.endRefusedConnection(socket, currentId, setId);
           return;
         }
         const ownerRegistration = this.pendingStageRoutes.get(clientMessage.runId);
@@ -1170,11 +1260,11 @@ class IntercomBroker {
             clientMessage.capability,
           )
         ) {
-          writeMessage(socket, {
+          writeMessageIfOpen(socket, {
             type: "registration_failed",
             reason: "Live workflow-stage route is owned by another active session",
           });
-          socket.end();
+          this.endRefusedConnection(socket, currentId, setId);
           return;
         }
         break;
@@ -1221,13 +1311,14 @@ class IntercomBroker {
 				currentId,
 				this.sessions,
 				this.deliveredMessages,
-				writeMessage,
+				writeMessageIfOpen,
 				this.supervisorChannel,
 				this.pendingQuestions,
 				this.routePendingStage,
 				this.resolveLiveWorkflowStage,
 				this.canControlLiveWorkflowStage,
 				this.resolveLegacyWorkflowStageTarget,
+				writeMessageWithOutcome,
 			);
 			break;
 		}
@@ -1253,7 +1344,7 @@ class IntercomBroker {
           clientMessage,
           currentId,
           this.sessions,
-          (target, message) => writeMessage(target, message),
+          (target, message) => writeMessageIfOpen(target, message),
         );
         break;
       }
@@ -1271,7 +1362,7 @@ class IntercomBroker {
     for (const question of this.pendingQuestions.takeForTarget(sessionId)) {
       const asker = this.sessions.get(question.senderSessionId);
       if (!asker) continue;
-      writeMessage(asker.socket, {
+      writeMessageIfOpen(asker.socket, {
         type: "peer_disconnected",
         replyTo: question.messageId,
         peerSessionId: departed.info.id,
@@ -1289,7 +1380,7 @@ class IntercomBroker {
       clearTimeout(pending.timeout);
       this.pendingStageAcknowledgments.delete(requestId);
       this.releasePendingStageAcknowledgment(requestId);
-      writeMessage(pending.senderSocket, {
+      writeMessageIfOpen(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
         ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -1321,7 +1412,7 @@ class IntercomBroker {
   private broadcastToMemberships(msg: BrokerMessage, groups: ReadonlySet<string>, exclude?: string): void {
     for (const [id, session] of this.sessions) {
       if (id !== exclude && [...groups].some((group) => hasGroup(sessionGroups(session.info), group))) {
-        writeMessage(session.socket, msg);
+        writeMessageIfOpen(session.socket, msg);
       }
     }
   }

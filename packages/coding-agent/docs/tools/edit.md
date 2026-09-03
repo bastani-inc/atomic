@@ -123,9 +123,13 @@ The tool's `details` value is `EditToolDetails`:
 - `firstChangedLine`: optional first changed post-edit line.
 
 Each successful `write` or `edit` records and returns a fresh snapshot tag. Plain `write` output is also compact: a refreshed
-header plus a byte-count summary, not a full file reprint. `write` strips copied hashline headers and `LINE:`/`*LINE:`
+header plus a success confirmation, not a full file reprint. `write` strips copied hashline headers and `LINE:`/`*LINE:`
 display prefixes only when they match a known snapshot in the current store, reports that stripping, and preserves whether
-a complete copied snapshot had a terminal newline. Unknown or literal hashline-looking content is preserved.
+a complete copied snapshot had a terminal newline. A copied `Successfully wrote to <path>` confirmation (with or without the
+legacy `N bytes` wording) counts as tool chrome only when `<path>` is the complete path the write was asked for — the `path`
+argument exactly as given, its resolved absolute form, or its cwd-relative form — or the copied snapshot's own path. A bare
+basename is not enough, so a user-authored line such as `Successfully wrote to notes.md` is preserved even when the target is
+`deep/dir/notes.md`. Unknown or literal hashline-looking content is preserved.
 
 Parallel `edit` calls sharing the same `[path#TAG]` are applied as one snapshot-anchored batch, so one sibling does not fail
 only because another sibling minted a new tag first. A later call arriving after that batch committed still attempts

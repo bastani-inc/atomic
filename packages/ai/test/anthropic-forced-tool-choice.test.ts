@@ -309,7 +309,7 @@ describe("forced tool choice on models that accept it", () => {
  */
 describe("forced tool choice on the OpenAI-completions mirror", () => {
 	it("marks openrouter/anthropic/claude-fable-5.1 as rejecting forced tool choice", () => {
-		expect(getModel("openrouter", "anthropic/claude-fable-5.1").compat?.supportsForcedToolChoice).toBe(false);
+		expect(getModel("openrouter", "anthropic/claude-fable-5.1:batch").compat?.supportsForcedToolChoice).toBe(false);
 	});
 
 	/**
@@ -334,7 +334,7 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	] as const;
 
 	it.each(forcingShapes)("rejects a %s tool choice and names it", async (_label, toolChoice, expectedLabel) => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
 
 		const message = await completionsErrorMessage(model, toolChoice as OpenAICompletionsOptions["toolChoice"]);
 
@@ -344,7 +344,7 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	});
 
 	it.each(["auto", "none"] as const)("passes %s through unchanged", async (toolChoice) => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
 
 		const payload = await captureCompletionsPayload(model, toolChoice);
 
@@ -354,7 +354,7 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	// The case that pins the `mode` distinction and would catch an over-broad fix: narrowing the
 	// candidate set is not forcing, so this shape must still reach the wire untouched.
 	it("passes allowed_tools with mode auto through unchanged", async () => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
 		const toolChoice: OpenAICompletionsOptions["toolChoice"] = {
 			type: "allowed_tools",
 			allowed_tools: { mode: "auto", tools: [{ type: "function", function: { name: "double_number" } }] },
@@ -370,7 +370,7 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	// own `supported_parameters` agrees: `claude-fable-5` lists `tool_choice`, `claude-fable-5.1`
 	// does not. A Fable-family match — correct for temperature — would be wrong here.
 	it.each(forcingShapes)("leaves Claude Fable 5 able to force a tool (%s)", async (_label, toolChoice) => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5");
+		const model = getModel("openrouter", "anthropic/claude-fable-5:batch");
 		expect(model.compat?.supportsForcedToolChoice).toBeUndefined();
 
 		const payload = await captureCompletionsPayload(model, toolChoice as OpenAICompletionsOptions["toolChoice"]);

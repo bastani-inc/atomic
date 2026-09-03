@@ -655,14 +655,14 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 			deliveredMessages,
 			(socket, brokerMessage) => {
 				writes.push({ socket, message: brokerMessage });
-				if (socket !== senderSocket || brokerMessage.type !== "message") return;
+				if (socket !== senderSocket || brokerMessage.type !== "message") return true;
 				wireNotifications++;
 				const admission = recipientAdmission.admit(brokerMessage.from, brokerMessage.message);
 				if (admission.kind === "pending") {
 					recipientCompletions.push(admission.completion);
-					return;
+					return true;
 				}
-				if (admission.kind === "duplicate") return;
+				if (admission.kind === "duplicate") return true;
 				recipientCompletions.push(
 					Promise.resolve().then(() => {
 						senderVisibleNotifications++;
@@ -679,6 +679,7 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 						recipientAdmission.commit(admission.reservation);
 					}),
 				);
+				return true;
 			},
 		);
 		await Promise.all(recipientCompletions);

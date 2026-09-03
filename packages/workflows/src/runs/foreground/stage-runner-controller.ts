@@ -32,6 +32,7 @@ import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import {
 	lastAssistantTextFromSession,
 	latestTerminalAssistantFailureSince,
+	structuredOutputTurnDetail,
 	WorkflowPromptModelFailure,
 } from "./stage-runner-messages.js";
 import { missingAdapter, stripWorkflowOnlyOptions, unavailableSync } from "./stage-runner-options.js";
@@ -45,7 +46,10 @@ import {
 	normalizeSessionCreateResult,
 } from "./stage-runner-session.js";
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
-import { structuredOutputToolErrorFromEvent } from "./stage-runner-structured-output.js";
+import {
+	STRUCTURED_OUTPUT_MISSING_ERROR,
+	structuredOutputToolErrorFromEvent,
+} from "./stage-runner-structured-output.js";
 import type {
 	AgentSessionConsumer,
 	StageModelFallbackMeta,
@@ -225,6 +229,7 @@ export class StageSessionController {
 	};
 	private readonly terminatingToolCallIds = new Set<string>();
 	private latestStructuredOutputToolErrorValue: string | undefined;
+	private structuredOutputCycleAttemptMark: number | undefined;
 	private unsubscribeTerminateWatcher: (() => void) | undefined;
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
@@ -283,12 +288,74 @@ export class StageSessionController {
 		return this.lastPromptStartIndex;
 	}
 
-	get latestStructuredOutputToolError(): string | undefined {
-		return this.latestStructuredOutputToolErrorValue;
-	}
-
 	resetStructuredOutputToolError(): void {
 		this.latestStructuredOutputToolErrorValue = undefined;
+	}
+
+	/**
+	 * Mark where the current candidate's structured-output correction cycle
+	 * begins, so exhausting that cycle can reclassify every attempt it recorded
+	 * (issue #2812).
+	 */
+	beginStructuredOutputCandidateCycle(): void {
+		this.structuredOutputCycleAttemptMark = this.modelAttempts.length;
+	}
+
+	/**
+	 * Why the latest schema-backed turn finished without a `structured_output`
+	 * call. A failed tool call already explains itself; anything else is a clean
+	 * turn whose shape has to be named, or the external cause stays invisible
+	 * (issue #2812).
+	 */
+	structuredOutputFailureReason(): string {
+		const toolError = this.latestStructuredOutputToolErrorValue;
+		if (toolError !== undefined) return toolError;
+		const messages = this.session?.messages;
+		if (messages === undefined) return STRUCTURED_OUTPUT_MISSING_ERROR;
+		return `${STRUCTURED_OUTPUT_MISSING_ERROR} ${structuredOutputTurnDetail(messages, this.lastPromptStartIndex ?? 0)}`;
+	}
+
+	/**
+	 * A candidate that burned its whole structured-output correction budget has
+	 * failed, however clean its turns looked. Route it through the chain rate
+	 * limits already use (issue #2812): reclassify the attempts it recorded,
+	 * warn, dispose the session, and point the walk at the next candidate, which
+	 * the caller then re-prompts with the original stage prompt and a fresh
+	 * correction budget. Returns whether such a candidate exists.
+	 */
+	async failCandidateForStructuredOutputExhaustion(error: string): Promise<boolean> {
+		const mark = this.structuredOutputCycleAttemptMark ?? 0;
+		this.structuredOutputCycleAttemptMark = undefined;
+		// Every clean-looking turn in this cycle was recorded as a success. None
+		// of them produced the structured result the stage requires.
+		for (let attemptIndex = mark; attemptIndex < this.modelAttempts.length; attemptIndex += 1) {
+			const attempt = this.modelAttempts[attemptIndex];
+			if (attempt === undefined || !attempt.success) continue;
+			this.modelAttempts[attemptIndex] = { ...attempt, success: false, error };
+		}
+		const candidates = this.hasExplicitModelFallbackConfig ? await this.modelCandidates() : [];
+		const index = this.activeCandidateIndex ?? 0;
+		const candidate = candidates[index];
+		const nextCandidate = candidates[index + 1];
+		if (this.opts.signal?.aborted || candidate === undefined || nextCandidate === undefined) {
+			this.modelWarnings.push(...this.pendingFallbackWarnings);
+			this.pendingFallbackWarnings.length = 0;
+			this.notifyModelFallbackMetaChange();
+			return false;
+		}
+		this.pendingFallbackWarnings.push(
+			`[fallback] ${candidateLabel(candidate)} failed: ${error}. Retrying with ${candidateLabel(nextCandidate)}.`,
+		);
+		// Unlike a rate-limit advance, nothing else in the run reveals that this
+		// candidate failed: its turns returned cleanly and its attempts are the
+		// only trace. Flush the warning now so it survives a fallback that then
+		// succeeds, instead of being cleared with the pending batch (issue #2812).
+		this.modelWarnings.push(...this.pendingFallbackWarnings);
+		this.pendingFallbackWarnings.length = 0;
+		await this.disposeCurrentSession();
+		this.activeCandidateIndex = index + 1;
+		this.notifyModelFallbackMetaChange();
+		return true;
 	}
 	requireSession(property: string): StageSessionRuntime {
 		if (!this.session) unavailableSync(property);
@@ -1350,6 +1417,8 @@ export class StageSessionController {
 				});
 				this.pendingFallbackWarnings.length = 0;
 				this.resumeCurrentSession = true;
+				// Issue #2812: the resumed candidate's success is durable metadata too.
+				this.notifySuccessfulModelFallbackMeta();
 				return true;
 			}
 			throw new WorkflowPromptModelFailure(terminalFailure);
@@ -1363,6 +1432,8 @@ export class StageSessionController {
 				});
 				this.pendingFallbackWarnings.length = 0;
 				this.resumeCurrentSession = true;
+				// Issue #2812: see above — a corrective success must reach the callback.
+				this.notifySuccessfulModelFallbackMeta();
 				return true;
 			}
 			const message = errorMessage(err);
@@ -1448,10 +1519,33 @@ export class StageSessionController {
 		});
 		this.pendingFallbackWarnings.length = 0;
 		this.resumeCurrentSession = true;
+		// Issue #2812: `onModelFallbackMetaChange` is the only boundary that
+		// refreshes the running stage snapshot the durable checkpoint reads. Every
+		// notification before this one is emitted on a selection or failure edge,
+		// so without this call the last durable record of a stage that fell back
+		// holds only the failed attempts, and a run interrupted between here and
+		// terminal persistence resumes without the provenance of its own result.
+		// Emitted last, after the pending warnings are cleared, so the payload is
+		// exactly what the terminal snapshot will carry.
+		this.notifySuccessfulModelFallbackMeta();
 	}
 
 	private notifyModelFallbackMetaChange(): void {
 		this.opts.onModelFallbackMetaChange?.(this.currentModelFallbackMeta());
+	}
+
+	/**
+	 * Issue #2812: `disposeAll()` neither awaits nor cancels a prompt already
+	 * parked in the adapter. That prompt still resolves, and its success still
+	 * belongs in `modelAttempts`. Publishing it does not: the stage snapshot is
+	 * terminal by then, and the executor writes whatever a callback hands it, so
+	 * a late success would stamp `success: true` onto an ended stage. Scoped to
+	 * the success edges this repair added — the selection and failure edges keep
+	 * the behavior they already had.
+	 */
+	private notifySuccessfulModelFallbackMeta(): void {
+		if (this.disposed) return;
+		this.notifyModelFallbackMetaChange();
 	}
 
 	private applyCandidateThinking(candidate: WorkflowResolvedModelCandidate | undefined): void {
