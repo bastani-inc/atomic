@@ -1,0 +1,21 @@
+{
+  "name": "@bastani/feedback",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pure feedback issue drafting, validation, formatting, and privacy utilities for Atomic.",
+  "contributors": [
+    "Norin Lavaee",
+    "Alex Lavaee"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src/**/*.ts", "README.md", "CHANGELOG.md"]
+}
