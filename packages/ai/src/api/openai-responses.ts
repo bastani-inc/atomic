@@ -31,6 +31,7 @@ import {
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
+	assertPayloadPreservesFastRoute,
 	convertResponsesMessages,
 	convertResponsesTools,
 	processResponsesStream,
@@ -164,6 +165,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
+			assertPayloadPreservesFastRoute(model, params);
 			const requestOptions = {
 				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),

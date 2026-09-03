@@ -230,6 +230,10 @@ export class ModelRuntime implements Models {
 		return withFastModelVariants(provider, {
 			getCopilotFastModelIds: () => copilotAdvertisedFastModelIds(this.credentials.peek("github-copilot")),
 			getModelOverrides: () => this.config.getProvider(provider.id)?.modelOverrides,
+			getExtensionOwnedApis: () => {
+				const extension = this.extensionProviders.get(provider.id);
+				return extension?.streamSimple !== undefined && extension.api ? new Set([extension.api]) : undefined;
+			},
 			onDiagnostics: (id, diagnostics) => {
 				if (diagnostics.length === 0) this.fastModelVariantDiagnostics.delete(id);
 				else this.fastModelVariantDiagnostics.set(id, diagnostics);

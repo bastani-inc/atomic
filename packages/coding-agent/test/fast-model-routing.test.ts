@@ -164,31 +164,56 @@ describe("fast model route resolution", () => {
 		expect(usesFirstPartyCodexRouting(codexModel)).toBe(true);
 	});
 
-	it("replaces a stale identity header and leaves other endpoints alone", () => {
-		const firstParty = fullModel({
+	it("replaces a stale identity header and names the route's upstream model", () => {
+		const firstPartyFast = fullModel({
 			provider: "openai-codex",
 			api: "openai-codex-responses",
 			baseUrl: "https://chatgpt.com/backend-api/codex/responses",
+			id: "gpt-5.1-codex-fast",
+			fastRoute: serviceTierRoute,
 		});
-		const replaced = withCodexFastRouteHeaders(
-			firstParty,
-			{ Originator: "pi", "X-Codex-Routing-Hint": "stale" },
-			true,
-		);
+		const replaced = withCodexFastRouteHeaders(firstPartyFast, {
+			Originator: "pi",
+			"X-Codex-Routing-Hint": "stale",
+		});
 		const replacedHeaders = new Headers(replaced as HeadersInit);
 		expect(replacedHeaders.get("originator")).toBe(CODEX_FAST_ROUTE_ORIGINATOR);
+		// The hint carries the upstream base model, not the canonical `-fast` identity.
 		expect(replacedHeaders.get(CODEX_FAST_ROUTE_HEADER)).toBe("model=gpt-5.1-codex;tier=priority");
 
-		expect(usesFirstPartyCodexRouting(firstParty)).toBe(true);
+		expect(usesFirstPartyCodexRouting(firstPartyFast)).toBe(true);
 		expect(usesFirstPartyCodexRouting(fullModel({ provider: "openai" }))).toBe(false);
 		expect(
 			usesFirstPartyCodexRouting(
 				fullModel({ provider: "openai-codex", baseUrl: "https://proxy.example/backend-api" }),
 			),
 		).toBe(false);
-		expect(withCodexFastRouteHeaders(fullModel({ provider: "openai" }), { "x-test": "yes" }, true)).toEqual({
-			"x-test": "yes",
+	});
+
+	/** The identity is derived from the model alone; there is no caller flag that can grant it. */
+	it("grants nothing to a model without an OpenAI-style fast route", () => {
+		const firstPartyNormal = fullModel({
+			provider: "openai-codex",
+			api: "openai-codex-responses",
+			baseUrl: "https://chatgpt.com/backend-api/codex/responses",
 		});
+		expect(withCodexFastRouteHeaders(firstPartyNormal, { "x-test": "yes" })).toEqual({ "x-test": "yes" });
+
+		// A Copilot fast route declares no service tier, so it never gets the first-party Codex identity.
+		const copilotFast = fullModel({
+			provider: "github-copilot",
+			api: "openai-responses",
+			id: "gpt-5.2-fast",
+			fastRoute: { baseModelId: "gpt-5.2", upstreamModelId: "gpt-5.2-fast" },
+		});
+		expect(withCodexFastRouteHeaders(copilotFast, { "x-test": "yes" })).toEqual({ "x-test": "yes" });
+
+		// A fast route on a non-first-party endpoint is passed through untouched.
+		expect(
+			withCodexFastRouteHeaders(fullModel({ provider: "openai", fastRoute: serviceTierRoute }), {
+				"x-test": "yes",
+			}),
+		).toEqual({ "x-test": "yes" });
 	});
 
 	it("uses native OpenAI Responses streaming for a service-tier route", () => {

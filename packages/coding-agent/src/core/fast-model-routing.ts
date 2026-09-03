@@ -98,18 +98,28 @@ function setHeader(headers: ProviderHeaders, name: string, value: string): void 
 }
 
 /**
- * Eager first-party routing headers for a request that is already resolved to its upstream model ID.
- * `enabled` reflects the model's own route metadata, never a session toggle.
+ * Eager first-party routing headers for a model that carries an OpenAI-style fast route.
+ *
+ * Derived entirely from the model: the headers are added only when the model's own `fastRoute`
+ * declares the priority tier and the model uses first-party Codex routing, and the hint names the
+ * route's upstream model ID — the same value the request serializes and the same value
+ * `withChatGptCodexTransportRouting` derives from the final payload. There is no caller-supplied
+ * enable flag, so a model without a route can never be granted this identity.
  */
 export function withCodexFastRouteHeaders(
-	model: Pick<Model<Api>, "baseUrl" | "id" | "provider">,
+	model: Pick<Model<Api>, "baseUrl" | "fastRoute" | "id" | "provider">,
 	headers: ProviderHeaders | undefined,
-	enabled: boolean,
 ): ProviderHeaders | undefined {
-	if (!enabled || !usesFirstPartyCodexRouting(model)) return headers;
+	if (getModelFastRoute(model)?.serviceTier !== FAST_MODEL_SERVICE_TIER || !usesFirstPartyCodexRouting(model)) {
+		return headers;
+	}
 	const fastHeaders: ProviderHeaders = { ...(headers ?? {}) };
 	setHeader(fastHeaders, "originator", CODEX_FAST_ROUTE_ORIGINATOR);
-	setHeader(fastHeaders, CODEX_FAST_ROUTE_HEADER, `model=${model.id};tier=${FAST_MODEL_SERVICE_TIER}`);
+	setHeader(
+		fastHeaders,
+		CODEX_FAST_ROUTE_HEADER,
+		`model=${resolveUpstreamModelId(model)};tier=${FAST_MODEL_SERVICE_TIER}`,
+	);
 	return fastHeaders;
 }
 

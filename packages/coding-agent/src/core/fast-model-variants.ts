@@ -26,6 +26,8 @@ export interface DeriveFastModelVariantsOptions {
 	copilotFastModelIds?: readonly string[];
 	/** `models.json` `modelOverrides` for this provider, applied to derived entries by their exact `-fast` ID. */
 	modelOverrides?: Readonly<Record<string, ModelsJsonModelOverride>>;
+	/** APIs whose transport a registered extension owns for this provider. No variant is derived for them. */
+	extensionOwnedApis?: ReadonlySet<Api>;
 }
 
 export interface FastModelVariantsOptions {
@@ -36,6 +38,11 @@ export interface FastModelVariantsOptions {
 	getCopilotFastModelIds?: () => readonly string[] | undefined;
 	/** Synchronous read of this provider's `models.json` `modelOverrides`, so a reload takes effect. */
 	getModelOverrides?: () => Readonly<Record<string, ModelsJsonModelOverride>> | undefined;
+	/**
+	 * Synchronous read of the APIs a registered extension supplies a stream function for. Read per call
+	 * because extensions register after initial composition on some paths.
+	 */
+	getExtensionOwnedApis?: () => ReadonlySet<Api> | undefined;
 	/** Called after every derivation pass with the complete diagnostic list for this provider. */
 	onDiagnostics?: (providerId: string, diagnostics: readonly FastModelVariantDiagnostic[]) => void;
 }
@@ -131,6 +138,9 @@ function fastRouteForBaseModel(
  * A derived entry is a real catalog model, so a `modelOverrides` entry keyed on its exact `-fast` ID
  * applies to it after derivation. Without that pass the derived entry would inherit the *base* model's
  * overrides and its own would be silently inert.
+ *
+ * No variant is derived for an API whose transport a registered extension owns, because Atomic cannot
+ * enforce the route through a transport it does not serialize.
  */
 export function deriveFastModelVariants(
 	providerId: string,
@@ -145,6 +155,10 @@ export function deriveFastModelVariants(
 	for (const model of models) {
 		derived.push(model);
 		if (model.fastRoute !== undefined || model.id.endsWith(FAST_MODEL_ID_SUFFIX)) continue;
+		// An extension that supplies this API's stream function owns its serialization, so Atomic cannot
+		// guarantee the route reaches the wire. Publishing a `-fast` choice it may not honor is the same
+		// hazard as publishing one for an adapter that cannot carry the tier.
+		if (options.extensionOwnedApis?.has(model.api) === true) continue;
 		const fastRoute = fastRouteForBaseModel(model, entitledCopilotFastModelIds);
 		if (!fastRoute) continue;
 		const variantId = fastModelId(model.id);
@@ -182,6 +196,7 @@ export function withFastModelVariants(provider: Provider, options: FastModelVari
 					? options.getCopilotFastModelIds?.()
 					: undefined,
 				modelOverrides: options.getModelOverrides?.(),
+				extensionOwnedApis: options.getExtensionOwnedApis?.(),
 			});
 			options.onDiagnostics?.(provider.id, diagnostics);
 			return models;

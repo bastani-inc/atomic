@@ -199,6 +199,71 @@ describe("deriveFastModelVariants", () => {
 		assert.deepEqual(diagnostics, []);
 	});
 
+	it("derives nothing for an API whose transport an extension owns", () => {
+		const base = [model({ id: "gpt-5.6-sol", provider: "openai-codex", api: "openai-codex-responses" })];
+
+		assert.deepEqual(ids(deriveFastModelVariants("openai-codex", base).models), ["gpt-5.6-sol", "gpt-5.6-sol-fast"]);
+		// Atomic cannot enforce the route through a transport it does not serialize.
+		assert.deepEqual(
+			ids(
+				deriveFastModelVariants("openai-codex", base, {
+					extensionOwnedApis: new Set(["openai-codex-responses"]),
+				}).models,
+			),
+			["gpt-5.6-sol"],
+		);
+		// A different API on the same provider is unaffected.
+		assert.deepEqual(
+			ids(
+				deriveFastModelVariants("openai-codex", base, { extensionOwnedApis: new Set(["openai-responses"]) }).models,
+			),
+			["gpt-5.6-sol", "gpt-5.6-sol-fast"],
+		);
+	});
+
+	/**
+	 * User amendment (2026-09-03): synthetic `-fast` aliases are limited to OpenAI and OpenAI Codex,
+	 * including the shared Codex transport alias. GitHub Copilot exposes only exact account-advertised
+	 * real `-fast` IDs. OpenRouter is explicitly excluded. This guard fails if a future eligibility edit
+	 * silently widens derivation beyond that set.
+	 */
+	it("synthesizes fast aliases only for OpenAI, OpenAI Codex, and the shared Codex transport", () => {
+		const providers: Array<[string, Api]> = [
+			["openai", "openai-responses"],
+			["openai-codex", "openai-codex-responses"],
+			["codex-proxy", "openai-codex-responses"],
+			["openrouter", "openai-completions"],
+			["openrouter", "openai-responses"],
+			["azure-openai-responses", "azure-openai-responses"],
+			["anthropic", "anthropic-messages"],
+			["vercel-ai-gateway", "openai-completions"],
+			["my-openai-compatible", "openai-responses"],
+			["github-copilot", "openai-responses"],
+			["github-copilot", "anthropic-messages"],
+		];
+		const synthesized: string[] = [];
+		for (const [provider, api] of providers) {
+			// No Copilot entitlement is supplied, so any derived entry here is a synthetic alias.
+			const { models } = deriveFastModelVariants(provider, [model({ id: "probe", provider, api })]);
+			if (models.some((entry) => entry.fastRoute !== undefined)) synthesized.push(`${provider}/${api}`);
+		}
+
+		assert.deepEqual(synthesized, [
+			"openai/openai-responses",
+			"openai-codex/openai-codex-responses",
+			"codex-proxy/openai-codex-responses",
+		]);
+
+		// Copilot derives only for an exact advertised ID, and never as a service-tier route.
+		const copilotBase = [model({ id: "claude-opus-4.8", provider: "github-copilot", api: "anthropic-messages" })];
+		assert.deepEqual(ids(deriveFastModelVariants("github-copilot", copilotBase).models), ["claude-opus-4.8"]);
+		const entitled = deriveFastModelVariants("github-copilot", copilotBase, {
+			copilotFastModelIds: ["claude-opus-4.8-fast"],
+		}).models;
+		assert.deepEqual(ids(entitled), ["claude-opus-4.8", "claude-opus-4.8-fast"]);
+		assert.equal(entitled[1]?.fastRoute?.serviceTier, undefined);
+	});
+
 	it("builds the canonical selectable ID", () => {
 		assert.equal(fastModelId("gpt-5.6-sol"), "gpt-5.6-sol-fast");
 	});

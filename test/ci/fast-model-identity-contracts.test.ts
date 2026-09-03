@@ -189,6 +189,8 @@ const removedNames = new Set([
 const proseNames = new Set([
 	"openai",
 	"anthropic",
+	// Parameter and request-field names, never exports.
+	"enabled",
 	"openrouter",
 	"flex",
 	"undefined",

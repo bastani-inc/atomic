@@ -443,6 +443,9 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 		originator: string | null;
 		routingHint: string | null;
 		marker: string | null;
+		/** pi-ai surfaces a stream failure as an error-stopReason assistant message, not a rejection. */
+		stopReason?: string;
+		errorMessage?: string;
 	}
 
 	function codexResponse(): Response {
@@ -510,14 +513,15 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 			// `serviceTier` only reaches the adapter through the API-typed option: pi-ai's
 			// `buildBaseOptions` whitelist drops it on the `*Simple` path, so asserting precedence there
 			// would pass no matter which side won.
-			if (options?.serviceTier !== undefined) {
-				await runtime.complete(model as Model<"openai-codex-responses">, context, {
-					transport: "sse",
-					...options,
-				});
-			} else {
-				await runtime.completeSimple(model, context, { transport: "sse", ...options });
-			}
+			const result =
+				options?.serviceTier !== undefined
+					? await runtime.complete(model as Model<"openai-codex-responses">, context, {
+							transport: "sse",
+							...options,
+						})
+					: await runtime.completeSimple(model, context, { transport: "sse", ...options });
+			captured.stopReason = result.stopReason;
+			captured.errorMessage = result.errorMessage;
 		} finally {
 			vi.unstubAllGlobals();
 		}
@@ -558,7 +562,9 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 		expect(captured.routingHint).toBe("model=gpt-5.6-sol;tier=priority");
 	});
 
-	it("reverts to pi's identity when a payload hook drops the tier off priority", async () => {
+	it("rejects a payload hook that drops the tier a fast route owns", async () => {
+		// A hook used to be able to send an ordinary-tier request under the `-fast` identity Atomic
+		// records, persists, and bills. Route-owned fields are now enforced, loudly, before dispatch.
 		const captured = await captureCodex("gpt-5.6-sol-fast", {
 			onPayload: (payload) => {
 				const record = { ...(payload as Record<string, unknown>) };
@@ -567,9 +573,32 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 			},
 		});
 
-		expect(captured.serviceTier).toBeUndefined();
-		expect(captured.originator).toBe("pi");
-		expect(captured.routingHint).toBeNull();
+		expect(captured.stopReason).toBe("error");
+		expect(captured.errorMessage).toContain('service_tier (expected "priority", got undefined)');
+		expect(captured.errorMessage).toContain('fast model "openai-codex/gpt-5.6-sol-fast"');
+		// Nothing reached the wire.
+		expect(captured.model).toBeUndefined();
+	});
+
+	it("rejects a payload hook that rewrites the model a fast route owns", async () => {
+		const captured = await captureCodex("gpt-5.6-sol-fast", {
+			onPayload: (payload) => ({ ...(payload as Record<string, unknown>), model: "some-other-model" }),
+		});
+
+		expect(captured.stopReason).toBe("error");
+		expect(captured.errorMessage).toContain('model (expected "gpt-5.6-sol", got "some-other-model")');
+		// The remedy names the normal sibling.
+		expect(captured.errorMessage).toContain('"openai-codex/gpt-5.6-sol"');
+		expect(captured.model).toBeUndefined();
+	});
+
+	it("leaves a hook free to rewrite anything the route does not own", async () => {
+		const captured = await captureCodex("gpt-5.6-sol-fast", {
+			onPayload: (payload) => ({ ...(payload as Record<string, unknown>), text: { verbosity: "high" } }),
+		});
+
+		expect(captured.serviceTier).toBe("priority");
+		expect(captured.originator).toBe("codex_cli_rs");
 	});
 
 	it("installs the WebSocket handshake identity when the transport is not forced to SSE", async () => {

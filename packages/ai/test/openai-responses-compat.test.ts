@@ -578,6 +578,56 @@ describe("openai-responses provider defaults", () => {
 	 * versus normal is model identity and the request is still recorded and billed as the fast one.
 	 * A normal model, which declares no tier, keeps honoring the option exactly as before.
 	 */
+	/**
+	 * A GitHub Copilot fast variant declares no tier: it sends its own advertised `-fast` model ID and
+	 * must carry no OpenAI service-tier field at all. Route *presence*, not just its declared value,
+	 * has to be the discriminator — otherwise a caller's option leaks a tier onto a Copilot request and
+	 * the priority cost multiplier with it.
+	 */
+	it.each(["priority", "flex", "default"] as const)(
+		"emits no service tier for a Copilot fast route even when a request asks for %s",
+		async (requested) => {
+			const base = getModel("openai", "gpt-5.5");
+			const copilotFast: Model<"openai-responses"> = {
+				...base,
+				id: "gpt-5.2-fast",
+				provider: "github-copilot",
+				// No `serviceTier`: Copilot routes by its own advertised model ID.
+				fastRoute: { baseModelId: "gpt-5.2", upstreamModelId: "gpt-5.2-fast" },
+			};
+			const tokenCount = 100_000;
+			const tokenScale = tokenCount / 1_000_000;
+			let capturedPayload: { model?: string; service_tier?: string } | undefined;
+			vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+				capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+				const sse = `data: ${JSON.stringify({
+					type: "response.completed",
+					response: {
+						status: "completed",
+						usage: {
+							input_tokens: tokenCount,
+							output_tokens: tokenCount,
+							total_tokens: tokenCount * 2,
+							input_tokens_details: { cached_tokens: 0 },
+						},
+					},
+				})}\n\n`;
+				return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+			});
+
+			const result = await streamOpenAIResponses(
+				copilotFast,
+				{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+				{ apiKey: "test-key", serviceTier: requested },
+			).result();
+
+			expect(capturedPayload?.model).toBe("gpt-5.2-fast");
+			expect(capturedPayload?.service_tier).toBeUndefined();
+			// No tier means no tier multiplier either.
+			expect(result.usage.cost.input).toBe(base.cost.input * tokenScale);
+		},
+	);
+
 	it.each([
 		["gpt-5.5-fast", "default", "priority", 2.5],
 		["gpt-5.5-fast", "flex", "priority", 2.5],

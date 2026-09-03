@@ -481,13 +481,14 @@ describe("createAgentSession fast model routing", () => {
 		assert.deepEqual(captured.model.fastRoute, serviceTierRoute("openai-test-model"));
 	});
 
-	it("preserves custom provider streaming for native OpenAI APIs on a fast route", async () => {
-		const baseModel = createModel("openai", "openai-responses");
-		const model: Model<Api> = {
-			...baseModel,
-			id: `${baseModel.id}-fast`,
-			fastRoute: serviceTierRoute(baseModel.id),
-		};
+	/**
+	 * Atomic cannot enforce a fast route through a transport it does not serialize, so no `-fast`
+	 * variant is published for an API a registered extension owns (asserted at the catalog level in
+	 * `fast-model-variants.test.ts`). What must keep working is the ordinary case: a normal model still
+	 * reaches the extension stream untouched.
+	 */
+	it("preserves custom provider streaming for a normal model", async () => {
+		const model = createModel("openai", "openai-responses");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-api-key" }));
 		const modelRuntime = await ModelRuntime.create({
@@ -530,13 +531,10 @@ describe("createAgentSession fast model routing", () => {
 
 			expect(result.stopReason).toBe("stop");
 			expect(nativeFetch).not.toHaveBeenCalled();
-			expect((capturedOptions as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBe(
-				FAST_MODEL_SERVICE_TIER,
-			);
-			// An extension stream owns its own transport, so it receives the canonical model and the
-			// service tier, and decides for itself how to route them.
-			expect(capturedModel?.id).toBe(`${baseModel.id}-fast`);
-			expect(capturedModel?.fastRoute).toEqual(serviceTierRoute(baseModel.id));
+			expect(capturedModel?.id).toBe(model.id);
+			expect(capturedModel?.fastRoute).toBeUndefined();
+			// A normal model carries no route, so no tier is injected into an extension's options.
+			expect((capturedOptions as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBeUndefined();
 		} finally {
 			session.dispose();
 			modelRuntime.unregisterProvider("openai");

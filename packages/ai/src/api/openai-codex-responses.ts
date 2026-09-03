@@ -37,6 +37,7 @@ import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
+	assertPayloadPreservesFastRoute,
 	convertResponsesMessages,
 	convertResponsesTools,
 	processResponsesStream,
@@ -279,6 +280,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			if (nextBody !== undefined) {
 				body = nextBody as RequestBody;
 			}
+			assertPayloadPreservesFastRoute(model, body);
 			const websocketRequestId = codexSessionId || uuidv7();
 			const sseHeaders = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, codexSessionId);
 			const websocketHeaders = buildWebSocketHeaders(
