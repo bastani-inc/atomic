@@ -217,7 +217,9 @@ const proseNames = new Set([
 	"medium",
 	"enabledModels",
 	"buildBaseOptions",
+	"supportsMidConvoEffort",
 	"tsgo",
+	"write",
 	"edit",
 ]);
 
