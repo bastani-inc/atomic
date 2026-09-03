@@ -228,10 +228,12 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 
 	// Share an export-only JSONL copy carrying context for the viewer. The
 	// persisted session is not mutated.
-	const tmpFile = path.join(os.tmpdir(), "session.jsonl");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-share-"));
+	const tmpFile = path.join(tempDir, "session.jsonl");
 	try {
 		this.session.exportToJsonl(tmpFile, { includeShareContext: true });
 	} catch (error: unknown) {
+		fs.rmSync(tempDir, { recursive: true, force: true });
 		this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		return;
 	}
@@ -249,7 +251,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
 		try {
-			fs.unlinkSync(tmpFile);
+			fs.rmSync(tempDir, { recursive: true, force: true });
 		} catch {
 			// Ignore cleanup errors
 		}

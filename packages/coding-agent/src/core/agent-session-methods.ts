@@ -466,6 +466,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_recoverableLengthRecoveryAttempted: boolean;
 	_contextOverflowUnresolved: boolean;
 	_branchSummaryAbortController: AbortController | undefined;
+	_branchSummaryCompletion: Promise<void> | undefined;
 	_retryAbortController: AbortController | undefined;
 	_retryAttempt: number;
 	_retryPromise: Promise<void> | undefined;

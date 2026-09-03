@@ -345,17 +345,20 @@ export function compact(
 	this._postCompactionContinuationToken += 1;
 	this._pendingPostCompactionContinuation = undefined;
 
-	const controller = new AbortController();
-	this._compactionAbortController = controller;
-	this._compactionReason = "manual";
 	const automaticCompletion = this._autoCompactionCompletion;
 	// The manual request wins. Abort the active automatic planner now, before the
 	// next microtask can admit a post-tool or threshold boundary, then wait for
-	// its owner to settle before mutating the transcript ourselves.
+	// its owner to settle before mutating the transcript ourselves. Start the
+	// session abort before publishing this new manual owner so abort() cancels
+	// prior work rather than cancelling or waiting on the compaction being started.
 	this._autoCompactionAbortController?.abort();
 	const abortBoundary = this.abort();
-	// This settles only after any active automatic run. Handle its rejection now
-	// so a failing event drain cannot become unhandled while that run finishes.
+
+	const controller = new AbortController();
+	this._compactionAbortController = controller;
+	this._compactionReason = "manual";
+	// Handle rejection now so a failing event drain cannot become unhandled
+	// while an automatic run finishes.
 	void abortBoundary.catch(() => {});
 	let flight!: Promise<VerbatimCompactionResult>;
 	// Start the owned run in a microtask so both single-flight fields are

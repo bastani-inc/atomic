@@ -88,6 +88,11 @@ export async function navigateTree(
 	// Set up abort controller for summarization
 	this._branchSummaryAbortController = new AbortController();
 	if (this._compactionReason === undefined) this._compactionReason = "branchSummary";
+	let finishBranchSummary = (): void => {};
+	const branchSummaryCompletion = new Promise<void>((resolve) => {
+		finishBranchSummary = resolve;
+	});
+	this._branchSummaryCompletion = branchSummaryCompletion;
 
 	try {
 		let extensionSummary: { summary: string; details?: unknown } | undefined;
@@ -235,6 +240,8 @@ export async function navigateTree(
 	} finally {
 		this._branchSummaryAbortController = undefined;
 		if (this._compactionReason === "branchSummary") this._compactionReason = undefined;
+		finishBranchSummary();
+		if (this._branchSummaryCompletion === branchSummaryCompletion) this._branchSummaryCompletion = undefined;
 	}
 }
 

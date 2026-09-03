@@ -77,9 +77,17 @@ export function abort(this: AgentSession): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.abort();
 	this.abortRetry();
+	this.abortCompaction();
+	this.abortBranchSummary();
 	this.agent.abort();
+	const manualCompaction = this._manualCompactionPromise;
+	const automaticCompaction = this._autoCompactionCompletion;
+	const branchSummary = this._branchSummaryCompletion;
 	const boundary = (async () => {
 		await this.agent.waitForIdle();
+		await Promise.allSettled(
+			[manualCompaction, automaticCompaction, branchSummary].filter((value) => value !== undefined),
+		);
 		await this._agentEventQueue;
 	})();
 	if (this._queuedMessagesPaused) {

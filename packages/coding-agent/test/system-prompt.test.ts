@@ -1,5 +1,17 @@
+import assert from "node:assert/strict";
 import { describe, expect, test } from "vitest";
+import type { Skill } from "../src/core/skills.ts";
+import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
+
+const testSkill: Skill = {
+	name: "test-skill",
+	description: "A test skill.",
+	filePath: "/skills/test-skill/SKILL.md",
+	baseDir: "/skills/test-skill",
+	sourceInfo: createSyntheticSourceInfo("/skills/test-skill/SKILL.md", { source: "test" }),
+	disableModelInvocation: false,
+};
 
 describe("buildSystemPrompt", () => {
 	describe("empty tools", () => {
@@ -216,6 +228,34 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).not.toContain("- **Workflows**:");
+		});
+	});
+
+	describe("skills", () => {
+		test.each([
+			{ name: "default prompt", customPrompt: undefined },
+			{ name: "custom prompt", customPrompt: "Custom system prompt" },
+		])("includes skills with only bash in the $name", ({ customPrompt }) => {
+			const prompt = buildSystemPrompt({
+				customPrompt,
+				selectedTools: ["bash"],
+				contextFiles: [],
+				skills: [testSkill],
+				cwd: process.cwd(),
+			});
+			assert.match(prompt, /<available_skills>/);
+			assert.match(prompt, /<name>test-skill<\/name>/);
+			assert.match(prompt, /Use bash to load a skill's file/);
+		});
+
+		test("omits skills without read or bash", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["write"],
+				contextFiles: [],
+				skills: [testSkill],
+				cwd: process.cwd(),
+			});
+			assert.doesNotMatch(prompt, /<available_skills>/);
 		});
 	});
 

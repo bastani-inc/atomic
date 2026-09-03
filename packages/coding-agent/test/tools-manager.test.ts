@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,7 @@ vi.mock("child_process", async () => {
 describe("managed tool downloads", () => {
 	let tempDir: string;
 	let ensureTool: typeof import("../src/utils/tools-manager.ts").ensureTool;
+	let getLatestVersion: typeof import("../src/utils/tools-manager.ts").getLatestVersion;
 
 	beforeEach(async () => {
 		tempDir = mkdtempSync(join(tmpdir(), "atomic-tools-manager-"));
@@ -26,7 +28,7 @@ describe("managed tool downloads", () => {
 		mocks.spawnSync.mockReset();
 		mocks.spawnSync.mockReturnValue({ error: new Error("not found") } as SpawnSyncReturns<Buffer>);
 		vi.resetModules();
-		({ ensureTool } = await import("../src/utils/tools-manager.ts"));
+		({ ensureTool, getLatestVersion } = await import("../src/utils/tools-manager.ts"));
 	});
 
 	afterEach(() => {
@@ -36,40 +38,83 @@ describe("managed tool downloads", () => {
 	});
 
 	it("retries transient release metadata errors before downloading a managed tool", async () => {
-		const releaseUrl = "https://api.github.com/repos/sharkdp/fd/releases/latest";
+		const releaseUrl = "https://github.com/BurntSushi/ripgrep/releases/latest";
 		let releaseAttempts = 0;
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 			if (String(input) === releaseUrl) {
 				releaseAttempts += 1;
-				return releaseAttempts < 3 ? new Response("busy", { status: 503 }) : Response.json({ tag_name: "v10.2.0" });
+				return releaseAttempts < 3
+					? new Response("busy", { status: 503 })
+					: new Response(null, { status: 302, headers: { location: "/BurntSushi/ripgrep/releases/tag/14.1.1" } });
 			}
 			return new Response("download unavailable", { status: 404 });
 		});
 
-		await expect(ensureTool("fd")).resolves.toBeUndefined();
+		await expect(ensureTool("rg")).resolves.toBeUndefined();
 
 		expect(releaseAttempts).toBe(3);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(3);
 	});
 
 	it("retries transient archive download errors after release metadata succeeds", async () => {
-		const releaseUrl = "https://api.github.com/repos/sharkdp/fd/releases/latest";
-		const archiveUrlPrefix = "https://github.com/sharkdp/fd/releases/download/v10.2.0/";
+		const releaseUrl = "https://github.com/BurntSushi/ripgrep/releases/latest";
+		const archiveUrlPrefix = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/";
 		let archiveAttempts = 0;
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 			const url = String(input);
-			if (url === releaseUrl) return Response.json({ tag_name: "v10.2.0" });
+			if (url === releaseUrl)
+				return new Response(null, {
+					status: 302,
+					headers: { location: "/BurntSushi/ripgrep/releases/tag/14.1.1" },
+				});
 			if (url.startsWith(archiveUrlPrefix)) {
 				archiveAttempts += 1;
 				return archiveAttempts < 3 ? new Response("busy", { status: 503 }) : new Response("archive");
 			}
 			return new Response("unexpected request", { status: 404 });
 		});
-		await expect(ensureTool("fd")).resolves.toBeUndefined();
+		await expect(ensureTool("rg")).resolves.toBeUndefined();
 
 		expect(archiveAttempts).toBe(3);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(1);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith(archiveUrlPrefix))).toHaveLength(3);
+	});
+
+	it("resolves the version from the release page redirect", async () => {
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(null, {
+					status: 302,
+					headers: { location: "https://github.com/sharkdp/fd/releases/tag/v10.4.2" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		assert.equal(await getLatestVersion("sharkdp/fd"), "10.4.2");
+		assert.equal(fetchMock.mock.calls[0]?.[0], "https://github.com/sharkdp/fd/releases/latest");
+		assert.equal((fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.redirect, "manual");
+	});
+
+	it("resolves relative release redirects", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(null, { status: 302, headers: { location: "/BurntSushi/ripgrep/releases/tag/15.2.0" } }),
+			),
+		);
+		assert.equal(await getLatestVersion("BurntSushi/ripgrep"), "15.2.0");
+	});
+
+	it("reports a non-redirect release response", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("not found", { status: 404 })),
+		);
+		await assert.rejects(
+			getLatestVersion("sharkdp/fd"),
+			/Failed to resolve latest sharkdp\/fd release: HTTP 404 without redirect/,
+		);
 	});
 
 	it("reports an offline skip through onStatus and never writes to the console", async () => {

@@ -58,6 +58,7 @@ type RenderSessionContextThis = {
 	mermaidMarkdownTransformerMode: "streaming";
 	getMarkdownTransformers(): readonly ((markdown: string) => string)[];
 	getRegisteredToolDefinition(toolName: string): undefined;
+	maybeShowAssistantDiagnostics(message: AssistantMessage): void;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 	chatMessageRenderOptions(): ChatMessageRenderOptions;
 	addRenderedChatEntry(entry: ChatMessageEntry): Component;
@@ -107,6 +108,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		mermaidMarkdownTransformerMode: "streaming",
 		getMarkdownTransformers: proto.getMarkdownTransformers,
 		getRegisteredToolDefinition: (_toolName: string) => undefined,
+		maybeShowAssistantDiagnostics: vi.fn(),
 		chatMessageRenderOptions: proto.chatMessageRenderOptions,
 		addRenderedChatEntry: proto.addRenderedChatEntry,
 		addMessageToChat(message: AgentMessage) {

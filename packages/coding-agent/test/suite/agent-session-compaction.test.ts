@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.ts";
@@ -247,5 +248,48 @@ describe("session_compact_failed", () => {
 				fromExtension: true,
 			},
 		]);
+	});
+});
+
+describe("AgentSession abort during manual compaction", () => {
+	let abortHarness: Harness | undefined;
+	afterEach(() => {
+		vi.restoreAllMocks();
+		abortHarness?.cleanup();
+	});
+
+	it("cancels the compaction and waits for it to settle", async () => {
+		abortHarness = await createHarness();
+		let markStarted = (): void => {};
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		let settled = false;
+		const internals = abortHarness.session as unknown as {
+			_applyVerbatimCompaction(options: { abortController: AbortController }): Promise<VerbatimCompactionResult>;
+		};
+		vi.spyOn(internals, "_applyVerbatimCompaction").mockImplementation(
+			(options) =>
+				new Promise<VerbatimCompactionResult>((_resolve, reject) => {
+					markStarted();
+					options.abortController.signal.addEventListener(
+						"abort",
+						() => {
+							settled = true;
+							reject(new Error("Compaction cancelled"));
+						},
+						{ once: true },
+					);
+				}),
+		);
+
+		const compaction = abortHarness.session.compact();
+		void compaction.catch(() => {});
+		await started;
+		await abortHarness.session.abort();
+
+		await assert.rejects(compaction, /Compaction cancelled/);
+		assert.equal(settled, true);
+		assert.equal(abortHarness.session.isCompacting, false);
 	});
 });

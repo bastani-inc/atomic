@@ -186,9 +186,7 @@ async function createRuntimeHost(options: {
 		runtimeHost,
 		cleanup: async () => {
 			try {
-				if (session.isStreaming) {
-					await session.abort();
-				}
+				await session.abort();
 			} catch {
 				// ignore test cleanup failures
 			}

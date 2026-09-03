@@ -32,6 +32,13 @@
 
 ### Fixed
 
+- Fixed RPC abort requests reporting success without cancelling an in-progress manual compaction ([#8920](https://github.com/earendil-works/pi/issues/8920)).
+- Fixed forked sessions losing a compaction boundary that referenced a removed label ([#8989](https://github.com/earendil-works/pi/issues/8989)).
+- Fixed session imports overwriting an existing stored session with the same filename ([#8985](https://github.com/earendil-works/pi/issues/8985)).
+- Fixed fd and rg auto-downloads failing behind exhausted shared GitHub API quotas by resolving release versions from GitHub's web redirect ([#8708](https://github.com/earendil-works/pi/issues/8708)).
+- Fixed JPEG orientation detection stopping at a non-EXIF APP1 segment before the EXIF segment ([#8616](https://github.com/earendil-works/pi/issues/8616)).
+- Fixed model-invocable skills disappearing when the bash tool is available but the read tool is not ([#8552](https://github.com/earendil-works/pi/issues/8552)).
+- Fixed concurrent `/share` commands overwriting one another's temporary session export ([#8613](https://github.com/earendil-works/pi/issues/8613)).
 - Fixed resumed sessions omitting persisted notices for Anthropic thinking blocks dropped during provider recovery.
 - Fixed proxied plain-HTTP provider requests hanging after a tool call by tunneling them with CONNECT ([#8134](https://github.com/earendil-works/pi/issues/8134)).
 - Fixed GitHub Copilot Claude Fable models to run through the Anthropic Messages adapter, so a selected thinking level reaches the provider instead of being dropped ([#8961](https://github.com/earendil-works/pi/issues/8961)).

@@ -141,6 +141,8 @@ class AgentSessionBase {
 	protected _stopAfterTurnBlockedContinuation = false;
 	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
+	/** Settles after the currently active branch-summary navigation finishes cleanup. */
+	protected _branchSummaryCompletion: Promise<void> | undefined = undefined;
 	protected _sessionSummaryAbortController: AbortController | undefined = undefined;
 	protected _sessionSummaryToken = 0;
 	/** The summary request currently in flight, published so a later launch can join it. */

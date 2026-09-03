@@ -113,8 +113,33 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 		throw new Error(`Entry ${input.leafId} not found`);
 	}
 
-	// Filter out LabelEntry from path - we'll recreate them from the resolved map
-	const pathWithoutLabels = input.path.filter((entry) => entry.type !== "label");
+	// Filter labels out, re-chain the retained path, and translate compaction boundaries
+	// that pointed at a removed label to the first retained entry after it.
+	const pathWithoutLabels: SessionEntry[] = [];
+	const replacementByLabelId = new Map<string, string>();
+	const pendingLabelIds: string[] = [];
+	let pathParentId: string | null = null;
+	for (const entry of input.path) {
+		if (entry.type === "label") {
+			pendingLabelIds.push(entry.id);
+			continue;
+		}
+		for (const labelId of pendingLabelIds) replacementByLabelId.set(labelId, entry.id);
+		pendingLabelIds.length = 0;
+		pathWithoutLabels.push(
+			entry.type === "compaction"
+				? {
+						...entry,
+						parentId: pathParentId,
+						firstKeptEntryId:
+							entry.firstKeptEntryId === null
+								? null
+								: (replacementByLabelId.get(entry.firstKeptEntryId) ?? entry.firstKeptEntryId),
+					}
+				: { ...entry, parentId: pathParentId },
+		);
+		pathParentId = entry.id;
+	}
 	const newSessionId = createSessionId();
 	const timestamp = new Date().toISOString();
 	const newSessionFile = createSessionFilePath(input.sessionDir, timestamp, newSessionId);

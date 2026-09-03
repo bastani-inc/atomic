@@ -74,6 +74,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const explicitlyExcludedTools = new Set(excludedTools ?? []);
 	const isPromptToolAvailable = (name: string): boolean =>
 		(!selectedTools || selectedTools.includes(name)) && !explicitlyExcludedTools.has(name);
+	const skillFileReadTool = (["read", "bash"] as const).find((tool) => isPromptToolAvailable(tool));
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -91,9 +92,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			}
 		}
 
-		// Append skills section (only if read tool is available)
-		if (isPromptToolAvailable("read") && skills.length > 0) {
-			prompt += formatSkillsForPrompt(skills);
+		// Append skills when a tool capable of reading their files is available.
+		if (skillFileReadTool && skills.length > 0) {
+			prompt += formatSkillsForPrompt(skills, skillFileReadTool);
 		}
 
 		// Add model metadata, date, and working directory last
@@ -132,7 +133,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const hasPowerShell = tools.includes("powershell");
 	const hasFind = tools.includes("find");
 	const hasLs = tools.includes("ls");
-	const hasRead = tools.includes("read");
 	const shouldIncludeAskUserFallbackGuidance =
 		selectedTools !== undefined &&
 		tools.length > 0 &&
@@ -204,9 +204,9 @@ Atomic documentation (read only when the user asks about customizing Atomic itse
 		}
 	}
 
-	// Append skills section (only if read tool is available)
-	if (hasRead && skills.length > 0) {
-		prompt += formatSkillsForPrompt(skills);
+	// Append skills when a tool capable of reading their files is available.
+	if (skillFileReadTool && skills.length > 0) {
+		prompt += formatSkillsForPrompt(skills, skillFileReadTool);
 	}
 
 	// Add model metadata, date, and working directory last
