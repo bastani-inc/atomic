@@ -1,0 +1,45 @@
+config_version = "0"
+exclude_patterns = [
+  "*_min.*",
+  "*-min.*",
+  "*.min.*",
+  "**/*.d.ts",
+  "**/assets/**",
+  "**/build/**",
+  "**/deps/**",
+  "**/dist/**",
+  "**/node_modules/**",
+  "**/target/**",
+  "**/vendor/**",
+]
+test_patterns = [
+  "**/test/**",
+  "**/*.test.*",
+  "**/test_*.*",
+]
+[smells]
+mode = "comment"
+[[source]]
+name = "default"
+default = true
+[[plugin]]
+name = "actionlint"
+[[plugin]]
+name = "bandit"
+[[plugin]]
+name = "biome"
+[[plugin]]
+name = "clippy"
+[[plugin]]
+name = "osv-scanner"
+[[plugin]]
+name = "ruff"
+drivers = ["lint"]
+[[plugin]]
+name = "rustfmt"
+[[plugin]]
+name = "shellcheck"
+[[plugin]]
+name = "trufflehog"
+[[plugin]]
+name = "zizmor"
