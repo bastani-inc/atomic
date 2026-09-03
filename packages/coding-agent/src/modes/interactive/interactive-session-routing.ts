@@ -281,11 +281,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 	options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
 ): Promise<{ cancelled: boolean }> {
 	await this.ensureDeferredStartupComplete();
-	if (this.loadingAnimation) {
-		this.loadingAnimation.stop();
-		this.loadingAnimation = undefined;
-	}
-	this.statusContainer.clear();
+	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
 	try {
 		const result = await this.runtimeHost.switchSession(sessionPath, {

@@ -171,7 +171,10 @@ type StopThis = {
 	disposeActiveSelector: () => void;
 	disposeInteractiveEngineHost: () => void;
 	settingsManager: { getShowTerminalProgress: () => boolean; getFullscreenExitOutput: () => FullscreenExitOutput };
-	loadingAnimation: undefined;
+	loadingAnimation: { stop(): void } | undefined;
+	workingIndicatorEmbedded: boolean;
+	setEditorWorkingStatusIndicator: (indicator: undefined) => boolean;
+	statusContainer: Container;
 	themeController: { disableAutoSync: () => void };
 	clearExtensionTerminalInputListeners: () => void;
 	footer: { dispose: () => void };
@@ -191,6 +194,9 @@ function createStopThis(exitOutput: FullscreenExitOutput): StopThis {
 			getFullscreenExitOutput: () => exitOutput,
 		},
 		loadingAnimation: undefined,
+		workingIndicatorEmbedded: false,
+		setEditorWorkingStatusIndicator: () => false,
+		statusContainer: new Container(),
 		themeController: { disableAutoSync: () => {} },
 		clearExtensionTerminalInputListeners: () => {},
 		footer: { dispose: () => {} },

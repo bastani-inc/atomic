@@ -23,6 +23,7 @@ import type { ExtensionAPI } from "../src/core/extensions/api-types.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { AtomicWorkingLoader } from "../src/modes/interactive/components/atomic-working-status.ts";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import {
 	createInteractiveTui,
@@ -30,6 +31,7 @@ import {
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
+import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
@@ -617,7 +619,6 @@ describe("InteractiveMode /copy confirmation", () => {
 		}
 	});
 });
-
 type WorkingLoaderStopContext = {
 	loadingAnimation: { stop(): void } | undefined;
 	workingIndicatorEmbedded: boolean;
@@ -625,8 +626,9 @@ type WorkingLoaderStopContext = {
 	statusContainer: Container;
 	settingsManager: { getClearOnShrink(): boolean };
 };
-
 type WorkingLoaderPrototype = {
+	clearWorkingLoader(this: WorkingLoaderStopContext): void;
+	handleClearCommand(this: Record<string, unknown>): Promise<void>;
 	stopWorkingLoader(this: WorkingLoaderStopContext): void;
 	setCustomEditorComponent(this: Record<string, unknown>, factory: ((...args: never[]) => unknown) | undefined): void;
 	resetExtensionUI(this: Record<string, unknown>): void;
@@ -653,6 +655,32 @@ describe("clear-on-shrink working status spacing", () => {
 		expect(context.statusContainer.children).toHaveLength(0);
 	});
 
+	test("the new-session teardown clears an embedded indicator from the editor border", async () => {
+		initTheme("dark");
+		const tui = createGuardedTui();
+		const editor = new CustomEditor(tui, getEditorTheme(), new KeybindingsManager(), { embedWorkingStatus: true });
+		const loader = new AtomicWorkingLoader(tui, undefined, String, "Working");
+		editor.setWorkingStatusIndicator(loader);
+		assert.match(editor.render(40)[0] ?? "", /∀/);
+
+		const context = {
+			ensureDeferredStartupComplete: async () => {},
+			loadingAnimation: loader,
+			workingIndicatorEmbedded: true,
+			setEditorWorkingStatusIndicator: (indicator: AtomicWorkingLoader | undefined) => {
+				editor.setWorkingStatusIndicator(indicator);
+				return true;
+			},
+			statusContainer: new Container(),
+			runtimeHost: { newSession: async () => ({ cancelled: true }) },
+		};
+
+		await workingLoaderPrototype.handleClearCommand.call(context as unknown as Record<string, unknown>);
+
+		assert.doesNotMatch(editor.render(40)[0] ?? "", /∀/);
+		assert.equal(context.loadingAnimation, undefined);
+	});
+
 	test("a standalone working indicator reserves clear-on-shrink status height", () => {
 		const context: WorkingLoaderStopContext = {
 			loadingAnimation: { stop: vi.fn() },
@@ -663,7 +691,6 @@ describe("clear-on-shrink working status spacing", () => {
 		};
 
 		workingLoaderPrototype.stopWorkingLoader.call(context);
-
 		expect(context.statusContainer.children).toHaveLength(1);
 	});
 

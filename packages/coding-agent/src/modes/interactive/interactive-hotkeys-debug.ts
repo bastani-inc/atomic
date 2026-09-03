@@ -143,11 +143,7 @@ InteractiveModeBase.prototype.handleHotkeysCommand = function (this: Interactive
 
 InteractiveModeBase.prototype.handleClearCommand = async function (this: InteractiveModeBase): Promise<void> {
 	await this.ensureDeferredStartupComplete();
-	if (this.loadingAnimation) {
-		this.loadingAnimation.stop();
-		this.loadingAnimation = undefined;
-	}
-	this.statusContainer.clear();
+	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	try {
 		const result = await this.runtimeHost.newSession();
 		if (result.cancelled) {

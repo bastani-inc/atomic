@@ -124,11 +124,7 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 		return;
 	}
 
-	if (this.loadingAnimation) {
-		this.loadingAnimation.stop();
-		this.loadingAnimation = undefined;
-	}
-	this.statusContainer.clear();
+	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 
 	this.manualCompactionTakeoverPending = true;
 	try {
@@ -158,10 +154,7 @@ InteractiveModeBase.prototype.stop = function (
 	if (this.settingsManager.getShowTerminalProgress()) {
 		this.ui.terminal.setProgress(false);
 	}
-	if (this.loadingAnimation) {
-		this.loadingAnimation.stop();
-		this.loadingAnimation = undefined;
-	}
+	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	this.themeController.disableAutoSync();
 	this.clearExtensionTerminalInputListeners();
 	this.footer.dispose();

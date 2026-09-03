@@ -157,6 +157,7 @@ declare module "./interactive-mode-base.ts" {
 		setExtensionStatus(key: string, text: string | undefined): void;
 		getWorkingLoaderMessage(): string;
 		createWorkingLoader(): AtomicWorkingLoader;
+		clearWorkingLoader(): void;
 		stopWorkingLoader(): void;
 		showWorkingLoaderNow(): void;
 		setWorkingVisible(visible: boolean): void;

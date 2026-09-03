@@ -176,11 +176,7 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 	};
 
 	try {
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = undefined;
-		}
-		this.statusContainer.clear();
+		InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 		const result = await this.runtimeHost.importFromJsonl(inputPath);
 		if (result.cancelled) {
 			this.showStatus("Import cancelled");

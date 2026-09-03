@@ -314,12 +314,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
-			if (this.loadingAnimation) {
-				this.loadingAnimation.stop();
-				this.loadingAnimation = undefined;
-				this.statusContainer.clear();
-				mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
-			}
+			if (this.loadingAnimation) this.stopWorkingLoader();
 			if (this.streamingComponent) {
 				this.chatContainer.removeChild(this.streamingComponent);
 				this.streamingComponent = undefined;

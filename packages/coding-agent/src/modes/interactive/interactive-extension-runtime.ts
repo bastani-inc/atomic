@@ -102,16 +102,18 @@ InteractiveModeBase.prototype.createWorkingLoader = function (this: InteractiveM
 	);
 };
 
-InteractiveModeBase.prototype.stopWorkingLoader = function (this: InteractiveModeBase): void {
-	const hadLoader = this.loadingAnimation !== undefined;
-	const wasEmbedded = this.workingIndicatorEmbedded;
-	if (this.loadingAnimation) {
-		this.loadingAnimation.stop();
-		this.loadingAnimation = undefined;
-	}
+InteractiveModeBase.prototype.clearWorkingLoader = function (this: InteractiveModeBase): void {
+	this.loadingAnimation?.stop();
+	this.loadingAnimation = undefined;
 	this.workingIndicatorEmbedded = false;
 	this.setEditorWorkingStatusIndicator?.(undefined);
 	this.statusContainer.clear();
+};
+
+InteractiveModeBase.prototype.stopWorkingLoader = function (this: InteractiveModeBase): void {
+	const hadLoader = this.loadingAnimation !== undefined;
+	const wasEmbedded = this.workingIndicatorEmbedded;
+	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	if (hadLoader && !wasEmbedded) mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
 };
 

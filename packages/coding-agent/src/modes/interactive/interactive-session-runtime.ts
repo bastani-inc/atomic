@@ -10,11 +10,7 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 		commandContextActions: {
 			waitForIdle: () => this.session.agent.waitForIdle(),
 			newSession: async (options) => {
-				if (this.loadingAnimation) {
-					this.loadingAnimation.stop();
-					this.loadingAnimation = undefined;
-				}
-				this.statusContainer.clear();
+				InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 				try {
 					const result = await this.runtimeHost.newSession(options);
 					if (!result.cancelled) {
