@@ -17,8 +17,10 @@ describe("feedback privacy core", () => {
 			body: "Ordinary diagnostic text.",
 			replacements: [],
 		});
+		assert.equal(scrubFeedback("safe", "API_KEY=hunter2").body, "API_KEY=[REDACTED]");
+		assert.equal(scrubFeedback("safe", "sortkey = name").body, "sortkey = name");
+		assert.equal(scrubFeedback("safe", 'hotkey = "ctrl+k"').body, 'hotkey = "[REDACTED]"');
 	});
-
 	test("scrubs every required category from title and body with safe, idempotent disclosure", () => {
 		const secrets = [
 			["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"].map((prefix) => prefix + "F".repeat(32)).join(" "),
@@ -42,7 +44,6 @@ describe("feedback privacy core", () => {
 		assert.equal(JSON.stringify(result.replacements).includes("fake-pass"), false);
 		assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
 	});
-
 	test("scrubs every platform's home paths without disclosing account names or rewriting URLs", () => {
 		const body =
 			"/Users/synthetic-account and /home/synthetic-account/project and C:\\Users\\synthetic-account\\app and c:\\users\\synthetic-account\\app and https://ex.invalid/Users/docs/readme";
@@ -56,7 +57,6 @@ describe("feedback privacy core", () => {
 		assert.equal(displayed.includes(accountName), false);
 		assert.deepEqual(result.replacements, [{ category: "home-directory", count: 5 }]);
 	});
-
 	test("scrubs prefixed and suffixed credential names and credentials in any URL scheme", () => {
 		const secrets = [
 			"G".repeat(40),
