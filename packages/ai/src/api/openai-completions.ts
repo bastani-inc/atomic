@@ -187,6 +187,7 @@ type ResolvedOpenAICompletionsCompat = Omit<
 	| "deferredToolsMode"
 	| "supportsThinkingTokenBudget"
 	| "thinkingTokenBudgetField"
+	| "vllmPriority"
 	| "supportsTemperature"
 	| "supportsForcedToolChoice"
 > & {
@@ -194,6 +195,7 @@ type ResolvedOpenAICompletionsCompat = Omit<
 	deferredToolsMode?: OpenAICompletionsCompat["deferredToolsMode"];
 	supportsThinkingTokenBudget?: OpenAICompletionsCompat["supportsThinkingTokenBudget"];
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
+	vllmPriority?: OpenAICompletionsCompat["vllmPriority"];
 	/** Optional so callers that build a resolved compat literal need not restate the defaults. */
 	supportsTemperature?: OpenAICompletionsCompat["supportsTemperature"];
 	supportsForcedToolChoice?: OpenAICompletionsCompat["supportsForcedToolChoice"];
@@ -931,6 +933,11 @@ function buildParams(
 			}
 		}
 		params.tool_choice = options.toolChoice;
+	}
+
+	if (compat.vllmPriority !== undefined) {
+		const vllmParams = params as typeof params & { priority?: number };
+		vllmParams.priority = compat.vllmPriority;
 	}
 
 	const thinkingTokenBudgetField = resolveThinkingTokenBudgetField(compat);
@@ -1805,5 +1812,6 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		deferredToolsMode: model.compat.deferredToolsMode ?? detected.deferredToolsMode,
 		sessionAffinityFormat: model.compat.sessionAffinityFormat ?? detected.sessionAffinityFormat,
 		supportsLongCacheRetention: model.compat.supportsLongCacheRetention ?? detected.supportsLongCacheRetention,
+		vllmPriority: model.compat.vllmPriority,
 	};
 }

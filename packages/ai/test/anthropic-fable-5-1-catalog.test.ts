@@ -140,13 +140,13 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 });
 
 describe("Claude Fable 5.1 server-side fallback", () => {
-	// "The permitted fallback targets for Claude Fable 5.1 are Claude Opus 4.8 and Claude Opus 5."
+	// Per-turn effort markers require fallback targets that support the same transport contract.
 	// https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
-	it("advertises exactly Claude Opus 4.8 and Claude Opus 5 as fallback targets", () => {
+	it("advertises only the per-turn-effort-compatible fallback target", () => {
 		const model = getModel("anthropic", "claude-fable-5-1");
 		const allowed = model.compat?.allowedFallbackModels ?? [];
 
-		expect(new Set(allowed.map((fallback) => fallback.model))).toEqual(new Set(["claude-opus-4-8", "claude-opus-5"]));
+		expect(new Set(allowed.map((fallback) => fallback.model))).toEqual(new Set(["claude-opus-5"]));
 		for (const fallback of allowed) {
 			expect(fallback.provider).toBe("anthropic");
 		}
@@ -155,6 +155,6 @@ describe("Claude Fable 5.1 server-side fallback", () => {
 	it("sends those fallbacks on the request payload", async () => {
 		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"));
 
-		expect(payload.fallbacks).toEqual([{ model: "claude-opus-4-8" }, { model: "claude-opus-5" }]);
+		expect(payload.fallbacks).toEqual([{ model: "claude-opus-5" }]);
 	});
 });

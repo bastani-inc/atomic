@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { getModel } from "../src/compat.ts";
-import type { Context, ToolCall } from "../src/types.ts";
+import type { Context, FetchFunction, Model, ToolCall } from "../src/types.ts";
 
 function createSseResponse(events: Array<{ event: string; data: string }>): Response {
 	const body = events.map(({ event, data }) => `event: ${event}\ndata: ${data}\n`).join("\n");
@@ -78,7 +78,71 @@ function createFakeAnthropicClient(response: Response): Anthropic {
 	} as unknown as Anthropic;
 }
 
+async function captureBetaHeader(model: Model<"anthropic-messages">, thinkingEnabled: boolean): Promise<string> {
+	let betaHeader = "";
+	await streamAnthropic(
+		model,
+		{ messages: [{ role: "user", content: "Hello", timestamp: 1 }] },
+		{
+			apiKey: "test-key",
+			thinkingEnabled,
+			fetch: (async (_input, init) => {
+				betaHeader = new Headers(init?.headers).get("anthropic-beta") ?? "";
+				return createSseResponse(minimalAnthropicEvents);
+			}) as FetchFunction,
+		},
+	).result();
+	return betaHeader;
+}
+
 describe("Anthropic raw SSE parsing", () => {
+	it("records one redacted diagnostic using the serving model's dropped-thinking report", async () => {
+		const events = minimalAnthropicEvents.map((event) => ({ ...event }));
+		events[0].data = JSON.stringify({
+			type: "message_start",
+			message: {
+				id: "msg_transformations",
+				model: "claude-fable-5-1",
+				usage: { input_tokens: 12, output_tokens: 0 },
+				input_transformations: [
+					{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" },
+				],
+			},
+		});
+		const delta = JSON.parse(events[4].data) as Record<string, unknown>;
+		delta.input_transformations = [
+			{ type: "thinking_dropped", path: "messages.3.content.0", reason: "model_binding_mismatch" },
+		];
+		events[4].data = JSON.stringify(delta);
+		const result = await streamAnthropic(
+			getModel("anthropic", "claude-fable-5-1"),
+			{ messages: [{ role: "user", content: "Hello", timestamp: 1 }] },
+			{ client: createFakeAnthropicClient(createSseResponse(events)) },
+		).result();
+
+		expect(result.diagnostics).toHaveLength(1);
+		expect(result.diagnostics?.[0]).toEqual({
+			type: "anthropic_input_transformations",
+			timestamp: expect.any(Number),
+			details: {
+				droppedBlockCount: 1,
+				reasons: ["model_binding_mismatch"],
+				paths: ["messages.3.content.0"],
+			},
+		});
+	});
+
+	it("omits the interleaved-thinking beta when thinking is disabled", async () => {
+		const betaHeader = await captureBetaHeader(getModel("openrouter", "anthropic/claude-3-haiku"), false);
+
+		expect(betaHeader).not.toContain("interleaved-thinking-2025-05-14");
+	});
+
+	it("sends the interleaved-thinking beta when supported thinking is enabled", async () => {
+		const betaHeader = await captureBetaHeader(getModel("anthropic", "claude-sonnet-4-5"), true);
+
+		expect(betaHeader).toContain("interleaved-thinking-2025-05-14");
+	});
 	it("repairs malformed SSE JSON and malformed streamed tool JSON", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const context: Context = {

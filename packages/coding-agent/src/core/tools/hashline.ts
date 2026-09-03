@@ -84,9 +84,10 @@ export interface StrippedHashlineContent {
 
 export function stripKnownHashlineCopiedContentWithMeta(
 	content: string,
-	_absolutePath: string,
-	_cwd: string,
+	absolutePath: string,
+	cwd: string,
 	store: HashlineSnapshotStore,
+	emittedPath: string,
 ): StrippedHashlineContent {
 	const normalized = normalizeHashlineContent(content);
 	const lines = normalized.split("\n");
@@ -102,21 +103,49 @@ export function stripKnownHashlineCopiedContentWithMeta(
 	if (!snapshot) return { content, stripped: false };
 	const body = lines.slice(headerIndex + 1);
 	if (body.length === 0) return { content: snapshot.content, stripped: true };
+	// The write tool emits its confirmation from the raw `path` argument it was
+	// called with (`Successfully wrote to ${path}`), not from the resolved path,
+	// so `emittedPath` is the authoritative anchor: it is the only form that is
+	// guaranteed to round-trip. The resolved and cwd-relative forms are accepted
+	// because a caller may have named the file either way, and the snapshot's own
+	// paths are accepted because a copied confirmation may belong to the write
+	// that produced the snapshot being copied. Every candidate is a complete
+	// path — a bare basename is deliberately NOT accepted, since `Successfully
+	// wrote to notes.md` is ordinary prose when the target is `deep/dir/notes.md`,
+	// and treating it as chrome destroys that line and everything after it.
+	const knownConfirmationPaths = new Set<string>();
+	const addKnownPath = (filePath: string): void => {
+		if (!filePath) return;
+		knownConfirmationPaths.add(filePath);
+		knownConfirmationPaths.add(filePath.replaceAll("\\", "/"));
+		knownConfirmationPaths.add(filePath.replaceAll("/", "\\"));
+	};
+	addKnownPath(emittedPath);
+	addKnownPath(absolutePath);
+	if (absolutePath) addKnownPath(relative(cwd, absolutePath));
+	addKnownPath(snapshot.absolutePath);
+	addKnownPath(snapshot.displayPath);
+	const isKnownWriteConfirmation = (line: string): boolean => {
+		const match = line.match(/^Successfully wrote (?:\d+ bytes )?to (.+)$/);
+		return match !== null && knownConfirmationPaths.has(match[1] ?? "");
+	};
 	const stripped: string[] = [];
 	const snapshotLines = snapshot.content.split("\n");
 	let sawRow = false;
 	let lastCopiedLineNumber: number | undefined;
 	// Trailing tool chrome a model is likely to copy along with the hashline
 	// body: the read/search continuation footers, the write tool's own
-	// `Successfully wrote N bytes to <path>` confirmation (and its stripped-
-	// note), and `Resolved …` conflict footers. These never carry a line
-	// number, so they mark the end of the numbered body — they must not abort
-	// stripping the way an arbitrary non-row line would.
+	// confirmation (and its stripped-note), and `Resolved …` conflict footers.
+	// A write confirmation is chrome only when it names the exact path the write
+	// was asked for; a matching prefix or basename alone may be user content.
+	// The optional byte count keeps pre-e583b290 confirmations matchable.
+	// These footers never carry a line number, so they mark the end of the
+	// numbered body instead of aborting stripping like an arbitrary line.
 	const isToolFooter = (line: string): boolean =>
 		line.trim() === "" ||
 		/^\[\d+ more lines in file\./.test(line) ||
 		/^\[Showing lines /.test(line) ||
-		/^Successfully wrote \d+ bytes to /.test(line) ||
+		isKnownWriteConfirmation(line) ||
 		/^Resolved \d+ conflicts?/.test(line) ||
 		/^Resolved conflict \d+/.test(line) ||
 		/^Note: stripped copied hashline/.test(line) ||
@@ -146,8 +175,8 @@ export function stripKnownHashlineCopiedContentWithMeta(
 	}
 
 	// Header + only tool chrome (e.g. a copied write confirmation
-	// `Successfully wrote N bytes to <path>`) names a known snapshot with no
-	// numbered body to recover — resolve to the snapshot's stored content.
+	// `Successfully wrote to <path>`) names a known snapshot with no numbered
+	// body to recover — resolve to the snapshot's stored content.
 	if (onlyFooter) return { content: snapshot.content, stripped: true };
 	return { content, stripped: false };
 }
@@ -157,8 +186,9 @@ export function stripKnownHashlineCopiedContent(
 	absolutePath: string,
 	cwd: string,
 	store: HashlineSnapshotStore,
+	emittedPath: string,
 ): string {
-	return stripKnownHashlineCopiedContentWithMeta(content, absolutePath, cwd, store).content;
+	return stripKnownHashlineCopiedContentWithMeta(content, absolutePath, cwd, store, emittedPath).content;
 }
 
 export function formatCompactHashlineEditResult(

@@ -109,6 +109,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
 		Type.Union([Type.Literal("openai"), Type.Literal("openai-nosession"), Type.Literal("openrouter")]),
 	),
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
+	vllmPriority: Type.Optional(Type.Number()),
 	supportsThinkingTokenBudget: Type.Optional(Type.Boolean()),
 });
 
@@ -134,6 +135,8 @@ const AnthropicMessagesCompatSchema = Type.Object({
 	forceAdaptiveThinking: Type.Optional(Type.Boolean()),
 	allowEmptySignature: Type.Optional(Type.Boolean()),
 	supportsStrictTools: Type.Optional(Type.Boolean()),
+	supportsMidConvoEffort: Type.Optional(Type.Boolean()),
+	enforcesPreservedThinkingBinding: Type.Optional(Type.Boolean()),
 	supportsToolReferences: Type.Optional(Type.Boolean()),
 });
 

@@ -22,7 +22,20 @@ const CONCURRENT_WAIT_TIMEOUT_MS = 40;
 const RETAINED_REAP_TIMEOUT_MS = 2_000;
 
 afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+	// The dropped retained child deliberately outlives its wrapper, and it holds
+	// `root` as its working directory and the inherited log file as stdout. Those
+	// stay locked on Windows until the process itself exits, which happens after
+	// it writes the marker this test waits on, so an immediate rmdir raced the
+	// exit and failed with EBUSY. Retry, then give up: reclaiming an OS temp dir
+	// is never the assertion.
+	for (const root of roots.splice(0)) {
+		if (!existsSync(root)) continue;
+		try {
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+		} catch {
+			// Left for the OS to reclaim.
+		}
+	}
 });
 
 function requiredBinding(): NativeBinding {

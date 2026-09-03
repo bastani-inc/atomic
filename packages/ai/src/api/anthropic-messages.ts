@@ -195,6 +195,7 @@ const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
 const SERVER_SIDE_FALLBACK_BETA = "server-side-fallback-2026-07-01";
 const THINKING_BINDING_CONTROLS_BETA = "thinking-binding-controls-2026-08-01";
+const MID_CONVERSATION_OUTPUT_CONFIG_BETA = "mid-conversation-output-config-2026-07-01";
 
 function shouldUseServerSideFallbackBeta(model: Model<"anthropic-messages">): boolean {
 	return (model.compat?.allowedFallbackModels?.length ?? 0) > 0;
@@ -219,6 +220,16 @@ function shouldUseThinkingBindingControlsBeta(model: Model<"anthropic-messages">
 	return model.compat?.enforcesPreservedThinkingBinding === true;
 }
 
+/**
+ * Per-turn effort and preserved-thinking binding are independent capabilities.
+ * `supportsMidConvoEffort` adds provider effort markers and requires binding controls;
+ * Atomic's older `enforcesPreservedThinkingBinding` remains the broader opt-in for
+ * transports that need drop recovery without supporting effort-only system messages.
+ */
+function supportsMidConvoEffort(model: Model<"anthropic-messages">): boolean {
+	return model.compat?.supportsMidConvoEffort === true;
+}
+
 /** One entry of the `input_transformations` array the block-binding controls beta adds. */
 interface AnthropicInputTransformation {
 	type?: string;
@@ -226,21 +237,15 @@ interface AnthropicInputTransformation {
 	reason?: string;
 }
 
-/**
- * Record thinking blocks the API dropped from this request.
- *
- * With the block-binding controls beta, `message_start` carries a top-level
- * `input_transformations` array naming each dropped block and why: `model_binding_mismatch` when
- * the conversation moved to a model that cannot read an earlier model's blocks (expected on a
- * downward model switch), or `prefix_binding_mismatch` when something before the block changed.
- * The drop is otherwise silent, so surface it on the existing diagnostics channel rather than
- * losing it. Not an error: the request succeeded without those blocks.
- */
-function recordInputTransformations(output: AssistantMessage, message: unknown): void {
+function getInputTransformations(message: unknown): AnthropicInputTransformation[] | undefined {
 	const transformations = (message as { input_transformations?: AnthropicInputTransformation[] })
 		?.input_transformations;
-	if (!Array.isArray(transformations) || transformations.length === 0) return;
+	return Array.isArray(transformations) ? transformations : undefined;
+}
 
+/** Record thinking blocks the API dropped from this request without exposing block contents. */
+function recordInputTransformations(output: AssistantMessage, transformations: AnthropicInputTransformation[]): void {
+	if (transformations.length === 0) return;
 	appendAssistantMessageDiagnostic(output, {
 		type: "anthropic_input_transformations",
 		timestamp: Date.now(),
@@ -341,6 +346,7 @@ function getAnthropicCompat(
 		| "enforcesPreservedThinkingBinding"
 		| "delegatesThinkingModelBinding"
 		| "supportsForcedToolChoice"
+		| "supportsMidConvoEffort"
 	>
 > {
 	return {
@@ -674,12 +680,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
+		const providerThinkingLevel = supportsMidConvoEffort(model) ? (options?.effort ?? "high") : undefined;
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
 			api: model.api as Api,
 			provider: model.provider,
 			model: model.id,
+			...(providerThinkingLevel === undefined ? {} : { providerThinkingLevel }),
 			usage: {
 				input: 0,
 				output: 0,
@@ -693,6 +701,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 		};
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+
+		let inputTransformations: AnthropicInputTransformation[] | undefined;
 
 		try {
 			let client: Anthropic;
@@ -725,7 +735,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				const created = createClient(
 					model,
 					apiKey,
-					options?.interleavedThinking ?? true,
+					model.reasoning && options?.thinkingEnabled === true && (options.interleavedThinking ?? true),
 					shouldUseFineGrainedToolStreamingBeta(model, context),
 					shouldUseServerSideFallbackBeta(model),
 					options?.headers,
@@ -786,7 +796,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
-					recordInputTransformations(output, event.message);
+					inputTransformations = getInputTransformations(event.message) ?? inputTransformations;
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
 						const block: Block = {
@@ -973,20 +983,18 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
-					// "After a mid-stream server-side fallback, the final `message_delta` event carries
-					// the array again with the serving model's entries."
-					// https://platform.claude.com/docs/en/build-with-claude/thinking
-					// This is a configured path for Claude Fable 5.1, whose generated metadata supplies
-					// `fallbacks`, so without this call the serving model's report would be dropped.
-					// No de-duplication is needed: the array is absent on an ordinary turn and empty
-					// when nothing was dropped, and `recordInputTransformations` returns early on both.
-					// The delta's entries describe the serving model, so they are distinct from
-					// `message_start`'s rather than a repeat of them.
-					recordInputTransformations(output, event);
+					// A non-empty final fallback report supersedes the request-start report with
+					// the serving model's transformations. An empty report must not erase drops
+					// already reported at message_start.
+					const servingTransformations = getInputTransformations(event);
+					if (servingTransformations && servingTransformations.length > 0) {
+						inputTransformations = servingTransformations;
+					}
 					addEarlierAttemptCosts(output, model, usageModel, event);
 				}
 			}
 
+			if (inputTransformations) recordInputTransformations(output, inputTransformations);
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
 			}
@@ -1001,6 +1009,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
+			if (
+				inputTransformations &&
+				!output.diagnostics?.some((diagnostic) => diagnostic.type === "anthropic_input_transformations")
+			) {
+				recordInputTransformations(output, inputTransformations);
+			}
 			for (const block of output.content) {
 				delete (block as { index?: number }).index;
 				// partialJson is only a streaming scratch buffer; never persist it.
@@ -1122,6 +1136,10 @@ function createClient(
 	if (shouldUseThinkingBindingControlsBeta(model)) {
 		betaFeatures.push(THINKING_BINDING_CONTROLS_BETA);
 	}
+	if (supportsMidConvoEffort(model)) {
+		betaFeatures.push(MID_CONVERSATION_OUTPUT_CONFIG_BETA, THINKING_BINDING_CONTROLS_BETA);
+	}
+	const uniqueBetaFeatures = [...new Set(betaFeatures)];
 
 	// Copilot: Bearer auth, selective betas.
 	if (model.provider === "github-copilot") {
@@ -1135,7 +1153,7 @@ function createClient(
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
-					...(betaFeatures.length > 0 ? { "anthropic-beta": betaFeatures.join(",") } : {}),
+					...(uniqueBetaFeatures.length > 0 ? { "anthropic-beta": uniqueBetaFeatures.join(",") } : {}),
 				},
 				model.headers,
 				dynamicHeaders,
@@ -1158,7 +1176,7 @@ function createClient(
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
-					"anthropic-beta": ["claude-code-20250219", "oauth-2025-04-20", ...betaFeatures].join(","),
+					"anthropic-beta": ["claude-code-20250219", "oauth-2025-04-20", ...uniqueBetaFeatures].join(","),
 					"user-agent": `claude-cli/${claudeCodeVersion}`,
 					"x-app": "cli",
 				},
@@ -1177,7 +1195,7 @@ function createClient(
 		{
 			accept: "application/json",
 			"anthropic-dangerous-direct-browser-access": "true",
-			...(betaFeatures.length > 0 ? { "anthropic-beta": betaFeatures.join(",") } : {}),
+			...(uniqueBetaFeatures.length > 0 ? { "anthropic-beta": uniqueBetaFeatures.join(",") } : {}),
 		},
 		sessionAffinityHeaders,
 		model.headers,
@@ -1217,16 +1235,21 @@ function buildParams(
 		deferredTools = [];
 	}
 	const deferredToolNames = new Set(deferredTools.map((tool) => normalizeToolName(tool.name)));
+	const converted = convertMessages(
+		transformedMessages,
+		isOAuthToken,
+		cacheControl,
+		compat.allowEmptySignature,
+		deferredToolNames,
+		normalizeToolName,
+		supportsMidConvoEffort(model) ? model.provider : undefined,
+	);
+	const activeEffort = options?.effort ?? "high";
 	const params: MessageCreateParamsStreamingWithFallbacks = {
 		model: model.id,
-		messages: convertMessages(
-			transformedMessages,
-			isOAuthToken,
-			cacheControl,
-			compat.allowEmptySignature,
-			deferredToolNames,
-			normalizeToolName,
-		),
+		messages: (supportsMidConvoEffort(model)
+			? insertThinkingLevelMessages(converted, activeEffort)
+			: converted.messages) as MessageParam[],
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
 	};
@@ -1259,7 +1282,12 @@ function buildParams(
 	}
 
 	// Temperature is incompatible with extended thinking and unsupported on Claude Opus 4.7+.
-	if (options?.temperature !== undefined && !options?.thinkingEnabled && compat.supportsTemperature) {
+	if (
+		options?.temperature !== undefined &&
+		!options?.thinkingEnabled &&
+		!supportsMidConvoEffort(model) &&
+		compat.supportsTemperature
+	) {
 		params.temperature = options.temperature;
 	}
 
@@ -1283,8 +1311,16 @@ function buildParams(
 		];
 	}
 
-	// Configure thinking mode: adaptive, budget-based, or explicitly disabled.
-	if (model.reasoning) {
+	// Managed effort models always use adaptive thinking. Their per-turn markers
+	// carry the actual effort; the top-level high value deliberately stays stable.
+	if (supportsMidConvoEffort(model)) {
+		params.thinking = {
+			type: "adaptive",
+			display: options?.thinkingDisplay ?? "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		} as unknown as NonNullable<MessageCreateParamsStreaming["thinking"]>;
+		params.output_config = { effort: "high" };
+	} else if (model.reasoning) {
 		if (options?.thinkingEnabled) {
 			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
 			// older Claude 4 models (whose API default is also "summarized").
@@ -1431,8 +1467,10 @@ function convertMessages(
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
-): MessageParam[] {
+	managedProvider?: string,
+): ConvertedAnthropicMessages {
 	const params: MessageParam[] = [];
+	const assistantLevels = new Map<number, AnthropicEffort>();
 	const loadedToolNames = new Set<string>();
 
 	for (let i = 0; i < transformedMessages.length; i++) {
@@ -1561,10 +1599,19 @@ function convertMessages(
 				}
 			}
 			if (blocks.length === 0) continue;
+			const messageIndex = params.length;
 			params.push({
 				role: "assistant",
 				content: blocks,
 			});
+			if (
+				managedProvider !== undefined &&
+				msg.api === "anthropic-messages" &&
+				msg.provider === managedProvider &&
+				isAnthropicEffort(msg.providerThinkingLevel)
+			) {
+				assistantLevels.set(messageIndex, msg.providerThinkingLevel);
+			}
 		} else if (msg.role === "toolResult") {
 			// Collect all consecutive toolResult messages, needed for z.ai Anthropic endpoint.
 			const toolResults: ContentBlockParam[] = [];
@@ -1618,7 +1665,38 @@ function convertMessages(
 		}
 	}
 
-	return params;
+	return { messages: params, assistantLevels };
+}
+
+interface ConvertedAnthropicMessages {
+	messages: MessageParam[];
+	assistantLevels: Map<number, AnthropicEffort>;
+}
+
+function isAnthropicEffort(value: string | undefined): value is AnthropicEffort {
+	return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+}
+
+interface EffortMessage {
+	role: "system";
+	content: [];
+	output_config: { effort: AnthropicEffort };
+}
+
+function insertThinkingLevelMessages(
+	converted: ConvertedAnthropicMessages,
+	activeEffort: AnthropicEffort,
+): Array<MessageParam | EffortMessage> {
+	const messages: Array<MessageParam | EffortMessage> = [];
+	for (let index = 0; index < converted.messages.length; index++) {
+		const historicalEffort = converted.assistantLevels.get(index);
+		if (historicalEffort !== undefined) {
+			messages.push({ role: "system", content: [], output_config: { effort: historicalEffort } });
+		}
+		messages.push(converted.messages[index]);
+	}
+	messages.push({ role: "system", content: [], output_config: { effort: activeEffort } });
+	return messages;
 }
 
 function shouldUseFineGrainedToolStreamingBeta(model: Model<"anthropic-messages">, context: Context): boolean {

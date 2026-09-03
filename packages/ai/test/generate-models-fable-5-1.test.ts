@@ -219,16 +219,20 @@ test("generates Claude Fable 5.1 with exact limits, pricing, thinking map, and c
 	assert.equal(model.compat?.supportsStrictTools, true);
 	assert.equal(model.compat?.delegatesThinkingModelBinding, true);
 	assert.equal(model.compat?.enforcesPreservedThinkingBinding, true);
+	assert.equal(model.compat?.supportsMidConvoEffort, true);
 	// Claude Fable 5.1 rejects forced tool use on every request.
 	assert.equal(model.compat?.supportsForcedToolChoice, false);
 });
 
-test("resolves Claude Fable 5.1 fallback targets to exactly Opus 4.8 and Opus 5", () => {
+test("limits Claude Fable 5.1 fallback targets to per-turn-effort-compatible models", () => {
 	const model = generate().anthropic["claude-fable-5-1"];
 	const fallbacks = model.compat?.allowedFallbackModels as Array<{ provider: string; model: string }> | undefined;
 
 	assert.ok(fallbacks, "expected allowedFallbackModels to be generated");
-	assert.deepEqual(fallbacks.map((f) => f.model).sort(), ["claude-opus-4-8", "claude-opus-5"]);
+	assert.deepEqual(
+		fallbacks.map((f) => f.model),
+		["claude-opus-5"],
+	);
 	for (const fallback of fallbacks) assert.equal(fallback.provider, "anthropic");
 });
 

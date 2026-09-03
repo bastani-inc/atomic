@@ -1,8 +1,21 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`b8b873b9872db04a938fb4357b5e8e824ddc051c`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/b8b873b9872db04a938fb4357b5e8e824ddc051c/packages/ai/CHANGELOG.md).
+This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`4e69b0c28060f0f02fbe38bfa7c21a2e2eb25057`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/4e69b0c28060f0f02fbe38bfa7c21a2e2eb25057/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
+
+### Added
+
+- Added Anthropic per-turn effort persistence, deterministic historical effort markers, and signed-thinking mismatch recovery for supported Claude models across Anthropic Messages transports, including OpenRouter.
+
+- Added `compat.vllmPriority` to the OpenAI Completions compatibility options. When set, it is sent as the top-level `priority` request field; lower values are handled earlier and the vLLM server default is `0`, so it only takes effect when vLLM runs with `--scheduling-policy priority`. Setting it on a background or batch model defers that model's long prefills behind interactive sessions. Off by default and never set on the generated catalog ([#9004](https://github.com/earendil-works/pi/pull/9004)).
+
+### Fixed
+
+- Fixed native Anthropic Messages requests sending the interleaved-thinking beta when thinking was disabled, and preserved request-start thinking-drop diagnostics when a later provider report is empty or the stream fails.
+
+- Fixed GitHub Copilot Claude Fable requests to use the Anthropic Messages adapter so selected reasoning levels are sent. The generated Copilot catalog now routes `claude-fable-*` alongside the other Claude 4.x/5.x entries ([#8961](https://github.com/earendil-works/pi/issues/8961)).
+- Fixed the generated Fireworks catalog to serve every GLM model through the OpenAI-compatible completions API. Previously only the `glm-5p2` family took that route and newer GLM entries such as `glm-5p3` were generated against the Anthropic-compatible endpoint ([#8978](https://github.com/earendil-works/pi/issues/8978)).
 
 ## [0.9.18-alpha.5] - 2026-09-01
 

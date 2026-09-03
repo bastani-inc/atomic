@@ -5,6 +5,7 @@ import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
 interface AnthropicThinkingPayload {
 	thinking?: { type: string; budget_tokens?: number; display?: string };
 	output_config?: { effort?: string };
+	messages: Array<{ role: string; content: unknown; output_config?: { effort?: string } }>;
 }
 
 class PayloadCaptured extends Error {
@@ -169,8 +170,9 @@ describe("Anthropic thinking disable payload", () => {
 
 		expect(payload.thinking?.type).not.toBe("disabled");
 		expect(payload.thinking?.budget_tokens).toBeUndefined();
-		// No effort is selected, so no `output_config` is sent.
-		expect(payload.output_config).toBeUndefined();
+		// Managed effort transports keep a stable top-level effort and append the active marker.
+		expect(payload.output_config).toEqual({ effort: "high" });
+		expect(payload.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort: "high" } });
 	});
 
 	it("never sends a thinking budget for Claude Fable 5.1", async () => {
@@ -191,7 +193,8 @@ describe("Anthropic thinking disable payload", () => {
 		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { reasoning });
 
 		expect(payload.thinking).toMatchObject({ type: "adaptive", display: "summarized" });
-		expect(payload.output_config).toEqual({ effort });
+		expect(payload.output_config).toEqual({ effort: "high" });
+		expect(payload.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort } });
 	});
 });
 

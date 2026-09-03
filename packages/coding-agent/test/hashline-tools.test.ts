@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
+import {
+	createHashlineSnapshotStore,
+	recordHashlineSnapshot,
+	stripKnownHashlineCopiedContentWithMeta,
+} from "../src/core/tools/hashline.ts";
 import { containsRecognizableHashlineOperations, parsePatch } from "../src/core/tools/hashline-engine/index.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { splitReadLineSelector } from "../src/core/tools/read-selectors.ts";
@@ -805,6 +809,177 @@ describe("hashline file tool parity", () => {
 		expect(written).toContain("line 1");
 		expect(written).not.toContain("[big.txt#");
 		expect(written).not.toContain("[Showing lines ");
+	});
+	// Pi sync (e583b290, upstream #8979): the write confirmation dropped its byte
+	// count, so the copied-chrome footer matcher had to widen. Both the current
+	// wording and the pre-e583b290 wording must still be recognised, because a
+	// resumed session's transcript can carry either.
+	it.each([
+		["current", "Successfully wrote to dest.txt"],
+		["pre-e583b290", "Successfully wrote 12 bytes to dest.txt"],
+	])("strips a copied %s write confirmation before write", async (_wording, confirmation) => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "source.txt"), "one\ntwo\nthree\n", "utf8");
+		const read = createReadToolDefinition(dir, { hashlineStore });
+		const snapshot = text(
+			await read.execute("read-confirm", { path: "source.txt" }, undefined, undefined, {} as ExtensionContext),
+		);
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-confirm",
+			{ path: "dest.txt", content: `${snapshot}\n${confirmation}` },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "dest.txt"), "utf8")).toBe("one\ntwo\nthree\n");
+	});
+
+	it("preserves copied snapshot rows followed by a write-confirmation lookalike", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "source.txt"), "one\ntwo\nthree\n", "utf8");
+		const snapshot = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-confirm-lookalike",
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		const content = `${snapshot}\nSuccessfully wrote to the incident report: preserve this user-authored sentence\nfollowing user content`;
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-confirm-lookalike",
+			{ path: "dest.txt", content },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "dest.txt"), "utf8")).toBe(content);
+	});
+
+	it("preserves a write-confirmation lookalike after a copied snapshot header", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "source.txt"), "unrelated snapshot content\n", "utf8");
+		const snapshot = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-header-confirm-lookalike",
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		const header = snapshot.split("\n")[0];
+		const content = `${header}\nSuccessfully wrote to the incident report: preserve this user-authored sentence`;
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-header-confirm-lookalike",
+			{ path: "dest.txt", content },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "dest.txt"), "utf8")).toBe(content);
+	});
+
+	// PR #2819 review round 2: the write tool emits its confirmation from the raw
+	// `path` argument (write.ts:371/432/483), not the resolved path. Anchoring the
+	// matcher on the resolved path alone broke the tool's own round trip for every
+	// non-normalized caller path, and — because an unrecognized confirmation falls
+	// through to the row matcher and aborts the whole strip — wrote the raw
+	// hashline header and `N:` prefixes to disk.
+	it.each([
+		["dot-slash", "./dest.txt", "dest.txt"],
+		["dot-dot segment", "sub/../dest.txt", "dest.txt"],
+	])("strips its own emitted confirmation for a %s write path", async (_label, writePath, onDisk) => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "source.txt"), "one\ntwo\nthree\n", "utf8");
+		const snapshot = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				`read-nonnormalized-${onDisk}-${writePath}`,
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		const write = createWriteToolDefinition(dir, { hashlineStore });
+		// The confirmation is copied back exactly as the tool emitted it.
+		const emitted = text(
+			await write.execute(
+				`write-nonnormalized-first-${writePath}`,
+				{ path: writePath, content: "placeholder\n" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		expect(emitted).toContain(`Successfully wrote to ${writePath}`);
+		await write.execute(
+			`write-nonnormalized-${writePath}`,
+			{ path: writePath, content: `${snapshot}\nSuccessfully wrote to ${writePath}` },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, onDisk), "utf8")).toBe("one\ntwo\nthree\n");
+	});
+
+	it("preserves a confirmation-shaped line naming only the write target's basename", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "source.txt"), "one\ntwo\nthree\n", "utf8");
+		const snapshot = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-basename-false-positive",
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		const content = `${snapshot}\nSuccessfully wrote to notes.md\nUSER LINE THAT MUST SURVIVE`;
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-basename-false-positive",
+			{ path: "deep/dir/notes.md", content },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "deep/dir/notes.md"), "utf8")).toBe(content);
+	});
+	// PR #2819 review round 2, root cause B: write.ts:356 (sqlite), :364 (archive),
+	// :378 (conflict) and :426 (internal resource) all pass `absolutePath: ""`.
+	// Those branches still emit `Successfully wrote to ${path}` (write.ts:371,
+	// :432), so without the raw emitted path they could not recognize their own
+	// confirmation and wrote the raw numbered body into the archive member,
+	// sqlite row, conflict resolution, or internal resource.
+	it.each([
+		["archive selector", "bundle.zip:member.txt"],
+		["internal resource selector", "conflict://1"],
+		["sqlite selector", "data.sqlite:t"],
+	])("recognizes a copied confirmation on the %s branch, which has no resolved path", (_label, selector) => {
+		const store = createHashlineSnapshotStore();
+		const snapshot = recordHashlineSnapshot(join("/repo", "source.txt"), "/repo", "one\ntwo\nthree\n", store);
+		const copied = `[${snapshot.displayPath}#${snapshot.tag}]\n1:one\n2:two\n3:three`;
+		for (const confirmation of [`Successfully wrote to ${selector}`, `Successfully wrote 12 bytes to ${selector}`]) {
+			const result = stripKnownHashlineCopiedContentWithMeta(
+				`${copied}\n${confirmation}`,
+				"",
+				"/repo",
+				store,
+				selector,
+			);
+			expect(result.stripped).toBe(true);
+			expect(result.content).toBe("one\ntwo\nthree\n");
+		}
+	});
+
+	it("preserves a confirmation naming a different target on a selector branch", () => {
+		const store = createHashlineSnapshotStore();
+		const snapshot = recordHashlineSnapshot(join("/repo", "source.txt"), "/repo", "one\ntwo\nthree\n", store);
+		const content = `[${snapshot.displayPath}#${snapshot.tag}]\n1:one\n2:two\n3:three\nSuccessfully wrote to other.zip:other.txt\nUSER LINE THAT MUST SURVIVE`;
+		const result = stripKnownHashlineCopiedContentWithMeta(content, "", "/repo", store, "bundle.zip:member.txt");
+		expect(result.stripped).toBe(false);
+		expect(result.content).toBe(content);
 	});
 
 	it("strips copied nested search output before write", async () => {

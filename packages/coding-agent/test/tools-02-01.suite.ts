@@ -49,8 +49,12 @@ describe("Coding Agent Tools", () => {
 
 			const result = await writeTool.execute("test-call-3", { path: testFile, content });
 
-			expect(getTextOutput(result)).toContain("Successfully wrote");
-			expect(getTextOutput(result)).toContain(testFile);
+			// Pi sync (e583b290, upstream #8979): the confirmation no longer reports a
+			// byte count, because it was counting UTF-16 code units. Atomic prefixes the
+			// message with its hashline header, so this asserts the tail rather than the
+			// whole output the way upstream's `toBe` does.
+			expect(getTextOutput(result)).toContain(`Successfully wrote to ${testFile}`);
+			expect(getTextOutput(result)).not.toMatch(/Successfully wrote \d+ bytes/);
 			expect(result.details?.resolvedPath).toBe(testFile);
 		});
 		it("should create parent directories", async () => {
@@ -59,7 +63,8 @@ describe("Coding Agent Tools", () => {
 
 			const result = await writeTool.execute("test-call-4", { path: testFile, content });
 
-			expect(getTextOutput(result)).toContain("Successfully wrote");
+			expect(getTextOutput(result)).toContain(`Successfully wrote to ${testFile}`);
+			expect(getTextOutput(result)).not.toMatch(/Successfully wrote \d+ bytes/);
 		});
 	});
 });

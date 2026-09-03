@@ -127,7 +127,7 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 	insertAfter(items, "terminal-progress", {
 		id: "cache-miss-notices",
 		label: "Cache miss notices",
-		description: "Show prompt-cache misses and compaction or branch-summary billing",
+		description: "Show cache costs and provider recovery diagnostics",
 		currentValue: config.showCacheMissNotices ? "true" : "false",
 		values: ["true", "false"],
 	});

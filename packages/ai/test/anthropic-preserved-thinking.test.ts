@@ -40,6 +40,7 @@ interface AnthropicThinkingPayload {
 		block_binding?: { prefix_mismatch_behavior?: string };
 	};
 	output_config?: { effort?: string };
+	messages: Array<{ role: string; content: unknown; output_config?: { effort?: string } }>;
 }
 
 class PayloadCaptured extends Error {
@@ -245,9 +246,9 @@ describe("Fable 5.1 prefix-mismatch handling", () => {
 		// Omitting `thinking` and sending `{type: "adaptive"}` are equivalent on this model, and
 		// leaving `display` absent keeps the API's `"omitted"` default that omission produced.
 		expect(payload.thinking?.type).toBe("adaptive");
-		expect(payload.thinking?.display).toBeUndefined();
+		expect(payload.thinking?.display).toBe("summarized");
 		expect(payload.thinking?.budget_tokens).toBeUndefined();
-		expect(payload.output_config).toBeUndefined();
+		expect(payload.output_config).toEqual({ effort: "high" });
 	});
 
 	it.each(["low", "medium", "high", "xhigh", "max"] as const)(
@@ -256,11 +257,12 @@ describe("Fable 5.1 prefix-mismatch handling", () => {
 			const { payload } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"), { reasoning });
 
 			expect(payload.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
-			expect(payload.output_config).toEqual({ effort: reasoning });
+			expect(payload.output_config).toEqual({ effort: "high" });
+			expect(payload.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort: reasoning } });
 		},
 	);
 
-	it.each(["claude-fable-5", "claude-opus-5", "claude-sonnet-4-5"] as const)(
+	it.each(["claude-fable-5", "claude-sonnet-4-5"] as const)(
 		"does not opt %s into the conversation check, on reasoning or no-reasoning turns",
 		async (modelId) => {
 			for (const options of [undefined, { reasoning: "high" as const }]) {
@@ -390,9 +392,8 @@ describe("dropped thinking blocks are observable", () => {
 		expect(diagnostic?.details?.paths).toEqual(["messages.2.content.0"]);
 	});
 
-	// Both events can report, and the delta's entries describe the serving model rather than
-	// repeating `message_start`'s, so both are recorded rather than de-duplicated away.
-	it("records both reports when message_start and message_delta each carry entries", async () => {
+	// A fallback delta describes the serving model and supersedes the request-start report.
+	it("records only the serving model report when both events carry entries", async () => {
 		const model = getModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(
 			eventsWithInputTransformations(
@@ -403,14 +404,13 @@ describe("dropped thinking blocks are observable", () => {
 		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
 
 		const diagnostics = result.diagnostics?.filter((d) => d.type === "anthropic_input_transformations") ?? [];
-		expect(diagnostics).toHaveLength(2);
-		expect(diagnostics[0].details?.paths).toEqual(["messages.1.content.0"]);
-		expect(diagnostics[1].details?.paths).toEqual(["messages.3.content.0"]);
+		expect(diagnostics).toHaveLength(1);
+		expect(diagnostics[0].details?.paths).toEqual(["messages.3.content.0"]);
 	});
 
-	// The empty-array guard is the de-duplication rule: an ordinary turn omits the field on the
-	// delta, and a nothing-dropped turn sends an empty array. Neither may add a second entry.
-	it("adds no second diagnostic when the delta reports an empty array", async () => {
+	// An empty serving report does not erase a real request-start report. There is still only one
+	// diagnostic because the reports are reconciled before emission.
+	it("preserves the request-start diagnostic when the serving report is empty", async () => {
 		const model = getModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(
 			eventsWithInputTransformations(
@@ -422,5 +422,22 @@ describe("dropped thinking blocks are observable", () => {
 
 		const diagnostics = result.diagnostics?.filter((d) => d.type === "anthropic_input_transformations") ?? [];
 		expect(diagnostics).toHaveLength(1);
+		expect(diagnostics[0].details?.paths).toEqual(["messages.1.content.0"]);
+	});
+
+	it("preserves the request-start diagnostic when the stream fails mid-response", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const events = eventsWithInputTransformations([
+			{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" },
+		]);
+		events[1] = { event: "content_block_start", data: "{invalid" };
+		const result = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(createSseResponse(events)),
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		const diagnostics = result.diagnostics?.filter((d) => d.type === "anthropic_input_transformations") ?? [];
+		expect(diagnostics).toHaveLength(1);
+		expect(diagnostics[0].details?.paths).toEqual(["messages.1.content.0"]);
 	});
 });

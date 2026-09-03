@@ -34,7 +34,7 @@ describe("resource write parity edges", () => {
 				{} as never,
 			),
 		);
-		expect(writeOutput).toMatch(/^\[plain\.txt#[0-9A-F]{4}\]\nSuccessfully wrote 6 bytes/);
+		expect(writeOutput).toMatch(/^\[plain\.txt#[0-9A-F]{4}\]\nSuccessfully wrote to /);
 		expect(writeOutput).not.toContain("1:hello");
 		const readOutput = text(
 			await createReadToolDefinition(testDir, { hashlineStore: store }).execute(

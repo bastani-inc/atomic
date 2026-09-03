@@ -244,6 +244,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					for (const [, component] of this.pendingTools.entries()) {
 						component.setArgsComplete();
 					}
+					this.maybeShowAssistantDiagnostics(this.streamingMessage);
 				}
 				this.streamingComponent = undefined;
 				this.streamingMessage = undefined;

@@ -1,4 +1,4 @@
-import type { Usage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import { CACHE_TTL_MS, collectCacheMisses } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
@@ -36,6 +36,32 @@ import {
 	type VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
+
+InteractiveModeBase.prototype.maybeShowAssistantDiagnostics = function (
+	this: InteractiveModeBase,
+	message: AssistantMessage,
+): void {
+	if (!this.settingsManager.getShowCacheMissNotices()) return;
+
+	for (const diagnostic of message.diagnostics ?? []) {
+		if (diagnostic.type !== "anthropic_input_transformations") continue;
+		const count = diagnostic.details?.droppedBlockCount;
+		if (typeof count !== "number" || count <= 0) continue;
+		const reasons = Array.isArray(diagnostic.details?.reasons)
+			? diagnostic.details.reasons.filter((reason): reason is string => typeof reason === "string")
+			: [];
+		const paths = Array.isArray(diagnostic.details?.paths)
+			? diagnostic.details.paths.filter((path): path is string => typeof path === "string")
+			: [];
+		const noun = count === 1 ? "thinking block" : `${count} thinking blocks`;
+		const reason = reasons.length > 0 ? reasons.join(", ") : "unknown reason";
+		const location = paths.length > 0 ? ` at ${paths.join(", ")}` : "";
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(
+			new Text(theme.fg("warning", `Anthropic dropped ${noun}: ${reason}${location}`), 1, 0),
+		);
+	}
+};
 
 InteractiveModeBase.prototype.showStatus = function (this: InteractiveModeBase, message: string): void {
 	const children = this.chatContainer.children;
@@ -426,6 +452,13 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	}
 	flushMessages();
 	if (this.settingsManager.getShowCacheMissNotices()) {
+		for (const entry of sessionEntries) {
+			for (const message of sessionEntryToContextMessages(entry)) {
+				if (message.role === "assistant" && message.stopReason !== "aborted" && message.stopReason !== "error") {
+					this.maybeShowAssistantDiagnostics(message);
+				}
+			}
+		}
 		for (const miss of collectCacheMisses(sessionEntries, {
 			getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model),
 		}).values()) {

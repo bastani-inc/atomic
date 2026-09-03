@@ -100,7 +100,7 @@ function eventsWithIterations(iterations: UsageIteration[]): Array<{ event: stri
 	});
 }
 
-/** A stream that starts on Fable 5.1, declines mid-output, and finishes on Opus 4.8. */
+/** A stream that starts on Fable 5.1, declines mid-output, and finishes on Opus 5. */
 function midOutputFallbackEvents(): Array<{ event: string; data: string }> {
 	return [
 		{
@@ -136,7 +136,7 @@ function midOutputFallbackEvents(): Array<{ event: string; data: string }> {
 				content_block: {
 					type: "fallback",
 					from: { model: "claude-fable-5-1" },
-					to: { model: "claude-opus-4-8" },
+					to: { model: "claude-opus-5" },
 				},
 			}),
 		},
@@ -180,7 +180,7 @@ describe("mid-output server-side fallback", () => {
 		expect(result.content[1]).toEqual({
 			type: "fallback",
 			fromModel: "claude-fable-5-1",
-			toModel: "claude-opus-4-8",
+			toModel: "claude-opus-5",
 		});
 	});
 
@@ -191,13 +191,13 @@ describe("mid-output server-side fallback", () => {
 		}).result();
 
 		// `message_start` named the requested model; only the fallback block names the serving one.
-		expect(result.model).toBe("claude-opus-4-8");
+		expect(result.model).toBe("claude-opus-5");
 	});
 
 	it("prices the returned message at the serving model's rates", async () => {
 		const model = getModel("anthropic", "claude-fable-5-1");
-		const opus = model.compat?.allowedFallbackModels?.find((f) => f.model === "claude-opus-4-8");
-		expect(opus, "expected Opus 4.8 among the generated fallback targets").toBeDefined();
+		const opus = model.compat?.allowedFallbackModels?.find((f) => f.model === "claude-opus-5");
+		expect(opus, "expected Opus 5 among the generated fallback targets").toBeDefined();
 		// The two models are priced differently, which is what makes this assertion meaningful.
 		expect(opus?.cost.input).not.toBe(model.cost.input);
 
@@ -205,7 +205,7 @@ describe("mid-output server-side fallback", () => {
 			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
 		}).result();
 
-		// 1M input tokens at Opus 4.8's rate, not Claude Fable 5.1's.
+		// 1M input tokens at Opus 5's rate, not Claude Fable 5.1's.
 		expect(result.usage.cost.input).toBeCloseTo(opus!.cost.input, 10);
 		expect(result.usage.cost.input).not.toBeCloseTo(model.cost.input, 10);
 	});
@@ -239,7 +239,7 @@ describe("mid-output server-side fallback", () => {
 				createSseResponse(
 					eventsWithIterations([
 						{ type: "message", model: "claude-fable-5-1", input_tokens: 0, output_tokens: 1_000_000 },
-						{ type: "fallback_message", model: "claude-opus-4-8", input_tokens: 1_000_000, output_tokens: 0 },
+						{ type: "fallback_message", model: "claude-opus-5", input_tokens: 1_000_000, output_tokens: 0 },
 					]),
 				),
 			),
@@ -264,7 +264,7 @@ describe("mid-output server-side fallback", () => {
 				createSseResponse(
 					eventsWithIterations([
 						{ type: "message", model: "claude-fable-5-1", input_tokens: 1_000_000, output_tokens: 0 },
-						{ type: "fallback_message", model: "claude-opus-4-8", input_tokens: 1_000_000, output_tokens: 0 },
+						{ type: "fallback_message", model: "claude-opus-5", input_tokens: 1_000_000, output_tokens: 0 },
 					]),
 				),
 			),
@@ -285,7 +285,7 @@ describe("mid-output server-side fallback", () => {
 			client: createFakeAnthropicClient(
 				createSseResponse(
 					eventsWithIterations([
-						{ type: "fallback_message", model: "claude-opus-4-8", input_tokens: 1_000_000, output_tokens: 500 },
+						{ type: "fallback_message", model: "claude-opus-5", input_tokens: 1_000_000, output_tokens: 500 },
 					]),
 				),
 			),
@@ -363,7 +363,7 @@ describe("mid-output server-side fallback", () => {
 });
 
 function fallbackBlock(): FallbackContent {
-	return { type: "fallback", fromModel: "claude-fable-5-1", toModel: "claude-opus-4-8" };
+	return { type: "fallback", fromModel: "claude-fable-5-1", toModel: "claude-opus-5" };
 }
 
 /** An assistant turn straddling a fallback boundary, with reasoning and a tool call on each side. */
@@ -381,7 +381,7 @@ function straddlingTurn(): AssistantMessage {
 		],
 		api: "anthropic-messages",
 		provider: "anthropic",
-		model: "claude-opus-4-8",
+		model: "claude-opus-5",
 		usage: {
 			input: 0,
 			output: 0,
@@ -509,7 +509,7 @@ describe("the fallback marker reaches the request body", () => {
 		expect(assistant!.content[1]).toEqual({
 			type: "fallback",
 			from: { model: "claude-fable-5-1" },
-			to: { model: "claude-opus-4-8" },
+			to: { model: "claude-opus-5" },
 		});
 	});
 
