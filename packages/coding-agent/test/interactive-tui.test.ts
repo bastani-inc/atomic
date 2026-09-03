@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { crc32, deflateSync } from "node:zlib";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
@@ -9,6 +10,7 @@ import {
 	ScrollView,
 	setCapabilities,
 	setCellDimensions,
+	setKeybindings,
 	Text,
 	type TUI,
 	type TuiAltScreen,
@@ -18,6 +20,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { registerContentTools } from "../../web-access/content-tools.ts";
 import type { ExtensionAPI } from "../src/core/extensions/api-types.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { AtomicWorkingLoader } from "../src/modes/interactive/components/atomic-working-status.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import {
@@ -618,6 +621,7 @@ type WorkingLoaderStopContext = {
 type WorkingLoaderPrototype = {
 	stopWorkingLoader(this: WorkingLoaderStopContext): void;
 	setCustomEditorComponent(this: Record<string, unknown>, factory: ((...args: never[]) => unknown) | undefined): void;
+	resetExtensionUI(this: Record<string, unknown>): void;
 };
 
 const workingLoaderPrototype = InteractiveMode.prototype as unknown as WorkingLoaderPrototype;
@@ -695,5 +699,40 @@ describe("clear-on-shrink working status spacing", () => {
 		expect(setEditorWorkingStatusIndicator).toHaveBeenCalledWith(loader);
 		expect(context.workingIndicatorEmbedded).toBe(false);
 		expect(statusContainer.children).toEqual([loader]);
+	});
+
+	test("resetting extension UI uses the default Working interrupt label", () => {
+		setKeybindings(KeybindingsManager.create());
+		const setMessage = vi.fn();
+		const context = {
+			extensionSelector: undefined,
+			extensionInput: undefined,
+			extensionEditor: undefined,
+			ui: { hideOverlay: vi.fn() },
+			clearExtensionTerminalInputListeners: vi.fn(),
+			setExtensionFooter: vi.fn(),
+			setExtensionHeader: vi.fn(),
+			clearExtensionWidgets: vi.fn(),
+			footerDataProvider: { clearExtensionStatuses: vi.fn() },
+			footer: { invalidate: vi.fn() },
+			autocompleteProviderWrappers: ["stale"],
+			setCustomEditorComponent: vi.fn(),
+			setupAutocompleteProvider: vi.fn(),
+			defaultEditor: { onExtensionShortcut: undefined },
+			interactiveEngineShortcutHandler: vi.fn(),
+			updateTerminalTitle: vi.fn(),
+			defaultWorkingMessage: "Working",
+			workingMessage: "custom",
+			workingVisible: false,
+			setWorkingIndicator: vi.fn(),
+			loadingAnimation: { setMessage },
+			setHiddenThinkingLabel: vi.fn(),
+		};
+
+		workingLoaderPrototype.resetExtensionUI.call(context as unknown as Record<string, unknown>);
+
+		assert.equal(context.workingMessage, undefined);
+		assert.equal(context.workingVisible, true);
+		assert.deepEqual(setMessage.mock.calls, [["Working (esc Interrupt)"]]);
 	});
 });
