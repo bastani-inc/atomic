@@ -4,7 +4,6 @@ export interface SettingsManagerInternals {
 	globalSettings: Settings;
 	projectSettings: Settings;
 	settings: Settings;
-	runtimeSettingsOverrides: Settings;
 	markModified(field: keyof Settings, nestedKey?: string): void;
 	markProjectModified(field: keyof Settings, nestedKey?: string): void;
 	save(): void;

@@ -185,7 +185,7 @@ interface DeferredStartupProbeContext extends DraftProbeContext {
 		reload(options: { reason: "startup" }): Promise<void>;
 		resourceLoader: { getThemes(): { themes: [] } };
 		extensionRunner: object;
-		modelRuntime: { getError(): undefined };
+		modelRuntime: { getError(): undefined; getWarning(): undefined };
 	};
 	rebuildChatFromMessages(): void;
 	stopWorkingLoader(): void;
@@ -213,7 +213,7 @@ function asDeferredStartupContext(probe: DraftProbe): DeferredStartupProbeContex
 			reload: vi.fn(async () => {}),
 			resourceLoader: { getThemes: () => ({ themes: [] as [] }) },
 			extensionRunner: {},
-			modelRuntime: { getError: () => undefined },
+			modelRuntime: { getError: () => undefined, getWarning: () => undefined },
 		},
 		rebuildChatFromMessages: vi.fn(),
 		stopWorkingLoader: vi.fn(),

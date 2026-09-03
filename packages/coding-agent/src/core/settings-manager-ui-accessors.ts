@@ -38,8 +38,6 @@ interface SettingsManagerUiAccessors {
 	setLatexRenderingEnabled(enabled: boolean): void;
 	getWarnings(): WarningSettings;
 	setWarnings(warnings: WarningSettings): void;
-	getCodexFastModeSettings(): { chat: boolean; workflow: boolean };
-	setCodexFastModeSettings(settings: Partial<{ chat: boolean; workflow: boolean }>): void;
 	getFullscreenScrollbar(): ScrollViewScrollbar;
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void;
 	getFullscreenExitOutput(): FullscreenExitOutput;
@@ -307,66 +305,6 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.warnings = { ...warnings };
 		state.markModified("warnings");
-		state.save();
-	},
-
-	getCodexFastModeSettings() {
-		const codexFastMode = settingsInternals(this).settings.codexFastMode;
-		return {
-			chat: codexFastMode?.chat ?? false,
-			workflow: codexFastMode?.workflow ?? false,
-		};
-	},
-
-	setCodexFastModeSettings(settings) {
-		if (settings.chat === undefined && settings.workflow === undefined) {
-			return;
-		}
-		const state = settingsInternals(this);
-		if (!state.globalSettings.codexFastMode) {
-			state.globalSettings.codexFastMode = {};
-		}
-		if (settings.chat !== undefined) {
-			state.globalSettings.codexFastMode.chat = settings.chat;
-			state.markModified("codexFastMode", "chat");
-		}
-		if (settings.workflow !== undefined) {
-			state.globalSettings.codexFastMode.workflow = settings.workflow;
-			state.markModified("codexFastMode", "workflow");
-		}
-
-		const projectCodexFastMode = state.projectSettings.codexFastMode;
-		const projectOverridesChat = projectCodexFastMode?.chat !== undefined;
-		const projectOverridesWorkflow = projectCodexFastMode?.workflow !== undefined;
-		let projectModified = false;
-		if (
-			(settings.chat !== undefined && projectOverridesChat) ||
-			(settings.workflow !== undefined && projectOverridesWorkflow)
-		) {
-			state.projectSettings.codexFastMode = { ...(projectCodexFastMode ?? {}) };
-			if (settings.chat !== undefined && projectOverridesChat) {
-				state.projectSettings.codexFastMode.chat = settings.chat;
-				state.markProjectModified("codexFastMode", "chat");
-				projectModified = true;
-			}
-			if (settings.workflow !== undefined && projectOverridesWorkflow) {
-				state.projectSettings.codexFastMode.workflow = settings.workflow;
-				state.markProjectModified("codexFastMode", "workflow");
-				projectModified = true;
-			}
-			if (projectModified) {
-				state.saveProjectSettings(state.projectSettings);
-			}
-		}
-
-		if (state.runtimeSettingsOverrides.codexFastMode) {
-			state.runtimeSettingsOverrides.codexFastMode = {
-				...state.runtimeSettingsOverrides.codexFastMode,
-				...(settings.chat !== undefined ? { chat: settings.chat } : {}),
-				...(settings.workflow !== undefined ? { workflow: settings.workflow } : {}),
-			};
-		}
-
 		state.save();
 	},
 };

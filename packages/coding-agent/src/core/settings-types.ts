@@ -69,11 +69,6 @@ export interface WarningSettings {
 	anthropicExtraUsage?: boolean; // default: true
 }
 
-export interface CodexFastModeSettings {
-	chat?: boolean; // default: false
-	workflow?: boolean; // default: false
-}
-
 export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
@@ -157,7 +152,6 @@ export interface Settings {
 	fullscreenCopyOnSelect?: boolean; // default: true
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
-	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY; global setting only
 	httpIdleTimeoutMs?: number | string; // HTTP idle timeout; 0 or "disabled" disables it

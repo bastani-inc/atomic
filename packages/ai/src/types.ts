@@ -960,6 +960,22 @@ export interface ModelCost extends ModelCostRates {
 	tiers?: ModelCostTier[];
 }
 
+/**
+ * Explicit routing metadata that marks a model as the fast-inference variant of another model.
+ *
+ * Presence of this field — never a `-fast` name suffix — is what gives a model fast semantics.
+ * A provider, `models.json` custom model, or extension may own an exact `<base>-fast` ID without
+ * this metadata, in which case it is an ordinary model and routes exactly as it is declared.
+ */
+export interface ModelFastRoute {
+	/** Canonical ID of the normal-speed model this variant pairs with, in the same provider. */
+	baseModelId: string;
+	/** Model ID to send upstream. OpenAI-style routing keeps the base ID; a provider with real fast siblings sends its own ID. */
+	upstreamModelId: string;
+	/** Service tier to send with the request. Set only for providers that route fast traffic through an OpenAI-style tier. */
+	serviceTier?: "priority";
+}
+
 // Model interface for the unified model system
 export interface Model<TApi extends Api> {
 	id: string;
@@ -985,6 +1001,11 @@ export interface Model<TApi extends Api> {
 	/** Default sampling parameters for this model. See {@link StreamOptions.samplingParams}; per-request keys override these. */
 	samplingParams?: Record<string, unknown>;
 	headers?: Record<string, string>;
+	/**
+	 * Marks this model as the fast-inference variant of {@link ModelFastRoute.baseModelId} and carries the
+	 * upstream routing it needs. Absent on every normal model.
+	 */
+	fastRoute?: ModelFastRoute;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat

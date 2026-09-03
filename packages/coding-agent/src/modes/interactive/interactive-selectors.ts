@@ -2,10 +2,8 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
 	configureHttpDispatcher,
-	FastModeSelectorComponent,
 	getAvailableThemes,
 	SettingsSelectorComponent,
-	setCodexFastModeEnvironmentSettings,
 	ToolExecutionComponent,
 } from "./interactive-mode-deps.ts";
 
@@ -43,38 +41,6 @@ InteractiveModeBase.prototype.showSelector = function (
 	this.editorContainer.addChild(created.component);
 	this.ui.setFocus(created.focus);
 	this.ui.requestRender();
-};
-
-InteractiveModeBase.prototype.showFastModeSelector = function (this: InteractiveModeBase): void {
-	if (!this.hasCodexFastModeSupportedModels()) {
-		this.showWarning("Fast mode isn't available for any configured model.");
-		return;
-	}
-
-	this.showSelector((done) => {
-		let pendingStatusMessage: string | undefined;
-		const selector = new FastModeSelectorComponent(this.settingsManager.getCodexFastModeSettings(), {
-			onChange: (settings, changedRow) => {
-				this.settingsManager.setCodexFastModeSettings({ [changedRow]: settings[changedRow] });
-				const effectiveSettings = this.settingsManager.getCodexFastModeSettings();
-				setCodexFastModeEnvironmentSettings(effectiveSettings);
-				this.footer.invalidate();
-				this.refreshBuiltInHeader();
-				const changedLabel = changedRow === "chat" ? "Chat" : "Workflow";
-				const changedState = effectiveSettings[changedRow] ? "on" : "off";
-				pendingStatusMessage = `${changedLabel} fast mode ${changedState}`;
-			},
-			onCancel: async () => {
-				await this.settingsManager.flush();
-				done();
-				if (pendingStatusMessage) {
-					this.showStatus(pendingStatusMessage);
-				}
-				this.ui.requestRender();
-			},
-		});
-		return { component: selector, focus: selector };
-	});
 };
 
 InteractiveModeBase.prototype.showSettingsSelector = function (this: InteractiveModeBase): void {

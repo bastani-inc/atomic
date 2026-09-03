@@ -8,7 +8,6 @@ import type {
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 
 export interface PiSdkSettingsManager {
-	getCodexFastModeSettings(): { readonly chat: boolean; readonly workflow: boolean };
 	getRetrySettings?(): { readonly enabled: boolean; readonly maxRetries: number; readonly baseDelayMs: number };
 }
 

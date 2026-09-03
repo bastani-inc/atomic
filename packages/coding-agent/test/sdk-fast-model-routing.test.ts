@@ -2,25 +2,25 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { zstdDecompressSync } from "node:zlib";
 import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	type Model,
+	type ModelFastRoute,
 	type SimpleStreamOptions,
 } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { CODEX_FAST_MODE_SERVICE_TIER } from "../src/core/codex-fast-mode.ts";
-import { CODEX_FAST_MODE_ORIGINATOR, CODEX_FAST_MODE_ROUTING_HEADER } from "../src/core/codex-fast-mode-transport.ts";
-import type { OrchestrationContext } from "../src/core/extensions/index.ts";
+import { CODEX_FAST_ROUTE_HEADER } from "../src/core/fast-model-routing-transport.ts";
+import { FAST_MODEL_SERVICE_TIER } from "../src/core/fast-model-variants.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
-interface CapturedFastModeRequest {
+interface CapturedFastRouteRequest {
 	model: Model<Api>;
 	options: SimpleStreamOptions | undefined;
 	payload: unknown;
@@ -146,27 +146,22 @@ function createDoneStream(model: Model<Api>) {
 	return stream;
 }
 
-const workflowContext: OrchestrationContext = {
-	kind: "workflow-stage",
-	workflowRunId: "run-1",
-	workflowStageId: "stage-1",
-	workflowStageName: "Stage 1",
-	constraints: {
-		disableWorkflowTool: true,
-	},
-};
+function serviceTierRoute(baseModelId: string): ModelFastRoute {
+	return { baseModelId, upstreamModelId: baseModelId, serviceTier: FAST_MODEL_SERVICE_TIER };
+}
 
-describe("createAgentSession codex fast mode", () => {
+function advertisedFastRoute(baseModelId: string): ModelFastRoute {
+	return { baseModelId, upstreamModelId: `${baseModelId}-fast` };
+}
+
+describe("createAgentSession fast model routing", () => {
 	let tempDir: string;
 	let cwd: string;
 	let agentDir: string;
 	let registeredProviders: Array<{ registry: ModelRuntime; provider: string }>;
-	let previousCodexFastModeEnv: string | undefined;
 
 	beforeEach(() => {
-		previousCodexFastModeEnv = process.env[ENV_CODEX_FAST_MODE];
-		delete process.env[ENV_CODEX_FAST_MODE];
-		tempDir = join(tmpdir(), `atomic-sdk-codex-fast-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		tempDir = join(tmpdir(), `atomic-sdk-fast-route-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
 		mkdirSync(cwd, { recursive: true });
@@ -182,24 +177,26 @@ describe("createAgentSession codex fast mode", () => {
 		if (existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
-		if (previousCodexFastModeEnv === undefined) {
-			delete process.env[ENV_CODEX_FAST_MODE];
-		} else {
-			process.env[ENV_CODEX_FAST_MODE] = previousCodexFastModeEnv;
-		}
 	});
 
-	async function captureFastModeRequest(options: {
+	async function captureFastRouteRequest(options: {
 		provider: string;
 		api?: Api;
-		settings: { chat: boolean; workflow: boolean };
-		orchestrationContext?: OrchestrationContext;
+		/** Explicit route metadata on the selected model; omitted for a normal model. */
+		fastRoute?: ModelFastRoute;
+		/** Selected model ID; defaults to the provider's normal test model. */
+		modelId?: string;
 		payload?: Record<string, unknown>;
 		fastModelIds?: string[];
 		useBuiltInDispatch?: boolean;
-	}): Promise<CapturedFastModeRequest> {
+	}): Promise<CapturedFastRouteRequest> {
 		const api = options.api ?? ("openai-responses" as Api);
-		const model = createModel(options.provider, api);
+		const baseModel = createModel(options.provider, api);
+		const model: Model<Api> = {
+			...baseModel,
+			...(options.modelId ? { id: options.modelId } : {}),
+			...(options.fastRoute ? { fastRoute: options.fastRoute } : {}),
+		};
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify(options.provider, async () =>
 			options.fastModelIds
@@ -217,7 +214,7 @@ describe("createAgentSession codex fast mode", () => {
 			modelsPath: join(agentDir, "models.json"),
 			allowModelNetwork: false,
 		});
-		const settingsManager = SettingsManager.inMemory({ codexFastMode: options.settings });
+		const settingsManager = SettingsManager.inMemory({});
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedOptions: SimpleStreamOptions | undefined;
 		let capturedModel: Model<Api> | undefined;
@@ -250,7 +247,6 @@ describe("createAgentSession codex fast mode", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
-			orchestrationContext: options.orchestrationContext,
 		});
 
 		try {
@@ -276,18 +272,21 @@ describe("createAgentSession codex fast mode", () => {
 
 	async function captureRealCopilotTurn(
 		api: "anthropic-messages" | "openai-responses" | "openai-completions",
-		fastModeEnabled: boolean,
-		modelId = "github-copilot-test-model",
+		fast: boolean,
+		baseModelId = "github-copilot-test-model",
 	): Promise<CopilotTurnCapture> {
-		const model = { ...createModel("github-copilot", api), id: modelId };
+		const base = { ...createModel("github-copilot", api), id: baseModelId };
+		const model: Model<Api> = fast
+			? { ...base, id: `${baseModelId}-fast`, fastRoute: advertisedFastRoute(baseModelId) }
+			: base;
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("github-copilot", async () => ({
 			type: "oauth",
 			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
 			refresh: "test-refresh-token",
 			expires: Number.MAX_SAFE_INTEGER,
-			availableModelIds: [model.id],
-			fastModelIds: [`${model.id}-fast`],
+			availableModelIds: [baseModelId],
+			fastModelIds: [`${baseModelId}-fast`],
 		}));
 		const modelRuntime = await ModelRuntime.create({
 			credentials: authStorage,
@@ -301,9 +300,7 @@ describe("createAgentSession codex fast mode", () => {
 			model,
 			authStorage,
 			modelRuntime,
-			settingsManager: SettingsManager.inMemory({
-				codexFastMode: { chat: fastModeEnabled, workflow: false },
-			}),
+			settingsManager: SettingsManager.inMemory({}),
 			sessionManager,
 		});
 		let body: Record<string, unknown> | undefined;
@@ -329,8 +326,12 @@ describe("createAgentSession codex fast mode", () => {
 			session.dispose();
 		}
 	}
-	it("rewrites actual Copilot request bodies across API paths without changing headers or message identity", async () => {
-		for (const api of ["anthropic-messages", "openai-responses", "openai-completions"] as const) {
+
+	// One case per API path: each turn creates a real agent session, so a single test covering all
+	// three ran six sessions and exceeded the shared per-test budget on a loaded machine.
+	it.each(["anthropic-messages", "openai-responses", "openai-completions"] as const)(
+		"sends the advertised Copilot fast ID over %s without headers or service-tier fields",
+		async (api) => {
 			const fast = await captureRealCopilotTurn(api, true);
 			const normal = await captureRealCopilotTurn(api, false);
 
@@ -339,43 +340,48 @@ describe("createAgentSession codex fast mode", () => {
 			assert.equal("service_tier" in fast.body, false);
 			assert.equal("speed" in fast.body, false);
 			assert.deepEqual(withoutRequestIdentity(fast.headers), withoutRequestIdentity(normal.headers));
-			assert.equal(fast.message.model, "github-copilot-test-model");
-		}
-	});
+			// The canonical `-fast` identity is what Atomic records, not the base.
+			assert.equal(fast.message.model, "github-copilot-test-model-fast");
+			assert.equal(normal.message.model, "github-copilot-test-model");
+		},
+	);
 
-	it("keeps the base model identity for Copilot fast-mode compaction checks", async () => {
-		const modelId = "gpt-5.6-sol";
-		const captured = await captureRealCopilotTurn("openai-responses", true, modelId);
+	it("records the selected canonical fast identity on the assistant message", async () => {
+		const captured = await captureRealCopilotTurn("openai-responses", true, "gpt-5.6-sol");
 
 		assert.equal(captured.message.provider, "github-copilot");
-		assert.equal(captured.message.model, modelId);
+		assert.equal(captured.message.model, "gpt-5.6-sol-fast");
 	});
 
-	it("persists and resumes the base Copilot model so disabling fast mode restores the base wire id", async () => {
-		const modelId = "gpt-5.6-sol";
+	it("persists and restores an exact Copilot -fast model ID across sessions", async () => {
+		const baseModelId = "gpt-5.6-sol";
+		const fastModelId = `${baseModelId}-fast`;
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("github-copilot", async () => ({
 			type: "oauth",
 			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
 			refresh: "test-refresh-token",
 			expires: Number.MAX_SAFE_INTEGER,
-			availableModelIds: [modelId],
-			fastModelIds: [`${modelId}-fast`],
+			availableModelIds: [baseModelId],
+			fastModelIds: [fastModelId],
 		}));
 		const modelRuntime = await ModelRuntime.create({
 			credentials: authStorage,
 			modelsPath: join(agentDir, "models.json"),
 			allowModelNetwork: false,
 		});
-		const model = modelRuntime.getModel("github-copilot", modelId);
+		// The derived fast variant is a real selectable model resolvable by its canonical ID.
+		const model = modelRuntime.getModel("github-copilot", fastModelId);
 		assert.ok(model);
+		assert.equal(model.id, fastModelId);
+		assert.deepEqual(model.fastRoute, { baseModelId, upstreamModelId: fastModelId });
 		const sessionManager = SessionManager.inMemory(cwd);
 		const requestBodies: Record<string, unknown>[] = [];
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 				requestBodies.push(JSON.parse(await bodyToText(init?.body)) as Record<string, unknown>);
-				return copilotResponse("openai-responses", modelId);
+				return copilotResponse("openai-responses", fastModelId);
 			}),
 		);
 		const first = await createAgentSession({
@@ -384,48 +390,50 @@ describe("createAgentSession codex fast mode", () => {
 			model,
 			authStorage,
 			modelRuntime,
-			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
+			settingsManager: SettingsManager.inMemory({}),
 			sessionManager,
 		});
 		await first.session.prompt("first turn");
 		first.session.dispose();
 
 		const persisted = sessionManager.buildSessionContext();
-		assert.deepEqual(persisted.model, { provider: "github-copilot", modelId });
+		assert.deepEqual(persisted.model, { provider: "github-copilot", modelId: fastModelId });
 		const persistedAssistant = persisted.messages.findLast((message) => message.role === "assistant");
-		assert.equal(persistedAssistant?.role === "assistant" ? persistedAssistant.model : undefined, modelId);
+		assert.equal(persistedAssistant?.role === "assistant" ? persistedAssistant.model : undefined, fastModelId);
 
 		const resumed = await createAgentSession({
 			cwd,
 			agentDir,
 			authStorage,
 			modelRuntime,
-			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: false, workflow: false } }),
+			settingsManager: SettingsManager.inMemory({}),
 			sessionManager,
 		});
 		try {
-			assert.equal(resumed.session.model?.id, modelId);
+			assert.equal(resumed.session.model?.id, fastModelId);
+			assert.deepEqual(resumed.session.model?.fastRoute, { baseModelId, upstreamModelId: fastModelId });
 			await resumed.session.prompt("second turn");
 			assert.deepEqual(
 				requestBodies.map((body) => body.model),
-				[`${modelId}-fast`, modelId],
+				[fastModelId, fastModelId],
 			);
 		} finally {
 			resumed.session.dispose();
 		}
 	});
 
-	it("keeps entitled Copilot requests on the built-in model runtime dispatch path", async () => {
-		const captured = await captureFastModeRequest({
+	it("keeps entitled Copilot fast requests on the built-in model runtime dispatch path", async () => {
+		const captured = await captureFastRouteRequest({
 			provider: "github-copilot",
 			api: "anthropic-messages",
-			settings: { chat: true, workflow: false },
+			modelId: "github-copilot-test-model-fast",
+			fastRoute: advertisedFastRoute("github-copilot-test-model"),
 			fastModelIds: ["github-copilot-test-model-fast"],
-			payload: { model: "github-copilot-test-model", messages: [] },
+			payload: { model: "github-copilot-test-model-fast", messages: [] },
 			useBuiltInDispatch: true,
 		});
 
-		assert.equal(captured.model.id, "github-copilot-test-model");
+		assert.equal(captured.model.id, "github-copilot-test-model-fast");
 		assert.equal("serviceTier" in (captured.options ?? {}), false);
 		assert.equal(captured.options?.headers, undefined);
 		assert.deepEqual(captured.payload, { model: "github-copilot-test-model-fast", messages: [] });
@@ -433,26 +441,11 @@ describe("createAgentSession codex fast mode", () => {
 		assert.equal("speed" in (captured.payload as Record<string, unknown>), false);
 	});
 
-	it("preserves unentitled Copilot requests when fast mode is enabled", async () => {
+	it("leaves a normal Copilot request untouched", async () => {
 		const payload = { model: "github-copilot-test-model", messages: [] };
-		const captured = await captureFastModeRequest({
+		const captured = await captureFastRouteRequest({
 			provider: "github-copilot",
 			api: "anthropic-messages",
-			settings: { chat: true, workflow: false },
-			fastModelIds: ["other-model-fast"],
-			payload,
-		});
-
-		assert.equal(captured.model.id, "github-copilot-test-model");
-		assert.strictEqual(captured.payload, payload);
-	});
-
-	it("preserves entitled Copilot requests when fast mode is disabled", async () => {
-		const payload = { model: "github-copilot-test-model", messages: [] };
-		const captured = await captureFastModeRequest({
-			provider: "github-copilot",
-			api: "anthropic-messages",
-			settings: { chat: false, workflow: false },
 			fastModelIds: ["github-copilot-test-model-fast"],
 			payload,
 		});
@@ -461,19 +454,40 @@ describe("createAgentSession codex fast mode", () => {
 		assert.strictEqual(captured.payload, payload);
 	});
 
-	it("adds priority service tier for enabled chat requests", async () => {
-		const captured = await captureFastModeRequest({
+	it("does not treat a bare -fast model ID without route metadata as fast", async () => {
+		const captured = await captureFastRouteRequest({
 			provider: "openai",
-			settings: { chat: true, workflow: false },
+			modelId: "openai-test-model-fast",
+		});
+
+		assert.equal(captured.model.id, "openai-test-model-fast");
+		expect((captured.options as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBeUndefined();
+		expect(captured.payload).not.toMatchObject({ service_tier: FAST_MODEL_SERVICE_TIER });
+	});
+
+	it("adds the priority service tier for an OpenAI service-tier route", async () => {
+		const captured = await captureFastRouteRequest({
+			provider: "openai",
+			modelId: "openai-test-model-fast",
+			fastRoute: serviceTierRoute("openai-test-model"),
 		});
 
 		expect((captured.options as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBe(
-			CODEX_FAST_MODE_SERVICE_TIER,
+			FAST_MODEL_SERVICE_TIER,
 		);
-		expect(captured.payload).toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
+		// Dispatch receives the canonical `-fast` model; the adapter reads `fastRoute.upstreamModelId`
+		// when it serializes the request, which the native-body test below asserts on the wire.
+		assert.equal(captured.model.id, "openai-test-model-fast");
+		assert.deepEqual(captured.model.fastRoute, serviceTierRoute("openai-test-model"));
 	});
 
-	it("preserves custom provider streaming for native OpenAI APIs when fast mode is enabled", async () => {
+	/**
+	 * Atomic cannot enforce a fast route through a transport it does not serialize, so no `-fast`
+	 * variant is published for an API a registered extension owns (asserted at the catalog level in
+	 * `fast-model-variants.test.ts`). What must keep working is the ordinary case: a normal model still
+	 * reaches the extension stream untouched.
+	 */
+	it("preserves custom provider streaming for a normal model", async () => {
 		const model = createModel("openai", "openai-responses");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-api-key" }));
@@ -482,9 +496,10 @@ describe("createAgentSession codex fast mode", () => {
 			modelsPath: join(agentDir, "models.json"),
 			allowModelNetwork: false,
 		});
-		const settingsManager = SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } });
+		const settingsManager = SettingsManager.inMemory({});
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedOptions: SimpleStreamOptions | undefined;
+		let capturedModel: Model<Api> | undefined;
 		const nativeFetch = vi.fn(async (): Promise<Response> => {
 			throw new Error("native OpenAI streaming should not be called for registered providers");
 		});
@@ -492,9 +507,10 @@ describe("createAgentSession codex fast mode", () => {
 
 		modelRuntime.registerProvider("openai", {
 			api: "openai-responses",
-			streamSimple: (_model, _context, streamOptions) => {
+			streamSimple: (streamModel, _context, streamOptions) => {
+				capturedModel = streamModel;
 				capturedOptions = streamOptions;
-				return createDoneStream(model);
+				return createDoneStream(streamModel);
 			},
 		});
 		registeredProviders.push({ registry: modelRuntime, provider: "openai" });
@@ -515,9 +531,10 @@ describe("createAgentSession codex fast mode", () => {
 
 			expect(result.stopReason).toBe("stop");
 			expect(nativeFetch).not.toHaveBeenCalled();
-			expect((capturedOptions as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBe(
-				CODEX_FAST_MODE_SERVICE_TIER,
-			);
+			expect(capturedModel?.id).toBe(model.id);
+			expect(capturedModel?.fastRoute).toBeUndefined();
+			// A normal model carries no route, so no tier is injected into an extension's options.
+			expect((capturedOptions as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBeUndefined();
 		} finally {
 			session.dispose();
 			modelRuntime.unregisterProvider("openai");
@@ -527,60 +544,13 @@ describe("createAgentSession codex fast mode", () => {
 		}
 	});
 
-	it("applies inherited chat fast mode environment to child sessions", async () => {
-		const previous = process.env[ENV_CODEX_FAST_MODE];
-		process.env[ENV_CODEX_FAST_MODE] = "chat=1;workflow=0";
-		try {
-			const captured = await captureFastModeRequest({
-				provider: "openai",
-				settings: { chat: false, workflow: false },
-			});
-
-			expect((captured.options as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBe(
-				CODEX_FAST_MODE_SERVICE_TIER,
-			);
-			expect(captured.payload).toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
-		} finally {
-			if (previous === undefined) {
-				delete process.env[ENV_CODEX_FAST_MODE];
-			} else {
-				process.env[ENV_CODEX_FAST_MODE] = previous;
-			}
-		}
-	});
-
-	it("uses the workflow setting for workflow-stage requests", async () => {
-		const disabled = await captureFastModeRequest({
-			provider: "openai",
-			settings: { chat: true, workflow: false },
-			orchestrationContext: workflowContext,
-		});
-		expect((disabled.options as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBeUndefined();
-		expect(disabled.payload).not.toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
-
-		const enabled = await captureFastModeRequest({
-			provider: "openai",
-			settings: { chat: false, workflow: true },
-			orchestrationContext: workflowContext,
-		});
-		expect((enabled.options as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBe(
-			CODEX_FAST_MODE_SERVICE_TIER,
-		);
-		expect(enabled.payload).toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
-	});
-
-	it("does not apply fast mode to GitHub Copilot", async () => {
-		const captured = await captureFastModeRequest({
-			provider: "github-copilot",
-			settings: { chat: true, workflow: true },
-		});
-
-		expect((captured.options as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBeUndefined();
-		expect(captured.payload).not.toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
-	});
-
-	it("sends priority service tier in native OpenAI Responses request bodies", async () => {
-		const model = createModel("openai", "openai-responses");
+	it("sends the base model ID plus a priority service tier in native OpenAI Responses bodies", async () => {
+		const baseModel = createModel("openai", "openai-responses");
+		const model: Model<Api> = {
+			...baseModel,
+			id: `${baseModel.id}-fast`,
+			fastRoute: serviceTierRoute(baseModel.id),
+		};
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-api-key" }));
 		const modelRuntime = await ModelRuntime.create({
@@ -588,7 +558,7 @@ describe("createAgentSession codex fast mode", () => {
 			modelsPath: join(agentDir, "models.json"),
 			allowModelNetwork: false,
 		});
-		const settingsManager = SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } });
+		const settingsManager = SettingsManager.inMemory({});
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedPayload: Record<string, unknown> | undefined;
 		vi.stubGlobal(
@@ -600,7 +570,7 @@ describe("createAgentSession codex fast mode", () => {
 					response: {
 						id: "resp_test",
 						status: "completed",
-						service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+						service_tier: FAST_MODEL_SERVICE_TIER,
 						usage: {
 							input_tokens: 0,
 							input_tokens_details: { cached_tokens: 0 },
@@ -631,19 +601,24 @@ describe("createAgentSession codex fast mode", () => {
 			const result = await stream.result();
 
 			expect(result.stopReason).toBe("stop");
-			expect(capturedPayload).toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
+			expect(capturedPayload).toMatchObject({
+				model: baseModel.id,
+				service_tier: FAST_MODEL_SERVICE_TIER,
+			});
 		} finally {
 			session.dispose();
 		}
 	});
 
-	it("routes a renamed provider through the shared Codex proxy transport", async () => {
+	it("does not grant Codex routing identity to a renamed provider with an explicit route", async () => {
 		const provider = "codex-proxy";
 		const api = "openai-codex-responses" as const;
-		const model = {
+		const baseModelId = "gpt-5.6-sol";
+		const model: Model<Api> = {
 			...createModel(provider, api),
-			id: "gpt-5.6-sol",
+			id: `${baseModelId}-fast`,
 			baseUrl: "https://monitor.example/backend-api",
+			fastRoute: serviceTierRoute(baseModelId),
 		};
 		const tokenPayload = Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
@@ -667,17 +642,24 @@ describe("createAgentSession codex fast mode", () => {
 		registeredProviders.push({ registry: modelRuntime, provider });
 		let capturedUrl: string | undefined;
 		let capturedHeaders: Headers | undefined;
+		let capturedPayload: Record<string, unknown> | undefined;
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 				capturedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 				capturedHeaders = new Headers(init?.headers);
+				const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+				capturedPayload = JSON.parse(
+					capturedHeaders.get("content-encoding") === "zstd"
+						? zstdDecompressSync(bytes).toString("utf8")
+						: new TextDecoder().decode(bytes),
+				) as Record<string, unknown>;
 				const completedEvent = {
 					type: "response.completed",
 					response: {
 						id: "resp_alias",
 						status: "completed",
-						service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+						service_tier: FAST_MODEL_SERVICE_TIER,
 						usage: {
 							input_tokens: 0,
 							input_tokens_details: { cached_tokens: 0 },
@@ -698,7 +680,7 @@ describe("createAgentSession codex fast mode", () => {
 			model,
 			authStorage,
 			modelRuntime,
-			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
+			settingsManager: SettingsManager.inMemory({}),
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 
@@ -706,27 +688,16 @@ describe("createAgentSession codex fast mode", () => {
 			const stream = await session.agent.streamFunction(
 				model,
 				{ messages: [] },
-				{
-					sessionId: session.sessionId,
-					transport: "sse",
-				},
+				{ sessionId: session.sessionId, transport: "sse" },
 			);
 			await stream.result();
 
 			expect(capturedUrl).toBe("https://monitor.example/backend-api/codex/responses");
-			expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_MODE_ORIGINATOR);
-			expect(capturedHeaders?.get(CODEX_FAST_MODE_ROUTING_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
+			expect(capturedHeaders?.get("originator")).toBe("pi");
+			expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
+			expect(capturedPayload).toMatchObject({ model: baseModelId, service_tier: FAST_MODEL_SERVICE_TIER });
 		} finally {
 			session.dispose();
 		}
-	});
-	it("does not overwrite an existing provider payload service_tier", async () => {
-		const captured = await captureFastModeRequest({
-			provider: "openai",
-			settings: { chat: true, workflow: false },
-			payload: { service_tier: "default" },
-		});
-
-		expect(captured.payload).toEqual({ service_tier: "default" });
 	});
 });

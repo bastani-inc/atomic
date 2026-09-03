@@ -5,6 +5,6 @@ beforeAll(() => {
 	initTheme("dark");
 });
 
-import "./subagents-render-stability-fast-mode.js";
+import "./subagents-render-stability-model-identity.js";
 import "./subagents-render-stability-running-spinner.js";
 import "./subagents-render-stability-invariants.js";

@@ -283,11 +283,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/fast") {
-				this.editor.setText("");
-				this.showFastModeSelector();
-				return;
-			}
 			if (text === "/scoped-models") {
 				this.editor.setText("");
 				await this.ensureDeferredStartupComplete();

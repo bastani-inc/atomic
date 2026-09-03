@@ -17,7 +17,6 @@ function parallelChild(
 		cause?: string;
 		model?: string;
 		thinking?: string;
-		fastMode?: boolean;
 		progressIndex?: number;
 	} = {},
 ): Details["results"][number] {
@@ -139,19 +138,18 @@ describe("top-level parallel status reduction", () => {
 	});
 });
 
-test("parallel result rows keep each child's model and thinking metadata", () => {
+test("parallel result rows keep each child's canonical model ID and thinking metadata", () => {
 	const rendered = renderParallel([
 		parallelChild("alpha", "ok", {
-			model: "openai/gpt-5.1-codex",
+			model: "openai-codex/gpt-5.6-sol-fast",
 			thinking: "high",
-			fastMode: true,
 		}),
 		parallelChild("beta", "ok", {
 			model: "anthropic/claude-sonnet-4",
 			thinking: "low",
 		}),
 	]);
-	assert.match(rendered, /alpha.*gpt-5\.1-codex · thinking high · fast/);
+	assert.match(rendered, /alpha.*openai-codex\/gpt-5\.6-sol-fast · thinking high/);
 	assert.match(rendered, /beta.*claude-sonnet-4 · thinking low/);
-	assert.doesNotMatch(rendered, /claude-sonnet-4 · thinking low · fast/);
+	assert.doesNotMatch(rendered, / · fast(?: ·|\))/u);
 });

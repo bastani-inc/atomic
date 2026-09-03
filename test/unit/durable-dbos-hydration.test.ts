@@ -581,7 +581,6 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 			sessionFile: "/tmp/review.jsonl",
 			startedAt: 1000,
 			durationMs: 400,
-			fastMode: true,
 			attemptedModels,
 			modelAttempts,
 			structured: { approved: true },
@@ -613,7 +612,6 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 						structured: review.structured,
 						artifacts: review.artifacts,
 						warnings: review.warnings,
-						fastMode: review.fastMode,
 						attemptedModels: review.attemptedModels,
 						modelAttempts: review.modelAttempts,
 					}),
@@ -643,7 +641,6 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 			structured: { approved: true },
 			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
 			warnings: ["hydrated warning"],
-			fastMode: true,
 			attemptedModels,
 			modelAttempts,
 		});

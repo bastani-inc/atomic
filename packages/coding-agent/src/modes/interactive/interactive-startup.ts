@@ -23,7 +23,6 @@ import {
 	DynamicBorder,
 	ENV_OFFLINE,
 	ensureTool,
-	formatCodexFastModeModelLabel,
 	getAgentDir,
 	getChangelogPath,
 	getCwdRelativePath,
@@ -42,7 +41,6 @@ import {
 	path,
 	recordTimeSinceReset,
 	Spacer,
-	shouldApplyCodexFastMode,
 	spawn,
 	Text,
 	theme,
@@ -70,6 +68,26 @@ function prepareStartupNotices(mode: InteractiveModeBase): void {
 		mode.firstRunNoticeVisible = mode.isFirstRunOnboardingEligible?.() ?? false;
 	}
 }
+
+/**
+ * Show non-fatal model-catalog warnings — today, a derived `-fast` variant suppressed because
+ * something already owns that exact model ID.
+ *
+ * Called unconditionally at startup and again after deferred extension loading, because an extension
+ * provider can introduce a collision that did not exist at startup. The last reported text is kept so
+ * the second read only speaks when the diagnostic set actually changed.
+ */
+InteractiveModeBase.prototype.reportModelCatalogWarning = function (
+	this: InteractiveModeBase,
+	targetContainer: Container = this.chatContainer,
+): void {
+	const warning = this.session.modelRuntime.getWarning?.();
+	if (!warning || warning === this.reportedModelCatalogWarning) {
+		return;
+	}
+	this.reportedModelCatalogWarning = warning;
+	this.showWarning(warning, targetContainer);
+};
 
 InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 	this: InteractiveModeBase,
@@ -561,17 +579,7 @@ InteractiveModeBase.prototype.getStartupModelLabel = function (this: Interactive
 		modelLabel = `${modelLabel} ${this.session.thinkingLevel || "off"}`;
 	}
 
-	if (!model) {
-		return modelLabel;
-	}
-
-	const fastModeEnabled = shouldApplyCodexFastMode(
-		model,
-		this.session.settingsManager.getCodexFastModeSettings(),
-		this.session.orchestrationContext,
-		this.session.modelRuntime.getCredentialSnapshot?.("github-copilot"),
-	);
-	return formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
+	return modelLabel;
 };
 
 InteractiveModeBase.prototype.getStartupIdentityText = function (

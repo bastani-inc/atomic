@@ -174,7 +174,7 @@ const authoredWorkflow = workflow({
     // @ts-expect-error standalone authors cannot supply runtime SessionManager objects without Atomic types.
     ctx.stage("invalid-session-manager", { sessionManager: {} });
     // @ts-expect-error standalone authors cannot supply partial runtime SettingsManager objects without Atomic types.
-    ctx.stage("invalid-settings-manager", { settingsManager: { getCodexFastModeSettings() { return { enabled: true }; } } });
+    ctx.stage("invalid-settings-manager", { settingsManager: { getRetrySettings() { return { enabled: true }; } } });
     // @ts-expect-error custom tools must provide the full runtime tool shape.
     ctx.stage("invalid-custom-tool", { customTools: [{ name: "bad" }] });
     await typedStage.sendUserMessage("typed follow-on"); await typedStage.sendUserMessage("typed steering", { deliverAs: "steer" });
@@ -391,7 +391,7 @@ const adapter: AgentSessionAdapter = {
     void options;
     return {
       settingsManager: {
-        getCodexFastModeSettings() { return { enabled: true, model: "fixture" }; },
+        getRetrySettings() { return { enabled: false, maxRetries: 0, baseDelayMs: 0 }; },
       },
       session: {
       async prompt() {},

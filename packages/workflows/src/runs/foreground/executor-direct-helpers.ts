@@ -1,9 +1,8 @@
 import { isAbsolute, join, resolve } from "node:path";
-import { CONFIG_DIR_NAME, isCodexFastModeCandidateModelId } from "@bastani/atomic";
+import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import type { WorkflowActor } from "../../shared/store-types.js";
 import type { StageOptions, WorkflowArtifact, WorkflowTaskOptions, WorkflowTaskStep } from "../../shared/types.js";
 import { workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
-import { buildModelCandidatesFromCatalog, workflowModelId } from "../shared/model-fallback.js";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -18,7 +17,6 @@ import {
 } from "../shared/worktree.js";
 import { resolveWorktreeStageCwd } from "../shared/worktree-cwd.js";
 import { withoutUndefinedProperties } from "./executor-task-prompts.js";
-import type { RunOpts } from "./executor-types.js";
 
 export type { GitWorktreeSetupCache } from "../shared/worktree.js";
 export { createGitWorktreeSetupCache, createGitWorktreeSetupCacheOwner } from "../shared/worktree.js";
@@ -299,30 +297,4 @@ export function collectWorktreeDiffs(
 
 export function cleanupPreparedWorktrees(prepared: PreparedTaskWorktrees): void {
 	if (prepared.setup !== undefined) cleanupWorktrees(prepared.setup);
-}
-
-export async function hasExplicitFastModeCandidate(input: {
-	readonly model?: StageOptions["model"];
-	readonly fallbackModels?: readonly string[];
-	readonly models?: RunOpts["models"];
-}): Promise<boolean> {
-	const rawCandidate =
-		isCodexFastModeCandidate(input.model) ||
-		(Array.isArray(input.fallbackModels) &&
-			input.fallbackModels.some((candidate) => isCodexFastModeCandidate(candidate)));
-	if (rawCandidate) return true;
-	try {
-		const candidates = await buildModelCandidatesFromCatalog({
-			primaryModel: input.model,
-			fallbackModels: input.fallbackModels,
-			catalog: input.models,
-		});
-		return candidates.some((candidate) => isCodexFastModeCandidate(candidate.id));
-	} catch {
-		return false;
-	}
-}
-
-function isCodexFastModeCandidate(model: StageOptions["model"] | string | undefined): boolean {
-	return isCodexFastModeCandidateModelId(workflowModelId(model));
 }

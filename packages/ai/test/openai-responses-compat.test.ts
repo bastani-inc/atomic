@@ -524,6 +524,179 @@ describe("openai-responses provider defaults", () => {
 		expect(result.usage.cost.output).toBe(model.cost.output * multiplier * tokenScale);
 		expect(result.usage.cost.total).toBe((model.cost.input + model.cost.output) * multiplier * tokenScale);
 	});
+
+	it("routes a fast variant to its base upstream model and prices it against that base", async () => {
+		const base = getModel("openai", "gpt-5.5");
+		// A fast variant keeps its canonical `-fast` id; `fastRoute` names the upstream model.
+		const fast: Model<"openai-responses"> = {
+			...base,
+			id: "gpt-5.5-fast",
+			fastRoute: { baseModelId: "gpt-5.5", upstreamModelId: "gpt-5.5", serviceTier: "priority" },
+		};
+		const tokenCount = 100_000;
+		const tokenScale = tokenCount / 1_000_000;
+		let capturedPayload: { model?: string; service_tier?: string } | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+			const sse = `data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					service_tier: "priority",
+					usage: {
+						input_tokens: tokenCount,
+						output_tokens: tokenCount,
+						total_tokens: tokenCount * 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`;
+			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+		});
+
+		// No `serviceTier` option: the tier comes from the model, which is what a standalone
+		// `Models`/`ModelRuntime` caller relies on (the `*Simple` whitelist drops the option).
+		const stream = streamOpenAIResponses(
+			fast,
+			{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{ apiKey: "test-key" },
+		);
+		const result = await stream.result();
+
+		// The wire carries the base upstream model plus the tier.
+		expect(capturedPayload?.model).toBe("gpt-5.5");
+		expect(capturedPayload?.service_tier).toBe("priority");
+		// The recorded assistant message keeps the canonical `-fast` identity.
+		expect(result.model).toBe("gpt-5.5-fast");
+		// Pricing keys on the base model, so gpt-5.5's 2.5x rate survives the rename.
+		expect(result.usage.cost.input).toBe(base.cost.input * 2.5 * tokenScale);
+		expect(result.usage.cost.total).toBe((base.cost.input + base.cost.output) * 2.5 * tokenScale);
+	});
+
+	/**
+	 * The route is the authority: a per-request option cannot downgrade a fast variant, because fast
+	 * versus normal is model identity and the request is still recorded and billed as the fast one.
+	 * A normal model, which declares no tier, keeps honoring the option exactly as before.
+	 */
+	/**
+	 * A GitHub Copilot fast variant declares no tier: it sends its own advertised `-fast` model ID and
+	 * must carry no OpenAI service-tier field at all. Route *presence*, not just its declared value,
+	 * has to be the discriminator — otherwise a caller's option leaks a tier onto a Copilot request and
+	 * the priority cost multiplier with it.
+	 */
+	it.each(["priority", "flex", "default"] as const)(
+		"emits no service tier for a Copilot fast route even when a request asks for %s",
+		async (requested) => {
+			const base = getModel("openai", "gpt-5.5");
+			const copilotFast: Model<"openai-responses"> = {
+				...base,
+				id: "gpt-5.2-fast",
+				provider: "github-copilot",
+				// No `serviceTier`: Copilot routes by its own advertised model ID.
+				fastRoute: { baseModelId: "gpt-5.2", upstreamModelId: "gpt-5.2-fast" },
+			};
+			const tokenCount = 100_000;
+			const tokenScale = tokenCount / 1_000_000;
+			let capturedPayload: { model?: string; service_tier?: string } | undefined;
+			vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+				capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+				const sse = `data: ${JSON.stringify({
+					type: "response.completed",
+					response: {
+						status: "completed",
+						usage: {
+							input_tokens: tokenCount,
+							output_tokens: tokenCount,
+							total_tokens: tokenCount * 2,
+							input_tokens_details: { cached_tokens: 0 },
+						},
+					},
+				})}\n\n`;
+				return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+			});
+
+			const result = await streamOpenAIResponses(
+				copilotFast,
+				{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+				{ apiKey: "test-key", serviceTier: requested },
+			).result();
+
+			expect(capturedPayload?.model).toBe("gpt-5.2-fast");
+			expect(capturedPayload?.service_tier).toBeUndefined();
+			// No tier means no tier multiplier either.
+			expect(result.usage.cost.input).toBe(base.cost.input * tokenScale);
+		},
+	);
+
+	it.each([
+		["null", null],
+		["an array", []],
+		["a primitive", "invalid"],
+	] as const)("rejects %s returned by a payload hook for a fast route", async (_label, replacement) => {
+		const base = getModel("openai", "gpt-5.5");
+		const fast: Model<"openai-responses"> = {
+			...base,
+			id: "gpt-5.5-fast",
+			fastRoute: { baseModelId: "gpt-5.5", upstreamModelId: "gpt-5.5", serviceTier: "priority" },
+		};
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+
+		const result = await streamOpenAIResponses(
+			fast,
+			{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{ apiKey: "test-key", onPayload: () => replacement as never },
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain('A request hook changed payload for fast model "openai/gpt-5.5-fast"');
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["gpt-5.5-fast", "default", "priority", 2.5],
+		["gpt-5.5-fast", "flex", "priority", 2.5],
+		["gpt-5.5", "default", "default", 1],
+		["gpt-5.5", "flex", "flex", 0.5],
+	] as const)("%s asked for %s serializes %s", async (modelId, requested, expectedTier, multiplier) => {
+		const base = getModel("openai", "gpt-5.5");
+		const model: Model<"openai-responses"> =
+			modelId === "gpt-5.5"
+				? base
+				: {
+						...base,
+						id: modelId,
+						fastRoute: { baseModelId: "gpt-5.5", upstreamModelId: "gpt-5.5", serviceTier: "priority" },
+					};
+		const tokenCount = 100_000;
+		const tokenScale = tokenCount / 1_000_000;
+		let capturedPayload: { service_tier?: string } | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(String(init?.body)) as { service_tier?: string };
+			const sse = `data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					usage: {
+						input_tokens: tokenCount,
+						output_tokens: tokenCount,
+						total_tokens: tokenCount * 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`;
+			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+		});
+
+		const result = await streamOpenAIResponses(
+			model,
+			{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{ apiKey: "test-key", serviceTier: requested },
+		).result();
+
+		expect(capturedPayload?.service_tier).toBe(expectedTier);
+		// Pricing follows the resolved tier, so a fast variant cannot be billed at the requested rate.
+		expect(result.usage.cost.input).toBe(base.cost.input * multiplier * tokenScale);
+	});
 });
 
 describe("openai-responses max_output_tokens compat", () => {

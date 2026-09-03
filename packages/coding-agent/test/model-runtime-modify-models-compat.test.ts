@@ -69,7 +69,15 @@ describe("extension provider model lifecycle", () => {
 
 		runtime.registerNativeProvider(provider);
 		const registry = new ModelRegistry(runtime);
-		expect(registry.getProvider("extension-native")).toBe(provider);
+		// `getProvider` returns the published catalog provider, which is the registered provider behind
+		// the fast-variant overlay: same id, same auth, same stream functions, plus derived `-fast`
+		// entries. `getRegisteredNativeProvider` still hands back the exact registered object.
+		const published = registry.getProvider("extension-native");
+		expect(published).toBeDefined();
+		expect(published?.id).toBe("extension-native");
+		expect(published?.auth).toBe(provider.auth);
+		expect(published?.streamSimple).toBe(provider.streamSimple);
+		expect(published?.getModels().map((entry) => entry.id)).toEqual(provider.getModels().map((entry) => entry.id));
 		expect(registry.getRegisteredNativeProvider("extension-native")).toBe(provider);
 		expect(registry.getRegisteredProviderIds()).toContain("extension-native");
 		expect(registry.find("extension-native", "native")).toBeDefined();
@@ -84,6 +92,43 @@ describe("extension provider model lifecycle", () => {
 
 		registry.unregisterProvider("extension-native");
 		expect(registry.getProvider("extension-native")).toBeUndefined();
+	});
+
+	it("does not derive fast aliases over a native extension provider's transport", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const nativeModel: Model<"openai-responses"> = {
+			id: "gpt-native",
+			name: "GPT Native",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://extension.example.test/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+		const provider: Provider = {
+			id: "openai",
+			name: "Extension OpenAI",
+			getModels: () => [nativeModel],
+			stream: () => {
+				throw new Error("unused");
+			},
+			streamSimple: () => {
+				throw new Error("unused");
+			},
+		};
+
+		runtime.registerNativeProvider(provider);
+
+		expect(runtime.getProvider("openai")?.stream).toBe(provider.stream);
+		expect(runtime.getModels("openai").map((entry) => entry.id)).toEqual(["gpt-native"]);
 	});
 
 	it("applies models.json overrides above native providers", async () => {

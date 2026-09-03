@@ -150,12 +150,7 @@ function _makeFakeAtomicSdk(
 		SettingsManager: {
 			create(cwd?: string, agentDir?: string, options?: { projectTrusted?: boolean }): PiSdkSettingsManager {
 				settingsCalls.push({ cwd, agentDir, options });
-				return {
-					getCodexFastModeSettings: () => ({
-						chat: false,
-						workflow: false,
-					}),
-				};
+				return {};
 			},
 		},
 		DefaultResourceLoader: FakeResourceLoader,

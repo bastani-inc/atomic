@@ -36,7 +36,13 @@ import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } f
 import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
+import {
+	assertPayloadPreservesFastRoute,
+	convertResponsesMessages,
+	convertResponsesTools,
+	processResponsesStream,
+	resolveRequestedServiceTier,
+} from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
 // ============================================================================
@@ -274,6 +280,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			if (nextBody !== undefined) {
 				body = nextBody as RequestBody;
 			}
+			assertPayloadPreservesFastRoute(model, body);
 			const websocketRequestId = codexSessionId || uuidv7();
 			const sseHeaders = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, codexSessionId);
 			const websocketHeaders = buildWebSocketHeaders(
@@ -552,7 +559,9 @@ function buildRequestBody(
 	});
 
 	const body: RequestBody = {
-		model: model.id,
+		// A fast variant keeps its canonical `-fast` id on the model object — that is the identity the
+		// caller selected and records — while routing to the base upstream model plus a service tier.
+		model: model.fastRoute?.upstreamModelId ?? model.id,
 		store: false,
 		stream: true,
 		instructions: context.systemPrompt || "You are a helpful assistant.",
@@ -568,8 +577,10 @@ function buildRequestBody(
 		body.temperature = options.temperature;
 	}
 
-	if (options?.serviceTier !== undefined) {
-		body.service_tier = options.serviceTier;
+	// A fast variant carries its own tier, so a caller that only hands over the model still routes fast.
+	const requestedServiceTier = resolveRequestedServiceTier(model, options?.serviceTier);
+	if (requestedServiceTier !== undefined) {
+		body.service_tier = requestedServiceTier;
 	}
 
 	if (toolPlacement.immediate.length > 0) {
@@ -597,14 +608,17 @@ function buildRequestBody(
 }
 
 function getServiceTierCostMultiplier(
-	model: Pick<Model<"openai-codex-responses">, "id">,
+	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
 	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 ): number {
+	// Price against the model that was actually billed upstream, so a `-fast` variant of a
+	// per-model rate (gpt-5.5) is not silently charged the generic multiplier.
+	const pricedModelId = model.fastRoute?.baseModelId ?? model.id;
 	switch (serviceTier) {
 		case "flex":
 			return 0.5;
 		case "priority":
-			return model.id === "gpt-5.5" ? 2.5 : 2;
+			return pricedModelId === "gpt-5.5" ? 2.5 : 2;
 		default:
 			return 1;
 	}
@@ -613,7 +627,7 @@ function getServiceTierCostMultiplier(
 function applyServiceTierPricing(
 	usage: Usage,
 	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-	model: Pick<Model<"openai-codex-responses">, "id">,
+	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
 ) {
 	const multiplier = getServiceTierCostMultiplier(model, serviceTier);
 	if (multiplier === 1) return;
@@ -670,7 +684,7 @@ async function processStream(
 		stream,
 		model,
 		{
-			serviceTier: options?.serviceTier,
+			serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
 			grammarToolInputProperties,
 			resolveServiceTier: resolveCodexServiceTier,
 			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
@@ -1525,7 +1539,7 @@ async function processWebSocketStream(
 			stream,
 			model,
 			{
-				serviceTier: options?.serviceTier,
+				serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
 				grammarToolInputProperties,
 				resolveServiceTier: resolveCodexServiceTier,
 				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),

@@ -1,29 +1,14 @@
 import { join } from "node:path";
-import {
-	type Api,
-	clampThinkingLevel,
-	type Message,
-	type Model,
-	type ProviderHeaders,
-	streamSimple,
-} from "@bastani/pi-ai/compat";
+import { clampThinkingLevel, type Message, type ProviderHeaders, streamSimple } from "@bastani/pi-ai/compat";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
-import {
-	isGitHubCopilotModel,
-	shouldApplyCodexFastMode,
-	streamWithCodexFastMode,
-	usesChatGptCodexTransport,
-	withChatGptCodexTransportRouting,
-	withCodexFastModePayload,
-	withCodexFastModeStreamOptions,
-} from "./codex-fast-mode.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
+import { getModelFastRoute, streamWithFastRoute, withFastRouteStreamOptions } from "./fast-model-routing.ts";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
@@ -283,13 +268,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
-	const isCodexFastModeEnabled = (requestModel: Model<Api>): boolean =>
-		shouldApplyCodexFastMode(
-			requestModel,
-			settingsManager.getCodexFastModeSettings(),
-			options.orchestrationContext,
-			modelRuntime.getCredentialSnapshot("github-copilot"),
-		);
 
 	agent = new Agent({
 		initialState: {
@@ -334,50 +312,46 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const assembledHeaders = headerRunner?.hasHandlers("before_provider_headers")
 				? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {})
 				: mergedHeaders;
-			const fastModeEnabled = isCodexFastModeEnabled(model);
 			const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
 			const usesExtensionStream =
 				extensionProvider?.streamSimple !== undefined && requestModel.api === extensionProvider.api;
 			const transportHeaders = usesExtensionStream
 				? assembledHeaders
 				: removeUnownedModelHeaders(assembledHeaders, model.headers, requestHeaders);
-			if (fastModeEnabled && !isGitHubCopilotModel(model) && !usesExtensionStream && !authResult) {
+			// Fast-vs-normal is the selected model's own identity, so the canonical `-fast` model is what
+			// dispatch, the recorded assistant message, session state, and usage all see. The provider
+			// adapter reads `fastRoute.upstreamModelId` when it serializes the outbound request.
+			const fastRoute = getModelFastRoute(requestModel);
+			if (fastRoute?.serviceTier !== undefined && !usesExtensionStream && !authResult) {
 				throw new Error(`No API key found for "${model.provider}"`);
 			}
-			const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
-				requestModel,
-				{
-					...streamOptions,
-					apiKey: auth.apiKey,
-					env: auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined,
-					timeoutMs,
-					websocketConnectTimeoutMs,
-					streamDeadlineMs,
-					maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
-					maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-					headers: transportHeaders,
-				},
-				fastModeEnabled,
-			);
+			const fastRouteStreamOptions = withFastRouteStreamOptions(fastRoute, {
+				...streamOptions,
+				apiKey: auth.apiKey,
+				env: auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined,
+				timeoutMs,
+				websocketConnectTimeoutMs,
+				streamDeadlineMs,
+				maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
+				maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+				headers: transportHeaders,
+			});
 			if (usesExtensionStream) {
-				return modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
+				return modelRuntime.streamSimple(requestModel, context, fastRouteStreamOptions);
 			}
-			if (fastModeEnabled && !isGitHubCopilotModel(requestModel)) {
-				return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
+			if (fastRoute?.serviceTier !== undefined) {
+				return streamWithFastRoute(requestModel, context, fastRouteStreamOptions);
 			}
-			const transportOptions =
-				usesChatGptCodexTransport(requestModel) && codexFastModeStreamOptions
-					? withChatGptCodexTransportRouting(requestModel, codexFastModeStreamOptions, false)
-					: codexFastModeStreamOptions;
-			return modelRuntime.streamSimple(requestModel, context, transportOptions);
+			// The Codex routing identity is attached by ModelRuntimeStreaming, after auth headers are
+			// merged. Applying it here would be inert: `mergeHeaders` copies the header object the
+			// wrapper mutates.
+			return modelRuntime.streamSimple(requestModel, context, fastRouteStreamOptions);
 		},
 		onPayload: async (payload, model) => {
-			const fastModeEnabled = isCodexFastModeEnabled(model);
-			const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled, model);
 			const sourceMessages = lastConvertedLlmMessages;
 			const replayGuardedPayload = sourceMessages
-				? restoreAnthropicReplayThinkingBlocks(guardedPayload, sourceMessages, model)
-				: guardedPayload;
+				? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)
+				: payload;
 			const runner = extensionRunnerRef.current;
 			let finalPayload: unknown;
 			if (!runner?.hasHandlers("before_provider_request")) {

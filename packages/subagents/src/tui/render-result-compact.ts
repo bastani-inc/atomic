@@ -37,7 +37,7 @@ export function renderSingleCompact(
 	]);
 	const c = new Container();
 	const width = getTermWidth() - 4;
-	const modelDisplay = modelThinkingBadge(theme, r.model, r.thinking, r.fastMode);
+	const modelDisplay = modelThinkingBadge(theme, r.model, r.thinking);
 	c.addChild(
 		new Text(
 			truncLine(
@@ -163,12 +163,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 				| undefined;
 			if (runningProg) {
 				const runningStats = formatProgressStats(theme, runningProg, true, now);
-				const runningBadge = modelThinkingBadge(
-					theme,
-					runningProg.model,
-					runningProg.thinking,
-					runningProg.fastMode,
-				);
+				const runningBadge = modelThinkingBadge(theme, runningProg.model, runningProg.thinking);
 				const runningLine = `${theme.fg("accent", pulseGlyph(pulseFrame))} ${rowLabel}: ${themeBold(theme, agentName)}${runningBadge}${runningStats ? ` ${theme.fg("dim", "·")} ${runningStats}` : ""}`;
 				c.addChild(new Text(truncLine(`  ${runningLine}`, width), 0, 0));
 				const activity = compactCurrentActivity(runningProg, now);
@@ -197,12 +192,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 					? progressFromArray.index + 1
 					: i + 1;
 		const stepStats = formatProgressStats(theme, rProg, true, now);
-		const modelDisplay = modelThinkingBadge(
-			theme,
-			r.model ?? rProg?.model,
-			r.thinking ?? rProg?.thinking,
-			r.fastMode ?? rProg?.fastMode,
-		);
+		const modelDisplay = modelThinkingBadge(theme, r.model ?? rProg?.model, r.thinking ?? rProg?.thinking);
 		const glyph = rPending ? theme.fg("dim", "◦") : resultGlyph(r, output, theme, rRunning, pulseFrame);
 		const pendingLabel = rPending ? ` ${theme.fg("dim", "· pending")}` : "";
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);

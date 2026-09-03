@@ -96,6 +96,122 @@ function buildSSEPayload({
 	return `${events.join("\n\n")}\n\n`;
 }
 
+describe("openai-codex fast model routing", () => {
+	const baseModel: Model<"openai-codex-responses"> = {
+		id: "gpt-5.6-sol",
+		name: "GPT-5.6 Sol",
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://chatgpt.com/backend-api",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 400000,
+		maxTokens: 128000,
+	};
+	const fastModel: Model<"openai-codex-responses"> = {
+		...baseModel,
+		id: "gpt-5.6-sol-fast",
+		fastRoute: { baseModelId: "gpt-5.6-sol", upstreamModelId: "gpt-5.6-sol", serviceTier: "priority" },
+	};
+	const context: Context = {
+		systemPrompt: "You are a helpful assistant.",
+		messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+	};
+
+	async function captureBody(
+		model: Model<"openai-codex-responses">,
+		run: typeof streamOpenAICodexResponses | typeof streamSimpleOpenAICodexResponses,
+	): Promise<Record<string, unknown> | null> {
+		let body: Record<string, unknown> | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				body = decodeCodexRequestBody(init?.body);
+				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		await run(model, context, { apiKey: mockToken(), transport: "sse" }).result();
+		return body;
+	}
+
+	/**
+	 * The tier must default from the model, not only from a caller-supplied option: `streamSimple`
+	 * reaches this adapter through pi-ai's `buildBaseOptions` whitelist, which drops `serviceTier`.
+	 * Without the model-driven default a standalone caller silently got normal-tier service.
+	 */
+	it("sends the base upstream model plus the model's own tier through stream", async () => {
+		const body = await captureBody(fastModel, streamOpenAICodexResponses);
+
+		expect(body?.model).toBe("gpt-5.6-sol");
+		expect(body?.service_tier).toBe("priority");
+	});
+
+	it("sends the base upstream model plus the model's own tier through streamSimple", async () => {
+		const body = await captureBody(fastModel, streamSimpleOpenAICodexResponses);
+
+		expect(body?.model).toBe("gpt-5.6-sol");
+		expect(body?.service_tier).toBe("priority");
+	});
+
+	it("sends no service tier for the normal sibling", async () => {
+		const body = await captureBody(baseModel, streamSimpleOpenAICodexResponses);
+
+		expect(body?.model).toBe("gpt-5.6-sol");
+		expect(body?.service_tier).toBeUndefined();
+	});
+
+	/**
+	 * The route is the authority. A fast variant is a distinct selected, recorded, persisted, and
+	 * billed identity, so a per-request option must not turn it into an ordinary request — that would
+	 * also suppress the Codex routing identity, which keys on the final payload's tier.
+	 */
+	it.each(["default", "flex"] as const)("keeps the fast route's tier when a request asks for %s", async (tier) => {
+		let body: Record<string, unknown> | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				body = decodeCodexRequestBody(init?.body);
+				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		await streamOpenAICodexResponses(fastModel, context, {
+			apiKey: mockToken(),
+			transport: "sse",
+			serviceTier: tier,
+		}).result();
+
+		expect(body?.service_tier).toBe("priority");
+	});
+
+	it.each(["default", "flex"] as const)("honors an explicit %s tier on the normal sibling", async (tier) => {
+		let body: Record<string, unknown> | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				body = decodeCodexRequestBody(init?.body);
+				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		await streamOpenAICodexResponses(baseModel, context, {
+			apiKey: mockToken(),
+			transport: "sse",
+			serviceTier: tier,
+		}).result();
+
+		expect(body?.service_tier).toBe(tier);
+	});
+});
+
 describe("openai-codex streaming", () => {
 	it("streams SSE responses into AssistantMessageEventStream", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));

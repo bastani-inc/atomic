@@ -10,7 +10,6 @@ import {
 	getAgentDir,
 	getBuiltinPackagePaths,
 	type PackageSource,
-	readStoredCredential,
 	SessionManager,
 	type SessionStats,
 	SettingsManager,
@@ -32,11 +31,6 @@ import {
 	resolveSkillsFromCatalog,
 } from "../../agents/skills.js";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
-import {
-	getSubagentCodexFastModeSettings,
-	resolveSubagentCodexFastModeScope,
-	resolveSubagentModelFastMode,
-} from "../../shared/fast-mode.js";
 import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
 import { resolveEffectiveThinking } from "../../shared/model-info.js";
 import {
@@ -169,16 +163,6 @@ function initialThinkingForAttempt(
 ): string | undefined {
 	return resolveEffectiveThinking(model, configuredThinking) ?? configuredThinking;
 }
-function defaultFastModeForChild(
-	cwd: string,
-	context: ParentContext["orchestrationContext"],
-	resolvedModel?: Model<Api>,
-): (model?: string) => boolean {
-	const settings = getSubagentCodexFastModeSettings(cwd);
-	const scope = resolveSubagentCodexFastModeScope(context);
-	const copilotCredential = readStoredCredential("github-copilot");
-	return (model) => resolveSubagentModelFastMode({ model, resolvedModel, cwd, settings, scope, copilotCredential });
-}
 
 export interface AttemptSignals {
 	readonly abort: AbortSignal;
@@ -247,7 +231,6 @@ export interface ResultEnvelope {
 	readonly envelope: string;
 	readonly model?: string;
 	readonly thinking?: string;
-	readonly fastMode?: boolean;
 	readonly modelAttempts?: readonly {
 		readonly model: string;
 		readonly status: TerminalStatus;
@@ -728,7 +711,6 @@ export class AdmittedChild {
 export interface ChildRuntimeMetadata {
 	model?: string;
 	thinking?: string;
-	fastMode?: boolean;
 }
 
 export interface RunningAttempt {
@@ -738,15 +720,10 @@ export interface RunningAttempt {
 	readonly startedAt: number;
 	currentModel?: string;
 	currentThinking?: string;
-	currentFastMode?: boolean;
 	status: "running" | ChildStatus;
 	promise: Promise<AttemptOutcome>;
 	terminate?: (cause: TerminationCauseName) => Promise<void>;
 	attemptToken?: number;
-}
-
-export interface StartAttemptOptions {
-	readonly fastModeForModel?: (model: string | undefined) => boolean;
 }
 
 export class SubagentControlRuntime {
@@ -819,8 +796,7 @@ export class SubagentControlRuntime {
 		admitted: AdmittedChild,
 		candidate: ModelCandidate,
 		signals: AttemptSignals,
-		onModelChange: ((model: string | undefined, thinking?: string, fastMode?: boolean) => void) | undefined,
-		fastModeForModel: (model: string | undefined) => boolean,
+		onModelChange: ((model: string | undefined, thinking?: string) => void) | undefined,
 	): Promise<AttemptOutcome> {
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
 		const configuredThinking = candidate.thinkingLevel ?? admitted.policy.thinkingLevel;
@@ -985,14 +961,13 @@ export class SubagentControlRuntime {
 			effectiveThinking =
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
-			onModelChange?.(effectiveModelId, effectiveThinking, fastModeForModel(effectiveModelId));
+			onModelChange?.(effectiveModelId, effectiveThinking);
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,
 				status: "running",
 				...(initialModelId === undefined ? {} : { model: initialModelId }),
 				...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
-				fastMode: fastModeForModel(initialModelId),
 				task: admitted.spec.task,
 				recentTools: [],
 				recentOutput: [],
@@ -1049,13 +1024,11 @@ export class SubagentControlRuntime {
 					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
 					effectiveModelId = event.to;
 					progressState.model = event.to;
-					progressState.fastMode = fastModeForModel(event.to);
-					onModelChange?.(effectiveModelId, effectiveThinking, progressState.fastMode);
+					onModelChange?.(effectiveModelId, effectiveThinking);
 				} else if (event.type === "thinking_level_changed") {
 					effectiveThinking = event.level;
 					progressState.thinking = effectiveThinking;
-					const fastMode = fastModeForModel(effectiveModelId);
-					onModelChange?.(effectiveModelId, effectiveThinking, fastMode);
+					onModelChange?.(effectiveModelId, effectiveThinking);
 					emitProgress(true);
 				}
 			});
@@ -1176,20 +1149,12 @@ export class SubagentControlRuntime {
 		}
 	}
 
-	startAttempt(
-		admitted: AdmittedChild,
-		candidate: ModelCandidate,
-		signals: AttemptSignals,
-		options: StartAttemptOptions = {},
-	): RunningAttempt {
+	startAttempt(admitted: AdmittedChild, candidate: ModelCandidate, signals: AttemptSignals): RunningAttempt {
 		const initialModel = modelIdForCandidate(candidate, admitted.policy.model);
 		const initialThinking = initialThinkingForAttempt(
 			initialModel,
 			candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
 		);
-		const fastModeForModel =
-			options.fastModeForModel ??
-			defaultFastModeForChild(admitted.policy.cwd, admitted.spec.parent?.orchestrationContext, candidate.model);
 		const running: RunningAttempt = {
 			id: this.nextAttemptId++,
 			child: admitted,
@@ -1198,7 +1163,6 @@ export class SubagentControlRuntime {
 			startedAt: Date.now(),
 			...(initialModel === undefined ? {} : { currentModel: initialModel }),
 			currentThinking: initialThinking,
-			currentFastMode: fastModeForModel(initialModel),
 			promise: Promise.resolve({
 				status: "error",
 				cause: "uninitialized",
@@ -1207,17 +1171,10 @@ export class SubagentControlRuntime {
 				envelope: "uninitialized",
 			}),
 		};
-		running.promise = this.runChildAttempt(
-			admitted,
-			candidate,
-			signals,
-			(model, thinking, fastMode) => {
-				running.currentModel = model;
-				running.currentThinking = thinking;
-				running.currentFastMode = fastMode;
-			},
-			fastModeForModel,
-		).then((result) => {
+		running.promise = this.runChildAttempt(admitted, candidate, signals, (model, thinking) => {
+			running.currentModel = model;
+			running.currentThinking = thinking;
+		}).then((result) => {
 			running.status = result.status;
 			this.runningAttempts.delete(running.id);
 			return result;
@@ -1245,11 +1202,10 @@ export class SubagentControlRuntime {
 		if (!running) return undefined;
 		const model = running.currentModel;
 		const thinking = running.currentThinking;
-		if (model === undefined && thinking === undefined && running.currentFastMode === undefined) return undefined;
+		if (model === undefined && thinking === undefined) return undefined;
 		return {
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinking }),
-			...(running.currentFastMode === undefined ? {} : { fastMode: running.currentFastMode }),
 		};
 	}
 
@@ -1343,13 +1299,7 @@ export function run_child_attempt(
 	candidate: ModelCandidate,
 	signals: AttemptSignals,
 ): Promise<AttemptOutcome> {
-	return control.runChildAttempt(
-		admitted,
-		candidate,
-		signals,
-		undefined,
-		defaultFastModeForChild(admitted.policy.cwd, admitted.spec.parent?.orchestrationContext, candidate.model),
-	);
+	return control.runChildAttempt(admitted, candidate, signals, undefined);
 }
 
 export function continue_detached(

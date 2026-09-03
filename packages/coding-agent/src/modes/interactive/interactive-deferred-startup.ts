@@ -80,6 +80,9 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		if (modelsJsonError) {
 			this.showError(`models.json error: ${modelsJsonError}`);
 		}
+		// Extension providers can introduce a `-fast` collision that did not exist at eager startup, so
+		// re-read; `reportModelCatalogWarning` suppresses a repeat of what startup already showed.
+		this.reportModelCatalogWarning(this.startupNoticesContainer);
 		void this.updateAvailableProviderCount().catch(() => {});
 		this.updateEditorBorderColor();
 		this.ui.requestRender();

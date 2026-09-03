@@ -758,7 +758,6 @@ test("an invocation controls pending and live delivery into an owned isolated st
 				group: isolatedGroup,
 				model: "test/model",
 				settingsManager: {
-					getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
 					getRetrySettings: () => ({ enabled: false, maxRetries: 0, baseDelayMs: 0 }),
 				},
 			} as never);
@@ -1238,7 +1237,6 @@ test("a durable pending admission survives a real stage-session fallback attempt
 				model: "anthropic/primary",
 				fallbackModels: ["openai/fallback"],
 				settingsManager: {
-					getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
 					getRetrySettings: () => ({ enabled: false, maxRetries: 0, baseDelayMs: 0 }),
 				},
 			} as never);

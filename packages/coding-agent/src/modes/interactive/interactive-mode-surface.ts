@@ -60,12 +60,12 @@ declare module "./interactive-mode-base.ts" {
 		getAutocompleteSourceTag(sourceInfo?: SourceInfo): string | undefined;
 		prefixAutocompleteDescription(description: string | undefined, sourceInfo?: SourceInfo): string | undefined;
 		getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[];
-		getCodexFastModeCandidateModels(): Model<Api>[];
-		hasCodexFastModeSupportedModels(): boolean;
 		createBaseAutocompleteProvider(): AutocompleteProvider;
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
 		setupAutocompleteProvider(): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
+		reportModelCatalogWarning(targetContainer?: Container): void;
+		reportedModelCatalogWarning: string | undefined;
 		hadLastChangelogVersionAtStartup: boolean;
 		firstRunNoticeVisible: boolean;
 		firstRunOnboardingNoticeComponents: Component[];
@@ -329,7 +329,6 @@ declare module "./interactive-mode-base.ts" {
 		showSelector(
 			create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
 		): void;
-		showFastModeSelector(): void;
 		showSettingsSelector(): void;
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		handleThinkingCommand(searchTerm?: string): void;

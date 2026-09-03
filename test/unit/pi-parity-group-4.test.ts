@@ -127,9 +127,15 @@ test("native provider registration round-trips through ModelRegistry and ModelRu
 	assert.ok(builtin);
 	const provider = { ...builtin, id: "native-test", name: "Native Test" };
 	registry.registerProvider(provider);
-	assert.equal(registry.getProvider("native-test"), provider);
+	// `getProvider` returns the published catalog provider: the registered provider behind the
+	// fast-variant overlay, so it shares the registered object's id, auth, and stream functions.
+	// `getRegisteredNativeProvider` still returns the exact registered object.
+	assert.equal(registry.getProvider("native-test")?.id, "native-test");
+	assert.equal(registry.getProvider("native-test")?.auth, provider.auth);
+	assert.equal(registry.getRegisteredNativeProvider("native-test"), provider);
 
-	assert.equal(runtime.getProvider("native-test"), provider);
+	assert.equal(runtime.getProvider("native-test")?.id, "native-test");
+	assert.equal(runtime.getProvider("native-test")?.streamSimple, provider.streamSimple);
 	assert.ok(runtime.getProviders().some((candidate) => candidate.id === "native-test"));
 	assert.equal(await runtime.checkAuth("native-test"), undefined);
 

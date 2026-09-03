@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Breaking Changes
 
 - Workflow-stage Intercom targets now accept only root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` paths. The legacy `<runId>:<stageKey>` form is refused with a canonical-path migration hint.
+- Removed the `fastMode` field from `WorkflowTaskResult`, stage snapshots, fallback metadata, and durable checkpoint/envelope records. Workflow stages now select fast inference explicitly by pinning a canonical `-fast` model ID in `model` or `fallbackModels`; normal and fast IDs remain separate ordered candidates.
 
 ### Added
 

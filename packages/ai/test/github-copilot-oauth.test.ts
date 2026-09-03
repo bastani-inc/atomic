@@ -164,7 +164,7 @@ describe("GitHub Copilot OAuth device flow", () => {
 		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual(["gpt-4.1"]);
 	});
 
-	it("stores entitled fast variants without exposing them in the model picker", async () => {
+	it("advertises entitled fast variants and keeps unentitled ones out of the picker", async () => {
 		const credentials = await refreshGitHubCopilotModelsForTest([
 			{
 				id: "claude-opus-4.8",
@@ -191,14 +191,55 @@ describe("GitHub Copilot OAuth device flow", () => {
 		const provider = githubCopilotProvider();
 		const regularModel = provider.getModels()[0];
 		assert.ok(regularModel);
-		const fastVariant = { ...regularModel, id: `${regularModel.id}-fast` };
+		const entitledFast = {
+			...regularModel,
+			id: "claude-opus-4.8-fast",
+			fastRoute: { baseModelId: "claude-opus-4.8", upstreamModelId: "claude-opus-4.8-fast" },
+		};
+		const unentitledFast = {
+			...regularModel,
+			id: "claude-opus-4.7-fast",
+			fastRoute: { baseModelId: "claude-opus-4.7", upstreamModelId: "claude-opus-4.7-fast" },
+		};
 		assert.deepEqual(
-			provider.filterModels?.([regularModel, fastVariant], {
+			provider.filterModels?.([regularModel, entitledFast, unentitledFast], {
 				...credentials,
 				type: "oauth",
-				availableModelIds: [regularModel.id, fastVariant.id],
+				availableModelIds: [regularModel.id, entitledFast.id, unentitledFast.id],
 			}),
-			[regularModel],
+			[regularModel, entitledFast],
+		);
+	});
+
+	it("drops fast variants entirely when the credential advertises no fast entitlements", async () => {
+		const provider = githubCopilotProvider();
+		const regularModel = provider.getModels()[0];
+		assert.ok(regularModel);
+		const derivedFast = {
+			...regularModel,
+			id: `${regularModel.id}-fast`,
+			fastRoute: { baseModelId: regularModel.id, upstreamModelId: `${regularModel.id}-fast` },
+		};
+		assert.deepEqual(provider.filterModels?.([regularModel, derivedFast], undefined), [regularModel]);
+		assert.deepEqual(provider.filterModels?.([regularModel, derivedFast], { type: "api_key", key: "token" }), [
+			regularModel,
+		]);
+	});
+
+	it("treats a Copilot-owned model that merely ends in -fast as an ordinary picker model", async () => {
+		const provider = githubCopilotProvider();
+		const regularModel = provider.getModels()[0];
+		assert.ok(regularModel);
+		// No fastRoute metadata: the `-fast` suffix alone must not confer fast semantics or filtering.
+		const suffixOnly = { ...regularModel, id: `${regularModel.id}-fast` };
+		assert.deepEqual(
+			provider.filterModels?.([regularModel, suffixOnly], {
+				type: "oauth",
+				accessToken: "token",
+				availableModelIds: [regularModel.id, suffixOnly.id],
+				fastModelIds: [],
+			}),
+			[regularModel, suffixOnly],
 		);
 	});
 

@@ -6,6 +6,12 @@ import { loadGitHubCopilotOAuth } from "../auth/oauth/load.ts";
 import { createProvider, type Provider } from "../models.ts";
 import { GITHUB_COPILOT_MODELS } from "./github-copilot.models.ts";
 
+/** Copilot advertises entitlements as string ID arrays on the OAuth credential; ignore any other shape. */
+function advertisedModelIds(value: unknown): ReadonlySet<string> | undefined {
+	if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) return undefined;
+	return new Set(value);
+}
+
 export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai-completions" | "openai-responses"> {
 	return createProvider({
 		id: "github-copilot",
@@ -17,14 +23,16 @@ export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai
 		},
 		models: Object.values(GITHUB_COPILOT_MODELS),
 		filterModels: (models, credential) => {
-			const selectableModels = models.filter((model) => !model.id.endsWith("-fast"));
-			if (credential?.type !== "oauth") return selectableModels;
-			const availableModelIds = credential.availableModelIds;
-			if (!Array.isArray(availableModelIds) || !availableModelIds.every((id) => typeof id === "string")) {
-				return selectableModels;
-			}
-			const available = new Set(availableModelIds);
-			return selectableModels.filter((model) => available.has(model.id));
+			const oauth = credential?.type === "oauth" ? credential : undefined;
+			const entitledFastModelIds = advertisedModelIds(oauth?.fastModelIds);
+			const availableModelIds = advertisedModelIds(oauth?.availableModelIds);
+			return models.filter((model) => {
+				// Fast siblings are advertised per account, so expose only the exact IDs this credential
+				// entitles. Fast-ness comes from the explicit route metadata, never from the `-fast` suffix:
+				// a Copilot-owned model that merely ends in `-fast` is an ordinary picker model.
+				if (model.fastRoute !== undefined) return entitledFastModelIds?.has(model.id) === true;
+				return availableModelIds?.has(model.id) ?? true;
+			});
 		},
 		api: {
 			"anthropic-messages": anthropicMessagesApi(),

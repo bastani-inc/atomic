@@ -1,10 +1,5 @@
 import { join } from "path";
-import {
-	getAgentConfigPaths,
-	getAgentDir,
-	getCodexFastModeEnvironmentSettings,
-	getProjectConfigPaths,
-} from "../config.js";
+import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { deepMergeSettings } from "./settings-merge.ts";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
@@ -21,7 +16,6 @@ export class SettingsManager {
 	private globalSettings: Settings;
 	private projectSettings: Settings;
 	private settings: Settings;
-	private runtimeSettingsOverrides: Settings;
 	private projectTrusted: boolean;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
@@ -48,21 +42,12 @@ export class SettingsManager {
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
-		this.runtimeSettingsOverrides = SettingsManager.getRuntimeSettingsOverrides();
 		this.settings = this.mergeEffectiveSettings();
 		this.touchSplitAccessorMethods();
 	}
 
-	private static getRuntimeSettingsOverrides(): Settings {
-		const codexFastMode = getCodexFastModeEnvironmentSettings();
-		return codexFastMode ? { codexFastMode } : {};
-	}
-
 	private mergeEffectiveSettings(): Settings {
-		return deepMergeSettings(
-			deepMergeSettings(this.globalSettings, this.projectSettings),
-			this.runtimeSettingsOverrides,
-		);
+		return deepMergeSettings(this.globalSettings, this.projectSettings);
 	}
 
 	/** Create a SettingsManager that loads from files */
@@ -295,7 +280,6 @@ export class SettingsManager {
 			this.recordError("project", projectLoad.error);
 		}
 
-		this.runtimeSettingsOverrides = SettingsManager.getRuntimeSettingsOverrides();
 		this.settings = this.mergeEffectiveSettings();
 	}
 	/** Load a reload candidate without publishing any settings to live readers. */
@@ -321,7 +305,6 @@ export class SettingsManager {
 		this.globalSettings = candidate.globalSettings;
 		this.projectSettings = candidate.projectSettings;
 		this.settings = candidate.settings;
-		this.runtimeSettingsOverrides = candidate.runtimeSettingsOverrides;
 		this.projectTrusted = candidate.projectTrusted;
 		this.modifiedFields = candidate.modifiedFields;
 		this.modifiedNestedFields = candidate.modifiedNestedFields;

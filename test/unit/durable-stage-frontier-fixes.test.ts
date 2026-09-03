@@ -260,7 +260,6 @@ test("cached replay hydrates persisted stage timing, result, session, and model 
 		sessionId: "sid",
 		sessionFile: "/tmp/session.jsonl",
 		model: "gpt-test",
-		fastMode: true,
 		attemptedModels: ["gpt-test"],
 		modelAttempts: [{ model: "gpt-test", success: true, usage }],
 	};
@@ -274,7 +273,6 @@ test("cached replay hydrates persisted stage timing, result, session, and model 
 	assert.equal(stage.sessionId, "sid");
 	assert.equal(stage.sessionFile, "/tmp/session.jsonl");
 	assert.equal(stage.model, "gpt-test");
-	assert.equal(stage.fastMode, true);
 	assert.deepEqual(stage.attemptedModels, ["gpt-test"]);
 	assert.equal(stage.modelAttempts?.[0]?.success, true);
 	assert.deepEqual(stage.modelAttempts?.[0]?.usage, usage);

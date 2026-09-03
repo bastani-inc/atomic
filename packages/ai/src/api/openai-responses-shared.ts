@@ -103,6 +103,73 @@ function convertToolResultOutput<TApi extends Api>(
 	return output;
 }
 
+/**
+ * The service tier this request should carry.
+ *
+ * The **presence** of `fastRoute` is the discriminator, and its declared tier is the value. Fast
+ * versus normal is model identity, so a caller who wants a different tier selects the normal sibling
+ * rather than downgrading the fast one; letting a per-request option win would let a model selected,
+ * recorded, persisted, and billed as `-fast` route as an ordinary request — and, because the Codex
+ * routing identity keys on the final payload's tier, silently drop `originator: codex_cli_rs` too.
+ *
+ * A route that declares **no** tier means *no tier*, not "fall through to the caller". A GitHub
+ * Copilot fast variant is exactly that case: it sends its own advertised `-fast` model ID and must
+ * carry no OpenAI service-tier field at all, whatever the caller asks for.
+ *
+ * A normal model has no route, so an explicit `serviceTier` still applies there exactly as it did
+ * before fast variants existed.
+ */
+export function resolveRequestedServiceTier(
+	model: Pick<Model<Api>, "fastRoute">,
+	optionsServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+): ResponseCreateParamsStreaming["service_tier"] | undefined {
+	return model.fastRoute ? model.fastRoute.serviceTier : optionsServiceTier;
+}
+
+/**
+ * Reject a payload hook that rewrote a field the model's route owns.
+ *
+ * A fast variant is a distinct selected, recorded, persisted, and billed identity, and the objective
+ * requires it to send its route's upstream model ID and tier. A hook that changes either would send a
+ * different model — or an ordinary-tier request — under the `-fast` identity Atomic recorded, and the
+ * Codex routing identity would faithfully advertise whatever the hook left behind.
+ *
+ * Following the repository's precedent for discarded caller instructions, this rejects loudly rather
+ * than silently restoring the route's values, so a misconfigured hook surfaces instead of hiding. A
+ * hook may still rewrite every other field, and a model without a route keeps unrestricted freedom.
+ */
+export function assertPayloadPreservesFastRoute(
+	model: Pick<Model<Api>, "fastRoute" | "id" | "provider">,
+	payload: unknown,
+): void {
+	const fastRoute = model.fastRoute;
+	if (!fastRoute) return;
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+		throw new Error(
+			`A request hook changed payload for fast model "${model.provider}/${model.id}" to a value that cannot carry ` +
+				`the route's upstream model and service tier. A fast model variant must send its route's upstream model and ` +
+				`service tier, because it is recorded, persisted, and billed under its own identity. Select the normal model ` +
+				`"${model.provider}/${fastRoute.baseModelId}" if the request needs different routing, or return an object that ` +
+				`preserves those fields.`,
+		);
+	}
+	const record = payload as Record<string, unknown>;
+	const conflicts: string[] = [];
+	if (record.model !== fastRoute.upstreamModelId) {
+		conflicts.push(`model (expected "${fastRoute.upstreamModelId}", got ${JSON.stringify(record.model)})`);
+	}
+	if (record.service_tier !== fastRoute.serviceTier) {
+		conflicts.push(`service_tier (expected ${JSON.stringify(fastRoute.serviceTier)}, got ${JSON.stringify(record.service_tier)})`);
+	}
+	if (conflicts.length === 0) return;
+	throw new Error(
+		`A request hook changed ${conflicts.join(" and ")} for fast model "${model.provider}/${model.id}". ` +
+			`A fast model variant must send its route's upstream model and service tier, because it is ` +
+			`recorded, persisted, and billed under its own identity. Select the normal model "${model.provider}/${fastRoute.baseModelId}" ` +
+			`if the request needs different routing, or stop rewriting those fields.`,
+	);
+}
+
 export interface OpenAIResponsesStreamOptions {
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	grammarToolInputProperties?: ReadonlyMap<string, string>;

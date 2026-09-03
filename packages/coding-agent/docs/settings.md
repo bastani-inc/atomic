@@ -85,25 +85,22 @@ Fallback attempts are visible as model changes in the session transcript and as 
 
 `enabledModels` is separate: it only controls the interactive Ctrl+P model cycle list and is not used as an implicit fallback chain.
 
-### Fast mode
+### Fast models
 
-Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode to supported `openai/*` and `openai-codex/*` providers, provider aliases that use the shared `openai-codex-responses` transport, and GitHub Copilot models whose OAuth account catalog advertises a fast variant. OpenAI requests use the priority service tier. GitHub Copilot requests use the account-supported fast variant without adding the OpenAI service-tier field. Fast mode does not apply to Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers.
+Fast inference is not a setting. Where a provider supports it, Atomic publishes a second selectable model whose canonical ID is the base model ID plus `-fast`, and you choose it the same way you choose any other model — in `/model`, as a startup default, in `fallbackModels`, in `enabledModels`, in a workflow stage's `model`, or in a subagent definition. Thinking suffixes work unchanged: `openai-codex/gpt-5.6-sol-fast:medium`.
 
-Chat and workflow-stage scopes are independent. Workflow stages, nested `ctx.workflow(...)` stages, and subagents launched by those stages use `codexFastMode.workflow`; normal-chat subagents use `codexFastMode.chat`. Atomic resolves eligibility again for each fallback model, so the marker and request behavior follow the effective provider and model. When fast mode is active, Atomic shows `fast` after the model name in the chat footer, workflow stage model labels, and subagent results. Enable the workflow scope deliberately for broad fan-outs because each eligible stage can consume fast provider requests. The `codexFastMode` setting name remains for compatibility.
-
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `codexFastMode.chat` | boolean | `false` | Enable fast mode for supported normal chat models |
-| `codexFastMode.workflow` | boolean | `false` | Enable fast mode for supported workflow-stage models |
+Normal and fast IDs stay distinct everywhere, so `fallbackModels` can list both and each attempt is recorded separately:
 
 ```json
 {
-  "codexFastMode": {
-    "chat": true,
-    "workflow": false
-  }
+  "fallbackModels": [
+    "openai-codex/gpt-5.6-sol-fast:medium",
+    "openai-codex/gpt-5.6-sol:medium"
+  ]
 }
 ```
+
+See [Providers](/providers#fast-models) for which providers publish fast variants, what each one sends upstream, and how an exact `-fast` model ID you own yourself takes precedence over the derived one.
 
 ### UI & Display
 

@@ -120,15 +120,20 @@ describe("createStageContext — model fallback", () => {
 		assert.equal(meta.warnings, undefined);
 	});
 
-	test("workflow fast mode keeps raw model metadata with a structured fast flag", async () => {
+	test("preserves fast and normal model identities as distinct ordered fallback attempts", async () => {
+		const calls: string[] = [];
 		const agentSession: AgentSessionAdapter = {
-			async create() {
+			async create(options) {
+				const model = typeof options.model === "string" ? options.model : "object-model";
+				calls.push(model);
 				const { session } = makeMockSession({
 					model: {
-						provider: "openai",
-						id: "gpt-5.1-codex",
+						provider: model.split("/", 1)[0],
+						id: model.slice(model.indexOf("/") + 1),
 					} as AgentSession["model"],
-					async prompt() {},
+					async prompt() {
+						if (model.endsWith("-fast")) throw new Error("fast route timed out");
+					},
 				});
 				return session;
 			},
@@ -138,100 +143,26 @@ describe("createStageContext — model fallback", () => {
 			makeOpts({
 				adapters: { agentSession },
 				stageOptions: {
-					settingsManager: {
-						getCodexFastModeSettings: () => ({
-							chat: false,
-							workflow: true,
-						}),
-					},
-				} as Parameters<typeof createStageContext>[0]["stageOptions"],
+					model: "openai-codex/gpt-5.6-sol-fast:medium",
+					fallbackModels: ["openai-codex/gpt-5.6-sol:medium"],
+				},
 			}),
 		) as InternalStageContext;
 
 		await ctx.prompt("go");
 
-		assert.equal(ctx.__modelFallbackMeta().model, "openai/gpt-5.1-codex");
-		assert.equal(ctx.__modelFallbackMeta().fastMode, true);
-	});
-
-	test("workflow fast mode metadata uses the adapter-created settings manager", async () => {
-		const agentSession: AgentSessionAdapter = {
-			async create() {
-				const { session } = makeMockSession({
-					model: {
-						provider: "openai",
-						id: "gpt-5.1-codex",
-					} as AgentSession["model"],
-					async prompt() {},
-				});
-				return {
-					session,
-					settingsManager: {
-						getCodexFastModeSettings: () => ({
-							chat: false,
-							workflow: true,
-						}),
-					},
-				};
-			},
-		};
-
-		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
-
-		await ctx.prompt("go");
-
-		assert.equal(ctx.__modelFallbackMeta().model, "openai/gpt-5.1-codex");
-		assert.equal(ctx.__modelFallbackMeta().fastMode, true);
-	});
-
-	test("workflow fast mode metadata uses the session settings manager when the adapter result omits one", async () => {
-		const agentSession: AgentSessionAdapter = {
-			async create() {
-				const { session } = makeMockSession({
-					model: {
-						provider: "openai",
-						id: "gpt-5.1-codex",
-					} as AgentSession["model"],
-					settingsManager: {
-						getCodexFastModeSettings: () => ({
-							chat: false,
-							workflow: true,
-						}),
-					},
-					async prompt() {},
-				});
-				return session;
-			},
-		};
-
-		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
-
-		await ctx.prompt("go");
-
-		assert.equal(ctx.__modelFallbackMeta().model, "openai/gpt-5.1-codex");
-		assert.equal(ctx.__modelFallbackMeta().fastMode, true);
-	});
-
-	test("workflow fast mode metadata does not reload settings when no manager is provided", async () => {
-		const agentSession: AgentSessionAdapter = {
-			async create() {
-				const { session } = makeMockSession({
-					model: {
-						provider: "openai",
-						id: "gpt-5.1-codex",
-					} as AgentSession["model"],
-					async prompt() {},
-				});
-				return session;
-			},
-		};
-
-		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
-
-		await ctx.prompt("go");
-
-		assert.equal(ctx.__modelFallbackMeta().model, "openai/gpt-5.1-codex");
-		assert.equal(ctx.__modelFallbackMeta().fastMode, undefined);
+		const priorityModel = "openai-codex/gpt-5.6-sol-fast";
+		const normalModel = "openai-codex/gpt-5.6-sol";
+		const meta = ctx.__modelFallbackMeta();
+		assert.deepEqual(calls, [priorityModel, normalModel]);
+		assert.deepEqual(meta.attemptedModels, [priorityModel, normalModel]);
+		assert.deepEqual(
+			meta.modelAttempts?.map(({ model, reasoningLevel, success }) => ({ model, reasoningLevel, success })),
+			[
+				{ model: priorityModel, reasoningLevel: "medium", success: false },
+				{ model: normalModel, reasoningLevel: "medium", success: true },
+			],
+		);
 	});
 
 	test("current model is appended as an implicit final fallback", async () => {

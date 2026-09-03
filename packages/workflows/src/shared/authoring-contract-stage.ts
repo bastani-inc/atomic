@@ -152,15 +152,6 @@ export interface WorkflowScopedModel {
 	readonly thinkingLevel?: WorkflowThinkingLevel;
 }
 
-export interface WorkflowFastModeSettings extends WorkflowSerializableObject {
-	readonly enabled?: boolean;
-	readonly model?: string;
-}
-
-export interface WorkflowFastModeSettingsManager {
-	getCodexFastModeSettings(): WorkflowFastModeSettings;
-}
-
 export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined>
 	extends WorkflowModelFallbackFields {
 	/** Optional structured final-answer schema. When set, the stage receives a schema-specific final-answer tool. */
@@ -284,7 +275,6 @@ export interface StageSessionRuntime {
 	readonly messages: readonly WorkflowSerializableValue[];
 	readonly isStreaming: boolean;
 	readonly pendingMessageCount?: number;
-	readonly settingsManager?: WorkflowFastModeSettingsManager;
 	navigateTree(
 		targetId: string,
 		options?: {
@@ -305,7 +295,6 @@ export type StageSessionCreateOptions = StageOptions;
 
 export interface StageSessionCreateResult {
 	readonly session: StageSessionRuntime;
-	readonly settingsManager?: WorkflowFastModeSettingsManager;
 }
 
 export interface StageExecutionMeta {
@@ -403,7 +392,6 @@ export interface WorkflowTaskResult extends WorkflowTaskContext {
 	readonly sessionFile?: string;
 	readonly artifacts?: readonly WorkflowArtifact[];
 	readonly model?: string;
-	readonly fastMode?: boolean;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly warnings?: readonly string[];

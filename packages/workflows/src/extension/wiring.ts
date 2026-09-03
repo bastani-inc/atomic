@@ -189,7 +189,7 @@ async function createPiSdkAgentSession(
 		settingsManager = sessionOptions?.settingsManager ?? resultSettingsManager ?? settingsManager;
 		return {
 			session: result.session,
-			...(settingsManager?.getCodexFastModeSettings !== undefined ? { settingsManager } : {}),
+			...(settingsManager !== undefined ? { settingsManager } : {}),
 		};
 	} catch (error) {
 		if (settingsManager !== undefined) throw attachSettingsManager(error, settingsManager);

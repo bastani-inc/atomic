@@ -1,13 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { readStoredCredential } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
-import {
-	getSubagentCodexFastModeSettings,
-	resolveSubagentCodexFastModeScope,
-	resolveSubagentModelFastMode,
-} from "../../shared/fast-mode.js";
 import type {
 	AgentProgress,
 	ArtifactPaths,
@@ -62,13 +56,7 @@ function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["o
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 	};
 }
-function progressFor(
-	agent: AgentConfig,
-	task: string,
-	outcome: AttemptOutcome,
-	startedAt: number,
-	fastMode: boolean,
-): AgentProgress {
+function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, startedAt: number): AgentProgress {
 	const status =
 		outcome.status === "ok"
 			? "completed"
@@ -82,7 +70,6 @@ function progressFor(
 		task,
 		...(outcome.model === undefined ? {} : { model: outcome.model }),
 		...(outcome.thinking === undefined ? {} : { thinking: outcome.thinking }),
-		...(fastMode ? { fastMode: true } : {}),
 		recentTools: [],
 		recentOutput: outcome.envelope ? outcome.envelope.split("\n").slice(-10) : [],
 		toolCount: outcome.stats.toolCalls,
@@ -101,13 +88,11 @@ function resultFromOutcome(
 	outcome: AttemptOutcome,
 	startedAt: number,
 	artifactPaths: ArtifactPaths | undefined,
-	fastModeForModel: (model: string | undefined) => boolean,
 ): SingleResult {
 	const status = outcome.status;
 	const output = outcome.status === "ok" ? outcome.output : outcome.envelope;
 	const model = outcome.model;
 	const thinking = outcome.thinking;
-	const fastModeEnabled = fastModeForModel(model);
 	const result: SingleResult = {
 		agent: agent.name,
 		task,
@@ -125,7 +110,6 @@ function resultFromOutcome(
 		usage: usageFromStats(outcome.stats),
 		...(model === undefined ? {} : { model }),
 		...(thinking === undefined ? {} : { thinking }),
-		...(fastModeEnabled ? { fastMode: true } : {}),
 		...("attemptedModels" in outcome && outcome.attemptedModels?.length
 			? { attemptedModels: [...outcome.attemptedModels] }
 			: {}),
@@ -133,7 +117,7 @@ function resultFromOutcome(
 		...(outcome.skillsWarning ? { skillsWarning: outcome.skillsWarning } : {}),
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
-		progress: progressFor(agent, task, outcome, startedAt, fastModeEnabled),
+		progress: progressFor(agent, task, outcome, startedAt),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,
 			tokens: outcome.stats.tokens.total,
@@ -218,21 +202,8 @@ export async function runSingleInProcess(
 	// session file — which, for a fork-context child, is the parent's model.
 	// Resolving the candidate here is what makes the agent's configured model win.
 	const resolvedCandidate = candidate ? options.resolveCandidateModel?.(candidate) : undefined;
-	const fastModeSettings = getSubagentCodexFastModeSettings(cwd);
-	const copilotCredential = readStoredCredential("github-copilot");
 	const orchestrationContext = workflowOrchestrationContext(options);
-	const fastModeScope = resolveSubagentCodexFastModeScope(orchestrationContext);
-	const resolveModel = (modelId: string) => options.resolveCandidateModel?.(modelId)?.model;
-	const fastModeForModel = (model: string | undefined): boolean =>
-		resolveSubagentModelFastMode({
-			model,
-			resolvedModel: resolvedCandidate?.model,
-			resolveModel,
-			cwd,
-			settings: fastModeSettings,
-			scope: fastModeScope,
-			copilotCredential,
-		});
+
 	const parent: ParentContext = {
 		path: options.runId,
 		depth: options.parentDepth ?? 0,
@@ -305,7 +276,6 @@ export async function runSingleInProcess(
 					const liveProgress = { ...progress, index: options.index ?? 0 };
 					const liveModel = liveProgress.model ?? candidate;
 					const liveThinking = liveProgress.thinking;
-					const liveFastMode = fastModeForModel(liveModel);
 					const liveResult: SingleResult = {
 						agent: agent.name,
 						task,
@@ -314,7 +284,6 @@ export async function runSingleInProcess(
 						usage: emptyUsage(),
 						...(liveModel === undefined ? {} : { model: liveModel }),
 						...(liveThinking === undefined ? {} : { thinking: liveThinking }),
-						...(liveFastMode ? { fastMode: true } : {}),
 						progress: liveProgress,
 					};
 					options.onUpdate?.({
@@ -340,7 +309,6 @@ export async function runSingleInProcess(
 			abort: options.signal ?? neverAbort,
 			interrupt: options.interruptSignal ?? neverAbort,
 		},
-		{ fastModeForModel },
 	);
 	if (options.onUpdate) {
 		const launchModel = running.currentModel ?? candidate;
@@ -351,7 +319,6 @@ export async function runSingleInProcess(
 			task,
 			...(launchModel === undefined ? {} : { model: launchModel }),
 			...(running.currentThinking === undefined ? {} : { thinking: running.currentThinking }),
-			fastMode: running.currentFastMode ?? fastModeForModel(launchModel),
 			recentTools: [],
 			recentOutput: [],
 			toolCount: 0,
@@ -385,7 +352,7 @@ export async function runSingleInProcess(
 		detachCleanup();
 		parentAskCleanup();
 		void running.promise.then(async (continuedOutcome) => {
-			const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths, fastModeForModel);
+			const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths);
 			await control.deliverChildResult(
 				{
 					path: continuedOutcome.path,
@@ -398,7 +365,6 @@ export async function runSingleInProcess(
 					envelope: continuedOutcome.envelope,
 					...(recovered.model === undefined ? {} : { model: recovered.model }),
 					...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
-					...(recovered.fastMode ? { fastMode: true } : {}),
 					sessionFile: continuedOutcome.sessionFile,
 					timestamp: Date.now(),
 					artifactsDir: options.artifactsDir,
@@ -413,7 +379,6 @@ export async function runSingleInProcess(
 			options.onDetachedExit?.(recovered);
 		});
 		const continuedModel = running.currentModel ?? candidate;
-		const continuedFastMode = fastModeForModel(continuedModel);
 		const continuedThinking = running.currentThinking;
 		const continuedResult: SingleResult = {
 			agent: agent.name,
@@ -427,7 +392,6 @@ export async function runSingleInProcess(
 			usage: emptyUsage(),
 			...(continuedModel === undefined ? {} : { model: continuedModel }),
 			...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
-			...(continuedFastMode ? { fastMode: true } : {}),
 			progress: {
 				index: options.index ?? 0,
 				agent: agent.name,
@@ -435,7 +399,6 @@ export async function runSingleInProcess(
 				task,
 				...(continuedModel === undefined ? {} : { model: continuedModel }),
 				...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
-				fastMode: continuedFastMode,
 				recentTools: [],
 				recentOutput: [],
 				toolCount: 0,
@@ -453,7 +416,7 @@ export async function runSingleInProcess(
 	detachCleanup();
 	parentAskCleanup();
 	const outcome = winner.value;
-	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, fastModeForModel);
+	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths);
 	if (filteredCandidates.skippedAttempts.length)
 		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];
 	await control.deliverChildResult(
@@ -467,7 +430,6 @@ export async function runSingleInProcess(
 			envelope: outcome.envelope,
 			...(result.model === undefined ? {} : { model: result.model }),
 			...(result.thinking === undefined ? {} : { thinking: result.thinking }),
-			...(result.fastMode ? { fastMode: true } : {}),
 			sessionFile: outcome.sessionFile,
 			timestamp: Date.now(),
 			artifactsDir: options.artifactsDir,

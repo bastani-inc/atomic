@@ -66,7 +66,6 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
 	readonly durationMs?: number;
 	readonly result?: string;
 	readonly model?: string;
-	readonly fastMode?: boolean;
 	readonly attemptedModels?: WorkflowSerializableValue;
 	readonly modelAttempts?: WorkflowSerializableValue;
 	readonly structured?: WorkflowSerializableValue;
@@ -164,7 +163,6 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
 		...(s.durationMs !== undefined ? { durationMs: s.durationMs } : {}),
 		...(s.result !== undefined ? { result: s.result } : {}),
 		...(s.model !== undefined ? { model: s.model } : {}),
-		...(s.fastMode !== undefined ? { fastMode: s.fastMode } : {}),
 		...(s.attemptedModels !== undefined ? { attemptedModels: [...s.attemptedModels] } : {}),
 		...(s.modelAttempts !== undefined ? { modelAttempts: s.modelAttempts as WorkflowSerializableValue } : {}),
 		...(s.structured !== undefined ? { structured: s.structured } : {}),
@@ -296,7 +294,6 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 		!isOptionalFiniteNumber(env.durationMs) ||
 		(env.result !== undefined && typeof env.result !== "string") ||
 		(env.model !== undefined && typeof env.model !== "string") ||
-		(env.fastMode !== undefined && typeof env.fastMode !== "boolean") ||
 		(env.attemptedModels !== undefined && !isStringArray(env.attemptedModels)) ||
 		(env.modelAttempts !== undefined && !isModelAttempts(env.modelAttempts)) ||
 		(env.artifacts !== undefined && !isWorkflowArtifacts(env.artifacts)) ||
@@ -317,7 +314,6 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 		...(typeof env.durationMs === "number" ? { durationMs: env.durationMs } : {}),
 		...(typeof env.result === "string" ? { result: env.result } : {}),
 		...(typeof env.model === "string" ? { model: env.model } : {}),
-		...(typeof env.fastMode === "boolean" ? { fastMode: env.fastMode } : {}),
 		...(isStringArray(env.attemptedModels) ? { attemptedModels: env.attemptedModels } : {}),
 		...(Array.isArray(env.modelAttempts)
 			? { modelAttempts: env.modelAttempts as DurableStageCheckpoint["modelAttempts"] }

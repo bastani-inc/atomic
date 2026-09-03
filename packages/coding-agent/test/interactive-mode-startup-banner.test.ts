@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import {
@@ -11,7 +10,6 @@ import {
 	renderStartupManifesto,
 	STARTUP_ASSEMBLY_GAPS,
 } from "../src/modes/interactive/components/atomic-banner.ts";
-import type { FastModeSelectorComponent } from "../src/modes/interactive/components/fast-mode-selector.ts";
 import {
 	StartupIdentityComponent,
 	startupStateAtElapsed,
@@ -26,10 +24,6 @@ function plain(text: string): string {
 
 interface StartupIdentityAccess {
 	getStartupIdentityText(maxWidth?: number, gap?: number, manifestoPhase?: number): string;
-}
-
-interface FastModeSelectorAccess {
-	showFastModeSelector(): void;
 }
 
 class StartupTerminal implements Terminal {
@@ -51,7 +45,6 @@ class StartupTerminal implements Terminal {
 }
 
 function renderStartupIdentity(options: {
-	chatFastMode: boolean;
 	reasoning: boolean;
 	thinkingLevel: ThinkingLevel;
 	maxWidth?: number;
@@ -60,7 +53,6 @@ function renderStartupIdentity(options: {
 	raw?: boolean;
 	provider?: string;
 	modelId?: string;
-	fastModelIds?: string[];
 }): string {
 	const session = {
 		state: {
@@ -72,25 +64,6 @@ function renderStartupIdentity(options: {
 			thinkingLevel: options.thinkingLevel,
 		},
 		thinkingLevel: options.thinkingLevel,
-		settingsManager: {
-			getCodexFastModeSettings: () => ({
-				chat: options.chatFastMode,
-				workflow: false,
-			}),
-		},
-		modelRuntime: {
-			getCredentialSnapshot: () =>
-				options.fastModelIds
-					? {
-							type: "oauth",
-							access: "token",
-							refresh: "refresh",
-							expires: Number.MAX_SAFE_INTEGER,
-							fastModelIds: options.fastModelIds,
-						}
-					: undefined,
-		},
-		orchestrationContext: undefined,
 		sessionManager: {
 			getCwd: () => "/tmp/project",
 		},
@@ -109,36 +82,34 @@ function renderStartupIdentity(options: {
 }
 
 describe("InteractiveMode startup banner", () => {
-	it("shows fast after the reasoning level when chat fast mode applies", () => {
+	it("renders the selected model ID and reasoning level with no separate fast badge", () => {
 		initTheme("dark");
 		const rendered = renderStartupIdentity({
-			chatFastMode: true,
 			reasoning: true,
 			thinkingLevel: "medium",
+			provider: "openai-codex",
+			modelId: "gpt-5.6-sol-fast",
 		});
 
-		expect(rendered).toContain("(openai) gpt-5.1-codex medium fast");
-		expect(rendered).not.toContain("gpt-5.1-codex fast medium");
+		expect(rendered).toContain("(openai-codex) gpt-5.6-sol-fast medium");
+		expect(rendered).not.toContain("gpt-5.6-sol-fast medium fast");
 	});
 
-	it("shows fast for an entitled Copilot startup model", () => {
+	it("renders an entitled Copilot fast model by its canonical selectable ID", () => {
 		initTheme("dark");
 		const rendered = renderStartupIdentity({
-			chatFastMode: true,
 			reasoning: false,
 			thinkingLevel: "off",
 			provider: "github-copilot",
-			modelId: "claude-opus-4.8",
-			fastModelIds: ["claude-opus-4.8-fast"],
+			modelId: "claude-opus-4.8-fast",
 		});
 
-		assert.equal(rendered.includes("(github-copilot) claude-opus-4.8 fast"), true);
+		assert.equal(rendered.includes("(github-copilot) claude-opus-4.8-fast"), true);
 	});
 
 	it("keeps the side-by-side layout when the terminal is wide enough", () => {
 		initTheme("dark");
 		const rendered = renderStartupIdentity({
-			chatFastMode: false,
 			reasoning: false,
 			thinkingLevel: "off",
 			maxWidth: 120,
@@ -152,7 +123,6 @@ describe("InteractiveMode startup banner", () => {
 	it("stacks the identity text under the logo when the meta column would wrap", () => {
 		initTheme("dark");
 		const rendered = renderStartupIdentity({
-			chatFastMode: false,
 			reasoning: false,
 			thinkingLevel: "off",
 			maxWidth: 40,
@@ -177,7 +147,6 @@ describe("InteractiveMode startup banner", () => {
 	it("drops the logo art entirely when the terminal is narrower than the logo", () => {
 		initTheme("dark");
 		const rendered = renderStartupIdentity({
-			chatFastMode: false,
 			reasoning: false,
 			thinkingLevel: "off",
 			maxWidth: 20,
@@ -193,7 +162,6 @@ describe("InteractiveMode startup banner", () => {
 		initTheme("dark");
 		for (const gap of STARTUP_ASSEMBLY_GAPS.slice(0, -1)) {
 			const rendered = renderStartupIdentity({
-				chatFastMode: false,
 				reasoning: false,
 				thinkingLevel: "off",
 				maxWidth: 20,
@@ -215,7 +183,6 @@ describe("InteractiveMode startup banner", () => {
 				{ gap: 0, manifestoPhase: 4 },
 			]) {
 				const rendered = renderStartupIdentity({
-					chatFastMode: false,
 					reasoning: false,
 					thinkingLevel: "medium",
 					maxWidth: 120,
@@ -319,52 +286,5 @@ describe("InteractiveMode startup banner", () => {
 		const final = plain(composeStartupIdentity(mark, meta, 64, renderStartupManifesto(4)));
 		expect(final).toContain("Engineering matters.");
 		expect(final.split("\n").every((line) => line.length <= 64)).toBe(true);
-	});
-	it("refreshes the banner and inherited child fast-mode state when /fast changes", async () => {
-		initTheme("dark");
-		const previous = process.env[ENV_CODEX_FAST_MODE];
-		let settings = { chat: false, workflow: false };
-		let selector: FastModeSelectorComponent | undefined;
-		const settingsManager = {
-			flush: vi.fn(),
-			getCodexFastModeSettings: () => settings,
-			setCodexFastModeSettings: vi.fn((next: Partial<typeof settings>) => {
-				settings = { ...settings, ...next };
-			}),
-		};
-		const fakeMode = Object.assign(Object.create(InteractiveMode.prototype), {
-			footer: { invalidate: vi.fn() },
-			hasCodexFastModeSupportedModels: () => true,
-			refreshBuiltInHeader: vi.fn(),
-			runtimeHost: { session: { settingsManager } },
-			showSelector: (create: (done: () => void) => { component: FastModeSelectorComponent }) => {
-				selector = create(() => {}).component;
-			},
-			showStatus: vi.fn(),
-			ui: { requestRender: vi.fn() },
-		});
-
-		try {
-			(fakeMode as unknown as FastModeSelectorAccess).showFastModeSelector();
-			selector?.handleInput("\x1b[C");
-
-			expect(settingsManager.setCodexFastModeSettings).toHaveBeenCalledWith({ chat: true });
-			expect(fakeMode.footer.invalidate).toHaveBeenCalledTimes(1);
-			expect(fakeMode.refreshBuiltInHeader).toHaveBeenCalledTimes(1);
-			expect(fakeMode.showStatus).not.toHaveBeenCalled();
-			expect(process.env[ENV_CODEX_FAST_MODE]).toBe("chat=1;workflow=0");
-
-			selector?.handleInput("\x1b");
-			await Promise.resolve();
-
-			expect(settingsManager.flush).toHaveBeenCalledTimes(1);
-			expect(fakeMode.showStatus).toHaveBeenCalledWith("Chat fast mode on");
-		} finally {
-			if (previous === undefined) {
-				delete process.env[ENV_CODEX_FAST_MODE];
-			} else {
-				process.env[ENV_CODEX_FAST_MODE] = previous;
-			}
-		}
 	});
 });
