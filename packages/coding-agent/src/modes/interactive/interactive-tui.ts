@@ -220,6 +220,7 @@ interface ScrollToEndIndicatorRect {
 interface ScrollViewLayoutState {
 	readonly followEnd?: boolean;
 	readonly isFollowingEnd: boolean;
+	readonly viewportHeight: number;
 }
 
 interface TuiLayoutBox {
@@ -239,6 +240,12 @@ interface TuiAltScreenLayoutInternals {
 	readonly currentLayout?: TuiLayoutFrame;
 }
 
+const KITTY_IMAGE_PREFIX = "\x1b_G";
+const ITERM2_IMAGE_PREFIX = "\x1b]1337;File=";
+
+function isImageLine(line: string): boolean {
+	return line.includes(KITTY_IMAGE_PREFIX) || line.includes(ITERM2_IMAGE_PREFIX);
+}
 const SGR_MOUSE_SEQUENCE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
 const LEFT_MOUSE_MODIFIER_MASK = 4 | 8 | 16;
 
@@ -367,6 +374,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		const previousRect = this.scrollToEndIndicatorRect;
 		this.scrollToEndIndicatorRect = undefined;
 		const layout = (this as unknown as TuiAltScreenLayoutInternals).currentLayout;
+		if (this.isFocusedOverlay()) return screen;
 		if (!layout || layout.width !== width || layout.height !== height) {
 			// pi-tui assigns currentLayout after compositing. If a detached view was
 			// visible before its geometry changed, render once more with the new frame.
@@ -378,9 +386,14 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 
 		const clip = findScrollViewBox(layout.root, scrollView)?.clip;
 		if (!clip || clip.width <= 0 || clip.height <= 0) return screen;
+		if (clip.height !== scrollView.viewportHeight) {
+			// The layout belongs to the prior frame, but the shared ScrollView already
+			// has the current dock-adjusted viewport height. Do not paint stale geometry.
+			if (previousRect) this.requestRender();
+			return screen;
+		}
 		const row = clip.y + clip.height - 1;
-		if (row < 0 || row >= screen.length) return screen;
-
+		if (row < 0 || row >= screen.length || isImageLine(screen[row] ?? "")) return screen;
 		const text = truncateToWidth(this.renderScrollToEndIndicator(), clip.width, "");
 		const textWidth = visibleWidth(text);
 		if (textWidth === 0) return screen;
@@ -400,6 +413,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		const pressed = sequences?.some(
 			(sequence) =>
 				!sequence.isRelease &&
+				(sequence.button & 32) === 0 &&
 				isLeftMouseButton(sequence) &&
 				sequence.y === rect.row &&
 				sequence.x >= rect.column &&
@@ -494,10 +508,10 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			};
 			viewportInputSubscriptions.set(this, subscription);
 			subscription.viewportUnsubscribe = super.addInputListener((data) => {
-				if (this.handleScrollToEndIndicatorMouseInput(data)) return { consume: true };
 				const gate = viewportInputGates.get(this);
 				const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
 				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay(), false)) return undefined;
+				if (this.handleScrollToEndIndicatorMouseInput(data)) return { consume: true };
 				return listener(data);
 			});
 			subscription.routeUnsubscribe = super.addInputListener(subscription.routeListener);

@@ -342,6 +342,31 @@ describe("interactive TUI renderer", () => {
 			const indicatorColumn =
 				scrolledTranscript.rect.x + Math.floor((scrolledTranscript.rect.width - indicator.length) / 2);
 			const indicatorRow = scrolledTranscript.rect.y + scrolledTranscript.rect.height - 1;
+			const handleIndicatorInput = Reflect.get(tui, "handleScrollToEndIndicatorMouseInput") as (
+				data: string,
+			) => boolean;
+			const motion = `\x1b[<32;${indicatorColumn + 1};${indicatorRow + 1}M`;
+			expect(handleIndicatorInput.call(tui, motion)).toBe(false);
+			terminal.input(motion);
+			expect(transcript.isFollowingEnd).toBe(false);
+
+			const outsidePress = `\x1b[<0;1;${indicatorRow + 1}M`;
+			terminal.input(outsidePress);
+			expect(transcript.isFollowingEnd).toBe(false);
+
+			const overlayInput = vi.fn(() => true);
+			const overlay = tui.showOverlay(
+				{ render: () => ["overlay"], invalidate: () => {}, handleInput: overlayInput },
+				{ anchor: "bottom-center", width: "100%" },
+			);
+			tui.renderNow();
+			const overlayPress = `\x1b[<0;${indicatorColumn + 1};${indicatorRow + 1}M`;
+			terminal.input(overlayPress);
+			expect(overlayInput).toHaveBeenCalledWith(overlayPress);
+			expect(transcript.isFollowingEnd).toBe(false);
+			overlay.hide();
+			tui.renderNow();
+
 			terminal.input(`\x1b[<0;${indicatorColumn + 1};${indicatorRow + 1}M`);
 			tui.renderNow();
 			const jumped = getFrame();
@@ -368,6 +393,48 @@ describe("interactive TUI renderer", () => {
 			tui.stop();
 			restoreOffline();
 			setKeybindings(previousKeybindings);
+		}
+	});
+	test("does not composite the jump-to-latest label onto an image row", () => {
+		const terminal = new RecordingTerminal();
+		terminal.columns = 50;
+		terminal.rows = 12;
+		const tui = createFullscreenTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+		}) as TuiAltScreen;
+		const transcript = new ScrollView(
+			new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ follow: "end", primary: true },
+		);
+		tui.setLayoutRoot(transcript);
+		tui.start();
+		try {
+			tui.renderNow();
+			transcript.scrollTo(0);
+			tui.renderNow();
+			const frame = getLayoutFrame(tui);
+			const row = frame.root.rect.y + frame.root.rect.height - 1;
+			const imageLine = "\x1b_Ga=p,i=1,r=1,c=1\x1b\\";
+			const lines = [...frame.lines];
+			lines[row] = imageLine;
+			const composite = Reflect.get(tui, "compositeScrollToEndIndicator") as (
+				lines: string[],
+				width: number,
+				height: number,
+			) => string[];
+
+			const plainLines = composite.call(tui, [...frame.lines], terminal.columns, terminal.rows);
+			expect(plainLines[row]).toContain("Jump to latest message");
+
+			expect(composite.call(tui, lines, terminal.columns, terminal.rows)[row]).toBe(imageLine);
+
+			const staleLines = [...frame.lines];
+			transcript.updateLayout(40, frame.root.rect.height - 1, () => {});
+			expect(composite.call(tui, staleLines, terminal.columns, terminal.rows)).toEqual(staleLines);
+		} finally {
+			tui.stop();
 		}
 	});
 	test.sequential("clips a real fetch_content Kitty image at the sticky dock and reuses its upload", async () => {
