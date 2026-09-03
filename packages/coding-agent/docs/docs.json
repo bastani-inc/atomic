@@ -35,7 +35,17 @@
           "skills",
           "subagents",
           "intercom",
-          "workflows",
+          {
+            "group": "Workflows",
+            "pages": [
+              "workflows",
+              "workflows/builtins",
+              "workflows/authoring",
+              "workflows/reliable-design",
+              "workflows/operations",
+              "workflows/api-reference"
+            ]
+          },
           "prompt-templates",
           "themes",
           "packages",

@@ -155,13 +155,13 @@ function activeSubagentContractPath(file: string): boolean {
 	return [
 		"packages/coding-agent/docs/intercom.md",
 		"packages/coding-agent/docs/subagents.md",
-		"packages/coding-agent/docs/workflows.md",
+		"packages/coding-agent/docs/workflows/api-reference.md",
 	].includes(file);
 }
 
 function activeSubagentContractSource(file: string): string {
 	const source = readFileSync(join(root, file), "utf8");
-	if (file === "packages/coding-agent/docs/workflows.md") {
+	if (file === "packages/coding-agent/docs/workflows/api-reference.md") {
 		const start = source.indexOf("### `tools` / `noTools` / `excludedTools`");
 		assert.notEqual(start, -1, "workflow subagent-tool contract section is missing");
 		const end = source.indexOf("\n### ", start + 4);

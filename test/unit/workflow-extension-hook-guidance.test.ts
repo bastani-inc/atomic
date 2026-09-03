@@ -5,7 +5,10 @@ import { moduleDir, readText } from "../helpers/runtime.js";
 
 const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
 const authoringGuidance = DEFAULT_PROMPT_GUIDANCE.join("\n");
-const workflowDocumentationPaths = ["packages/coding-agent/docs/workflows.md", "packages/workflows/README.md"];
+const workflowDocumentationPaths = [
+	"packages/coding-agent/docs/workflows/authoring.md",
+	"packages/workflows/README.md",
+];
 
 async function readRepositoryFile(path: string): Promise<string> {
 	return (await readText(resolve(repositoryRoot, path))).replaceAll("\r\n", "\n");

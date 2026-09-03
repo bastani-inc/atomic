@@ -17,7 +17,7 @@ const docsDir = join(repoRoot, "packages/coding-agent/docs");
 
 /** Every markdown file this layer shipped or touched, discovered not hardcoded. */
 const docFiles = [
-	...readdirSync(docsDir)
+	...readdirSync(docsDir, { recursive: true, encoding: "utf8" })
 		.filter((name) => name.endsWith(".md"))
 		.map((name) => [`packages/coding-agent/docs/${name}`, join(docsDir, name)] as const),
 	["packages/workflows/README.md", join(repoRoot, "packages/workflows/README.md")] as const,
@@ -230,7 +230,7 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 	});
 
 	test("workflows docs no longer document find-in-stage-chat", () => {
-		const workflows = doc("workflows.md");
+		const workflows = doc("workflows/operations.md");
 		assert.doesNotMatch(workflows, /\*\*Find in stage chat\*\*/u);
 		assert.doesNotMatch(workflows, /ctrl\+shift\+f/iu);
 

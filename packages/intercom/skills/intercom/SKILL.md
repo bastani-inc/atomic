@@ -242,7 +242,7 @@ Use constructive quorum when several fresh-context reviewers judge the same arti
 3. Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether the round changed it and which evidence caused the change.
 4. Let the deterministic reducer count final votes; this pattern does not change quorum counts or the `stop_review_loop` contract.
 
-In Atomic workflows, each invocation has its own Intercom group, and parallel stages and delegated subagents inherit it when Intercom is available. Sibling reviewers can therefore coordinate without custom group wiring. See the [constructive quorum workflow pattern](../../../coding-agent/docs/workflows.md#common-workflow-patterns).
+In Atomic workflows, each invocation has its own Intercom group, and parallel stages and delegated subagents inherit it when Intercom is available. Sibling reviewers can therefore coordinate without custom group wiring. See the [constructive quorum workflow pattern](../../../coding-agent/docs/workflows/reliable-design.md#common-workflow-patterns).
 
 ## Key Differences
 

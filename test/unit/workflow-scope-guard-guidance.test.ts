@@ -14,7 +14,7 @@ import {
 } from "./executor-shared.js";
 
 const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
-const documentationPath = resolve(repositoryRoot, "packages/coding-agent/docs/workflows.md");
+const documentationPath = resolve(repositoryRoot, "packages/coding-agent/docs/workflows/reliable-design.md");
 
 async function readDocumentation(): Promise<string> {
 	return (await readText(documentationPath)).replaceAll("\r\n", "\n");

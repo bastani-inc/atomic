@@ -86,7 +86,7 @@ Optional; raises GitHub API limits on shared networks. Curl and GNU Wget keep th
 
 ### Which runtime runs your workflows
 
-How you install Atomic decides which runtime hosts it: a package-manager install runs under Node, while the standalone binaries are Bun-compiled and run under Bun. Authored workflows execute inside whichever host is active, so a workflow that reaches for a `Bun.*` global runs only under the standalone binary and fails with `Bun is not defined` under an npm install. Installing Bun separately does not change that — the npm install still runs on Node. Write workflow code against APIs both hosts provide, such as `node:child_process` and `node:fs`; see [Workflows](/workflows) for the rule and worked examples.
+How you install Atomic decides which runtime hosts it: a package-manager install runs under Node, while the standalone binaries are Bun-compiled and run under Bun. Authored workflows execute inside whichever host is active, so a workflow that reaches for a `Bun.*` global runs only under the standalone binary and fails with `Bun is not defined` under an npm install. Installing Bun separately does not change that — the npm install still runs on Node. Write workflow code against APIs both hosts provide, such as `node:child_process` and `node:fs`; see [Custom Workflow Authoring](/workflows/authoring) for the rule and worked examples.
 
 ### Alpine and musl Linux archives
 
@@ -225,7 +225,7 @@ The below-editor `BACKGROUND` panel uses two lines per card at 80 columns and wi
 
 Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them.
 
-Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflows](/workflows) for the full reference and authoring guide.
+Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflow Operations](/workflows/operations) for the full run-control reference.
 
 ### Top skills to invoke directly
 
@@ -249,7 +249,7 @@ Use `/skill:research-codebase` for a focused subsystem or question. For reposito
 
 ### Create your own workflow in natural language
 
-Named workflows may be builtin, project, user, or package supplied. You do not have to hand-write TypeScript to add a new workflow. Describe what you want in plain chat and Atomic will design and write it for you using the [Workflows](/workflows) reference as the source of truth:
+Named workflows may be builtin, project, user, or package supplied. You do not have to hand-write TypeScript to add a new workflow. Describe what you want in plain chat and Atomic will design and write it for you using [Builtins and Dynamic Workflows](/workflows/builtins) and the [Custom Workflow Authoring](/workflows/authoring) reference as its source of truth:
 
 ```text
 Create a reusable Atomic workflow called review-changes. It takes one
@@ -267,7 +267,7 @@ Atomic will:
 - run `/workflow reload` so the generated workflow is rediscovered and can be launched with `/workflow <name>`,
 - then report the generated workflow folder so you can inspect the code it wrote, using `Custom workflow created. You can inspect its code at: <workflow-folder-path>` (for example, `.atomic/workflows/`); Atomic does this only for newly created custom workflows, never builtin or pre-existing workflows.
 
-The same plain-chat approach works for editing or hardening an existing workflow. For the full authoring reference, see [Workflows](/workflows), including composition with user-defined workflows and all nine builtins from `@bastani/atomic/workflows/builtin`.
+The same plain-chat approach works for editing or hardening an existing workflow. For the full authoring reference, see [Custom Workflow Authoring](/workflows/authoring), including composition with user-defined workflows and all nine builtins from `@bastani/atomic/workflows/builtin`.
 
 ### Default tools and prompts
 

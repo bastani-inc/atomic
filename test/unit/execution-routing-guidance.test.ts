@@ -24,6 +24,11 @@ const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}\n
 
 const workflowDocumentationPaths = [
 	"packages/coding-agent/docs/workflows.md",
+	"packages/coding-agent/docs/workflows/builtins.md",
+	"packages/coding-agent/docs/workflows/authoring.md",
+	"packages/coding-agent/docs/workflows/reliable-design.md",
+	"packages/coding-agent/docs/workflows/operations.md",
+	"packages/coding-agent/docs/workflows/api-reference.md",
 	"packages/coding-agent/docs/quickstart.md",
 	"packages/workflows/README.md",
 	"docs/workflow-playbook.md",
@@ -217,7 +222,7 @@ describe("workflow-first execution routing", () => {
 	});
 
 	test("mirrors the stage assignment policy in workflow authoring docs", async () => {
-		for (const path of ["packages/coding-agent/docs/workflows.md", "packages/workflows/README.md"]) {
+		for (const path of ["packages/coding-agent/docs/workflows/reliable-design.md", "packages/workflows/README.md"]) {
 			const documentation = await readRepositoryFile(path);
 			for (const phrase of [
 				"failure cost",
@@ -335,7 +340,7 @@ describe("workflow-first execution routing", () => {
 	});
 
 	test("documents the complete stacked-slices starter section", async () => {
-		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows/reliable-design.md");
 		const heading = "##### Stacked implementation slices starter pattern";
 		const sectionStart = documentation.indexOf(heading);
 		expect(sectionStart).toBeGreaterThanOrEqual(0);
@@ -362,7 +367,14 @@ describe("workflow-first execution routing", () => {
 
 	test("requires dynamic workflow topologies to remain acyclic", async () => {
 		const authoringGuidance = workflowGuidance.join("\n");
-		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		const documentation = (
+			await Promise.all(
+				[
+					"packages/coding-agent/docs/workflows/authoring.md",
+					"packages/coding-agent/docs/workflows/reliable-design.md",
+				].map(readRepositoryFile),
+			)
+		).join("\n");
 		const rootReadme = await readRepositoryFile("README.md");
 
 		for (const phrase of [
@@ -426,7 +438,7 @@ describe("workflow-first execution routing", () => {
 		]) {
 			expect(workflowGuidance.join("\n")).toContain(phrase);
 		}
-		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows/reliable-design.md");
 		for (const phrase of [
 			"Interpret ordering words locally unless a cross-item dependency is explicit",
 			"already merged into the base each run will use",
@@ -538,7 +550,7 @@ describe("workflow-first execution routing", () => {
 	});
 
 	test("mirrors risk/evidence routing and verifier-loop guidance in workflow docs", async () => {
-		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows/reliable-design.md");
 
 		for (const phrase of [
 			"pre-launch workflow architecture",
@@ -640,7 +652,7 @@ describe("workflow-first execution routing", () => {
 	});
 
 	test("mirrors blocked-continuation guidance in workflow docs", async () => {
-		for (const path of ["packages/coding-agent/docs/workflows.md", "packages/workflows/README.md"]) {
+		for (const path of ["packages/coding-agent/docs/workflows/operations.md", "packages/workflows/README.md"]) {
 			const documentation = await readRepositoryFile(path);
 			for (const phrase of [
 				"Treat a blocked run as continuable by default",
@@ -754,7 +766,7 @@ describe("workflow-first execution routing", () => {
 	});
 
 	test("synchronizes side-effect guidance across workflow authoring references", async () => {
-		for (const path of ["packages/coding-agent/docs/workflows.md", "packages/workflows/README.md"]) {
+		for (const path of ["packages/coding-agent/docs/workflows/authoring.md", "packages/workflows/README.md"]) {
 			const documentation = await readRepositoryFile(path);
 			for (const phrase of [
 				"ctx.tool(name, args, fn)",
@@ -902,7 +914,7 @@ describe("workflow-first execution routing", () => {
 			"packages/workflows/src/extension/workflow-prompts.ts",
 			"packages/workflows/src/extension/workflow-schema.ts",
 			"packages/workflows/README.md",
-			"packages/coding-agent/docs/workflows.md",
+			"packages/coding-agent/docs/workflows/operations.md",
 			"scripts/readme-feature-wall/tapes/6.2.tape",
 		];
 		const staleWorkflowSendGuidance = [
@@ -924,7 +936,7 @@ describe("workflow-first execution routing", () => {
 				expect(currentGuidance, `${path}: ${stale}`).not.toContain(stale);
 		}
 
-		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows/operations.md");
 		for (const current of [
 			"`answer` responds only to a pending primitive or structured human-input prompt",
 			"Use `workflow resume` only for paused workflow control",
@@ -966,7 +978,7 @@ describe("workflow-first execution routing", () => {
 			"hide the graph across files",
 			"line counts alone as a module boundary",
 		];
-		for (const path of ["packages/coding-agent/docs/workflows.md", "packages/workflows/README.md"]) {
+		for (const path of ["packages/coding-agent/docs/workflows/authoring.md", "packages/workflows/README.md"]) {
 			const documentation = await readRepositoryFile(path);
 			for (const phrase of sharedPolicyPhrases) {
 				expect(documentation, path).toContain(phrase);

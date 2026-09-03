@@ -11,6 +11,11 @@ const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
  */
 const publishedWorkflowDocs = [
 	"packages/coding-agent/docs/workflows.md",
+	"packages/coding-agent/docs/workflows/builtins.md",
+	"packages/coding-agent/docs/workflows/authoring.md",
+	"packages/coding-agent/docs/workflows/reliable-design.md",
+	"packages/coding-agent/docs/workflows/operations.md",
+	"packages/coding-agent/docs/workflows/api-reference.md",
 	"packages/coding-agent/docs/quickstart.md",
 	"packages/workflows/README.md",
 	"docs/workflow-playbook.md",
@@ -100,7 +105,7 @@ describe("published workflow examples stay host-portable", () => {
 	});
 
 	test("states the both-hosts rule where workflows are authored", async () => {
-		const workflows = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		const workflows = await readRepositoryFile("packages/coding-agent/docs/workflows/authoring.md");
 		const quickstart = await readRepositoryFile("packages/coding-agent/docs/quickstart.md");
 
 		for (const phrase of [
@@ -108,7 +113,7 @@ describe("published workflow examples stay host-portable", () => {
 			"Bun is not defined",
 			"node:child_process",
 		]) {
-			expect(workflows, "workflows.md").toContain(phrase);
+			expect(workflows, "workflows/authoring.md").toContain(phrase);
 		}
 
 		for (const phrase of ["a package-manager install runs under Node", "Bun is not defined"]) {

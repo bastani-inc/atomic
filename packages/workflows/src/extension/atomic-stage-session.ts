@@ -52,7 +52,7 @@ export interface PrepareAtomicStageSessionOptions {
 /**
  * Workflow stages are top-level sessions that carry a policy object; they are
  * not subagent children. They keep full management and are authorized to
- * delegate, as `packages/coding-agent/docs/workflows.md` documents. Nesting
+ * delegate, as `packages/coding-agent/docs/workflows/api-reference.md` documents. Nesting
  * stays bounded by the depth guard in the subagent executor.
  */
 const WORKFLOW_STAGE_SUBAGENT_POLICY: SubagentChildPolicy = {
