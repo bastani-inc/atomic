@@ -554,10 +554,12 @@ describe("openai-responses provider defaults", () => {
 			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
 		});
 
+		// No `serviceTier` option: the tier comes from the model, which is what a standalone
+		// `Models`/`ModelRuntime` caller relies on (the `*Simple` whitelist drops the option).
 		const stream = streamOpenAIResponses(
 			fast,
 			{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
-			{ apiKey: "test-key", serviceTier: "priority" },
+			{ apiKey: "test-key" },
 		);
 		const result = await stream.result();
 

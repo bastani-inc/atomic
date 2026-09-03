@@ -1,10 +1,14 @@
+import { zstdDecompressSync } from "node:zlib";
 import {
+	type Api,
 	type AuthOperationOptions,
 	type AuthType,
+	type Context,
 	type CredentialStore,
 	InMemoryCredentialStore,
+	type Model,
 } from "@bastani/pi-ai";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 
@@ -297,5 +301,109 @@ describe("ModelRuntime auth options", () => {
 		).rejects.toThrow();
 		expect(runtime.hasConfiguredAuth("openai")).toBe(false);
 		expect(refreshes).toBe(0);
+	});
+});
+
+/**
+ * `docs/sdk.md` points standalone integrations at `modelRuntime.complete()`. That path never passed
+ * through `sdk.ts`, so before the tier was defaulted from the model it silently sent a fast model's
+ * request at normal tier: right upstream model ID, no `service_tier`, normal-rate billing, no warning.
+ */
+describe("ModelRuntime standalone requests honor a selected fast model", () => {
+	const context: Context = { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] };
+
+	function completedResponse(): Response {
+		const completed = {
+			type: "response.completed",
+			response: {
+				id: "resp_probe",
+				status: "completed",
+				service_tier: "priority",
+				usage: {
+					input_tokens: 1,
+					input_tokens_details: { cached_tokens: 0 },
+					output_tokens: 1,
+					total_tokens: 2,
+				},
+			},
+		};
+		return new Response(`data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`, {
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+		});
+	}
+
+	async function fastRuntime(providerId: "openai"): Promise<ModelRuntime> {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify(providerId, async () => ({ type: "api_key", key: "test-api-key" }));
+		return ModelRuntime.create({ credentials, modelsPath: null });
+	}
+
+	async function capturePayload(
+		run: (runtime: ModelRuntime, model: Model<Api>) => Promise<unknown>,
+		providerId: "openai",
+		modelId: string,
+	): Promise<Record<string, unknown> | undefined> {
+		const runtime = await fastRuntime(providerId);
+		const model = runtime.getModel(providerId, modelId);
+		expect(model).toBeDefined();
+		if (!model) throw new Error(`missing model ${providerId}/${modelId}`);
+		let payload: Record<string, unknown> | undefined;
+		const fetchImplementation = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+			const encoding = new Headers(init?.headers).get("content-encoding");
+			payload = JSON.parse(
+				encoding === "zstd" ? zstdDecompressSync(bytes).toString("utf8") : new TextDecoder().decode(bytes),
+			) as Record<string, unknown>;
+			return completedResponse();
+		});
+		vi.stubGlobal("fetch", fetchImplementation);
+		try {
+			await run(runtime, model);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+		return payload;
+	}
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it.each([
+		["completeSimple", (runtime: ModelRuntime, model: Model<Api>) => runtime.completeSimple(model, context)],
+		["complete", (runtime: ModelRuntime, model: Model<Api>) => runtime.complete(model, context)],
+		["streamSimple", (runtime: ModelRuntime, model: Model<Api>) => runtime.streamSimple(model, context).result()],
+	] as const)("%s sends the base model plus the priority tier for openai/gpt-5.6-sol-fast", async (_name, run) => {
+		const payload = await capturePayload(run, "openai", "gpt-5.6-sol-fast");
+
+		expect(payload?.model).toBe("gpt-5.6-sol");
+		expect(payload?.service_tier).toBe("priority");
+	});
+
+	it("sends no service tier for the normal sibling", async () => {
+		const payload = await capturePayload(
+			(runtime, model) => runtime.completeSimple(model, context),
+			"openai",
+			"gpt-5.6-sol",
+		);
+
+		expect(payload?.model).toBe("gpt-5.6-sol");
+		expect(payload?.service_tier).toBeUndefined();
+	});
+
+	it("lets an API-typed request opt a fast model down to another tier", async () => {
+		// `complete()` carries the adapter's own option type, so an explicit tier reaches the adapter and
+		// wins over the model's. (The `*Simple` path cannot express this: pi-ai's `buildBaseOptions`
+		// whitelist drops `serviceTier` before the adapter sees it, which is why the model-driven
+		// default is what makes a fast model work there at all.)
+		const payload = await capturePayload(
+			(runtime, model) => runtime.complete(model as Model<"openai-responses">, context, { serviceTier: "default" }),
+			"openai",
+			"gpt-5.6-sol-fast",
+		);
+
+		expect(payload?.model).toBe("gpt-5.6-sol");
+		expect(payload?.service_tier).toBe("default");
 	});
 });

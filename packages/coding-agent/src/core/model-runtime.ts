@@ -34,7 +34,9 @@ import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import {
 	copilotAdvertisedFastModelIds,
+	FAST_MODEL_ID_SUFFIX,
 	type FastModelVariantDiagnostic,
+	isGitHubCopilotModel,
 	withFastModelVariants,
 } from "./fast-model-variants.ts";
 import { ModelConfig } from "./model-config.ts";
@@ -369,8 +371,24 @@ export class ModelRuntime implements Models {
 	getProvider(providerId: string): Provider | undefined {
 		return this.models.getProvider(providerId);
 	}
-	/** Whether an authenticated provider may reconstruct an absent saved model ID. */
-	canRestoreUnknownModel(providerId: string): boolean {
+	/**
+	 * Whether an authenticated provider may reconstruct an absent saved model ID.
+	 *
+	 * Pass `modelId` whenever it is known. GitHub Copilot advertises its fast siblings per account, so
+	 * a `-fast` ID the credential does not entitle is definitively not restorable — reconstructing it
+	 * would resurrect a model the account lost access to, with no route metadata, under the same
+	 * session. Every other provider keeps the provider-scoped answer, so a provider-owned model whose
+	 * upstream name merely ends in `-fast` (several exist under `vercel-ai-gateway`) still restores.
+	 */
+	canRestoreUnknownModel(providerId: string, modelId?: string): boolean {
+		if (
+			modelId !== undefined &&
+			isGitHubCopilotModel({ provider: providerId }) &&
+			modelId.endsWith(FAST_MODEL_ID_SUFFIX) &&
+			copilotAdvertisedFastModelIds(this.credentials.peek(providerId))?.includes(modelId) !== true
+		) {
+			return false;
+		}
 		return canRestoreUnknownModelProvider(
 			providerId,
 			this.defaultBuiltins.get(providerId),

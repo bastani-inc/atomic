@@ -103,6 +103,21 @@ function convertToolResultOutput<TApi extends Api>(
 	return output;
 }
 
+/**
+ * The service tier this request should carry.
+ *
+ * A fast model variant declares its tier in `fastRoute`, so any caller that simply hands the model to
+ * an adapter — `Models.stream`/`complete`, `ModelRuntime.complete*`, or a provider's `streamSimple`
+ * taken directly — routes it correctly. An explicit per-request `serviceTier` still wins, which keeps
+ * a caller able to opt a fast model down to `"default"` or `"flex"` for one request.
+ */
+export function resolveRequestedServiceTier(
+	model: Pick<Model<Api>, "fastRoute">,
+	optionsServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+): ResponseCreateParamsStreaming["service_tier"] | undefined {
+	return optionsServiceTier ?? model.fastRoute?.serviceTier;
+}
+
 export interface OpenAIResponsesStreamOptions {
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	grammarToolInputProperties?: ReadonlyMap<string, string>;

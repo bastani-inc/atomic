@@ -36,7 +36,12 @@ import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } f
 import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
+import {
+	convertResponsesMessages,
+	convertResponsesTools,
+	processResponsesStream,
+	resolveRequestedServiceTier,
+} from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
 // ============================================================================
@@ -570,8 +575,10 @@ function buildRequestBody(
 		body.temperature = options.temperature;
 	}
 
-	if (options?.serviceTier !== undefined) {
-		body.service_tier = options.serviceTier;
+	// A fast variant carries its own tier, so a caller that only hands over the model still routes fast.
+	const requestedServiceTier = resolveRequestedServiceTier(model, options?.serviceTier);
+	if (requestedServiceTier !== undefined) {
+		body.service_tier = requestedServiceTier;
 	}
 
 	if (toolPlacement.immediate.length > 0) {
@@ -675,7 +682,7 @@ async function processStream(
 		stream,
 		model,
 		{
-			serviceTier: options?.serviceTier,
+			serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
 			grammarToolInputProperties,
 			resolveServiceTier: resolveCodexServiceTier,
 			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
@@ -1530,7 +1537,7 @@ async function processWebSocketStream(
 			stream,
 			model,
 			{
-				serviceTier: options?.serviceTier,
+				serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
 				grammarToolInputProperties,
 				resolveServiceTier: resolveCodexServiceTier,
 				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),

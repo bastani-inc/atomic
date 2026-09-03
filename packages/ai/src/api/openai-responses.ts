@@ -30,7 +30,12 @@ import {
 	preserveCopilotIntegrationHeader,
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
+import {
+	convertResponsesMessages,
+	convertResponsesTools,
+	processResponsesStream,
+	resolveRequestedServiceTier,
+} from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
@@ -181,7 +186,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				stream,
 				model,
 				{
-					serviceTier: options?.serviceTier,
+					serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
 					grammarToolInputProperties,
 					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
 				},
@@ -336,8 +341,10 @@ function buildParams(
 		params.temperature = options?.temperature;
 	}
 
-	if (options?.serviceTier !== undefined) {
-		params.service_tier = options.serviceTier;
+	// A fast variant carries its own tier, so a caller that only hands over the model still routes fast.
+	const requestedServiceTier = resolveRequestedServiceTier(model, options?.serviceTier);
+	if (requestedServiceTier !== undefined) {
+		params.service_tier = requestedServiceTier;
 	}
 
 	if (toolPlacement.immediate.length > 0) {
