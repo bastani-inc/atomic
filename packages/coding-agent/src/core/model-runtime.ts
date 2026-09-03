@@ -161,8 +161,10 @@ export class ModelRuntime implements Models {
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
-		this.streaming = new ModelRuntimeStreaming(this.models, (model, overrides) =>
-			this.getRequestAuth(model, overrides),
+		this.streaming = new ModelRuntimeStreaming(
+			this.models,
+			(model, overrides) => this.getRequestAuth(model, overrides),
+			(model) => this.ownsExtensionTransport(model),
 		);
 		this.rebuildProviders();
 	}
@@ -452,6 +454,16 @@ export class ModelRuntime implements Models {
 
 	getRegisteredProviderConfig(providerId: string): ProviderConfigInput | undefined {
 		return this.extensionProviders.get(providerId);
+	}
+
+	/**
+	 * Whether an extension supplies the stream function for this model's api. Such a transport owns its
+	 * own serialization, so Atomic must not attach first-party provider routing to it. This mirrors the
+	 * `usesExtensionStream` check the agent session makes before dispatching.
+	 */
+	private ownsExtensionTransport(model: Model<Api>): boolean {
+		const extension = this.extensionProviders.get(model.provider);
+		return extension?.streamSimple !== undefined && model.api === extension.api;
 	}
 
 	getRegisteredProviderIds(): readonly string[] {

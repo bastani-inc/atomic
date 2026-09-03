@@ -7,7 +7,9 @@ import {
 	type CredentialStore,
 	InMemoryCredentialStore,
 	type Model,
+	type SimpleStreamOptions,
 } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -405,5 +407,200 @@ describe("ModelRuntime standalone requests honor a selected fast model", () => {
 
 		expect(payload?.model).toBe("gpt-5.6-sol");
 		expect(payload?.service_tier).toBe("default");
+	});
+});
+
+/**
+ * The first-party ChatGPT Codex routing identity — `originator: codex_cli_rs` plus
+ * `x-codex-routing-hint` — used to be attached only by the agent session, so a standalone
+ * `modelRuntime.complete*()` sent the right model and tier under pi's identity. It is attached by
+ * `ModelRuntimeStreaming` now, which has to happen after auth headers are merged: the wrapper mutates
+ * a header object it captures, and `mergeHeaders` copies, so anything applied upstream is inert.
+ */
+describe("ModelRuntime standalone Codex requests carry the first-party routing identity", () => {
+	const context: Context = { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] };
+	// The Codex backend reads its account id from the bearer token.
+	const codexToken = `header.${Buffer.from(
+		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
+	).toString("base64url")}.signature`;
+
+	interface CodexCapture {
+		model?: string;
+		serviceTier?: string;
+		originator: string | null;
+		routingHint: string | null;
+		marker: string | null;
+	}
+
+	function codexResponse(): Response {
+		const completed = {
+			type: "response.completed",
+			response: {
+				id: "resp_codex",
+				status: "completed",
+				service_tier: "priority",
+				usage: {
+					input_tokens: 1,
+					input_tokens_details: { cached_tokens: 0 },
+					output_tokens: 1,
+					total_tokens: 2,
+				},
+			},
+		};
+		return new Response(`data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`, {
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+		});
+	}
+
+	async function codexRuntime(): Promise<ModelRuntime> {
+		// openai-codex is OAuth-only, so an api_key credential leaves the provider unconfigured.
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("openai-codex", async () => ({
+			type: "oauth",
+			access: codexToken,
+			refresh: "refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+		}));
+		return ModelRuntime.create({ credentials, modelsPath: null });
+	}
+
+	async function captureCodex(
+		modelId: string,
+		options?: { onPayload?: (payload: unknown) => unknown },
+	): Promise<CodexCapture> {
+		const runtime = await codexRuntime();
+		const model = runtime.getModel("openai-codex", modelId);
+		expect(model).toBeDefined();
+		if (!model) throw new Error(`missing model openai-codex/${modelId}`);
+		const captured: CodexCapture = { originator: null, routingHint: null, marker: null };
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				const headers = new Headers(init?.headers);
+				const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+				const body = JSON.parse(
+					headers.get("content-encoding") === "zstd"
+						? zstdDecompressSync(bytes).toString("utf8")
+						: new TextDecoder().decode(bytes),
+				) as { model?: string; service_tier?: string };
+				captured.model = body.model;
+				captured.serviceTier = body.service_tier;
+				captured.originator = headers.get("originator");
+				captured.routingHint = headers.get("x-codex-routing-hint");
+				// The internal marker is stripped before dispatch; assert it never leaves the process.
+				captured.marker = headers.get("x-atomic-codex-fast-route");
+				return codexResponse();
+			}),
+		);
+		try {
+			await runtime.completeSimple(model, context, { transport: "sse", ...options });
+		} finally {
+			vi.unstubAllGlobals();
+		}
+		return captured;
+	}
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("sends the Codex harness identity and a base-model routing hint for a fast model", async () => {
+		const captured = await captureCodex("gpt-5.6-sol-fast");
+
+		expect(captured.model).toBe("gpt-5.6-sol");
+		expect(captured.serviceTier).toBe("priority");
+		expect(captured.originator).toBe("codex_cli_rs");
+		expect(captured.routingHint).toBe("model=gpt-5.6-sol;tier=priority");
+		expect(captured.marker).toBeNull();
+	});
+
+	it("keeps pi's identity and sends no routing hint for the normal sibling", async () => {
+		const captured = await captureCodex("gpt-5.6-sol");
+
+		expect(captured.model).toBe("gpt-5.6-sol");
+		expect(captured.serviceTier).toBeUndefined();
+		expect(captured.originator).toBe("pi");
+		expect(captured.routingHint).toBeNull();
+		expect(captured.marker).toBeNull();
+	});
+
+	it("reverts to pi's identity when a payload hook drops the tier off priority", async () => {
+		const captured = await captureCodex("gpt-5.6-sol-fast", {
+			onPayload: (payload) => {
+				const record = { ...(payload as Record<string, unknown>) };
+				delete record.service_tier;
+				return record;
+			},
+		});
+
+		expect(captured.serviceTier).toBeUndefined();
+		expect(captured.originator).toBe("pi");
+		expect(captured.routingHint).toBeNull();
+	});
+
+	it("installs the WebSocket handshake identity when the transport is not forced to SSE", async () => {
+		const runtime = await codexRuntime();
+		const model = runtime.getModel("openai-codex", "gpt-5.6-sol-fast");
+		expect(model).toBeDefined();
+		if (!model) throw new Error("missing fast model");
+		class UnwrappedWebSocket {
+			close(): void {}
+		}
+		vi.stubGlobal("WebSocket", UnwrappedWebSocket);
+		// CLI entrypoints install this through the HTTP dispatcher; a pure SDK embedder never does, so
+		// without the runtime installing it the WebSocket half of the contract stays unrepaired.
+		expect(globalThis.WebSocket).toBe(UnwrappedWebSocket as unknown as typeof globalThis.WebSocket);
+		try {
+			// The socket cannot connect in-process; installation happens before dispatch, which is the
+			// assertion. Failure of the request itself is irrelevant here.
+			await runtime.completeSimple(model, context).catch(() => undefined);
+			expect(globalThis.WebSocket).not.toBe(UnwrappedWebSocket as unknown as typeof globalThis.WebSocket);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("leaves an extension-owned transport unwrapped", async () => {
+		const runtime = await codexRuntime();
+		const model = runtime.getModel("openai-codex", "gpt-5.6-sol-fast");
+		expect(model).toBeDefined();
+		if (!model) throw new Error("missing fast model");
+		let capturedOptions: SimpleStreamOptions | undefined;
+		runtime.registerProvider("openai-codex", {
+			api: "openai-codex-responses",
+			streamSimple: (streamModel, _streamContext, streamOptions) => {
+				capturedOptions = streamOptions;
+				const stream = createAssistantMessageEventStream();
+				stream.end({
+					role: "assistant",
+					content: [{ type: "text", text: "ok" }],
+					api: streamModel.api,
+					provider: streamModel.provider,
+					model: streamModel.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				});
+				return stream;
+			},
+		});
+		try {
+			await runtime.completeSimple(model, context, { transport: "sse" });
+		} finally {
+			runtime.unregisterProvider("openai-codex");
+		}
+
+		// An extension that owns the transport owns its serialization; Atomic must not proxy its fetch
+		// or inject provider routing headers into it.
+		expect(capturedOptions?.fetch).toBeUndefined();
+		expect(new Headers(capturedOptions?.headers as HeadersInit).get("x-codex-routing-hint")).toBeNull();
 	});
 });

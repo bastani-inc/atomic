@@ -22,6 +22,8 @@ import {
 	type SimpleStreamOptions,
 	type StreamOptions,
 } from "@bastani/pi-ai";
+import { usesChatGptCodexTransport, withChatGptCodexTransportRouting } from "./fast-model-routing.ts";
+import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 
 export function mergeHeaders(
@@ -41,14 +43,36 @@ export function mergeHeaders(
 }
 
 type ResolveAuth = (model: Model<Api>, overrides?: ModelRuntimeAuthOverrides) => Promise<AuthResult | undefined>;
+/** Whether an extension owns this model's transport, in which case it owns its serialization too. */
+type OwnsExtensionTransport = (model: Model<Api>) => boolean;
 
 /** Streaming request preparation split from ModelRuntime solely for Atomic's 500-line source gate. */
 export class ModelRuntimeStreaming {
 	private readonly models: MutableModels;
 	private readonly resolveAuth: ResolveAuth;
-	constructor(models: MutableModels, resolveAuth: ResolveAuth) {
+	private readonly ownsExtensionTransport: OwnsExtensionTransport;
+	constructor(models: MutableModels, resolveAuth: ResolveAuth, ownsExtensionTransport: OwnsExtensionTransport) {
 		this.models = models;
 		this.resolveAuth = resolveAuth;
+		this.ownsExtensionTransport = ownsExtensionTransport;
+	}
+
+	/**
+	 * Attach the first-party ChatGPT Codex routing identity to a prepared request.
+	 *
+	 * This must happen *after* `prepareRequest`, not before it. The wrapper works by mutating the
+	 * header object it captures at construction, and `prepareRequest` rebuilds headers through
+	 * `mergeHeaders`, which copies — so a wrapper applied upstream is silently inert. The wrapper
+	 * decides from the final payload whether the request is priority, so a normal model still ends up
+	 * with `originator: pi` and no routing hint.
+	 */
+	private withCodexRouting<TOptions extends StreamOptions>(model: Model<Api>, options: TOptions): TOptions {
+		if (!usesChatGptCodexTransport(model) || this.ownsExtensionTransport(model)) return options;
+		// The WebSocket handshake builds its headers inside pi-ai and the constructor can be cached, so
+		// the identity is repaired through the global constructor rather than per-request options. CLI
+		// entrypoints install this through the HTTP dispatcher; a pure SDK embedder never does.
+		if (options.transport !== "sse") installCodexFastRouteWebSocketIdentity();
+		return withChatGptCodexTransportRouting(model, options);
 	}
 
 	private async prepareRequest(
@@ -92,7 +116,7 @@ export class ModelRuntimeStreaming {
 			return prepared.provider.stream(
 				prepared.model as Model<TApi>,
 				context,
-				prepared.options as ApiStreamOptions<TApi>,
+				this.withCodexRouting(prepared.model, prepared.options) as ApiStreamOptions<TApi>,
 			);
 		});
 	}
@@ -108,7 +132,11 @@ export class ModelRuntimeStreaming {
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		return lazyStream(model, async () => {
 			const prepared = await this.prepareRequest(model, options);
-			return prepared.provider.streamSimple(prepared.model, context, prepared.options as SimpleStreamOptions);
+			return prepared.provider.streamSimple(
+				prepared.model,
+				context,
+				this.withCodexRouting(prepared.model, prepared.options) as SimpleStreamOptions,
+			);
 		});
 	}
 

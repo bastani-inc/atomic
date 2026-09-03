@@ -11,9 +11,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import type { AgentSessionEvent } from "@bastani/atomic";
+import { type AgentSessionEvent, getEnvNames } from "@bastani/atomic";
 import { SubagentControl as NativeSubagentControl } from "@bastani/atomic-natives";
-import { test } from "vitest";
+import { test, vi } from "vitest";
+import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
@@ -138,6 +139,121 @@ test(
 		} finally {
 			if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+			clearSubagentControls();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS,
+);
+
+/**
+ * Restores coverage deleted with `subagents-inprocess-fast-mode.test.ts`. The clean break removed the
+ * fast-mode toggle, not thinking-level clamping: a child that asks for `xhigh` against a
+ * `reasoning: false` model must still report `off`, end to end through a real in-process child. The
+ * original case only touched fast mode in one fixture line, so it is restored here on a normal model.
+ */
+function completedOpenAIResponse(): Response {
+	const message = {
+		id: "msg_thinking_clamp",
+		type: "message",
+		status: "completed",
+		role: "assistant",
+		content: [{ type: "output_text", text: "ok", annotations: [] }],
+		phase: "final_answer",
+	};
+	const events = [
+		{ type: "response.created", response: { id: "resp_thinking_clamp", status: "in_progress" } },
+		{
+			type: "response.output_item.added",
+			output_index: 0,
+			item: { ...message, status: "in_progress", content: [] },
+		},
+		{ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "ok" },
+		{ type: "response.output_item.done", output_index: 0, item: message },
+		{
+			type: "response.completed",
+			response: {
+				id: "resp_thinking_clamp",
+				status: "completed",
+				output: [message],
+				usage: {
+					input_tokens: 0,
+					input_tokens_details: { cached_tokens: 0 },
+					output_tokens: 0,
+					total_tokens: 0,
+				},
+			},
+		},
+	];
+	const body = `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+	return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+test(
+	"a live in-process child reports the session's clamped thinking level",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-clamp-"));
+		const agentDir = join(root, "agent");
+		const agentDirEnvNames = getEnvNames(ENV_AGENT_DIR);
+		const previousAgentDirEnv = Object.fromEntries(agentDirEnvNames.map((name) => [name, process.env[name]]));
+		mkdirSync(join(root, ".atomic"), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			join(root, ".atomic", "settings.json"),
+			JSON.stringify({ defaultProvider: "openai", defaultModel: "non-reasoning-fixture" }),
+			"utf8",
+		);
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ openai: { type: "api_key", key: "test-api-key" } }),
+			"utf8",
+		);
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					openai: {
+						api: "openai-responses",
+						baseUrl: "https://api.openai.example/v1",
+						models: [
+							{
+								id: "non-reasoning-fixture",
+								name: "Non-reasoning fixture",
+								reasoning: false,
+								input: ["text"],
+								contextWindow: 128_000,
+								maxTokens: 4_096,
+							},
+						],
+					},
+				},
+			}),
+			"utf8",
+		);
+		for (const name of agentDirEnvNames) process.env[name] = agentDir;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => completedOpenAIResponse()),
+		);
+		clearSubagentControls();
+		try {
+			const result = await runSingleInProcess(root, { ...sampleAgent(), thinking: "xhigh" }, "clamp thinking", {
+				cwd: root,
+				runId: "real-thinking-clamp",
+				modelOverride: "openai/non-reasoning-fixture",
+				testSession: false,
+			});
+
+			assert.equal(result.status, "ok");
+			assert.equal(result.model, "openai/non-reasoning-fixture");
+			assert.equal(result.thinking, "off");
+			assert.equal(result.progress?.thinking, "off");
+		} finally {
+			vi.unstubAllGlobals();
+			for (const name of agentDirEnvNames) {
+				if (previousAgentDirEnv[name] === undefined) delete process.env[name];
+				else process.env[name] = previousAgentDirEnv[name];
+			}
 			clearSubagentControls();
 			rmSync(root, { recursive: true, force: true });
 		}

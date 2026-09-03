@@ -8,13 +8,7 @@ import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
-import {
-	getModelFastRoute,
-	streamWithFastRoute,
-	usesChatGptCodexTransport,
-	withChatGptCodexTransportRouting,
-	withFastRouteStreamOptions,
-} from "./fast-model-routing.ts";
+import { getModelFastRoute, streamWithFastRoute, withFastRouteStreamOptions } from "./fast-model-routing.ts";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
@@ -348,11 +342,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (fastRoute?.serviceTier !== undefined) {
 				return streamWithFastRoute(requestModel, context, fastRouteStreamOptions);
 			}
-			const transportOptions =
-				usesChatGptCodexTransport(requestModel) && fastRouteStreamOptions
-					? withChatGptCodexTransportRouting(requestModel, fastRouteStreamOptions, false)
-					: fastRouteStreamOptions;
-			return modelRuntime.streamSimple(requestModel, context, transportOptions);
+			// The Codex routing identity is attached by ModelRuntimeStreaming, after auth headers are
+			// merged. Applying it here would be inert: `mergeHeaders` copies the header object the
+			// wrapper mutates.
+			return modelRuntime.streamSimple(requestModel, context, fastRouteStreamOptions);
 		},
 		onPayload: async (payload, model) => {
 			const sourceMessages = lastConvertedLlmMessages;
