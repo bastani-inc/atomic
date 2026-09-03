@@ -8,7 +8,7 @@ import {
 } from "../messages.ts";
 import { normalizeDerivedSessionEntries } from "../session-entry-normalization.ts";
 import { buildSessionContext } from "../session-manager-history.ts";
-import type { CompactionEntry, SessionEntry } from "../session-manager-types.ts";
+import type { CompactionEntry, SessionEntry } from "../session-manager-types.js";
 import { type CompactionSettings, estimateContextTokens, estimateTokens } from "./compaction.ts";
 import {
 	COMPACTION_AUTO_QUERY,

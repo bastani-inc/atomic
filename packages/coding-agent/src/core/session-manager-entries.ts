@@ -21,7 +21,7 @@ import {
 	type SessionSummaryEntry,
 	type SessionWorkflowMetadata,
 	type ThinkingLevelChangeEntry,
-} from "./session-manager-types.ts";
+} from "./session-manager-types.js";
 import { generateId } from "./session-manager-validation.ts";
 
 function entryBase(

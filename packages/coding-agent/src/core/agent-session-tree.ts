@@ -1,6 +1,6 @@
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./compaction/index.ts";
-import type { SessionBeforeTreeResult, TreePreparation } from "./extensions/index.ts";
+import type { SessionBeforeTreeResult, TreePreparation } from "./extensions/index.js";
 import type { BranchSummaryEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 

@@ -25,7 +25,7 @@ import {
 	markCodexFastModeRequest,
 	wrapCodexFastModeFetch,
 } from "./codex-fast-mode-transport.ts";
-import type { OrchestrationContext } from "./extensions/index.ts";
+import type { OrchestrationContext } from "./extensions/index.js";
 
 export const CODEX_FAST_MODE_SERVICE_TIER = "priority" as const;
 

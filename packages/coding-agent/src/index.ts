@@ -369,7 +369,7 @@ export {
 	type ProjectTrustUpdate,
 	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 } from "./core/trust-manager.ts";
-export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
+export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.js";
 export * from "./index-extensions.js";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";

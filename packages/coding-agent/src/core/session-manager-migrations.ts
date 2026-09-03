@@ -4,7 +4,7 @@ import {
 	type FileEntry,
 	type SessionHeader,
 	type SessionMessageEntry,
-} from "./session-manager-types.ts";
+} from "./session-manager-types.js";
 import { generateId } from "./session-manager-validation.ts";
 
 /** Migrate v1 → v2: add id/parentId tree structure. Mutates in place. */

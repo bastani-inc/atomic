@@ -33,6 +33,6 @@ export type {
 	SessionTreeNode,
 	SessionWorkflowMetadata,
 	ThinkingLevelChangeEntry,
-} from "./session-manager-types.ts";
-export { CURRENT_SESSION_VERSION } from "./session-manager-types.ts";
+} from "./session-manager-types.js";
+export { CURRENT_SESSION_VERSION } from "./session-manager-types.js";
 export { assertValidSessionId } from "./session-manager-validation.ts";

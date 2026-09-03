@@ -25,7 +25,7 @@ import type {
 	SessionBeforeCompactResult,
 	SessionCompactEvent,
 	SessionCompactFailedEvent,
-} from "./extensions/index.ts";
+} from "./extensions/index.js";
 import type { CompactionEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 

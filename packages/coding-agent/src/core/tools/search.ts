@@ -22,7 +22,7 @@ import {
 	searchInternalSelector,
 	searchSqliteSelector,
 	sqliteSelectorForPath,
-} from "./resource-selectors.ts";
+} from "./resource-selectors.js";
 import { buildSearchDetails, type SearchToolDetails } from "./search-details.ts";
 import { filterSearchOutputByLineRange, type SearchLineRange, splitLineRangeSelector } from "./search-line-ranges.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";

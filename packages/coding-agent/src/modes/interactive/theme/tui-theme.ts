@@ -2,7 +2,7 @@ import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-work
 import chalk from "chalk";
 import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
 import { theme } from "./global-theme.ts";
-import type { Theme } from "./theme-class.ts";
+import type { Theme } from "./theme-class.js";
 
 type CliHighlightTheme = Record<string, (s: string) => string>;
 

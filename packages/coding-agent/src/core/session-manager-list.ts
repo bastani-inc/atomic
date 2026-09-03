@@ -19,7 +19,7 @@ import type {
 	SessionInfoEntry,
 	SessionListProgress,
 	SessionMessageEntry,
-} from "./session-manager-types.ts";
+} from "./session-manager-types.js";
 
 function isMessageWithContent(message: AgentMessage): message is Message {
 	return typeof (message as Message).role === "string" && "content" in message;

@@ -23,7 +23,7 @@ import {
 	withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import type { ExtensionRunner } from "./extensions/index.ts";
+import type { ExtensionRunner } from "./extensions/index.js";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";

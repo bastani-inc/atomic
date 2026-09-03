@@ -1,5 +1,5 @@
 import { normalizeMessageContent } from "./messages.ts";
-import type { SessionEntry } from "./session-manager-types.ts";
+import type { SessionEntry } from "./session-manager-types.js";
 
 /**
  * Build a safe derived path for replay/analysis without rewriting durable

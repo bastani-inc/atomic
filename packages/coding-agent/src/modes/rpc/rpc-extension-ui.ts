@@ -7,7 +7,7 @@ import type {
 	HostInputFormRequest,
 	HostSessionPickerRequest,
 	WorkingIndicatorOptions,
-} from "../../core/extensions/index.ts";
+} from "../../core/extensions/index.js";
 import type { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";

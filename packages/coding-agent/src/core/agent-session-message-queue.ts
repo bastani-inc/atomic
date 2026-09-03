@@ -18,7 +18,7 @@ import {
 	type InterruptQueueHold,
 	normalizeInterruptAbortMessage,
 } from "./agent-session-types.ts";
-import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 
 export { transferWorkflowStageDeliveriesTo };

@@ -49,7 +49,7 @@ import {
 	resolveArchiveSelector,
 	resolveInternalSelector,
 	sqliteSelectorForPath,
-} from "./resource-selectors.ts";
+} from "./resource-selectors.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 

@@ -44,7 +44,7 @@ import type {
 	SessionStartEvent,
 	ToolDefinition,
 	ToolInfo,
-} from "./extensions/index.ts";
+} from "./extensions/index.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
@@ -107,7 +107,7 @@ export interface AgentSessionQueuePauseControl {
 }
 
 export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl {
-	readonly orchestrationContext: import("./extensions/index.ts").OrchestrationContext | undefined;
+	readonly orchestrationContext: import("./extensions/index.js").OrchestrationContext | undefined;
 	readonly modelRuntime: ModelRuntime;
 	readonly state: AgentState;
 	readonly model: Model<Api> | undefined;
@@ -485,7 +485,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_baseToolsOverride?: Record<string, AgentTool>;
 	_sessionStartEvent: SessionStartEvent;
 	_orchestrationContext?: OrchestrationContext;
-	_subagentPolicy?: import("./extensions/index.ts").SubagentChildPolicy;
+	_subagentPolicy?: import("./extensions/index.js").SubagentChildPolicy;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionMode: ExtensionMode;
 	_disposed: boolean;

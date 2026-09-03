@@ -13,7 +13,7 @@ import type {
 	ReplacedSessionContext,
 	SessionShutdownEvent,
 	SessionStartEvent,
-} from "./extensions/index.ts";
+} from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { AuthStatus } from "./provider-composer.ts";

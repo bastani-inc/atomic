@@ -23,7 +23,7 @@ export {
 	type TerminalThemeDetection,
 	type TerminalThemeDetectionOptions,
 } from "./terminal-detection.ts";
-export { Theme, type ThemeBg, type ThemeColor } from "./theme-class.ts";
+export { Theme, type ThemeBg, type ThemeColor } from "./theme-class.js";
 export {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,

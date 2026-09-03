@@ -20,8 +20,8 @@ export type {
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
-} from "./extensions/index.ts";
-export { isPowerShellToolResult } from "./extensions/index.ts";
+} from "./extensions/index.js";
+export { isPowerShellToolResult } from "./extensions/index.js";
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
 export type {

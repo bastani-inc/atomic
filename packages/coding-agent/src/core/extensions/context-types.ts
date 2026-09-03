@@ -181,7 +181,7 @@ export interface ExtensionContext {
 	/** Current thinking level, resolved from the active session at access time. */
 	thinkingLevel?: ThinkingLevel;
 	/** Session-scoped internal resource router (e.g. artifact:// resolver). */
-	readonly internalResourceRouter?: import("../tools/resource-selectors.ts").InternalResourceRouter;
+	readonly internalResourceRouter?: import("../tools/resource-selectors.js").InternalResourceRouter;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
 	/** Whether project-local trust is active for this context. */

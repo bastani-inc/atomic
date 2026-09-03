@@ -9,7 +9,7 @@
 import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentSessionEvent } from "../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
-import type { ExtensionError } from "../core/extensions/index.ts";
+import type { ExtensionError } from "../core/extensions/index.js";
 import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";

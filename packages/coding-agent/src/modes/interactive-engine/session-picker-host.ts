@@ -1,4 +1,4 @@
-import type { ExtensionUIContext, HostSessionPickerRow } from "../../core/extensions/index.ts";
+import type { ExtensionUIContext, HostSessionPickerRow } from "../../core/extensions/index.js";
 import {
 	type HostSessionPickerMount,
 	mountHostSessionPicker,

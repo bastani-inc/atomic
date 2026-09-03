@@ -27,7 +27,7 @@ import type {
 	ToolExecutionUpdateEvent,
 	TurnEndEvent,
 	TurnStartEvent,
-} from "./extensions/index.ts";
+} from "./extensions/index.js";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./extensions/stale-context.ts";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";

@@ -1,4 +1,4 @@
-import type { SessionHeader, SessionWorkflowMetadata } from "./session-manager-types.ts";
+import type { SessionHeader, SessionWorkflowMetadata } from "./session-manager-types.js";
 
 export const WORKFLOW_SESSION_METADATA_ENV = "ATOMIC_WORKFLOW_SESSION_METADATA";
 

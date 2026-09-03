@@ -3,7 +3,7 @@ import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
-import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { ModelRuntime } from "./model-runtime.js";
 import {

@@ -14,7 +14,7 @@ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput } from "./render-utils.ts";
-import { type InternalResourceContext, resolveInternalSelector } from "./resource-selectors.ts";
+import { type InternalResourceContext, resolveInternalSelector } from "./resource-selectors.js";
 import { loadNativeSearchBinding } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";

@@ -15,7 +15,7 @@ import type {
 	SessionContext,
 	SessionEntry,
 	SessionTreeNode,
-} from "./session-manager-types.ts";
+} from "./session-manager-types.js";
 
 /** Build the single context message a durable entry contributes, if any. */
 function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {

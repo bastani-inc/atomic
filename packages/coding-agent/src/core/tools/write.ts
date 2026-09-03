@@ -36,7 +36,7 @@ import {
 	writeArchiveSelector,
 	writeInternalSelector,
 	writeSqliteSelector,
-} from "./resource-selectors.ts";
+} from "./resource-selectors.js";
 import { invalidateNativeSearchCache } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 

@@ -83,7 +83,7 @@ export type {
 	HostCustomUiState,
 	HostCustomUiStateListener,
 	ProjectTrustContext,
-} from "../../core/extensions/index.ts";
+} from "../../core/extensions/index.js";
 export { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 export { configureHttpDispatcher } from "../../core/http-dispatcher.ts";
 export { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";

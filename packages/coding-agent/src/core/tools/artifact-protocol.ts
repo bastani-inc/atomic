@@ -9,7 +9,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { getArtifactManager } from "./artifacts.ts";
-import type { InternalResourceRouter } from "./resource-selectors.ts";
+import type { InternalResourceRouter } from "./resource-selectors.js";
 
 const activeArtifactDirs = new Set<string>();
 

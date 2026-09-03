@@ -1,4 +1,4 @@
-import type { ExtensionUIContext } from "../../core/extensions/index.ts";
+import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../rpc/rpc-types.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 

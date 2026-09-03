@@ -6,7 +6,7 @@ import {
 	queueProtectedStreamingCustomMessages,
 	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
-import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 
 function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): void {

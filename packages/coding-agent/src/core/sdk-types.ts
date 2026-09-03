@@ -7,7 +7,7 @@ import type {
 	SessionStartEvent,
 	SubagentChildPolicy,
 	ToolDefinition,
-} from "./extensions/index.ts";
+} from "./extensions/index.js";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";

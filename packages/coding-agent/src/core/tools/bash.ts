@@ -30,7 +30,7 @@ import { executeNativePty } from "./bash-pty-native.ts";
 import { applyBashSessionEnvironment, snapshotBashSessionEnvironment } from "./bash-session-environment.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
-import { expandShellInternalUrls, type InternalResourceContext } from "./resource-selectors.ts";
+import { expandShellInternalUrls, type InternalResourceContext } from "./resource-selectors.js";
 import { invalidateNativeSearchCache } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult } from "./truncate.ts";

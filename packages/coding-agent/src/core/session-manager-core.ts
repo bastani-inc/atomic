@@ -46,7 +46,7 @@ import type {
 	SessionNameState,
 	SessionTreeNode,
 	SessionWorkflowMetadata,
-} from "./session-manager-types.ts";
+} from "./session-manager-types.js";
 import { assertValidSessionId, createSessionId } from "./session-manager-validation.ts";
 
 /** Manages conversation sessions as append-only trees stored in JSONL files.  Each session entry has an id and parentId forming a tree structure. The "leaf" pointer tracks the current position. Appending creates a child of the current leaf. Branching moves the leaf to an earlier entry, allowing new branches without modifying history.  Use buildSessionContext() to get the resolved message list for the LLM, which applies context-deletion filtering and follows the path from root to current leaf. */

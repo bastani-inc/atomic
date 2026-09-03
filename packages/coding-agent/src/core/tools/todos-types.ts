@@ -1,5 +1,5 @@
 import { type Static, Type } from "typebox";
-import { StringEnum } from "../typebox-compat.ts";
+import { StringEnum } from "../typebox-compat.js";
 
 export interface TodoFrontMatter {
 	id: string;

@@ -8,7 +8,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import type { SessionStats } from "./agent-session-types.ts";
 import { calculateContextTokens, estimateContextTokens } from "./compaction/index.ts";
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
-import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.ts";
+import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 

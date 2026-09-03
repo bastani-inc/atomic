@@ -16,7 +16,7 @@ import type {
 	SessionEntry,
 	SessionHeader,
 	SessionWorkflowMetadata,
-} from "./session-manager-types.ts";
+} from "./session-manager-types.js";
 import { assertValidSessionId, createSessionId, generateId } from "./session-manager-validation.ts";
 
 export function createBackupSnapshot(

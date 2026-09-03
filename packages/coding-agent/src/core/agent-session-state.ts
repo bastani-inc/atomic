@@ -1,7 +1,7 @@
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import type { ToolDefinition, ToolInfo } from "./extensions/index.ts";
+import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
 import { appendRegisteredMandatoryTools, isMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";

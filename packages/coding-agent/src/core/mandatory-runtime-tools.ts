@@ -1,4 +1,4 @@
-import type { Extension, RegisteredTool, ToolDefinition } from "./extensions/index.ts";
+import type { Extension, RegisteredTool, ToolDefinition } from "./extensions/index.js";
 
 const MANDATORY_TOOL_NAMES = new Set(["intercom"]);
 const TRUSTED_MANDATORY_DEFINITIONS = new WeakSet<ToolDefinition>();

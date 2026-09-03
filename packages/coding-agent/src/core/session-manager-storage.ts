@@ -15,7 +15,7 @@ import { join } from "path";
 import { StringDecoder } from "string_decoder";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { isClassifiedWorkflowSession } from "./session-manager-classification.ts";
-import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
+import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.js";
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
 /**
