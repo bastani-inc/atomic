@@ -163,6 +163,53 @@ describe("openai-codex fast model routing", () => {
 		expect(body?.model).toBe("gpt-5.6-sol");
 		expect(body?.service_tier).toBeUndefined();
 	});
+
+	/**
+	 * The route is the authority. A fast variant is a distinct selected, recorded, persisted, and
+	 * billed identity, so a per-request option must not turn it into an ordinary request — that would
+	 * also suppress the Codex routing identity, which keys on the final payload's tier.
+	 */
+	it.each(["default", "flex"] as const)("keeps the fast route's tier when a request asks for %s", async (tier) => {
+		let body: Record<string, unknown> | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				body = decodeCodexRequestBody(init?.body);
+				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		await streamOpenAICodexResponses(fastModel, context, {
+			apiKey: mockToken(),
+			transport: "sse",
+			serviceTier: tier,
+		}).result();
+
+		expect(body?.service_tier).toBe("priority");
+	});
+
+	it.each(["default", "flex"] as const)("honors an explicit %s tier on the normal sibling", async (tier) => {
+		let body: Record<string, unknown> | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				body = decodeCodexRequestBody(init?.body);
+				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		await streamOpenAICodexResponses(baseModel, context, {
+			apiKey: mockToken(),
+			transport: "sse",
+			serviceTier: tier,
+		}).result();
+
+		expect(body?.service_tier).toBe(tier);
+	});
 });
 
 describe("openai-codex streaming", () => {

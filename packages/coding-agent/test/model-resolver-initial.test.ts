@@ -301,7 +301,7 @@ describe("default model selection", () => {
 	 * substitute a different model.
 	 */
 	describe("Copilot fast-sibling restoration follows the credential's advertisement", () => {
-		async function copilotRuntime(fastModelIds: string[]) {
+		async function copilotRuntime(fastModelIds: string[], availableModelIds = ["claude-opus-4.8"]) {
 			const registry = await createInMemoryModelRegistry(
 				AuthStorage.inMemory({
 					"github-copilot": {
@@ -309,7 +309,7 @@ describe("default model selection", () => {
 						access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
 						refresh: "refresh-token",
 						expires: Number.MAX_SAFE_INTEGER,
-						availableModelIds: ["claude-opus-4.8"],
+						availableModelIds,
 						fastModelIds,
 					},
 				}),
@@ -354,6 +354,27 @@ describe("default model selection", () => {
 				baseModelId: "claude-opus-4.8",
 				upstreamModelId: "claude-opus-4.8-fast",
 			});
+		});
+
+		test("restores an advertised ordinary Copilot model whose name ends in -fast", async () => {
+			// Copilot's per-account advertisement is the authority, not the name shape. An ID the account
+			// lists as an ordinary picker/policy model is ordinary even when it ends in `-fast`; the
+			// provider's own filterModels reaches the same conclusion by checking route metadata first.
+			const modelRuntime = await copilotRuntime([], ["provider-owned-probe-fast", "claude-opus-4.8"]);
+
+			expect(modelRuntime.getModel("github-copilot", "provider-owned-probe-fast")).toBeUndefined();
+			expect(modelRuntime.canRestoreUnknownModel("github-copilot", "provider-owned-probe-fast")).toBe(true);
+			const result = await restoreModelFromSession(
+				"github-copilot",
+				"provider-owned-probe-fast",
+				undefined,
+				false,
+				modelRuntime,
+			);
+			expect(result.fallbackMessage).toBeUndefined();
+			expect(result.model?.id).toBe("provider-owned-probe-fast");
+			// Reconstructed models carry no route metadata, so it routes as the ordinary model it is.
+			expect(result.model?.fastRoute).toBeUndefined();
 		});
 
 		test("still reconstructs a missing Copilot model that is not a fast sibling", async () => {

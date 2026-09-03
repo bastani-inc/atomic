@@ -326,6 +326,8 @@ export class InteractiveModeBase {
 	changelogMarkdown: string | undefined = undefined;
 
 	startupNoticesShown = false;
+	/** Last model-catalog warning already shown, so the deferred re-read only speaks on a change. */
+	reportedModelCatalogWarning: string | undefined;
 	startupNoticesPrepared = false;
 
 	anthropicSubscriptionWarningShown = false;

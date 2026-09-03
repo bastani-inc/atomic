@@ -16,7 +16,7 @@ import { createShowLoadedResourcesThis } from "./interactive-mode-status-resourc
 
 initTheme("dark");
 
-function createOrderingMode(): InteractiveMode {
+function createOrderingMode(getWarning: () => string | undefined = () => undefined): InteractiveMode {
 	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode;
 	Object.assign(mode, {
 		chatContainer: new StartupChatContainer(),
@@ -25,6 +25,8 @@ function createOrderingMode(): InteractiveMode {
 		ui: { requestRender() {} },
 		lastStatusSpacer: undefined,
 		lastStatusText: undefined,
+		// `session` is a getter over `runtimeHost`; the eager binding reads the model catalog through it.
+		runtimeHost: { session: { modelRuntime: { getError: () => undefined, getWarning } } },
 	});
 	return mode;
 }
@@ -165,6 +167,82 @@ async function renderNoticeBeforeDisclosure(startupPath: "eager" | "deferred", n
 	}
 	return normalizeStartupOutput(mode.chatContainer);
 }
+
+const COLLISION_WARNING =
+	'Model "openai-codex/gpt-5.6-sol-fast" is already defined by the provider, models.json, or an extension';
+
+/**
+ * The suppressed-derived-duplicate warning is documented as an interactive startup notice. It used to
+ * be read only inside `completeDeferredStartup`, which is reachable only when extension loading was
+ * deferred and, when it did fire, rendered into the chat container rather than the startup notices.
+ */
+async function renderCatalogWarning(
+	startupPath: "eager" | "deferred",
+	getWarning: () => string | undefined,
+): Promise<string> {
+	const mode = createOrderingMode(getWarning);
+	mode.attachStartupNoticesContainer();
+	Object.assign(mode, {
+		showLoadedResources: (options: { targetContainer?: Container }) => {
+			options.targetContainer?.addChild(new Text("RESOURCES", 0, 0));
+		},
+		showStartupNoticesIfNeeded() {},
+		maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
+	});
+	if (startupPath === "eager") {
+		mode.rebindCurrentSession = async () => {};
+		await bindInitialEagerSession(mode);
+	} else {
+		configureDeferredMode(mode);
+		Object.defineProperty(mode, "session", {
+			configurable: true,
+			value: {
+				reload: async () => {},
+				resourceLoader: { getThemes: () => ({ themes: [] }) },
+				extensionRunner: {},
+				modelRuntime: { getError: () => undefined, getWarning },
+			},
+		});
+		await InteractiveMode.prototype.completeDeferredStartup.call(mode);
+	}
+	return normalizeStartupOutput(mode.chatContainer);
+}
+
+for (const startupPath of ["eager", "deferred"] as const) {
+	test(`${startupPath} startup renders the model-catalog collision warning as a startup notice`, async () => {
+		const output = await renderCatalogWarning(startupPath, () => COLLISION_WARNING);
+
+		assert.ok(output.includes(COLLISION_WARNING), output);
+		assert.ok(output.includes("Warning:"), output);
+		assertResourcesBefore(output, COLLISION_WARNING);
+	});
+
+	test(`${startupPath} startup stays silent when the catalog has no warning`, async () => {
+		const output = await renderCatalogWarning(startupPath, () => undefined);
+
+		assert.ok(!output.includes("Warning:"), output);
+	});
+}
+
+test("the deferred re-read reports only a changed catalog warning", async () => {
+	let warning: string | undefined = COLLISION_WARNING;
+	const mode = createOrderingMode(() => warning);
+	mode.attachStartupNoticesContainer();
+
+	mode.reportModelCatalogWarning(mode.startupNoticesContainer);
+	mode.reportModelCatalogWarning(mode.startupNoticesContainer);
+	// The startup chat container withholds output until startup releases it.
+	releaseStartupChatOutput(mode);
+	const afterRepeat = normalizeStartupOutput(mode.chatContainer);
+	assert.equal(afterRepeat.split(COLLISION_WARNING).length - 1, 1, afterRepeat);
+
+	// An extension provider can introduce a collision that did not exist at startup.
+	warning = 'Model "openai/other-fast" is already defined by the provider, models.json, or an extension';
+	mode.reportModelCatalogWarning(mode.startupNoticesContainer);
+	const afterChange = normalizeStartupOutput(mode.chatContainer);
+	assert.ok(afterChange.includes("openai/other-fast"), afterChange);
+	assert.equal(afterChange.split(COLLISION_WARNING).length - 1, 1, afterChange);
+});
 
 function assertResourcesBefore(output: string, marker: string): void {
 	assert.ok(output.includes("RESOURCES"), output);

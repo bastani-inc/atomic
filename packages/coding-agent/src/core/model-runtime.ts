@@ -34,6 +34,7 @@ import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import {
 	copilotAdvertisedFastModelIds,
+	copilotAdvertisesModelId,
 	FAST_MODEL_ID_SUFFIX,
 	type FastModelVariantDiagnostic,
 	isGitHubCopilotModel,
@@ -376,18 +377,21 @@ export class ModelRuntime implements Models {
 	/**
 	 * Whether an authenticated provider may reconstruct an absent saved model ID.
 	 *
-	 * Pass `modelId` whenever it is known. GitHub Copilot advertises its fast siblings per account, so
-	 * a `-fast` ID the credential does not entitle is definitively not restorable — reconstructing it
-	 * would resurrect a model the account lost access to, with no route metadata, under the same
-	 * session. Every other provider keeps the provider-scoped answer, so a provider-owned model whose
-	 * upstream name merely ends in `-fast` (several exist under `vercel-ai-gateway`) still restores.
+	 * Pass `modelId` whenever it is known. GitHub Copilot advertises every model it offers per account,
+	 * so a `-fast` ID that appears in neither the picker list nor the fast-sibling list is definitively
+	 * not restorable — reconstructing it would resurrect a model the account lost access to, with no
+	 * route metadata, under the same session. This consults the same credential lists the Copilot
+	 * provider's own `filterModels` uses, so an ID the account advertises as an ordinary model stays
+	 * ordinary whatever its name ends in. Every other provider keeps the provider-scoped answer, so a
+	 * provider-owned model whose upstream name merely ends in `-fast` (several exist under
+	 * `vercel-ai-gateway`) still restores.
 	 */
 	canRestoreUnknownModel(providerId: string, modelId?: string): boolean {
 		if (
 			modelId !== undefined &&
 			isGitHubCopilotModel({ provider: providerId }) &&
 			modelId.endsWith(FAST_MODEL_ID_SUFFIX) &&
-			copilotAdvertisedFastModelIds(this.credentials.peek(providerId))?.includes(modelId) !== true
+			!copilotAdvertisesModelId(this.credentials.peek(providerId), modelId)
 		) {
 			return false;
 		}

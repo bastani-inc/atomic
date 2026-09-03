@@ -64,6 +64,8 @@ declare module "./interactive-mode-base.ts" {
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
 		setupAutocompleteProvider(): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
+		reportModelCatalogWarning(targetContainer?: Container): void;
+		reportedModelCatalogWarning: string | undefined;
 		hadLastChangelogVersionAtStartup: boolean;
 		firstRunNoticeVisible: boolean;
 		firstRunOnboardingNoticeComponents: Component[];

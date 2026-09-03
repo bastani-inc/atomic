@@ -572,6 +572,57 @@ describe("openai-responses provider defaults", () => {
 		expect(result.usage.cost.input).toBe(base.cost.input * 2.5 * tokenScale);
 		expect(result.usage.cost.total).toBe((base.cost.input + base.cost.output) * 2.5 * tokenScale);
 	});
+
+	/**
+	 * The route is the authority: a per-request option cannot downgrade a fast variant, because fast
+	 * versus normal is model identity and the request is still recorded and billed as the fast one.
+	 * A normal model, which declares no tier, keeps honoring the option exactly as before.
+	 */
+	it.each([
+		["gpt-5.5-fast", "default", "priority", 2.5],
+		["gpt-5.5-fast", "flex", "priority", 2.5],
+		["gpt-5.5", "default", "default", 1],
+		["gpt-5.5", "flex", "flex", 0.5],
+	] as const)("%s asked for %s serializes %s", async (modelId, requested, expectedTier, multiplier) => {
+		const base = getModel("openai", "gpt-5.5");
+		const model: Model<"openai-responses"> =
+			modelId === "gpt-5.5"
+				? base
+				: {
+						...base,
+						id: modelId,
+						fastRoute: { baseModelId: "gpt-5.5", upstreamModelId: "gpt-5.5", serviceTier: "priority" },
+					};
+		const tokenCount = 100_000;
+		const tokenScale = tokenCount / 1_000_000;
+		let capturedPayload: { service_tier?: string } | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(String(init?.body)) as { service_tier?: string };
+			const sse = `data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					usage: {
+						input_tokens: tokenCount,
+						output_tokens: tokenCount,
+						total_tokens: tokenCount * 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`;
+			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+		});
+
+		const result = await streamOpenAIResponses(
+			model,
+			{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{ apiKey: "test-key", serviceTier: requested },
+		).result();
+
+		expect(capturedPayload?.service_tier).toBe(expectedTier);
+		// Pricing follows the resolved tier, so a fast variant cannot be billed at the requested rate.
+		expect(result.usage.cost.input).toBe(base.cost.input * multiplier * tokenScale);
+	});
 });
 
 describe("openai-responses max_output_tokens compat", () => {

@@ -394,11 +394,11 @@ describe("ModelRuntime standalone requests honor a selected fast model", () => {
 		expect(payload?.service_tier).toBeUndefined();
 	});
 
-	it("lets an API-typed request opt a fast model down to another tier", async () => {
-		// `complete()` carries the adapter's own option type, so an explicit tier reaches the adapter and
-		// wins over the model's. (The `*Simple` path cannot express this: pi-ai's `buildBaseOptions`
-		// whitelist drops `serviceTier` before the adapter sees it, which is why the model-driven
-		// default is what makes a fast model work there at all.)
+	it("keeps the fast route's tier even when an API-typed request asks for another", async () => {
+		// The route is the authority: fast versus normal is model identity, so a caller who wants a
+		// different tier selects the normal sibling. Downgrading here would let a model recorded,
+		// persisted, and billed as `-fast` route as an ordinary request — and would silently drop the
+		// Codex routing identity, which keys on the final payload's tier.
 		const payload = await capturePayload(
 			(runtime, model) => runtime.complete(model as Model<"openai-responses">, context, { serviceTier: "default" }),
 			"openai",
@@ -406,7 +406,20 @@ describe("ModelRuntime standalone requests honor a selected fast model", () => {
 		);
 
 		expect(payload?.model).toBe("gpt-5.6-sol");
-		expect(payload?.service_tier).toBe("default");
+		expect(payload?.service_tier).toBe("priority");
+	});
+
+	it("still honors an explicit tier on a normal model", async () => {
+		// `serviceTier` keeps working exactly as it did before fast variants existed, wherever the model
+		// declares no tier of its own.
+		const payload = await capturePayload(
+			(runtime, model) => runtime.complete(model as Model<"openai-responses">, context, { serviceTier: "flex" }),
+			"openai",
+			"gpt-5.6-sol",
+		);
+
+		expect(payload?.model).toBe("gpt-5.6-sol");
+		expect(payload?.service_tier).toBe("flex");
 	});
 });
 
@@ -467,7 +480,7 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 
 	async function captureCodex(
 		modelId: string,
-		options?: { onPayload?: (payload: unknown) => unknown },
+		options?: { onPayload?: (payload: unknown) => unknown; serviceTier?: "default" | "flex" },
 	): Promise<CodexCapture> {
 		const runtime = await codexRuntime();
 		const model = runtime.getModel("openai-codex", modelId);
@@ -494,7 +507,17 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 			}),
 		);
 		try {
-			await runtime.completeSimple(model, context, { transport: "sse", ...options });
+			// `serviceTier` only reaches the adapter through the API-typed option: pi-ai's
+			// `buildBaseOptions` whitelist drops it on the `*Simple` path, so asserting precedence there
+			// would pass no matter which side won.
+			if (options?.serviceTier !== undefined) {
+				await runtime.complete(model as Model<"openai-codex-responses">, context, {
+					transport: "sse",
+					...options,
+				});
+			} else {
+				await runtime.completeSimple(model, context, { transport: "sse", ...options });
+			}
 		} finally {
 			vi.unstubAllGlobals();
 		}
@@ -523,6 +546,16 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 		expect(captured.originator).toBe("pi");
 		expect(captured.routingHint).toBeNull();
 		expect(captured.marker).toBeNull();
+	});
+
+	it("keeps the Codex identity when a request asks for a lower tier", async () => {
+		// The route wins over the option, so the only channel that can suppress the identity is a
+		// payload hook rewriting the built body — asserted by the next case.
+		const captured = await captureCodex("gpt-5.6-sol-fast", { serviceTier: "default" });
+
+		expect(captured.serviceTier).toBe("priority");
+		expect(captured.originator).toBe("codex_cli_rs");
+		expect(captured.routingHint).toBe("model=gpt-5.6-sol;tier=priority");
 	});
 
 	it("reverts to pi's identity when a payload hook drops the tier off priority", async () => {

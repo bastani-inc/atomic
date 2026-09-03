@@ -106,16 +106,21 @@ function convertToolResultOutput<TApi extends Api>(
 /**
  * The service tier this request should carry.
  *
- * A fast model variant declares its tier in `fastRoute`, so any caller that simply hands the model to
- * an adapter — `Models.stream`/`complete`, `ModelRuntime.complete*`, or a provider's `streamSimple`
- * taken directly — routes it correctly. An explicit per-request `serviceTier` still wins, which keeps
- * a caller able to opt a fast model down to `"default"` or `"flex"` for one request.
+ * A fast model variant declares its tier in `fastRoute`, and that declaration is the authority: fast
+ * versus normal is model identity, so a caller who wants a different tier selects the normal sibling
+ * rather than downgrading the fast one. Letting a per-request option win would let a model selected,
+ * recorded, persisted, and billed as `-fast` route as an ordinary request — and, because the Codex
+ * routing identity keys on the final payload's tier, silently drop `originator: codex_cli_rs` too.
+ *
+ * A normal model has no declared tier, so an explicit `serviceTier` still applies there exactly as it
+ * did before fast variants existed. Payload hooks are a separate mechanism: they rewrite the built
+ * body, and the routing identity follows whatever tier they leave behind.
  */
 export function resolveRequestedServiceTier(
 	model: Pick<Model<Api>, "fastRoute">,
 	optionsServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 ): ResponseCreateParamsStreaming["service_tier"] | undefined {
-	return optionsServiceTier ?? model.fastRoute?.serviceTier;
+	return model.fastRoute?.serviceTier ?? optionsServiceTier;
 }
 
 export interface OpenAIResponsesStreamOptions {
