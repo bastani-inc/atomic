@@ -143,7 +143,16 @@ export function assertPayloadPreservesFastRoute(
 	payload: unknown,
 ): void {
 	const fastRoute = model.fastRoute;
-	if (!fastRoute || typeof payload !== "object" || payload === null || Array.isArray(payload)) return;
+	if (!fastRoute) return;
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+		throw new Error(
+			`A request hook changed payload for fast model "${model.provider}/${model.id}" to a value that cannot carry ` +
+				`the route's upstream model and service tier. A fast model variant must send its route's upstream model and ` +
+				`service tier, because it is recorded, persisted, and billed under its own identity. Select the normal model ` +
+				`"${model.provider}/${fastRoute.baseModelId}" if the request needs different routing, or return an object that ` +
+				`preserves those fields.`,
+		);
+	}
 	const record = payload as Record<string, unknown>;
 	const conflicts: string[] = [];
 	if (record.model !== fastRoute.upstreamModelId) {

@@ -629,6 +629,30 @@ describe("openai-responses provider defaults", () => {
 	);
 
 	it.each([
+		["null", null],
+		["an array", []],
+		["a primitive", "invalid"],
+	] as const)("rejects %s returned by a payload hook for a fast route", async (_label, replacement) => {
+		const base = getModel("openai", "gpt-5.5");
+		const fast: Model<"openai-responses"> = {
+			...base,
+			id: "gpt-5.5-fast",
+			fastRoute: { baseModelId: "gpt-5.5", upstreamModelId: "gpt-5.5", serviceTier: "priority" },
+		};
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+
+		const result = await streamOpenAIResponses(
+			fast,
+			{ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{ apiKey: "test-key", onPayload: () => replacement as never },
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain('A request hook changed payload for fast model "openai/gpt-5.5-fast"');
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it.each([
 		["gpt-5.5-fast", "default", "priority", 2.5],
 		["gpt-5.5-fast", "flex", "priority", 2.5],
 		["gpt-5.5", "default", "default", 1],
