@@ -73,9 +73,8 @@ export function resolveUpstreamModelId(model: Pick<Model<Api>, "fastRoute" | "id
 }
 
 /**
- * Preserve the eager first-party header helper for callers that only know a provider and base URL.
- * The shared transport wrapper below recomputes the identity from the final payload and also covers
- * aliases and proxies.
+ * Whether a model uses the first-party OpenAI Codex provider identity and endpoint.
+ * A renamed provider on the same protocol remains non-first-party.
  */
 export function usesFirstPartyCodexRouting(model: Pick<Model<Api>, "baseUrl" | "provider">): boolean {
 	return model.provider === "openai-codex" && isFirstPartyCodexBaseUrl(model.baseUrl);
@@ -102,9 +101,9 @@ function setHeader(headers: ProviderHeaders, name: string, value: string): void 
  *
  * Derived entirely from the model: the headers are added only when the model's own `fastRoute`
  * declares the priority tier and the model uses first-party Codex routing, and the hint names the
- * route's upstream model ID — the same value the request serializes and the same value
- * `withChatGptCodexTransportRouting` derives from the final payload. There is no caller-supplied
- * enable flag, so a model without a route can never be granted this identity.
+ * route's upstream model ID — the same value the request serializes and
+ * `withChatGptCodexTransportRouting` reads from route metadata. There is no caller-supplied enable
+ * flag, so a model without a route can never be granted this identity.
  */
 export function withCodexFastRouteHeaders(
 	model: Pick<Model<Api>, "baseUrl" | "fastRoute" | "id" | "provider">,
@@ -138,12 +137,6 @@ export function shouldUseNativeFastRoute(
 	options: FastRouteStreamOptions | undefined,
 ): boolean {
 	return isNativeFastRouteApi(model.api) && options?.serviceTier === FAST_MODEL_SERVICE_TIER;
-}
-
-function payloadRecord(payload: unknown): Record<string, unknown> | undefined {
-	return typeof payload === "object" && payload !== null && !Array.isArray(payload)
-		? (payload as Record<string, unknown>)
-		: undefined;
 }
 
 function codexEnvironmentScope(env: StreamOptions["env"]): string {
@@ -183,11 +176,13 @@ function updateCodexWebSocketRoutingState(
 export function withChatGptCodexTransportRouting<TOptions extends StreamOptions>(
 	model: Model<Api>,
 	options: TOptions,
-	enabled = true,
 	closeWebSocketSessions: CloseCodexWebSocketSessions = closeOpenAICodexWebSocketSessions,
 ): TOptions {
 	const headers: ProviderHeaders = { ...(options.headers ?? {}) };
 	const onPayload = options.onPayload;
+	const priority =
+		getModelFastRoute(model)?.serviceTier === FAST_MODEL_SERVICE_TIER && usesFirstPartyCodexRouting(model);
+	const routedModel = resolveUpstreamModelId(model);
 	return {
 		...options,
 		headers,
@@ -195,11 +190,6 @@ export function withChatGptCodexTransportRouting<TOptions extends StreamOptions>
 		onPayload: async (payload, requestModel) => {
 			const replacement = await onPayload?.(payload, requestModel);
 			const finalPayload = replacement === undefined ? payload : replacement;
-			const record = payloadRecord(finalPayload);
-			const priority = enabled && record?.service_tier === FAST_MODEL_SERVICE_TIER;
-			// The hint names the model the request actually routes to, so it matches the serialized
-			// payload rather than the canonical `-fast` identity the caller selected.
-			const routedModel = typeof record?.model === "string" ? record.model : resolveUpstreamModelId(model);
 			deleteHeader(headers, CODEX_FAST_ROUTE_HEADER);
 			clearCodexFastRouteRequestMarker(headers);
 			if (priority) {
@@ -281,8 +271,9 @@ export function buildOpenAICodexResponsesFastRouteOptions(
 }
 
 /**
- * Stream a request whose model resolved to a service-tier fast route. `model` must already be the
- * upstream request model, so the payload and the routing hint both carry the base upstream ID.
+ * Stream a request whose canonical selected model carries fast-route metadata. The provider adapter
+ * translates only the serialized request to the route's upstream ID; the model object keeps its
+ * canonical `-fast` identity.
  */
 export function streamWithFastRoute(
 	model: Model<Api>,

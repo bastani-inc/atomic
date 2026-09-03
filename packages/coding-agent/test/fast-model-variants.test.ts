@@ -40,11 +40,10 @@ function ids(models: readonly Model<Api>[]): string[] {
 }
 
 describe("fast model variant eligibility", () => {
-	it("routes OpenAI, OpenAI Codex, and any provider on the shared Codex transport", () => {
+	it("routes only first-party OpenAI and OpenAI Codex providers", () => {
 		assert.equal(usesOpenAIFastServiceTier({ provider: "openai", api: "openai-responses" }), true);
 		assert.equal(usesOpenAIFastServiceTier({ provider: "openai-codex", api: "openai-codex-responses" }), true);
-		// A renamed provider or proxy qualifies by its API, not its name.
-		assert.equal(usesOpenAIFastServiceTier({ provider: "codex-proxy", api: "openai-codex-responses" }), true);
+		assert.equal(usesOpenAIFastServiceTier({ provider: "codex-proxy", api: "openai-codex-responses" }), false);
 	});
 
 	it("keeps Azure OpenAI, OpenRouter, and generic OpenAI-compatible providers ineligible", () => {
@@ -69,7 +68,7 @@ describe("fast model variant eligibility", () => {
 		["openai", "openai-completions", false],
 		["openai-codex", "openai-codex-responses", true],
 		["openai-codex", "openai-completions", false],
-		["codex-proxy", "openai-codex-responses", true],
+		["codex-proxy", "openai-codex-responses", false],
 		["azure-openai-responses", "azure-openai-responses", false],
 		["openrouter", "openai-completions", false],
 		["my-openai-compatible", "openai-responses", false],
@@ -222,12 +221,11 @@ describe("deriveFastModelVariants", () => {
 	});
 
 	/**
-	 * User amendment (2026-09-03): synthetic `-fast` aliases are limited to OpenAI and OpenAI Codex,
-	 * including the shared Codex transport alias. GitHub Copilot exposes only exact account-advertised
-	 * real `-fast` IDs. OpenRouter is explicitly excluded. This guard fails if a future eligibility edit
-	 * silently widens derivation beyond that set.
+	 * User amendment (2026-09-03): synthetic `-fast` aliases are limited to the first-party OpenAI
+	 * and OpenAI Codex provider IDs. GitHub Copilot exposes only exact account-advertised real
+	 * `-fast` IDs. OpenRouter and non-first-party providers are explicitly excluded.
 	 */
-	it("synthesizes fast aliases only for OpenAI, OpenAI Codex, and the shared Codex transport", () => {
+	it("synthesizes fast aliases only for OpenAI and OpenAI Codex", () => {
 		const providers: Array<[string, Api]> = [
 			["openai", "openai-responses"],
 			["openai-codex", "openai-codex-responses"],
@@ -248,11 +246,7 @@ describe("deriveFastModelVariants", () => {
 			if (models.some((entry) => entry.fastRoute !== undefined)) synthesized.push(`${provider}/${api}`);
 		}
 
-		assert.deepEqual(synthesized, [
-			"openai/openai-responses",
-			"openai-codex/openai-codex-responses",
-			"codex-proxy/openai-codex-responses",
-		]);
+		assert.deepEqual(synthesized, ["openai/openai-responses", "openai-codex/openai-codex-responses"]);
 
 		// Copilot derives only for an exact advertised ID, and never as a service-tier route.
 		const copilotBase = [model({ id: "claude-opus-4.8", provider: "github-copilot", api: "anthropic-messages" })];

@@ -305,6 +305,11 @@ describe("codex fast-route first-party transport", () => {
 		baseUrl: "https://chatgpt.com/backend-api",
 		id: "gpt-5.6-sol",
 	});
+	const codexFastRoute: ModelFastRoute = {
+		baseModelId: codexModel.id,
+		upstreamModelId: codexModel.id,
+		serviceTier: FAST_MODEL_SERVICE_TIER,
+	};
 	const priorityHeaders = {
 		originator: "pi",
 		[CODEX_FAST_ROUTE_HEADER]: "model=gpt-5.6-sol;tier=priority",
@@ -388,47 +393,55 @@ describe("codex fast-route first-party transport", () => {
 		expect(websocketCaptured).toEqual(httpCaptured);
 	});
 
-	it("drops cached WebSockets when the final routing identity changes", async () => {
+	it("drops cached WebSockets when the model routing identity changes", async () => {
 		const closeSessions = vi.fn<(sessionId?: string) => void>();
 		const sessionId = `fast-routing-${Date.now()}-${Math.random()}`;
-		const priorityOptions = withChatGptCodexTransportRouting(codexModel, { sessionId }, true, closeSessions);
-		await priorityOptions.onPayload?.({ model: codexModel.id, service_tier: FAST_MODEL_SERVICE_TIER }, codexModel);
+		const fastModel = fullModel({ ...codexModel, id: "gpt-5.6-sol-fast", fastRoute: codexFastRoute });
+		const priorityOptions = withChatGptCodexTransportRouting(fastModel, { sessionId }, closeSessions);
+		await priorityOptions.onPayload?.(
+			{ model: codexFastRoute.upstreamModelId, service_tier: FAST_MODEL_SERVICE_TIER },
+			fastModel,
+		);
 		expect(closeSessions).not.toHaveBeenCalled();
-		const normalOptions = withChatGptCodexTransportRouting(codexModel, { sessionId }, true, closeSessions);
+		const normalOptions = withChatGptCodexTransportRouting(codexModel, { sessionId }, closeSessions);
 		await normalOptions.onPayload?.({ model: codexModel.id }, codexModel);
 
 		expect(closeSessions).toHaveBeenCalledOnce();
 		expect(closeSessions).toHaveBeenCalledWith(sessionId);
 	});
 
-	it("does not activate the Codex harness identity while Fast Mode is off", async () => {
-		const options = withChatGptCodexTransportRouting(
-			codexModel,
-			{
-				headers: {
-					originator: CODEX_FAST_ROUTE_ORIGINATOR,
-					[CODEX_FAST_ROUTE_HEADER]: "model=stale;tier=priority",
-				},
-				onPayload: (payload) => ({
-					...(payload as Record<string, unknown>),
-					service_tier: FAST_MODEL_SERVICE_TIER,
-				}),
-			},
-			false,
-		);
-		const payload = await options.onPayload?.({ model: codexModel.id }, codexModel);
-		const preparedHeaders = new Headers(options.headers as HeadersInit);
-		preparedHeaders.set("originator", "pi");
-		preparedHeaders.set(CODEX_FAST_ROUTE_HEADER, "model=stale;tier=priority");
-		const headers = forceCodexFastRouteOriginator(
+	it("derives the Codex harness identity from the model route, not a caller-supplied tier", async () => {
+		const normalOptions = withChatGptCodexTransportRouting(codexModel, {
+			headers: { originator: "pi" },
+			onPayload: (payload) => ({
+				...(payload as Record<string, unknown>),
+				service_tier: FAST_MODEL_SERVICE_TIER,
+			}),
+		});
+		const normalPayload = await normalOptions.onPayload?.({ model: codexModel.id }, codexModel);
+		const normalHeaders = forceCodexFastRouteOriginator(
 			"https://monitor.example/backend-api/codex/responses",
-			preparedHeaders,
+			new Headers(normalOptions.headers as HeadersInit),
 		);
 
-		expect(payload).toMatchObject({ service_tier: FAST_MODEL_SERVICE_TIER });
-		expect(headers.get("originator")).toBe("pi");
-		expect(headers.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
-		expect(headers.get("x-atomic-codex-fast-route")).toBeNull();
+		const fastModel = fullModel({ ...codexModel, id: "gpt-5.6-sol-fast", fastRoute: codexFastRoute });
+		const fastOptions = withChatGptCodexTransportRouting(fastModel, { headers: { originator: "pi" } });
+		await fastOptions.onPayload?.(
+			{ model: codexFastRoute.upstreamModelId, service_tier: FAST_MODEL_SERVICE_TIER },
+			fastModel,
+		);
+		const fastHeaders = forceCodexFastRouteOriginator(
+			"https://monitor.example/backend-api/codex/responses",
+			new Headers(fastOptions.headers as HeadersInit),
+		);
+
+		expect(normalPayload).toMatchObject({ service_tier: FAST_MODEL_SERVICE_TIER });
+		expect(normalHeaders.get("originator")).toBe("pi");
+		expect(normalHeaders.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
+		expect(fastHeaders.get("originator")).toBe(CODEX_FAST_ROUTE_ORIGINATOR);
+		expect(fastHeaders.get(CODEX_FAST_ROUTE_HEADER)).toBe(
+			`model=${codexFastRoute.upstreamModelId};tier=${FAST_MODEL_SERVICE_TIER}`,
+		);
 	});
 
 	it("sends tier, identity, and routing hint through the real Codex SSE transport", async () => {
@@ -465,17 +478,15 @@ describe("codex fast-route first-party transport", () => {
 			});
 		});
 
+		const fastModel = fullModel({ ...codexModel, id: "gpt-5.6-sol-fast", fastRoute: codexFastRoute });
 		const stream = streamWithFastRoute(
-			codexModel,
+			fastModel,
 			emptyContext,
-			withFastRouteStreamOptions(
-				{ baseModelId: codexModel.id, upstreamModelId: codexModel.id, serviceTier: FAST_MODEL_SERVICE_TIER },
-				{
-					apiKey: `header.${tokenPayload}.signature`,
-					fetch: fetchImplementation as typeof globalThis.fetch,
-					transport: "sse",
-				},
-			),
+			withFastRouteStreamOptions(codexFastRoute, {
+				apiKey: `header.${tokenPayload}.signature`,
+				fetch: fetchImplementation as typeof globalThis.fetch,
+				transport: "sse",
+			}),
 		);
 		await stream.result();
 
@@ -484,7 +495,7 @@ describe("codex fast-route first-party transport", () => {
 		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
 	});
 
-	it("routes a renamed provider through a monitoring proxy", async () => {
+	it("does not grant first-party routing identity to a renamed provider", async () => {
 		const tokenPayload = Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
 		).toString("base64url");
@@ -533,12 +544,12 @@ describe("codex fast-route first-party transport", () => {
 		await stream.result();
 
 		expect(capturedUrl).toBe("https://monitor.example/backend-api/codex/responses");
-		expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_ROUTE_ORIGINATOR);
-		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
+		expect(capturedHeaders?.get("originator")).toBe("pi");
+		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 		expect(capturedHeaders?.get("x-atomic-codex-fast-route")).toBeNull();
 	});
 
-	it("keeps normal identity when the final request payload is not priority", async () => {
+	it("keeps normal identity when a route-less model's payload hook changes its tier", async () => {
 		const tokenPayload = Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-default" } }),
 		).toString("base64url");
@@ -593,7 +604,7 @@ describe("codex fast-route first-party transport", () => {
 		expect(capturedHeaders?.get("x-atomic-codex-fast-route")).toBeNull();
 	});
 
-	it("keeps pi's identity on the same transport when fast mode is disabled", async () => {
+	it("keeps pi's identity for a normal model on the Codex transport", async () => {
 		const tokenPayload = Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
 		).toString("base64url");

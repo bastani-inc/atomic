@@ -94,6 +94,43 @@ describe("extension provider model lifecycle", () => {
 		expect(registry.getProvider("extension-native")).toBeUndefined();
 	});
 
+	it("does not derive fast aliases over a native extension provider's transport", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const nativeModel: Model<"openai-responses"> = {
+			id: "gpt-native",
+			name: "GPT Native",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://extension.example.test/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+		const provider: Provider = {
+			id: "openai",
+			name: "Extension OpenAI",
+			getModels: () => [nativeModel],
+			stream: () => {
+				throw new Error("unused");
+			},
+			streamSimple: () => {
+				throw new Error("unused");
+			},
+		};
+
+		runtime.registerNativeProvider(provider);
+
+		expect(runtime.getProvider("openai")?.stream).toBe(provider.stream);
+		expect(runtime.getModels("openai").map((entry) => entry.id)).toEqual(["gpt-native"]);
+	});
+
 	it("applies models.json overrides above native providers", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-native-provider-"));
 		const modelsPath = join(tempDir, "models.json");

@@ -13,7 +13,7 @@ import {
 } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { CODEX_FAST_ROUTE_HEADER, CODEX_FAST_ROUTE_ORIGINATOR } from "../src/core/fast-model-routing-transport.ts";
+import { CODEX_FAST_ROUTE_HEADER } from "../src/core/fast-model-routing-transport.ts";
 import { FAST_MODEL_SERVICE_TIER } from "../src/core/fast-model-variants.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -610,7 +610,7 @@ describe("createAgentSession fast model routing", () => {
 		}
 	});
 
-	it("routes a renamed provider on the shared Codex transport with the base model in the routing hint", async () => {
+	it("does not grant Codex routing identity to a renamed provider with an explicit route", async () => {
 		const provider = "codex-proxy";
 		const api = "openai-codex-responses" as const;
 		const baseModelId = "gpt-5.6-sol";
@@ -693,8 +693,8 @@ describe("createAgentSession fast model routing", () => {
 			await stream.result();
 
 			expect(capturedUrl).toBe("https://monitor.example/backend-api/codex/responses");
-			expect(capturedHeaders?.get("originator")).toBe(CODEX_FAST_ROUTE_ORIGINATOR);
-			expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBe("model=gpt-5.6-sol;tier=priority");
+			expect(capturedHeaders?.get("originator")).toBe("pi");
+			expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 			expect(capturedPayload).toMatchObject({ model: baseModelId, service_tier: FAST_MODEL_SERVICE_TIER });
 		} finally {
 			session.dispose();

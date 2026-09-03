@@ -356,6 +356,25 @@ describe("default model selection", () => {
 			});
 		});
 
+		test("refuses an advertised fast ID when its base model is absent from the catalog", async () => {
+			const modelRuntime = await copilotRuntime(["future-copilot-model-fast"]);
+
+			expect(modelRuntime.getModel("github-copilot", "future-copilot-model")).toBeUndefined();
+			expect(modelRuntime.getModel("github-copilot", "future-copilot-model-fast")).toBeUndefined();
+			expect(modelRuntime.canRestoreUnknownModel("github-copilot", "future-copilot-model-fast")).toBe(false);
+			const result = await restoreModelFromSession(
+				"github-copilot",
+				"future-copilot-model-fast",
+				undefined,
+				false,
+				modelRuntime,
+			);
+			expect(result.fallbackMessage).toContain(
+				"Could not restore model github-copilot/future-copilot-model-fast (model no longer exists)",
+			);
+			expect(result.model?.id).not.toBe("future-copilot-model-fast");
+		});
+
 		test("restores an advertised ordinary Copilot model whose name ends in -fast", async () => {
 			// Copilot's per-account advertisement is the authority, not the name shape. An ID the account
 			// lists as an ordinary picker/policy model is ordinary even when it ends in `-fast`; the

@@ -231,8 +231,14 @@ export class ModelRuntime implements Models {
 			getCopilotFastModelIds: () => copilotAdvertisedFastModelIds(this.credentials.peek("github-copilot")),
 			getModelOverrides: () => this.config.getProvider(provider.id)?.modelOverrides,
 			getExtensionOwnedApis: () => {
+				const ownedApis = new Set<Api>();
 				const extension = this.extensionProviders.get(provider.id);
-				return extension?.streamSimple !== undefined && extension.api ? new Set([extension.api]) : undefined;
+				if (extension?.streamSimple !== undefined && extension.api) ownedApis.add(extension.api);
+				const native = this.nativeExtensionProviders.get(provider.id);
+				if (native?.stream !== undefined || native?.streamSimple !== undefined) {
+					for (const model of native.getModels()) ownedApis.add(model.api);
+				}
+				return ownedApis.size > 0 ? ownedApis : undefined;
 			},
 			onDiagnostics: (id, diagnostics) => {
 				if (diagnostics.length === 0) this.fastModelVariantDiagnostics.delete(id);
@@ -383,21 +389,24 @@ export class ModelRuntime implements Models {
 	 *
 	 * Pass `modelId` whenever it is known. GitHub Copilot advertises every model it offers per account,
 	 * so a `-fast` ID that appears in neither the picker list nor the fast-sibling list is definitively
-	 * not restorable — reconstructing it would resurrect a model the account lost access to, with no
-	 * route metadata, under the same session. This consults the same credential lists the Copilot
-	 * provider's own `filterModels` uses, so an ID the account advertises as an ordinary model stays
-	 * ordinary whatever its name ends in. Every other provider keeps the provider-scoped answer, so a
-	 * provider-owned model whose upstream name merely ends in `-fast` (several exist under
-	 * `vercel-ai-gateway`) still restores.
+	 * not restorable. An ID advertised as a fast sibling also requires its corresponding base model in
+	 * the catalog; otherwise reconstruction would invent a route-less fast identity. An ID advertised
+	 * as an ordinary model stays ordinary whatever its name ends in. Every other provider keeps the
+	 * provider-scoped answer, so a provider-owned model whose upstream name merely ends in `-fast`
+	 * (several exist under `vercel-ai-gateway`) still restores.
 	 */
 	canRestoreUnknownModel(providerId: string, modelId?: string): boolean {
 		if (
 			modelId !== undefined &&
 			isGitHubCopilotModel({ provider: providerId }) &&
-			modelId.endsWith(FAST_MODEL_ID_SUFFIX) &&
-			!copilotAdvertisesModelId(this.credentials.peek(providerId), modelId)
+			modelId.endsWith(FAST_MODEL_ID_SUFFIX)
 		) {
-			return false;
+			const credential = this.credentials.peek(providerId);
+			if (!copilotAdvertisesModelId(credential, modelId)) return false;
+			if (copilotAdvertisedFastModelIds(credential)?.includes(modelId) === true) {
+				const baseModelId = modelId.slice(0, -FAST_MODEL_ID_SUFFIX.length);
+				if (!this.models.getModel(providerId, baseModelId)) return false;
+			}
 		}
 		return canRestoreUnknownModelProvider(
 			providerId,
