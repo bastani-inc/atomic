@@ -7,7 +7,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import type { Theme } from "../../modes/interactive/theme/theme-class.ts";
+import type { Theme } from "../../modes/interactive/theme/theme-class.js";
 import { prepareFeedbackRequestPreview } from "./posting.js";
 import type { ScrubbedFeedbackDraft } from "./privacy.js";
 import { FEEDBACK_TEMPLATES, FeedbackValidationError, type FormattedFeedbackDraft } from "./templates.js";

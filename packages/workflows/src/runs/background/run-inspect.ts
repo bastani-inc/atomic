@@ -34,6 +34,7 @@ import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
  */
 export interface RunDetail {
 	readonly runId: string;
+	readonly rootRunId?: string;
 	readonly name: string;
 	readonly status: RunStatus | "crashed";
 	readonly mode: "single" | "chain";
@@ -109,6 +110,7 @@ export function inspectRun(
 
 	const detail: RunDetail = {
 		runId: copy.id,
+		...(copy.rootRunId === undefined ? {} : { rootRunId: copy.rootRunId }),
 		name: copy.name,
 		status: effectiveRunStatus(copy),
 		mode: expandedStages.length > 1 ? "chain" : "single",

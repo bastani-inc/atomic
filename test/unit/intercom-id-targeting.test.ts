@@ -15,7 +15,7 @@ type ToolResult = {
 type Tool = {
 	execute(
 		id: string,
-		params: { action?: string; to?: string; message?: string },
+		params: { action?: string; to?: string; message?: string; group?: string },
 		signal: AbortSignal | undefined,
 		update: undefined,
 		ctx: object,
@@ -138,7 +138,7 @@ describe("Intercom full session ID targeting", () => {
 		// it blocked to the 10-minute timeout instead of settling.
 		const runId = "27840002-3528-413e-84c4-87a43e5037a2";
 		const stageSession = session("ee02315c-1111-4222-8333-123456789abc", "reviewer-stage");
-		const nameTarget = `${runId}:reviewer`;
+		const nameTarget = `workflow:${runId}/reviewer`;
 		let tool: Tool | undefined;
 		const client = {
 			sessionId: "self-session-id",
@@ -154,7 +154,7 @@ describe("Intercom full session ID targeting", () => {
 							runId,
 							stageId: "reviewer-id",
 							stageName: "reviewer",
-							target: `${runId}:reviewer-id`,
+							target: `workflow:${runId}/reviewer-id`,
 							lifecycle: "running" as const,
 							group: `workflow:${runId}/reviewers`,
 							sessionId: stageSession.id,
@@ -448,5 +448,142 @@ describe("Intercom full session ID targeting", () => {
 		assert.match(result.content[0]?.text ?? "", /Session not found/);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /Cannot message the current session/);
 		assert.deepEqual(current.sent, []);
+	});
+});
+
+describe("intercom list renders possible future stage rows (D7)", () => {
+	const futureRow = {
+		kind: "workflow-future-stage" as const,
+		runId: "d7000009-0000-4000-8000-000000000009",
+		target: "workflow:d7000009-0000-4000-8000-000000000009/orchestrator-*",
+		queuedCount: 2,
+		group: "workflow:d7000009-0000-4000-8000-000000000009",
+	};
+	const broadcastRow = {
+		kind: "workflow-future-stage" as const,
+		runId: "d7000009-0000-4000-8000-000000000009",
+		target: "workflow:d7000009-0000-4000-8000-000000000009/**",
+		queuedCount: 1,
+		group: "workflow:d7000009-0000-4000-8000-000000000009",
+	};
+
+	function futureFixture(directory: {
+		sessions: SessionInfo[];
+		workflowStages: never[];
+		workflowFutureStages: readonly unknown[];
+	}) {
+		let tool: Tool | undefined;
+		const client = {
+			sessionId: "self-session-id",
+			groups: ["default"],
+			async listSessions(): Promise<SessionInfo[]> {
+				return directory.sessions;
+			},
+			async listDirectory(group?: string): Promise<typeof directory> {
+				return group === undefined ? directory : directory;
+			},
+		};
+		registerIntercomTool(
+			{
+				registerTool(value: Tool) {
+					tool = value;
+				},
+				appendEntry() {},
+			} as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				confirmSend: false,
+				beginReplyWait: () => ({ ok: false, reason: "busy" as const, limit: 0 }),
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		assert.ok(tool);
+		return { tool: tool! };
+	}
+
+	test("list renders the canonical target and the queued count for every future row", async () => {
+		const self = session("self-session-id", "self");
+		const { tool } = futureFixture({
+			sessions: [self],
+			workflowStages: [],
+			workflowFutureStages: [futureRow, broadcastRow],
+		});
+		const result = await tool.execute("list-call", { action: "list" }, undefined, undefined, context);
+		const text = result.content[0]?.text ?? "";
+		assert.match(
+			text,
+			/- future workflow stage `workflow:d7000009-0000-4000-8000-000000000009\/orchestrator-\*` — 2 queued messages\n/,
+		);
+		assert.match(
+			text,
+			/- future workflow stage `workflow:d7000009-0000-4000-8000-000000000009\/\*\*` — 1 queued message(\n|$)/,
+		);
+		const details = (result as unknown as { details?: { workflowFutureStages?: unknown[] } }).details;
+		assert.deepEqual(details?.workflowFutureStages, [futureRow, broadcastRow]);
+	});
+
+	test("the singular count form renders without the plural suffix", async () => {
+		const self = session("self-session-id", "self");
+		const { tool } = futureFixture({
+			sessions: [self],
+			workflowStages: [],
+			workflowFutureStages: [{ ...futureRow, queuedCount: 1 }],
+		});
+		const result = await tool.execute("list-call", { action: "list" }, undefined, undefined, context);
+		const rowLine = (result.content[0]?.text ?? "").split("\n").find((line) => line.includes("orchestrator-"));
+		assert.match(rowLine ?? "", /— 1 queued message$/);
+	});
+
+	test("read-only group peek renders future rows returned for the peeked group", async () => {
+		const self = session("self-session-id", "self");
+		self.groups = ["default"];
+		const peekedDirectory = {
+			sessions: [],
+			workflowStages: [],
+			workflowFutureStages: [futureRow],
+		};
+		let tool: Tool | undefined;
+		const client = {
+			sessionId: "self-session-id",
+			groups: ["default"],
+			async listSessions(): Promise<SessionInfo[]> {
+				return [self];
+			},
+			async listDirectory(group?: string) {
+				return group === undefined
+					? { sessions: [self], workflowStages: [], workflowFutureStages: [] }
+					: peekedDirectory;
+			},
+		};
+		registerIntercomTool(
+			{
+				registerTool(value: Tool) {
+					tool = value;
+				},
+				appendEntry() {},
+			} as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				confirmSend: false,
+				beginReplyWait: () => ({ ok: false, reason: "busy" as const, limit: 0 }),
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		assert.ok(tool);
+		const result = await tool!.execute(
+			"peek-call",
+			{ action: "list", group: "workflow:d7000009-0000-4000-8000-000000000009" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.match(
+			result.content[0]?.text ?? "",
+			/- future workflow stage `workflow:d7000009-0000-4000-8000-000000000009\/orchestrator-\*` — 2 queued messages/,
+		);
+		const details = (result as unknown as { details?: { workflowFutureStages?: unknown[] } }).details;
+		assert.deepEqual(details?.workflowFutureStages, [futureRow]);
 	});
 });

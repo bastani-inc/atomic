@@ -304,7 +304,7 @@ describe("renderRunDetail — themed", () => {
 			}),
 		);
 		const plain = stripAnsi(renderRunDetail(detail, { theme: deriveGraphTheme({}), width: 100 }));
-		assert.match(plain, /pending target {2}detail-run:review-a/);
+		assert.ok(plain.includes("pending target  workflow:detail-run/review-a"));
 		assert.match(plain, /pending id {6}offline · delivery unavailable/);
 		assert.doesNotMatch(plain, /detail-run:offline/);
 	});
@@ -316,12 +316,12 @@ describe("renderRunDetail — themed", () => {
 			}),
 		);
 		const out = renderRunDetail(detail, { width: 80 });
-		assert.match(out, /pending target {2}plain-run:worker-id/);
+		assert.ok(out.includes("pending target  workflow:plain-run/worker-id"));
 		for (const line of renderRunDetail(detail, { width: 32 }).split("\n")) assert.equal(visibleWidth(line), 32);
 	});
 	test("never ellipsizes a projected pending-stage target at widths 32 through 200", () => {
 		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
-		const target = `${runId}:review-a`;
+		const target = `workflow:${runId}/review-a`;
 		const localStore = createStore();
 		localStore.recordRunStart(
 			makeRun({
@@ -371,7 +371,7 @@ describe("renderRunDetail — themed", () => {
 
 		assert.match(plain, /✗ failed/);
 		assert.match(plain, /pending id {6}review-a · delivery unavailable/);
-		assert.doesNotMatch(plain, new RegExp(`${runId}:review-a`));
+		assert.doesNotMatch(plain, new RegExp(`workflow:${runId}/review-a`));
 	});
 });
 

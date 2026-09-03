@@ -23,6 +23,7 @@
 import { join } from "node:path";
 import { CONFIG_DIR_NAMES, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
 import * as bundledManifest from "../../builtin/index.js";
+import { resolveBuiltinDefinitionSource, scanPossibleStagesFromSource } from "../shared/possible-stages.js";
 import type { WorkflowDefinition } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { createRegistry } from "../workflows/registry.js";
@@ -84,10 +85,17 @@ export type DiagnosticLevel = "error" | "warn";
  *   IMPORT_FAILED      — dynamic import of a workflow file threw
  *   PATH_NOT_FOUND     — a config-specified path does not exist
  *   CONFIG_INVALID     — DiscoveryConfig has an invalid structure
+ *   ZERO_STAGES        — the D1 possible-stage scan found no stage call sites (warn)
  */
 export interface DiscoveryDiagnostic {
 	readonly level: DiagnosticLevel;
-	readonly code: "INVALID_DEFINITION" | "DUPLICATE_NAME" | "IMPORT_FAILED" | "PATH_NOT_FOUND" | "CONFIG_INVALID";
+	readonly code:
+		| "INVALID_DEFINITION"
+		| "DUPLICATE_NAME"
+		| "IMPORT_FAILED"
+		| "PATH_NOT_FOUND"
+		| "CONFIG_INVALID"
+		| "ZERO_STAGES";
 	readonly message: string;
 	/** Export key, workflow name, or file path associated with this diagnostic. */
 	readonly source?: string;
@@ -180,6 +188,32 @@ function validateConfig(config: unknown): string | null {
 	return null;
 }
 
+/**
+ * D10 lint: a definition whose static scan finds neither possible stages nor
+ * another tracked node call logs a warning. Scan failures never surface here
+ * (the scan reports its own warnings and never blocks).
+ */
+function zeroStageLintDiagnostic(
+	def: WorkflowDefinition,
+	filePath: string | undefined,
+): DiscoveryDiagnostic | undefined {
+	const entryPath = filePath ?? resolveBuiltinDefinitionSource(def.normalizedName);
+	if (entryPath === undefined) return undefined;
+	let scan: ReturnType<typeof scanPossibleStagesFromSource>;
+	try {
+		scan = scanPossibleStagesFromSource(entryPath);
+	} catch {
+		return undefined;
+	}
+	if (scan.hasTrackedNodes || scan.stages.length > 0) return undefined;
+	return {
+		level: "warn",
+		code: "ZERO_STAGES",
+		message: `workflow "${def.name}" yielded zero possible stages: no ctx.stage/ctx.task/ctx.chain/ctx.parallel/ctx.workflow/ctx.tool call sites were found by the static scan`,
+		source: filePath ?? def.normalizedName,
+	};
+}
+
 /** Merge a batch of candidates into registry state, first-seen wins. */
 async function applyBatch(
 	candidates: WorkflowModuleCandidateRecord[],
@@ -220,6 +254,8 @@ async function applyBatch(
 			...(filePath !== undefined ? { filePath } : {}),
 			...(configuredName !== undefined ? { configuredName } : {}),
 		});
+		const lint = zeroStageLintDiagnostic(def, filePath);
+		if (lint !== undefined) diagnostics.push(lint);
 	}
 	return registry;
 }
@@ -264,6 +300,8 @@ function applyBatchShapeOnly(
 			...(filePath !== undefined ? { filePath } : {}),
 			...(configuredName !== undefined ? { configuredName } : {}),
 		});
+		const lint = zeroStageLintDiagnostic(def, filePath);
+		if (lint !== undefined) diagnostics.push(lint);
 	}
 	return registry;
 }

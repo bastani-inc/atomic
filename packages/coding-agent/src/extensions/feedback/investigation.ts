@@ -1,5 +1,5 @@
-import type { ToolCallEventResult } from "../../core/extensions/index.ts";
-import { SUBAGENT_PROTECTED_PATHS_INPUT } from "../../core/subagent-protected-paths.ts";
+import type { ToolCallEventResult } from "../../core/extensions/index.js";
+import { SUBAGENT_PROTECTED_PATHS_INPUT } from "../../core/subagent-protected-paths.js";
 import type { FeedbackSessionFacts } from "./index.js";
 import type { FeedbackKind } from "./templates.js";
 import type { WorkingTreeDisclosure } from "./working-tree.js";

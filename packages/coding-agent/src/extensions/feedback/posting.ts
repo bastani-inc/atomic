@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExecOptions, ExecResult } from "../../core/extensions/index.ts";
+import type { ExecOptions, ExecResult } from "../../core/extensions/index.js";
 import type { FeedbackPostHandler, FeedbackPostRequest, FeedbackPostResult } from "./preview.js";
 import { rescrubFeedbackDraft, type ScrubbedFeedbackDraft } from "./privacy.js";
 import { FEEDBACK_REPOSITORY, type FeedbackKind, type FormattedFeedbackDraft } from "./templates.js";

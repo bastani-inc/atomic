@@ -289,7 +289,7 @@ export {
 	type SkillFrontmatter,
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
-export { SUBAGENT_PROTECTED_PATHS_INPUT } from "./core/subagent-protected-paths.ts";
+export { SUBAGENT_PROTECTED_PATHS_INPUT } from "./core/subagent-protected-paths.js";
 export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
 // Builtin tool definitions reusable by first-party extensions (e.g. workflows
 // invoking the structured ask_user_question UI deterministically).

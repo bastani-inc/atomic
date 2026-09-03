@@ -18,6 +18,7 @@ export function durableRootRegistrationForRun(args: {
 	readonly hasPersistence: boolean;
 	readonly isChildRun: boolean;
 	readonly continuationSourceId: string | undefined;
+	readonly possibleStages?: readonly string[];
 }): WorkflowRegistrationInput | undefined {
 	const shouldRegister =
 		!args.isChildRun && (args.continuationSourceId === undefined || args.continuationSourceId !== args.runId);
@@ -31,6 +32,7 @@ export function durableRootRegistrationForRun(args: {
 		rootWorkflowId: args.runId,
 		resumable: true,
 		...(args.hasPersistence ? { sessionFile: undefined } : {}),
+		...(args.possibleStages !== undefined ? { possibleStages: args.possibleStages } : {}),
 	};
 }
 

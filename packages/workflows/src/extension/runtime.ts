@@ -83,6 +83,12 @@ export interface ExtensionRuntimeOpts {
 	cwd?: string;
 	/** Resolve the host's non-default session directory for workflow stage transcripts. */
 	resolveDefaultStageSessionDir?: () => string | undefined;
+	/**
+	 * Resolves a workflow definition's source path for the D1 possible-stage
+	 * scan at launch (discovery filePath, else the builtin source probe).
+	 * When absent, launch skips the scan and the run simply has no set.
+	 */
+	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
 	/** Seed lifecycle state before historical completed snapshots are restored. */
 	beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
 }
@@ -159,6 +165,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const jobs = opts.jobs;
 	const runtimeCwd = opts.cwd ?? process.cwd();
 	const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
+	const resolvePossibleStageEntry = opts.resolvePossibleStageEntry;
 	const beforeRestoreCompleted = opts.beforeRestoreCompleted;
 	const ensureDbosReady = async (): Promise<void> => {
 		// Deliberately not memoized: the factory revalidates its memoized backend
@@ -441,6 +448,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				mcp,
 				config,
 				models,
+				resolvePossibleStageEntry,
 				policy: options?.policy,
 				...(options?.origin === undefined ? {} : { origin: options.origin }),
 				...(options?.signal === undefined ? {} : { signal: options.signal }),

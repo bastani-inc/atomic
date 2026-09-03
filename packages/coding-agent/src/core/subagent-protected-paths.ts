@@ -1,7 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, resolve, sep } from "node:path";
-import type { SubagentChildPolicy, ToolCallEvent, ToolCallEventResult } from "./extensions/index.ts";
-import { parseArchiveSelector, parseSqliteSelector, resolveInternalSelector } from "./tools/resource-selectors.ts";
+import type { SubagentChildPolicy, ToolCallEvent, ToolCallEventResult } from "./extensions/index.js";
+import { parseArchiveSelector, parseSqliteSelector, resolveInternalSelector } from "./tools/resource-selectors.js";
 
 export const SUBAGENT_PROTECTED_PATHS_INPUT = "__atomicProtectedPaths" as const;
 export const SUBAGENT_PROTECTED_PATHS_REFUSAL =
@@ -72,7 +72,7 @@ function targetMatchesProtected(target: MutationTarget, cwd: string, protectedPa
 const SIMPLE_SHELL_TOKEN = String.raw`(?:[^\s'"]+|'[^']*'|"[^"]*")`;
 const SIMPLE_SHELL_SEGMENT = new RegExp(`^${SIMPLE_SHELL_TOKEN}(?:\\s+${SIMPLE_SHELL_TOKEN})*\\s*$`, "u");
 const SIMPLE_SHELL_TOKEN_PATTERN = new RegExp(SIMPLE_SHELL_TOKEN, "gu");
-const FORBIDDEN_SHELL_SYNTAX = /[;&|<>`$(){}*?[\]!\\]/u;
+const FORBIDDEN_SHELL_SYNTAX = /[;&|<>`$(){}*?[\]!\\\r\n]/u;
 
 function parseSimpleShellSegment(segment: string): string[] | undefined {
 	const trimmed = segment.trim();

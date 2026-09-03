@@ -1,6 +1,6 @@
 import { type Static, Type } from "typebox";
-import type { ExtensionContext, ToolDefinition } from "../../core/extensions/index.ts";
-import { StringEnum } from "../../core/typebox-compat.ts";
+import type { ExtensionContext, ToolDefinition } from "../../core/extensions/index.js";
+import { StringEnum } from "../../core/typebox-compat.js";
 import type { FeedbackInvestigationAssessment, FeedbackInvestigationController } from "./investigation.js";
 import {
 	type FeedbackFailureAction,

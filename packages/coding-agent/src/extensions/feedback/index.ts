@@ -9,8 +9,8 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
-} from "../../core/extensions/index.ts";
-import type { SessionEntry } from "../../core/session-manager-types.ts";
+} from "../../core/extensions/index.js";
+import type { SessionEntry } from "../../core/session-manager-types.js";
 import { FeedbackInvestigationController, INVESTIGATION_UNAVAILABLE } from "./investigation.js";
 import { createGitHubFeedbackPostHandler } from "./posting.js";
 import type { FeedbackPostHandler } from "./preview.js";

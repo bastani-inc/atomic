@@ -126,23 +126,20 @@ Stage targeting is exact but not UUID-bound, because stage identifiers are not a
 
 #### Intercom delivery to pending workflow stages
 
-A known workflow stage whose session has not initialized is still addressable by the workflow run's full UUID and its exact authored stage key while that run can still reach the stage. Model-facing `workflow status` and interactive status list/detail surfaces proactively enumerate materialized pending stages by display name and canonical stage ID. They print the exact `<runId>:<stageId>` target only when `pendingStageDeliveryAvailable` is true and the stage's owning run is nonterminal, and label delivery unavailable otherwise; an ended root or nested child run never advertises a retained pending stage as steerable through a projected parent. Duplicate display names therefore remain independently identifiable without overstating capability. Run `intercom({ action: "list" })` from the invocation context to discover materialized stages: each live route appears as `PENDING` or `RUNNING` with its canonical target. Note that the `sessionId` reported by `workflow status` is an SDK session id and is **not** an Intercom target. From a session in the workflow invocation group — including a main chat that explicitly joined `workflow:<rootRunId>` — use ordinary Intercom delivery:
+A workflow stage uses the root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` path shown by `intercom list` and workflow status surfaces. A segment may be a stage name, a materialized run id, or a glob: `*` matches one segment and may be embedded, while `**` matches any depth. Model-facing `workflow status` and interactive status list/detail surfaces enumerate materialized pending stages by display name and canonical stage ID, printing the path only when `pendingStageDeliveryAvailable` is true and the owning run is nonterminal. An ended root or nested child never advertises a retained pending target. Duplicate names remain independently identifiable. The workflow SDK `sessionId` is **not** an Intercom target.
+
+Join `workflow:<rootRunId>` and run `intercom({ action: "list" })` to see live sessions, materialized `PENDING`/`RUNNING` stages, and possible future literal, glob, and nested-child targets with queued counts. Then use ordinary Intercom delivery:
 
 ```ts
 intercom({
   action: "send",
-  to: "<runId>:reviewer",
+  to: "workflow:<rootRunId>/reviewer",
   message: "Scope changed: raw amendment text is now part of the oracle."
 })
 // queued — distinct from live-session delivered
 ```
 
-Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages only for known pending stages and delivers them when their sessions initialize, before their first model turn. Live stage delivery is immediate. Use `ask` once the stage session is live and can reply. Unknown run/stage identities retain the ordinary unknown-target failure.
-
-The workflows extension persists pending messages with run state across resume/replay and broker restart. Each exact run/stage key accepts 50 queued messages; the next send is refused without eviction. Only sessions in the run's Intercom group may queue them. When the stage session initializes, Atomic delivers its messages FIFO through the ordinary inbound Intercom path **before the first model turn**. The transcript labels them **Messages received before you started**, preserves sender identity and `Sent:` timestamps, and keeps them separate from the stage task prompt. Duplicate logical message IDs and stage-attempt restarts do not redeliver a message.
-
-If the destination is skipped, the run terminates, or the stage becomes terminal before its session initializes, Atomic marks queued messages undeliverable rather than dropping them. Senders whose messages requested acknowledgment receive a correlated failure notification. Running and completed stages continue through their existing live, late, and post-mortem routes.
-
+Send material updates through Intercom to every affected workflow stage, including stages that have not started. Name and pattern sends remain sticky for every future matching stage until root termination. When shared scope or acceptance criteria change, broadcast one authoritative update to `workflow:<rootRunId>/**` (or a narrower path pattern) rather than enumerating stages; live matches receive it immediately and future descendants receive it before their first model turn. A syntactically valid path outside the persisted known set queues with a `notInKnownSet` warning and settles undeliverable at terminal only if never delivered; an entry delivered at least once is not reported undeliverable. Use `ask` once the stage session is live and can reply.
 
 At 80 columns and wider, each `BACKGROUND` card keeps the full run identity and preserves its mode, progress, live-tool details, and elapsed/status metadata. When the remaining single-row budget permits, it adds bounded pending-stage details: a target is either shown exactly or replaced by a `stage`-labeled canonical ID, and `… N more` reports omitted pending stages. If no bounded pending-stage form fits, the pending label is omitted entirely rather than displacing the existing metadata. Tool nodes are read-only durable graph nodes, not attachable stage chats. Below 80 columns, the panel keeps its aggregate collapsed form and omits run IDs, stage identities, targets, and tool names.
 
@@ -731,7 +728,7 @@ Note what is tagged and what is not: the constraint and the criteria are protect
 **Steering.** A `send` amendment is authoritative and stages must carry it forward, but it is one short message arriving late into an already-long session, competing against the entire transcript for retention. Tagging it keeps it alive until the stage acts on it:
 
 ```
-intercom({ action: "send", to: `${runId}:<stageKey>`, message:
+intercom({ action: "send", to: "workflow:<rootRunId>/<stage>", message:
   "<keepContext>\nNew requirement: the fix must not change the public API.\n</keepContext>" })
 ```
 
@@ -3035,7 +3032,7 @@ The workflow tool action surface is:
 - discovery: `list`, `get`, `inputs`, plus `models` for the configured model catalog
 - execution: named `run` with validated `workflow` and `inputs`
 - inspection: `status`, `stages`, `stage`, `transcript`
-- prompt response: `answer`; run control: `pause`, `interrupt`, `quit`, `resume`; free-form stage communication: ordinary Intercom `send`/`ask` to exact `<runId>:<stageKey>` targets
+- prompt response: `answer`; run control: `pause`, `interrupt`, `quit`, `resume`; free-form stage communication: ordinary Intercom `send`/live `ask` to `workflow:<rootRunId>/<segment>[/<segment>...]` path targets, including `*` and `**` globs
 - rediscovery: `reload`
 
 Every registered `workflow` tool call has one hard two-minute wall-clock deadline at the shared public tool boundary. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
@@ -3203,7 +3200,7 @@ Control behavior:
 - `stage` returns details for one stage by exact stage id or exact stage name, including nested child stages shown in the expanded graph and the persisted `sessionFile` when available. User-facing graph and control messages print full stage IDs; pass one back verbatim, or use the stage's exact name. Prefixes and partial names no longer resolve. Two stages sharing an exact name return an ambiguity diagnostic rather than selecting one.
 - `transcript` is reference-first with a small preview by default: it returns metadata, transcript paths, and up to 5 recent entries. For targeted lookup, quote the exact `sessionFile`/`transcriptPath` value without changing platform separators (preserve Windows backslashes), search it with `rg` or `grep`, then read only small surrounding ranges. Text results include JSON-escaped `sessionFileJson`/`transcriptPathJson` lines for copy-safe path literals. Pass explicit `tail` or `limit` to override the 5-entry preview; `tail` overrides `limit`; `includeToolOutput` includes captured snapshot tool output in snapshot transcript results.
 - `answer` responds only to a pending primitive or structured human-input prompt. It accepts `promptId` plus `response`, `text`, or `message`, preserves prompt-kind validation, and never sends stage chat, steers, resumes, or starts a model turn.
-- Send free-form updates through ordinary Intercom to `<runId>:<stageKey>`. Atomic delivers immediately to live stages and queues messages for known stages that have not started, delivering them before their first model turn; unknown stages remain unknown targets. Use `ask` once the target has a reply-capable live session. Use `workflow resume` only for paused workflow control.
+- Send free-form updates through ordinary Intercom to `workflow:<rootRunId>/<segment>[/<segment>...]`; `*` matches one segment and `**` any depth. Use `intercom list` inside the invocation group to see live, pending, and possible future targets. Atomic delivers immediately to live stages and queues matching future stages, delivering them before their first model turn. `workflow:<rootRunId>/**` remains sticky for every future descendant until root termination; narrower name and pattern sends reach every future match. Valid paths outside the known set queue with a `notInKnownSet` warning and settle undeliverable at terminal only if never delivered. Use `ask` once the target has a reply-capable live session. Use `workflow resume` only for paused workflow control.
 - `pause`, `interrupt`, and `quit` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped `pause` and `interrupt` controls can target a visible nested child stage from the expanded graph. Atomic routes stage controls to the owning nested run internally.
 - `interrupt` and `quit` can also name one in-flight `ctx.tool` node with `stageId`, by expanded node id, local `tool:<argsHash>` id, or tool name. Both mean the same thing for a tool: abort that single call now. Tool nodes stay non-attachable — this is an abort control, not a chat target. Identifiers resolve exactly first and then uniquely; a name shared by two tool nodes (or by a stage and a tool) returns the same ambiguity diagnostic stages get, listing each match as `<name> (tool)`.
 - Aborting one tool node leaves every sibling stage and sibling tool node running and does not pause the run. The node becomes `cancelled`, writes no replayable checkpoint, and re-runs on a later resume. Whether the run itself survives is ordinary author control flow: an awaited `ctx.tool` that is aborted rejects, exactly as it would for any other failure, unless the workflow catches it. A node that has already settled reports that it is not running rather than silently succeeding.

@@ -747,8 +747,14 @@ describe("workflow heartbeat delivery", () => {
 		assert.match(send.content, /match each update's reach to its impact/);
 		assert.match(send.content, /send a local update to its affected stage/);
 		assert.match(send.content, /shared scope or acceptance criteria change/);
-		assert.match(send.content, /same authoritative Intercom update/);
-		assert.match(send.content, /every relevant live and known unstarted `<runId>:<stageKey>`/);
+		assert.match(send.content, /broadcast one authoritative Intercom update/);
+		assert.match(send.content, /`workflow:<rootRunId>\/\*\*`/);
+		assert.match(send.content, /narrower path pattern such as `workflow:<rootRunId>\/review-\*`/);
+		assert.match(send.content, /rather than enumerating stages/);
+		assert.match(send.content, /`\*\*` reaches every live stage now and remains sticky/);
+		assert.match(send.content, /every future stage, including nested children/);
+		assert.match(send.content, /`intercom list` inside the invocation group/);
+		assert.match(send.content, /live, pending, and possible future targets/);
 		assert.match(send.content, /worker-to-reviewer loop/);
 		assert.match(send.content, /Intercom delivers immediately to live stages/);
 		assert.match(send.content, /queues updates for known stages that have not started/);

@@ -185,6 +185,25 @@ describe("feedback final-output privacy review", () => {
 		);
 	});
 
+	test("redacts Bearer and other authorization header values", () => {
+		const bearerToken = "synthetic-bearer-credential";
+		const basicCredential = "c3ludGhldGljOnBhc3N3b3Jk";
+		const result = scrubFeedbackDraft(
+			draft(
+				"Safe",
+				[`Authorization: Bearer ${bearerToken}`, `authorization:\tBasic ${basicCredential}`].join("\r\n"),
+			),
+			{ homeDirectories: [] },
+		);
+
+		assert.equal(result.draft.body, "Authorization: [REDACTED]\r\nauthorization:\t[REDACTED]");
+		assert.doesNotMatch(result.draft.body, new RegExp(`${bearerToken}|${basicCredential}`, "u"));
+		assert.deepEqual(
+			result.replacements.map((replacement) => replacement.kind),
+			["authorization-header", "authorization-header"],
+		);
+	});
+
 	test("matches Windows home prefixes across slash styles without crossing path boundaries", () => {
 		const result = scrubFeedbackDraft(
 			draft(

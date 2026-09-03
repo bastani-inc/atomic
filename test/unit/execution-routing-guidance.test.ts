@@ -669,7 +669,7 @@ describe("workflow-first execution routing", () => {
 			"A heartbeat is a periodic alignment check",
 			"continue a progressing run when no intervention is needed",
 			"Send free-form updates through Intercom",
-			"`<runId>:<stageKey>`",
+			"`workflow:<rootRunId>/<segment>[/<segment>...]`",
 			"delivers immediately to live stages",
 			"before their first model turn",
 			"Use `ask` once the target has a live session that can reply",
@@ -841,11 +841,26 @@ describe("workflow-first execution routing", () => {
 			registered?.description.includes("Workflow invocation groups are named `workflow:<rootRunId>`"),
 			"workflow tool description should document invocation-group names",
 		);
+		expect(registered?.description).toContain("`workflow:<rootRunId>/<segment>[/<segment>...]`");
+		expect(registered?.description).toContain("`*` matches one segment and `**` any depth");
+		expect(registered?.description).toContain("`intercom list` inside the invocation group");
+		expect(registered?.description).toContain("Name and pattern sends remain sticky for every future matching stage");
+		expect(registered?.description).toContain("broadcast one authoritative update to `workflow:<rootRunId>/**`");
+		expect(registered?.description).toContain("`notInKnownSet` warning");
+		expect(registered?.description).toContain("settles undeliverable at terminal only if never delivered");
 		expect(registered?.description).toContain("answer pending prompts");
 		expect(registered?.description).toContain("pause/resume/interrupt/quit runs");
 		expect(registered?.description).not.toMatch(/workflow send|action ['"]send['"]/i);
+
 		const readme = await readRepositoryFile("packages/workflows/README.md");
-		expect(readme).toContain(`"description": ${JSON.stringify(WORKFLOW_TOOL_DESCRIPTION)},`);
+		for (const sharedGuidance of [
+			"`workflow:<rootRunId>/<segment>[/<segment>...]`",
+			"broadcast one authoritative update to `workflow:<rootRunId>/**`",
+			"`notInKnownSet` warning",
+			"use `ask` only on live targets",
+		]) {
+			expect(readme).toContain(sharedGuidance);
+		}
 	});
 
 	test("documents directional invocation control before workflow-stage steering", async () => {
@@ -913,7 +928,7 @@ describe("workflow-first execution routing", () => {
 		for (const current of [
 			"`answer` responds only to a pending primitive or structured human-input prompt",
 			"Use `workflow resume` only for paused workflow control",
-			"ordinary Intercom to `<runId>:<stageKey>`",
+			"ordinary Intercom to",
 			"delivers immediately to live stages",
 			"delivering them before their first model turn",
 			"Use `ask` once the target has a reply-capable live session",

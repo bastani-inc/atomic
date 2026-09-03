@@ -3,7 +3,7 @@ import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-work
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
-import { guardSubagentProtectedPaths } from "./subagent-protected-paths.ts";
+import { guardSubagentProtectedPaths } from "./subagent-protected-paths.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 
 export function _installAgentToolHooks(this: AgentSession): void {

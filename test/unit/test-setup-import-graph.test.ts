@@ -28,7 +28,9 @@ const SETUP_FILE = "test/setup-workflow-durability.ts";
  * DBOS backend. 45 leaves headroom for incidental churn inside that existing
  * subsystem while still failing loudly if another hub module is imported.
  */
-const MAX_REACHABLE_MODULES = 45;
+// Re-measured at 47 when the intercom-stage-paths slices added stage-target modules to
+// the durable/shared graph (workflow-stage-target, possible-stages, path matching).
+const MAX_REACHABLE_MODULES = 47;
 
 /**
  * Every static and dynamic import form that can pull a module into the graph.

@@ -81,6 +81,38 @@ describe("foreground subagent protected-path policy", () => {
 		}
 	});
 
+	test("blocks LF and CRLF shell command separators before a mutation", async () => {
+		// #2799: shells treat newlines as command separators, not argument whitespace.
+		const harness = await createHarness({
+			subagentPolicy: {
+				managementActions: "restricted",
+				fanoutAuthorized: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+				protectedPaths: ["dirty.txt"],
+			},
+		});
+		try {
+			writeFileSync(join(harness.tempDir, "dirty.txt"), "user bytes\n");
+			const beforeToolCall = harness.session.agent.beforeToolCall;
+			assert.ok(beforeToolCall);
+
+			for (const [toolName, command] of [
+				["bash", "cat dirty.txt\nrm -f dirty.txt"],
+				["powershell", "Get-Content dirty.txt\r\nRemove-Item dirty.txt"],
+			] as const) {
+				const result = (await beforeToolCall({
+					toolCall: { id: `newline-${toolName}`, name: toolName },
+					args: { command },
+				})) as ToolCallEventResult | undefined;
+				assert.deepEqual(result, { block: true, reason: SUBAGENT_PROTECTED_BASH_REFUSAL }, toolName);
+			}
+			assert.equal(readFileSync(join(harness.tempDir, "dirty.txt"), "utf8"), "user bytes\n");
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	test("allows proven read-only diagnostics and safe artifacts while blocking direct and indirect shell mutation", async () => {
 		// #2799: keep ordinary debugger diagnostics without risking pre-existing work.
 		const harness = await createHarness({

@@ -12,6 +12,8 @@
 
 - `ExtensionContext.hasNonBuiltinExtensions` reports whether the session loaded a non-builtin extension. Atomic supplies the authoritative value in production, while the public member remains optional and defaults to `false` for compatibility with existing extension context object literals.
 
+- The `edit` tool's model-facing hashline guidance now includes compact worked examples and anti-patterns for commonly rejected patch shapes, and correctly identifies native Rust tree-sitter block resolution as primary with the brace/indent heuristic as its fallback. The hashline reference documentation is now a specification covering inputs, verified tolerated shapes, outputs, worked examples, limits, literal error messages, and warnings.
+
 ## [0.9.18-alpha.5] - 2026-09-01
 
 ### Added

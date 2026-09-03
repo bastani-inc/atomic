@@ -55,6 +55,7 @@
         "group": "Reference",
         "pages": [
           "tools",
+          "tools/edit",
           "session-format"
         ]
       },

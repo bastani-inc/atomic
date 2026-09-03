@@ -5,11 +5,12 @@ import {
 	type PendingStageMessageRequest,
 	type PendingStageMessageResult,
 	type PendingStageNotificationRequest,
+	type StickyLiveDeliveredNotice,
 } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.ts";
-import type { SessionInfo, Message, WorkflowStageRosterAnnouncement } from "./types.js";
+import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement } from "./types.js";
 import { ReplyTracker } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
@@ -53,16 +54,21 @@ const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 
 interface PendingStageRouteRegistrationEvent {
 	readonly runId: string;
 	readonly group: string;
 	readonly capability: string;
 	readonly stages?: WorkflowStageRosterAnnouncement[];
+	readonly possibleStages?: WorkflowPossibleStageAnnouncement[];
 	completion?: Promise<void>;
 }
 
-type PendingStageRouteRegistration = Pick<PendingStageRouteRegistrationEvent, "group" | "capability" | "stages">;
+type PendingStageRouteRegistration = Pick<
+	PendingStageRouteRegistrationEvent,
+	"group" | "capability" | "stages" | "possibleStages"
+>;
 
 interface PendingStageRouteClientState {
 	route: PendingStageRouteRegistration;
@@ -558,6 +564,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 			return reject(error);
 		}
 	}
+	function relayStickyLiveDelivered(notice: StickyLiveDeliveredNotice): void {
+		// The workflow bridge records the ledger entries for exactly these targets.
+		pi.events.emit(STICKY_LIVE_DELIVERED_EVENT, { handled: false, ...notice });
+	}
 	function handlePendingStageNotification(nextClient: IntercomClient, request: PendingStageNotificationRequest): void {
 		void admitPendingStageNotification(nextClient, request)
 			.catch(() => false)
@@ -583,6 +593,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     });
 		nextClient.on("pending_stage_notification", (request: PendingStageNotificationRequest) => {
 			handlePendingStageNotification(nextClient, request);
+		});
+		nextClient.on("sticky_live_delivered", (notice: StickyLiveDeliveredNotice) => {
+			if (client === nextClient) relayStickyLiveDelivered(notice);
 		});
     nextClient.on("peer_disconnected", (notice: PeerDisconnectNotice) => {
       if (client !== nextClient) {
@@ -672,6 +685,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("error", () => {
       // Route-owner reconnect logic runs from the disconnect path.
     });
+    nextClient.on("sticky_live_delivered", (notice: StickyLiveDeliveredNotice) => {
+      if (state.client === nextClient) relayStickyLiveDelivered(notice);
+    });
   }
   async function ensurePendingStageRouteClient(
     runId: string,
@@ -701,7 +717,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!existing) pendingStageRouteClients.set(runId, state);
 	if (state.client?.isConnected()) {
 		state.route = route;
-		state.client.registerPendingStageRoute(runId, normalizeGroup(route.group), route.capability, route.stages);
+		state.client.registerPendingStageRoute(
+			runId,
+			normalizeGroup(route.group),
+			route.capability,
+			route.stages,
+			route.possibleStages,
+		);
 		return;
 	}
 	if (state.promise) {
@@ -724,7 +746,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         await nextClient.disconnect();
         throw new Error("Intercom runtime no longer active");
       }
-      nextClient.registerPendingStageRoute(runId, normalizeGroup(route.group), route.capability, route.stages);
+      nextClient.registerPendingStageRoute(
+        runId,
+        normalizeGroup(route.group),
+        route.capability,
+        route.stages,
+        route.possibleStages,
+      );
       await nextClient.listSessions();
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         await nextClient.disconnect();
@@ -766,7 +794,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   ): Promise<void> {
     const routeGroup = normalizeGroup(route.group);
     if (clientRegistrationGroup === routeGroup) {
-      activeClient.registerPendingStageRoute(runId, routeGroup, route.capability, route.stages);
+      activeClient.registerPendingStageRoute(
+        runId,
+        routeGroup,
+        route.capability,
+        route.stages,
+        route.possibleStages,
+      );
       return;
     }
     await ensurePendingStageRouteClient(runId, { ...route, group: routeGroup });
@@ -818,11 +852,19 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         }
         const orchestration = contextAtStart.orchestrationContext;
         if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
-          await nextClient.registerLiveWorkflowStageRoute(
-            orchestration.workflowRunId,
-            [orchestration.workflowStageId, orchestration.workflowStageName],
-            orchestration.pendingStageDelivery.routeCapability,
+          // A stage name containing "/" or "*" is not a canonical path segment; register the
+          // always-valid stage-id key so the stage stays live-addressable without tripping the
+          // broker's single-segment key validation.
+          const liveStageKeys = [orchestration.workflowStageId, orchestration.workflowStageName].filter(
+            (stageKey) => !stageKey.includes("/") && !stageKey.includes("*"),
           );
+          if (liveStageKeys.length > 0) {
+            await nextClient.registerLiveWorkflowStageRoute(
+              orchestration.workflowRunId,
+              liveStageKeys,
+              orchestration.pendingStageDelivery.routeCapability,
+            );
+          }
         }
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();
@@ -881,6 +923,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 		group: payload.group,
 		capability: payload.capability,
 		...(payload.stages === undefined ? {} : { stages: payload.stages }),
+		...(payload.possibleStages === undefined ? {} : { possibleStages: payload.possibleStages }),
 	});
     const completion = ensureConnected("background").then((activeClient) =>
       registerPendingStageRoute(activeClient, payload.runId, payload),
@@ -901,6 +944,30 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!isPendingStageUndeliverableEvent(payload) || payload.handled) return;
     payload.handled = true;
     const actionable = `Pending workflow stage could not receive intercom message: ${payload.reason}`;
+    // The launching session commonly joins its own invocation group and steers stages
+    // from there, so the notice's recipient is the very session that owns the pending
+    // route. The broker refuses that as a self-send ("Session not found"), which would
+    // leave the durable entry unnotified forever; admit the notice locally instead.
+    const selfClient = client;
+    const notifiesThisSession =
+      selfClient !== null &&
+      selfClient.isConnected() &&
+      (payload.senderId === selfClient.sessionId ||
+        (payload.senderReturnAddress !== undefined && payload.senderReturnAddress === currentSessionId));
+    if (notifiesThisSession && selfClient.sessionId !== null) {
+      payload.completion = admitPendingStageNotification(selfClient, {
+        requestId: `local:${payload.notificationId}`,
+        from: { id: selfClient.sessionId, ...buildRegistration() },
+        message: {
+          id: payload.notificationId,
+          timestamp: Date.now(),
+          replyTo: payload.messageId,
+          replyError: actionable,
+          content: { text: actionable },
+        },
+      }).catch(() => false);
+      return;
+    }
 		payload.completion = pendingStageNotificationClient(payload.runId)
 			.then((activeClient) => {
 				const route = pendingStageRoutes.get(payload.runId);

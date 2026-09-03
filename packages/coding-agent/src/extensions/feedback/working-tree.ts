@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { ExecOptions, ExecResult } from "../../core/extensions/index.ts";
+import type { ExecOptions, ExecResult } from "../../core/extensions/index.js";
 
 export type FeedbackExec = (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;
 

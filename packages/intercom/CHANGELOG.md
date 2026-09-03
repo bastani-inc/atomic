@@ -4,6 +4,19 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Workflow-stage targets now accept only root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` paths. The legacy `<runId>:<stageKey>` form is refused with a canonical-path migration hint.
+
+### Added
+
+- Workflow-stage routing now supports literal, run-id, and glob path segments, sticky delivery to every future match, and `workflow:<rootRunId>/**` broadcast to live and future descendants until root termination.
+- `intercom list` now surfaces persisted possible future literals, patterns, and child paths with queued counts. Valid targets outside the known set queue with a `notInKnownSet` warning and produce a terminal undeliverable notification only when never delivered.
+
+### Changed
+
+- Intercom tool guidance, the bundled skill, and workflow-stage discovery documentation now teach canonical path targets, globs, sticky broadcasts, speculative acceptance, terminal settlement, and live-only asks.
+
 ## [0.9.18-alpha.5] - 2026-09-01
 
 ### Fixed
