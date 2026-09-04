@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@bastani/atomic";
+import type { ExtensionAPI, ToolResultEvent } from "@bastani/atomic";
 import { Type } from "typebox";
 import {
 	collectFeedbackDiagnostics,
@@ -61,10 +61,11 @@ const feedbackDiagnosticsParameters = Type.Object({
 	since: Type.Optional(Type.String()),
 });
 
-function markFailedFeedbackSubmission(event: { readonly toolName: string; readonly details?: unknown }) {
+function markFailedFeedbackSubmission(event: ToolResultEvent) {
 	if (event.toolName !== "feedback_submit_issue") return;
-	const details = event.details as FeedbackSubmitDetails | undefined;
-	if (details?.ok === false) return { isError: true } as const;
+	const details = event.details;
+	if (typeof details !== "object" || details === null || !("ok" in details) || details.ok !== false) return;
+	return { isError: true } as const;
 }
 
 export default function feedback(pi: ExtensionAPI): void {
@@ -111,8 +112,6 @@ export default function feedback(pi: ExtensionAPI): void {
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
 	});
-
-	pi.on("tool_result", markFailedFeedbackSubmission);
 
 	pi.registerTool<typeof feedbackPrepareParameters, FeedbackPrepareDetails>({
 		name: "feedback_prepare_issue",
@@ -179,4 +178,5 @@ export default function feedback(pi: ExtensionAPI): void {
 			};
 		},
 	});
+	pi.on("tool_result", markFailedFeedbackSubmission);
 }
