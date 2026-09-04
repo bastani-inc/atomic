@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * OpenAI models served through Bedrock Converse (e.g. `global.openai.gpt-5.6-terra`)
- * return encrypted reasoning as the opaque `redactedContent` member of
- * `reasoningContent`, not as `reasoningText`. The AWS SDK decodes the wire blob to
- * `Uint8Array`.
+ * OpenAI models served through Bedrock Converse return encrypted reasoning as the opaque
+ * `redactedContent` member of `reasoningContent`, not as `reasoningText`. The AWS SDK decodes
+ * the wire blob to `Uint8Array`.
  * @see https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ReasoningContentBlockDelta.html
  */
 const bedrockMock = vi.hoisted(() => {
@@ -62,6 +61,7 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
+import { getModel } from "../src/compat.ts";
 import type { Context, Message, Model, ThinkingContent } from "../src/types.ts";
 
 const gptModel: Model<"bedrock-converse-stream"> = {
@@ -77,6 +77,15 @@ const gptModel: Model<"bedrock-converse-stream"> = {
 	maxTokens: 128000,
 };
 
+const astraModel: Model<"bedrock-converse-stream"> = {
+	...gptModel,
+	id: "global.openai.gpt-6-astra",
+	name: "GPT-6-Astra (Global)",
+	input: ["text", "image"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 272000,
+};
+
 const emptyUsage = {
 	input: 0,
 	output: 0,
@@ -86,7 +95,7 @@ const emptyUsage = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-/** Mirrors the ConverseStream frames GPT-5.6 emits: encrypted reasoning, then text. */
+/** Mirrors the ConverseStream frames OpenAI reasoning models emit: encrypted reasoning, then text. */
 function redactedReasoningEvents(): unknown[] {
 	return [
 		{ messageStart: { role: "assistant" } },
@@ -104,12 +113,16 @@ function redactedReasoningEvents(): unknown[] {
 }
 
 interface BedrockRequestPayload {
+	modelId: string;
 	messages: Array<{ role: string; content: Array<Record<string, unknown>> }>;
 }
 
-async function capturePayload(context: Context): Promise<BedrockRequestPayload> {
+async function capturePayload(
+	context: Context,
+	model: Model<"bedrock-converse-stream"> = gptModel,
+): Promise<BedrockRequestPayload> {
 	let capturedPayload: BedrockRequestPayload | undefined;
-	const s = streamBedrock(gptModel, context, {
+	const s = streamBedrock(model, context, {
 		cacheRetention: "none",
 		signal: AbortSignal.abort(),
 		onPayload: (payload) => {
@@ -131,10 +144,26 @@ describe("Bedrock redacted reasoning", () => {
 		bedrockMock.streamEvents = undefined;
 	});
 
-	it("does not fail the stream when reasoning arrives as redactedContent", async () => {
+	it.each(["openai.gpt-6-astra", "global.openai.gpt-6-astra", "us.openai.gpt-6-astra"] as const)(
+		"passes %s unchanged to ConverseStreamCommand",
+		async (modelId) => {
+			const model = getModel("amazon-bedrock", modelId);
+			expect(model).toBeDefined();
+			const payload = await capturePayload(
+				{ messages: [{ role: "user", content: "hello", timestamp: Date.now() }] },
+				model as Model<"bedrock-converse-stream">,
+			);
+			expect(payload.modelId).toBe(modelId);
+		},
+	);
+
+	it.each([
+		["GPT-5.6 Terra", gptModel],
+		["GPT-6-Astra", astraModel],
+	] as const)("does not fail the %s stream when reasoning arrives as redactedContent", async (_name, model) => {
 		bedrockMock.streamEvents = redactedReasoningEvents();
 
-		const response = await streamBedrock(gptModel, {
+		const response = await streamBedrock(model, {
 			messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
 		}).result();
 

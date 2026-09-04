@@ -584,16 +584,21 @@ describe("openai-responses provider defaults", () => {
 	 * has to be the discriminator — otherwise a caller's option leaks a tier onto a Copilot request and
 	 * the priority cost multiplier with it.
 	 */
-	it.each(["priority", "flex", "default"] as const)(
-		"emits no service tier for a Copilot fast route even when a request asks for %s",
-		async (requested) => {
+	it.each([
+		["gpt-5.2", "priority"],
+		["gpt-5.2", "flex"],
+		["gpt-5.2", "default"],
+		["gpt-6-astra", "priority"],
+	] as const)(
+		"emits no service tier for a Copilot %s fast route even when a request asks for %s",
+		async (modelId, requested) => {
 			const base = getModel("openai", "gpt-5.5");
 			const copilotFast: Model<"openai-responses"> = {
 				...base,
-				id: "gpt-5.2-fast",
+				id: `${modelId}-fast`,
 				provider: "github-copilot",
 				// No `serviceTier`: Copilot routes by its own advertised model ID.
-				fastRoute: { baseModelId: "gpt-5.2", upstreamModelId: "gpt-5.2-fast" },
+				fastRoute: { baseModelId: modelId, upstreamModelId: `${modelId}-fast` },
 			};
 			const tokenCount = 100_000;
 			const tokenScale = tokenCount / 1_000_000;
@@ -621,7 +626,7 @@ describe("openai-responses provider defaults", () => {
 				{ apiKey: "test-key", serviceTier: requested },
 			).result();
 
-			expect(capturedPayload?.model).toBe("gpt-5.2-fast");
+			expect(capturedPayload?.model).toBe(`${modelId}-fast`);
 			expect(capturedPayload?.service_tier).toBeUndefined();
 			// No tier means no tier multiplier either.
 			expect(result.usage.cost.input).toBe(base.cost.input * tokenScale);

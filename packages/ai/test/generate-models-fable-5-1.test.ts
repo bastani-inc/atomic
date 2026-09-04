@@ -249,8 +249,9 @@ test("limits Claude Fable 5.1 fallback targets to per-turn-effort-compatible mod
 
 test("generates every published Bedrock profile with its own pricing and no invented mirror", () => {
 	const bedrock = generate()["amazon-bedrock"];
+	const fableIds = Object.keys(bedrock).filter((id) => id.includes("claude-fable-5-1"));
 
-	assert.deepEqual(Object.keys(bedrock).sort(), [
+	assert.deepEqual(fableIds.sort(), [
 		"anthropic.claude-fable-5-1",
 		"global.anthropic.claude-fable-5-1",
 		"us.anthropic.claude-fable-5-1",
@@ -277,7 +278,7 @@ test("generates every published Bedrock profile with its own pricing and no inve
 		cacheWrite: 13.75,
 	});
 
-	for (const id of Object.keys(bedrock)) {
+	for (const id of fableIds) {
 		assert.equal(bedrock[id].contextWindow, 1_000_000, id);
 		assert.equal(bedrock[id].maxTokens, 128_000, id);
 		assert.deepEqual(bedrock[id].thinkingLevelMap, { off: null, minimal: null, xhigh: "xhigh", max: "max" }, id);

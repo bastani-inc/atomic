@@ -542,6 +542,16 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 		expect(captured.marker).toBeNull();
 	});
 
+	it("preserves the GPT-6-Astra Codex transport identity and routing hint", async () => {
+		const captured = await captureCodex("gpt-6-astra-fast");
+
+		expect(captured.model).toBe("gpt-6-astra");
+		expect(captured.serviceTier).toBe("priority");
+		expect(captured.originator).toBe("codex_cli_rs");
+		expect(captured.routingHint).toBe("model=gpt-6-astra;tier=priority");
+		expect(captured.marker).toBeNull();
+	});
+
 	it("keeps pi's identity and sends no routing hint for the normal sibling", async () => {
 		const captured = await captureCodex("gpt-5.6-sol");
 
@@ -601,27 +611,30 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 		expect(captured.originator).toBe("codex_cli_rs");
 	});
 
-	it("installs the WebSocket handshake identity when the transport is not forced to SSE", async () => {
-		const runtime = await codexRuntime();
-		const model = runtime.getModel("openai-codex", "gpt-5.6-sol-fast");
-		expect(model).toBeDefined();
-		if (!model) throw new Error("missing fast model");
-		class UnwrappedWebSocket {
-			close(): void {}
-		}
-		vi.stubGlobal("WebSocket", UnwrappedWebSocket);
-		// CLI entrypoints install this through the HTTP dispatcher; a pure SDK embedder never does, so
-		// without the runtime installing it the WebSocket half of the contract stays unrepaired.
-		expect(globalThis.WebSocket).toBe(UnwrappedWebSocket as unknown as typeof globalThis.WebSocket);
-		try {
-			// The socket cannot connect in-process; installation happens before dispatch, which is the
-			// assertion. Failure of the request itself is irrelevant here.
-			await runtime.completeSimple(model, context).catch(() => undefined);
-			expect(globalThis.WebSocket).not.toBe(UnwrappedWebSocket as unknown as typeof globalThis.WebSocket);
-		} finally {
-			vi.unstubAllGlobals();
-		}
-	});
+	it.each(["gpt-5.6-sol-fast", "gpt-6-astra-fast"] as const)(
+		"installs the WebSocket handshake identity for %s when the transport is not forced to SSE",
+		async (modelId) => {
+			const runtime = await codexRuntime();
+			const model = runtime.getModel("openai-codex", modelId);
+			expect(model).toBeDefined();
+			if (!model) throw new Error("missing fast model");
+			class UnwrappedWebSocket {
+				close(): void {}
+			}
+			vi.stubGlobal("WebSocket", UnwrappedWebSocket);
+			// CLI entrypoints install this through the HTTP dispatcher; a pure SDK embedder never does, so
+			// without the runtime installing it the WebSocket half of the contract stays unrepaired.
+			expect(globalThis.WebSocket).toBe(UnwrappedWebSocket as unknown as typeof globalThis.WebSocket);
+			try {
+				// The socket cannot connect in-process; installation happens before dispatch, which is the
+				// assertion. Failure of the request itself is irrelevant here.
+				await runtime.completeSimple(model, context).catch(() => undefined);
+				expect(globalThis.WebSocket).not.toBe(UnwrappedWebSocket as unknown as typeof globalThis.WebSocket);
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		},
+	);
 
 	it("leaves an extension-owned transport unwrapped", async () => {
 		const runtime = await codexRuntime();

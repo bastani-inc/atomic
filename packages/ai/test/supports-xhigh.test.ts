@@ -106,6 +106,20 @@ describe("getSupportedThinkingLevels", () => {
 		},
 	);
 
+	it("includes exactly low through max for every built-in GPT-6-Astra route", () => {
+		const models = [
+			getModel("openai", "gpt-6-astra"),
+			getModel("openai-codex", "gpt-6-astra"),
+			getModel("amazon-bedrock", "openai.gpt-6-astra"),
+			getModel("amazon-bedrock", "global.openai.gpt-6-astra"),
+			getModel("amazon-bedrock", "us.openai.gpt-6-astra"),
+		];
+		for (const model of models) {
+			expect(model).toBeDefined();
+			expect(getSupportedThinkingLevels(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+		}
+	});
+
 	it("includes only medium/high/xhigh for OpenAI GPT-5.5 Pro", () => {
 		const model = getModel("openai", "gpt-5.5-pro");
 		expect(model).toBeDefined();

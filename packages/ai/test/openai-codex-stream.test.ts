@@ -115,6 +115,13 @@ describe("openai-codex fast model routing", () => {
 		id: "gpt-5.6-sol-fast",
 		fastRoute: { baseModelId: "gpt-5.6-sol", upstreamModelId: "gpt-5.6-sol", serviceTier: "priority" },
 	};
+	const astraFastModel: Model<"openai-codex-responses"> = {
+		...baseModel,
+		id: "gpt-6-astra-fast",
+		name: "GPT-6-Astra (fast)",
+		input: ["text", "image"],
+		fastRoute: { baseModelId: "gpt-6-astra", upstreamModelId: "gpt-6-astra", serviceTier: "priority" },
+	};
 	const context: Context = {
 		systemPrompt: "You are a helpful assistant.",
 		messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
@@ -127,7 +134,7 @@ describe("openai-codex fast model routing", () => {
 		let body: Record<string, unknown> | null = null;
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
 				body = decodeCodexRequestBody(init?.body);
 				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
 					status: 200,
@@ -151,6 +158,14 @@ describe("openai-codex fast model routing", () => {
 		expect(body?.service_tier).toBe("priority");
 	});
 
+	it("sends GPT-6-Astra's base ID, priority tier, and encrypted reasoning request", async () => {
+		const body = await captureBody(astraFastModel, streamOpenAICodexResponses);
+
+		expect(body?.model).toBe("gpt-6-astra");
+		expect(body?.service_tier).toBe("priority");
+		expect(body?.include).toContain("reasoning.encrypted_content");
+	});
+
 	it("sends the base upstream model plus the model's own tier through streamSimple", async () => {
 		const body = await captureBody(fastModel, streamSimpleOpenAICodexResponses);
 
@@ -171,11 +186,11 @@ describe("openai-codex fast model routing", () => {
 	 * also suppress the Codex routing identity, which keys on the final payload's tier.
 	 */
 	it.each(["default", "flex"] as const)("keeps the fast route's tier when a request asks for %s", async (tier) => {
-		let body: Record<string, unknown> | null = null;
+		const captured: { body: Record<string, unknown> | null } = { body: null };
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-				body = decodeCodexRequestBody(init?.body);
+			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+				captured.body = decodeCodexRequestBody(init?.body);
 				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
 					status: 200,
 					headers: { "content-type": "text/event-stream" },
@@ -188,15 +203,15 @@ describe("openai-codex fast model routing", () => {
 			serviceTier: tier,
 		}).result();
 
-		expect(body?.service_tier).toBe("priority");
+		expect(captured.body?.service_tier).toBe("priority");
 	});
 
 	it.each(["default", "flex"] as const)("honors an explicit %s tier on the normal sibling", async (tier) => {
-		let body: Record<string, unknown> | null = null;
+		const captured: { body: Record<string, unknown> | null } = { body: null };
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-				body = decodeCodexRequestBody(init?.body);
+			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+				captured.body = decodeCodexRequestBody(init?.body);
 				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
 					status: 200,
 					headers: { "content-type": "text/event-stream" },
@@ -209,7 +224,7 @@ describe("openai-codex fast model routing", () => {
 			serviceTier: tier,
 		}).result();
 
-		expect(body?.service_tier).toBe(tier);
+		expect(captured.body?.service_tier).toBe(tier);
 	});
 });
 
@@ -1182,6 +1197,7 @@ describe("openai-codex streaming", () => {
 		["gpt-5.1-codex", "priority", 2],
 		["gpt-5.5", "flex", 0.5],
 		["gpt-5.5", "priority", 2.5],
+		["gpt-6-astra", "priority", 2],
 	] as const)(
 		"uses the client-sent %s service tier for %s when Codex echoes default",
 		async (modelId, serviceTier, multiplier) => {

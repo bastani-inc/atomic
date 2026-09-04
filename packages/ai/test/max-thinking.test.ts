@@ -48,6 +48,12 @@ describe("max thinking level", () => {
 		},
 	);
 
+	it.each(["openai", "openai-codex"] as const)("exposes exactly low through max for %s/gpt-6-astra", (provider) => {
+		const model = getModel(provider, "gpt-6-astra");
+		expect(model).toBeDefined();
+		expect(getSupportedThinkingLevels(model!)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+	});
+
 	it("supports a hole between high and max", () => {
 		const model: Model<"openai-completions"> = {
 			id: "high-and-max",
@@ -67,8 +73,8 @@ describe("max thinking level", () => {
 		expect(clampThinkingLevel(model, "xhigh")).toBe("max");
 	});
 
-	it("sends max to the Codex Responses API", async () => {
-		const model = getModel("openai-codex", "gpt-5.6-sol")!;
+	it.each(["gpt-5.6-sol", "gpt-6-astra"] as const)("sends max for %s to the Codex Responses API", async (modelId) => {
+		const model = getModel("openai-codex", modelId)!;
 		const context: Context = {
 			systemPrompt: "You are a helpful assistant.",
 			messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],

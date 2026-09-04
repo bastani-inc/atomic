@@ -14,6 +14,7 @@ A complete `defaultProvider`/`defaultModel` pair in `settings.json` is resolved 
 - [Supported APIs](#supported-apis)
 - [Provider Configuration](#provider-configuration)
 - [Model Configuration](#model-configuration)
+- [GPT-6-Astra Built-in Models](#gpt-6-astra-built-in-models)
 - [Request-wide Cost Tiers](#request-wide-cost-tiers)
 - [Overriding Built-in Providers](#overriding-built-in-providers)
 - [Per-model Overrides](#per-model-overrides)
@@ -221,6 +222,23 @@ Current behavior:
 - The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
 - `input` lists the modalities **Atomic can send**. `["text"]`, `["text", "image"]`, and `["text", "image", "pdf"]` are the possible values. PDF is a platform capability rather than a per-model one — Anthropic documents that ["All active models support PDF processing"](https://platform.claude.com/docs/en/build-with-claude/pdf-support), routed through the same vision path as images — so upstream metadata carries it on every Claude entry. Atomic advertises it only where a runtime can serialize a document block: the Anthropic Messages and Amazon Bedrock Converse paths. A Claude mirror on any other provider stays at `["text", "image"]`, and a document sent to such a model is replaced by a visible placeholder rather than dropped silently. Note that Bedrock's Converse API needs citations enabled for full visual PDF understanding; without them it falls back to text extraction. `"pdf"` means PDF specifically: a document block's media type must be `application/pdf`, and any other value is rejected by name rather than sent mislabelled, because both request builders hardcode PDF rather than reading the field.
 
+
+### GPT-6-Astra Built-in Models
+
+Atomic ships `openai/gpt-6-astra` and `openai-codex/gpt-6-astra`. Both accept text and image input, expose tool search and additional tools, and offer exactly `low`, `medium`, `high`, `xhigh`, and `max` reasoning. `off`, `minimal`, and Codex's client-side `ultra` orchestration preset are not API reasoning levels and do not appear in Atomic's selector.
+
+The built-in OpenAI and Codex entries use a 272,000-token default input/context limit and a 128,000-token maximum output. OpenAI documents a 1,050,000-token API maximum, but requests above 272,000 aggregate input tokens enter the long-context price tier for the whole request. Override `contextWindow` only when the larger window and its price are intentional.
+
+| Aggregate input | Input | Cached input | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272,000 | $10 | $1 | $12.50 | $50 |
+| Above 272,000 | $20 | $2 | $25 | $75 |
+
+Rates are per million tokens. `openai/gpt-6-astra-fast` and `openai-codex/gpt-6-astra-fast` are derived canonical choices that keep these base catalog rates; the OpenAI adapters apply Fast's 2x multiplier at request time. The Codex fast choice sends upstream ID `gpt-6-astra` with `service_tier: priority` while Atomic records `gpt-6-astra-fast`.
+
+Amazon Bedrock exposes `openai.gpt-6-astra`, `global.openai.gpt-6-astra`, and `us.openai.gpt-6-astra` through the `amazon-bedrock` provider. These entries keep the same 272,000 input and 128,000 output limits, text and image input, and five reasoning levels; Atomic sends the selected effort as Bedrock's OpenAI `reasoning_effort` field. They do not get Fast or OpenAI tool-search metadata. Atomic sends each Bedrock ID unchanged and records all four price fields as zero because AWS had not published Astra pricing. Zero means unknown here, not free.
+
+Atomic does not synthesize Azure OpenAI Astra entries. Live-provider catalogs remain authoritative: the current OpenRouter catalog publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`, while the Vercel AI Gateway publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`. Atomic imports those exact IDs and their request-wide long-context prices. Vercel owns its suffixed ID, so it remains route-less and does not gain Atomic's first-party fast-route behavior.
 
 ### Sampling Parameters
 

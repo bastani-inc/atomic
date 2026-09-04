@@ -49,6 +49,10 @@ Checks refresh expired OAuth credentials by default through the ordinary locked 
 
 If the Codex backend reports that an OAuth/auth token was invalidated or revoked, retry the request once in case the rejection is transient. If it persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential or repeatedly retry a definitive authentication rejection.
 
+GPT-6-Astra is selectable as `openai-codex/gpt-6-astra`. Atomic also derives the canonical `openai-codex/gpt-6-astra-fast` choice. The fast choice sends upstream model `gpt-6-astra` with `service_tier: priority` and keeps the first-party Codex transport identity described below. Codex currently marks Astra as hidden in its bundled catalog, so access can depend on the account, rollout, and minimum client policy even though Atomic lists the model.
+
+Codex describes Astra Fast as "2x speed, increased usage." OpenAI prices Fast at twice the applicable API token rates. Pick the fast identity only when the latency reduction is worth the higher usage and price.
+
 ### Fast models
 
 Fast inference is a model choice, not a mode. Where a provider supports it, Atomic adds a second selectable model whose canonical ID is the base model ID plus `-fast` — for example `openai-codex/gpt-5.6-sol-fast`. It appears in `/model`, in `atomic --list-models`, and in workflow model catalogs alongside its normal sibling, and it is persisted and restored by that exact ID. Select it anywhere you name a model, including with a thinking suffix: `openai-codex/gpt-5.6-sol-fast:medium`.
@@ -65,6 +69,8 @@ A fast variant's route owns two request fields: the upstream model ID and the se
 Atomic does not publish a fast variant for a model whose API is served by an extension's own stream function, including a natively registered provider: it cannot enforce the route through a transport it does not serialize. Such a provider keeps its normal models and its own transport untouched.
 
 Fast behavior comes from explicit route metadata attached when the variant is derived — never from the `-fast` suffix. If a provider, a `models.json` custom model, or an extension already defines that exact `-fast` ID, that model wins: it routes exactly as it is declared, Atomic suppresses the derived duplicate, and interactive startup and `--list-models` print a warning naming the model to rename or remove. Fast variants are not derived for Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers.
+
+Provider-owned names that end in `-fast` remain ordinary exact IDs. The Vercel AI Gateway currently advertises `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`; Atomic preserves both live-catalog records and their long-context prices without attaching `fastRoute` to the suffixed ID. OpenRouter independently advertises `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`, also with request-wide long-context prices. If either live provider withdraws a record, the next generated catalog omits it rather than keeping a handwritten mirror.
 
 For first-party OpenAI Codex models on the shared ChatGPT Codex transport, explicit fast-route metadata — not the final payload tier, a caller flag, or the `-fast` suffix — selects the routing contract: `originator: codex_cli_rs` plus `x-codex-routing-hint: model=<base-upstream-model>;tier=priority` on both HTTP/SSE and WebSocket transports. Credential resolution preserves that identity when it resolves to the first-party ChatGPT endpoint; merely using `api: "openai-codex-responses"` under a renamed provider or proxy does not grant it. WebSocket fallback, reconnect, and HTTP retry attempts reuse the model route's identity, and switching between normal and fast model routes drops a cached socket before reuse. Requests to the standard OpenAI API send only the tier. On a normal model Atomic keeps the normal `originator: pi` identity and sends no routing hint, even if a standalone caller explicitly requests `serviceTier: priority`. The same contract covers standalone `modelRuntime.stream()`/`complete()`/`streamSimple()`/`completeSimple()` requests.
 
@@ -86,6 +92,10 @@ Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock
 - `COPILOT_GITHUB_TOKEN` is read as an API key when you prefer an environment variable over `/login`
 - Models come from the bundled `pi-ai` GitHub Copilot catalog; an OAuth credential narrows the list to the ids your account can actually use
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+
+Atomic includes a provisional `github-copilot/gpt-6-astra` entry routed through Copilot's Responses endpoint. Until Copilot publishes metadata, it uses Astra's known text/image capabilities, 272,000 default context, 128,000 output limit, and `low` through `max` reasoning. Zero catalog costs mean Copilot pricing is unknown, not free. Copilot metadata takes precedence when present, and the OAuth account catalog still controls availability. This entry does not guarantee that Copilot has enabled Astra for your account.
+
+`github-copilot/gpt-6-astra-fast` appears only when the OAuth account catalog advertises that exact fast ID. It sends `gpt-6-astra-fast` unchanged with no `service_tier`, unlike first-party OpenAI's priority route. A raw `COPILOT_GITHUB_TOKEN` cannot supply that fast entitlement.
 
 #### Endpoint routing for `COPILOT_GITHUB_TOKEN`
 
@@ -295,6 +305,16 @@ Also supports ECS task roles (`AWS_CONTAINER_CREDENTIALS_*`) and IRSA (`AWS_WEB_
 ```bash
 atomic --provider amazon-bedrock --model us.anthropic.claude-sonnet-4-20250514-v1:0
 ```
+
+GPT-6-Astra uses three exact Bedrock IDs:
+
+```text
+openai.gpt-6-astra
+global.openai.gpt-6-astra
+us.openai.gpt-6-astra
+```
+
+Select them under the single `amazon-bedrock` provider. Atomic passes the chosen ID unchanged to Bedrock Converse and sends the selected `low`, `medium`, `high`, `xhigh`, or `max` setting as the OpenAI `reasoning_effort` field. The unprefixed ID is Codex's direct/Mantle entry; `global.` and `us.` are Bedrock Runtime inference profiles. Bedrock does not advertise Astra Fast, so Atomic derives no fast sibling for these models. AWS's public region and pricing pages did not list Astra when this catalog entry was added. Availability can vary by account and region, and Atomic records zero catalog cost until AWS publishes an authoritative rate.
 
 Prompt caching is enabled automatically for Claude models whose ID contains a recognizable model name (base models and system-defined inference profiles). For application inference profiles (whose ARNs don't contain the model name), set `AWS_BEDROCK_FORCE_CACHE=1` to enable cache points:
 

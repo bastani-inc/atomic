@@ -362,6 +362,47 @@ describe("ModelRuntime fast model catalog", () => {
 		assert.equal(runtime.getWarning(), undefined);
 	});
 
+	it("exposes GPT-6-Astra and its canonical derived fast identity", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-fast-variants-"));
+		tempDirs.push(dir);
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.create(join(dir, "auth.json")),
+			modelsPath: join(dir, "models.json"),
+			allowModelNetwork: false,
+		});
+
+		const base = runtime.getModel("openai-codex", "gpt-6-astra");
+		const fast = runtime.getModel("openai-codex", "gpt-6-astra-fast");
+		assert.ok(base);
+		assert.ok(fast);
+		assert.notEqual(fast, base);
+		assert.deepEqual(fast.fastRoute, {
+			baseModelId: "gpt-6-astra",
+			upstreamModelId: "gpt-6-astra",
+			serviceTier: FAST_MODEL_SERVICE_TIER,
+		});
+		assert.equal(base.fastRoute, undefined);
+	});
+
+	it("gates Copilot Astra fast on the exact account entitlement without a priority tier", async () => {
+		const entitled = await runtimeWithCopilotCredential(["gpt-6-astra-fast"]);
+		const fast = entitled.getModel("github-copilot", "gpt-6-astra-fast");
+		assert.ok(fast);
+		assert.equal(fast.api, "openai-responses");
+		assert.deepEqual(fast.fastRoute, {
+			baseModelId: "gpt-6-astra",
+			upstreamModelId: "gpt-6-astra-fast",
+		});
+		assert.ok((await entitled.getAvailable()).some((m) => m.provider === "github-copilot" && m.id === fast.id));
+		const none = await runtimeWithCopilotCredential([]);
+		assert.equal(none.getModel("github-copilot", "gpt-6-astra-fast"), undefined);
+		assert.ok(none.getModel("github-copilot", "gpt-6-astra"));
+		assert.equal(
+			(await none.getAvailable()).some((m) => m.provider === "github-copilot" && m.id === "gpt-6-astra"),
+			false,
+		);
+	});
+
 	it("resolves a Copilot fast ID only while its entitlement is advertised", async () => {
 		const entitled = await runtimeWithCopilotCredential(["claude-opus-4.8-fast"]);
 		const fast = entitled.getModel("github-copilot", "claude-opus-4.8-fast");
