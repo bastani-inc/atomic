@@ -3,8 +3,13 @@ import { reviewDecisionSchema } from "./goal-schemas.js";
 // Keep this model list identical to Ralph's orchestrator while preserving a
 // locally contained Goal configuration.
 export const orchestratorModelConfig = {
-    model: "anthropic/claude-opus-5:high",
+    model: "openai-codex/gpt-6-astra:high",
     fallbackModels: [
+      "github-copilot/gpt-6-astra:high",
+      "openai/gpt-6-astra:high",
+      "anthropic/claude-fable-5-1:high",
+      "github-copilot/claude-fable-5-1:high",
+      "anthropic/claude-opus-5:high",
       "github-copilot/claude-opus-5:high",
       "openai-codex/gpt-5.6-sol:xhigh",
       "github-copilot/gpt-5.6-sol:xhigh",
@@ -27,6 +32,8 @@ export const orchestratorModelConfig = {
       "zai-coding-cn/glm-5.3-flash:high",
       "baseten/zai-org/GLM-5.3:high",
       "baseten/zai-org/GLM-5.3-Flash:high",
+      "openrouter/openai/gpt-6-astra:high",
+      "openrouter/anthropic/claude-fable-5-1:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-fable-5:high",
@@ -44,8 +51,13 @@ export const orchestratorModelConfig = {
 // Keep Goal's reviewer configuration independent so GPT-5.6 precedes Kimi K3
 // within both the leading direct-provider group and the OpenRouter group.
 export const reviewerModelConfig = {
-    model: "anthropic/claude-opus-5:high",
+    model: "openai-codex/gpt-6-astra:xhigh",
     fallbackModels: [
+      "github-copilot/gpt-6-astra:xhigh",
+      "openai/gpt-6-astra:xhigh",
+      "anthropic/claude-fable-5-1:high",
+      "github-copilot/claude-fable-5-1:high",
+      "anthropic/claude-opus-5:high",
       "github-copilot/claude-opus-5:high",
       "anthropic/claude-fable-5:high",
       "github-copilot/claude-fable-5:high",
@@ -68,6 +80,8 @@ export const reviewerModelConfig = {
       "zai-coding-cn/glm-5.3-flash:high",
       "baseten/zai-org/GLM-5.3:high",
       "baseten/zai-org/GLM-5.3-Flash:high",
+      "openrouter/openai/gpt-6-astra:xhigh",
+      "openrouter/anthropic/claude-fable-5-1:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/openai/gpt-5.6-sol:xhigh",

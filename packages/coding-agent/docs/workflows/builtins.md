@@ -98,6 +98,19 @@ Atomic bundles nine workflows: six reusable control-flow patterns, two autonomou
 
 Across these builtins, model-facing stages use compact, outcome-first contracts tuned for GPT-5.6, Claude Opus 5, and Claude Fable 5. Long artifacts and receipts are rendered before the final instruction, reporting stages ground completion claims in current tool evidence, and user-facing or downstream reports have explicit shape and length bounds. Orchestrators delegate only genuinely independent work that is too large for a handful of tool calls, rather than spawning agents to recheck their own work.
 
+The current `goal`, `ralph`, and `open-claude-design` defaults are:
+
+| Role | Primary model |
+|---|---|
+| Goal and Ralph orchestrators | `openai-codex/gpt-6-astra:high` |
+| Goal reviewers | `openai-codex/gpt-6-astra:xhigh` |
+| Ralph prompt engineer and research | `openai-codex/gpt-6-astra:high` |
+| Ralph reviewer A | `anthropic/claude-fable-5-1:high` |
+| Ralph reviewer B | `openai-codex/gpt-6-astra:xhigh` |
+| Open Claude Design model stages | `openai-codex/gpt-6-astra:high` |
+
+Astra-led chains try GitHub Copilot Astra, OpenAI Astra, Anthropic Fable 5.1, then GitHub Copilot Fable 5.1 before older models. Ralph reviewer A starts with GitHub Copilot Fable 5.1, then Codex, Copilot, and OpenAI Astra at `xhigh`. Later fallback order is role-specific: Ralph research puts Fable 5 before Sol, while the orchestrators put Sol before Fable 5. Reviewer A puts Kimi before Sol; Goal reviewers and Ralph reviewer B put Sol before Kimi. OpenRouter mirrors follow direct-provider candidates. These are configured preferences, not guarantees of provider or account availability.
+
 ### Six composable pattern builtins
 
 The six common patterns are full definitions exported from `@bastani/atomic/workflows/builtin`:

@@ -14,8 +14,9 @@ import {
 } from "../../packages/workflows/builtin/ralph-models.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
+import { orchestratorFallbacks, reviewerFallbacks } from "./latest-model-config-expectations.js";
 
-test("Goal orchestrator uses a local copy of Ralph's exact xhigh model config", async () => {
+test("Goal orchestrator uses a local copy of Ralph's exact Astra high model config", async () => {
 	const mod = await import("../../packages/workflows/builtin/goal.js");
 	const workflow = mod.default as unknown as WorkflowDefinition;
 	const ctx = makeMockCtx({
@@ -27,7 +28,8 @@ test("Goal orchestrator uses a local copy of Ralph's exact xhigh model config", 
 
 	const options = ctx.calls.taskOptions["orchestrator-1"]?.[0];
 	assert.ok(options, "missing Goal orchestrator options");
-	assert.equal(options.model, "anthropic/claude-opus-5:high");
+	assert.equal(options.model, "openai-codex/gpt-6-astra:high");
+	assert.deepEqual(options.fallbackModels, orchestratorFallbacks);
 	assert.equal(options.model, ralphOrchestratorModelConfig.model);
 	assert.deepEqual(options.fallbackModels, ralphOrchestratorModelConfig.fallbackModels);
 	assert.deepEqual(options.excludedTools, ralphOrchestratorModelConfig.excludedTools);
@@ -52,24 +54,11 @@ test("Goal reviewers prioritize GPT-5.6 within direct and OpenRouter groups", as
 		assert.equal(options.context, undefined, name);
 		assert.equal(options.forkFromSessionFile, undefined, name);
 		assert.equal(options.model, goalReviewerModelConfig.model, name);
+		assert.equal(options.model, "openai-codex/gpt-6-astra:xhigh", name);
 		assert.deepEqual(options.fallbackModels, goalReviewerModelConfig.fallbackModels, name);
 		assert.deepEqual(options.excludedTools, goalReviewerModelConfig.excludedTools, name);
 		const fallbacks = options.fallbackModels ?? [];
-		assert.deepEqual(
-			fallbacks.slice(0, 9),
-			[
-				"github-copilot/claude-opus-5:high",
-				"anthropic/claude-fable-5:high",
-				"github-copilot/claude-fable-5:high",
-				"openai-codex/gpt-5.6-sol:xhigh",
-				"github-copilot/gpt-5.6-sol:xhigh",
-				"openai/gpt-5.6-sol:xhigh",
-				"kimi-coding/k3:max",
-				"moonshotai/kimi-k3:max",
-				"moonshotai-cn/kimi-k3:max",
-			],
-			name,
-		);
+		assert.deepEqual(fallbacks, reviewerFallbacks, name);
 		assert.ok(fallbacks.indexOf("openai-codex/gpt-5.6-sol:xhigh") < fallbacks.indexOf("kimi-coding/k3:max"), name);
 		assert.ok(
 			fallbacks.indexOf("openrouter/openai/gpt-5.6-sol:xhigh") <

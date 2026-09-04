@@ -2,8 +2,8 @@
 name: codebase-online-researcher
 description: Online research for up-to-date documentation and library-source knowledge. Use when you need authoritative external information — official docs, ecosystem context, version-specific behavior, GitHub permalinks into open-source libraries, or video tutorials.
 tools: read, search, find, ls, bash, web_search, fetch_content, get_search_content, todo
-model: openai-codex/gpt-5.6-sol:medium
-fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.6:xhigh, github-copilot/grok-4.6:xhigh, zai/glm-5.3:high, zai-coding-cn/glm-5.3:high, zai/glm-5.3-flash:high, zai-coding-cn/glm-5.3-flash:high, baseten/zai-org/GLM-5.3:high, baseten/zai-org/GLM-5.3-Flash:high, openrouter/openai/gpt-5.6-sol:medium, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.6, openrouter/z-ai/glm-5.3:high, openrouter/z-ai/glm-5.3-flash:high
+model: openai-codex/gpt-6-astra:low
+fallbackModels: github-copilot/gpt-6-astra:low, openai/gpt-6-astra:low, anthropic/claude-fable-5-1:low, github-copilot/claude-fable-5-1:low, openai-codex/gpt-5.6-sol:medium, github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.6:xhigh, github-copilot/grok-4.6:xhigh, zai/glm-5.3:high, zai-coding-cn/glm-5.3:high, zai/glm-5.3-flash:high, zai-coding-cn/glm-5.3-flash:high, baseten/zai-org/GLM-5.3:high, baseten/zai-org/GLM-5.3-Flash:high, openrouter/openai/gpt-6-astra:low, openrouter/anthropic/claude-fable-5-1:low, openrouter/openai/gpt-5.6-sol:medium, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.6, openrouter/z-ai/glm-5.3:high, openrouter/z-ai/glm-5.3-flash:high
 skills: playwright-cli
 ---
 
@@ -67,15 +67,15 @@ Prioritize official sources, recognized experts, reputable technical material, a
 
 Recovery rules that change behavior:
 
-| Failure | Recovery |
-| --- | --- |
-| `search` finds nothing | Broaden to concept names rather than exact symbols. |
-| `gh` is rate-limited | Use git operations in the existing local clone. |
-| Repository is too large | Use the API-only view returned by `fetch_content`, or `forceClone: true` when a clone is necessary. |
-| Clone path is missing | A slash-bearing branch may have misresolved; list the repository tree and navigate it. |
-| Implementation remains uncertain | Label the uncertainty, state the hypothesis, and cite the evidence found. |
-| Video extraction fails | Ensure Chrome is signed into gemini.google.com or set `GEMINI_API_KEY`. |
-| `web_search` fails | Check provider configuration; try `provider: "gemini"` when a Perplexity key is unavailable. |
+| Failure                          | Recovery                                                                                            |
+| -------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `search` finds nothing           | Broaden to concept names rather than exact symbols.                                                 |
+| `gh` is rate-limited             | Use git operations in the existing local clone.                                                     |
+| Repository is too large          | Use the API-only view returned by `fetch_content`, or `forceClone: true` when a clone is necessary. |
+| Clone path is missing            | A slash-bearing branch may have misresolved; list the repository tree and navigate it.              |
+| Implementation remains uncertain | Label the uncertainty, state the hypothesis, and cite the evidence found.                           |
+| Video extraction fails           | Ensure Chrome is signed into gemini.google.com or set `GEMINI_API_KEY`.                             |
+| `web_search` fails               | Check provider configuration; try `provider: "gemini"` when a Perplexity key is unavailable.        |
 
 A page-level 403 needs no manual recovery when the automatic Gemini fallback is configured.
 

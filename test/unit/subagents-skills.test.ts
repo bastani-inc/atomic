@@ -190,7 +190,7 @@ describe("subagent skill resolution", () => {
 
 		const debuggerRow = guidance.split("\n").find((line) => line.startsWith("| `debugger`"));
 		assert.ok(debuggerRow, "missing debugger guidance row");
-		assert.match(debuggerRow, /`openai-codex\/gpt-5\.6-sol:xhigh`/);
+		assert.match(debuggerRow, /`openai-codex\/gpt-6-astra:xhigh`/);
 		for (const capability of ["intercom", "contact_supervisor", "todo"]) {
 			assert.match(debuggerRow, new RegExp(`\\b${capability}\\b`));
 		}
