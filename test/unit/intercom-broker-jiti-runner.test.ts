@@ -142,16 +142,17 @@ describe("shipped dependency manifests", () => {
 		assert.ok(codingAgent.dependencies?.jiti, "the broker runner must stay a declared dependency");
 	});
 
-	test("the published shrinkwrap ships no tsx, esbuild, or esbuild platform package", () => {
+	test("the published shrinkwrap ships Chord's esbuild dependency but no obsolete tsx runner", () => {
 		const shrinkwrap = JSON.parse(
 			readFileSync(join(repoRoot, "packages/coding-agent/npm-shrinkwrap.json"), "utf8"),
-		) as { packages: Record<string, unknown> };
+		) as { packages: Record<string, { version?: string }> };
 
-		const offenders = Object.keys(shrinkwrap.packages).filter((entry) =>
-			/(^|\/)node_modules\/(tsx|esbuild|@esbuild\/[^/]+|fsevents)$/u.test(entry),
+		const obsolete = Object.keys(shrinkwrap.packages).filter((entry) =>
+			/(^|\/)node_modules\/(tsx|fsevents)$/u.test(entry),
 		);
 
-		assert.deepEqual(offenders, []);
+		assert.deepEqual(obsolete, []);
+		assert.equal(shrinkwrap.packages["node_modules/esbuild"]?.version, "0.28.1");
 		assert.ok(Object.keys(shrinkwrap.packages).some((entry) => entry.endsWith("node_modules/jiti")));
 	});
 });

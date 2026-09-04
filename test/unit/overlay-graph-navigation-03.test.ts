@@ -11,7 +11,7 @@ import {
 import { renderHeader } from "../../packages/workflows/src/tui/header.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
-import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
+import { sliceColumns, visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const {
@@ -460,7 +460,11 @@ describe("GraphView keyboard navigation", () => {
 		const scrollbar = view._graphScrollbarGeometry;
 		assert.ok(scrollbar);
 		for (let row = scrollbar.thumbTop; row < scrollbar.thumbTop + scrollbar.thumbHeight; row++) {
-			assert.match(lines[row]!, /\x1b\[100m/, `thumb row ${row} remains painted over the prompt card`);
+			assert.match(
+				sliceColumns(lines[row]!, scrollbar.column, 1, true),
+				/┃/u,
+				`thumb row ${row} remains painted over the prompt card`,
+			);
 		}
 		view.dispose();
 	});

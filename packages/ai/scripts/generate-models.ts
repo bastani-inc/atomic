@@ -489,6 +489,7 @@ const XAI_BUILTIN_EXCLUDED_MODEL_IDS = new Set([
 	"grok-3-fast",
 	"grok-4.20-0309-non-reasoning",
 	"grok-4.20-0309-reasoning",
+	"grok-build-0.1",
 	"grok-code-fast-1",
 ]);
 const XAI_RESPONSES_COMPAT: OpenAIResponsesCompat = {
@@ -518,6 +519,8 @@ const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS = new Set([
 	"gpt-5.4",
 	"gpt-5.5",
 ]);
+
+const GITHUB_COPILOT_CLAUDE_FABLE_MODEL_IDS = ["claude-fable-5", "claude-fable-5-1"] as const;
 
 // Checked manually against the authenticated GitHub Copilot /models endpoint on 2026-06-15.
 // Keep this to narrow corrections over models.dev metadata instead of snapshotting Copilot's catalog.
@@ -1027,8 +1030,8 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	) {
 		mergeThinkingLevelMap(model, { off: "none" });
 	}
-	// xAI models without verified effort options (e.g. grok-build-0.1) must not
-	// send the undocumented "none"/"minimal" efforts.
+	// xAI models without verified effort options must not send the undocumented
+	// "none"/"minimal" efforts.
 	if (model.provider === "xai" && model.api === "openai-responses" && model.thinkingLevelMap === undefined) {
 		mergeThinkingLevelMap(model, { off: null, minimal: null });
 	}
@@ -2254,9 +2257,15 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		// Process GitHub Copilot models
-		if (data["github-copilot"]?.models) {
-			for (const [modelId, m] of Object.entries(data["github-copilot"].models)) {
+		// Keep both Claude Fable generations in the static Copilot catalog. GitHub's authenticated
+		// picker still controls account availability; when its models.dev catalog lags a Fable release,
+		// reuse that release's models.dev Anthropic metadata instead of maintaining a local snapshot.
+		const githubCopilotModels = { ...data["github-copilot"]?.models };
+		for (const modelId of GITHUB_COPILOT_CLAUDE_FABLE_MODEL_IDS) {
+			const source = githubCopilotModels[modelId] ?? data.anthropic?.models?.[modelId];
+			if (source) githubCopilotModels[modelId] = source;
+		}
+		for (const [modelId, m] of Object.entries(githubCopilotModels)) {
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
 
@@ -2304,7 +2313,6 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				models.push(copilotModel);
 				recordModelsDevReasoningOptions("github-copilot", modelId, m);
-			}
 		}
 
 		// Process MiniMax models

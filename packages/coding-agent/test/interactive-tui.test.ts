@@ -342,11 +342,7 @@ describe("interactive TUI renderer", () => {
 			const indicatorColumn =
 				scrolledTranscript.rect.x + Math.floor((scrolledTranscript.rect.width - indicator.length) / 2);
 			const indicatorRow = scrolledTranscript.rect.y + scrolledTranscript.rect.height - 1;
-			const handleIndicatorInput = Reflect.get(tui, "handleScrollToEndIndicatorMouseInput") as (
-				data: string,
-			) => string | undefined;
 			const motion = `\x1b[<32;${indicatorColumn + 1};${indicatorRow + 1}M`;
-			expect(handleIndicatorInput.call(tui, motion)).toBeUndefined();
 			terminal.input(motion);
 			expect(transcript.isFollowingEnd).toBe(false);
 
@@ -427,18 +423,14 @@ describe("interactive TUI renderer", () => {
 			lines[row] = imageLine;
 			const composite = Reflect.get(tui, "compositeScrollToEndIndicator") as (
 				lines: string[],
+				layout: ReturnType<typeof getLayoutFrame>,
 				width: number,
-				height: number,
 			) => string[];
 
-			const plainLines = composite.call(tui, [...frame.lines], terminal.columns, terminal.rows);
+			const plainLines = composite.call(tui, [...frame.lines], frame, terminal.columns);
 			expect(plainLines[row]).toContain("Jump to latest message");
 
-			expect(composite.call(tui, lines, terminal.columns, terminal.rows)[row]).toBe(imageLine);
-
-			const staleLines = [...frame.lines];
-			transcript.updateLayout(40, frame.root.rect.height - 1, () => {});
-			expect(composite.call(tui, staleLines, terminal.columns, terminal.rows)).toEqual(staleLines);
+			expect(composite.call(tui, lines, frame, terminal.columns)[row]).toBe(imageLine);
 		} finally {
 			tui.stop();
 		}
@@ -572,7 +564,7 @@ type CopyCommandPrototype = Pick<InteractiveMode, "handleCopyCommand">;
 
 const copyCommandPrototype: CopyCommandPrototype = InteractiveMode.prototype;
 
-describe("pi-tui 0.84.4 fullscreen copy", () => {
+describe("pi-tui 0.85.0 fullscreen copy", () => {
 	test("retains a disabled automatic selection and copies it programmatically", async () => {
 		const copied: string[] = [];
 		const terminal = new RecordingTerminal();

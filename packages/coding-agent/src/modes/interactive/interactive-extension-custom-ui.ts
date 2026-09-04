@@ -310,6 +310,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 							focus: () => handle.focus(),
 							unfocus: (unfocusOptions) => handle.unfocus(unfocusOptions),
 							isFocused: () => handle.isFocused(),
+							getBounds: () => handle.getBounds(),
 						};
 						overlayHandle = wrappedHandle;
 						options?.onHandle?.(wrappedHandle);

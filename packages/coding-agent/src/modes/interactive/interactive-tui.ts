@@ -1,6 +1,5 @@
 import {
 	type Component,
-	compositeTuiLine,
 	isKeyRelease,
 	ProcessTerminal,
 	type Terminal,
@@ -8,8 +7,6 @@ import {
 	TuiAltScreen,
 	type TuiInputListener,
 	TuiMainScreen,
-	truncateToWidth,
-	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.ts";
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
@@ -55,6 +52,10 @@ interface TuiAltScreenMouseInternals {
 /** pi-tui 0.84.2 keeps its overlay-deferral predicate private (tui-alt-screen.d.ts:84). */
 interface TuiAltScreenViewportDeferral {
 	shouldDeferViewportInputToOverlay?(): boolean;
+}
+
+interface TuiAltScreenScrollToEndIndicatorInternals {
+	handleScrollToEndIndicatorMouseEvent(event: unknown): boolean;
 }
 
 interface TuiAltScreenSelectionInternals {
@@ -211,41 +212,6 @@ interface ParsedMouseSequence {
 	readonly isRelease: boolean;
 }
 
-interface ScrollToEndIndicatorRect {
-	readonly row: number;
-	readonly column: number;
-	readonly width: number;
-}
-
-interface ScrollViewLayoutState {
-	readonly followEnd?: boolean;
-	readonly isFollowingEnd: boolean;
-	readonly viewportHeight: number;
-}
-
-interface TuiLayoutBox {
-	readonly clip: { x: number; y: number; width: number; height: number };
-	readonly children: readonly TuiLayoutBox[];
-	readonly scrollView?: ScrollViewLayoutState;
-}
-
-interface TuiLayoutFrame {
-	readonly root: TuiLayoutBox;
-	readonly width: number;
-	readonly height: number;
-	readonly primaryScrollView?: ScrollViewLayoutState;
-}
-
-interface TuiAltScreenLayoutInternals {
-	readonly currentLayout?: TuiLayoutFrame;
-}
-
-const KITTY_IMAGE_PREFIX = "\x1b_G";
-const ITERM2_IMAGE_PREFIX = "\x1b]1337;File=";
-
-function isImageLine(line: string): boolean {
-	return line.includes(KITTY_IMAGE_PREFIX) || line.includes(ITERM2_IMAGE_PREFIX);
-}
 const SGR_MOUSE_SEQUENCE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
 const LEFT_MOUSE_MODIFIER_MASK = 4 | 8 | 16;
 
@@ -285,14 +251,6 @@ function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
 	return sequences;
 }
 
-function findScrollViewBox(box: TuiLayoutBox, scrollView: ScrollViewLayoutState): TuiLayoutBox | undefined {
-	if (box.scrollView === scrollView) return box;
-	for (const child of box.children) {
-		const found = findScrollViewBox(child, scrollView);
-		if (found) return found;
-	}
-	return undefined;
-}
 /** Whether every report in a mouse chunk is a vertical wheel event. */
 export function isMouseWheelInput(data: string): boolean {
 	const sequences = parseMouseSequences(data);
@@ -362,81 +320,6 @@ function replayMouseInput(viewportListener: TuiInputListener, data: string): voi
  * route last so application listeners still receive deferred viewport keys.
  */
 class AtomicTuiAltScreen extends TuiAltScreen {
-	private scrollToEndIndicatorRect: ScrollToEndIndicatorRect | undefined;
-
-	private renderScrollToEndIndicator(): string {
-		const shortcut = keyDisplayText("tui.altScreen.bottom");
-		const label = ` ↓ Jump to latest message${shortcut ? ` · ${shortcut}` : ""} `;
-		return theme.bg("selectedBg", theme.fg("text", label));
-	}
-
-	private compositeScrollToEndIndicator(screen: string[], width: number, height: number): string[] {
-		const previousRect = this.scrollToEndIndicatorRect;
-		this.scrollToEndIndicatorRect = undefined;
-		const layout = (this as unknown as TuiAltScreenLayoutInternals).currentLayout;
-		if (this.isFocusedOverlay()) return screen;
-		if (!layout || layout.width !== width || layout.height !== height) {
-			// pi-tui assigns currentLayout after compositing. If a detached view was
-			// visible before its geometry changed, render once more with the new frame.
-			if (previousRect) this.requestRender();
-			return screen;
-		}
-		const scrollView = layout.primaryScrollView;
-		if (!scrollView || scrollView.followEnd === false || scrollView.isFollowingEnd) return screen;
-
-		const clip = findScrollViewBox(layout.root, scrollView)?.clip;
-		if (!clip || clip.width <= 0 || clip.height <= 0) return screen;
-		if (clip.height !== scrollView.viewportHeight) {
-			// The layout belongs to the prior frame, but the shared ScrollView already
-			// has the current dock-adjusted viewport height. Do not paint stale geometry.
-			if (previousRect) this.requestRender();
-			return screen;
-		}
-		const row = clip.y + clip.height - 1;
-		if (row < 0 || row >= screen.length || isImageLine(screen[row] ?? "")) return screen;
-		const text = truncateToWidth(this.renderScrollToEndIndicator(), clip.width, "");
-		const textWidth = visibleWidth(text);
-		if (textWidth === 0) return screen;
-		const column = clip.x + Math.floor((clip.width - textWidth) / 2);
-		const result = [...screen];
-		result[row] = compositeTuiLine(result[row] ?? "", text, column, textWidth, width);
-		if (result[row] === screen[row]) return screen;
-
-		this.scrollToEndIndicatorRect = { row, column, width: textWidth };
-		return result;
-	}
-
-	private handleScrollToEndIndicatorMouseInput(data: string): string | undefined {
-		const rect = this.scrollToEndIndicatorRect;
-		if (!rect) return undefined;
-		const sequences = parseMouseSequences(data);
-		const pressedIndex = sequences?.findIndex(
-			(sequence) =>
-				!sequence.isRelease &&
-				(sequence.button & 32) === 0 &&
-				isLeftMouseButton(sequence) &&
-				sequence.y === rect.row &&
-				sequence.x >= rect.column &&
-				sequence.x < rect.column + rect.width,
-		);
-		if (pressedIndex === undefined || pressedIndex < 0 || !sequences) return undefined;
-
-		this.scrollToEndIndicatorRect = undefined;
-		this.scrollToBottom();
-		return sequences
-			.filter((_, index) => index !== pressedIndex)
-			.map((sequence) => sequence.data)
-			.join("");
-	}
-
-	protected override compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
-		return super.compositeOverlays(
-			this.compositeScrollToEndIndicator(lines, termWidth, termHeight),
-			termWidth,
-			termHeight,
-		);
-	}
-
 	constructor(
 		terminal: Terminal,
 		showHardwareCursor: boolean,
@@ -459,6 +342,13 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		const deferral = this as unknown as TuiAltScreenViewportDeferral;
 		const deferToOverlay = deferral.shouldDeferViewportInputToOverlay?.bind(this);
 		deferral.shouldDeferViewportInputToOverlay = () => !viewportInputReplays.has(this) && deferToOverlay?.() === true;
+
+		// pi-tui 0.85 owns the jump-to-end indicator, but its hit test runs before Atomic's
+		// focused-overlay input gate. Let the gate offer that press to the overlay first.
+		const indicator = this as unknown as TuiAltScreenScrollToEndIndicatorInternals;
+		const handleScrollToEndIndicator = indicator.handleScrollToEndIndicatorMouseEvent.bind(this);
+		indicator.handleScrollToEndIndicatorMouseEvent = (event) =>
+			this.isFocusedOverlay() ? false : handleScrollToEndIndicator(event);
 	}
 
 	/**
@@ -514,11 +404,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 				const gate = viewportInputGates.get(this);
 				const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
 				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay(), false)) return undefined;
-				const remainingInput = this.handleScrollToEndIndicatorMouseInput(data);
-				if (remainingInput !== undefined) {
-					if (remainingInput.length > 0) listener(remainingInput);
-					return { consume: true };
-				}
 				return listener(data);
 			});
 			subscription.routeUnsubscribe = super.addInputListener(subscription.routeListener);
@@ -709,6 +594,11 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
+			scrollToEndIndicator: () => {
+				const shortcut = keyDisplayText("tui.altScreen.bottom");
+				const label = ` ↓ Jump to latest message${shortcut ? ` · ${shortcut}` : ""} `;
+				return theme.bg("selectedBg", theme.fg("text", label));
+			},
 			openUrl: (url) =>
 				handleUrlActivation(url, {
 					onOverlayInternalUiAction: options.onOverlayInternalUiAction,

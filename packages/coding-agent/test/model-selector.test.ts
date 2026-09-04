@@ -1,5 +1,5 @@
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -56,6 +56,29 @@ describe("model selector", () => {
 		selector.handleInput("\x1b[B");
 		expect(getModelRow("current-model")).toBe(`  ✓ current-model [${currentModel.provider}]`);
 		expect(getModelRow("browsed-model")).toBe(`→   browsed-model [${currentModel.provider}]`);
+		selector.dispose();
+	});
+
+	it("uses the configured save binding", async () => {
+		setKeybindings(new KeybindingsManager({ "app.models.save": "ctrl+r" }));
+		harness = await createHarness();
+		const currentModel = harness.getModel()!;
+		const saveDefault = vi.fn();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			currentModel,
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			[],
+			saveDefault,
+			() => {},
+		);
+
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain("ctrl+r set as default");
+		selector.handleInput("\x13");
+		expect(saveDefault).not.toHaveBeenCalled();
+		selector.handleInput("\x12");
+		expect(saveDefault).toHaveBeenCalledWith(currentModel, true);
 		selector.dispose();
 	});
 });

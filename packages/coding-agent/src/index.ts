@@ -470,14 +470,6 @@ export {
 } from "./modes/interactive/theme/theme.ts";
 // Run modes for programmatic SDK usage
 export { pickWhimsicalWorkingMessage } from "./modes/interactive/whimsical-messages.ts";
-// Experimental Harness factory
-export {
-	type BuildCodingAgentHarnessSystemPromptOptions,
-	buildCodingAgentHarnessSystemPrompt,
-	type CodingAgentHarnessTool,
-	type CreateCodingAgentHarnessOptions,
-	createCodingAgentHarness,
-} from "./server/create-harness.ts";
 export { createChildProcessEnvironment } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";

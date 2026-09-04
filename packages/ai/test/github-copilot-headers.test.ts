@@ -3,7 +3,7 @@ import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { buildCopilotDynamicHeaders, isRawCopilotToken } from "../src/api/github-copilot-headers.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { getModel } from "../src/compat.ts";
+import { getModels } from "../src/compat.ts";
 import type { Context, Model } from "../src/types.ts";
 
 const context: Context = {
@@ -86,9 +86,8 @@ async function captureRequestHeaders(
 	optionsHeaders?: Record<string, string>,
 	modelIntegrationId?: string,
 ): Promise<Record<string, string>> {
-	const modelId =
-		api === "anthropic-messages" ? "claude-sonnet-4.6" : api === "openai-completions" ? "gpt-4.1" : "gpt-5.4";
-	const baseModel = getModel("github-copilot", modelId);
+	const baseModel = getModels("github-copilot").find((candidate) => candidate.api === api);
+	if (!baseModel) throw new Error(`No ${api} models available through GitHub Copilot`);
 	const model = modelIntegrationId
 		? ({ ...baseModel, headers: { ...baseModel.headers, "Copilot-Integration-Id": modelIntegrationId } } as Model<
 				"anthropic-messages" | "openai-completions" | "openai-responses"

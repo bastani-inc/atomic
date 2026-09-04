@@ -381,6 +381,7 @@ export class EngineCustomUiService {
 				this.send({ type: "engine_custom_control", componentId, action: "unfocus" });
 			},
 			isFocused: () => focused,
+			getBounds: () => undefined,
 		};
 	}
 
