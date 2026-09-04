@@ -27,6 +27,8 @@ interface SubagentRelayDeps {
   authorizeSupervisorChild?(childName: string): Promise<import("./broker/client.js").SupervisorAuthorization>;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup?(): string;
+  /** Internal test seam for exercising authority pressure and storage failure. */
+  localDeliveryAuthority?: DeliveredMessageCache;
 }
 
 async function dispatchRelayFallback(
@@ -51,8 +53,7 @@ async function dispatchRelayFallback(
 
 export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps): void {
   const { getLiveContext, currentSessionTargetMatches, sendIncomingMessage, ensureConnected, resolveSessionTarget } = deps;
-  const localDeliveries = new DeliveredMessageCache();
-  const localDeliveriesInFlight = new Map<string, { signature: string; completion: Promise<void> }>();
+  const localDeliveries = deps.localDeliveryAuthority ?? new DeliveredMessageCache();
   function deliverLocalSubagentRelayMessage(
     sender: "subagent-control" | "subagent-result",
     status: string,
@@ -140,34 +141,53 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
     options: { sender: "subagent-control" | "subagent-result"; status: string; errorEntryType: string; acknowledge?: boolean; terminalBarrier?: { runId: string; terminalId?: string; sourceSessionTargets: string[] } },
   ): Promise<void> {
     try {
-      const signature = buildSendSignature(parsed.to, { text: parsed.message });
-      const match = parsed.requestId ? localDeliveries.lookup(parsed.requestId, signature) : "miss";
-      if (match === "conflict") {
-        throw new Error(`Intercom message ID '${parsed.requestId}' was already delivered with a different target or payload`);
+      const signature = JSON.stringify({
+        sender: options.sender,
+        send: buildSendSignature(parsed.to, { text: parsed.message }),
+      });
+      if (!parsed.requestId) {
+        await deliverLocalSubagentRelayMessage(
+          options.sender,
+          options.status,
+          parsed.message,
+          options.terminalBarrier,
+        );
+        acknowledgeResult(options, parsed.requestId, true);
+        return;
       }
-      if (match === "miss") {
-        const pending = parsed.requestId ? localDeliveriesInFlight.get(parsed.requestId) : undefined;
-        if (pending && pending.signature !== signature) {
-          await pending.completion;
-          throw new Error(`Intercom message ID '${parsed.requestId}' was already delivered with a different target or payload`);
-        }
-        let delivery = pending?.completion;
-        if (!delivery && parsed.requestId) {
-          const deferred = Promise.withResolvers<void>();
-          delivery = deferred.promise;
-          void delivery.catch(() => {});
-          localDeliveriesInFlight.set(parsed.requestId, { signature, completion: delivery });
-          try {
-            void deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier, parsed.requestId).then(deferred.resolve, deferred.reject);
-          } catch (error) {
-            deferred.reject(error);
-          }
-          void delivery.finally(() => { localDeliveriesInFlight.delete(parsed.requestId!); }).catch(() => {});
-        } else if (!delivery) {
-          delivery = deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier, parsed.requestId);
-        }
-        await delivery;
-        if (parsed.requestId) localDeliveries.record(parsed.requestId, signature);
+
+      const reservation = localDeliveries.reserve(parsed.requestId, signature);
+      if (reservation === "match") {
+        acknowledgeResult(options, parsed.requestId, true);
+        return;
+      }
+      if (reservation !== "recorded") {
+        const reason = reservation === "conflict"
+          ? `Intercom message ID '${parsed.requestId}' was already delivered with a different sender, target, or payload`
+          : reservation === "capacity"
+            ? "Local Intercom delivery authority is at capacity; refusing delivery"
+            : reservation === "uncertain"
+              ? `Intercom message ID '${parsed.requestId}' has uncertain local delivery state; refusing replay`
+              : "Local Intercom delivery authority is invalid; refusing delivery";
+        throw new Error(reason);
+      }
+
+      try {
+        await deliverLocalSubagentRelayMessage(
+          options.sender,
+          options.status,
+          parsed.message,
+          options.terminalBarrier,
+          parsed.requestId,
+        );
+      } catch (error) {
+        localDeliveries.forget(parsed.requestId, signature);
+        throw error;
+      }
+
+      const accepted = localDeliveries.accept(parsed.requestId, signature);
+      if (accepted !== "accepted") {
+        throw new Error(`Local Intercom delivery authority could not accept message '${parsed.requestId}'; refusing acknowledgement`);
       }
       acknowledgeResult(options, parsed.requestId, true);
     } catch (error) {

@@ -179,10 +179,12 @@ interface IntercomToolDeps {
   /** Atomically reserves one correlation-keyed reply waiter. */
   beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
   replyTracker: ReplyTracker | (() => ReplyTracker);
+  /** Internal test seam for exercising retry pressure before public tool side effects. */
+  retryIdentityMaxEntries?: number;
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const retryIdentities = new RetryIdentityReservations();
+  const retryIdentities = new RetryIdentityReservations({ maxEntries: deps.retryIdentityMaxEntries });
   const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
   const getMetadata = typeof childOrchestratorMetadata === "function"
@@ -498,6 +500,17 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           }
           let retryIdentity: RetryIdentityAttempt | undefined;
           try {
+            if (retryToken === undefined) {
+              retryIdentity = retryIdentities.begin({
+                sessionId: toolSessionId,
+                action: "send",
+                target: to,
+                text: message,
+                attachments,
+                replyTo,
+                expectsReply: false,
+              });
+            }
             if (!replyTo && deps.confirmSend && ctx.hasUI) {
               const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
               const confirmed = await ctx.ui.confirm(
@@ -505,6 +518,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 `Send to "${to}":\n\n${message}${attachmentText}`,
               );
               if (!confirmed) {
+                if (retryIdentity !== undefined) retryIdentities.release(retryIdentity);
+                retryIdentity = undefined;
                 return {
                   content: [{ type: "text", text: "Message cancelled by user" }],
                   isError: false,
@@ -512,7 +527,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 };
               }
             }
-            retryIdentity = retryIdentities.begin({
+            retryIdentity ??= retryIdentities.begin({
               sessionId: toolSessionId,
               action: "send",
               target: to,
@@ -653,6 +668,16 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           let retryIdentity: RetryIdentityAttempt | undefined;
 
           try {
+            if (retryToken !== undefined && !message) throw new RetryTokenError("mismatch");
+            retryIdentity = retryIdentities.begin({
+              sessionId: toolSessionId,
+              action: "ask",
+              target: to,
+              text: message ?? "",
+              attachments,
+              replyTo,
+              expectsReply: true,
+            }, retryToken);
             const metadata = getMetadata();
             const currentSupervisorId = connectedClient.supervisorSessionId ?? undefined;
             const metadataSupervisorId = metadata?.supervisor?.supervisorSessionId;
@@ -677,24 +702,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               directParentTarget &&
               claimParentAsk(currentSupervisorId ?? metadataSupervisorId ?? to)
             ) {
+              retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
               return {
                 content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
                 isError: false,
                 details: { yielded: true },
               };
-            }
-
-            if (retryToken !== undefined) {
-              if (!message) throw new RetryTokenError("mismatch");
-              retryIdentity = retryIdentities.begin({
-                sessionId: toolSessionId,
-                action: "ask",
-                target: to,
-                text: message,
-                attachments,
-                replyTo,
-                expectsReply: true,
-              }, retryToken);
             }
 
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
@@ -733,6 +747,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               const resolvedParent =
                 authoritativeParent ?? await resolveTarget(connectedClient, metadata.orchestratorTarget);
               if (resolvedParent !== null && resolvedParent === sendTo && claimParentAsk(sendTo)) {
+                retryIdentities.release(retryIdentity);
+                retryIdentity = undefined;
                 return {
                   content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
                   isError: false,
@@ -740,7 +756,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 };
               }
             }
+
             if (!message) {
+              retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
               return {
                 content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
                 isError: true,
@@ -766,15 +785,6 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 					details: retryErrorDetails(retained?.retryToken),
 				};
 			}
-			retryIdentity ??= retryIdentities.begin({
-				sessionId: toolSessionId,
-				action: "ask",
-				target: to,
-				text: message,
-				attachments,
-				replyTo,
-				expectsReply: true,
-			});
 			const questionId = retryIdentity.messageId;
 			const replyFrom = replySender.kind === "resolved" ? replySender.sessionId : sendTo;
 			const admission = beginReplyWait(replyFrom, questionId, _signal);
@@ -910,8 +920,11 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 
         case "reply": {
           if (!message) {
+            const errorText = retryToken === undefined
+              ? "Missing 'message' parameter"
+              : getErrorMessage(new RetryTokenError("mismatch"));
             return {
-              content: [{ type: "text", text: "Missing 'message' parameter" }],
+              content: [{ type: "text", text: errorText }],
               isError: true,
               details: { error: true },
             };
@@ -919,62 +932,77 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 
           let retryIdentity: RetryIdentityAttempt | undefined;
           try {
-			const target = activeReplyTracker().resolveReplyTarget({ to, replyTo });
-			const replySendTo = to ?? target.from.id;
-			const replyLogicalTarget = to ?? target.from.id;
-            if (target.from.id === connectedClient.sessionId) {
-              return {
-                content: [{ type: "text", text: "Cannot message the current session" }],
-                isError: true,
-                details: { error: true },
-              };
-            }
             retryIdentity = retryIdentities.begin({
               sessionId: toolSessionId,
               action: "reply",
               target: to,
               text: message,
               attachments,
-              replyTo: target.message.id,
-              requestedReplyTo: replyTo,
+              replyTo,
               expectsReply: false,
             }, retryToken);
+            if (retryToken === undefined) {
+              const target = activeReplyTracker().resolveReplyTarget({ to, replyTo });
+              retryIdentities.bindReplyRoute(retryIdentity, {
+                senderId: target.from.id,
+                ...(target.from.name === undefined ? {} : { senderName: target.from.name }),
+                messageId: target.message.id,
+                expectsReply: target.message.expectsReply === true,
+              });
+            }
+            const route = retryIdentities.replyRoute(retryIdentity);
+            if (route === undefined) throw new RetryTokenError("invalid");
+            const replySendTo = to ?? route.senderId;
+            const replyLogicalTarget = to ?? route.senderId;
+            const displayTarget = route.senderName || route.senderId;
+            if (route.senderId === connectedClient.sessionId) {
+              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
+              retryIdentity = undefined;
+              return {
+                content: [{
+                  type: "text",
+                  text: `Cannot message the current session${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}`,
+                }],
+                isError: true,
+                details: retryErrorDetails(retained.retryToken),
+              };
+            }
             const replyMessageId = retryIdentity.messageId;
             const sendReply = (targetId: string) => connectedClient.send(targetId, {
               messageId: replyMessageId,
               logicalTarget: replyLogicalTarget,
-              ...(target.message.expectsReply === true ? { requirePendingReply: true as const } : {}),
+              ...(route.expectsReply ? { requirePendingReply: true as const } : {}),
               text: message,
               attachments,
-              replyTo: target.message.id,
+              replyTo: route.messageId,
             });
             let result = await sendReply(replySendTo);
             if (
               to === undefined &&
               result.delivered === false &&
               result.reasonCode === "session_not_found" &&
-              target.from.name !== undefined
+              route.senderName !== undefined
             ) {
-              result = await sendReply(target.from.name);
+              result = await sendReply(route.senderName);
             }
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
-              activeReplyTracker().markReplied(target.message.id);
+              activeReplyTracker().markReplied(route.messageId);
               pi.appendEntry("intercom_sent", {
-                to: target.from.name || target.from.id,
-                message: { text: message, attachments, replyTo: target.message.id },
+                to: displayTarget,
+                message: { text: message, attachments, replyTo: route.messageId },
                 messageId: result.id,
                 timestamp: Date.now(),
               });
               return {
-                content: [{ type: "text", text: `Reply queued for ${target.from.name || target.from.id}` }],
+                content: [{ type: "text", text: `Reply queued for ${displayTarget}` }],
                 isError: false,
                 details: {
                   messageId: result.id,
                   delivered: false,
                   queued: true,
-                  replyTo: target.message.id,
+                  replyTo: route.messageId,
                   target: result.target,
                   position: result.position,
                 },
@@ -987,7 +1015,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               return {
                 content: [{
                   type: "text",
-                  text: `Reply to "${target.from.name || target.from.id}" was not delivered: ${errorText}${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}`,
+                  text: `Reply to "${displayTarget}" was not delivered: ${errorText}${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}`,
                 }],
                 isError: true,
                 details: retryToken === undefined
@@ -1001,17 +1029,17 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
-            activeReplyTracker().markReplied(target.message.id);
+            activeReplyTracker().markReplied(route.messageId);
             pi.appendEntry("intercom_sent", {
-              to: target.from.name || target.from.id,
-              message: { text: message, attachments, replyTo: target.message.id },
+              to: displayTarget,
+              message: { text: message, attachments, replyTo: route.messageId },
               messageId: result.id,
               timestamp: Date.now(),
             });
             return {
-              content: [{ type: "text", text: `Reply sent to ${target.from.name || target.from.id}` }],
+              content: [{ type: "text", text: `Reply sent to ${displayTarget}` }],
               isError: false,
-              details: { messageId: result.id, delivered: true, replyTo: target.message.id },
+              details: { messageId: result.id, delivered: true, replyTo: route.messageId },
             };
           } catch (error) {
             let failure = error;

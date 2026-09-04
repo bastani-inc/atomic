@@ -96,11 +96,26 @@ test("attachment object order is canonical while array order, duplicates, and la
 	}
 });
 
-test("an omitted and an empty attachment list share canonical retry identity", () => {
-	const reservations = fixture();
-	const input = { ...base, attachments: undefined };
-	const { attempt, retryToken } = retain(reservations, input);
-	assert.equal(reservations.begin({ ...input, attachments: [] }, retryToken).messageId, attempt.messageId);
+test("omitted and explicit empty attachments are distinct exact retry arguments", () => {
+	const omittedReservations = fixture();
+	const omitted = { ...base, attachments: undefined };
+	const { retryToken: omittedToken } = retain(omittedReservations, omitted);
+	assert.throws(
+		() => omittedReservations.begin({ ...omitted, attachments: [] }, omittedToken),
+		(error: unknown) => error instanceof RetryTokenError && error.code === "mismatch",
+	);
+
+	const emptyReservations = fixture();
+	const empty = { ...base, attachments: [] };
+	const { attempt, retryToken: emptyToken } = retain(emptyReservations, empty);
+	assert.equal(emptyReservations.begin({ ...empty, attachments: [] }, emptyToken).messageId, attempt.messageId);
+
+	const reverseReservations = fixture();
+	const { retryToken: emptyFirstToken } = retain(reverseReservations, empty);
+	assert.throws(
+		() => reverseReservations.begin(omitted, emptyFirstToken),
+		(error: unknown) => error instanceof RetryTokenError && error.code === "mismatch",
+	);
 });
 
 test("concurrent identical failures get independent tokens and exact identities", () => {
@@ -126,7 +141,6 @@ test("invalid, mismatched, foreign-session, and already claimed tokens fail with
 		{ ...base, target: "worker " },
 		{ ...base, text: "different" },
 		{ ...base, replyTo: "different" },
-		{ ...base, requestedReplyTo: "different" },
 		{ ...base, expectsReply: true },
 	]) {
 		assert.throws(() => reservations.begin(input, retryToken), RetryTokenError);
@@ -141,6 +155,37 @@ test("invalid, mismatched, foreign-session, and already claimed tokens fail with
 			return error.code === "in_flight";
 		},
 	);
+});
+
+test("a reply retry exposes only the route snapshot bound to its fresh reservation", () => {
+	const reservations = fixture();
+	const input: RetryIdentityInput = {
+		sessionId: "session-a",
+		action: "reply",
+		text: "answer",
+		replyTo: "question-a",
+		expectsReply: false,
+	};
+	const fresh = reservations.begin(input);
+	reservations.bindReplyRoute(fresh, {
+		senderId: "sender-a",
+		senderName: "sender",
+		messageId: "question-a",
+		expectsReply: true,
+	});
+	const retryToken = reservations.retainAfterRecoverableDisconnect(fresh);
+	assert.ok(retryToken);
+	assert.throws(
+		() => reservations.begin({ ...input, replyTo: "question-b" }, retryToken),
+		(error: unknown) => error instanceof RetryTokenError && error.code === "mismatch",
+	);
+	const retry = reservations.begin(input, retryToken);
+	assert.deepEqual(reservations.replyRoute(retry), {
+		senderId: "sender-a",
+		senderName: "sender",
+		messageId: "question-a",
+		expectsReply: true,
+	});
 });
 
 test("token scope can be checked before resolving reply state without consuming a claim", () => {
@@ -163,18 +208,34 @@ test("a claimed retry retains its token after an inconclusive result but a fresh
 	assert.equal(reservations.retainAfterInconclusiveRetry(fresh), undefined);
 });
 
-test("capacity pressure refuses fresh work without evicting retained token claims", () => {
+test("capacity pressure refuses fresh work before minting an ID without blocking retained token claims", () => {
 	let now = 0;
-	const reservations = fixture({ ttlMs: 100, maxEntries: 2, now: () => now });
-	const oldest = retain(reservations);
-	const middle = retain(reservations, { ...base, text: "middle" });
-	const overflow = reservations.begin({ ...base, text: "overflow" });
-	assert.throws(() => reservations.retainAfterRecoverableDisconnect(overflow), RetryIdentityCapacityError);
-	assert.throws(() => reservations.begin({ ...base, text: "new work" }), RetryIdentityCapacityError);
-	assert.equal(reservations.begin(base, oldest.retryToken).messageId, oldest.attempt.messageId);
-	assert.equal(reservations.begin({ ...base, text: "middle" }, middle.retryToken).messageId, middle.attempt.messageId);
+	let createdIds = 0;
+	const reservations = fixture({
+		ttlMs: 100,
+		maxEntries: 1,
+		now: () => now,
+		createId: () => `counted-${++createdIds}`,
+	});
+	const retained = retain(reservations);
+	assert.equal(createdIds, 1);
+	assert.throws(() => reservations.begin({ ...base, text: "overflow" }), RetryIdentityCapacityError);
+	assert.equal(createdIds, 1, "capacity refusal must happen before consuming an operation ID");
+	const claim = reservations.begin(base, retained.retryToken);
+	assert.equal(claim.messageId, retained.attempt.messageId);
+	assert.equal(createdIds, 1, "a valid claim at capacity reuses its retained ID");
+	assert.equal(reservations.retainAfterRecoverableDisconnect(claim), retained.retryToken);
 	now = 100;
 	assert.doesNotThrow(() => reservations.begin(base));
+	assert.equal(createdIds, 2, "expiry reopens one fresh slot");
+});
+
+test("an in-flight fresh operation owns capacity until it releases", () => {
+	const reservations = fixture({ maxEntries: 1 });
+	const first = reservations.begin(base);
+	assert.throws(() => reservations.begin({ ...base, text: "concurrent" }), RetryIdentityCapacityError);
+	reservations.release(first);
+	assert.doesNotThrow(() => reservations.begin({ ...base, text: "after release" }));
 });
 test("settled token tombstones stay bounded without blocking a new retained operation", () => {
 	const reservations = fixture({ maxEntries: 1 });

@@ -22,8 +22,14 @@ export interface RetryIdentityInput {
 	readonly text: string;
 	readonly attachments?: readonly Attachment[];
 	readonly replyTo?: string;
-	readonly requestedReplyTo?: string;
 	readonly expectsReply?: boolean;
+}
+
+export interface RetryIdentityReplyRoute {
+	readonly senderId: string;
+	readonly senderName?: string;
+	readonly messageId: string;
+	readonly expectsReply: boolean;
 }
 
 export interface RetryIdentityAttempt {
@@ -43,6 +49,7 @@ interface RetryIdentityReservation {
 	readonly sessionId: string;
 	readonly action: RetryIdentityAction;
 	readonly expiresAt: number;
+	replyRoute?: RetryIdentityReplyRoute;
 	retryToken?: string;
 	reuseCount: number;
 	state: ReservationState;
@@ -59,7 +66,7 @@ export interface RetryIdentityReservationsOptions {
 
 export class RetryIdentityCapacityError extends Error {
 	constructor() {
-		super("Intercom retry identity capacity is exhausted; refusing delivery until retained identities expire");
+		super("Intercom retry identity capacity is exhausted; refusing delivery until an in-flight or retained identity is released or expires");
 		this.name = "RetryIdentityCapacityError";
 	}
 }
@@ -87,9 +94,8 @@ function operationKey(input: RetryIdentityInput): string {
 		input.action,
 		input.target,
 		input.text,
-		canonicalizeAttachmentsForSendSignature(input.attachments) ?? [],
+		canonicalizeAttachmentsForSendSignature(input.attachments),
 		input.replyTo,
-		input.requestedReplyTo,
 		input.expectsReply,
 	]);
 }
@@ -109,7 +115,7 @@ export class RetryIdentityReservations {
 	private readonly now: () => number;
 	private readonly createId: () => string;
 	private readonly createToken: () => string;
-	private blockedUntil = 0;
+	private freshInFlightCount = 0;
 
 	constructor(options: RetryIdentityReservationsOptions = {}) {
 		this.ttlMs = options.ttlMs ?? RETRY_IDENTITY_TTL_MS;
@@ -127,8 +133,11 @@ export class RetryIdentityReservations {
 		// expired token is distinguishable from a token that never belonged here.
 		if (retryToken !== undefined) return this.claimRetry(key, retryToken, now);
 		this.prune(now);
-		if (this.blockedUntil > now) throw new RetryIdentityCapacityError();
-		return this.attempt({
+		this.discardSettledTombstonesForCapacity();
+		if (this.tokenReservations.size + this.freshInFlightCount >= this.maxEntries) {
+			throw new RetryIdentityCapacityError();
+		}
+		const reservation: RetryIdentityReservation = {
 			key,
 			messageId: this.createId(),
 			expiresAt: now + this.ttlMs,
@@ -136,7 +145,9 @@ export class RetryIdentityReservations {
 			action: input.action,
 			reuseCount: 0,
 			state: "fresh-in-flight",
-		});
+		};
+		this.freshInFlightCount += 1;
+		return this.attempt(reservation);
 	}
 
 	/** Validate token ownership/state before any target resolution without consuming a retry. */
@@ -147,6 +158,27 @@ export class RetryIdentityReservations {
 		}
 		this.requireClaimable(reservation);
 		return Math.max(0, this.maxReuses - reservation.reuseCount);
+	}
+
+	/** Bind the mutable reply tracker result to a fresh operation before it can be retained. */
+	bindReplyRoute(attempt: RetryIdentityAttempt, route: RetryIdentityReplyRoute): void {
+		const reservation = this.currentReservation(attempt);
+		if (
+			reservation === undefined ||
+			reservation.action !== "reply" ||
+			reservation.state !== "fresh-in-flight" ||
+			reservation.replyRoute !== undefined ||
+			route.senderId.length === 0 ||
+			route.messageId.length === 0
+		) {
+			throw new RetryTokenError("invalid");
+		}
+		reservation.replyRoute = { ...route };
+	}
+
+	replyRoute(attempt: RetryIdentityAttempt): RetryIdentityReplyRoute | undefined {
+		const route = this.currentReservation(attempt)?.replyRoute;
+		return route === undefined ? undefined : { ...route };
 	}
 
 	/** Retain a fresh or claimed attempt after the typed recoverable disconnect. */
@@ -163,6 +195,7 @@ export class RetryIdentityReservations {
 		const reservation = this.currentReservation(attempt);
 		if (reservation === undefined || reservation.state === "released" || reservation.state === "settled") return;
 		if (reservation.retryToken === undefined) {
+			this.releaseFreshCapacity(reservation);
 			reservation.state = "released";
 			return;
 		}
@@ -210,39 +243,39 @@ export class RetryIdentityReservations {
 		const fresh = reservation.state === "fresh-in-flight";
 		if (!fresh && reservation.state !== "retry-in-flight") return undefined;
 		if (fresh && !allowFresh) {
+			this.releaseFreshCapacity(reservation);
 			reservation.state = "released";
 			return undefined;
 		}
 		if (reservation.expiresAt <= now) {
-			if (reservation.retryToken === undefined) reservation.state = "released";
-			else this.expire(reservation);
+			if (reservation.retryToken === undefined) {
+				this.releaseFreshCapacity(reservation);
+				reservation.state = "released";
+			} else this.expire(reservation);
 			return undefined;
 		}
 		if (reservation.reuseCount >= this.maxReuses) {
-			if (reservation.retryToken === undefined) reservation.state = "released";
-			else reservation.state = "exhausted";
+			if (reservation.retryToken === undefined) {
+				this.releaseFreshCapacity(reservation);
+				reservation.state = "released";
+			} else reservation.state = "exhausted";
 			return undefined;
 		}
 		if (fresh) {
-			this.discardSettledTombstonesForCapacity();
-			if (this.blockedUntil > now || this.tokenReservations.size >= this.maxEntries) {
-				this.blockedUntil = Math.max(this.blockedUntil, reservation.expiresAt);
-				reservation.state = "released";
-				throw new RetryIdentityCapacityError();
-			}
 			reservation.retryToken = this.uniqueToken();
 			this.tokenReservations.set(reservation.retryToken, reservation);
+			this.releaseFreshCapacity(reservation);
 		}
 		reservation.state = "retained";
 		return reservation.retryToken;
 	}
 
 	private discardSettledTombstonesForCapacity(): void {
-		if (this.tokenReservations.size < this.maxEntries) return;
+		if (this.tokenReservations.size + this.freshInFlightCount < this.maxEntries) return;
 		for (const [token, reservation] of this.tokenReservations) {
 			if (reservation.state !== "settled") continue;
 			this.tokenReservations.delete(token);
-			if (this.tokenReservations.size < this.maxEntries) return;
+			if (this.tokenReservations.size + this.freshInFlightCount < this.maxEntries) return;
 		}
 	}
 
@@ -272,6 +305,10 @@ export class RetryIdentityReservations {
 		return reservation?.reuseCount === attempt.reuseCount ? reservation : undefined;
 	}
 
+	private releaseFreshCapacity(reservation: RetryIdentityReservation): void {
+		if (reservation.state !== "fresh-in-flight") return;
+		this.freshInFlightCount = Math.max(0, this.freshInFlightCount - 1);
+	}
 	private finishRetained(reservation: RetryIdentityReservation, state: "settled" | "released"): void {
 		reservation.state = state;
 	}
@@ -282,7 +319,6 @@ export class RetryIdentityReservations {
 	}
 
 	private prune(now: number): void {
-		if (this.blockedUntil <= now) this.blockedUntil = 0;
 		for (const reservation of this.tokenReservations.values()) {
 			if (reservation.expiresAt <= now) this.expire(reservation);
 		}

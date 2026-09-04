@@ -670,6 +670,106 @@ test("an implicit public reply prefers the exact live sender ID when a duplicate
 	assert.equal(exactReplies[0]?.replyTo, questions[0]?.message.id);
 });
 
+test("an accepted implicit reply retry stays bound to its original ask after a new ask arrives", async () => {
+	const originalReplies: Message[] = [];
+	const newReplies: Message[] = [];
+	const originalAsker = await createClient("original-asker");
+	originalAsker.on("message", (_from: SessionInfo, message: Message) => originalReplies.push(message));
+	const newAsker = await createClient("new-asker");
+	newAsker.on("message", (_from: SessionInfo, message: Message) => newReplies.push(message));
+	const replyTracker = new ReplyTracker();
+	const questions: Array<{ from: SessionInfo; message: Message }> = [];
+	const replier = await createClient("reply-worker");
+	replier.on("message", (from: SessionInfo, message: Message) => {
+		questions.push({ from, message });
+		replyTracker.recordIncomingMessage(from, message);
+	});
+
+	const originalQuestion = await originalAsker.send("reply-worker", {
+		text: "original question",
+		expectsReply: true,
+	});
+	assert.equal(originalQuestion.delivered, true, originalQuestion.reason);
+	await waitUntil(() => questions.length === 1, "the original implicit reply route is recorded");
+	const originalQuestionId = questions[0]?.message.id;
+	assert.ok(originalQuestionId);
+
+	const tool = registerTool(replier, { connectionName: "reply-worker", replyTracker });
+	const attempts: SendOptions[] = [];
+	const rawSend = replier.send.bind(replier);
+	const firstSocket = (replier as unknown as { socket: net.Socket }).socket;
+	let loseFirstAcknowledgement = true;
+	replier.send = async (...args: Parameters<Client["send"]>) => {
+		attempts.push(args[1]);
+		if (loseFirstAcknowledgement) {
+			loseFirstAcknowledgement = false;
+			firstSocket.pause();
+		}
+		return rawSend(...args);
+	};
+	const firstExecution = tool.execute(
+		"implicit-reply-before-ack-loss",
+		{ action: "reply", message: "answer only the original" },
+		undefined,
+		undefined,
+		context,
+	);
+	await waitUntil(() => originalReplies.length === 1, "the broker accepts the original implicit reply");
+	firstSocket.destroy();
+	const first = await firstExecution;
+	assert.equal(first.isError, true);
+	assert.match(first.content[0]?.text ?? "", /Client disconnected/);
+	const retryToken = requiredRetryToken(first);
+
+	await connect(replier, "reply-worker");
+	const secondQuestion = await newAsker.send("reply-worker", {
+		text: "new ambient question",
+		expectsReply: true,
+	});
+	assert.equal(secondQuestion.delivered, true, secondQuestion.reason);
+	await waitUntil(() => questions.length === 2, "the new ambient ask is recorded before retry");
+	const newQuestionId = questions[1]?.message.id;
+	assert.ok(newQuestionId);
+	const mismatch = await tool.execute(
+		"mismatched-reply-after-state-change",
+		{ action: "reply", message: "different answer", retryToken },
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(mismatch.isError, true);
+	assert.match(mismatch.content[0]?.text ?? "", /does not match this Intercom operation/);
+	assert.equal(attempts.length, 1, "mismatched token input fails before send and does not consume the stored route");
+	assert.deepEqual(
+		replyTracker.listPending().map(({ message }) => message.id),
+		[originalQuestionId, newQuestionId],
+	);
+
+	const retry = await tool.execute(
+		"implicit-reply-after-state-change",
+		{ action: "reply", message: "answer only the original", retryToken },
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(retry.isError, false, retry.content[0]?.text);
+	assert.deepEqual(
+		attempts.map(({ messageId, replyTo }) => ({ messageId, replyTo })),
+		[
+			{ messageId: originalReplies[0]?.id, replyTo: originalQuestionId },
+			{ messageId: originalReplies[0]?.id, replyTo: originalQuestionId },
+		],
+		"the retry uses the original message identity and correlation snapshot",
+	);
+	assert.equal(originalReplies.length, 1, "durable broker authority suppresses duplicate delivery");
+	assert.equal(newReplies.length, 0, "the ambient ask cannot steal the retry");
+	assert.deepEqual(
+		replyTracker.listPending().map(({ message }) => message.id),
+		[newQuestionId],
+		"only the original question settles after the retained acknowledgement",
+	);
+});
+
 test("a public reply reaches a retried cross-group ask after the asker reconnects", async () => {
 	const runId = "9f3c0cb8-f495-42de-9e4d-7f58f973ac55";
 	const invocationGroup = `workflow:${runId}`;

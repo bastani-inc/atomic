@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { describe, test } from "vitest";
+import {
+	DeliveredMessageCache,
+	getDeliveredMessageAuthorityKeyPath,
+} from "../../packages/intercom/broker/delivered-message-cache.js";
 import { InboundIdleQueue } from "../../packages/intercom/inbound-idle-queue.js";
 import {
 	SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
@@ -17,6 +24,9 @@ interface RelayHarnessOptions {
 	localFailures?: number;
 	runtimeStarted?: boolean;
 	ownerGroup?: string;
+	localDeliveryMaxEntries?: number;
+	localDeliveryAuthority?: DeliveredMessageCache;
+	afterLocalDelivery?(): void;
 }
 
 function createRelayHarness(options: RelayHarnessOptions) {
@@ -61,24 +71,33 @@ function createRelayHarness(options: RelayHarnessOptions) {
 	};
 	const context = { cwd: "/tmp" } as ExtensionContext;
 
-	registerSubagentRelay(pi as never, {
-		runtimeGeneration: () => 1,
-		runtimeStarted: () => options.runtimeStarted ?? true,
-		runtimeContext: () => context,
-		getLiveContext: () => (options.liveChecks[liveCheckIndex++] ? context : null),
-		currentSessionTargetMatches: () => options.localMatches?.[localMatchIndex++] ?? options.local ?? false,
-		sendIncomingMessage: (entry: { from: { group?: string } }) => {
-			localEntries.push(entry);
-			localDeliveries += 1;
-			if (localDeliveries <= (options.localFailures ?? 0)) throw new Error("local send failed");
-		},
-		ensureConnected: async () => {
-			ensureConnectedCalls += 1;
-			return client;
-		},
-		resolveSessionTarget: async () => "resolved-target",
-		homeGroup: () => options.ownerGroup ?? "default",
-	});
+	registerSubagentRelay(
+		pi as never,
+		{
+			runtimeGeneration: () => 1,
+			runtimeStarted: () => options.runtimeStarted ?? true,
+			runtimeContext: () => context,
+			getLiveContext: () => (options.liveChecks[liveCheckIndex++] ? context : null),
+			currentSessionTargetMatches: () => options.localMatches?.[localMatchIndex++] ?? options.local ?? false,
+			sendIncomingMessage: (entry: { from: { group?: string } }) => {
+				localEntries.push(entry);
+				localDeliveries += 1;
+				if (localDeliveries <= (options.localFailures ?? 0)) throw new Error("local send failed");
+				options.afterLocalDelivery?.();
+			},
+			ensureConnected: async () => {
+				ensureConnectedCalls += 1;
+				return client;
+			},
+			resolveSessionTarget: async () => "resolved-target",
+			homeGroup: () => options.ownerGroup ?? "default",
+			localDeliveryAuthority:
+				options.localDeliveryAuthority ??
+				(options.localDeliveryMaxEntries === undefined
+					? undefined
+					: new DeliveredMessageCache(undefined, options.localDeliveryMaxEntries)),
+		} as never,
+	);
 
 	return {
 		deliveries,
@@ -236,9 +255,10 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 		assert.deepEqual(emitted, [{ requestId: "lazy-request", delivered: false, error: "retired" }]);
 	});
 
-	test("acknowledges duplicate local completion request ids without forwarding twice", async () => {
+	test("acknowledges an accepted local completion replay without forwarding twice", async () => {
 		const harness = createRelayHarness({ liveChecks: [true, true], local: true });
 		harness.emitResult();
+		await settleRelay();
 		harness.emitResult();
 		await settleRelay();
 		assert.equal(harness.counts().localDeliveries, 1);
@@ -248,9 +268,23 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 		]);
 	});
 
+	test("negatively acknowledges an uncertain in-flight replay without repeating the side effect", async () => {
+		const harness = createRelayHarness({ liveChecks: [true, true], local: true });
+		harness.emitResult();
+		harness.emitResult();
+		await settleRelay();
+		assert.equal(harness.counts().localDeliveries, 1);
+		assert.deepEqual(
+			harness.deliveries.map(({ delivered }) => delivered),
+			[false, true],
+		);
+		assert.match(harness.deliveries[0]?.error ?? "", /uncertain local delivery state/);
+	});
+
 	test("rejects conflicting local request-id reuse without forwarding the new payload", async () => {
 		const harness = createRelayHarness({ liveChecks: [true, true], local: true });
 		harness.emitResult();
+		await settleRelay();
 		harness.emitResult({ message: "different" });
 		await settleRelay();
 		assert.equal(harness.counts().localDeliveries, 1);
@@ -258,6 +292,58 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 			harness.deliveries.map((entry) => entry.delivered),
 			[true, false],
 		);
+	});
+
+	test("actual local relay refuses a new ID at authority capacity before delivery and on replay", async () => {
+		const harness = createRelayHarness({
+			liveChecks: [true, true, true, true, true],
+			local: true,
+			localDeliveryMaxEntries: 2,
+		});
+		for (const requestId of ["retained-1", "retained-2"]) {
+			harness.emitResult({ requestId });
+			await settleRelay();
+		}
+		harness.emitResult({ requestId: "at-capacity" });
+		await settleRelay();
+		harness.emitResult({ requestId: "at-capacity" });
+		await settleRelay();
+		harness.emitResult({ requestId: "retained-1" });
+		await settleRelay();
+
+		assert.equal(harness.counts().localDeliveries, 2, "neither refused attempt may run the local side effect");
+		assert.deepEqual(
+			harness.deliveries.map(({ requestId, delivered }) => ({ requestId, delivered })),
+			[
+				{ requestId: "retained-1", delivered: true },
+				{ requestId: "retained-2", delivered: true },
+				{ requestId: "at-capacity", delivered: false },
+				{ requestId: "at-capacity", delivered: false },
+				{ requestId: "retained-1", delivered: true },
+			],
+		);
+	});
+
+	test("actual local relay keeps the production 10,001st live ID fail-closed", async () => {
+		const boundary = 10_000;
+		const harness = createRelayHarness({
+			liveChecks: Array(boundary + 2).fill(true),
+			local: true,
+		});
+		for (let index = 0; index <= boundary; index += 1) {
+			harness.emitResult({ requestId: `production-${index}` });
+		}
+		await settleRelay();
+		assert.equal(harness.counts().localDeliveries, boundary);
+		assert.deepEqual(
+			harness.deliveries.find(({ requestId }) => requestId === `production-${boundary}`)?.delivered,
+			false,
+		);
+
+		harness.emitResult({ requestId: `production-${boundary}` });
+		await settleRelay();
+		assert.equal(harness.counts().localDeliveries, boundary, "replay of the unreserved newest ID stays refused");
+		assert.equal(harness.deliveries.at(-1)?.delivered, false);
 	});
 
 	test("local result handoffs carry the relay owner group", async () => {
@@ -287,6 +373,51 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 			{ requestId: "request-1", delivered: false, error: "local send failed" },
 			{ requestId: "request-1", delivered: true },
 		]);
+	});
+
+	test("a durable authority failure after the local side effect safely refuses replay", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "intercom-local-relay-authority-"));
+		const authority = new DeliveredMessageCache(60_000, 2, join(directory, "authority.sqlite"));
+		try {
+			const harness = createRelayHarness({
+				liveChecks: [true, true],
+				local: true,
+				localDeliveryAuthority: authority,
+				afterLocalDelivery: () => authority.close(),
+			});
+			harness.emitResult();
+			await settleRelay();
+			harness.emitResult();
+			await settleRelay();
+			assert.equal(harness.counts().localDeliveries, 1);
+			assert.deepEqual(
+				harness.deliveries.map(({ delivered }) => delivered),
+				[false, false],
+			);
+			assert.ok(harness.deliveries.every(({ error }) => typeof error === "string"));
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("an invalid local authority refuses before the relay side effect", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "intercom-invalid-local-relay-authority-"));
+		const storagePath = join(directory, "authority.sqlite");
+		writeFileSync(getDeliveredMessageAuthorityKeyPath(storagePath), Buffer.alloc(32));
+		try {
+			const harness = createRelayHarness({
+				liveChecks: [true],
+				local: true,
+				localDeliveryAuthority: new DeliveredMessageCache(60_000, 2, storagePath),
+			});
+			harness.emitResult();
+			await settleRelay();
+			assert.equal(harness.counts().localDeliveries, 0);
+			assert.equal(harness.deliveries[0]?.delivered, false);
+			assert.match(harness.deliveries[0]?.error ?? "", /authority is invalid/);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	test("guards local delivery after target resolution too", async () => {

@@ -6,13 +6,20 @@ import { IntercomClientDisconnectedError } from "../../packages/intercom/recover
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
-import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import type { Attachment, Message, SessionInfo } from "../../packages/intercom/types.js";
 
 type ToolResult = { content: Array<{ text: string }>; isError: boolean; details?: Record<string, unknown> };
 type Tool = {
 	execute(
 		id: string,
-		params: { action: string; to?: string; message?: string; replyTo?: string; retryToken?: string },
+		params: {
+			action: string;
+			to?: string;
+			message?: string;
+			attachments?: Attachment[];
+			replyTo?: string;
+			retryToken?: string;
+		},
 		signal: AbortSignal | undefined,
 		update: undefined,
 		ctx: object,
@@ -166,6 +173,146 @@ test("invalid, mismatched, foreign-session, and exhausted retry claims fail with
 	assert.equal(fourth.isError, true);
 	assert.match(fourth.content[0]?.text ?? "", /exhausted its 3 retry attempts/);
 	assert.equal(sent.length, 4, "the fourth claimed retry must not reach the client");
+});
+
+test("public retry claims preserve omitted attachments versus an explicit empty list", async () => {
+	for (const [firstAttachments, mismatchedAttachments] of [
+		[undefined, []],
+		[[], undefined],
+	] as const) {
+		const { tool, sent } = fixture(new IntercomClientDisconnectedError());
+		const params = {
+			action: "send",
+			to: peer.name,
+			message: "attachment presence is exact",
+			...(firstAttachments === undefined ? {} : { attachments: [...firstAttachments] }),
+		};
+		const first = await tool.execute("first", params, undefined, undefined, context);
+		const retryToken = first.details?.retryToken;
+		assert.equal(typeof retryToken, "string");
+		const mismatch = await tool.execute(
+			"mismatch",
+			{
+				action: "send",
+				to: peer.name,
+				message: "attachment presence is exact",
+				attachments: mismatchedAttachments === undefined ? undefined : [...mismatchedAttachments],
+				retryToken: retryToken as string,
+			},
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(mismatch.isError, true);
+		assert.match(mismatch.content[0]?.text ?? "", /does not match this Intercom operation/);
+		assert.equal(sent.length, 1, "an omission/empty mismatch fails before client.send");
+
+		await tool.execute("exact", { ...params, retryToken: retryToken as string }, undefined, undefined, context);
+		assert.equal(sent.length, 2);
+		assert.equal(sent[1]?.messageId, sent[0]?.messageId, "the exact claim reuses the retained operation ID");
+	}
+});
+
+test("actual send tool refuses fresh capacity before confirmation, target resolution, ID use, or send", async () => {
+	let replyResolutions = 0;
+	let tool: Tool | undefined;
+	let confirmations = 0;
+	let resolverCalls = 0;
+	const sent: SendOptions[] = [];
+	const client = {
+		sessionId: "self-id",
+		groups: ["default"],
+		async send(_target: string, options: SendOptions) {
+			sent.push(options);
+			throw new IntercomClientDisconnectedError();
+		},
+	};
+	registerIntercomTool(
+		{
+			registerTool(value: Tool) {
+				tool = value;
+			},
+			appendEntry() {},
+		} as never,
+		{
+			ensureConnected: async () => client,
+			syncPresenceIdentity() {},
+			resolveSessionTarget: async () => {
+				resolverCalls += 1;
+				return peer.id;
+			},
+			homeGroup: () => "default",
+			setJoinedGroups() {},
+			clearJoinedGroups() {},
+			confirmSend: true,
+			beginReplyWait: () => {
+				throw new Error("send must not allocate a reply waiter");
+			},
+			replyTracker: {
+				resolveReplyTarget() {
+					replyResolutions += 1;
+					throw new Error("capacity refusal must precede mutable reply resolution");
+				},
+			} as never,
+			retryIdentityMaxEntries: 1,
+		} as never,
+	);
+	assert.ok(tool);
+	const uiContext = {
+		sessionManager: { getSessionId: () => "host-session" },
+		hasUI: true,
+		ui: {
+			async confirm() {
+				confirmations += 1;
+				return true;
+			},
+		},
+	};
+	const first = await tool.execute(
+		"retained",
+		{ action: "send", to: peer.name, message: "first" },
+		undefined,
+		undefined,
+		uiContext,
+	);
+	const retryToken = first.details?.retryToken;
+	assert.equal(typeof retryToken, "string");
+	const retainedMessageId = sent[0]?.messageId;
+	assert.ok(retainedMessageId);
+
+	const refused = await tool.execute(
+		"capacity-refused",
+		{ action: "send", to: peer.name, message: "fresh" },
+		undefined,
+		undefined,
+		uiContext,
+	);
+	assert.equal(refused.isError, true);
+	assert.match(refused.content[0]?.text ?? "", /capacity is exhausted/);
+	const refusedReply = await tool.execute(
+		"reply-capacity-refused",
+		{ action: "reply", message: "fresh reply" },
+		undefined,
+		undefined,
+		uiContext,
+	);
+	assert.equal(refusedReply.isError, true);
+	assert.match(refusedReply.content[0]?.text ?? "", /capacity is exhausted/);
+	assert.equal(replyResolutions, 0, "capacity refusal happens before mutable reply resolution");
+	assert.equal(sent.length, 1);
+	assert.equal(confirmations, 1, "capacity refusal happens before the fresh UI confirmation");
+	assert.equal(resolverCalls, 1, "capacity refusal happens before fresh target resolution");
+	assert.equal(sent.length, 1, "capacity refusal never reaches client.send");
+
+	const claim = await tool.execute(
+		"valid-claim-at-capacity",
+		{ action: "send", to: peer.name, message: "first", retryToken: retryToken as string },
+		undefined,
+		undefined,
+		uiContext,
+	);
+	assert.equal(claim.details?.retryToken, retryToken, "a valid retained claim remains available at capacity");
+	assert.equal(sent[1]?.messageId, retainedMessageId);
 });
 
 for (const action of ["send", "ask", "reply"] as const) {
