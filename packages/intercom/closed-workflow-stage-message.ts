@@ -9,9 +9,11 @@ import { sendWorkflowStageDeliveryFailure } from "./workflow-stage-delivery-fail
 
 /**
  * Owns late ingress after a workflow stage seals its active generation.
- * Blocking asks are handed to workflow post-mortem routing once and receive a
- * correlated remote tool error if revival fails. Ordinary late notifications
- * retain the stable parent-route retry used before completed-stage asks existed.
+ * Stage-owned children carry runtime-owned subagent source metadata, so their
+ * late traffic is dropped with the cancelled child instead of escaping to the
+ * parent route. Blocking asks from other sessions are handed to workflow
+ * post-mortem routing once; ordinary non-child notifications retain the stable
+ * parent-route retry used before completed-stage asks existed.
  */
 export function routeClosedWorkflowStageMessage(
   entry: InboundMessageEntry,
@@ -22,6 +24,7 @@ export function routeClosedWorkflowStageMessage(
   currentClient: () => IntercomClient | null,
   isCurrent: () => boolean,
 ): void {
+  if (entry.message.source?.subagentRunId !== undefined) return;
   if (entry.message.expectsReply !== true) {
     void retryStableDelivery({ deliver, isCurrent }).catch(() => {});
     return;

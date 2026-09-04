@@ -61,6 +61,8 @@ type Tool = {
 
 interface FixtureOptions {
 	resolveSessionTarget?: (_client: object, target: string) => Promise<string | null>;
+	onSupervisorSend?: () => void;
+	supervisorSendGate?: Promise<void>;
 }
 
 function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) {
@@ -111,6 +113,8 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 			},
 		) {
 			sent.push({ to, message, supervisor: true });
+			options.onSupervisorSend?.();
+			await options.supervisorSendGate;
 			return { id: message.messageId ?? "sent", delivered: true };
 		},
 	};
@@ -638,6 +642,30 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(progress.sent[0]?.supervisor, true);
 		assert.equal(progress.waiterCalls.length, 0);
 		assert.equal(parentAskEvents, 0);
+	});
+
+	test("an in-flight progress update reports cancellation when its owning stage closes", async () => {
+		const started = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const controller = new AbortController();
+		const progress = fixture("supervisor", {
+			onSupervisorSend: () => started.resolve(),
+			supervisorSendGate: finish.promise,
+		});
+		const execution = progress.tool.execute(
+			"call",
+			{ reason: "progress_update", message: "Late finding" },
+			controller.signal,
+			undefined,
+			context,
+		);
+		await started.promise;
+		controller.abort();
+		finish.resolve();
+		const result = await execution;
+
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]?.text, "Cancelled");
 	});
 });
 

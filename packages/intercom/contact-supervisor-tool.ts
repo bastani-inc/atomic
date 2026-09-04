@@ -214,6 +214,13 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             const result = await connectedClient.sendToSupervisor(sendTo, {
               text: formatChildOrchestratorMessage("update", metadata, message),
             });
+            if (signal?.aborted) {
+              return {
+                content: [{ type: "text", text: "Cancelled" }],
+                isError: true,
+                details: { error: true },
+              };
+            }
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {

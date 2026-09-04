@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "vitest";
+import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { routeClosedWorkflowStageMessage } from "../../packages/intercom/closed-workflow-stage-message.js";
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 import intercom from "../../packages/intercom/index.js";
@@ -109,9 +110,41 @@ test("ordinary late notifications keep the external route without claiming targe
 	const admission = new InboundMessageAdmission();
 	const tracker = new ReplyTracker();
 	const message = { ...ask(), expectsReply: false };
-	let deliveries = 0;
+	const deliveredMessages: Message[] = [];
 	routeClosedWorkflowStageMessage(
 		{ from: sender, message, bodyText: message.content.text },
+		admission,
+		tracker,
+		null,
+		async () => {
+			deliveredMessages.push(message);
+		},
+		() => null,
+		() => true,
+	);
+	await waitFor(() => deliveredMessages.length === 1);
+	assert.equal(deliveredMessages[0], message, "ordinary payload identity remains unchanged");
+	assert.deepEqual(tracker.listPending(), []);
+	assert.equal(
+		admission.admit(sender, message).kind,
+		"reserved",
+		"destination late router retains admission ownership",
+	);
+});
+
+test("a closed workflow stage suppresses child-owned late traffic without changing ordinary delivery", async () => {
+	const admission = new InboundMessageAdmission();
+	const tracker = new ReplyTracker();
+	const childMessage: Message = {
+		...ask(),
+		id: "late-child-update",
+		expectsReply: false,
+		source: { subagentRunId: "foreground-detach-run-1-0", subagentAgent: "worker", subagentIndex: 0 },
+		content: { text: "late child finding" },
+	};
+	let deliveries = 0;
+	routeClosedWorkflowStageMessage(
+		{ from: sender, message: childMessage, channel: "supervisor", bodyText: childMessage.content.text },
 		admission,
 		tracker,
 		null,
@@ -121,13 +154,92 @@ test("ordinary late notifications keep the external route without claiming targe
 		() => null,
 		() => true,
 	);
-	await waitFor(() => deliveries === 1);
+	await sleep(20);
+
+	assert.equal(deliveries, 0);
 	assert.deepEqual(tracker.listPending(), []);
-	assert.equal(
-		admission.admit(sender, message).kind,
-		"reserved",
-		"destination late router retains admission ownership",
+});
+
+test("an in-flight child Intercom send cancelled by stage close cannot report success or reach the parent", async () => {
+	const admission = new InboundMessageAdmission();
+	const tracker = new ReplyTracker();
+	const sendStarted = Promise.withResolvers<void>();
+	const finishSend = Promise.withResolvers<void>();
+	const boundary = new WorkflowStageAdmissionBoundary();
+	let parentDeliveries = 0;
+	let registered:
+		| {
+				execute(
+					id: string,
+					params: Record<string, string>,
+					signal: AbortSignal | undefined,
+					update: undefined,
+					ctx: object,
+				): Promise<{ content: Array<{ text: string }>; isError: boolean }>;
+		  }
+		| undefined;
+	const parent: SessionInfo = { ...sender, id: "stage-parent", name: "Parent" };
+	const child: SessionInfo = { ...sender, id: "child-intercom", name: "Child" };
+	const client = {
+		sessionId: child.id,
+		async send(_to: string, outgoing: { messageId?: string; text: string }) {
+			sendStarted.resolve();
+			await finishSend.promise;
+			const message: Message = {
+				id: outgoing.messageId ?? "late-child-send",
+				timestamp: Date.now(),
+				source: { subagentRunId: "foreground-detach-run-1-0", subagentAgent: "worker", subagentIndex: 0 },
+				content: { text: outgoing.text },
+			};
+			routeClosedWorkflowStageMessage(
+				{ from: child, message, bodyText: message.content.text },
+				admission,
+				tracker,
+				null,
+				async () => {
+					parentDeliveries += 1;
+				},
+				() => null,
+				() => true,
+			);
+			return { id: message.id, delivered: true };
+		},
+	};
+	registerIntercomTool(
+		{
+			registerTool(tool: typeof registered) {
+				registered = tool;
+			},
+			appendEntry() {},
+		} as never,
+		{
+			ensureConnected: async () => client,
+			syncPresenceIdentity() {},
+			resolveSessionTarget: async () => parent.id,
+			beginReplyWait: () => {
+				throw new Error("send must not reserve a reply waiter");
+			},
+			confirmSend: false,
+			replyTracker: tracker,
+		} as never,
 	);
+	assert.ok(registered);
+	const execution = registered.execute(
+		"tool-call",
+		{ action: "send", to: parent.id, message: "late child finding" },
+		boundary.closeSignal,
+		undefined,
+		{ sessionManager: { getSessionId: () => child.id }, hasUI: false },
+	);
+	await sendStarted.promise;
+	await boundary.close();
+	finishSend.resolve();
+	const result = await execution;
+	await sleep(20);
+
+	assert.equal(result.isError, true);
+	assert.match(result.content[0]?.text ?? "", /Cancelled/);
+	assert.equal(parentDeliveries, 0);
 });
 
 interface ComposedLateAskEvent {
