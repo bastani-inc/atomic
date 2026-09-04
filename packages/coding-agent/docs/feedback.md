@@ -22,6 +22,7 @@ Usage: /feedback <what happened or what you want to change>
 ```
 
 The blank form starts no model turn.
+If the bundled feedback skill cannot be loaded, Atomic prints `The bundled feedback skill is unavailable.` and starts no model turn.
 
 ## Revise and approve
 
