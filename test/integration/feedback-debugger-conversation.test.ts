@@ -220,6 +220,7 @@ describe("feedback bug investigation", () => {
 		assert.ok(git(root, "status", "--porcelain").includes("tracked.txt"));
 		assert.ok(git(root, "status", "--porcelain").includes("untracked.txt"));
 		const draft = getMessageText(harness.session.messages.at(-1));
+		assert.ok(draft.includes("Kind: bug"));
 		assert.ok(draft.includes("**Reproduction without extensions:** Not tested without extensions"));
 		assert.ok(draft.includes("**Extension activity:** user-extension"));
 		assert.ok(draft.includes("**Supported evidence:** Investigation completed without a root cause"));

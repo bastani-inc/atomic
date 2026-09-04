@@ -18,6 +18,7 @@ const { validateToolArguments } = await import("../../packages/ai/dist/index.js"
 const { default: feedback } = await import("../../packages/coding-agent/dist/builtin/feedback/index.bundle.mjs");
 let tool;
 feedback({
+	on() {},
 	registerCommand() {},
 	registerTool(candidate) {
 		if (candidate.name === "feedback_prepare_issue") tool = candidate;
