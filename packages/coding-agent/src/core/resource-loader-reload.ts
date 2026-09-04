@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath, resolvePath } from "../utils/paths.ts";
 import { getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
-import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
+import {
+	clearExtensionCache,
+	createExtensionRuntime,
+	loadExtensionsCached,
+	publishLoadedExtensions,
+} from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
@@ -152,6 +157,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	for (const extension of extensionsResult.extensions) {
 		if (mandatoryPaths.has(extension.resolvedPath)) markTrustedMandatoryRuntimeExtension(extension);
 	}
+	publishLoadedExtensions(extensionsResult.runtime, extensionsResult.extensions);
 	applyExtensionSourceInfo(loader, extensionsResult.extensions, metadataByPath);
 	return extensionsResult;
 }
@@ -340,6 +346,7 @@ export async function prepareDefaultResourceLoaderReload(
 				if (!extensionsResult.extensions.includes(extension)) extensionsResult.extensions.push(extension);
 			}
 		}
+		publishLoadedExtensions(state.extensionsResult.runtime, state.extensionsResult.extensions);
 		for (const extension of state.extensionsResult.extensions) {
 			const registration = extension.tools.get("intercom");
 			if (loadedMandatoryExtensions.has(extension) && registration && isTrustedMandatoryRuntimeTool(registration)) {

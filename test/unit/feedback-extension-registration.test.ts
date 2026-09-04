@@ -23,7 +23,7 @@ test("feedback extension registration matches its bundled command advertisement"
 	const advertised = BUNDLED_EXTENSION_SLASH_COMMANDS.find(({ name }) => name === "feedback");
 	assert.equal(registeredDescription, FEEDBACK_COMMAND_DESCRIPTION);
 	assert.equal(registeredDescription, advertised?.description);
-	assert.deepEqual(toolNames, ["feedback_prepare_issue"]);
+	assert.deepEqual(toolNames, ["feedback_collect_diagnostics", "feedback_prepare_issue"]);
 });
 
 // Regression for #2799, review comment 3939724837: both advertised kinds need a draft path.
