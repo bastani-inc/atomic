@@ -154,6 +154,7 @@ describe("feedback bug investigation", () => {
 		expect(git(root, "status", "--porcelain")).toContain("tracked.txt");
 		expect(git(root, "status", "--porcelain")).toContain("untracked.txt");
 		const draft = harness.session.messages.map(getMessageText).join("\n");
+		expect(draft).toContain("Kind: bug");
 		expect(draft).toContain("**Reproduction without extensions:** Not tested without extensions");
 		expect(draft).toContain("**Extension activity:** user-extension");
 		expect(draft).toContain("**Supported evidence:** Investigation completed without a root cause");

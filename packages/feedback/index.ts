@@ -61,6 +61,12 @@ const feedbackDiagnosticsParameters = Type.Object({
 	since: Type.Optional(Type.String()),
 });
 
+function markFailedFeedbackSubmission(event: { readonly toolName: string; readonly details?: unknown }) {
+	if (event.toolName !== "feedback_submit_issue") return;
+	const details = event.details as FeedbackSubmitDetails | undefined;
+	if (details?.ok === false) return { isError: true } as const;
+}
+
 export default function feedback(pi: ExtensionAPI): void {
 	pi.registerCommand("feedback", {
 		description: FEEDBACK_COMMAND_DESCRIPTION,
@@ -105,6 +111,8 @@ export default function feedback(pi: ExtensionAPI): void {
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
 	});
+
+	pi.on("tool_result", markFailedFeedbackSubmission);
 
 	pi.registerTool<typeof feedbackPrepareParameters, FeedbackPrepareDetails>({
 		name: "feedback_prepare_issue",

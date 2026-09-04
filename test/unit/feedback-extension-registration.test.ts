@@ -8,8 +8,14 @@ import type { ExtensionAPI, RegisteredCommand, ToolDefinition } from "../../pack
 test("feedback extension registration matches its bundled command advertisement", async () => {
 	let registeredDescription: string | undefined;
 	let submissionTool: ToolDefinition | undefined;
+	let toolResultEvent: string | undefined;
+	let toolResultHandler: ((event: { toolName: string; details?: unknown }) => unknown) | undefined;
 	const toolNames: string[] = [];
 	const api = {
+		on: ((event: string, handler: typeof toolResultHandler) => {
+			toolResultEvent = event;
+			toolResultHandler = handler;
+		}) as ExtensionAPI["on"],
 		registerCommand: ((name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">) => {
 			if (name === "feedback") registeredDescription = options.description;
 		}) as ExtensionAPI["registerCommand"],
@@ -17,13 +23,23 @@ test("feedback extension registration matches its bundled command advertisement"
 			toolNames.push(tool.name);
 			if (tool.name === "feedback_submit_issue") submissionTool = tool;
 		}) as ExtensionAPI["registerTool"],
-	} as Pick<ExtensionAPI, "registerCommand" | "registerTool"> as ExtensionAPI;
+	} as Pick<ExtensionAPI, "on" | "registerCommand" | "registerTool"> as ExtensionAPI;
 
 	feedback(api);
 
 	const advertised = BUNDLED_EXTENSION_SLASH_COMMANDS.find(({ name }) => name === "feedback");
 	assert.equal(registeredDescription, FEEDBACK_COMMAND_DESCRIPTION);
 	assert.equal(registeredDescription, advertised?.description);
+	assert.equal(toolResultEvent, "tool_result");
+	assert.ok(toolResultHandler);
+	assert.deepEqual(toolResultHandler({ toolName: "feedback_submit_issue", details: { ok: false } }), {
+		isError: true,
+	});
+	assert.equal(
+		toolResultHandler({ toolName: "feedback_submit_issue", details: { ok: true, url: "url", fingerprint: "id" } }),
+		undefined,
+	);
+	assert.equal(toolResultHandler({ toolName: "feedback_prepare_issue", details: { ok: false } }), undefined);
 	assert.deepEqual(toolNames, ["feedback_collect_diagnostics", "feedback_prepare_issue", "feedback_submit_issue"]);
 	assert.ok(submissionTool);
 	const exact = { kind: "bug", title: "Reviewed", body: "Reviewed body" };
