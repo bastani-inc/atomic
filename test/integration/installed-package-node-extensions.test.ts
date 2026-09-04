@@ -18,7 +18,9 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, test } from "vitest";
+import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.js";
 import { moduleDir } from "../helpers/runtime.js";
 
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
@@ -27,6 +29,8 @@ const packageDir = join(repoRoot, "packages", "coding-agent");
 const distCli = join(packageDir, "dist", "cli.js");
 
 const distBuilt = fs.existsSync(distCli);
+
+const INSTALLED_PACKAGE_SMOKE_TIMEOUT_MS = 240_000;
 
 /**
  * Locate a REAL Node runtime on PATH. The repo's bunfig `[run] bun = true`
@@ -80,9 +84,10 @@ if (!distBuilt || !nodeExe) {
 }
 
 let tmpRoot: string | undefined;
+const tmpRoots: string[] = [];
 
 afterAll(() => {
-	if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
+	for (const root of tmpRoots) fs.rmSync(root, { recursive: true, force: true });
 });
 
 /** Symlink (junction on Windows, so no elevation is needed) a real directory. */
@@ -99,6 +104,7 @@ function linkDir(target: string, linkPath: string): void {
  */
 function buildInstalledLayout(): string {
 	tmpRoot = fs.mkdtempSync(join(os.tmpdir(), "atomic-node-smoke-"));
+	tmpRoots.push(tmpRoot);
 	const layoutNodeModules = join(tmpRoot, "install", "node_modules");
 	fs.mkdirSync(layoutNodeModules, { recursive: true });
 
@@ -124,6 +130,36 @@ function buildInstalledLayout(): string {
 	fs.cpSync(join(packageDir, "dist"), join(atomicDest, "dist"), { recursive: true, dereference: true });
 	return atomicDest;
 }
+
+runTest(
+	"installed @bastani/atomic includes loadable feedback resources",
+	() => {
+		const atomicDest = buildInstalledLayout();
+		const feedbackDir = join(atomicDest, "dist", "builtin", "feedback");
+		const manifest = JSON.parse(fs.readFileSync(join(feedbackDir, "package.json"), "utf8")) as { name?: string };
+		assert.equal(manifest.name, "@bastani/feedback");
+
+		const extensionEntry = join(feedbackDir, INSTALLED_EXTENSION_ENTRIES.feedback);
+		assert.ok(fs.existsSync(extensionEntry), `${extensionEntry} missing from built package`);
+		assert.ok(nodeExe, "real node executable must be resolved before the smoke runs");
+		const loadResult = spawnSync(
+			nodeExe,
+			[
+				"--input-type=module",
+				"--eval",
+				`const extension = await import(${JSON.stringify(pathToFileURL(extensionEntry).href)}); if (typeof extension.default !== "function") process.exit(1);`,
+			],
+			{ cwd: atomicDest, encoding: "utf8", timeout: 30_000 },
+		);
+		assert.equal(loadResult.signal, null, `feedback extension load killed by ${loadResult.signal}`);
+		assert.equal(loadResult.status, 0, `feedback extension failed to load:\n${loadResult.stderr}`);
+
+		const skillPath = join(feedbackDir, "skills", "feedback", "SKILL.md");
+		assert.ok(fs.existsSync(skillPath), `${skillPath} missing from built package`);
+		assert.match(fs.readFileSync(skillPath, "utf8"), /^---\r?\nname: feedback\r?\n/u);
+	},
+	INSTALLED_PACKAGE_SMOKE_TIMEOUT_MS,
+);
 
 runTest(
 	"installed @bastani/atomic loads builtin extensions under Node",
@@ -161,5 +197,5 @@ runTest(
 			);
 		}
 	},
-	240_000,
+	INSTALLED_PACKAGE_SMOKE_TIMEOUT_MS,
 );
