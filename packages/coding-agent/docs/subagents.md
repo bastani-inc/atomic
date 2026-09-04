@@ -128,6 +128,8 @@ Status and interrupt use the live Rust registry and status watch; `list` and `ge
 
 Inside workflow stages, completion delivery observes the stage generation boundary. A completion admitted before the boundary closes is queued through the stage AgentSession and processed before the stage publishes its terminal snapshot. Closing the boundary cancels still-running stage-owned children, and findings or completion notifications that arrive afterward are suppressed rather than routed to the parent/main chat. Explicit post-mortem stage chat remains available separately for deliberate follow-up.
 
+Cancellation does not retract an Intercom send already submitted to the broker. That operation keeps its transport receipt or retry identity, while the closed stage suppresses late incoming messages from its own children. A transport acknowledgement does not mean a late finding was shown in the parent chat.
+
 Live progress and completed results show each step's resolved model ID and effective reasoning level, including after a model fallback; parallel steps keep their metadata separate. Fast inference is part of the model ID, so an agent pinned to a fast variant renders it directly — `codebase-analyzer (openai-codex/gpt-5.6-sol-fast · thinking medium)` — with no separate `fast` badge. Select fast inference in an agent definition's `model` and fallback model fields, for example `openai-codex/gpt-5.6-sol-fast:medium`; normal and fast IDs stay distinct fallback candidates and distinct records. See [Providers](/providers#fast-models) for which providers publish fast variants and what each one sends upstream.
 
 ## Orchestrator model and group policy

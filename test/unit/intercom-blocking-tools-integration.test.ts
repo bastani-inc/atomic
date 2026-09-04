@@ -672,7 +672,8 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(result.content[0]?.text, "Message sent to parent");
 	});
 
-	test("an in-flight progress update reports cancellation when its owning stage closes", async () => {
+	// #2840: cancelling the child cannot retract an already accepted progress update.
+	test("stage closure preserves an in-flight progress update's transport receipt", async () => {
 		const started = Promise.withResolvers<void>();
 		const finish = Promise.withResolvers<void>();
 		const boundary = new WorkflowStageAdmissionBoundary();
@@ -682,7 +683,7 @@ describe("registered blocking intercom tools", () => {
 		});
 		const execution = progress.tool.execute(
 			"call",
-			{ reason: "progress_update", message: "Late finding" },
+			{ reason: "progress_update", message: "Accepted finding" },
 			boundary.closeSignal,
 			undefined,
 			context,
@@ -692,8 +693,8 @@ describe("registered blocking intercom tools", () => {
 		finish.resolve();
 		const result = await execution;
 
-		assert.equal(result.isError, true);
-		assert.equal(result.content[0]?.text, "Cancelled");
+		assert.equal(result.isError, false);
+		assert.match(result.content[0]?.text ?? "", /Progress update sent to supervisor/);
 	});
 });
 

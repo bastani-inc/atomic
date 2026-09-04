@@ -1,8 +1,6 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import { awaitOperationOrStageClose } from "./abortable-operation.js";
-
 import type { IntercomClient } from "./broker/client.js";
 import type { SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
@@ -550,12 +548,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }, retryToken);
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
-              retryIdentities.release(retryIdentity);
+              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
               return {
-                content: [{ type: "text", text: "Cancelled" }],
+                content: [{ type: "text", text: `Cancelled${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}` }],
                 isError: true,
-                details: { error: true },
+                details: retryErrorDetails(retained.retryToken),
               };
             }
             if (sendTo === connectedClient.sessionId) {
@@ -570,23 +568,15 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: retryErrorDetails(retained.retryToken),
               };
             }
-            const sendOutcome = await awaitOperationOrStageClose(connectedClient.send(sendTo, {
+            // Stage closure cannot undo a submitted send. Preserve its receipt or
+            // disconnect retry identity; the owning receiver suppresses late ingress.
+            const result = await connectedClient.send(sendTo, {
               messageId: retryIdentity.messageId,
               logicalTarget: to,
               text: message,
               attachments,
               replyTo,
-            }), _signal);
-            if (sendOutcome.status === "stage-closed") {
-              retryIdentities.release(retryIdentity);
-              retryIdentity = undefined;
-              return {
-                content: [{ type: "text", text: "Cancelled" }],
-                isError: true,
-                details: { error: true },
-              };
-            }
-            const result = sendOutcome.value;
+            });
 
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);

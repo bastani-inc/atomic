@@ -1,7 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-const WORKFLOW_STAGE_CLOSE_REASON = Symbol.for("@bastani/atomic/workflow-stage-close");
-
 export type WorkflowStageAdmissionDecision = "admitted" | "late" | "duplicate";
 
 export interface WorkflowStageAdmissionResult {
@@ -126,7 +124,7 @@ export class WorkflowStageAdmissionBoundary {
 
 	close(): Promise<void> {
 		this.seal();
-		if (!this.closeController.signal.aborted) this.closeController.abort(WORKFLOW_STAGE_CLOSE_REASON);
+		if (!this.closeController.signal.aborted) this.closeController.abort();
 		this.closePromise ??= this.finishClose();
 		return this.closePromise;
 	}

@@ -135,6 +135,7 @@ test("ordinary late notifications keep the external route without claiming targe
 	);
 });
 
+// #2840: late findings from the closed stage's children must not reach main chat.
 test("a closed workflow stage suppresses child-owned late traffic without changing ordinary delivery", async () => {
 	const admission = new InboundMessageAdmission();
 	const tracker = new ReplyTracker();
@@ -164,7 +165,8 @@ test("a closed workflow stage suppresses child-owned late traffic without changi
 	assert.deepEqual(tracker.listPending(), []);
 });
 
-test("an in-flight child Intercom send cancelled by stage close cannot report success or reach the parent", async () => {
+// #2840: receiver ownership, not a sender-side cancellation race, gates late findings.
+test("an in-flight child Intercom send reaching a closed stage cannot reach the parent", async () => {
 	const admission = new InboundMessageAdmission();
 	const tracker = new ReplyTracker();
 	const sendStarted = Promise.withResolvers<void>();
@@ -244,8 +246,8 @@ test("an in-flight child Intercom send cancelled by stage close cannot report su
 	const result = await execution;
 	await sleep(20);
 
-	assert.equal(result.isError, true);
-	assert.match(result.content[0]?.text ?? "", /Cancelled/);
+	assert.equal(result.isError, false, "keep the transport acknowledgement; suppression happens at ingress");
+	assert.match(result.content[0]?.text ?? "", /Message sent/);
 	assert.equal(parentDeliveries, 0);
 });
 
