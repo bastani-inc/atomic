@@ -12,6 +12,7 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
+	handleDurableResume,
 	prepareWorkflowResumeCatalog,
 	resolveWorkflowResumeTarget,
 	type WorkflowRunControlDeps,
@@ -282,6 +283,45 @@ describe("/workflow resume completed target", () => {
 
 		assert.equal(resumeCalls, 0);
 		assert.match(result.errors.join("\n"), /stale or missing durable checkpoint\/session data/);
+	});
+
+	test("keeps the initialized backend when opening a completed target outside the openable catalog", async () => {
+		const backend = new InMemoryDurableBackend();
+		const workflowId = testRunId("retained-stale-completed-target");
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId,
+			name: "completed-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "completed",
+			completedCheckpoints: 1,
+		});
+		const baseRuntime = createExtensionRuntime({ store });
+		await baseRuntime.prepareDurableCatalog?.();
+		setDurableBackend(undefined);
+		let resumeCalls = 0;
+		const runtime: ExtensionRuntime = {
+			...baseRuntime,
+			async resumeDurableWorkflow() {
+				resumeCalls += 1;
+				return { ok: false, reason: "workflow_not_found", message: "unexpected resume fallback" };
+			},
+		};
+		const errors: string[] = [];
+
+		await handleDurableResume(
+			workflowId,
+			{ hasUI: true, ui: { notify: () => undefined } },
+			{ info: () => undefined, error: (message) => errors.push(message) },
+			commandDeps(runtime, []),
+			{ resumable: [], completed: [] },
+		);
+
+		assert.equal(resumeCalls, 0);
+		assert.deepEqual(errors, [
+			`Completed workflow ${workflowId} is stale or missing durable checkpoint/session data and cannot be opened.`,
+		]);
 	});
 
 	test("does not let a retained completed snapshot bypass authoritative stale checks", async () => {

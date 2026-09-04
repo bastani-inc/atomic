@@ -50,9 +50,9 @@ export async function prepareWorkflowResumeCatalog(
 ): Promise<WorkflowResumeCatalog> {
 	const shared = await runtime.prepareDurableCatalog?.();
 	const prepared = shared?.resumable ?? (await runtime.prepareDurableResumable(target));
-	const backend = getDurableBackend();
+	const fallbackBackend = shared === undefined ? getDurableBackend() : undefined;
 	const isDisplayLoadable = (entry: ResumableWorkflowEntry): boolean =>
-		shared !== undefined || backend.isWorkflowLoadable(entry.workflowId);
+		fallbackBackend === undefined || fallbackBackend.isWorkflowLoadable(entry.workflowId);
 	// The durable catalog is already produced by `listResumableWorkflows()`, which
 	// applies `isDurableWorkflowResumable`; re-filtering here would only drop rows
 	// a hydrating backend has not yet materialized.
@@ -63,7 +63,7 @@ export async function prepareWorkflowResumeCatalog(
 		shared?.completed ??
 		(runtime.prepareCompletedDurable !== undefined
 			? await runtime.prepareCompletedDurable()
-			: listOpenableCompletedWorkflows(backend));
+			: listOpenableCompletedWorkflows(fallbackBackend ?? getDurableBackend()));
 	return {
 		resumable,
 		completed: completed.filter((entry) => isDisplayLoadable(entry)),
