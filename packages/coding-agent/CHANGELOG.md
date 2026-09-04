@@ -68,6 +68,7 @@
 - Fixed branch summaries failing when reasoning consumes a 2048-token output cap by raising the cap to 4096 tokens, clamped to the model's `maxTokens` ([#8845](https://github.com/earendil-works/pi/issues/8845)).
 - Pinned managed fd downloads on darwin/x64 to 10.3.0, matching upstream pi's known-good archive for that host ([#8708](https://github.com/earendil-works/pi/issues/8708)).
 - Fixed model catalog refresh errors in the `/model` selector rendering without the blank line used by the corresponding success status.
+- Fixed Anthropic Messages tool requests advertising root object-union parameter schemas without fields by projecting their branch fields into Anthropic-compatible object schemas ([#2190](https://github.com/bastani-inc/atomic/pull/2190) by [@elefthei](https://github.com/elefthei)).
 
 ## [0.9.18-alpha.5] - 2026-09-01
 
