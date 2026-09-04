@@ -124,31 +124,32 @@ test("every work job the gate names exists and is otherwise independent", async 
  * whole job. `suites` owns TWO retryable steps (unit and integration), so its
  * worst legitimate run is roughly double its test time.
  *
- * Worst observed per step across runs 31085190975 and 31088323060:
- *   suites  Linux   setup  86 s, unit 355 s, integration 31 s ->  858 s (14.3 min)
- *   suites  Windows setup 232 s, unit 324 s, integration 44 s ->  968 s (16.1 min)
- *   agent-suite Linux   setup  72 s, suite 105 s             ->  282 s ( 4.7 min)
- *   agent-suite Windows setup 125 s, suite 208 s             ->  541 s ( 9.0 min)
+ * Recent observed per-step costs:
+ *   run 33858796656 Windows setup 140 s, unit 475 s, integration 75 s
+ *   run 33864468533 Windows setup 103 s, unit 511 s + 494 s retry,
+ *                              integration >92 s (41/42 files completed)
+ * The remaining integration file is the structural packed-package install and
+ * typecheck, so the cancelled partial duration is a lower bound rather than a
+ * completed sample. The retry-inclusive calculation is therefore at least
+ * 140 + 2*(511 + 92) = 1346 s (22.4 min).
  *
- * The former `suites` 13/14 pair sat BELOW both retry-inclusive figures, so a
- * genuine failure that triggered the retry was cancelled at the cap instead of
- * reporting a failure -- and GitHub withholds job logs until the whole run
- * completes, so the cancellation carried no test names. Both `suites` legs now
- * take a single 20-minute cap (1.40x Linux, 1.24x Windows): the per-platform
- * split encoded precision these shared 4-vCPU runners do not support, given
- * setup alone varied 73 s to 232 s across two samples of the same job.
+ * The former 20-minute cap expired after the unit retry passed and cancelled
+ * integration. Both `suites` legs now share a 28-minute cap: 1.25x that lower
+ * bound and effectively the same headroom as the former cap's 1.24x Windows
+ * ratio. A single value still avoids encoding per-platform precision these
+ * shared 4-vCPU runners do not support.
  *
- * `agent-suite` and `release-archive` keep their pairs: agent-suite already
- * clears its retry-inclusive worst case at 1.70x/1.33x, and release-archive
- * runs no retryable step at all. The Windows `release-archive` cap is 9 minutes
- * because cold setup observed 152 s for `rust-toolchain` and 71 s for checkout,
+ * `agent-suite` and `release-archive` keep their pairs: agent-suite still
+ * clears its retry-inclusive observations, and release-archive runs no
+ * retryable step at all. The Windows `release-archive` cap is 9 minutes because
+ * cold setup observed 152 s for `rust-toolchain` and 71 s for checkout,
  * followed by roughly 110 s native build and 40 s archive smoke.
  */
 test("each split job declares its own measured timeout", async () => {
 	const workflow = await readText(testPath);
 	const blocks = await jobs();
 	const caps: Record<string, [number, number]> = {
-		suites: [20, 20],
+		suites: [28, 28],
 		"agent-suite": [8, 12],
 		"release-archive": [5, 9],
 	};
@@ -173,13 +174,10 @@ test("each split job declares its own measured timeout", async () => {
 	assert.match(blocks.get("static-checks") as string, /^[ \t]+timeout-minutes: 6$/mu);
 	assert.match(blocks.get("test") as string, /^[ \t]+timeout-minutes: 5$/mu);
 	// A cap is still a hang detector: it must bound a stuck job to minutes rather
-	// than GitHub's six-hour default. The former assertion was `< 15`, inherited
-	// from the blanket pair these caps replaced rather than from any measurement,
-	// and it is what forced Windows `suites` to 14 minutes -- below the 16.1 min
-	// a legitimate retried run needs. The bound is now the largest cap the
+	// than GitHub's six-hour default. The bound is the largest cap the current
 	// measurements justify, so raising one further has to come with new numbers.
 	for (const [, value] of workflow.matchAll(/^\s+timeout_minutes: (\d+)$/gmu)) {
-		assert.ok(Number(value) <= 20, `cap ${value} is too loose to detect a hang`);
+		assert.ok(Number(value) <= 28, `cap ${value} is too loose to detect a hang`);
 	}
 });
 

@@ -65,6 +65,21 @@ const DOWNLOAD_ATTEMPT_LIMIT = 3;
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 const DOWNLOAD_RETRY_DELAY_MS = 250;
 
+async function fetchDownloadAttempt(url, fetchImpl, timeoutMs) {
+	const signal = AbortSignal.timeout(timeoutMs);
+	// AbortSignal.timeout() uses an unref'ed timer, so a stalled request can let
+	// Node exit before the signal fires. This referenced timer keeps the attempt
+	// alive while retaining the built-in signal's validation and error shape.
+	const deadline = setTimeout(() => {}, timeoutMs);
+	try {
+		const response = await fetchImpl(url, { redirect: "follow", signal });
+		const body = response.ok ? await response.arrayBuffer() : undefined;
+		return { response, body };
+	} finally {
+		clearTimeout(deadline);
+	}
+}
+
 function sleep(milliseconds) {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
@@ -80,8 +95,9 @@ export async function download(
 ) {
 	for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPT_LIMIT; attempt += 1) {
 		let response;
+		let body;
 		try {
-			response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+			({ response, body } = await fetchDownloadAttempt(url, fetchImpl, timeoutMs));
 		} catch (error) {
 			if (attempt === DOWNLOAD_ATTEMPT_LIMIT) throw error;
 			await delay(DOWNLOAD_RETRY_DELAY_MS * attempt);
@@ -91,15 +107,6 @@ export async function download(
 		if (!response.ok) {
 			const error = new Error(`download failed (${response.status} ${response.statusText}): ${url}`);
 			if (!isTransientHttpStatus(response.status) || attempt === DOWNLOAD_ATTEMPT_LIMIT) throw error;
-			await delay(DOWNLOAD_RETRY_DELAY_MS * attempt);
-			continue;
-		}
-
-		let body;
-		try {
-			body = await response.arrayBuffer();
-		} catch (error) {
-			if (attempt === DOWNLOAD_ATTEMPT_LIMIT) throw error;
 			await delay(DOWNLOAD_RETRY_DELAY_MS * attempt);
 			continue;
 		}
