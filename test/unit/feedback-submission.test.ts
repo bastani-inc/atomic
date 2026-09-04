@@ -94,8 +94,14 @@ test("requires the latest exact ordinary-assistant display before approval", asy
 		[prepare("draft", bug), message("display", "assistant", bug.body), approval],
 	]) {
 		const transport = new FakeTransport();
-		await submitFeedbackIssue(bug, { sessionManager: { getBranch: () => branch }, transport });
+		const result = await submitFeedbackIssue(bug, { sessionManager: { getBranch: () => branch }, transport });
+		assert.equal(resultCode(result), "stale-draft");
+		assert.equal(transport.requests.length, 0);
 	}
+	const changed = setup();
+	const result = await submitFeedbackIssue({ ...bug, body: `${bug.body} edited` }, changed.runtime);
+	assert.equal(resultCode(result), "stale-draft");
+	assert.equal(changed.transport.requests.length, 0);
 });
 test("re-scrubs immediately before posting", async () => {
 	const secret = { ...bug, body: `token=ghp_${"a".repeat(30)}` };
@@ -129,6 +135,7 @@ test("keeps credentials in headers and classifies primary and secondary limits",
 		[403, null, null, "permission"],
 		[403, "0", null, "rate-limit"],
 		[403, "4999", "60", "rate-limit"],
+		[404, null, null, "unexpected-status"],
 		[422, null, null, "validation"],
 	] as const) {
 		let authorization = "";
@@ -153,13 +160,13 @@ test("prevents concurrent, repeated, restored, and boundary-collision duplicates
 	const first = setup();
 	const completed = await submitFeedbackIssue(bug, first.runtime);
 	assert.equal(resultCode(await submitFeedbackIssue(bug, first.runtime)), "duplicate");
-	if (completed.ok) {
-		const recovered = setup();
-		recovered.branch.push(submissionResult("success", completed));
-		const duplicate = await submitFeedbackIssue(bug, recovered.runtime);
-		assert.equal(resultCode(duplicate), "duplicate");
-		assert.equal(duplicate.ok ? "" : duplicate.existingUrl, completed.url);
-	}
+	assert.ok(completed.ok);
+	const recovered = setup();
+	recovered.branch.push(submissionResult("success", completed));
+	const duplicate = await submitFeedbackIssue(bug, recovered.runtime);
+	assert.equal(resultCode(duplicate), "duplicate");
+	assert.equal(duplicate.ok ? "" : duplicate.existingUrl, completed.url);
+	assert.equal(completed.url, "https://github.com/bastani-inc/atomic/issues/42");
 	let release!: (value: unknown) => void;
 	const pending: IssueSubmissionTransport = { createIssue: () => new Promise((resolve) => (release = resolve)) };
 	const concurrent = setup(bug, "post it", pending as FakeTransport);
