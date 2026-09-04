@@ -7,6 +7,8 @@ import {
 	initializeDurableBackend,
 	setDurableBackend,
 } from "../../packages/workflows/src/durable/factory.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { prepareWorkflowResumeCatalog } from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
 
 const PROVISIONING_FAILURE = "initdb: error: cannot be run as root";
 const EXPECTED_DEGRADATION_WARNING =
@@ -115,6 +117,29 @@ describe("durable factory non-durable degradation", () => {
 		} finally {
 			consoleSpy.mockRestore();
 		}
+	});
+
+	test.sequential("an in-flight durable catalog preparation keeps the backend that initialization returned", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: "stable-catalog-backend",
+			name: "stable-catalog",
+			inputs: {},
+			status: "paused",
+			createdAt: 1,
+			completedCheckpoints: 1,
+		});
+		setDurableBackend(backend);
+		const runtime = createExtensionRuntime({ definitions: [], durabilityWarningSink: () => undefined });
+
+		const preparation = prepareWorkflowResumeCatalog(runtime, new Set());
+		setDurableBackend(undefined);
+
+		const catalog = await preparation;
+		assert.deepEqual(
+			catalog.resumable.map((entry) => entry.workflowId),
+			["stable-catalog-backend"],
+		);
 	});
 });
 

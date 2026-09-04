@@ -1,4 +1,4 @@
-import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import {
 	type OpenCompletedDurableResult,
@@ -52,7 +52,7 @@ export interface DurableResumeRuntimeDeps {
 	readonly store: Store;
 	readonly adapters?: StageAdapters;
 	readonly runtimeCwd: string;
-	readonly ensureReady: () => Promise<void>;
+	readonly ensureReady: () => Promise<DurableWorkflowBackend>;
 	readonly resolveDefaultStageSessionDir?: () => string | undefined;
 	readonly baseRunOpts: (policy?: WorkflowExecutionPolicy) => RunOpts;
 	readonly beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
@@ -60,10 +60,7 @@ export interface DurableResumeRuntimeDeps {
 }
 
 export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): DurableResumeRuntime {
-	const hydrateStoredWorkflowCandidates = async (
-		backend: ReturnType<typeof getDurableBackend>,
-		target?: string,
-	): Promise<void> => {
+	const hydrateStoredWorkflowCandidates = async (backend: DurableWorkflowBackend, target?: string): Promise<void> => {
 		const ids = deps.store
 			.runs()
 			.map((run) => run.id)
@@ -73,12 +70,11 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
 	return {
 		async inspectDurableWorkflow(workflowId) {
-			await deps.ensureReady();
-			return await inspectTargetedDurableWorkflow(getDurableBackend(), workflowId);
+			const backend = await deps.ensureReady();
+			return await inspectTargetedDurableWorkflow(backend, workflowId);
 		},
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
-			await deps.ensureReady();
-			const backend = getDurableBackend();
+			const backend = await deps.ensureReady();
 			if (preparedCatalog.length === 0) {
 				preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
 			}
@@ -102,8 +98,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return getDurableBackend().listResumableWorkflows();
 		},
 		async prepareDurableResumable(workflowId) {
-			await deps.ensureReady();
-			const backend = getDurableBackend();
+			const backend = await deps.ensureReady();
 			try {
 				await hydrateStoredWorkflowCandidates(backend, workflowId);
 				preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
@@ -113,8 +108,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			}
 		},
 		async prepareDurableCatalog() {
-			await deps.ensureReady();
-			const backend = getDurableBackend();
+			const backend = await deps.ensureReady();
 			try {
 				await backend.hydrateResumableWorkflows();
 				await hydrateStoredWorkflowCandidates(backend);
@@ -126,8 +120,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			}
 		},
 		async prepareDurableResumableForIds(workflowIds) {
-			await deps.ensureReady();
-			const backend = getDurableBackend();
+			const backend = await deps.ensureReady();
 			try {
 				preparedCatalog = await prepareTargetedDurableResumable(backend, workflowIds);
 				return preparedCatalog;
@@ -136,8 +129,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			}
 		},
 		async prepareCompletedDurable() {
-			await deps.ensureReady();
-			const backend = getDurableBackend();
+			const backend = await deps.ensureReady();
 			try {
 				await backend.hydrateResumableWorkflows();
 				await hydrateStoredWorkflowCandidates(backend);
