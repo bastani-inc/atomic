@@ -128,6 +128,7 @@ describe("Intercom full session ID targeting", () => {
 		);
 
 		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(current.sent.length, 1);
 		assert.equal(current.sent[0]?.to, recipient.id);
 		assert.equal(typeof current.sent[0]?.messageId, "string");
 	});
@@ -323,6 +324,7 @@ describe("Intercom full session ID targeting", () => {
 		);
 
 		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(current.sent.length, 1);
 		assert.equal(current.sent[0]?.to, sender.id);
 		assert.equal(current.sent[0]?.replyTo, "question-sender");
 		assert.equal(typeof current.sent[0]?.messageId, "string");
@@ -342,6 +344,7 @@ describe("Intercom full session ID targeting", () => {
 		);
 
 		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(current.sent.length, 1);
 		assert.equal(current.sent[0]?.to, recipient.id);
 		assert.equal(typeof current.sent[0]?.messageId, "string");
 	});

@@ -5,13 +5,14 @@ import {
 	parseLegacyWorkflowStageTarget,
 	parseWorkflowStageTarget,
 } from "../workflow-stage-target.js";
+import { normalizeGroup } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
 import { resolveSessionTarget, sessionTargetFailureReason } from "../session-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { isVerticalBypass, sameGroup } from "./group-isolation.js";
-import { sessionsShareGroup } from "./group-membership.js";
+import { sessionGroups, sessionsShareGroup } from "./group-membership.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 
 export interface BrokerConnectedSession {
@@ -31,6 +32,14 @@ export interface BrokerConnectedSession {
   supervisorId?: string;
   /** Private issuer identity used to restore child capabilities after reconnects. */
   supervisorOwnerToken?: string;
+}
+
+/** Immutable registration authority plus normalized memberships used when an accepted ask is rebound. */
+export function senderGroupIdentity(session: BrokerConnectedSession): string {
+	return JSON.stringify([
+		normalizeGroup(session.registrationGroup),
+		[...sessionGroups(session.info)].sort((left, right) => left.localeCompare(right)),
+	]);
 }
 
 export interface PendingStageRoute {
@@ -128,6 +137,16 @@ export function handleBrokerSend(
 	const signature = buildMessageSendSignature(clientMessage.to, message, senderIdentity);
 	const deliveredMatch = deliveredMessages.lookup(message.id, signature);
 	if (deliveredMatch === "match") {
+		if (message.expectsReply === true) {
+			const targetSessionId = deliveredMessages.lookupQuestionTarget(
+				message.id,
+				signature,
+				senderGroupIdentity(fromSession),
+			);
+			if (targetSessionId !== undefined && sessions.has(targetSessionId)) {
+				pendingQuestions.record(fromSession.info.id, targetSessionId, message.id);
+			}
+		}
 		write(socket, { type: "delivered", messageId: message.id, attemptId });
 		return;
 	}
@@ -244,10 +263,15 @@ export function handleBrokerSend(
       write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
     };
     const finishDelivery = (): void => {
-      deliveredMessages.record(message.id, signature);
       if (message.expectsReply === true) {
+		deliveredMessages.recordQuestion(message.id, signature, {
+			targetSessionId: target.info.id,
+			senderGroupIdentity: senderGroupIdentity(fromSession),
+		});
         pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
-      }
+	  } else {
+		deliveredMessages.record(message.id, signature);
+	  }
       if (message.replyTo !== undefined) {
         pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo);
       }

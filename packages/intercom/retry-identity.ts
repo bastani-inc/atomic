@@ -27,10 +27,15 @@ export interface RetryIdentityAttempt {
 	readonly expiresAt: number;
 }
 
+type ReservationState = "in-flight" | "retained" | "released";
+
 interface RetryIdentityReservation {
-	readonly expiresAt: number;
+	readonly key: string;
 	readonly messageId: string;
+	readonly expiresAt: number;
+	readonly createdOrder: number;
 	reuseCount: number;
+	state: ReservationState;
 }
 
 export interface RetryIdentityReservationsOptions {
@@ -54,17 +59,22 @@ function operationKey(input: RetryIdentityInput): string {
 }
 
 /**
- * Retains an operation identity only across typed recoverable-disconnect retries.
- * A tool registration owns one instance, and the session id remains in every key so
- * a reconnect or registration replacement cannot make identities cross sessions.
+ * Retains operation identities only across typed recoverable-disconnect retries.
+ * Each key owns a FIFO of independently failed operations: later retry calls claim
+ * them in retention order, and a failed retry returns to the tail so one identity
+ * cannot starve its identical peers. The original creation order controls global
+ * oldest-first capacity eviction.
  */
 export class RetryIdentityReservations {
-	private readonly reservations = new Map<string, RetryIdentityReservation>();
+	private readonly reservations = new Map<string, RetryIdentityReservation[]>();
+	private readonly attemptStates = new WeakMap<RetryIdentityAttempt, RetryIdentityReservation>();
 	private readonly ttlMs: number;
 	private readonly maxEntries: number;
 	private readonly maxReuses: number;
 	private readonly now: () => number;
 	private readonly createId: () => string;
+	private nextCreatedOrder = 0;
+	private retainedCount = 0;
 
 	constructor(options: RetryIdentityReservationsOptions = {}) {
 		this.ttlMs = options.ttlMs ?? RETRY_IDENTITY_TTL_MS;
@@ -78,55 +88,107 @@ export class RetryIdentityReservations {
 		const now = this.now();
 		this.prune(now);
 		const key = operationKey(input);
-		const reservation = this.reservations.get(key);
-		// A retry claims the retained identity while it is in flight. Leaving it in
-		// the map would let a concurrent intentional call reuse the same message ID.
-		if (reservation !== undefined && reservation.reuseCount < this.maxReuses) {
-			this.reservations.delete(key);
+		const queue = this.reservations.get(key);
+		while (queue !== undefined && queue.length > 0) {
+			const reservation = queue.shift();
+			if (reservation === undefined) break;
+			this.retainedCount -= 1;
+			if (queue.length === 0) this.reservations.delete(key);
+			if (reservation.state !== "retained") continue;
+			if (reservation.reuseCount >= this.maxReuses || reservation.expiresAt <= now) {
+				reservation.state = "released";
+				continue;
+			}
+			// Claiming removes this identity from the FIFO while it is in flight, so
+			// a concurrent intentional call cannot share its message ID.
+			reservation.state = "in-flight";
 			reservation.reuseCount += 1;
-			return {
-				key,
-				messageId: reservation.messageId,
-				reuseCount: reservation.reuseCount,
-				expiresAt: reservation.expiresAt,
-			};
+			return this.attempt(reservation);
 		}
-		if (reservation !== undefined) this.reservations.delete(key);
-		return { key, messageId: this.createId(), reuseCount: 0, expiresAt: now + this.ttlMs };
+		const reservation: RetryIdentityReservation = {
+			key,
+			messageId: this.createId(),
+			expiresAt: now + this.ttlMs,
+			createdOrder: this.nextCreatedOrder++,
+			reuseCount: 0,
+			state: "in-flight",
+		};
+		return this.attempt(reservation);
 	}
 
 	retainAfterRecoverableDisconnect(attempt: RetryIdentityAttempt): void {
 		const now = this.now();
 		this.prune(now);
-		if (attempt.reuseCount >= this.maxReuses || attempt.expiresAt <= now) {
-			this.release(attempt);
+		const reservation = this.currentReservation(attempt);
+		if (reservation === undefined || reservation.state !== "in-flight") return;
+		if (reservation.reuseCount >= this.maxReuses || reservation.expiresAt <= now) {
+			reservation.state = "released";
 			return;
 		}
-		const current = this.reservations.get(attempt.key);
-		if (current?.messageId === attempt.messageId) return;
 		// Keep the original attempt's deadline: refreshing here could outlive the
 		// broker record whose retained acknowledgement makes the retry safe.
-		this.reservations.set(attempt.key, {
-			messageId: attempt.messageId,
-			expiresAt: attempt.expiresAt,
-			reuseCount: attempt.reuseCount,
-		});
-		while (this.reservations.size > this.maxEntries) {
-			const oldest = this.reservations.keys().next().value as string | undefined;
-			if (oldest === undefined) break;
-			this.reservations.delete(oldest);
-		}
+		reservation.state = "retained";
+		const queue = this.reservations.get(reservation.key) ?? [];
+		queue.push(reservation);
+		this.reservations.set(reservation.key, queue);
+		this.retainedCount += 1;
+		while (this.retainedCount > this.maxEntries) this.evictOldest();
 	}
 
 	release(attempt: RetryIdentityAttempt): void {
-		const current = this.reservations.get(attempt.key);
-		if (current?.messageId === attempt.messageId) this.reservations.delete(attempt.key);
+		const reservation = this.currentReservation(attempt);
+		if (reservation === undefined || reservation.state === "released") return;
+		if (reservation.state === "retained") this.removeRetained(reservation);
+		reservation.state = "released";
+	}
+
+	private attempt(reservation: RetryIdentityReservation): RetryIdentityAttempt {
+		const attempt = {
+			key: reservation.key,
+			messageId: reservation.messageId,
+			reuseCount: reservation.reuseCount,
+			expiresAt: reservation.expiresAt,
+		};
+		this.attemptStates.set(attempt, reservation);
+		return attempt;
+	}
+
+	private currentReservation(attempt: RetryIdentityAttempt): RetryIdentityReservation | undefined {
+		const reservation = this.attemptStates.get(attempt);
+		return reservation?.reuseCount === attempt.reuseCount ? reservation : undefined;
+	}
+
+	private removeRetained(reservation: RetryIdentityReservation): void {
+		const queue = this.reservations.get(reservation.key);
+		const index = queue?.indexOf(reservation) ?? -1;
+		if (queue === undefined || index < 0) return;
+		queue.splice(index, 1);
+		this.retainedCount -= 1;
+		if (queue.length === 0) this.reservations.delete(reservation.key);
+	}
+
+	private evictOldest(): void {
+		let oldest: RetryIdentityReservation | undefined;
+		for (const queue of this.reservations.values()) {
+			for (const reservation of queue) {
+				if (oldest === undefined || reservation.createdOrder < oldest.createdOrder) oldest = reservation;
+			}
+		}
+		if (oldest === undefined) return;
+		this.removeRetained(oldest);
+		oldest.state = "released";
 	}
 
 	private prune(now: number): void {
-		for (const [key, reservation] of this.reservations) {
-			if (reservation.expiresAt > now) continue;
-			this.reservations.delete(key);
+		for (const [key, queue] of this.reservations) {
+			const retained = queue.filter((reservation) => {
+				if (reservation.expiresAt > now) return true;
+				reservation.state = "released";
+				this.retainedCount -= 1;
+				return false;
+			});
+			if (retained.length === 0) this.reservations.delete(key);
+			else if (retained.length !== queue.length) this.reservations.set(key, retained);
 		}
 	}
 }

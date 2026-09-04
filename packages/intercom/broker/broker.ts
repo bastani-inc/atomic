@@ -25,7 +25,12 @@ import {
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { isMessage } from "./client-message-validation.js";
 import { buildMessageSendSignature } from "./send-signature.js";
-import { handleBrokerSend, type BrokerConnectedSession, type PendingStageRoute } from "./send-handler.js";
+import {
+	handleBrokerSend,
+	type BrokerConnectedSession,
+	type PendingStageRoute,
+	senderGroupIdentity,
+} from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -759,9 +764,14 @@ class IntercomBroker {
 				});
 				return;
 			}
-			this.deliveredMessages.record(pending.messageId, pending.signature);
 			if (pending.message.expectsReply === true) {
+				this.deliveredMessages.recordQuestion(pending.messageId, pending.signature, {
+					targetSessionId: target.info.id,
+					senderGroupIdentity: senderGroupIdentity(from),
+				});
 				this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
+			} else {
+				this.deliveredMessages.record(pending.messageId, pending.signature);
 			}
 			if (pending.message.replyTo !== undefined) {
 				this.pendingQuestions.clearReply(from.info.id, target.info.id, pending.message.replyTo);

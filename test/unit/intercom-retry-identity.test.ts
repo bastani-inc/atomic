@@ -50,6 +50,76 @@ test("begin claims a retained identity so a concurrent identical operation stays
 	assert.notEqual(concurrent.messageId, first.messageId);
 });
 
+test("concurrent recoverable operations retain independent identities in original call order", () => {
+	const reservations = new RetryIdentityReservations({ createId: ids() });
+	const first = reservations.begin(base);
+	const second = reservations.begin(base);
+	reservations.retainAfterRecoverableDisconnect(first);
+	reservations.retainAfterRecoverableDisconnect(second);
+
+	const firstRetry = reservations.begin(base);
+	const secondRetry = reservations.begin(base);
+	const concurrentIntentionalCall = reservations.begin(base);
+	assert.equal(firstRetry.messageId, first.messageId);
+	assert.equal(secondRetry.messageId, second.messageId);
+	assert.notEqual(concurrentIntentionalCall.messageId, first.messageId);
+	assert.notEqual(concurrentIntentionalCall.messageId, second.messageId);
+});
+
+test("duplicate retention and settlement affect only the originating attempt", () => {
+	const reservations = new RetryIdentityReservations({ createId: ids() });
+	const first = reservations.begin(base);
+	const second = reservations.begin(base);
+	reservations.retainAfterRecoverableDisconnect(first);
+	reservations.retainAfterRecoverableDisconnect(first);
+	reservations.retainAfterRecoverableDisconnect(second);
+	reservations.release(first);
+
+	assert.equal(reservations.begin(base).messageId, second.messageId);
+	assert.notEqual(reservations.begin(base).messageId, first.messageId);
+});
+
+test("a stale duplicate retain cannot expose an identity already claimed by its retry", () => {
+	const reservations = new RetryIdentityReservations({ createId: ids() });
+	const first = reservations.begin(base);
+	reservations.retainAfterRecoverableDisconnect(first);
+	const retry = reservations.begin(base);
+	reservations.retainAfterRecoverableDisconnect(first);
+
+	assert.equal(retry.messageId, first.messageId);
+	assert.notEqual(reservations.begin(base).messageId, first.messageId);
+});
+
+test("capacity and original TTL apply to individual reservations sharing one operation key", () => {
+	let now = 0;
+	const reservations = new RetryIdentityReservations({
+		ttlMs: 100,
+		maxEntries: 2,
+		now: () => now,
+		createId: ids(),
+	});
+	const oldest = reservations.begin(base);
+	now = 20;
+	const middle = reservations.begin(base);
+	now = 40;
+	const newest = reservations.begin(base);
+	reservations.retainAfterRecoverableDisconnect(newest);
+	reservations.retainAfterRecoverableDisconnect(oldest);
+	reservations.retainAfterRecoverableDisconnect(middle);
+
+	const firstRetry = reservations.begin(base);
+	const secondRetry = reservations.begin(base);
+	assert.equal(firstRetry.messageId, newest.messageId, "remaining identities keep FIFO retention order");
+	assert.equal(secondRetry.messageId, middle.messageId);
+	assert.notEqual(firstRetry.messageId, oldest.messageId, "the globally oldest identity is evicted at capacity");
+	reservations.retainAfterRecoverableDisconnect(firstRetry);
+	reservations.retainAfterRecoverableDisconnect(secondRetry);
+
+	now = 120;
+	assert.equal(reservations.begin(base).messageId, newest.messageId, "each identity keeps its own original deadline");
+	assert.notEqual(reservations.begin(base).messageId, middle.messageId);
+});
+
 test("retry identity scope preserves every operation field, ordering, and session boundary", () => {
 	const reservations = new RetryIdentityReservations({ createId: ids() });
 	const first = reservations.begin(base);

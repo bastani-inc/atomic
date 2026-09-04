@@ -15,6 +15,24 @@ test("successful message ids dedupe only the same logical send within a bounded 
 	assert.equal(cache.lookup("three", "signature-three", 102), "match");
 });
 
+test("question route metadata is available only to the exact delivered identity and sender groups", () => {
+	const cache = new DeliveredMessageCache(100, 2);
+	cache.recordQuestion(
+		"question",
+		"accepted-signature",
+		{ targetSessionId: "accepted-target", senderGroupIdentity: "accepted-groups" },
+		0,
+	);
+
+	assert.equal(cache.lookupQuestionTarget("question", "accepted-signature", "accepted-groups", 1), "accepted-target");
+	assert.equal(cache.lookupQuestionTarget("other-id", "accepted-signature", "accepted-groups", 1), undefined);
+	assert.equal(cache.lookupQuestionTarget("question", "changed-signature", "accepted-groups", 1), undefined);
+	assert.equal(cache.lookupQuestionTarget("question", "accepted-signature", "changed-groups", 1), undefined);
+	cache.record("ordinary-send", "ordinary-signature", 2);
+	assert.equal(cache.lookupQuestionTarget("ordinary-send", "ordinary-signature", "accepted-groups", 2), undefined);
+	assert.equal(cache.lookupQuestionTarget("question", "accepted-signature", "accepted-groups", 101), undefined);
+});
+
 test("logical send signatures normalize options and ignore transport metadata", () => {
 	const options = {
 		text: "done",

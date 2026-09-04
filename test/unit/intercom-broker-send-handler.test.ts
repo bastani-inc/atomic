@@ -150,6 +150,87 @@ test("broker wire send dedupes a reconnect and rejects target, payload, or disti
 	);
 });
 
+test("a deduplicated question rebinds only its accepted target and sender group identity", () => {
+	const originalSocket = {} as net.Socket;
+	const reconnectedSocket = {} as net.Socket;
+	const targetSocket = {} as net.Socket;
+	const logicalTarget = "workflow:4ac72924-c452-4e5f-9e63-2435722109f7/reviewer";
+	const senderGroup = "workflow:4ac72924-c452-4e5f-9e63-2435722109f7";
+	const targetGroup = `${senderGroup}/reviewers`;
+	const original = {
+		...session("sender-old", "sender", originalSocket, "stable-sender"),
+		registrationGroup: "default",
+	};
+	original.info.group = "default";
+	original.info.groups = ["default", senderGroup];
+	const target = { ...session("target", "reviewer", targetSocket), registrationGroup: targetGroup };
+	target.info.group = targetGroup;
+	target.info.groups = [targetGroup];
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[original.info.id, original],
+		[target.info.id, target],
+	]);
+	const cache = new DeliveredMessageCache();
+	const pending = new PendingQuestionIndex();
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	const write = (socket: net.Socket, value: BrokerMessage) => {
+		writes.push({ socket, message: value });
+		return true;
+	};
+	const question = { ...message("stable-question", "choose"), expectsReply: true };
+	const send = (socket: net.Socket, senderId: string, outgoing: Message = question) =>
+		handleBrokerSend(
+			socket,
+			{ type: "send", to: logicalTarget, message: outgoing },
+			senderId,
+			sessions,
+			cache,
+			write,
+			new SupervisorChannelCache(),
+			pending,
+			undefined,
+			() => target,
+			() => true,
+		);
+
+	send(originalSocket, original.info.id);
+	assert.equal(pending.matchesReply(target.info.id, original.info.id, question.id), true);
+	pending.pruneSender(original.info.id);
+	sessions.delete(original.info.id);
+	const reconnected = {
+		...session("sender-new", "sender", reconnectedSocket, "stable-sender"),
+		registrationGroup: "default",
+	};
+	reconnected.info.group = "default";
+	reconnected.info.groups = ["default", senderGroup];
+	sessions.set(reconnected.info.id, reconnected);
+
+	send(reconnectedSocket, reconnected.info.id);
+	assert.equal(pending.matchesReply(target.info.id, reconnected.info.id, question.id), true);
+	assert.equal(
+		writes.filter((entry) => entry.socket === targetSocket && entry.message.type === "message").length,
+		1,
+		"rebinding must not redeliver the accepted question",
+	);
+
+	pending.pruneSender(reconnected.info.id);
+	reconnected.info.groups = ["default", "other-group"];
+	send(reconnectedSocket, reconnected.info.id);
+	assert.equal(
+		pending.matchesReply(target.info.id, reconnected.info.id, question.id),
+		false,
+		"changed sender groups cannot claim the accepted cross-group reply route",
+	);
+
+	const changedPayload = { ...question, content: { text: "changed" } };
+	send(reconnectedSocket, reconnected.info.id, changedPayload);
+	const payloadConflict = writes.find(
+		(entry) => entry.socket === reconnectedSocket && entry.message.type === "delivery_failed",
+	)?.message;
+	assert.equal(payloadConflict?.type, "delivery_failed");
+	if (payloadConflict?.type === "delivery_failed") assert.equal(payloadConflict.reasonCode, "message_id_conflict");
+});
+
 test("broker wire send keeps absent attemptId compatibility but rejects malformed present values", () => {
 	const sender = {} as net.Socket;
 	const recipient = {} as net.Socket;
