@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.18-alpha.6] - 2026-09-04
+
 ### Breaking Changes
 
 - **Breaking:** `createGatewayBindingFetch` now requires `binding.fetch()` and always forwards requests verbatim. The `gateway(id).run(...)` universal-endpoint fallback is removed. `baseUrl` and `gateway` options are ignored. Bindings without `fetch()` throw at construction. Point each model's `baseUrl` at `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}`.

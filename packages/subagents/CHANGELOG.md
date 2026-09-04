@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.18-alpha.6] - 2026-09-04
+
 ### Breaking Changes
 
 - Removed the redundant `fastMode` fields from subagent result, progress, runtime metadata, persisted artifact metadata, and run-history records. Agents now select fast inference by pinning a canonical `-fast` model ID in `model` or fallback model fields, for example `openai-codex/gpt-5.6-sol-fast:medium`.

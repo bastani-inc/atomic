@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.18-alpha.6] - 2026-09-04
+
 ### Breaking Changes
 
 - Replaced the `/fast` toggle with explicit selectable fast model identity. `/fast`, its selector UI, the `codexFastMode.chat`/`codexFastMode.workflow` settings, the `ATOMIC_CODEX_FAST_MODE` environment variable, chat-versus-workflow scope inheritance, and every public export tied to that toggle state are removed with no compatibility shim or migration. Select fast inference by choosing a fast model.
