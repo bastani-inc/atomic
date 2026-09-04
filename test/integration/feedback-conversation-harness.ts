@@ -49,3 +49,6 @@ export async function createFeedbackConversationHarness(): Promise<Harness> {
 export function transcriptText(harness: Harness): string {
 	return harness.session.messages.map(getMessageText).join("\n");
 }
+export function assistantMessages(harness: Harness): string[] {
+	return harness.session.messages.filter((message) => message.role === "assistant").map(getMessageText);
+}

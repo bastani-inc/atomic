@@ -153,10 +153,14 @@ function responses(secret: string, expectSubagent: boolean): FauxResponseStep[] 
 				{ stopReason: "toolUse" },
 			);
 		},
-		(context) =>
-			fauxAssistantMessage(
-				`${getMessageText(context.messages.findLast((message) => message.role === "toolResult"))}\n\nEditable draft; please request edits or approve.`,
-			),
+		(context) => {
+			const result = context.messages.findLast(
+				(message) => message.role === "toolResult" && message.toolName === "feedback_prepare_issue",
+			);
+			return fauxAssistantMessage(
+				`${getMessageText(result)}\n\nThe draft remains editable. Would you like edits or approval?`,
+			);
+		},
 	];
 }
 async function settleTurn(harness: Harness): Promise<void> {
@@ -226,6 +230,7 @@ describe("feedback bug investigation", () => {
 		assert.ok(draft.includes("**Supported evidence:** Investigation completed without a root cause"));
 		assert.ok(draft.includes("**Unknowns:** Root cause remains unknown"));
 		assert.ok(draft.includes("**Debugger-created paths:** debugger-note.txt"));
+		assert.ok(draft.includes("Would you like edits or approval?"));
 	});
 	// #2799: exercise capped diagnostics through the registered tool and prepared draft, using the shipped skill.
 	it("carries incomplete path disclosure into the prepared bug draft", async () => {
@@ -293,7 +298,8 @@ describe("feedback bug investigation", () => {
 			await settleTurn(harness);
 			assert.equal(calls.length, behavior === "absent" ? 0 : 1);
 			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("Root cause remains unknown"));
-			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("Editable draft"));
+			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("The draft remains editable."));
+			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("Would you like edits or approval?"));
 			const diagnostics = diagnosticResults(harness).at(-1)?.details as FeedbackDiagnostics;
 			assert.deepEqual(diagnostics.worktree.paths, []);
 			assert.equal(diagnostics.worktree.available, false);
