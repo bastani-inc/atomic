@@ -40,6 +40,7 @@
             "group": "Everyday use",
             "pages": [
               "usage",
+              "feedback",
               "guides/non-interactive",
               "sessions",
               "compaction",
