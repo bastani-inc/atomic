@@ -102,11 +102,16 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     }
   };
 
-  // Anthropic-heavy chain for design taste. Opus stays at :xhigh here because
-  // visual quality, rather than cost per task, is the primary objective.
+  // Astra high leads the design stages, followed by Fable 5.1 high.
+  // Keep the design-specific ordering of the older model fallbacks.
   const designModelConfig = {
-    model: "anthropic/claude-opus-5:high",
+    model: "openai-codex/gpt-6-astra:high",
     fallbackModels: [
+      "github-copilot/gpt-6-astra:high",
+      "openai/gpt-6-astra:high",
+      "anthropic/claude-fable-5-1:high",
+      "github-copilot/claude-fable-5-1:high",
+      "anthropic/claude-opus-5:high",
       "github-copilot/claude-opus-5:high",
       "anthropic/claude-fable-5:high",
       "github-copilot/claude-fable-5:high",
@@ -126,6 +131,8 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "zai-coding-cn/glm-5.3-flash:high",
       "baseten/zai-org/GLM-5.3:high",
       "baseten/zai-org/GLM-5.3-Flash:high",
+      "openrouter/openai/gpt-6-astra:high",
+      "openrouter/anthropic/claude-fable-5-1:high",
       "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/anthropic/claude-opus-4-8:high",

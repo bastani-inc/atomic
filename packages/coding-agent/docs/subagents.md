@@ -71,6 +71,8 @@ Atomic currently bundles these agents from `@bastani/subagents`:
 | `code-simplifier` | Simplify recently changed code under its behavior-preservation “doors” rubric. | Yes |
 | `worker` | Implement an approved task or handoff, validate the narrow change, and escalate product, architecture, or scope decisions to its supervisor. | Yes |
 
+All bundled agents except `debugger` default to `openai-codex/gpt-6-astra:low`; `debugger` uses `openai-codex/gpt-6-astra:xhigh`. Their fallback chains start with GitHub Copilot Astra, OpenAI Astra, Anthropic Fable 5.1, then GitHub Copilot Fable 5.1. Ordinary agents use Astra/Fable 5.1 at `low`, with Sol and GPT-5.5 fallbacks at `medium`, including the locator roles. Debugger keeps Astra and Sol at `xhigh` and Anthropic fallbacks at `high`. Later candidates retain provider-specific reasoning levels and identifiers; OpenRouter mirrors follow the direct-provider candidates. Each agent definition contains its complete ordered chain.
+
 The bundled definitions keep their routing and model frontmatter but use compact, outcome-first bodies: role and goal, success criteria, constraints and tool routes, output contract, and stop rules where applicable. Report-producing agents ground progress claims in tool results and return concise evidence rather than narrating internal reasoning. Read-oriented agents inspect and report. `debugger`, `code-simplifier`, and `worker` can edit files, so give them an explicit scope and validation target. The debugger should finish an in-scope diagnosis by applying and validating the fix, not stop at a proposed patch.
 
 ## Review compositions

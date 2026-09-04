@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Heartbeat, workflow-tool, and builtin stage guidance now directs shared scope and acceptance-criteria amendments through one authoritative path broadcast rather than enumerating known stages, and teaches path discovery, globs, sticky delivery, and live-only asks.
 - The stage-chat jump indicator now uses the same `↓ Jump to latest message · <shortcut>` copy as the fullscreen transcript overlay.
+- Updated Goal/Ralph orchestration, Ralph prompt engineering and research, and Open Claude Design to GPT-6 Astra at `high`; Goal reviewers and Ralph reviewer B use Astra at `xhigh`, while Ralph reviewer A uses Claude Fable 5.1 at `high`. Added Astra and Fable 5.1 fallbacks while retaining role-specific provider order and reasoning levels. Ralph research now places Fable 5 before Sol, and reviewer B places Sol after Fable 5 and Fugu before GPT-5.5 in its OpenRouter group.
 
 ### Fixed
 

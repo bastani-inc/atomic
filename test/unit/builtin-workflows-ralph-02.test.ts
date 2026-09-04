@@ -6,6 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { makeMockCtx, normalizePathSeparators, readPaths } from "./builtin-workflows-helpers.js";
+import {
+	orchestratorFallbacks,
+	researchFallbacks,
+	reviewerAFallbacks,
+	reviewerFallbacks,
+} from "./latest-model-config-expectations.js";
 import { assertReviewerIntercomCoordination } from "./reviewer-intercom-prompt-assertions.js";
 
 describe("ralph", () => {
@@ -243,7 +249,19 @@ describe("ralph", () => {
 		assert.notEqual(reviewerOptions?.schema, undefined);
 		assert.equal(reviewerOptions?.customTools, undefined);
 		const reviewerBOptions = ctx.calls.taskOptions["reviewer-b"]?.[0];
-		assert.equal(reviewerBOptions?.model, "openai-codex/gpt-5.6-sol:xhigh");
+		assert.equal(reviewerBOptions?.model, "openai-codex/gpt-6-astra:xhigh");
+		for (const [name, model, fallbacks] of [
+			["research-prompt-refinement-1", "openai-codex/gpt-6-astra:high", researchFallbacks],
+			["research-1", "openai-codex/gpt-6-astra:high", researchFallbacks],
+			["orchestrator-1", "openai-codex/gpt-6-astra:high", orchestratorFallbacks],
+			["reviewer-a", "anthropic/claude-fable-5-1:high", reviewerAFallbacks],
+			["reviewer-b", "openai-codex/gpt-6-astra:xhigh", reviewerFallbacks],
+		] as const) {
+			const options = ctx.calls.taskOptions[name]?.[0];
+			assert.ok(options, `missing ${name} configuration`);
+			assert.equal(options.model, model, name);
+			assert.deepEqual(options.fallbackModels, fallbacks, name);
+		}
 		assert.deepEqual(ctx.calls.parallel[0], ["reviewer-a", "reviewer-b"]);
 		// Regression: #2784 — Ralph reviewer isolation is authored and becomes invocation-owned at runtime.
 		assert.equal(ctx.calls.parallelOptions[0]?.group, "ralph-reviewers-iter-1");

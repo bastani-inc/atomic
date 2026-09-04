@@ -9,6 +9,7 @@
 ### Changed
 
 - Subagent labels now render the complete selected model ID, including `-fast`, without appending a separate `fast` badge.
+- Updated bundled agents to GPT-6 Astra at `low`, with debugger at `xhigh`. Added Astra and Claude Fable 5.1 provider fallbacks ahead of older models. Locator roles now use the same ordered fallback chain as the other ordinary agents, including Sol, GPT-5.5, and Opus 4.8 at `medium`.
 
 ### Fixed
 
