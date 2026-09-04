@@ -4,6 +4,7 @@ import {
 	RETRY_IDENTITY_RETRY_OPPORTUNITY_MS,
 	RETRY_IDENTITY_TTL_MS,
 } from "./retry-policy.js";
+import { canonicalizeAttachmentsForSendSignature } from "./broker/send-signature.js";
 import type { Attachment } from "./types.js";
 
 export { ASK_REPLY_TIMEOUT_MS, RETRY_IDENTITY_RETRY_OPPORTUNITY_MS, RETRY_IDENTITY_TTL_MS };
@@ -63,7 +64,7 @@ function operationKey(input: RetryIdentityInput): string {
 		input.action,
 		input.target,
 		input.text,
-		input.attachments,
+		canonicalizeAttachmentsForSendSignature(input.attachments),
 		input.replyTo,
 		input.requestedReplyTo,
 		input.expectsReply,

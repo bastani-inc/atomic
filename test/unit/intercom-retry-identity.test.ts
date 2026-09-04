@@ -43,6 +43,48 @@ test("a recoverable retry reuses its operation identity and a settled repeat doe
 	assert.notEqual(intentionalRepeat.messageId, first.messageId);
 });
 
+test("attachment member order is canonical while array order, duplicates, and language semantics stay exact", () => {
+	const reservations = new RetryIdentityReservations({ createId: ids() });
+	const firstAttachments: RetryIdentityInput["attachments"] = [
+		{ type: "snippet", name: "ordered", content: "alpha", language: "ts" },
+		{ type: "context", name: "duplicate", content: "beta" },
+		{ type: "context", name: "duplicate", content: "beta" },
+	];
+	const reorderedMembers: RetryIdentityInput["attachments"] = [
+		{ language: "ts", content: "alpha", name: "ordered", type: "snippet" },
+		{ language: undefined, content: "beta", name: "duplicate", type: "context" },
+		{ content: "beta", name: "duplicate", type: "context" },
+	];
+	const first = reservations.begin({ ...base, attachments: firstAttachments });
+	reservations.retainAfterRecoverableDisconnect(first);
+
+	const reorderedRetry = reservations.begin({ ...base, attachments: reorderedMembers });
+	assert.equal(reorderedRetry.messageId, first.messageId, "typed member insertion order is not logical identity");
+	reservations.retainAfterRecoverableDisconnect(reorderedRetry);
+
+	const [ordered, duplicate] = reorderedMembers;
+	assert.ok(ordered);
+	assert.ok(duplicate);
+	assert.notEqual(
+		reservations.begin({ ...base, attachments: [duplicate, ordered, duplicate] }).messageId,
+		first.messageId,
+		"attachment array order remains significant",
+	);
+	assert.notEqual(
+		reservations.begin({ ...base, attachments: [ordered, duplicate] }).messageId,
+		first.messageId,
+		"attachment duplicates remain significant",
+	);
+	assert.notEqual(
+		reservations.begin({
+			...base,
+			attachments: [ordered, { ...duplicate, language: "" }, duplicate],
+		}).messageId,
+		first.messageId,
+		"a supported empty language is distinct from omitted or undefined language",
+	);
+});
+
 test("begin claims a retained identity so a concurrent identical operation stays distinct", () => {
 	const reservations = new RetryIdentityReservations({ createId: ids() });
 	const first = reservations.begin(base);
