@@ -2,7 +2,6 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
 import { runCallback, runSynchronousCallback } from "../callback-activity.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
-import { normalizeToolParameterSchema } from "./tool-parameter-schema.ts";
 
 declare module "@earendil-works/pi-agent-core" {
 	interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
@@ -33,10 +32,7 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,
-		// Normalized here because this is the one adapter every tool passes through, and
-		// `AgentTool.parameters` is both what the provider advertises and what validates
-		// incoming arguments — the two must stay the same schema.
-		parameters: normalizeToolParameterSchema(definition.parameters, definition.name),
+		parameters: definition.parameters,
 		...(Object.hasOwn(definition, "constrainedSampling")
 			? { constrainedSampling: definition.constrainedSampling }
 			: {}),

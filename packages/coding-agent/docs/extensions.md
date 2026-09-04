@@ -2134,8 +2134,6 @@ async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 
 ### Tool Definition
 
-Tool `parameters` must be object-rooted. A provider advertises a tool from the root `properties`/`required` keywords alone, so a root carrying neither is advertised as a tool with no parameters and clients then send every argument as a string. A `Type.Union` of object-rooted branches is still accepted: Atomic rewrites it to an equivalent object root — branch properties merged and optional, a differing discriminator unioned, the original branches retained under `anyOf` — so validation stays exactly as strict as the union. Any other non-object root is left as authored and warns once at registration.
-
 ```typescript
 import { Type } from "typebox";
 import { StringEnum } from "@bastani/atomic";
