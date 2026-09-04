@@ -15,7 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { stagePostgresRuntime } from "./stage-postgres-runtime.mjs";
+import { download, stagePostgresRuntime } from "./stage-postgres-runtime.mjs";
 
 const temporaryDirectories = [];
 const repositoryRoot = new URL("..", import.meta.url).pathname;
@@ -109,6 +109,117 @@ function fakeWindowsArtifact(root) {
 		},
 	};
 }
+
+test("download retries a transient transport failure and then succeeds", async () => {
+	const root = temporaryDirectory("atomic-pg-download-retry-");
+	const destination = join(root, "artifact");
+	let attempts = 0;
+	await download("https://example.invalid/artifact", destination, {
+		fetchImpl: async () => {
+			attempts += 1;
+			if (attempts === 1) throw new TypeError("temporary network failure");
+			return new Response("artifact payload");
+		},
+		delay: async () => {},
+	});
+	assert.equal(attempts, 2);
+	assert.equal(readFileSync(destination, "utf8"), "artifact payload");
+});
+
+test("download aborts never-settling requests after a finite deadline", async () => {
+	const root = temporaryDirectory("atomic-pg-download-timeout-");
+	const destination = join(root, "artifact");
+	const signals = [];
+	await assert.rejects(
+		download("https://example.invalid/artifact", destination, {
+			fetchImpl: async (_url, options) => {
+				signals.push(options.signal);
+				return new Promise((_, reject) => {
+					options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+				});
+			},
+			delay: async () => {},
+			timeoutMs: 5,
+		}),
+		(error) => error?.name === "TimeoutError",
+	);
+	assert.equal(signals.length, 3);
+	assert.equal(
+		signals.every((signal) => signal instanceof AbortSignal),
+		true,
+	);
+	assert.equal(
+		signals.every((signal) => signal.aborted),
+		true,
+	);
+});
+
+test("download bounds retries for persistent transient failures", async () => {
+	const root = temporaryDirectory("atomic-pg-download-bounded-");
+	const destination = join(root, "artifact");
+	let attempts = 0;
+	await assert.rejects(
+		download("https://example.invalid/artifact", destination, {
+			fetchImpl: async () => {
+				attempts += 1;
+				throw new TypeError("persistent network failure");
+			},
+			delay: async () => {},
+		}),
+		/persistent network failure/u,
+	);
+	assert.equal(attempts, 3);
+});
+
+test("download retries HTTP 429 and then succeeds", async () => {
+	const root = temporaryDirectory("atomic-pg-download-rate-limit-");
+	const destination = join(root, "artifact");
+	let attempts = 0;
+	await download("https://example.invalid/rate-limited", destination, {
+		fetchImpl: async () => {
+			attempts += 1;
+			if (attempts === 1) return new Response("retry", { status: 429, statusText: "Too Many Requests" });
+			return new Response("artifact payload");
+		},
+		delay: async () => {},
+	});
+	assert.equal(attempts, 2);
+	assert.equal(readFileSync(destination, "utf8"), "artifact payload");
+});
+
+test("download retries a transient HTTP failure and preserves the final error shape", async () => {
+	const root = temporaryDirectory("atomic-pg-download-http-retry-");
+	const destination = join(root, "artifact");
+	let attempts = 0;
+	await assert.rejects(
+		download("https://example.invalid/unavailable", destination, {
+			fetchImpl: async () => {
+				attempts += 1;
+				return new Response("unavailable", { status: 503, statusText: "Service Unavailable" });
+			},
+			delay: async () => {},
+		}),
+		/download failed \(503 Service Unavailable\): https:\/\/example\.invalid\/unavailable/u,
+	);
+	assert.equal(attempts, 3);
+});
+
+test("download does not retry a permanent HTTP failure", async () => {
+	const root = temporaryDirectory("atomic-pg-download-permanent-");
+	const destination = join(root, "artifact");
+	let attempts = 0;
+	await assert.rejects(
+		download("https://example.invalid/missing", destination, {
+			fetchImpl: async () => {
+				attempts += 1;
+				return new Response("missing", { status: 404, statusText: "Not Found" });
+			},
+			delay: async () => {},
+		}),
+		/download failed \(404 Not Found\): https:\/\/example\.invalid\/missing/u,
+	);
+	assert.equal(attempts, 1);
+});
 
 test("staging rejects an artifact whose checksum does not match", async () => {
 	const root = temporaryDirectory("atomic-pg-stage-checksum-");

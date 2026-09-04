@@ -61,10 +61,51 @@ function run(command, args) {
 	if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
 }
 
-async function download(url, destination) {
-	const response = await fetch(url, { redirect: "follow" });
-	if (!response.ok) throw new Error(`download failed (${response.status} ${response.statusText}): ${url}`);
-	writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
+const DOWNLOAD_ATTEMPT_LIMIT = 3;
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+const DOWNLOAD_RETRY_DELAY_MS = 250;
+
+function sleep(milliseconds) {
+	return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}
+
+function isTransientHttpStatus(status) {
+	return status === 429 || status >= 500;
+}
+
+export async function download(
+	url,
+	destination,
+	{ fetchImpl = fetch, delay = sleep, timeoutMs = DOWNLOAD_TIMEOUT_MS } = {},
+) {
+	for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPT_LIMIT; attempt += 1) {
+		let response;
+		try {
+			response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+		} catch (error) {
+			if (attempt === DOWNLOAD_ATTEMPT_LIMIT) throw error;
+			await delay(DOWNLOAD_RETRY_DELAY_MS * attempt);
+			continue;
+		}
+
+		if (!response.ok) {
+			const error = new Error(`download failed (${response.status} ${response.statusText}): ${url}`);
+			if (!isTransientHttpStatus(response.status) || attempt === DOWNLOAD_ATTEMPT_LIMIT) throw error;
+			await delay(DOWNLOAD_RETRY_DELAY_MS * attempt);
+			continue;
+		}
+
+		let body;
+		try {
+			body = await response.arrayBuffer();
+		} catch (error) {
+			if (attempt === DOWNLOAD_ATTEMPT_LIMIT) throw error;
+			await delay(DOWNLOAD_RETRY_DELAY_MS * attempt);
+			continue;
+		}
+		writeFileSync(destination, Buffer.from(body));
+		return;
+	}
 }
 
 function copyTree(source, destination) {
