@@ -356,7 +356,11 @@ describe("Intercom recoverable disconnect at the lazy event-relay boundary", () 
 			[
 				{
 					name: SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
-					payload: { requestId: "req-1", delivered: false, error: "Client disconnected" },
+					payload: {
+						requestId: "req-1",
+						delivered: false,
+						error: "Client disconnected. Retry the same Intercom call up to three times to reconnect.",
+					},
 				},
 			],
 			"the waiting relay is still acknowledged so nothing hangs on the silenced diagnostic",

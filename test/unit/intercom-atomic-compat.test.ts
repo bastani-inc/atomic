@@ -434,7 +434,7 @@ describe("lazy intercom registration", () => {
 		assert.ok(guidance.includes("`workflow:<rootRunId>/**`"));
 		assert.match(guidance, /notInKnownSet/);
 		assert.match(guidance, /live session/i);
-		assert.match(guidance, /fails with exactly `Client disconnected`.*retry the same call once/u);
+		assert.match(guidance, /fails with `Client disconnected`.*retry the same call up to three times/u);
 	});
 
 	test("registers contact_supervisor when PI or ATOMIC subagent bridge metadata exists", () => {

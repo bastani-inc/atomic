@@ -150,7 +150,7 @@ test("heavy tool guidance teaches exact known workflow-stage targets without rep
 	assert.ok(guidance.includes("`workflow:<rootRunId>/**`"));
 	assert.match(guidance, /notInKnownSet/);
 	assert.match(guidance, /live session/i);
-	assert.match(guidance, /fails with exactly `Client disconnected`.*retry the same call once/u);
+	assert.match(guidance, /fails with `Client disconnected`.*retry the same call up to three times/u);
 });
 
 test("join is additive and leave without a group returns home", async () => {
