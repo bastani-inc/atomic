@@ -2,13 +2,16 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 import {
 	collectFeedbackDiagnostics,
-	type FeedbackDiagnostics,
+	createGitHubIssueTransport,
 	type DraftValidationError,
 	FEEDBACK_REPOSITORY,
-	formatIssueBody,
-	scrubFeedback,
+	type FeedbackDiagnostics,
 	type FeedbackDraft,
+	type FeedbackSubmitDetails,
+	formatIssueBody,
 	type RedactionSummary,
+	scrubFeedback,
+	submitFeedbackIssue,
 	validateFeedbackDraft,
 } from "./src/index.js";
 
@@ -41,6 +44,12 @@ const feedbackPrepareParameters = Type.Object({
 	why: Type.Optional(Type.String()),
 	how: Type.Optional(Type.String()),
 });
+
+const feedbackSubmitParameters = Type.Object({
+	kind: Type.Union([Type.Literal("bug"), Type.Literal("enhancement")]),
+	title: Type.String(),
+	body: Type.String(),
+}, { additionalProperties: false });
 
 const feedbackDiagnosticsParameters = Type.Object({
 	report: Type.String(),
@@ -136,7 +145,25 @@ export default function feedback(pi: ExtensionAPI): void {
 			const privacyNote = scrubbed.replacements.length
 				? `Privacy scrubbed: ${scrubbed.replacements.map(({ category, count }) => `${category} (${count})`).join(", ")}.`
 				: "Privacy scrubbed: no replacements needed.";
-			return { content: [{ type: "text", text: `${details.title}\n\n${details.body}\n\n${privacyNote}` }], details };
+			const text =
+				`Repository: ${details.repository.owner}/${details.repository.repo}\nKind: ${details.kind}\n\n${details.title}\n\n${details.body}\n\n${privacyNote}`;
+			return { content: [{ type: "text", text }], details };
+		},
+	});
+
+	pi.registerTool<typeof feedbackSubmitParameters, FeedbackSubmitDetails>({
+		name: "feedback_submit_issue",
+		label: "Submit feedback issue",
+		description: "Post an already-reviewed feedback draft only after the user's clear conversational approval.",
+		parameters: feedbackSubmitParameters,
+		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+			const details = await submitFeedbackIssue(params, {
+				sessionManager: ctx.sessionManager, transport: createGitHubIssueTransport(), signal,
+			});
+			return {
+				content: [{ type: "text", text: details.ok ? details.url : details.message }],
+				details, ...(details.ok ? {} : { isError: true }),
+			};
 		},
 	});
 }

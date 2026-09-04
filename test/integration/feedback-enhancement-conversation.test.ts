@@ -159,7 +159,9 @@ describe("feedback command conversation entry", () => {
 		await harness.session.prompt("It improves accessibility");
 
 		expect(harness.session.messages.filter((message) => message.role === "toolResult")).toHaveLength(1);
-		expect(messageText(harness)).toContain("### What do you want to change?\n\nAdd keyboard navigation");
+		expect(messageText(harness)).toContain(
+			"Repository: bastani-inc/atomic\nKind: enhancement\n\nKeyboard navigation",
+		);
 		expect(messageText(harness)).toContain("Would you like edits or approval?");
 	});
 
