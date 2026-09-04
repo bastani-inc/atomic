@@ -106,7 +106,15 @@ function assertAstraCapabilities(model: GeneratedModel, provider: string): void 
 	assert.deepEqual(model.input, ["text", "image"]);
 	assert.equal(model.contextWindow, 272_000);
 	assert.equal(model.maxTokens, 128_000);
-	assert.deepEqual(model.thinkingLevelMap, { off: null, minimal: null, xhigh: "xhigh", max: "max" });
+	assert.deepEqual(model.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: "xhigh",
+		max: "max",
+	});
 	assert.deepEqual(getSupportedThinkingLevels(model as unknown as Model<Api>), [
 		"low",
 		"medium",
@@ -124,7 +132,7 @@ afterEach(() => {
 	for (const root of temporaryRoots.splice(0)) rmSync(root, { force: true, recursive: true });
 });
 
-test("generates authoritative OpenAI and Codex GPT-6-Astra metadata without internal policy fields", () => {
+test("falls back to authoritative OpenAI and Codex GPT-6-Astra metadata without internal policy fields", () => {
 	const catalogs = generate();
 	const openai = catalogs.openai["gpt-6-astra"];
 	const codex = catalogs["openai-codex"]["gpt-6-astra"];
@@ -153,6 +161,38 @@ test("generates authoritative OpenAI and Codex GPT-6-Astra metadata without inte
 		assert.equal("persistent_instructions" in model, false);
 		assert.equal("tools" in model, false);
 	}
+	assert.equal(openai.compat?.supportsExplicitPromptCacheMode, true);
+});
+
+test("prefers a models.dev OpenAI Astra row over the missing-model fallback", () => {
+	const openai = generate([], [], {
+		openai: {
+			models: {
+				"gpt-6-astra": {
+					name: "models.dev Astra fixture",
+					tool_call: true,
+					reasoning: true,
+					reasoning_options: [{ type: "effort", values: ["none", "low", "medium", "high", "xhigh", "max"] }],
+					modalities: { input: ["text", "image"], output: ["text"] },
+					limit: { context: 1_050_000, output: 128_000 },
+					cost: { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
+				},
+			},
+		},
+	}).openai["gpt-6-astra"];
+
+	assert.ok(openai);
+	assert.equal(openai.name, "models.dev Astra fixture");
+	assertAstraCapabilities(openai, "openai");
+	assert.deepEqual(openai.cost, {
+		input: 10,
+		output: 50,
+		cacheRead: 1,
+		cacheWrite: 12.5,
+		tiers: [{ inputTokensAbove: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }],
+	});
+	assert.equal(openai.compat?.supportsAdditionalTools, true);
+	assert.equal(openai.compat?.supportsToolSearch, true);
 	assert.equal(openai.compat?.supportsExplicitPromptCacheMode, true);
 });
 

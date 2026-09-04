@@ -94,7 +94,19 @@ function getPromptCacheRetention(
 	compat: Required<OpenAIResponsesCompat>,
 	cacheRetention: CacheRetention,
 ): "24h" | undefined {
-	return cacheRetention === "long" && compat.supportsLongCacheRetention ? "24h" : undefined;
+	return cacheRetention === "long" && compat.supportsLongCacheRetention && !compat.supportsExplicitPromptCacheMode
+		? "24h"
+		: undefined;
+}
+
+function getPromptCacheOptions(
+	compat: Required<OpenAIResponsesCompat>,
+	cacheRetention: CacheRetention,
+): { mode?: "explicit"; ttl?: "30m" } | undefined {
+	if (!compat.supportsExplicitPromptCacheMode) return undefined;
+	if (cacheRetention === "none") return { mode: "explicit" };
+	if (cacheRetention === "long" && compat.supportsLongCacheRetention) return { ttl: "30m" };
+	return undefined;
 }
 
 function formatOpenAIResponsesError(error: unknown): string {
@@ -322,8 +334,9 @@ function buildParams(
 	});
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
-	const disableImplicitPromptCache = cacheRetention === "none" && compat.supportsExplicitPromptCacheMode;
-	const params: ResponseCreateParamsStreaming & { prompt_cache_options?: { mode: "explicit" } } = {
+	const params: ResponseCreateParamsStreaming & {
+		prompt_cache_options?: { mode?: "explicit"; ttl?: "30m" };
+	} = {
 		// A fast variant keeps its canonical `-fast` id on the model object — that is the identity the
 		// caller selected and records — while routing to the base upstream model plus a service tier.
 		model: model.fastRoute?.upstreamModelId ?? model.id,
@@ -331,7 +344,7 @@ function buildParams(
 		stream: true,
 		prompt_cache_key: cacheRetention === "none" ? undefined : clampOpenAIPromptCacheKey(options?.sessionId),
 		prompt_cache_retention: getPromptCacheRetention(compat, cacheRetention),
-		prompt_cache_options: disableImplicitPromptCache ? { mode: "explicit" } : undefined,
+		prompt_cache_options: getPromptCacheOptions(compat, cacheRetention),
 		store: false,
 	};
 

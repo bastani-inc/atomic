@@ -240,6 +240,8 @@ Amazon Bedrock exposes `openai.gpt-6-astra`, `global.openai.gpt-6-astra`, and `u
 
 Atomic does not synthesize Azure OpenAI Astra entries. Live-provider catalogs remain authoritative: the current OpenRouter catalog publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`, while the Vercel AI Gateway publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`. Atomic imports those exact IDs and their request-wide long-context prices. Vercel owns its suffixed ID, so it remains route-less and does not gain Atomic's first-party fast-route behavior.
 
+On OpenAI Responses, Astra uses the newer prompt-cache payload. `cacheRetention: "long"` sends `prompt_cache_options.ttl: "30m"` instead of the legacy `prompt_cache_retention: "24h"`; `none` sends explicit mode without a cache key, and `short` sends neither cache option. Earlier Responses models keep the 24-hour field for long retention.
+
 ### Sampling Parameters
 
 `samplingParams` is a free-form object merged into every request body for an OpenAI-compatible model after the fields Atomic sets, so its keys win. Use it to send parameters that Atomic does not model, including server-specific values such as llama.cpp's `min_p` or vLLM's `top_k`:
@@ -613,7 +615,7 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `supportsStrictTools`                         | Anthropic/Bedrock strict-tool capability, normally generated from verified model metadata. |
 | `supportsOpenAIGrammarTools`                  | Canonical Pi capability for OpenAI Lark/regex custom tools. Keep false unless the endpoint passes custom tools through unchanged. |
 | `supportsGrammarTools`                        | Atomic compatibility alias for `supportsOpenAIGrammarTools`; the canonical field wins if both disagree. |
-| `supportsLongCacheRetention`                  | Whether the provider accepts long cache retention when cache retention is `long`: `prompt_cache_retention: "24h"` for OpenAI prompt caching, or `cache_control.ttl: "1h"` when `cacheControlFormat` is `anthropic`. Default: `true`. |
+| `supportsLongCacheRetention`                  | Whether the provider accepts long cache retention when cache retention is `long`: `prompt_cache_options.ttl: "30m"` for GPT-5.6+ Responses models, `prompt_cache_retention: "24h"` for earlier OpenAI models, or `cache_control.ttl: "1h"` when `cacheControlFormat` is `anthropic`. Default: `true`. |
 | `vllmPriority`                                | vLLM scheduler priority sent as the top-level `priority` request field. Lower values are handled earlier and the server default is `0`, so it only takes effect when vLLM runs with `--scheduling-policy priority`. Off by default; not set on the generated catalog. |
 | `openRouterRouting`                           | OpenRouter provider routing preferences. This object is sent as-is in the `provider` field of the [OpenRouter API request](https://openrouter.ai/docs/guides/routing/provider-selection).                                            |
 | `vercelGatewayRouting`                        | Vercel AI Gateway routing config for provider selection (`only`, `order`)                                                                                                                                                            |

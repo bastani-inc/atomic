@@ -4,7 +4,7 @@ import { stream as streamOpenAICompletions } from "../src/api/openai-completions
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
 import { getModel, stream } from "../src/compat.ts";
 import { MODELS } from "../src/models.generated.ts";
-import type { Context, Model } from "../src/types.ts";
+import type { CacheRetention, Context, Model, OpenAIResponsesCompat } from "../src/types.ts";
 
 class PayloadCaptured extends Error {
 	constructor() {
@@ -19,7 +19,7 @@ interface OpenAICompletionsCachePayload {
 }
 
 interface OpenAIResponsesCachePayload extends OpenAICompletionsCachePayload {
-	prompt_cache_options?: { mode: "explicit" };
+	prompt_cache_options?: { mode?: "explicit"; ttl?: "30m" };
 }
 
 function stopAfterPayload<TPayload>(capture: (payload: TPayload) => void): (payload: unknown) => never {
@@ -317,112 +317,69 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 			expect(capturedPayload.prompt_cache_retention).toBe("24h");
 		});
 
-		it("should omit prompt_cache_retention when supportsLongCacheRetention is false", async () => {
-			const model = {
-				...getModel("openai", "gpt-4o-mini"),
-				compat: { supportsLongCacheRetention: false },
-			};
-			let capturedPayload: any = null;
-
-			try {
-				const s = streamOpenAIResponses(model, context, {
-					apiKey: "fake-key",
-					cacheRetention: "long",
-					sessionId: "session-compat-false",
-					onPayload: stopAfterPayload((payload) => {
-						capturedPayload = payload;
-					}),
-				});
-
-				for await (const event of s) {
-					if (event.type === "error") break;
-				}
-			} catch {
-				// Expected to fail
-			}
-
-			expect(capturedPayload).not.toBeNull();
-			expect(capturedPayload.prompt_cache_retention).toBeUndefined();
-		});
-
-		it("should omit prompt_cache_key and disable implicit writes when cacheRetention is none", async () => {
-			const model = getModel("openai", "gpt-5.6-sol");
+		async function captureResponsesCachePayload(
+			model: Model<"openai-responses">,
+			cacheRetention: CacheRetention,
+			compat?: OpenAIResponsesCompat,
+		): Promise<OpenAIResponsesCachePayload> {
 			let capturedPayload: OpenAIResponsesCachePayload | undefined;
+			const configuredModel = compat ? { ...model, compat: { ...model.compat, ...compat } } : model;
 
 			try {
-				const s = streamOpenAIResponses(model, context, {
+				const response = streamOpenAIResponses(configuredModel, context, {
 					apiKey: "fake-key",
-					cacheRetention: "none",
-					sessionId: "session-1",
+					cacheRetention,
+					sessionId: "session-cache-test",
 					onPayload: stopAfterPayload<OpenAIResponsesCachePayload>((payload) => {
 						capturedPayload = payload;
 					}),
 				});
 
-				for await (const event of s) {
+				for await (const event of response) {
 					if (event.type === "error") break;
 				}
 			} catch {
-				// Expected to fail
+				// Expected after the payload hook stops the request.
 			}
 
-			expect(capturedPayload).toBeDefined();
-			expect(capturedPayload?.prompt_cache_key).toBeUndefined();
-			expect(capturedPayload?.prompt_cache_retention).toBeUndefined();
-			expect(capturedPayload?.prompt_cache_options).toEqual({ mode: "explicit" });
-		});
+			if (!capturedPayload) throw new Error("OpenAI Responses payload was not captured");
+			return capturedPayload;
+		}
 
-		it("should omit prompt_cache_options for models that reject it", async () => {
-			const model = getModel("openai", "gpt-4o-mini");
-			let capturedPayload: OpenAIResponsesCachePayload | undefined;
+		it.each([
+			["gpt-4o-mini", "none", undefined, undefined, undefined],
+			["gpt-4o-mini", "short", "session-cache-test", undefined, undefined],
+			["gpt-4o-mini", "long", "session-cache-test", "24h", undefined],
+			["gpt-5.6-sol", "none", undefined, undefined, { mode: "explicit" }],
+			["gpt-6-astra", "none", undefined, undefined, { mode: "explicit" }],
+			["gpt-6-astra", "short", "session-cache-test", undefined, undefined],
+			["gpt-6-astra", "long", "session-cache-test", undefined, { ttl: "30m" }],
+		] as const)(
+			"uses the supported cache payload for %s with %s retention",
+			async (modelId, cacheRetention, cacheKey, retention, cacheOptions) => {
+				const payload = await captureResponsesCachePayload(getModel("openai", modelId), cacheRetention);
 
-			try {
-				const s = streamOpenAIResponses(model, context, {
-					apiKey: "fake-key",
-					cacheRetention: "none",
-					sessionId: "session-1",
-					onPayload: stopAfterPayload<OpenAIResponsesCachePayload>((payload) => {
-						capturedPayload = payload;
-					}),
-				});
+				expect(payload.prompt_cache_key).toBe(cacheKey);
+				expect(payload.prompt_cache_retention).toBe(retention);
+				expect(payload.prompt_cache_options).toEqual(cacheOptions);
+			},
+		);
 
-				for await (const event of s) {
-					if (event.type === "error") break;
-				}
-			} catch {
-				// Expected to fail
-			}
+		it.each([
+			["gpt-4o-mini", { supportsLongCacheRetention: false }, undefined, undefined],
+			["gpt-4o-mini", { supportsExplicitPromptCacheMode: true }, undefined, { ttl: "30m" }],
+			["gpt-6-astra", { supportsExplicitPromptCacheMode: false }, "24h", undefined],
+			["gpt-6-astra", { supportsLongCacheRetention: false }, undefined, undefined],
+		] as const)(
+			"honors cache capability overrides for %s with %j",
+			async (modelId, compat, retention, cacheOptions) => {
+				const payload = await captureResponsesCachePayload(getModel("openai", modelId), "long", compat);
 
-			expect(capturedPayload).toBeDefined();
-			expect(capturedPayload?.prompt_cache_key).toBeUndefined();
-			expect(capturedPayload?.prompt_cache_options).toBeUndefined();
-		});
-
-		it("should set prompt_cache_retention when cacheRetention is long", async () => {
-			const model = getModel("openai", "gpt-4o-mini");
-			let capturedPayload: any = null;
-
-			try {
-				const s = streamOpenAIResponses(model, context, {
-					apiKey: "fake-key",
-					cacheRetention: "long",
-					sessionId: "session-2",
-					onPayload: stopAfterPayload((payload) => {
-						capturedPayload = payload;
-					}),
-				});
-
-				for await (const event of s) {
-					if (event.type === "error") break;
-				}
-			} catch {
-				// Expected to fail
-			}
-
-			expect(capturedPayload).not.toBeNull();
-			expect(capturedPayload.prompt_cache_key).toBe("session-2");
-			expect(capturedPayload.prompt_cache_retention).toBe("24h");
-		});
+				expect(payload.prompt_cache_key).toBe("session-cache-test");
+				expect(payload.prompt_cache_retention).toBe(retention);
+				expect(payload.prompt_cache_options).toEqual(cacheOptions);
+			},
+		);
 	});
 
 	describe("OpenAI Completions Provider", () => {

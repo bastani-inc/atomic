@@ -44,6 +44,7 @@
 - `ModelRuntime.getProvider()` now returns the same published provider as `getProviders()`, so every catalog accessor agrees about derived `-fast` models. It is the registered provider behind a `{ ...provider, getModels }` overlay, so `auth`, `login`, `stream`, and `streamSimple` remain the same function references; use `getRegisteredNativeProvider()` when you need the exact registered object.
 - The chat footer, startup banner, workflow stage labels, and subagent result labels no longer append a separate `fast` marker. The selected model ID carries the `-fast` suffix itself, so a subagent renders as `codebase-analyzer (openai-codex/gpt-5.6-sol-fast · thinking medium)`.
 - The `edit` tool's model-facing hashline guidance now includes compact worked examples and anti-patterns for commonly rejected patch shapes, and correctly identifies native Rust tree-sitter block resolution as primary with the brace/indent heuristic as its fallback. The hashline reference documentation is now a specification covering inputs, verified tolerated shapes, outputs, worked examples, limits, literal error messages, and warnings.
+- OpenAI Responses models that advertise explicit prompt-cache support, including GPT-5.6 and GPT-6 Astra, now use `prompt_cache_options.ttl: "30m"` for long cache retention. Earlier Responses models retain `prompt_cache_retention: "24h"`; no-cache and short-cache requests continue to omit unsupported fields.
 
 ### Fixed
 
