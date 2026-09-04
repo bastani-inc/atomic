@@ -197,6 +197,8 @@ export function prepareExecutionContext(input: {
 		intercomBridge,
 	};
 
+	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(runId);
+
 	const foregroundMode: "single" | "parallel" = hasTasks ? "parallel" : "single";
 	const foregroundControl = {
 		runId,

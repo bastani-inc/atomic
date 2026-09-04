@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+const WORKFLOW_STAGE_CLOSE_REASON = Symbol.for("@bastani/atomic/workflow-stage-close");
+
 export type WorkflowStageAdmissionDecision = "admitted" | "late" | "duplicate";
 
 export interface WorkflowStageAdmissionResult {
@@ -26,6 +28,7 @@ export class WorkflowStageAdmissionBoundary {
 	private readonly invocationContext = new AsyncLocalStorage<string>();
 	private closePromise: Promise<void> | undefined;
 	private readonly closeController = new AbortController();
+	private readonly ownedSubagentRunIds = new Set<string>();
 
 	/** Aborts synchronously when close begins so stage-owned work can terminate before late delivery. */
 	get closeSignal(): AbortSignal {
@@ -105,6 +108,14 @@ export class WorkflowStageAdmissionBoundary {
 		);
 	}
 
+	registerOwnedSubagentRun(runId: string): void {
+		this.ownedSubagentRunIds.add(runId);
+	}
+
+	ownsSubagentRun(runId: string): boolean {
+		return this.ownedSubagentRunIds.has(runId);
+	}
+
 	isOpen(): boolean {
 		return this.open;
 	}
@@ -115,7 +126,7 @@ export class WorkflowStageAdmissionBoundary {
 
 	close(): Promise<void> {
 		this.seal();
-		if (!this.closeController.signal.aborted) this.closeController.abort();
+		if (!this.closeController.signal.aborted) this.closeController.abort(WORKFLOW_STAGE_CLOSE_REASON);
 		this.closePromise ??= this.finishClose();
 		return this.closePromise;
 	}

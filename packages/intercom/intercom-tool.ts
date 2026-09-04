@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
+import { awaitOperationOrStageClose } from "./abortable-operation.js";
+
 import type { IntercomClient } from "./broker/client.js";
 import type { SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
@@ -568,14 +570,14 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: retryErrorDetails(retained.retryToken),
               };
             }
-            const result = await connectedClient.send(sendTo, {
+            const sendOutcome = await awaitOperationOrStageClose(connectedClient.send(sendTo, {
               messageId: retryIdentity.messageId,
               logicalTarget: to,
               text: message,
               attachments,
               replyTo,
-            });
-            if (_signal?.aborted) {
+            }), _signal);
+            if (sendOutcome.status === "stage-closed") {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
               return {
@@ -584,6 +586,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true },
               };
             }
+            const result = sendOutcome.value;
+
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;

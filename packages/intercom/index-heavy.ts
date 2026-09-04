@@ -345,14 +345,17 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (receivedBeforeStageStart) {
       return sendIncomingMessage(entry, "prelude", messageGeneration, false);
     }
-    const stageClosed = liveContext.orchestrationContext?.kind === "workflow-stage"
-      && liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
+    const stageAdmission = liveContext.orchestrationContext?.kind === "workflow-stage"
+      ? liveContext.orchestrationContext.messageAdmission
+      : undefined;
+    const stageClosed = stageAdmission?.isOpen() === false;
     if (stageClosed) {
       routeClosedWorkflowStageMessage(
         entry, inboundDeliveries, replyTracker, replyWaiters.pending(),
         () => sendIncomingMessage(entry, "trigger", messageGeneration, false),
         () => client,
         () => Boolean(getLiveContext(liveContext, messageGeneration)),
+        (runId) => stageAdmission.boundary.ownsSubagentRun(runId),
       );
       return;
     }

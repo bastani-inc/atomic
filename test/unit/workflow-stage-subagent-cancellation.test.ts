@@ -195,6 +195,8 @@ test("closing a workflow stage cancels its detached single child without a late 
 			stageContext(root, boundary, "stage-a"),
 		);
 		const launched = await run.launched;
+		assert.equal(boundary.ownsSubagentRun(launched.runId), true);
+
 		await sleep(10);
 		await detach(bus, launched, 0);
 		assert.equal((await execution).details?.results[0]?.detached, true);
@@ -248,6 +250,11 @@ test("closing one stage cancels every detached parallel child but leaves another
 			stageContext(root, boundaryB, "stage-b"),
 		);
 		const [launchedA, launchedB] = await Promise.all([stageA.launched, stageB.launched]);
+		assert.equal(boundaryA.ownsSubagentRun(launchedA.runId), true);
+		assert.equal(boundaryA.ownsSubagentRun(launchedB.runId), false);
+		assert.equal(boundaryB.ownsSubagentRun(launchedA.runId), false);
+		assert.equal(boundaryB.ownsSubagentRun(launchedB.runId), true);
+
 		await sleep(10);
 		await detach(busA, launchedA, 0);
 		await detach(busB, launchedB, 0);

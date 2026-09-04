@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
+import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { registerContactSupervisorTool } from "../../packages/intercom/contact-supervisor-tool.js";
 import {
 	ForegroundDetachHandoff,
@@ -61,6 +62,9 @@ type Tool = {
 
 interface FixtureOptions {
 	resolveSessionTarget?: (_client: object, target: string) => Promise<string | null>;
+	onSend?: () => void;
+	sendGate?: Promise<void>;
+
 	onSupervisorSend?: () => void;
 	supervisorSendGate?: Promise<void>;
 }
@@ -100,6 +104,9 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 			},
 		) {
 			sent.push({ to, message, supervisor: false });
+			options.onSend?.();
+			await options.sendGate;
+
 			return { id: message.messageId ?? "sent", delivered: true };
 		},
 		async sendToSupervisor(
@@ -644,10 +651,31 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(parentAskEvents, 0);
 	});
 
-	test("an in-flight progress update reports cancellation when its owning stage closes", async () => {
+	test("a generic abort does not rewrite an in-flight send's delivery result", async () => {
 		const started = Promise.withResolvers<void>();
 		const finish = Promise.withResolvers<void>();
 		const controller = new AbortController();
+		const send = fixture("intercom", { onSend: () => started.resolve(), sendGate: finish.promise });
+		const execution = send.tool.execute(
+			"call",
+			{ action: "send", to: "parent", message: "Already accepted" },
+			controller.signal,
+			undefined,
+			context,
+		);
+		await started.promise;
+		controller.abort();
+		finish.resolve();
+		const result = await execution;
+
+		assert.equal(result.isError, false);
+		assert.equal(result.content[0]?.text, "Message sent to parent");
+	});
+
+	test("an in-flight progress update reports cancellation when its owning stage closes", async () => {
+		const started = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const boundary = new WorkflowStageAdmissionBoundary();
 		const progress = fixture("supervisor", {
 			onSupervisorSend: () => started.resolve(),
 			supervisorSendGate: finish.promise,
@@ -655,12 +683,12 @@ describe("registered blocking intercom tools", () => {
 		const execution = progress.tool.execute(
 			"call",
 			{ reason: "progress_update", message: "Late finding" },
-			controller.signal,
+			boundary.closeSignal,
 			undefined,
 			context,
 		);
 		await started.promise;
-		controller.abort();
+		await boundary.close();
 		finish.resolve();
 		const result = await execution;
 

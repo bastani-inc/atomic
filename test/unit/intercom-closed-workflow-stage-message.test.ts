@@ -67,6 +67,7 @@ test("failed completed-stage revival sends an actionable error on the exact ask 
 		},
 		() => client as never,
 		() => true,
+		() => false,
 	);
 	await waitFor(() => sent.length === 1);
 
@@ -96,6 +97,7 @@ test("successful completed-stage handoff retains the exact pending ask for the r
 		},
 		() => null,
 		() => true,
+		() => false,
 	);
 	await waitFor(() => delivered);
 
@@ -121,6 +123,7 @@ test("ordinary late notifications keep the external route without claiming targe
 		},
 		() => null,
 		() => true,
+		() => false,
 	);
 	await waitFor(() => deliveredMessages.length === 1);
 	assert.equal(deliveredMessages[0], message, "ordinary payload identity remains unchanged");
@@ -153,6 +156,7 @@ test("a closed workflow stage suppresses child-owned late traffic without changi
 		},
 		() => null,
 		() => true,
+		(runId) => runId === childMessage.source?.subagentRunId,
 	);
 	await sleep(20);
 
@@ -166,6 +170,8 @@ test("an in-flight child Intercom send cancelled by stage close cannot report su
 	const sendStarted = Promise.withResolvers<void>();
 	const finishSend = Promise.withResolvers<void>();
 	const boundary = new WorkflowStageAdmissionBoundary();
+	boundary.registerOwnedSubagentRun("foreground-detach-run-1-0");
+
 	let parentDeliveries = 0;
 	let registered:
 		| {
@@ -201,6 +207,7 @@ test("an in-flight child Intercom send cancelled by stage close cannot report su
 				},
 				() => null,
 				() => true,
+				(runId) => boundary.ownsSubagentRun(runId),
 			);
 			return { id: message.id, delivered: true };
 		},
@@ -360,6 +367,7 @@ test("production listener composition preserves the workflow owner's failed revi
 			},
 			() => client as never,
 			() => true,
+			() => false,
 		);
 		const failure = await Promise.race([
 			sent.promise,
@@ -545,6 +553,7 @@ test("the ask tool receives the production-composed correlated revival failure w
 				},
 				() => targetClient as never,
 				() => true,
+				() => false,
 			);
 			return { id: inbound.id, delivered: true };
 		},

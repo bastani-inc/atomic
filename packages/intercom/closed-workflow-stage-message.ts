@@ -9,11 +9,10 @@ import { sendWorkflowStageDeliveryFailure } from "./workflow-stage-delivery-fail
 
 /**
  * Owns late ingress after a workflow stage seals its active generation.
- * Stage-owned children carry runtime-owned subagent source metadata, so their
- * late traffic is dropped with the cancelled child instead of escaping to the
- * parent route. Blocking asks from other sessions are handed to workflow
- * post-mortem routing once; ordinary non-child notifications retain the stable
- * parent-route retry used before completed-stage asks existed.
+ * The stage boundary retains the exact subagent run IDs it launched, so only
+ * matching child traffic is dropped instead of escaping to the parent route.
+ * Blocking asks from other sessions are handed to workflow post-mortem routing
+ * once; ordinary non-owned notifications retain the stable parent-route retry.
  */
 export function routeClosedWorkflowStageMessage(
   entry: InboundMessageEntry,
@@ -23,8 +22,11 @@ export function routeClosedWorkflowStageMessage(
   deliver: () => Promise<void>,
   currentClient: () => IntercomClient | null,
   isCurrent: () => boolean,
+  ownsSubagentRun: (runId: string) => boolean,
 ): void {
-  if (entry.message.source?.subagentRunId !== undefined) return;
+  const sourceRunId = entry.message.source?.subagentRunId;
+  if (sourceRunId !== undefined && ownsSubagentRun(sourceRunId)) return;
+
   if (entry.message.expectsReply !== true) {
     void retryStableDelivery({ deliver, isCurrent }).catch(() => {});
     return;

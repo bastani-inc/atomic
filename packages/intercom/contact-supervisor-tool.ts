@@ -2,6 +2,8 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
+import { awaitOperationOrStageClose } from "./abortable-operation.js";
+
 import type { IntercomClient } from "./broker/client.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
@@ -211,16 +213,17 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
         if (reason === "progress_update") {
           const message = params.message as string;
           try {
-            const result = await connectedClient.sendToSupervisor(sendTo, {
+            const sendOutcome = await awaitOperationOrStageClose(connectedClient.sendToSupervisor(sendTo, {
               text: formatChildOrchestratorMessage("update", metadata, message),
-            });
-            if (signal?.aborted) {
+            }), signal);
+            if (sendOutcome.status === "stage-closed") {
               return {
                 content: [{ type: "text", text: "Cancelled" }],
                 isError: true,
                 details: { error: true },
               };
             }
+            const result = sendOutcome.value;
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
