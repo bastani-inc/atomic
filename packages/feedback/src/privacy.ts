@@ -14,6 +14,7 @@ export interface ScrubbedFeedback {
 function escaped(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
+const seg = "[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+";
 const rules = [
 	{
 		category: "private-key",
@@ -47,7 +48,7 @@ const rules = [
 	},
 	{
 		category: "home-directory",
-		pattern: new RegExp(`(?<!\\w)(?:${escaped(homedir())}|(?:\\w:)?[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+)`, "giu"),
+		pattern: new RegExp(`(?<!\\w)(?:${escaped(homedir())}|(?:\\w:)?${seg})(?:${seg})*`, "giu"),
 		replacement: "~",
 	},
 ] as const satisfies readonly { category: string; pattern: RegExp; replacement: string }[];

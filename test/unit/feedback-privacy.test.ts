@@ -50,6 +50,7 @@ describe("feedback privacy core", () => {
 		const result = scrubFeedback(homedir(), body);
 		assert.equal(result.title, "~");
 		assert.equal(result.body, "~ and ~/project and ~\\app and ~\\app and https://ex.invalid/Users/docs/readme");
+		assert.equal(scrubFeedback("safe", "~/home/synthetic-account").body, "~~");
 		const displayed = JSON.stringify(result);
 		assert.doesNotMatch(displayed, /synthetic-account/u);
 		assert.equal(displayed.includes(homedir()), false);
