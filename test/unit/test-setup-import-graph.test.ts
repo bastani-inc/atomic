@@ -30,7 +30,9 @@ const SETUP_FILE = "test/setup-workflow-durability.ts";
  */
 // Re-measured at 47 when the intercom-stage-paths slices added stage-target modules to
 // the durable/shared graph (workflow-stage-target, possible-stages, path matching).
-const MAX_REACHABLE_MODULES = 47;
+// Re-measured at 48 when durability warnings added the process-owner leaf. A trivial file's setup was
+// 1.76–2.38s with the leaf versus 1.83–2.21s without it; its only import is type-only and erased at runtime.
+const MAX_REACHABLE_MODULES = 48;
 
 /**
  * Every static and dynamic import form that can pull a module into the graph.

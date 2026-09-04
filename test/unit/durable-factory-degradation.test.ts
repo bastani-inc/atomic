@@ -7,6 +7,14 @@ import {
 	initializeDurableBackend,
 	setDurableBackend,
 } from "../../packages/workflows/src/durable/factory.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { prepareWorkflowResumeCatalog } from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
+
+const PROVISIONING_FAILURE = "initdb: error: cannot be run as root";
+const EXPECTED_DEGRADATION_WARNING =
+	"atomic-workflows: durable backend unavailable — continuing NON-DURABLY with an in-memory backend. " +
+	"Workflow runs will execute, but their state will not survive this process and `/workflow resume` " +
+	`after exit will not work. Restore durability by fixing Postgres provisioning: DBOS workflow durability configuration failed: ${PROVISIONING_FAILURE}. Set DBOS_SYSTEM_DATABASE_URL to an existing Postgres when local provisioning is unavailable.`;
 
 afterEach(() => {
 	setDurableBackend(undefined);
@@ -14,10 +22,41 @@ afterEach(() => {
 });
 
 describe("durable factory non-durable degradation", () => {
-	test.sequential("falls back to one in-memory backend with a loud warning when DBOS cannot be provisioned", async () => {
+	test.sequential("routes one warning through a UI sink while concurrent callers share the fallback", async () => {
 		setDurableBackend(undefined); // clear the preload-injected test backend
 		resetDbosLifecycleForTests(async () => {
-			throw new Error("initdb: error: cannot be run as root");
+			throw new Error(PROVISIONING_FAILURE);
+		});
+		const notifications: string[] = [];
+		const consoleWarnings: string[] = [];
+		const consoleSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+			consoleWarnings.push(args.map(String).join(" "));
+		});
+		try {
+			const notify = (message: string): void => {
+				notifications.push(message);
+			};
+			const [first, second] = await Promise.all([
+				initializeDurableBackend(notify),
+				initializeDurableBackend(notify),
+			]);
+
+			assert.ok(first instanceof InMemoryDurableBackend);
+			assert.equal(first.persistent, false);
+			assert.equal(second, first);
+			assert.equal(await initializeDurableBackend(notify), first);
+			assert.equal(getDurableBackend(), first);
+			assert.deepEqual(notifications, [EXPECTED_DEGRADATION_WARNING]);
+			assert.equal(consoleWarnings.filter((message) => message.includes("NON-DURABLY")).length, 0);
+		} finally {
+			consoleSpy.mockRestore();
+		}
+	});
+
+	test.sequential("prints one actionable warning when no UI sink is available", async () => {
+		setDurableBackend(undefined);
+		resetDbosLifecycleForTests(async () => {
+			throw new Error(PROVISIONING_FAILURE);
 		});
 		const warnings: string[] = [];
 		const consoleSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
@@ -27,17 +66,39 @@ describe("durable factory non-durable degradation", () => {
 			const [first, second] = await Promise.all([initializeDurableBackend(), initializeDurableBackend()]);
 
 			assert.ok(first instanceof InMemoryDurableBackend);
-			assert.equal(first.persistent, false);
-			// Concurrent initialization must converge on a single fallback backend.
 			assert.equal(second, first);
-			assert.equal(await initializeDurableBackend(), first);
-			// The sync accessor serves the degraded backend after initialization.
-			assert.equal(getDurableBackend(), first);
+			assert.deepEqual(
+				warnings.filter((message) => message.includes("NON-DURABLY")),
+				[EXPECTED_DEGRADATION_WARNING],
+			);
+		} finally {
+			consoleSpy.mockRestore();
+		}
+	});
 
-			const degradationWarnings = warnings.filter((message) => message.includes("NON-DURABLY"));
-			assert.equal(degradationWarnings.length, 1);
-			assert.match(degradationWarnings[0]!, /cannot be run as root/);
-			assert.match(degradationWarnings[0]!, /\/workflow resume/);
+	test.sequential("a throwing UI sink cannot block the in-memory fallback", async () => {
+		setDurableBackend(undefined);
+		resetDbosLifecycleForTests(async () => {
+			throw new Error(PROVISIONING_FAILURE);
+		});
+		const warnings: string[] = [];
+		const consoleSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		});
+		try {
+			let publishedBackend: ReturnType<typeof getDurableBackend> | undefined;
+			const backend = await initializeDurableBackend(() => {
+				publishedBackend = getDurableBackend();
+				throw new Error("UI transport unavailable");
+			});
+
+			assert.ok(backend instanceof InMemoryDurableBackend);
+			assert.equal(backend.persistent, false);
+			assert.equal(publishedBackend, backend);
+			assert.deepEqual(
+				warnings.filter((message) => message.includes("NON-DURABLY")),
+				[EXPECTED_DEGRADATION_WARNING],
+			);
 		} finally {
 			consoleSpy.mockRestore();
 		}
@@ -56,6 +117,29 @@ describe("durable factory non-durable degradation", () => {
 		} finally {
 			consoleSpy.mockRestore();
 		}
+	});
+
+	test.sequential("an in-flight durable catalog preparation keeps the backend that initialization returned", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: "stable-catalog-backend",
+			name: "stable-catalog",
+			inputs: {},
+			status: "paused",
+			createdAt: 1,
+			completedCheckpoints: 1,
+		});
+		setDurableBackend(backend);
+		const runtime = createExtensionRuntime({ definitions: [], durabilityWarningSink: () => undefined });
+
+		const preparation = prepareWorkflowResumeCatalog(runtime, new Set());
+		setDurableBackend(undefined);
+
+		const catalog = await preparation;
+		assert.deepEqual(
+			catalog.resumable.map((entry) => entry.workflowId),
+			["stable-catalog-backend"],
+		);
 	});
 });
 

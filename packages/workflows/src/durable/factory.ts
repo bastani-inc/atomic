@@ -2,6 +2,11 @@
 
 import { type DurableWorkflowBackend, InMemoryDurableBackend } from "./backend.js";
 import {
+	type DurabilityWarningSink,
+	getDurableBackendProcessOwner,
+	resetDurableBackendProcessOwner,
+} from "./backend-process-owner.js";
+import {
 	DbosNotReadyError,
 	DbosShutdownError,
 	dbosLifecycleState,
@@ -10,9 +15,7 @@ import {
 } from "./dbos-lifecycle.js";
 import { classifyDbosDurabilityFailure, readDbosFailureDetail } from "./dbos-registration-diagnostics.js";
 
-let injectedBackend: DurableWorkflowBackend | undefined;
-let initializedBackend: DurableWorkflowBackend | undefined;
-let initializing: Promise<DurableWorkflowBackend> | undefined;
+export type { DurabilityWarningSink } from "./backend-process-owner.js";
 
 /**
  * A memoized backend is only reusable while its lifecycle generation is
@@ -26,20 +29,23 @@ function isMemoizedBackendUsable(backend: DurableWorkflowBackend): boolean {
 
 /** Return the injected test backend or the process-wide initialized backend. */
 export function getDurableBackend(): DurableWorkflowBackend {
+	const owner = getDurableBackendProcessOwner();
 	const memoized =
-		initializedBackend !== undefined && isMemoizedBackendUsable(initializedBackend) ? initializedBackend : undefined;
-	const backend = injectedBackend ?? memoized ?? getReadyDbosBackendSync();
+		owner.initializedBackend !== undefined && isMemoizedBackendUsable(owner.initializedBackend)
+			? owner.initializedBackend
+			: undefined;
+	const backend = owner.injectedBackend ?? memoized ?? getReadyDbosBackendSync();
 	if (backend === undefined) throw new DbosNotReadyError();
 	return backend;
 }
 
 /** Internal injection seam. Production initialization uses DBOS. */
 export function setDurableBackend(backend: DurableWorkflowBackend | undefined): void {
-	injectedBackend = backend;
 	if (backend === undefined) {
-		initializedBackend = undefined;
-		initializing = undefined;
+		resetDurableBackendProcessOwner();
+		return;
 	}
+	getDurableBackendProcessOwner().injectedBackend = backend;
 }
 
 /** Create an isolated current-interface backend for tests only. */
@@ -57,24 +63,29 @@ export function createInMemoryTestBackend(): InMemoryDurableBackend {
  * Non-durable runs execute normally but do not survive the process:
  * `/workflow resume` after exit has nothing to restore.
  */
-export async function initializeDurableBackend(): Promise<DurableWorkflowBackend> {
-	if (injectedBackend !== undefined) return injectedBackend;
-	if (initializedBackend !== undefined) {
-		if (isMemoizedBackendUsable(initializedBackend)) return initializedBackend;
+export async function initializeDurableBackend(warningSink?: DurabilityWarningSink): Promise<DurableWorkflowBackend> {
+	const owner = getDurableBackendProcessOwner();
+	if (warningSink !== undefined) owner.warningSink = warningSink;
+	if (owner.injectedBackend !== undefined) return owner.injectedBackend;
+	if (owner.initializedBackend !== undefined) {
+		if (isMemoizedBackendUsable(owner.initializedBackend)) return owner.initializedBackend;
 		// Never hand out a backend from a stopped lifecycle generation.
-		initializedBackend = undefined;
-		initializing = undefined;
+		owner.initializedBackend = undefined;
+		owner.initializing = undefined;
 	}
-	initializing ??= getReadyDbosBackend()
+	owner.initializing ??= getReadyDbosBackend()
 		.catch(async (error: unknown) => {
-			if (error instanceof DbosShutdownError) throw error;
+			if (error instanceof DbosShutdownError) {
+				owner.initializing = undefined;
+				throw error;
+			}
 			return await degradeToNonDurableBackend(error);
 		})
 		.then((backend) => {
-			initializedBackend = backend;
+			owner.initializedBackend = backend;
 			return backend;
 		});
-	return await initializing;
+	return await owner.initializing;
 }
 
 async function degradeToNonDurableBackend(error: unknown): Promise<DurableWorkflowBackend> {
@@ -84,10 +95,24 @@ async function degradeToNonDurableBackend(error: unknown): Promise<DurableWorkfl
 		kind === "duplicate_registration"
 			? `Restore durability by resolving the duplicate DBOS operation registration: ${detail}`
 			: `Restore durability by fixing Postgres provisioning: ${detail}`;
-	console.error(
+	const warning =
 		"atomic-workflows: durable backend unavailable — continuing NON-DURABLY with an in-memory backend. " +
-			"Workflow runs will execute, but their state will not survive this process and `/workflow resume` " +
-			`after exit will not work. ${restore}`,
-	);
-	return new InMemoryDurableBackend();
+		"Workflow runs will execute, but their state will not survive this process and `/workflow resume` " +
+		`after exit will not work. ${restore}`;
+	const owner = getDurableBackendProcessOwner();
+	const backend = new InMemoryDurableBackend();
+	owner.initializedBackend = backend;
+	if (!owner.warningReported) {
+		owner.warningReported = true;
+		try {
+			if (owner.warningSink !== undefined) {
+				owner.warningSink(warning);
+				return backend;
+			}
+		} catch {
+			// A stale or failed host UI must not prevent the non-durable fallback.
+		}
+		console.error(warning);
+	}
+	return backend;
 }

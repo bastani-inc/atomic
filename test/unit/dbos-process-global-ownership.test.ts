@@ -44,7 +44,7 @@ let graphGeneration = 0;
 let originalDatabaseUrl: string | undefined;
 const emptyHandle = { getStatus: async () => null, getResult: async () => null };
 
-function createSharedFakeDbos(): SharedFakeDbos {
+function createSharedFakeDbos(options: { readonly launch?: () => Promise<void> } = {}): SharedFakeDbos {
 	const wrappers = new Map<string, RegisteredWrapper>();
 	const registeredNames: string[] = [];
 	let shutdowns = 0;
@@ -61,6 +61,7 @@ function createSharedFakeDbos(): SharedFakeDbos {
 		},
 		async launch() {
 			launched = true;
+			await options.launch?.();
 		},
 		async shutdown() {
 			shutdowns += 1;
@@ -89,6 +90,20 @@ function createSharedFakeDbos(): SharedFakeDbos {
 		async deleteWorkflows() {},
 	};
 	return sdk;
+}
+
+function deferred<T>(): {
+	readonly promise: Promise<T>;
+	readonly resolve: (value: T) => void;
+	readonly reject: (error: unknown) => void;
+} {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
 }
 
 function processOwner(): ProcessOwnerView | undefined {
@@ -175,6 +190,37 @@ describe("process-global DBOS ownership", () => {
 			} finally {
 				consoleSpy.mockRestore();
 			}
+		},
+		DURABILITY_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
+	);
+
+	test.sequential(
+		"shares one degraded backend and warning across repeated durability-graph evaluation",
+		async () => {
+			const launchStarted = deferred<void>();
+			const launchFailure = deferred<never>();
+			const sdk = createSharedFakeDbos({
+				launch: async () => {
+					launchStarted.resolve();
+					return await launchFailure.promise;
+				},
+			});
+			const firstWarnings: string[] = [];
+			const secondWarnings: string[] = [];
+			const first = await evaluateDurabilityGraph(sdk);
+			const firstInitialization = first.initializeDurableBackend((message) => firstWarnings.push(message));
+			await launchStarted.promise;
+			const second = await evaluateDurabilityGraph(sdk);
+			const secondInitialization = second.initializeDurableBackend((message) => secondWarnings.push(message));
+
+			launchFailure.reject(new Error("postgres unavailable"));
+			const [firstBackend, secondBackend] = await Promise.all([firstInitialization, secondInitialization]);
+
+			assert.equal(firstBackend.persistent, false);
+			assert.equal(secondBackend, firstBackend);
+			assert.deepEqual(firstWarnings, []);
+			assert.equal(secondWarnings.length, 1);
+			assert.match(secondWarnings[0] ?? "", /continuing NON-DURABLY/);
 		},
 		DURABILITY_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
 	);

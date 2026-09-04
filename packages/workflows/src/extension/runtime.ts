@@ -10,7 +10,7 @@
  *            src/workflows/registry.ts
  */
 
-import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
+import { type DurabilityWarningSink, getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { DetachedRunOpts } from "../runs/background/runner.js";
@@ -81,6 +81,8 @@ export interface ExtensionRuntimeOpts {
 	jobs?: JobTracker;
 	/** Invocation cwd used for workflow execution. Defaults to process.cwd(). */
 	cwd?: string;
+	/** Display-only degradation warning reporter supplied by the host composition root. */
+	durabilityWarningSink?: DurabilityWarningSink;
 	/** Resolve the host's non-default session directory for workflow stage transcripts. */
 	resolveDefaultStageSessionDir?: () => string | undefined;
 	/**
@@ -163,16 +165,17 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const config = opts.config;
 	const models = opts.models;
 	const jobs = opts.jobs;
+	const durabilityWarningSink = opts.durabilityWarningSink;
 	const runtimeCwd = opts.cwd ?? process.cwd();
 	const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
 	const resolvePossibleStageEntry = opts.resolvePossibleStageEntry;
 	const beforeRestoreCompleted = opts.beforeRestoreCompleted;
-	const ensureDbosReady = async (): Promise<void> => {
+	const ensureDbosReady = async () => {
 		// Deliberately not memoized: the factory revalidates its memoized backend
 		// against the current DBOS lifecycle generation, so caching a permanently
 		// resolved promise here could mask a backend stopped after a
 		// host-session replacement (issue #1957).
-		await initializeDurableBackend();
+		return await initializeDurableBackend(durabilityWarningSink);
 	};
 
 	function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
