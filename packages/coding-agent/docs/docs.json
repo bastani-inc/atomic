@@ -33,6 +33,7 @@
         "pages": [
           "extensions",
           "skills",
+          "feedback",
           "subagents",
           "intercom",
           {
