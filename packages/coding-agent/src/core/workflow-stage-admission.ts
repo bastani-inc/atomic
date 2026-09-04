@@ -25,6 +25,12 @@ export class WorkflowStageAdmissionBoundary {
 	private readonly pending = new Set<Promise<void>>();
 	private readonly invocationContext = new AsyncLocalStorage<string>();
 	private closePromise: Promise<void> | undefined;
+	private readonly closeController = new AbortController();
+
+	/** Aborts synchronously when close begins so stage-owned work can terminate before late delivery. */
+	get closeSignal(): AbortSignal {
+		return this.closeController.signal;
+	}
 	private readonly drainAdmittedWork: () => Promise<void>;
 
 	constructor(drainAdmittedWork: (() => Promise<void>) | undefined = undefined, completedKeys: Iterable<string> = []) {
@@ -109,6 +115,7 @@ export class WorkflowStageAdmissionBoundary {
 
 	close(): Promise<void> {
 		this.seal();
+		if (!this.closeController.signal.aborted) this.closeController.abort();
 		this.closePromise ??= this.finishClose();
 		return this.closePromise;
 	}

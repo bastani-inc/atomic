@@ -36,6 +36,7 @@ import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
+	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
 import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.js";
 import {
@@ -181,14 +182,16 @@ export async function runParallelPath(
 		const results = await runForegroundParallelTasks({
 			onDetachedExit: (index, result) => {
 				try {
-					notifyDetachedForegroundChildExit({
-						pi: deps.pi,
-						runId,
-						mode: "parallel",
-						index,
-						totalTasks: tasks.length,
-						result,
-					});
+					if (workflowStageAcceptsDetachedNotification(ctx)) {
+						notifyDetachedForegroundChildExit({
+							pi: deps.pi,
+							runId,
+							mode: "parallel",
+							index,
+							totalTasks: tasks.length,
+							result,
+						});
+					}
 				} finally {
 					detachedCleanup.recover(index);
 				}
