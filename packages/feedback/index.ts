@@ -9,6 +9,7 @@ import {
 	type FeedbackDraft,
 	type FeedbackSubmitDetails,
 	formatIssueBody,
+	formatPreparedDisplay,
 	type RedactionSummary,
 	scrubFeedback,
 	submitFeedbackIssue,
@@ -146,10 +147,9 @@ export default function feedback(pi: ExtensionAPI): void {
 				privacySummary: scrubbed.replacements,
 			};
 			const privacyNote = scrubbed.replacements.length
-				? `Privacy scrubbed: ${scrubbed.replacements.map(({ category, count }) => `${category} (${count})`).join(", ")}.`
-				: "Privacy scrubbed: no replacements needed.";
-			const text =
-				`Repository: ${details.repository.owner}/${details.repository.repo}\nKind: ${details.kind}\n\n${details.title}\n\n${details.body}\n\n${privacyNote}`;
+				? `${scrubbed.replacements.map(({ category, count }) => `${category} (${count})`).join(", ")}.`
+				: "no replacements needed.";
+			const text = formatPreparedDisplay(details, privacyNote);
 			return { content: [{ type: "text", text }], details };
 		},
 	});

@@ -13,9 +13,9 @@ const messages = {
 	"rate-limit": "GitHub rate-limited the submission. The reviewed draft was not posted.",
 	validation: "GitHub rejected the issue as invalid. The reviewed draft was not posted.",
 	network: "The issue submission has no confirmed result. Check bastani-inc/atomic before approving another attempt.",
-	"unexpected-status": "GitHub returned an unexpected response; the reviewed draft was not posted.",
 	abort: "The issue submission was aborted before a confirmed result. Check bastani-inc/atomic before approving another attempt.",
-	"malformed-response": "GitHub returned an invalid issue response; no success is being reported.",
+	"malformed-response":
+		"GitHub returned an invalid issue response with no confirmed result. Check bastani-inc/atomic before approving another attempt.",
 	"stale-draft": "The submitted content does not match the most recent prepared draft. Review the latest draft first.",
 	"missing-approval": "Clear approval to post the most recent draft is required in a new ordinary user message.",
 	"private-data": "The reviewed content still contains private data. Prepare and review the scrubbed draft again.",
@@ -36,10 +36,9 @@ export type FeedbackSubmissionRuntime = {
 	readonly transport: IssueSubmissionTransport;
 	readonly signal?: AbortSignal;
 };
-type TransportFailure = "authentication" | "permission" | "rate-limit" | "validation" | "unexpected-status";
 export class IssueTransportError extends Error {
 	constructor(
-		readonly code: TransportFailure,
+		readonly code: FeedbackSubmissionFailure,
 		message: string,
 	) {
 		super(message);
@@ -65,6 +64,9 @@ function contentText(content: unknown, separator = ""): string {
 		.filter((text): text is string => typeof text === "string")
 		.join(separator);
 }
+export function formatPreparedDisplay(input: FeedbackSubmissionInput, privacyNote: string): string {
+	return `Repository: ${FEEDBACK_REPOSITORY.owner}/${FEEDBACK_REPOSITORY.repo}\nKind: ${input.kind}\n\n${input.title}\n\n${input.body}\n\nPrivacy scrubbed: ${privacyNote}`;
+}
 type PreparedDraft = { readonly draft: FeedbackSubmissionInput; readonly display: string };
 function prepared(entry: BranchEntry): PreparedDraft | undefined {
 	const message = toolResult(entry, "feedback_prepare_issue");
@@ -82,7 +84,7 @@ function prepared(entry: BranchEntry): PreparedDraft | undefined {
 		return;
 	const draft: FeedbackSubmissionInput = { kind: details.kind, title: details.title, body: details.body };
 	const display = contentText(message.content);
-	const prefix = `Repository: ${FEEDBACK_REPOSITORY.owner}/${FEEDBACK_REPOSITORY.repo}\nKind: ${draft.kind}\n\n${draft.title}\n\n${draft.body}\n\nPrivacy scrubbed: `;
+	const prefix = formatPreparedDisplay(draft, "");
 	return display.startsWith(prefix) && display.endsWith(".") ? { draft, display } : undefined;
 }
 function roleText(entry: BranchEntry, role: "assistant" | "user"): string | undefined {
@@ -176,19 +178,12 @@ export async function submitFeedbackIssue(
 	}
 }
 function responseFailure(response: Response): IssueTransportError | Error {
-	const known: Partial<Record<number, TransportFailure>> = {
-		401: "authentication",
-		422: "validation",
-		429: "rate-limit",
-	};
+	const primary = { 401: "authentication", 422: "validation", 429: "rate-limit" };
+	const { status, headers } = response;
+	const limited = status === 403 && (headers.has("retry-after") || headers.get("x-ratelimit-remaining") === "0");
 	const code =
-		known[response.status] ??
-		(response.status === 403
-			? response.headers.has("retry-after") || response.headers.get("x-ratelimit-remaining") === "0"
-				? "rate-limit"
-				: "permission"
-			: "unexpected-status");
-	return new IssueTransportError(code, messages[code]);
+		primary[status as 401 | 422 | 429] ?? (limited ? "rate-limit" : status === 403 ? "permission" : "network");
+	return new IssueTransportError(code as FeedbackSubmissionFailure, messages[code as FeedbackSubmissionFailure]);
 }
 export function createGitHubIssueTransport(
 	fetcher: typeof fetch = fetch,

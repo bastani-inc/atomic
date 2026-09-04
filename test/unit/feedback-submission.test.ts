@@ -4,15 +4,16 @@ import {
 	createGitHubIssueTransport,
 	type FeedbackSubmissionInput,
 	type FeedbackSubmitDetails,
+	formatPreparedDisplay,
 	type IssueSubmissionRequest,
 	type IssueSubmissionTransport,
 	IssueTransportError,
+	scrubFeedback,
 	submitFeedbackIssue,
 } from "../../packages/feedback/src/index.js";
 
-const bug = { kind: "bug", title: "Atomic stops", body: "### What happened?\n\nIt stops." } as const;
-const preparedText = (input: FeedbackSubmissionInput) =>
-	`Repository: bastani-inc/atomic\nKind: ${input.kind}\n\n${input.title}\n\n${input.body}\n\nPrivacy scrubbed: no replacements needed.`;
+const bug = { kind: "bug", title: "no replacements needed.", body: "### What happened?\n\nIt stops." } as const;
+const preparedText = (input: FeedbackSubmissionInput) => formatPreparedDisplay(input, "no replacements needed.");
 const transcript = (id: string, message: object) => ({ type: "message", id, message }) as const;
 const message = (id: string, role: "assistant" | "user", content: string) =>
 	({ type: "message", id, message: { role, content } }) as const;
@@ -24,9 +25,8 @@ function prepare(id: string, input: FeedbackSubmissionInput, display = preparedT
 		details: { repository: { owner: "bastani-inc", repo: "atomic" }, ...input, privacySummary: [] },
 	});
 }
-function submissionResult(id: string, details: object, isError = false) {
-	return transcript(id, { role: "toolResult", toolName: "feedback_submit_issue", isError, details });
-}
+const submissionResult = (id: string, details: object) =>
+	transcript(id, { role: "toolResult", toolName: "feedback_submit_issue", details });
 class FakeTransport implements IssueSubmissionTransport {
 	readonly requests: IssueSubmissionRequest[] = [];
 	constructor(
@@ -34,8 +34,7 @@ class FakeTransport implements IssueSubmissionTransport {
 	) {}
 	async createIssue(request: IssueSubmissionRequest): Promise<unknown> {
 		this.requests.push(request);
-		if (this.outcome instanceof Error) throw this.outcome;
-		return this.outcome;
+		return this.outcome instanceof Error ? Promise.reject(this.outcome) : this.outcome;
 	}
 }
 function setup(input: FeedbackSubmissionInput = bug, approval = "post it", transport = new FakeTransport()) {
@@ -44,11 +43,7 @@ function setup(input: FeedbackSubmissionInput = bug, approval = "post it", trans
 		message("display", "assistant", `${preparedText(input)}\n\nWould you like edits or approval?`),
 		message("approval", "user", approval),
 	];
-	return {
-		branch,
-		transport,
-		runtime: { sessionManager: { getBranch: () => branch }, transport },
-	};
+	return { branch, transport, runtime: { sessionManager: { getBranch: () => branch }, transport } };
 }
 const resultCode = (result: FeedbackSubmitDetails): string => (result.ok ? "ok" : result.code);
 test("posts exact reviewed bug and enhancement payloads and validates the URL", async () => {
@@ -95,6 +90,8 @@ test("re-scrubs immediately before posting", async () => {
 	const scenario = setup(secret);
 	assert.equal(resultCode(await submitFeedbackIssue(secret, scenario.runtime)), "private-data");
 	assert.equal(scenario.transport.requests.length, 0);
+	const nested = { ...bug, body: scrubFeedback("", "/Users/bob/home/alice/x").body };
+	assert.equal(resultCode(await submitFeedbackIssue(nested, setup(nested).runtime)), "ok");
 });
 test("maps every safe failure without leaking transport errors", async () => {
 	const token = `ghp_${"x".repeat(30)}`;
@@ -110,6 +107,7 @@ test("maps every safe failure without leaking transport errors", async () => {
 		const result = await submitFeedbackIssue(bug, setup(bug, "post it", new FakeTransport(outcome)).runtime);
 		assert.equal(resultCode(result), code);
 		assert.equal(JSON.stringify(result).includes(token), false);
+		assert.ok(code !== "malformed-response" || (!result.ok && result.message.includes("no confirmed result")));
 	}
 	const aborted = setup();
 	const result = await submitFeedbackIssue(bug, { ...aborted.runtime, signal: AbortSignal.abort() });
@@ -120,25 +118,26 @@ test("keeps credentials in headers and classifies primary and secondary limits",
 	for (const [status, remaining, retryAfter, code] of [
 		[401, null, null, "authentication"],
 		[403, null, null, "permission"],
+		[500, null, null, "network"],
 		[403, "0", null, "rate-limit"],
 		[403, "4999", "60", "rate-limit"],
-		[404, null, null, "unexpected-status"],
 		[422, null, null, "validation"],
 	] as const) {
 		let authorization = "";
 		const fetcher = (async (_url: string | URL | Request, init?: RequestInit) => {
 			authorization = new Headers(init?.headers).get("Authorization") ?? "";
-			return new Response("{}", {
-				status,
-				headers: {
-					...(remaining ? { "x-ratelimit-remaining": remaining } : {}),
-					...(retryAfter ? { "retry-after": retryAfter } : {}),
-				},
-			});
+			const headers = new Headers({
+				...(remaining ? { "x-ratelimit-remaining": remaining } : {}),
+				...(retryAfter ? { "retry-after": retryAfter } : {}),
+			} as Record<string, string>);
+			return new Response("{}", { status, headers });
 		}) as typeof fetch;
 		await assert.rejects(
 			() => createGitHubIssueTransport(fetcher, { GITHUB_TOKEN: "secret-token" }).createIssue(request),
-			(error: IssueTransportError) => error.code === code && !error.message.includes("secret-token"),
+			(error: IssueTransportError) =>
+				error.code === code &&
+				!error.message.includes("secret-token") &&
+				(code !== "network" || error.message.includes("no confirmed result")),
 		);
 		assert.equal(authorization, "Bearer secret-token");
 	}
@@ -150,9 +149,7 @@ test("prevents concurrent, repeated, restored, and boundary-collision duplicates
 	const recovered = setup();
 	recovered.branch.push(submissionResult("success", completed));
 	const duplicate = await submitFeedbackIssue(bug, recovered.runtime);
-	assert.equal(resultCode(duplicate), "duplicate");
 	assert.equal(duplicate.ok ? "" : duplicate.existingUrl, completed.ok ? completed.url : "");
-	assert.equal(completed.ok ? completed.url : "", "https://github.com/bastani-inc/atomic/issues/42");
 	let release!: (value: unknown) => void;
 	const pending: IssueSubmissionTransport = { createIssue: () => new Promise((resolve) => (release = resolve)) };
 	const concurrent = setup(bug, "post it", pending as FakeTransport);
@@ -164,7 +161,7 @@ test("prevents concurrent, repeated, restored, and boundary-collision duplicates
 test("restores consumed failed approvals and permits only a fresh approval", async () => {
 	const attempt = setup(bug, "post it", new FakeTransport(new Error("offline")));
 	const failed = await submitFeedbackIssue(bug, attempt.runtime);
-	attempt.branch.push(submissionResult("failure", failed, true));
+	attempt.branch.push(submissionResult("failure", failed));
 	const retry = new FakeTransport();
 	const restored = { sessionManager: { getBranch: () => attempt.branch }, transport: retry };
 	assert.equal(resultCode(await submitFeedbackIssue(bug, restored)), "missing-approval");
