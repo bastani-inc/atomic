@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
@@ -19,6 +18,8 @@ import type { ReplyTracker } from "./reply-tracker.js";
 import { resolveSessionTargetId } from "./session-target.js";
 import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
+import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
+import { RetryIdentityReservations, type RetryIdentityAttempt } from "./retry-identity.js";
 
 async function listDirectory(client: IntercomClient, group?: string): Promise<SessionDirectory> {
 	if (typeof client.listDirectory === "function") return client.listDirectory(group);
@@ -150,6 +151,7 @@ interface IntercomToolDeps {
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
+  const retryIdentities = new RetryIdentityReservations();
   const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
   const getMetadata = typeof childOrchestratorMetadata === "function"
@@ -233,7 +235,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         };
       }
 
-      syncPresenceIdentity(ctx.sessionManager.getSessionId());
+      const toolSessionId = ctx.sessionManager.getSessionId();
+      syncPresenceIdentity(toolSessionId);
       const { action, to, message, attachments, replyTo, group } = params;
       const resolveOwnGroups = (sessions?: readonly SessionInfo[]): string[] => {
         if (Array.isArray(connectedClient.groups)) {
@@ -452,12 +455,24 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 };
               }
             }
-            const result = await connectedClient.send(sendTo, {
+            const retryIdentity = retryIdentities.begin({
+              sessionId: toolSessionId,
+              action: "send",
+              target: sendTo,
               text: message,
               attachments,
               replyTo,
+              expectsReply: false,
             });
-            if (result.queued === true) {
+            try {
+              const result = await connectedClient.send(sendTo, {
+                messageId: retryIdentity.messageId,
+                text: message,
+                attachments,
+                replyTo,
+              });
+              retryIdentities.release(retryIdentity);
+              if (result.queued === true) {
               pi.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
@@ -502,11 +517,19 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             if (replyTo) {
               activeReplyTracker().markReplied(replyTo);
             }
-            return {
-              content: [{ type: "text", text: `Message sent to ${to}` }],
-              isError: false,
-              details: { messageId: result.id, delivered: true },
-            };
+              return {
+                content: [{ type: "text", text: `Message sent to ${to}` }],
+                isError: false,
+                details: { messageId: result.id, delivered: true },
+              };
+            } catch (error) {
+              if (isRecoverableIntercomDisconnect(error)) {
+                retryIdentities.retainAfterRecoverableDisconnect(retryIdentity);
+              } else {
+                retryIdentities.release(retryIdentity);
+              }
+              throw error;
+            }
           } catch (error) {
             return {
               content: [{ type: "text", text: `Failed to send: ${getErrorMessage(error)}` }],
@@ -533,6 +556,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             };
           }
           let wait: ReplyWait | null = null;
+          let retryIdentity: RetryIdentityAttempt | undefined;
 
           try {
             const metadata = getMetadata();
@@ -601,7 +625,6 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true },
               };
             }
-			const questionId = randomUUID();
 			// Canonical workflow targets must remain canonical on the send path so the
 			// broker can authorize invocation-to-subgroup control. The waiter, however,
 			// correlates the actual inbound stage session identity.
@@ -616,9 +639,21 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 					details: { error: true },
 				};
 			}
+			retryIdentity = retryIdentities.begin({
+				sessionId: toolSessionId,
+				action: "ask",
+				target: sendTo,
+				text: message,
+				attachments,
+				replyTo,
+				expectsReply: true,
+			});
+			const questionId = retryIdentity.messageId;
 			const replyFrom = replySender.kind === "resolved" ? replySender.sessionId : sendTo;
 			const admission = beginReplyWait(replyFrom, questionId, _signal);
             if (!admission.ok) {
+              retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
               const text = admission.reason === "busy"
                 ? `Too many pending asks (${admission.limit}); reply-wait slots are full`
                 : "Cancelled";
@@ -636,6 +671,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               replyTo,
               expectsReply: true,
             });
+            retryIdentities.release(retryIdentity);
+            retryIdentity = undefined;
 
             if (!sendResult.delivered) {
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
@@ -689,6 +726,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             // Settle only this call's own waiter; a concurrent call's
             // reservation must never be torn down from this failure path.
             wait?.cancel(toError(error));
+            if (retryIdentity !== undefined) {
+              if (isRecoverableIntercomDisconnect(error)) {
+                retryIdentities.retainAfterRecoverableDisconnect(retryIdentity);
+              } else {
+                retryIdentities.release(retryIdentity);
+              }
+            }
             return {
               content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
               isError: true,
@@ -706,6 +750,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             };
           }
 
+          let retryIdentity: RetryIdentityAttempt | undefined;
           try {
 			const target = activeReplyTracker().resolveReplyTarget({ to, replyTo });
             if (target.from.id === connectedClient.sessionId) {
@@ -715,10 +760,22 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true },
               };
             }
+            retryIdentity = retryIdentities.begin({
+              sessionId: toolSessionId,
+              action: "reply",
+              target: target.from.id,
+              text: message,
+              attachments,
+              replyTo: target.message.id,
+              expectsReply: false,
+            });
             const result = await connectedClient.send(target.from.id, {
+              messageId: retryIdentity.messageId,
               text: message,
               replyTo: target.message.id,
             });
+            retryIdentities.release(retryIdentity);
+            retryIdentity = undefined;
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
@@ -740,6 +797,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               details: { messageId: result.id, delivered: true, replyTo: target.message.id },
             };
           } catch (error) {
+            if (retryIdentity !== undefined) {
+              if (isRecoverableIntercomDisconnect(error)) {
+                retryIdentities.retainAfterRecoverableDisconnect(retryIdentity);
+              } else {
+                retryIdentities.release(retryIdentity);
+              }
+            }
             return {
               content: [{ type: "text", text: `Failed to reply: ${getErrorMessage(error)}` }],
               isError: true,

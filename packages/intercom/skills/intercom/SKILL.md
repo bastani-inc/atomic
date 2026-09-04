@@ -493,7 +493,9 @@ if (!result.delivered) {
 
 ### Connection lost
 
-Sessions automatically reconnect if the broker restarts. If persistently disconnected:
+Sessions automatically reconnect if the broker restarts. If an explicit `send`, `ask`, or `reply` fails with `Client disconnected`, retry that identical call up to three times. Intercom reuses the failed operation identity during that bounded window, so an acknowledgement lost after broker acceptance does not duplicate delivery; a settled call releases the identity, and a later intentional repeat is delivered as a new operation.
+
+If the session remains disconnected after those retries:
 
 ```typescript
 intercom({ action: "status" })
