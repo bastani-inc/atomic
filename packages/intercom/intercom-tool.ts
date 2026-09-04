@@ -458,7 +458,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const retryIdentity = retryIdentities.begin({
               sessionId: toolSessionId,
               action: "send",
-              target: sendTo,
+              target: to,
               text: message,
               attachments,
               replyTo,
@@ -467,56 +467,57 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             try {
               const result = await connectedClient.send(sendTo, {
                 messageId: retryIdentity.messageId,
+                logicalTarget: to,
                 text: message,
                 attachments,
                 replyTo,
               });
               retryIdentities.release(retryIdentity);
               if (result.queued === true) {
+                pi.appendEntry("intercom_sent", {
+                  to,
+                  message: { text: message, attachments, replyTo },
+                  messageId: result.id,
+                  timestamp: Date.now(),
+                });
+                const notInKnownSet = result.notInKnownSet === true;
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: notInKnownSet
+                        ? `Message queued for ${to} (not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)`
+                        : `Message queued for ${to}`,
+                    },
+                  ],
+                  isError: false,
+                  details: {
+                    messageId: result.id,
+                    delivered: false,
+                    queued: true,
+                    target: result.target,
+                    position: result.position,
+                    ...(notInKnownSet ? { notInKnownSet: true } : {}),
+                  },
+                };
+              }
+              if (!result.delivered) {
+                const errorText = result.reason ?? "Session may not exist or has disconnected.";
+                return {
+                  content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
+                  isError: true,
+                  details: { messageId: result.id, delivered: false, reason: result.reason },
+                };
+              }
               pi.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: result.id,
                 timestamp: Date.now(),
               });
-              const notInKnownSet = result.notInKnownSet === true;
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: notInKnownSet
-                      ? `Message queued for ${to} (not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)`
-                      : `Message queued for ${to}`,
-                  },
-                ],
-                isError: false,
-                details: {
-                  messageId: result.id,
-                  delivered: false,
-                  queued: true,
-					target: result.target,
-                  position: result.position,
-                  ...(notInKnownSet ? { notInKnownSet: true } : {}),
-                },
-              };
-            }
-            if (!result.delivered) {
-              const errorText = result.reason ?? "Session may not exist or has disconnected.";
-              return {
-                content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
-                isError: true,
-                details: { messageId: result.id, delivered: false, reason: result.reason },
-              };
-            }
-            pi.appendEntry("intercom_sent", {
-              to,
-              message: { text: message, attachments, replyTo },
-              messageId: result.id,
-              timestamp: Date.now(),
-            });
-            if (replyTo) {
-              activeReplyTracker().markReplied(replyTo);
-            }
+              if (replyTo) {
+                activeReplyTracker().markReplied(replyTo);
+              }
               return {
                 content: [{ type: "text", text: `Message sent to ${to}` }],
                 isError: false,
@@ -642,7 +643,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 			retryIdentity = retryIdentities.begin({
 				sessionId: toolSessionId,
 				action: "ask",
-				target: sendTo,
+				target: to,
 				text: message,
 				attachments,
 				replyTo,
@@ -666,6 +667,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             wait = admission.wait;
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
+              logicalTarget: to,
               text: message,
               attachments,
               replyTo,
@@ -755,6 +757,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           let retryIdentity: RetryIdentityAttempt | undefined;
           try {
 			const target = activeReplyTracker().resolveReplyTarget({ to, replyTo });
+			const replySendTo = to ?? target.from.name ?? target.from.id;
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -765,15 +768,19 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             retryIdentity = retryIdentities.begin({
               sessionId: toolSessionId,
               action: "reply",
-              target: target.from.id,
+              target: to,
               text: message,
               attachments,
               replyTo: target.message.id,
+              requestedReplyTo: replyTo,
               expectsReply: false,
             });
-            const result = await connectedClient.send(target.from.id, {
+            const result = await connectedClient.send(replySendTo, {
               messageId: retryIdentity.messageId,
+              logicalTarget: to ?? replySendTo,
+              ...(target.message.expectsReply === true ? { requirePendingReply: true } : {}),
               text: message,
+              attachments,
               replyTo: target.message.id,
             });
             retryIdentities.release(retryIdentity);
@@ -789,7 +796,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             activeReplyTracker().markReplied(target.message.id);
             pi.appendEntry("intercom_sent", {
               to: target.from.name || target.from.id,
-              message: { text: message, replyTo: target.message.id },
+              message: { text: message, attachments, replyTo: target.message.id },
               messageId: result.id,
               timestamp: Date.now(),
             });

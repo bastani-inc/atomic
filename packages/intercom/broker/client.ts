@@ -33,6 +33,10 @@ export interface SendOptions {
   expectsReply?: boolean;
   replyError?: string;
   messageId?: string;
+  /** Internal caller-issued target identity; transport still uses the `to` argument. */
+  logicalTarget?: string;
+  /** Public reply must use the broker's exact pending reverse question route. */
+  requirePendingReply?: true;
 }
 
 export interface SendResult {
@@ -960,7 +964,12 @@ export class IntercomClient extends EventEmitter {
     const messageId = options.messageId ?? randomUUID();
     let acquired;
     try {
-      acquired = this.pendingSends.acquire(messageId, buildSendSignature(to, options), 10000);
+		const pendingSignature = JSON.stringify({
+			transportTarget: to,
+			logicalSignature: buildSendSignature(options.logicalTarget ?? to, options),
+			requirePendingReply: options.requirePendingReply ?? false,
+		});
+		acquired = this.pendingSends.acquire(messageId, pendingSignature, 10000);
     } catch (error) {
       return Promise.reject(toError(error));
     }
@@ -975,7 +984,15 @@ export class IntercomClient extends EventEmitter {
       content: { text: options.text, attachments: options.attachments },
     };
     try {
-		writeMessage(socket, { type, to, message, attemptId: acquired.attempt.attemptId, ...extra });
+		writeMessage(socket, {
+			type,
+			to,
+			...(options.logicalTarget === undefined ? {} : { logicalTarget: options.logicalTarget }),
+			...(options.requirePendingReply === undefined ? {} : { requirePendingReply: options.requirePendingReply }),
+			message,
+			attemptId: acquired.attempt.attemptId,
+			...extra,
+		});
     } catch (error) {
       this.pendingSends.reject(acquired.attempt, toError(error));
     }

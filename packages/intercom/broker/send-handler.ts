@@ -42,6 +42,13 @@ export function senderGroupIdentity(session: BrokerConnectedSession): string {
 	]);
 }
 
+
+/** Stable recipient authority used independently from the freshly resolved transport ID. */
+export function deliveryTargetIdentity(session: BrokerConnectedSession): string {
+	return session.registrationReturnAddress === undefined
+		? JSON.stringify(["session", session.info.id])
+		: JSON.stringify(["return", session.registrationReturnAddress, normalizeGroup(session.registrationGroup)]);
+}
 export interface PendingStageRoute {
   readonly socket: net.Socket;
   readonly from: BrokerConnectedSession;
@@ -91,10 +98,10 @@ export function handleBrokerSend(
 	sessions: Map<string, BrokerConnectedSession>,
 	deliveredMessages: DeliveredMessageCache,
 	/**
-	 * Hand one frame to a socket. Returns whether the frame was actually written:
-	 * the broker's `writeMessageIfOpen` answers `false` for a socket whose
-	 * writable side has already ended, and a target delivery may only be recorded
-	 * and acknowledged when the answer is `true`.
+	 * Hand one frame to a socket. Returns whether the frame was actually written.
+	 * Durable acceptance is reserved before this call to close the restart window;
+	 * a `false` answer removes that exact reservation, while only `true` is
+	 * acknowledged to the sender.
 	 */
 	write: (target: net.Socket, message: BrokerMessage) => boolean,
 	supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
@@ -117,15 +124,30 @@ export function handleBrokerSend(
     return;
   }
   const attemptId = typeof clientMessage.attemptId === "string" ? clientMessage.attemptId : undefined;
+  const hasLogicalTarget = Object.prototype.hasOwnProperty.call(clientMessage, "logicalTarget");
+  if (hasLogicalTarget && typeof clientMessage.logicalTarget !== "string") {
+    write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid logicalTarget format" });
+    return;
+  }
   if (typeof clientMessage.to !== "string" || !isMessage(message)) {
     write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid message format" });
     return;
   }
+  const hasRequirePendingReply = Object.prototype.hasOwnProperty.call(clientMessage, "requirePendingReply");
+  if (hasRequirePendingReply && clientMessage.requirePendingReply !== true) {
+    write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid requirePendingReply format" });
+    return;
+  }
+  const requirePendingReply = clientMessage.requirePendingReply === true;
   if (Object.prototype.hasOwnProperty.call(clientMessage, "channel")) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Invalid channel" });
     return;
   }
   const supervisorSend = clientMessage.type === "supervisor_send";
+  if (requirePendingReply && (supervisorSend || message.replyTo === undefined || message.expectsReply === true)) {
+    write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid requirePendingReply message" });
+    return;
+  }
 
 
   const fromSession = currentId ? sessions.get(currentId) : undefined;
@@ -134,32 +156,15 @@ export function handleBrokerSend(
     return;
   }
 	const senderIdentity = fromSession.registrationReturnAddress ?? fromSession.info.id;
-	const signature = buildMessageSendSignature(clientMessage.to, message, senderIdentity);
-	const deliveredMatch = deliveredMessages.lookup(message.id, signature);
-	if (deliveredMatch === "match") {
-		if (message.expectsReply === true) {
-			const targetSessionId = deliveredMessages.lookupQuestionTarget(
-				message.id,
-				signature,
-				senderGroupIdentity(fromSession),
-			);
-			if (targetSessionId !== undefined && sessions.has(targetSessionId)) {
-				pendingQuestions.record(fromSession.info.id, targetSessionId, message.id);
-			}
-		}
-		write(socket, { type: "delivered", messageId: message.id, attemptId });
-		return;
-	}
-	if (deliveredMatch === "conflict") {
-		write(socket, {
-			type: "delivery_failed",
-			messageId: message.id,
-			attemptId,
-			reason: `Intercom message ID '${message.id}' was already delivered with a different target or payload`,
-			reasonCode: "message_id_conflict",
-		});
-		return;
-	}
+	const logicalTarget = typeof clientMessage.logicalTarget === "string" ? clientMessage.logicalTarget : clientMessage.to;
+	const baseSignature = buildMessageSendSignature(logicalTarget, message, senderIdentity);
+	const signature = requirePendingReply
+		? JSON.stringify({
+				requirePendingReply: true,
+				senderGroupIdentity: senderGroupIdentity(fromSession),
+				baseSignature,
+			})
+		: baseSignature;
   const trimmedTo = clientMessage.to.trim();
   if (supervisorSend && !fromSession.supervisorId) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor channel is not authorized" });
@@ -219,9 +224,52 @@ export function handleBrokerSend(
       write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Cannot message the current session" });
       return;
     }
+	const targetIdentity = deliveryTargetIdentity(target);
+	const deliveredMatch = deliveredMessages.lookupForTarget(message.id, signature, targetIdentity);
+	if (requirePendingReply && deliveredMatch === "match") {
+		write(socket, { type: "delivered", messageId: message.id, attemptId });
+		return;
+	}
+	if (requirePendingReply && deliveredMatch === "conflict") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: `Intercom message ID '${message.id}' was already delivered with a different target or payload`,
+			reasonCode: "message_id_conflict",
+		});
+		return;
+	}
+	if (requirePendingReply && deliveredMatch === "invalid") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
+		});
+		return;
+	}
+	if (requirePendingReply && deliveredMatch === "uncertain") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery",
+		});
+		return;
+	}
 	const correlatedReply =
 		message.replyTo !== undefined &&
 		pendingQuestions.matchesReply(fromSession.info.id, target.info.id, message.replyTo);
+	if (requirePendingReply && !correlatedReply) {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: "Pending question route does not authorize this public reply",
+		});
+		return;
+	}
 	const bypass =
 		supervisorSend ||
 		isVerticalBypass({
@@ -241,6 +289,55 @@ export function handleBrokerSend(
       });
       return;
     }
+	if (deliveredMatch === "match") {
+		if (message.expectsReply === true) {
+			const acceptedQuestionTarget = deliveredMessages.lookupQuestionTarget(
+				message.id,
+				signature,
+				senderGroupIdentity(fromSession),
+			);
+			if (acceptedQuestionTarget === undefined) {
+				write(socket, {
+					type: "delivery_failed",
+					messageId: message.id,
+					attemptId,
+					reason: "Accepted Intercom question route could not be securely rebound",
+				});
+				return;
+			}
+			pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+		}
+		write(socket, { type: "delivered", messageId: message.id, attemptId });
+		return;
+	}
+	if (deliveredMatch === "conflict") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: `Intercom message ID '${message.id}' was already delivered with a different target or payload`,
+			reasonCode: "message_id_conflict",
+		});
+		return;
+	}
+	if (deliveredMatch === "invalid") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
+		});
+		return;
+	}
+	if (deliveredMatch === "uncertain") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery",
+		});
+		return;
+	}
 		if (
 			liveWorkflowTarget !== undefined &&
 			workflowTarget !== undefined &&
@@ -260,17 +357,81 @@ export function handleBrokerSend(
       ? ({ type: "message", from: fromSession.info, message, channel: "supervisor" } as const)
       : ({ type: "message", from: fromSession.info, message } as const);
     const failDelivery = (): void => {
+	  if (reservation === "recorded") deliveredMessages.forget(message.id, signature);
       write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
     };
-    const finishDelivery = (): void => {
-      if (message.expectsReply === true) {
-		deliveredMessages.recordQuestion(message.id, signature, {
-			targetSessionId: target.info.id,
-			senderGroupIdentity: senderGroupIdentity(fromSession),
+	const reservation = message.expectsReply === true
+		? deliveredMessages.reserveQuestion(
+			message.id,
+			signature,
+			{
+				targetSessionId: target.info.id,
+				senderGroupIdentity: senderGroupIdentity(fromSession),
+			},
+			Date.now(),
+			targetIdentity,
+		)
+		: deliveredMessages.reserve(message.id, signature, Date.now(), targetIdentity);
+	if (reservation === "match") {
+		if (
+			message.expectsReply === true &&
+			deliveredMessages.lookupQuestionTarget(
+				message.id,
+				signature,
+				senderGroupIdentity(fromSession),
+			) === undefined
+		) {
+			write(socket, {
+				type: "delivery_failed",
+				messageId: message.id,
+				attemptId,
+				reason: "Accepted Intercom question route could not be securely rebound",
+			});
+			return;
+		}
+		if (message.expectsReply === true) pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+		write(socket, { type: "delivered", messageId: message.id, attemptId });
+		return;
+	}
+	if (reservation !== "recorded") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: reservation === "capacity"
+				? "Intercom accepted-delivery capacity is full; refusing delivery without evicting live retry authority"
+				: reservation === "uncertain"
+					? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
+					: "Intercom accepted-delivery authority changed before forwarding; refusing possible duplicate delivery",
+			...(reservation === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
 		});
+		return;
+	}
+    const finishDelivery = (): void => {
+	  let accepted: ReturnType<DeliveredMessageCache["accept"]>;
+	  try {
+		accepted = deliveredMessages.accept(message.id, signature, targetIdentity);
+	  } catch {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
+		});
+		return;
+	  }
+	  if (accepted !== "accepted") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
+			...(accepted === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
+		});
+		return;
+	  }
+      if (message.expectsReply === true) {
         pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
-	  } else {
-		deliveredMessages.record(message.id, signature);
 	  }
       if (message.replyTo !== undefined) {
         pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo);

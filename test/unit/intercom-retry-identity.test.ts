@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
+	ASK_REPLY_TIMEOUT_MS,
 	RETRY_IDENTITY_MAX_REUSES,
+	RETRY_IDENTITY_RETRY_OPPORTUNITY_MS,
 	RETRY_IDENTITY_TTL_MS,
+	RetryIdentityCapacityError,
 	type RetryIdentityInput,
 	RetryIdentityReservations,
 } from "../../packages/intercom/retry-identity.js";
+import { DELIVERED_MESSAGE_TTL_MS } from "../../packages/intercom/retry-policy.js";
 
 const base: RetryIdentityInput = {
 	sessionId: "session-a",
@@ -90,7 +94,7 @@ test("a stale duplicate retain cannot expose an identity already claimed by its 
 	assert.notEqual(reservations.begin(base).messageId, first.messageId);
 });
 
-test("capacity and original TTL apply to individual reservations sharing one operation key", () => {
+test("capacity pressure fails closed without evicting an accepted retry identity", () => {
 	let now = 0;
 	const reservations = new RetryIdentityReservations({
 		ttlMs: 100,
@@ -99,25 +103,16 @@ test("capacity and original TTL apply to individual reservations sharing one ope
 		createId: ids(),
 	});
 	const oldest = reservations.begin(base);
-	now = 20;
-	const middle = reservations.begin(base);
-	now = 40;
-	const newest = reservations.begin(base);
-	reservations.retainAfterRecoverableDisconnect(newest);
+	const middle = reservations.begin({ ...base, text: "middle" });
+	const overflow = reservations.begin({ ...base, text: "overflow" });
 	reservations.retainAfterRecoverableDisconnect(oldest);
 	reservations.retainAfterRecoverableDisconnect(middle);
+	reservations.retainAfterRecoverableDisconnect(overflow);
 
-	const firstRetry = reservations.begin(base);
-	const secondRetry = reservations.begin(base);
-	assert.equal(firstRetry.messageId, newest.messageId, "remaining identities keep FIFO retention order");
-	assert.equal(secondRetry.messageId, middle.messageId);
-	assert.notEqual(firstRetry.messageId, oldest.messageId, "the globally oldest identity is evicted at capacity");
-	reservations.retainAfterRecoverableDisconnect(firstRetry);
-	reservations.retainAfterRecoverableDisconnect(secondRetry);
-
-	now = 120;
-	assert.equal(reservations.begin(base).messageId, newest.messageId, "each identity keeps its own original deadline");
-	assert.notEqual(reservations.begin(base).messageId, middle.messageId);
+	assert.throws(() => reservations.begin(base), RetryIdentityCapacityError);
+	assert.throws(() => reservations.begin({ ...base, text: "new work" }), RetryIdentityCapacityError);
+	now = 100;
+	assert.doesNotThrow(() => reservations.begin(base));
 });
 
 test("retry identity scope preserves every operation field, ordering, and session boundary", () => {
@@ -129,22 +124,34 @@ test("retry identity scope preserves every operation field, ordering, and sessio
 		{ ...base, sessionId: "session-b" },
 		{ ...base, action: "ask" },
 		{ ...base, target: "reviewer" },
+		{ ...base, target: "worker " },
+		{ ...base, target: "WORKER" },
 		{ ...base, text: "preserve whitespace" },
 		{ ...base, attachments: [...(base.attachments ?? [])].reverse() },
 		{ ...base, replyTo: "other-question" },
+		{ ...base, requestedReplyTo: "question-id" },
 		{ ...base, expectsReply: true },
 	];
 	for (const input of distinct) assert.notEqual(reservations.begin(input).messageId, first.messageId);
 });
 
-test("retry reservations expire before the broker delivery cache", () => {
+test("retry identity covers the full ask wait plus an explicit bounded retry opportunity", () => {
 	let now = 1_000;
 	const reservations = new RetryIdentityReservations({ now: () => now, createId: ids() });
 	const first = reservations.begin(base);
 	reservations.retainAfterRecoverableDisconnect(first);
-	now += RETRY_IDENTITY_TTL_MS;
+	now += ASK_REPLY_TIMEOUT_MS;
+	const atAskBoundary = reservations.begin(base);
+	assert.equal(atAskBoundary.messageId, first.messageId);
+	reservations.retainAfterRecoverableDisconnect(atAskBoundary);
+	now += RETRY_IDENTITY_RETRY_OPPORTUNITY_MS - 1;
+	const beforeRetryBoundary = reservations.begin(base);
+	assert.equal(beforeRetryBoundary.messageId, first.messageId);
+	reservations.retainAfterRecoverableDisconnect(beforeRetryBoundary);
+	now += 1;
 	assert.notEqual(reservations.begin(base).messageId, first.messageId);
-	assert.ok(RETRY_IDENTITY_TTL_MS < 10 * 60 * 1_000);
+	assert.equal(RETRY_IDENTITY_TTL_MS, ASK_REPLY_TIMEOUT_MS + RETRY_IDENTITY_RETRY_OPPORTUNITY_MS);
+	assert.ok(DELIVERED_MESSAGE_TTL_MS > RETRY_IDENTITY_TTL_MS);
 });
 
 test("recoverable retries do not extend the original bounded identity lifetime", () => {
@@ -160,18 +167,13 @@ test("recoverable retries do not extend the original bounded identity lifetime",
 	assert.notEqual(reservations.begin(base).messageId, first.messageId);
 });
 
-test("retry reservations evict the oldest entry at the configured bound", () => {
+test("retry reservation pressure does not mint an unsafe replacement identity", () => {
 	const reservations = new RetryIdentityReservations({ maxEntries: 2, createId: ids() });
-	const first = reservations.begin(base);
-	reservations.retainAfterRecoverableDisconnect(first);
-	const second = reservations.begin({ ...base, text: "second" });
-	reservations.retainAfterRecoverableDisconnect(second);
-	const third = reservations.begin({ ...base, text: "third" });
-	reservations.retainAfterRecoverableDisconnect(third);
-
-	assert.notEqual(reservations.begin(base).messageId, first.messageId);
-	assert.equal(reservations.begin({ ...base, text: "second" }).messageId, second.messageId);
-	assert.equal(reservations.begin({ ...base, text: "third" }).messageId, third.messageId);
+	for (const text of ["first", "second", "third"]) {
+		const attempt = reservations.begin({ ...base, text });
+		reservations.retainAfterRecoverableDisconnect(attempt);
+	}
+	assert.throws(() => reservations.begin({ ...base, text: "first" }), RetryIdentityCapacityError);
 });
 
 test("one reservation permits exactly the documented three retry reuses", () => {

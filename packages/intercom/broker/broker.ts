@@ -6,7 +6,12 @@ import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { createMessageReader } from "./framing.js";
 import { writeMessageIfOpen, writeMessageWithOutcome } from "./socket-writes.js";
-import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
+import {
+	getBrokerDeliveredMessagesPath,
+	getBrokerPidPath,
+	getBrokerSocketPath,
+	getIntercomDirPath,
+} from "./paths.js";
 import type {
 	SessionInfo,
 	Message,
@@ -22,10 +27,11 @@ import {
 	parseWorkflowStageTarget,
 	withWorkflowStageTargetFinalSegment,
 } from "../workflow-stage-target.js";
-import { DeliveredMessageCache } from "./delivered-message-cache.js";
+import { DELIVERED_MESSAGE_MAX_ENTRIES, DeliveredMessageCache } from "./delivered-message-cache.js";
 import { isMessage } from "./client-message-validation.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import {
+	deliveryTargetIdentity,
 	handleBrokerSend,
 	type BrokerConnectedSession,
 	type PendingStageRoute,
@@ -43,6 +49,7 @@ import {
 } from "./group-membership.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
+import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -211,7 +218,11 @@ class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
-  private deliveredMessages = new DeliveredMessageCache();
+  private deliveredMessages = new DeliveredMessageCache(
+	DELIVERED_MESSAGE_TTL_MS,
+	DELIVERED_MESSAGE_MAX_ENTRIES,
+	getBrokerDeliveredMessagesPath(),
+  );
   private supervisorChannel = new SupervisorChannelCache();
   private pendingQuestions = new PendingQuestionIndex();
   private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
@@ -738,44 +749,142 @@ class IntercomBroker {
 			});
 			return;
 		}
-		const deliveredMatch = this.deliveredMessages.lookup(pending.messageId, pending.signature);
-		if (deliveredMatch === "conflict") {
+		const targetIdentity = deliveryTargetIdentity(target);
+		const deliveredMatch = this.deliveredMessages.lookupForTarget(
+			pending.messageId,
+			pending.signature,
+			targetIdentity,
+		);
+		if (deliveredMatch !== "miss") {
+			if (deliveredMatch === "match") {
+				if (pending.message.expectsReply === true) {
+					const acceptedQuestionTarget = this.deliveredMessages.lookupQuestionTarget(
+						pending.messageId,
+						pending.signature,
+						senderGroupIdentity(from),
+					);
+					if (acceptedQuestionTarget === undefined) {
+						writeMessageIfOpen(pending.senderSocket, {
+							type: "delivery_failed",
+							messageId: pending.messageId,
+							...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+							reason: "Accepted Intercom question route could not be securely rebound",
+						});
+						return;
+					}
+					this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
+				}
+				writeMessageIfOpen(pending.senderSocket, {
+					type: "delivered",
+					messageId: pending.messageId,
+					...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+				});
+				return;
+			}
 			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivery_failed",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				reason: `Intercom message ID '${pending.messageId}' was already delivered with a different target or payload`,
-				reasonCode: "message_id_conflict",
+				reason:
+					deliveredMatch === "conflict"
+						? `Intercom message ID '${pending.messageId}' was already delivered with a different target or payload`
+						: deliveredMatch === "uncertain"
+							? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
+							: "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
+				...(deliveredMatch === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
 			});
 			return;
 		}
-		if (deliveredMatch === "miss") {
-			if (
-				!writeMessageIfOpen(target.socket, { type: "message", from: pending.sender, message: pending.message })
-			) {
-				// Nothing reached the stage, so nothing may be recorded as delivered and no
-				// reply authorization may be opened for a conversation that never happened.
-				// The sender keeps the message id and can retry it truthfully.
-				writeMessageIfOpen(pending.senderSocket, {
-					type: "delivery_failed",
-					messageId: pending.messageId,
-					...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-					reason: "Session not found",
-				});
-				return;
-			}
+		const reservation =
+			pending.message.expectsReply === true
+				? this.deliveredMessages.reserveQuestion(
+						pending.messageId,
+						pending.signature,
+						{
+							targetSessionId: target.info.id,
+							senderGroupIdentity: senderGroupIdentity(from),
+						},
+						Date.now(),
+						targetIdentity,
+					)
+				: this.deliveredMessages.reserve(pending.messageId, pending.signature, Date.now(), targetIdentity);
+		if (reservation === "match") {
 			if (pending.message.expectsReply === true) {
-				this.deliveredMessages.recordQuestion(pending.messageId, pending.signature, {
-					targetSessionId: target.info.id,
-					senderGroupIdentity: senderGroupIdentity(from),
-				});
+				const acceptedQuestionTarget = this.deliveredMessages.lookupQuestionTarget(
+					pending.messageId,
+					pending.signature,
+					senderGroupIdentity(from),
+				);
+				if (acceptedQuestionTarget === undefined) {
+					writeMessageIfOpen(pending.senderSocket, {
+						type: "delivery_failed",
+						messageId: pending.messageId,
+						...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+						reason: "Accepted Intercom question route could not be securely rebound",
+					});
+					return;
+				}
 				this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
-			} else {
-				this.deliveredMessages.record(pending.messageId, pending.signature);
 			}
-			if (pending.message.replyTo !== undefined) {
-				this.pendingQuestions.clearReply(from.info.id, target.info.id, pending.message.replyTo);
-			}
+			writeMessageIfOpen(pending.senderSocket, {
+				type: "delivered",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+			});
+			return;
+		}
+		if (reservation !== "recorded") {
+			writeMessageIfOpen(pending.senderSocket, {
+				type: "delivery_failed",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+				reason:
+					reservation === "capacity"
+						? "Intercom accepted-delivery capacity is full; refusing delivery without evicting live retry authority"
+						: reservation === "uncertain"
+							? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
+							: "Intercom accepted-delivery authority changed before forwarding; refusing possible duplicate delivery",
+				...(reservation === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
+			});
+			return;
+		}
+		if (!writeMessageIfOpen(target.socket, { type: "message", from: pending.sender, message: pending.message })) {
+			this.deliveredMessages.forget(pending.messageId, pending.signature);
+			writeMessageIfOpen(pending.senderSocket, {
+				type: "delivery_failed",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+				reason: "Session not found",
+			});
+			return;
+		}
+		let accepted: ReturnType<DeliveredMessageCache["accept"]>;
+		try {
+			accepted = this.deliveredMessages.accept(pending.messageId, pending.signature, targetIdentity);
+		} catch {
+			writeMessageIfOpen(pending.senderSocket, {
+				type: "delivery_failed",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+				reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
+			});
+			return;
+		}
+		if (accepted !== "accepted") {
+			writeMessageIfOpen(pending.senderSocket, {
+				type: "delivery_failed",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+				reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
+				...(accepted === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
+			});
+			return;
+		}
+		if (pending.message.expectsReply === true) {
+			this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
+		}
+		if (pending.message.replyTo !== undefined) {
+			this.pendingQuestions.clearReply(from.info.id, target.info.id, pending.message.replyTo);
 		}
 		writeMessageIfOpen(pending.senderSocket, {
 			type: "delivered",
@@ -882,13 +991,17 @@ class IntercomBroker {
 			writeMessageIfOpen(socket, { type: "delivered", messageId: message.id, ...(attemptId === undefined ? {} : { attemptId }) });
 			return;
 		}
-		if (deliveredMatch === "conflict") {
+		if (deliveredMatch !== "miss") {
 			this.failPendingStageNotification(
 				socket,
 				message.id,
 				attemptId,
-				`Intercom message ID '${message.id}' was already delivered with a different target or payload`,
-				"message_id_conflict",
+				deliveredMatch === "conflict"
+					? `Intercom message ID '${message.id}' was already delivered with a different target or payload`
+					: deliveredMatch === "uncertain"
+						? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
+						: "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
+				deliveredMatch === "conflict" ? "message_id_conflict" : undefined,
 			);
 			return;
 		}
@@ -924,10 +1037,48 @@ class IntercomBroker {
 		}
 
 		const requestId = randomUUID();
+		let reservation: ReturnType<DeliveredMessageCache["reserve"]>;
+		try {
+			reservation = this.deliveredMessages.reserve(message.id, signature);
+		} catch {
+			this.failPendingStageNotification(
+				socket,
+				message.id,
+				attemptId,
+				"Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
+			);
+			return;
+		}
+		if (reservation === "match") {
+			writeMessageIfOpen(socket, {
+				type: "delivered",
+				messageId: message.id,
+				...(attemptId === undefined ? {} : { attemptId }),
+			});
+			return;
+		}
+		if (reservation !== "recorded") {
+			this.failPendingStageNotification(
+				socket,
+				message.id,
+				attemptId,
+				reservation === "capacity"
+					? "Intercom accepted-delivery capacity is full; refusing delivery without evicting live retry authority"
+					: reservation === "conflict"
+						? `Intercom message ID '${message.id}' was already delivered with a different target or payload`
+						: reservation === "uncertain"
+							? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
+							: "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
+				reservation === "conflict" ? "message_id_conflict" : undefined,
+			);
+			return;
+		}
+
 		const timeout = setTimeout(() => {
 			const pending = this.pendingStageNotificationAcknowledgments.get(requestId);
 			if (pending === undefined) return;
 			this.pendingStageNotificationAcknowledgments.delete(requestId);
+			this.deliveredMessages.forget(pending.messageId, pending.signature);
 			this.failPendingStageNotification(
 				pending.senderSocket,
 				pending.messageId,
@@ -958,6 +1109,7 @@ class IntercomBroker {
 			clearTimeout(timeout);
 			this.pendingStageNotificationAcknowledgments.delete(requestId);
 			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
+			this.deliveredMessages.forget(message.id, signature);
 		}
 	}
 
@@ -971,6 +1123,7 @@ class IntercomBroker {
 		clearTimeout(pending.timeout);
 		this.pendingStageNotificationAcknowledgments.delete(requestId);
 		if (!delivered) {
+			this.deliveredMessages.forget(pending.messageId, pending.signature);
 			this.failPendingStageNotification(
 				pending.senderSocket,
 				pending.messageId,
@@ -979,7 +1132,28 @@ class IntercomBroker {
 			);
 			return;
 		}
-		this.deliveredMessages.record(pending.messageId, pending.signature);
+		let accepted: ReturnType<DeliveredMessageCache["accept"]>;
+		try {
+			accepted = this.deliveredMessages.accept(pending.messageId, pending.signature);
+		} catch {
+			this.failPendingStageNotification(
+				pending.senderSocket,
+				pending.messageId,
+				pending.attemptId,
+				"Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
+			);
+			return;
+		}
+		if (accepted !== "accepted") {
+			this.failPendingStageNotification(
+				pending.senderSocket,
+				pending.messageId,
+				pending.attemptId,
+				"Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
+				accepted === "conflict" ? "message_id_conflict" : undefined,
+			);
+			return;
+		}
 		writeMessageIfOpen(pending.senderSocket, {
 			type: "delivered",
 			messageId: pending.messageId,
@@ -1401,6 +1575,7 @@ class IntercomBroker {
 		if (pending.ownerSessionId !== sessionId && pending.recipientSessionId !== sessionId) continue;
 		clearTimeout(pending.timeout);
 		this.pendingStageNotificationAcknowledgments.delete(requestId);
+		this.deliveredMessages.forget(pending.messageId, pending.signature);
 		if (pending.ownerSessionId === sessionId) continue;
 		this.failPendingStageNotification(
 			pending.senderSocket,
@@ -1459,6 +1634,7 @@ class IntercomBroker {
     this.liveWorkflowStageRouteActivations.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
+	this.deliveredMessages.close();
     const ownsRuntime = this.readPidFile() === process.pid;
     this.unlinkRuntimeFilesIfOwned();
     // Node unlinks a Unix socket path on server.close() even after a successor

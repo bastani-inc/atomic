@@ -109,7 +109,7 @@ export type ClientMessage =
 	| { type: "join_group"; requestId: string; group: string }
 	| { type: "leave_group"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
-  | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
+  | { type: "send" | "supervisor_send"; to: string; logicalTarget?: string; requirePendingReply?: true; message: Message; attemptId?: string }
 	| {
 			type: "send_pending_stage_notification";
 			runId: string;

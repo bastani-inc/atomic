@@ -493,7 +493,9 @@ if (!result.delivered) {
 
 ### Connection lost
 
-Sessions automatically reconnect if the broker restarts. If an explicit `send`, `ask`, or `reply` fails with `Client disconnected`, retry that identical call up to three times. Intercom reuses the failed operation identity during that bounded window, so an acknowledgement lost after broker acceptance does not duplicate delivery; a settled call releases the identity, and a later intentional repeat is delivered as a new operation.
+Sessions automatically reconnect if the broker restarts. If an explicit `send`, `ask`, or `reply` fails with `Client disconnected`, retry that identical call up to three times. Intercom preserves the caller-issued target verbatim and reuses the failed operation identity at most three times for 11 minutes from its first attempt—the 10-minute ask window plus a 1-minute retry opportunity, never extended by a retry. Broker acceptance is retained durably for 12 minutes across broker and peer reconnects, so a lost acknowledgement does not duplicate delivery and a deduplicated ask remains answerable with the recipient's public `reply` action. If a crash leaves an operation reserved but not provably forwarded, Intercom refuses the retry instead of risking a duplicate. A settled call is released and a later intentional repeat is new; a different alias, sender, recipient, thread, payload, or attachment ordering remains distinct or conflicts.
+
+Retry safety is bounded and fails closed: the client allows at most 1,000 retained identities, while the broker allows 10,000 live authority records—including uncertain reservations—and 64 MiB of record content. At either limit Intercom refuses work rather than evicting a still-valid identity; stale broker authority expires after 12 minutes, and malformed durable authority also refuses delivery rather than risking a duplicate.
 
 If the session remains disconnected after those retries:
 

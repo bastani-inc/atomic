@@ -15,6 +15,7 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { ExtensionAPI, RegisteredCommand, ToolDefinition } from "../../packages/coding-agent/src/index.js";
 import {
+	getBrokerDeliveredMessagesPath,
 	getBrokerPidPath,
 	getBrokerSocketPath,
 	getBrokerSpawnLockPath,
@@ -74,6 +75,7 @@ describe("intercom Atomic agent-dir paths", () => {
 				assert.equal(getBrokerSocketPath("darwin"), join(agentDir, "intercom", "broker.sock"));
 				assert.equal(getBrokerPidPath(), join(agentDir, "intercom", "broker.pid"));
 				assert.equal(getBrokerSpawnLockPath(), join(agentDir, "intercom", "broker.spawn.lock"));
+				assert.equal(getBrokerDeliveredMessagesPath(), join(agentDir, "intercom", "delivered-messages.sqlite"));
 			},
 		);
 	});
@@ -86,11 +88,13 @@ describe("intercom Atomic agent-dir paths", () => {
 		withEnv({ HOME: home, ATOMIC_CODING_AGENT_DIR: atomicAgentDir, PI_CODING_AGENT_DIR: piAgentDir }, () => {
 			assert.equal(getBrokerSocketPath("linux"), join(atomicAgentDir, "intercom", "broker.sock"));
 			assert.equal(getBrokerPidPath(), join(atomicAgentDir, "intercom", "broker.pid"));
+			assert.equal(getBrokerDeliveredMessagesPath(), join(atomicAgentDir, "intercom", "delivered-messages.sqlite"));
 		});
 
 		withEnv({ HOME: home, ATOMIC_CODING_AGENT_DIR: undefined, PI_CODING_AGENT_DIR: piAgentDir }, () => {
 			assert.equal(getBrokerSocketPath("linux"), join(piAgentDir, "intercom", "broker.sock"));
 			assert.equal(getBrokerPidPath(), join(piAgentDir, "intercom", "broker.pid"));
+			assert.equal(getBrokerDeliveredMessagesPath(), join(piAgentDir, "intercom", "delivered-messages.sqlite"));
 		});
 	});
 

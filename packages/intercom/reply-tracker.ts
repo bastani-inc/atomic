@@ -1,3 +1,4 @@
+import { ASK_REPLY_TIMEOUT_MS } from "./retry-policy.js";
 import type { Message, SessionInfo } from "./types.js";
 import { resolveSessionTarget, sessionTargetFailureReason } from "./session-target.js";
 
@@ -12,7 +13,7 @@ export class ReplyTracker {
   private readonly pendingTurnContexts: IntercomContext[] = [];
   private currentTurnContext: IntercomContext | null = null;
 
-  constructor(private readonly askTimeoutMs = 10 * 60 * 1000) {}
+  constructor(private readonly askTimeoutMs = ASK_REPLY_TIMEOUT_MS) {}
 
   recordIncomingMessage(from: SessionInfo, message: Message, receivedAt = Date.now()): IntercomContext {
     const context = { from, message, receivedAt };
