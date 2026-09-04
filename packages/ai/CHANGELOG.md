@@ -33,6 +33,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - **Breaking:** `githubCopilotProvider().filterModels` no longer strips every model ID ending in `-fast` from the selectable list. It now exposes a model carrying `fastRoute` only when the OAuth credential's `fastModelIds` advertises that exact ID, and treats a Copilot-owned model that merely ends in `-fast` as an ordinary picker model gated by `availableModelIds`.
 - Qwen3.8 Max and Qwen3.8 Flash no longer offer the `off` thinking level on the `qwen-token-plan`, `qwen-token-plan-cn`, and `qwen-token-plan-individual` providers. Their selectable effort levels now follow models.dev metadata: `low`, `medium`, and `xhigh`.
 - `reduceAssistantMessageFrames` now rebuilds an ended text, thinking, or tool-call block as a value the reducer owns, assembled from the end frame and the rest of the replayed block's own data, instead of deleting optional fields on a value read out of externally supplied frame content. Reduced output is unchanged for every input, including field order and any property the frame carried that the declared block types do not name.
+- OpenAI Responses models that accept `prompt_cache_options`, including GPT-6 Astra, now send `ttl: "30m"` for long prompt-cache retention instead of combining that API with the legacy `prompt_cache_retention: "24h"` field. Earlier Responses models keep the 24-hour field, explicit no-cache mode remains limited to capable models, and short retention omits both controls.
 
 ### Fixed
 

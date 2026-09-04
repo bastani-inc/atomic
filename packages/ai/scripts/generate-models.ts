@@ -1063,8 +1063,22 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	) {
 		mergeThinkingLevelMap(model, { off: null });
 	}
-	if (isOpenAiGpt6AstraModelId(model.id)) {
-		mergeThinkingLevelMap(model, { off: null, minimal: null });
+	if (
+		(model.id === "gpt-6-astra" &&
+			(model.api === "openai-responses" ||
+				model.api === "azure-openai-responses" ||
+				model.api === "openai-codex-responses")) ||
+		(model.api === "bedrock-converse-stream" && isOpenAiGpt6AstraModelId(model.id))
+	) {
+		mergeThinkingLevelMap(model, {
+			off: null,
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: "max",
+		});
 	}
 	if (model.provider === "github-copilot" && model.id.startsWith("gpt-5")) {
 		mergeThinkingLevelMap(model, { minimal: "low" });
