@@ -128,7 +128,9 @@ describe("Intercom full session ID targeting", () => {
 		);
 
 		assert.equal(result.isError, false, result.content[0]?.text);
-		assert.deepEqual(current.sent, [{ to: recipient.id }]);
+		assert.equal(current.sent.length, 1);
+		assert.equal(current.sent[0]?.to, recipient.id);
+		assert.equal(typeof current.sent[0]?.messageId, "string");
 	});
 
 	test("ask by a workflow stage name alias keys its reply waiter on the live stage session", async () => {
@@ -322,7 +324,10 @@ describe("Intercom full session ID targeting", () => {
 		);
 
 		assert.equal(result.isError, false, result.content[0]?.text);
-		assert.deepEqual(current.sent, [{ to: sender.id, replyTo: "question-sender" }]);
+		assert.equal(current.sent.length, 1);
+		assert.equal(current.sent[0]?.to, sender.id);
+		assert.equal(current.sent[0]?.replyTo, "question-sender");
+		assert.equal(typeof current.sent[0]?.messageId, "string");
 	});
 
 	test("exact case-insensitive session names resolve to the full ID", async () => {
@@ -339,7 +344,9 @@ describe("Intercom full session ID targeting", () => {
 		);
 
 		assert.equal(result.isError, false, result.content[0]?.text);
-		assert.deepEqual(current.sent, [{ to: recipient.id }]);
+		assert.equal(current.sent.length, 1);
+		assert.equal(current.sent[0]?.to, recipient.id);
+		assert.equal(typeof current.sent[0]?.messageId, "string");
 	});
 
 	test("an 8-character ID prefix is rejected for send", async () => {

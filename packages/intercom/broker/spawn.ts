@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
@@ -36,6 +36,11 @@ const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = getBrokerPidPath();
 const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
 const BROKER_LOG = getBrokerLogPath();
+
+function ensurePrivateDirectory(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") chmodSync(path, 0o700);
+}
 
 /**
  * How much of the broker startup log is read back into an error message.
@@ -182,7 +187,7 @@ function writeWindowsHiddenLauncher(
   commandLine: string,
   launcherPath: string = getWindowsHiddenLauncherPath(),
 ): string {
-  mkdirSync(dirname(launcherPath), { recursive: true });
+  ensurePrivateDirectory(dirname(launcherPath));
   writeFileSync(launcherPath, getWindowsHiddenLauncherScript(commandLine), "utf-8");
   return launcherPath;
 }
@@ -254,7 +259,7 @@ export function getBrokerSpawnOptions(
 
 /** Truncate (or create) the broker log so each spawn starts from a bounded, current file. */
 function resetBrokerLog(logPath: string = BROKER_LOG): void {
-  mkdirSync(dirname(logPath), { recursive: true });
+  ensurePrivateDirectory(dirname(logPath));
   closeSync(openSync(logPath, "w"));
 }
 
@@ -295,7 +300,7 @@ function toError(error: unknown): Error {
 }
 
 export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: string[]): Promise<void> {
-  mkdirSync(INTERCOM_DIR, { recursive: true });
+  ensurePrivateDirectory(INTERCOM_DIR);
 
   if (await isBrokerRunning()) {
     return;

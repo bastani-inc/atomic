@@ -13,7 +13,8 @@ type ToolResult = {
 
 type Tool = {
 	description: string;
-	parameters: { properties?: { to?: { description?: string } } };
+	promptSnippet?: string;
+	parameters: { properties?: { to?: { description?: string }; retryToken?: { description?: string } } };
 	execute(
 		id: string,
 		params: { action?: string; group?: string },
@@ -150,7 +151,9 @@ test("heavy tool guidance teaches exact known workflow-stage targets without rep
 	assert.ok(guidance.includes("`workflow:<rootRunId>/**`"));
 	assert.match(guidance, /notInKnownSet/);
 	assert.match(guidance, /live session/i);
-	assert.match(guidance, /fails with `Client disconnected`.*retry the same call up to three times/u);
+	assert.match(guidance, /returned `retryToken`.*three claimed attempts/u);
+	assert.match(tool.promptSnippet ?? "", /returned retryToken/);
+	assert.match(tool.parameters.properties?.retryToken?.description ?? "", /omit it for every fresh operation/);
 });
 
 test("join is additive and leave without a group returns home", async () => {

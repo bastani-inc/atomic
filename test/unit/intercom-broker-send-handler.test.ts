@@ -1,13 +1,26 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
 import { test } from "vitest";
-import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
+import {
+	DELIVERED_MESSAGE_MAX_ENTRIES,
+	DeliveredMessageCache,
+} from "../../packages/intercom/broker/delivered-message-cache.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
-import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
+import {
+	type BrokerConnectedSession,
+	deliveryTargetIdentity,
+	handleBrokerSend,
+} from "../../packages/intercom/broker/send-handler.js";
+import { buildMessageSendSignature } from "../../packages/intercom/broker/send-signature.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 
-function session(id: string, name: string, socket: net.Socket): BrokerConnectedSession {
+function session(
+	id: string,
+	name: string,
+	socket: net.Socket,
+	registrationReturnAddress?: string,
+): BrokerConnectedSession {
 	const info: SessionInfo = {
 		id,
 		name,
@@ -17,20 +30,25 @@ function session(id: string, name: string, socket: net.Socket): BrokerConnectedS
 		startedAt: 1,
 		lastActivity: 1,
 	};
-	return { socket, info };
+	return {
+		socket,
+		info,
+		...(registrationReturnAddress === undefined ? {} : { registrationReturnAddress }),
+	};
 }
 
 function message(id: string, text = "hello"): Message {
 	return { id, timestamp: 1, content: { text } };
 }
 
-test("broker wire send dedupes identical retries and rejects target, payload, or sender conflicts with attempt IDs", () => {
+test("broker wire send dedupes a reconnect and rejects target, payload, or distinct-sender conflicts", () => {
 	const senderOne = {} as net.Socket;
+	const reconnectedSender = {} as net.Socket;
 	const senderTwo = {} as net.Socket;
 	const recipient = {} as net.Socket;
 	const other = {} as net.Socket;
 	const sessions = new Map<string, BrokerConnectedSession>([
-		["sender-1", session("sender-1", "sender", senderOne)],
+		["sender-1", session("sender-1", "sender", senderOne, "sender-return-1")],
 		["recipient", session("recipient", "recipient", recipient)],
 		["other", session("other", "other", other)],
 	]);
@@ -91,10 +109,35 @@ test("broker wire send dedupes identical retries and rejects target, payload, or
 	assert.equal(writes.filter((entry) => entry.socket === other && entry.message.type === "message").length, 0);
 
 	sessions.delete("sender-1");
-	sessions.set("sender-2", session("sender-2", "sender", senderTwo));
+	sessions.set("sender-reconnected", session("sender-reconnected", "sender", reconnectedSender, "sender-return-1"));
+	handleBrokerSend(
+		reconnectedSender,
+		{ type: "send", to: "recipient", message: message("stable"), attemptId: "attempt-5" },
+		"sender-reconnected",
+		sessions,
+		cache,
+		write,
+	);
+	assert.equal(
+		writes.filter(
+			(entry) =>
+				entry.socket === reconnectedSender &&
+				entry.message.type === "delivered" &&
+				entry.message.attemptId === "attempt-5",
+		).length,
+		1,
+	);
+	assert.equal(
+		writes.filter((entry) => entry.socket === recipient && entry.message.type === "message").length,
+		1,
+		"a reconnected sender receives the retained acknowledgment without duplicate delivery",
+	);
+
+	sessions.delete("sender-reconnected");
+	sessions.set("sender-2", session("sender-2", "sender", senderTwo, "sender-return-2"));
 	handleBrokerSend(
 		senderTwo,
-		{ type: "send", to: "recipient", message: message("stable"), attemptId: "attempt-5" },
+		{ type: "send", to: "recipient", message: message("stable"), attemptId: "attempt-6" },
 		"sender-2",
 		sessions,
 		cache,
@@ -104,18 +147,307 @@ test("broker wire send dedupes identical retries and rejects target, payload, or
 		(entry) =>
 			entry.socket === senderTwo &&
 			entry.message.type === "delivery_failed" &&
-			entry.message.attemptId === "attempt-5",
+			entry.message.attemptId === "attempt-6",
 	)?.message;
 	assert.equal(senderConflict?.type, "delivery_failed");
 	if (senderConflict?.type === "delivery_failed") assert.equal(senderConflict.reasonCode, "message_id_conflict");
 	assert.equal(
 		writes.filter((entry) => entry.socket === recipient && entry.message.type === "message").length,
 		1,
-		"a replacement sender cannot claim another sender's delivered message ID",
+		"a different return identity cannot claim another sender's delivered message ID",
 	);
 });
 
-test("broker wire send keeps absent attemptId compatibility but rejects malformed present values", () => {
+test("a deduplicated question rebinds only its accepted target and sender group identity", () => {
+	const originalSocket = {} as net.Socket;
+	const reconnectedSocket = {} as net.Socket;
+	const targetSocket = {} as net.Socket;
+	const logicalTarget = "workflow:4ac72924-c452-4e5f-9e63-2435722109f7/reviewer";
+	const senderGroup = "workflow:4ac72924-c452-4e5f-9e63-2435722109f7";
+	const targetGroup = `${senderGroup}/reviewers`;
+	const original = {
+		...session("sender-old", "sender", originalSocket, "stable-sender"),
+		registrationGroup: "default",
+	};
+	original.info.group = "default";
+	original.info.groups = ["default", senderGroup];
+	const target = { ...session("target", "reviewer", targetSocket), registrationGroup: targetGroup };
+	target.info.group = targetGroup;
+	target.info.groups = [targetGroup];
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[original.info.id, original],
+		[target.info.id, target],
+	]);
+	const cache = new DeliveredMessageCache();
+	const pending = new PendingQuestionIndex();
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	const write = (socket: net.Socket, value: BrokerMessage) => {
+		writes.push({ socket, message: value });
+		return true;
+	};
+	const question = { ...message("stable-question", "choose"), expectsReply: true };
+	const send = (socket: net.Socket, senderId: string, outgoing: Message = question) =>
+		handleBrokerSend(
+			socket,
+			{ type: "send", to: logicalTarget, message: outgoing },
+			senderId,
+			sessions,
+			cache,
+			write,
+			new SupervisorChannelCache(),
+			pending,
+			undefined,
+			() => target,
+			() => true,
+		);
+
+	send(originalSocket, original.info.id);
+	assert.equal(pending.matchesReply(target.info.id, original.info.id, question.id), true);
+	pending.pruneSender(original.info.id);
+	sessions.delete(original.info.id);
+	const reconnected = {
+		...session("sender-new", "sender", reconnectedSocket, "stable-sender"),
+		registrationGroup: "default",
+	};
+	reconnected.info.group = "default";
+	reconnected.info.groups = ["default", senderGroup];
+	sessions.set(reconnected.info.id, reconnected);
+
+	send(reconnectedSocket, reconnected.info.id);
+	assert.equal(pending.matchesReply(target.info.id, reconnected.info.id, question.id), true);
+	assert.equal(
+		writes.filter((entry) => entry.socket === targetSocket && entry.message.type === "message").length,
+		1,
+		"rebinding must not redeliver the accepted question",
+	);
+
+	pending.pruneSender(reconnected.info.id);
+	reconnected.info.groups = ["default", "other-group"];
+	send(reconnectedSocket, reconnected.info.id);
+	assert.equal(
+		pending.matchesReply(target.info.id, reconnected.info.id, question.id),
+		false,
+		"changed sender groups cannot claim the accepted cross-group reply route",
+	);
+
+	const changedPayload = { ...question, content: { text: "changed" } };
+	send(reconnectedSocket, reconnected.info.id, changedPayload);
+	const payloadConflict = writes.find(
+		(entry) =>
+			entry.socket === reconnectedSocket &&
+			entry.message.type === "delivery_failed" &&
+			entry.message.reasonCode === "message_id_conflict",
+	)?.message;
+	assert.equal(payloadConflict?.type, "delivery_failed");
+});
+
+test("logical target stays stable across recipient transport churn and preserves raw-alias conflicts", () => {
+	const senderSocket = {} as net.Socket;
+	const originalRecipientSocket = {} as net.Socket;
+	const replacementRecipientSocket = {} as net.Socket;
+	const sender = session("sender", "sender", senderSocket, "stable-sender");
+	const originalRecipient = session("recipient-old", "recipient", originalRecipientSocket, "stable-recipient");
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[sender.info.id, sender],
+		[originalRecipient.info.id, originalRecipient],
+	]);
+	const cache = new DeliveredMessageCache();
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	const write = (socket: net.Socket, outgoing: BrokerMessage) => {
+		writes.push({ socket, message: outgoing });
+		return true;
+	};
+	const stable = message("recipient-churn", "same payload");
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: originalRecipient.info.id, logicalTarget: "recipient", message: stable },
+		sender.info.id,
+		sessions,
+		cache,
+		write,
+	);
+	sessions.delete(originalRecipient.info.id);
+	const replacementRecipient = session("recipient-new", "recipient", replacementRecipientSocket, "stable-recipient");
+	sessions.set(replacementRecipient.info.id, replacementRecipient);
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: replacementRecipient.info.id, logicalTarget: "recipient", message: stable },
+		sender.info.id,
+		sessions,
+		cache,
+		write,
+	);
+	assert.equal(
+		writes.filter((entry) => entry.message.type === "message").length,
+		1,
+		"a freshly resolved transport ID must not alter the logical operation",
+	);
+
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: replacementRecipient.info.id, logicalTarget: replacementRecipient.info.id, message: stable },
+		sender.info.id,
+		sessions,
+		cache,
+		write,
+	);
+	assert.equal(
+		writes.some(
+			(entry) => entry.message.type === "delivery_failed" && entry.message.reasonCode === "message_id_conflict",
+		),
+		true,
+		"a different caller-issued alias cannot claim the accepted raw-target identity",
+	);
+
+	const otherRecipient = session("recipient-other", "recipient", replacementRecipientSocket, "different-recipient");
+	sessions.delete(replacementRecipient.info.id);
+	sessions.set(otherRecipient.info.id, otherRecipient);
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: otherRecipient.info.id, logicalTarget: "recipient", message: stable },
+		sender.info.id,
+		sessions,
+		cache,
+		write,
+	);
+	assert.equal(writes.filter((entry) => entry.message.type === "message").length, 1);
+});
+
+test("the former broker capacity boundary cannot redeliver an accepted operation", () => {
+	const senderSocket = {} as net.Socket;
+	const recipientSocket = {} as net.Socket;
+	const sessions = new Map<string, BrokerConnectedSession>([
+		["sender", session("sender", "sender", senderSocket, "stable-sender")],
+		["recipient", session("recipient", "recipient", recipientSocket, "stable-recipient")],
+	]);
+	const cache = new DeliveredMessageCache();
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	const write = (socket: net.Socket, outgoing: BrokerMessage) => {
+		writes.push({ socket, message: outgoing });
+		return true;
+	};
+	const accepted = message("retained-at-capacity", "deliver exactly once");
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: "recipient", message: accepted },
+		"sender",
+		sessions,
+		cache,
+		write,
+	);
+	const now = Date.now();
+	for (let index = 1; index < DELIVERED_MESSAGE_MAX_ENTRIES; index += 1) {
+		assert.equal(cache.record(`unrelated-${index}`, `signature-${index}`, now), "recorded");
+	}
+	assert.equal(cache.record("over-capacity", "over-capacity-signature", now), "capacity");
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: "recipient", message: accepted },
+		"sender",
+		sessions,
+		cache,
+		write,
+	);
+	assert.equal(
+		writes.filter((entry) => entry.socket === recipientSocket && entry.message.type === "message").length,
+		1,
+	);
+	assert.equal(
+		writes.filter((entry) => entry.socket === senderSocket && entry.message.type === "delivered").length,
+		2,
+	);
+});
+
+test("an uncertain pre-forward reservation refuses retry without a recipient delivery", () => {
+	const senderSocket = {} as net.Socket;
+	const recipientSocket = {} as net.Socket;
+	const sender = session("sender", "sender", senderSocket, "stable-sender");
+	const recipient = session("recipient", "recipient", recipientSocket, "stable-recipient");
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[sender.info.id, sender],
+		[recipient.info.id, recipient],
+	]);
+	const cache = new DeliveredMessageCache();
+	const uncertain = message("uncertain", "do not redeliver");
+	const signature = buildMessageSendSignature("recipient", uncertain, "stable-sender");
+	assert.equal(cache.reserve(uncertain.id, signature, Date.now(), deliveryTargetIdentity(recipient)), "recorded");
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: "recipient", message: uncertain },
+		sender.info.id,
+		sessions,
+		cache,
+		(socket, outgoing) => {
+			writes.push({ socket, message: outgoing });
+			return true;
+		},
+	);
+	assert.equal(
+		writes.some((entry) => entry.socket === recipientSocket && entry.message.type === "message"),
+		false,
+	);
+	assert.equal(
+		writes.some(
+			(entry) =>
+				entry.socket === senderSocket &&
+				entry.message.type === "delivery_failed" &&
+				/cannot prove/.test(entry.message.reason),
+		),
+		true,
+	);
+});
+
+test("public reply metadata requires the exact broker-recorded reverse question route", () => {
+	const recipientSocket = {} as net.Socket;
+	const askerSocket = {} as net.Socket;
+	const imposterSocket = {} as net.Socket;
+	const recipient = session("recipient", "recipient", recipientSocket);
+	const asker = session("asker-new", "renamed-asker", askerSocket, "stable-asker");
+	const imposter = session("imposter", "old-asker-name", imposterSocket, "different-peer");
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[recipient.info.id, recipient],
+		[asker.info.id, asker],
+		[imposter.info.id, imposter],
+	]);
+	const pending = new PendingQuestionIndex();
+	pending.record(asker.info.id, recipient.info.id, "question");
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	handleBrokerSend(
+		recipientSocket,
+		{
+			type: "send",
+			to: "old-asker-name",
+			requirePendingReply: true,
+			message: { ...message("reply", "private answer"), replyTo: "question" },
+		},
+		recipient.info.id,
+		sessions,
+		new DeliveredMessageCache(),
+		(socket, outgoing) => {
+			writes.push({ socket, message: outgoing });
+			return true;
+		},
+		undefined,
+		pending,
+	);
+	assert.equal(
+		writes.some((entry) => entry.socket === imposterSocket && entry.message.type === "message"),
+		false,
+	);
+	assert.equal(
+		writes.some(
+			(entry) =>
+				entry.socket === recipientSocket &&
+				entry.message.type === "delivery_failed" &&
+				/Pending question route/.test(entry.message.reason),
+		),
+		true,
+	);
+	assert.equal(pending.matchesReply(recipient.info.id, asker.info.id, "question"), true);
+});
+
+test("broker wire send keeps omitted retry fields compatible but rejects malformed present values", () => {
 	const sender = {} as net.Socket;
 	const recipient = {} as net.Socket;
 	const sessions = new Map<string, BrokerConnectedSession>([
@@ -169,10 +501,36 @@ test("broker wire send keeps absent attemptId compatibility but rejects malforme
 	)?.message;
 	assert.equal(malformed?.type, "delivery_failed");
 	assert.match(malformed?.reason ?? "", /attemptId/);
+	handleBrokerSend(
+		sender,
+		{ type: "send", to: "recipient", logicalTarget: 42, message: message("bad-logical-target") },
+		"sender",
+		sessions,
+		cache,
+		write,
+	);
+	const malformedLogicalTarget = writes.find(
+		(entry) => entry.message.type === "delivery_failed" && entry.message.messageId === "bad-logical-target",
+	)?.message;
+	assert.equal(malformedLogicalTarget?.type, "delivery_failed");
+	assert.match(malformedLogicalTarget?.reason ?? "", /logicalTarget/);
+	handleBrokerSend(
+		sender,
+		{ type: "send", to: "recipient", requirePendingReply: false, message: message("bad-reply-route") },
+		"sender",
+		sessions,
+		cache,
+		write,
+	);
+	const malformedReplyRoute = writes.find(
+		(entry) => entry.message.type === "delivery_failed" && entry.message.messageId === "bad-reply-route",
+	)?.message;
+	assert.equal(malformedReplyRoute?.type, "delivery_failed");
+	assert.match(malformedReplyRoute?.reason ?? "", /requirePendingReply/);
 	assert.equal(
 		writes.filter((entry) => entry.socket === recipient && entry.message.type === "message").length,
 		1,
-		"malformed attemptId must not downgrade and forward",
+		"malformed retry metadata must not downgrade and forward",
 	);
 });
 

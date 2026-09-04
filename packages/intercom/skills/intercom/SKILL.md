@@ -493,7 +493,15 @@ if (!result.delivered) {
 
 ### Connection lost
 
-Sessions automatically reconnect if the broker restarts. If persistently disconnected:
+Sessions automatically reconnect if the broker restarts. If an explicit `send`, `ask`, or `reply` fails with the typed `Client disconnected` error, copy the opaque `retryToken` from the tool result and repeat the exact action and arguments with it. Make at most three claimed attempts. Never attach that token to a different action, target, message, attachment sequence, attachment presence (`attachments` omitted is not explicit `[]`), or reply thread, and omit it for every fresh operation—even a deliberately byte-identical one. Invalid, expired, foreign-session, mismatched, concurrent, exhausted, and settled claims fail without sending.
+
+The token keeps the original message ID and deadline (11 minutes from the initial attempt: the 10-minute ask window plus one minute). A claimed retry that returns `delivered: false`, `Session not found`, durable-authority uncertainty/capacity refusal, or another typed disconnect returns the same token for the next bounded claim; each claim consumes one attempt and never extends the deadline. Delivered or queued success settles it. Initial tokenless nondelivery and unrelated/non-recoverable failures do not create retry state.
+
+Broker acceptance is retained for 12 minutes, so acknowledgement loss does not duplicate delivery and a deduplicated ask remains replyable. Implicit public reply prefers the recorded exact sender ID while live and falls back to authorized reconnect resolution only after departure. A retained implicit reply keeps its original sender/question snapshot, so later inbound asks cannot redirect its token claim. Durable SQLite stores fixed keyed HMAC digests rather than message/attachment text; its paired key and database artifacts are owner-only on POSIX. Missing, malformed, uncertain, or capacity-bound authority fails closed rather than risking a duplicate.
+
+Retry safety is bounded: fresh client operations reserve one of 1,000 identity slots before confirmation, target resolution, or send, while valid existing claims remain usable at capacity. The broker and local result relay allow 10,000 live delivery records; the broker also bounds digest/routing authority to 64 MiB. At a limit Intercom refuses new work before its delivery side effect rather than evicting a still-valid identity.
+
+If the session remains disconnected after those retries:
 
 ```typescript
 intercom({ action: "status" })

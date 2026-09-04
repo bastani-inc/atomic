@@ -31,6 +31,24 @@ test("the session protocol carries a set of group memberships", () => {
 	assert.deepEqual(registration.session.groups, ["default", "reviewers"]);
 });
 
+test("logical targets are optional retry metadata and preserve legacy send frames", () => {
+	const legacy: ClientMessage = {
+		type: "send",
+		to: "resolved-session-id",
+		message: { id: "legacy", timestamp: 1, content: { text: "legacy" } },
+	};
+	const retryAware: ClientMessage = {
+		type: "send",
+		to: "resolved-session-id",
+		logicalTarget: "caller-issued name  ",
+		requirePendingReply: true,
+		message: { id: "retry", timestamp: 1, replyTo: "question", content: { text: "retry" } },
+	};
+	assert.equal("logicalTarget" in legacy, false);
+	assert.equal(retryAware.logicalTarget, "caller-issued name  ");
+	assert.equal(retryAware.requirePendingReply, true);
+});
+
 test("legacy single-group clients remain valid protocol clients", () => {
 	const session: SessionInfo = { ...BASE_SESSION, group: "reviewers" };
 	const registration: ClientMessage = {

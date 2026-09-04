@@ -197,6 +197,11 @@ describe("concurrent blocking intercom requests", () => {
 		await sleep(0);
 		release();
 		await settles(() => current.sent.length === 2, "both asks send their questions");
+		assert.notEqual(
+			current.sent[0]?.message.messageId,
+			current.sent[1]?.message.messageId,
+			"concurrent identical asks must reserve distinct question correlations",
+		);
 		current.replyToPending();
 		current.replyToPending();
 		for (const result of await Promise.all([first, second])) {

@@ -8,7 +8,9 @@ export interface LogicalSendOptions {
   replyError?: string;
 }
 
-function normalizeAttachments(attachments: Attachment[] | undefined): Array<Record<string, string>> | undefined {
+export function canonicalizeAttachmentsForSendSignature(
+	attachments: readonly Attachment[] | undefined,
+): Array<Record<string, string>> | undefined {
   return attachments?.map((attachment) => ({
     type: attachment.type,
     name: attachment.name,
@@ -22,7 +24,7 @@ export function buildSendSignature(to: string, options: LogicalSendOptions): str
   return JSON.stringify({
     to,
     text: options.text,
-    attachments: normalizeAttachments(options.attachments) ?? [],
+    attachments: canonicalizeAttachmentsForSendSignature(options.attachments) ?? [],
     replyTo: options.replyTo ?? null,
     expectsReply: options.expectsReply ?? false,
     replyError: options.replyError ?? null,

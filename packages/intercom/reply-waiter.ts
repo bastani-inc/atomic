@@ -1,3 +1,4 @@
+import { ASK_REPLY_TIMEOUT_MS } from "./retry-policy.js";
 import type { Message } from "./types.js";
 
 export interface ReplyWaiterRecord {
@@ -26,7 +27,7 @@ export type ReplyWaitAdmission =
   | { ok: false; reason: "busy"; limit: number }
   | { ok: false; reason: "cancelled" };
 
-export const DEFAULT_REPLY_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_REPLY_TIMEOUT_MS = ASK_REPLY_TIMEOUT_MS;
 export const DEFAULT_MAX_PENDING_REPLY_WAITS = 6;
 
 /**
