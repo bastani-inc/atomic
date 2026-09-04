@@ -642,6 +642,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 Use this to communicate findings, request help, or coordinate work with other sessions.
 Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
 For send, live session names and exact full session IDs remain supported. Workflow-stage targets use \`workflow:<rootRunId>/<segment>[/<segment>...]\`; \`*\` matches one segment and \`**\` any depth. Use \`intercom list\` inside the invocation group to see live, pending, and possible future targets with queued counts. \`workflow:<rootRunId>/**\` reaches live stages now and remains sticky for every future stage until root termination; valid targets outside the known set queue with a \`notInKnownSet\` warning and settle undeliverable at terminal only if never delivered. Use \`ask\` only on live targets.
+If a call fails with \`Client disconnected\`, retry the same call up to three times; each retry reconnects the client.
 Usage:
   intercom({ action: "list" })                    → List sessions in your group
   intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions

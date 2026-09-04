@@ -176,6 +176,7 @@ A valid target outside the known set queues speculatively with a \`notInKnownSet
 undeliverable at terminal only if never delivered. Use \`ask\` only for a live, reply-capable target.
 Stage paths win over same-named owned subgroups for send/ask; \`list\` with \`group\` continues to
 select the group.
+If a call fails with \`Client disconnected\`, retry the same call up to three times; each retry reconnects the client.
 
 Usage:
   intercom({ action: "list" })                    → List sessions visible through your groups
