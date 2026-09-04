@@ -64,6 +64,8 @@ export function prepareExecutionContext(input: {
 	deps: ResolvedExecutorDeps;
 }): ExecutionContextBuildResult {
 	const { params, ctx, signal, onUpdate, deps } = input;
+	const stageCloseSignal = ctx.orchestrationContext?.messageAdmission?.boundary.closeSignal;
+	const executionSignal = stageCloseSignal === undefined ? signal : AbortSignal.any([signal, stageCloseSignal]);
 	const depth = getCurrentSubagentDepth(ctx);
 	const normalized = normalizeRepeatedParallelCounts(params);
 	if (normalized.error) return { error: normalized.error };
@@ -179,7 +181,7 @@ export function prepareExecutionContext(input: {
 		params: effectiveParams,
 		effectiveCwd,
 		ctx,
-		signal,
+		signal: executionSignal,
 		onUpdate: onUpdateWithContext,
 		agents,
 		...(parallelAgentConfigs ? { parallelAgentConfigs } : {}),
@@ -194,6 +196,8 @@ export function prepareExecutionContext(input: {
 		controlConfig,
 		intercomBridge,
 	};
+
+	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(runId);
 
 	const foregroundMode: "single" | "parallel" = hasTasks ? "parallel" : "single";
 	const foregroundControl = {

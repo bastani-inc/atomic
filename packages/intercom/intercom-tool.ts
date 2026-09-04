@@ -498,6 +498,16 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               details: { error: true },
             };
           }
+          if (_signal?.aborted) {
+            return {
+              content: [{
+                type: "text",
+                text: `Cancelled${retryTokenGuidance(retryToken, retryPreflightRemaining ?? 0)}`,
+              }],
+              isError: true,
+              details: retryErrorDetails(retryToken),
+            };
+          }
           let retryIdentity: RetryIdentityAttempt | undefined;
           try {
             if (retryToken === undefined) {
@@ -537,6 +547,15 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               expectsReply: false,
             }, retryToken);
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
+            if (_signal?.aborted) {
+              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
+              retryIdentity = undefined;
+              return {
+                content: [{ type: "text", text: `Cancelled${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}` }],
+                isError: true,
+                details: retryErrorDetails(retained.retryToken),
+              };
+            }
             if (sendTo === connectedClient.sessionId) {
               const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
@@ -549,6 +568,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: retryErrorDetails(retained.retryToken),
               };
             }
+            // Stage closure cannot undo a submitted send. Preserve its receipt or
+            // disconnect retry identity; the owning receiver suppresses late ingress.
             const result = await connectedClient.send(sendTo, {
               messageId: retryIdentity.messageId,
               logicalTarget: to,
@@ -556,6 +577,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               attachments,
               replyTo,
             });
+
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;

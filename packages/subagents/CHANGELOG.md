@@ -10,6 +10,10 @@
 
 - Subagent labels now render the complete selected model ID, including `-fast`, without appending a separate `fast` badge.
 
+### Fixed
+
+- Workflow stages now cancel their still-running subagents at completion, including single and parallel children detached for Intercom coordination. Cancelled children keep the `interrupted` status, `cause: "abort"`, and normal cleanup. Late findings and completion notifications from those children no longer reach the parent/main chat. Exact run ownership preserves other stages' child traffic, and already-submitted Intercom sends retain their transport receipts and retry identities. Detached children still notify normally while their owning stage is live ([#2840](https://github.com/bastani-inc/atomic/issues/2840)).
+
 ## [0.9.16] - 2026-08-29
 
 Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

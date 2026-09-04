@@ -38,6 +38,7 @@ import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
+	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
 import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.js";
 
@@ -224,7 +225,9 @@ export async function runSinglePath(
 			},
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);
-				if (result) notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
+				if (result && workflowStageAcceptsDetachedNotification(ctx)) {
+					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
+				}
 			},
 			index: 0,
 			modelOverride,

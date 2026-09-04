@@ -33,11 +33,16 @@ type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) =>
 const SESSION_ID = "019f0000-aaaa-7bbb-8ccc-dddddddddddd";
 const SELF_ALIAS = "subagent-chat-019f0000-aaaa-7bbb-8ccc-dddddddddddd";
 
+interface CapturedInboundMessage {
+	readonly customType?: string;
+	readonly details?: { readonly message?: object };
+}
+
 function fixture(options: { rejectLateRoutes?: number } = {}) {
 	const handlers = new Map<string, Handler[]>();
 	const eventHandlers = new Map<string, Array<(payload: unknown) => void | Promise<void>>>();
 	const entries: Array<{ type: string; data: { error?: string } }> = [];
-	const inboundMessages: Array<{ customType?: string }> = [];
+	const inboundMessages: CapturedInboundMessage[] = [];
 	const deliveryAcks: Array<{ requestId?: string; delivered?: boolean; error?: string }> = [];
 	let remainingLateRouteRejections = options.rejectLateRoutes ?? 0;
 	const ctx = {
@@ -61,14 +66,14 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 		appendEntry(type: string, data: { error?: string }) {
 			entries.push({ type, data });
 		},
-		async sendMessage(message: { customType?: string }) {
+		async sendMessage(message: CapturedInboundMessage) {
 			if (message.customType === "intercom_message" && remainingLateRouteRejections > 0) {
 				remainingLateRouteRejections -= 1;
 				throw new Error("injected main-chat route failure");
 			}
 			inboundMessages.push(message);
 		},
-		async sendMessages(messages: Array<{ customType?: string }>) {
+		async sendMessages(messages: CapturedInboundMessage[]) {
 			if (
 				messages.some((message) => message.customType === "intercom_message") &&
 				remainingLateRouteRejections > 0
@@ -220,6 +225,8 @@ describe("lazy relay lifecycle-context fallback", () => {
 		const parent = fixture({ rejectLateRoutes: 1 });
 		await parent.fire("turn_start", { type: "turn_start" });
 		const boundary = new WorkflowStageAdmissionBoundary();
+		boundary.registerOwnedSubagentRun("owned-stage-run");
+
 		await boundary.close();
 		const sourceHandlers = new Map<string, Handler[]>();
 		const sourceEvents = new Map<string, Array<(payload: unknown) => void>>();
@@ -279,15 +286,34 @@ describe("lazy relay lifecycle-context fallback", () => {
 		for (const handler of sourceHandlers.get("session_start") ?? [])
 			await handler({ type: "session_start", reason: "startup" }, sourceContext);
 		assert.ok(inbound);
-		inbound(
-			sourceContext as never,
-			{ id: "sender", name: "reviewer", cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
-			{ id: "closed-late", timestamp: 1, content: { text: "late" } },
-		);
+		const sender = {
+			id: "sender",
+			name: "reviewer",
+			cwd: "/repo",
+			model: "test",
+			pid: 1,
+			startedAt: 1,
+			lastActivity: 1,
+		};
+		const ownedChildMessage = {
+			id: "closed-late-owned-child",
+			timestamp: 1,
+			source: { subagentRunId: "owned-stage-run", subagentAgent: "worker", subagentIndex: 0 },
+			content: { text: "late from this stage's child" },
+		};
+		const unrelatedChildMessage = {
+			id: "closed-late-unrelated-child",
+			timestamp: 2,
+			source: { subagentRunId: "other-stage-run", subagentAgent: "worker", subagentIndex: 0 },
+			content: { text: "late from another stage's child" },
+		};
+		inbound(sourceContext as never, sender, ownedChildMessage);
+		inbound(sourceContext as never, sender, unrelatedChildMessage);
 		for (const handler of sourceHandlers.get("session_shutdown") ?? [])
 			await handler({ type: "session_shutdown", reason: "quit" }, sourceContext);
 		await settle(() => parent.inboundMessages.length === 1);
 		assert.equal(parent.inboundMessages.length, 1);
+		assert.equal(parent.inboundMessages[0]?.details?.message, unrelatedChildMessage);
 	});
 	test("still delivers locally on the normal session_start path", async () => {
 		const current = fixture();
