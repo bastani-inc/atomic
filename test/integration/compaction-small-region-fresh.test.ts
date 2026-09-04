@@ -14,7 +14,14 @@ import { test } from "vitest";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import { MIN_COMPACTABLE_REGION_LINES } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
-import { preparation, region, runRequest, scriptedStream, testModel } from "../unit/compaction-rung-support.js";
+import {
+	preparation,
+	region,
+	runRequest,
+	scriptedStream,
+	setKeptTailTokenEstimate,
+	testModel,
+} from "../unit/compaction-rung-support.js";
 
 const smallRegion = () => region(MIN_COMPACTABLE_REGION_LINES - 1);
 
@@ -34,9 +41,14 @@ test("a load-bearing small region reaches fresh without invoking any planner", a
 
 test("a load-bearing small region drops an oversized protected tail", async () => {
 	const stream = scriptedStream({ default: [{ text: "1,5\n" }] });
+	// A protected tail far larger than the tiny region and the hard limit alike.
+	// A directly-built preparation carries no tail estimate, so set it explicitly
+	// (mirroring `prepareCompactionBoundary`); the fresh rung drops the tail only
+	// when its estimate exceeds the limit.
+	const prep = preparation({ region: smallRegion(), tokensBefore: 500_000 });
+	setKeptTailTokenEstimate(prep, 500_000);
 	const result = await runVerbatimCompaction(
-		// A tail far larger than the tiny region and the hard limit alike.
-		preparation({ region: smallRegion(), tokensBefore: 500_000 }),
+		prep,
 		testModel({ contextWindow: 1_000 }),
 		runRequest({ streamFn: stream.streamFn, urgency: "load_bearing" }),
 	);

@@ -124,6 +124,7 @@ test("the appended fresh boundary renders the degraded notice", () => {
 			text: "[User]: retained\n(filtered 12 lines)",
 			stats: details.stats,
 			rung: details.rung,
+			displayTokensBefore: details.tokensBefore ?? details.stats.tokensBefore,
 		})
 			.render(200)
 			.join("\n"),
@@ -172,6 +173,7 @@ test("a fresh boundary is not swallowed by an identical-text planned boundary", 
 			text: "[User]: retained\n(filtered 12 lines)",
 			stats: boundaryDetails(state)[1].stats,
 			rung: boundaryDetails(state)[1].rung,
+			displayTokensBefore: boundaryDetails(state)[1].tokensBefore ?? boundaryDetails(state)[1].stats.tokensBefore,
 		})
 			.render(200)
 			.join("\n"),
@@ -210,6 +212,7 @@ test("a committed fresh boundary stays visible when the final gate also errors",
 			text: "[User]: retained\n(filtered 12 lines)",
 			stats: details[0].stats,
 			rung: details[0].rung,
+			displayTokensBefore: details[0].tokensBefore ?? details[0].stats.tokensBefore,
 		})
 			.render(200)
 			.join("\n"),

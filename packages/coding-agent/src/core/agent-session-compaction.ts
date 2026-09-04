@@ -8,6 +8,7 @@ import {
 	type CompactionPlannerModel,
 	type CompactionPlanOptions,
 	type CompactionRung,
+	computeWholeContextStats,
 	type FallbackPlannerContext,
 	getKeptTailTokenEstimate,
 	prepareCompactionBoundary,
@@ -61,17 +62,20 @@ function deepFreeze<T>(value: T): T {
 function extensionStats(preparation: VerbatimCompactionPreparation, compactedText: string): VerbatimCompactionStats {
 	const linesBefore = preparation.region.lines.length;
 	const linesKept = compactedText.split("\n").length;
-	const tokensAfter = Math.ceil(compactedText.length / 4) + getKeptTailTokenEstimate(preparation);
-	return {
+	const tailEstimate = getKeptTailTokenEstimate(preparation);
+	const regionStats: VerbatimCompactionStats = {
 		linesBefore,
 		linesDeleted: Math.max(0, linesBefore - linesKept),
 		linesKept,
 		rangeCount: 0,
-		tokensBefore: preparation.tokensBefore,
-		tokensAfter,
+		tokensBefore: preparation.region.tokenEstimate,
+		tokensAfter: Math.ceil(compactedText.length / 4),
 		percentReduction:
-			preparation.tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10,
+			preparation.region.tokenEstimate === 0
+				? 0
+				: Math.round((1 - Math.ceil(compactedText.length / 4) / preparation.region.tokenEstimate) * 1000) / 10,
 	};
+	return computeWholeContextStats(regionStats, preparation.region, tailEstimate, true);
 }
 
 export async function _applyVerbatimCompaction(
@@ -198,6 +202,7 @@ export async function _applyVerbatimCompaction(
 		parameters: preparation.parameters,
 		stats: compacted.stats,
 		rung: compacted.rung,
+		tokensBefore: preparation.tokensBefore,
 		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
