@@ -214,6 +214,10 @@ const proseNames = new Set([
 	"service_tier",
 	"serviceTier",
 	"originator",
+	// PR #2858: the Codex originator and reasoning efforts are wire values, not exports.
+	"codex_cli_rs",
+	"low",
+	"max",
 	"fast",
 	"medium",
 	"enabledModels",
