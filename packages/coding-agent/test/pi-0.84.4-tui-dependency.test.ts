@@ -19,7 +19,7 @@ const WINDOWS_COMPILED_FD_FIXTURE_TIMEOUT_MS = 120_000;
 const tempDirs: string[] = [];
 
 function tempDir(): string {
-	const path = mkdtempSync(join(tmpdir(), "atomic-pi-0.84.4-"));
+	const path = mkdtempSync(join(tmpdir(), "atomic-pi-0.85.0-"));
 	tempDirs.push(path);
 	return path;
 }
@@ -84,7 +84,7 @@ afterEach(() => {
 	removeTempDirs(tempDirs);
 });
 
-describe("pi-tui 0.84.4 dependency behavior", () => {
+describe("pi-tui 0.85.0 dependency behavior", () => {
 	test(
 		"scoped autocomplete keeps a direct child ahead of flooded nested matches",
 		async () => {

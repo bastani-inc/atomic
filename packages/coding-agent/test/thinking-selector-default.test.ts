@@ -1,7 +1,7 @@
 import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { setKeybindings } from "@earendil-works/pi-tui";
-import { beforeAll, expect, test } from "vitest";
+import { beforeAll, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ThinkingSelectorComponent } from "../src/modes/interactive/components/thinking-selector.ts";
 import {
@@ -138,4 +138,22 @@ test("keeps the current thinking level marked while browsing", () => {
 	selector.handleInput("\x1b[B");
 	expect(getLevelRow("medium")?.startsWith("  ✓ medium")).toBe(true);
 	expect(getLevelRow("high")?.startsWith("→   high")).toBe(true);
+});
+
+test("uses the configured save binding", () => {
+	setKeybindings(new KeybindingsManager({ "app.thinking.save": "ctrl+r" }));
+	const saveDefault = vi.fn();
+	const selector = new ThinkingSelectorComponent(
+		"medium",
+		["medium", "high"],
+		() => {},
+		() => {},
+		saveDefault,
+	);
+
+	expect(stripAnsi(selector.render(120).join("\n"))).toContain("ctrl+r to set as default");
+	selector.handleInput("\x13");
+	expect(saveDefault).not.toHaveBeenCalled();
+	selector.handleInput("\x12");
+	expect(saveDefault).toHaveBeenCalledWith("medium");
 });

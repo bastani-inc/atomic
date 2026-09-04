@@ -9,6 +9,7 @@
 - Removed the environment-sourced runtime settings-override layer, which existed only to inherit the fast-mode toggle into child sessions. Effective settings are now the global-then-project merge.
 - Cloudflare AI Gateway binding transport no longer falls back to `gateway(id).run(...)`. `createGatewayBindingFetch` requires `binding.fetch()`.
 - `WorkflowPendingStageDelivery`, exported from the package root, now requires a `fail(reason: Error): void` member. A delivery owner that has run out of recovery calls it to settle the stage's pending delivery terminally; `ready()` has no timeout, so a delivery nobody can settle leaves its stage parked forever. Implementers of the interface must add `fail(reason)`.
+- Removed the experimental remote-session lease API, transcript projection helpers, and harness factory after Pi 0.85 replaced their underlying contracts. `@bastani/atomic/client` now re-exports the service-addressed `@earendil-works/pi-client` API.
 
 ### Added
 
@@ -23,10 +24,13 @@
 - A provider, `models.json` custom model, or extension that already owns an exact `-fast` model ID wins: Atomic keeps that model exactly as declared, suppresses the derived duplicate, and reports an actionable warning in the interactive startup notices and from `--list-models`. The interactive notice renders on every launch, and is re-read after deferred extension loading so a collision an extension provider introduces is reported too. Fast behavior comes only from explicit route metadata, never from the `-fast` suffix.
 - Added a clickable "Jump to latest message" label with the `tui.altScreen.bottom` shortcut to the fullscreen transcript while it is scrolled up ([#9080](https://github.com/earendil-works/pi/pull/9080) by [@rwachtler](https://github.com/rwachtler)).
 - Gemini 3.8 Flash is now selectable in Atomic on Google (`google/gemini-3.8-flash`), Google Vertex, GitHub Copilot, opencode zen, OpenRouter (`openrouter/google/gemini-3.8-flash` and its `:batch` variant), and the Vercel AI Gateway. Provider metadata follows the upstream catalogs: Google, Google Vertex, opencode zen, and OpenRouter currently advertise a 1,048,576-token context window and 65,536 maximum output tokens; models.dev advertises 1,000,000 and 64,000 for GitHub Copilot; the Vercel AI Gateway advertises 1,000,000 and 65,536. Google, Google Vertex, opencode zen, OpenRouter, and GitHub Copilot offer low, medium, and high; the Vercel AI Gateway publishes no per-model thinking levels, so its entry also offers off and minimal. Run `--list-models` for the current catalog and the models your account can access ([#9076](https://github.com/earendil-works/pi/issues/9076)).
+- Claude Fable 5 and Claude Fable 5.1 are now present in the generated GitHub Copilot catalog with models.dev limits, pricing, and reasoning metadata. Copilot account availability remains gated by the authenticated model picker.
 - Baseten's models.dev-backed catalog now includes `zai-org/GLM-5.3-Fast` with the limits, pricing, inputs, and reasoning levels models.dev advertises.
 
 ### Changed
 
+- Updated all upstream Pi runtime dependencies to 0.85.0.
+- Reduced fullscreen transcript search latency on large transcripts through pi-tui 0.85.0's cached search index and visible-match highlighting.
 - Changed the default interactive working copy from `Working...` to `Working` (and `Working (esc Interrupt)` while resetting extension UI) while preserving Atomic's animated `∀` luminance ramp in its standalone status row. Custom editors may opt into placing the indicator in their top border.
 - Replaced the fullscreen transcript's dock-reserved `Jump to bottom` row with the centered `Jump to latest message` overlay, so scrolling up no longer shrinks the transcript viewport by one row.
 - Aligned the shared workflow-stage-chat jump indicator with that overlay: `↓ Jump to latest message · <tui.altScreen.bottom>`, matching upstream pi's shortcut display.
@@ -41,6 +45,7 @@
 
 ### Fixed
 
+- Fixed configurable save keybindings in the model and thinking selectors ([#8797](https://github.com/earendil-works/pi/issues/8797)).
 - Fixed RPC abort requests reporting success without cancelling an in-progress manual compaction ([#8920](https://github.com/earendil-works/pi/issues/8920)).
 - Fixed forked sessions losing a compaction boundary that referenced a removed label ([#8989](https://github.com/earendil-works/pi/issues/8989)).
 - Fixed session imports overwriting an existing stored session with the same filename ([#8985](https://github.com/earendil-works/pi/issues/8985)).

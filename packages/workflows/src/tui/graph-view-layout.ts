@@ -185,7 +185,7 @@ export class GraphViewLayout {
 			const after = sliceColumns(line, geometry.column + 1, width - geometry.column - 1, true);
 			const beforePad = " ".repeat(Math.max(0, geometry.column - visibleWidth(before)));
 			const afterPad = " ".repeat(Math.max(0, width - geometry.column - 1 - visibleWidth(after)));
-			lines[row] = `${before}${beforePad}${this.scrollView.scrollbarStyle(" ")}${after}${afterPad}`;
+			lines[row] = `${before}${beforePad}${this.scrollView.scrollbarThumbStyle("┃")}${after}${afterPad}`;
 		}
 	}
 

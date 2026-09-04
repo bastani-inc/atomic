@@ -90,6 +90,16 @@ const CATALOG = {
 			},
 		},
 	},
+	"github-copilot": {
+		models: {
+			"claude-fable-5": {
+				...FABLE_5_1_MODELS_DEV,
+				id: "claude-fable-5",
+				name: "Claude Fable 5",
+				cost: { ...FABLE_COST, cache_read: 1 },
+			},
+		},
+	},
 	"amazon-bedrock": {
 		models: {
 			"anthropic.claude-fable-5-1": {
@@ -177,6 +187,7 @@ function generate(): Record<string, Record<string, GeneratedModel>> {
 		"amazon-bedrock": read("amazon-bedrock"),
 		openrouter: read("openrouter"),
 		"vercel-ai-gateway": read("vercel-ai-gateway"),
+		"github-copilot": read("github-copilot"),
 	};
 }
 
@@ -314,4 +325,29 @@ test("emits no OpenRouter or Vercel Fable mirror when those live APIs return not
 	// OpenRouter's two synthesized routing entries are unrelated to any upstream catalog and are
 	// expected to survive an empty stub; naming them keeps this assertion honest about scope.
 	assert.deepEqual(Object.keys(catalogs.openrouter).sort(), ["auto", "openrouter/fusion"]);
+});
+
+test("generates both GitHub Copilot Claude Fable models from models.dev metadata", () => {
+	const copilot = generate()["github-copilot"];
+	const fable5 = copilot["claude-fable-5"];
+	const fable51 = copilot["claude-fable-5-1"];
+
+	assert.ok(fable5, "expected the Copilot catalog's Fable 5 row to be retained");
+	assert.ok(fable51, "expected Fable 5.1 to use the models.dev Anthropic row when Copilot lags it");
+	for (const model of [fable5, fable51]) {
+		assert.equal(model.api, "anthropic-messages");
+		assert.equal(model.provider, "github-copilot");
+		assert.equal(model.contextWindow, 1_000_000);
+		assert.equal(model.maxTokens, 128_000);
+	}
+	assert.equal(fable5.cost.cacheRead, 1);
+	assert.equal(fable51.cost.cacheRead, 0.25);
+	assert.equal(fable51.compat?.supportsForcedToolChoice, false);
+	assert.deepEqual(getSupportedThinkingLevels(fable51 as unknown as Model<Api>), [
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+		"max",
+	]);
 });

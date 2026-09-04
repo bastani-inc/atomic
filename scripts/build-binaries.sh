@@ -48,10 +48,17 @@ ALPINE_MUSL_RUNTIME_VERSION="14.2.0-r6"
 ALPINE_MUSL_RUNTIME_BASE="https://dl-cdn.alpinelinux.org/alpine/$ALPINE_MUSL_RUNTIME_BRANCH/main"
 
 CLIPBOARD_STAGE_DIR=""
+ESBUILD_STAGE_DIR=""
 MUSL_RUNTIME_STAGE_DIR=""
 cleanup_clipboard_stage() {
     if [[ -n "$CLIPBOARD_STAGE_DIR" ]]; then
         rm -rf "$CLIPBOARD_STAGE_DIR"
+    fi
+}
+
+cleanup_esbuild_stage() {
+    if [[ -n "$ESBUILD_STAGE_DIR" ]]; then
+        rm -rf "$ESBUILD_STAGE_DIR"
     fi
 }
 
@@ -63,6 +70,7 @@ cleanup_musl_runtime_stage() {
 
 cleanup_build_stages() {
     cleanup_clipboard_stage
+    cleanup_esbuild_stage
     cleanup_musl_runtime_stage
 }
 trap cleanup_build_stages EXIT
@@ -188,6 +196,20 @@ if [[ "$SKIP_DEPS" == "false" ]]; then
     CLIPBOARD_STAGE_DIR="$(cd -- "$CLIPBOARD_STAGE_DIR" && pwd -P)"
     bun run packages/coding-agent/scripts/stage-clipboard-native-bindings.ts \
         "$CLIPBOARD_STAGE_DIR" "$clipboard_version"
+
+    echo "==> Staging cross-platform esbuild binaries for Chord..."
+    esbuild_version="$(node -p 'require("./node_modules/esbuild/package.json").version')"
+    ESBUILD_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/atomic-esbuild-stage.XXXXXX")"
+    ESBUILD_STAGE_DIR="$(cd -- "$ESBUILD_STAGE_DIR" && pwd -P)"
+    printf '%s\n' '{"name":"atomic-esbuild-native-stage","private":true}' > "$ESBUILD_STAGE_DIR/package.json"
+    esbuild_targets=()
+    for esbuild_target in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-arm64 win32-x64; do
+        esbuild_targets+=("@esbuild/${esbuild_target}@${esbuild_version}")
+    done
+    (
+        cd "$ESBUILD_STAGE_DIR"
+        bun add --no-save --os '*' --cpu '*' "${esbuild_targets[@]}"
+    )
 else
     echo "==> Skipping cross-platform native bindings (--skip-deps)"
 fi
@@ -306,6 +328,18 @@ embedded_postgres_package_name() {
         linux-arm64) echo "linux-arm64" ;;
         windows-x64) echo "windows-x64" ;;
         windows-arm64) echo "windows-arm64" ;;
+        *) echo "Unknown platform: $1" >&2; return 1 ;;
+    esac
+}
+
+esbuild_package_name() {
+    case "$1" in
+        darwin-arm64) echo "darwin-arm64" ;;
+        darwin-x64) echo "darwin-x64" ;;
+        linux-arm64|linux-arm64-musl) echo "linux-arm64" ;;
+        linux-x64|linux-x64-musl) echo "linux-x64" ;;
+        windows-arm64) echo "win32-arm64" ;;
+        windows-x64) echo "win32-x64" ;;
         *) echo "Unknown platform: $1" >&2; return 1 ;;
     esac
 }
@@ -460,6 +494,23 @@ for platform in "${PLATFORMS[@]}"; do
     fi
 
     cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
+    # Chord 0.85 uses esbuild for facet bundling. The shared dependency tree contains only the
+    # build host's optional native leaf, so replace it with the leaf for this archive target.
+    esbuild_leaf="$(esbuild_package_name "$platform")"
+    esbuild_source_root="$runtime_deps_dir"
+    if [[ -n "$ESBUILD_STAGE_DIR" ]]; then
+        esbuild_source_root="$ESBUILD_STAGE_DIR/node_modules"
+    fi
+    rm -rf "binaries/$platform/node_modules/@esbuild"
+    if [ -d "$esbuild_source_root/@esbuild/$esbuild_leaf" ]; then
+        mkdir -p "binaries/$platform/node_modules/@esbuild"
+        cp -r "$esbuild_source_root/@esbuild/$esbuild_leaf" "binaries/$platform/node_modules/@esbuild/"
+    elif [[ "$SKIP_DEPS" == "false" ]]; then
+        echo "Missing esbuild native package for $platform: @esbuild/$esbuild_leaf" >&2
+        exit 1
+    else
+        echo "==> esbuild native package unavailable for $platform (--skip-deps)"
+    fi
     if [[ "$platform" == linux-*-musl ]]; then
         # npm's Linux leaves contain glibc binaries. Musl archives instead receive
         # the checksum-pinned Zonky Alpine runtime in the native package below.

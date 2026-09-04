@@ -28,7 +28,7 @@ afterEach(() => {
 	resetCapabilitiesCache();
 });
 
-describe("pi-tui 0.84.4 settings", () => {
+describe("pi-tui 0.85.0 settings", () => {
 	test("maps explicit terminal capability settings and omits auto, unset, and invalid values", () => {
 		expect(
 			SettingsManager.inMemory({

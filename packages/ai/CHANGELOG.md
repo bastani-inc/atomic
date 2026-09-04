@@ -1,6 +1,6 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`6aedd1066e540642165aa30fa7b4a1b863778aa7`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/6aedd1066e540642165aa30fa7b4a1b863778aa7/packages/ai/CHANGELOG.md).
+This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`92d8e2d17d4f357788381c49ce2cdb3f4ed1f21c`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/92d8e2d17d4f357788381c49ce2cdb3f4ed1f21c/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
 
@@ -16,10 +16,12 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Added `AssistantMessageFrameEncoder` and `reduceAssistantMessageFrames` so callers can persist compact, replayable stream progress without the full event stream ([upstream `8b5899dc`](https://github.com/earendil-works/pi/commit/8b5899dce26f9f6b8d313ee6a4b4a8dccbb9bfc2)).
 - Added Gemini 3.8 Flash to the generated provider catalogs. `google` and `google-vertex` publish `gemini-3.8-flash` with a 1,048,576-token context window, 65,536 maximum output tokens, text and image input, and $0.75 input / $3.75 output / $0.075 cache read per million tokens. Thinking is always on, so `off` is denied as on Gemini 3.6 and 3.7 Flash, and `minimal` is denied too because Google publishes only `LOW`, `MEDIUM`, and `HIGH` for this model and states that `MINIMAL` is unsupported. That denial is scoped to 3.8: Gemini 3.5 and 3.6 Flash do publish `MINIMAL` and keep offering it. The model also lands on `opencode`, `openrouter` (`google/gemini-3.8-flash` and `:batch`), and `vercel-ai-gateway` (`google/gemini-3.8-flash`) from those providers' own catalogs ([#9076](https://github.com/earendil-works/pi/issues/9076)).
 - Added `github-copilot/gemini-3.8-flash` from the models.dev Copilot catalog. Atomic consumes that row without supplementing or overriding it; the current metadata provides a 1,000,000-token context window, 64,000 maximum output tokens, text and image input, and `reasoning_effort` values of `low`, `medium`, and `high`. The model routes through Copilot's OpenAI-compatible completions endpoint with Copilot's static headers.
+- Added `github-copilot/claude-fable-5` and `github-copilot/claude-fable-5-1`. The generator uses each model's models.dev metadata, falling back to the models.dev Anthropic row when the Copilot catalog has not published the same model yet; the authenticated Copilot picker still controls which models an account may select.
 - Added `zai-org/GLM-5.3-Fast` to the Baseten catalog from models.dev.
 
 ### Changed
 
+- Exported `./utils/*` subpaths required by Pi 0.85 runtime packages.
 - **Breaking:** the **presence** of `Model.fastRoute` — not just its declared tier value — decides the service tier. A route that declares no tier now means *no tier*, so a GitHub Copilot fast variant emits no `service_tier` field and takes no tier cost multiplier whatever the caller passes. Previously a caller's option leaked through on such a route, which contradicted the documented Copilot contract. A model with no route still honors an explicit `serviceTier`.
 - **Breaking:** the OpenAI Responses and ChatGPT Codex Responses adapters now reject a payload hook that changes the `model` or `service_tier` of a model carrying a `fastRoute`, or replaces its request body with a non-object that cannot carry those fields. The error names the model, the violation, and the normal sibling to select instead. A hook could previously send a different model, an ordinary-tier request, or a malformed replacement under the `-fast` identity the caller recorded and is billed for. Hooks keep unrestricted freedom over every other field and over models with no route. New export: `assertPayloadPreservesFastRoute` from `api/openai-responses-shared`.
 - **Breaking:** a fast model variant's declared `service_tier` now wins over a per-request `serviceTier` option. Fast versus normal is model identity, so a caller who wants another tier selects the normal sibling; letting the option win allowed a model that is still selected, recorded, persisted, and billed as `-fast` to route as an ordinary request. A model with no route honors an explicit `serviceTier` exactly as before. Payload hooks may rewrite other fields, but cannot override a fast route's model or tier.
@@ -32,6 +34,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
+- Removed the retired `grok-build-0.1` preview from the generated xAI catalog.
 - Fixed native Anthropic Messages requests sending the interleaved-thinking beta when thinking was disabled, and preserved request-start thinking-drop diagnostics when a later provider report is empty or the stream fails.
 - Fixed GitHub Copilot Claude Fable requests to use the Anthropic Messages adapter so selected reasoning levels are sent. The generated Copilot catalog now routes `claude-fable-*` alongside the other Claude 4.x/5.x entries ([#8961](https://github.com/earendil-works/pi/issues/8961)).
 - Fixed the generated Fireworks catalog to serve every GLM model through the OpenAI-compatible completions API. Previously only the `glm-5p2` family took that route and newer GLM entries such as `glm-5p3` were generated against the Anthropic-compatible endpoint ([#8978](https://github.com/earendil-works/pi/issues/8978)).

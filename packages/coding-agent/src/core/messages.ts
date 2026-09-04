@@ -54,7 +54,7 @@ export type StageAdmittedCustomMessage<T = unknown> = CustomMessage<T> & {
 export interface BranchSummaryMessage {
 	role: "branchSummary";
 	summary: string;
-	fromId: string;
+	fromId: string | null;
 	timestamp: number;
 }
 

@@ -217,7 +217,7 @@ async function settle(fixture: Fixture): Promise<void> {
 	fixture.tui.renderNow();
 }
 
-describe("pi-tui 0.84.4 overlay selection ownership", () => {
+describe("pi-tui 0.85.0 overlay selection ownership", () => {
 	test("a workflow-style overlay selection neither copies nor survives hide and repaint", async () => {
 		const copied: string[] = [];
 		const fixture = createFixture({

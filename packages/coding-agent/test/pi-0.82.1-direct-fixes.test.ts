@@ -112,8 +112,9 @@ describe("Pi 0.82.1 remaining direct coding-agent parity", () => {
 		);
 		expect(value).toBe("../sibling-package/index.ts");
 	});
-	it("inherits the AgentHarness execution-tool surface from pi-agent-core 0.82.1", () => {
-		expect(typeof AgentHarness).toBe("function");
+	it("inherits the AgentHarness execution-tool surface from pi-agent-core 0.85.0", () => {
+		expect(typeof AgentHarness).toBe("object");
+		expect(typeof AgentHarness.create).toBe("function");
 		for (const factory of [createBashTool, createEditTool, createReadTool, createWriteTool]) {
 			expect(typeof factory).toBe("function");
 		}

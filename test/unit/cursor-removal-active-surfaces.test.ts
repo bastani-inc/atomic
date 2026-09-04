@@ -59,6 +59,7 @@ describe("removed provider active surfaces", () => {
 
 	test("Impeccable admin and pin commands ignore removed-editor directories", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-impeccable-removal-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
 		const scripts = join(root, "packages/workflows/skills/impeccable/scripts");
 		try {
 			mkdirSync(join(cwd, ".agents", "skills", "impeccable"), { recursive: true });
