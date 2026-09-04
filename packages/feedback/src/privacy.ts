@@ -469,6 +469,7 @@ function scrubPrivateKeys(input: string): {
 		replacements: count ? [{ category: "private-key", count }] : [],
 	};
 }
+const homeDirectoryPrefix = "(?<![\\w~])";
 const rules = [
 	{
 		category: "private-key",
@@ -496,7 +497,10 @@ const rules = [
 	{ category: "credential-assignment", scrub: scrubCredentialAssignments },
 	{
 		category: "home-directory",
-		pattern: new RegExp(`(?<!\\w)(?:${escaped(homedir())}|(?:\\w:)?[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+)`, "giu"),
+		pattern: new RegExp(
+			`${homeDirectoryPrefix}(?:${escaped(homedir())}|(?:\\w:)?[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+)`,
+			"giu",
+		),
 		replacement: "~",
 	},
 ] as const satisfies readonly RedactionRule[];
