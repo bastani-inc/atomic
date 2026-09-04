@@ -1246,6 +1246,10 @@ function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, option
 	return modelId.startsWith("us-gov.") || modelId.startsWith("arn:aws-us-gov:");
 }
 
+function isOpenAiGpt6AstraBedrockModel(model: Model<"bedrock-converse-stream">): boolean {
+	return /^(?:global\.|us\.)?openai\.gpt-6-astra$/.test(model.id);
+}
+
 function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
@@ -1291,6 +1295,14 @@ function buildAdditionalModelRequestFields(
 		}
 
 		return result;
+	}
+
+	if (isOpenAiGpt6AstraBedrockModel(model)) {
+		// Bedrock maps OpenAI Chat Completions fields that are not part of Converse's
+		// inferenceConfig into additionalModelRequestFields. GPT-6-Astra uses the Chat
+		// Completions spelling rather than the Responses API's nested reasoning object.
+		// https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-openai.html
+		return { reasoning_effort: mapThinkingLevelToEffort(model, options.reasoning) };
 	}
 
 	return undefined;

@@ -139,6 +139,8 @@ test("routes GitHub Copilot Claude Fable models through anthropic-messages", () 
 		"claude-sonnet-4": "anthropic-messages",
 		"gemini-3-pro": "openai-completions",
 		"gpt-5.2": "openai-responses",
+		// Astra's provisional fallback is present even before models.dev advertises it.
+		"gpt-6-astra": "openai-responses",
 	});
 });
 

@@ -58,6 +58,23 @@ describe("selectable -fast model identity", () => {
 		});
 	});
 
+	it("restores GPT-6-Astra fast as a distinct canonical model", async () => {
+		const runtime = await createRuntime();
+		const restored = await restoreModelFromSession("openai-codex", "gpt-6-astra-fast", undefined, false, runtime);
+		const normal = runtime.getModel("openai-codex", "gpt-6-astra");
+
+		assert.equal(restored.fallbackMessage, undefined);
+		assert.equal(restored.model?.id, "gpt-6-astra-fast");
+		assert.deepEqual(restored.model?.fastRoute, {
+			baseModelId: "gpt-6-astra",
+			upstreamModelId: "gpt-6-astra",
+			serviceTier: FAST_MODEL_SERVICE_TIER,
+		});
+		assert.ok(normal);
+		assert.notEqual(restored.model, normal);
+		assert.equal(normal.fastRoute, undefined);
+	});
+
 	it("restores the normal sibling as a different model", async () => {
 		const runtime = await createRuntime();
 		const normal = await restoreModelFromSession("openai-codex", "gpt-5.6-sol", undefined, false, runtime);

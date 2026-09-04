@@ -9,6 +9,7 @@ interface BedrockThinkingPayload {
 		thinking?: { type: string; budget_tokens?: number; display?: string };
 		output_config?: { effort?: string };
 		anthropic_beta?: string[];
+		reasoning_effort?: string;
 	};
 }
 
@@ -163,6 +164,17 @@ describe("Bedrock thinking payload", () => {
 		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort });
 	});
+
+	it.each(["low", "medium", "high", "xhigh", "max"] as const)(
+		"maps %s reasoning to reasoning_effort for Bedrock GPT-6-Astra",
+		async (reasoning) => {
+			const model = getModel("amazon-bedrock", "global.openai.gpt-6-astra");
+
+			const payload = await capturePayload(model, { reasoning });
+
+			expect(payload.additionalModelRequestFields).toEqual({ reasoning_effort: reasoning });
+		},
+	);
 
 	it("never sends a thinking budget for Bedrock Claude Fable 5.1", async () => {
 		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");

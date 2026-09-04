@@ -206,6 +206,13 @@ interface OpenRouterModelListItem {
 		completion?: string;
 		input_cache_read?: string;
 		input_cache_write?: string;
+		overrides?: Array<{
+			min_prompt_tokens?: number;
+			prompt?: string;
+			completion?: string;
+			input_cache_read?: string;
+			input_cache_write?: string;
+		}>;
 	};
 	top_provider?: {
 		context_length?: number;
@@ -226,7 +233,17 @@ interface AiGatewayModel {
 		output?: string | number;
 		input_cache_read?: string | number;
 		input_cache_write?: string | number;
+		input_tiers?: AiGatewayPriceTier[];
+		output_tiers?: AiGatewayPriceTier[];
+		input_cache_read_tiers?: AiGatewayPriceTier[];
+		input_cache_write_tiers?: AiGatewayPriceTier[];
 	};
+}
+
+interface AiGatewayPriceTier {
+	cost?: string | number;
+	min?: number;
+	max?: number;
 }
 
 const COPILOT_STATIC_HEADERS = {
@@ -424,13 +441,19 @@ const OPENAI_TOOL_SEARCH_MODEL_IDS = new Set([
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
+	"gpt-6-astra",
 ]);
 // Public OpenAI documents additional_tools for applications that load tools
 // outside the normal tool-search flow. Codex currently uses the input item for
 // its Responses Lite GPT-5.6 models.
 // https://developers.openai.com/api/docs/guides/tools-tool-search#add-tools-at-a-specific-point-in-the-input
 const OPENAI_ADDITIONAL_TOOLS_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
-const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS = new Set([
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-6-astra",
+]);
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272000;
 const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
 	"gpt-5.4",
@@ -438,6 +461,7 @@ const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
+	"gpt-6-astra",
 ]);
 const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS = new Set([
 	"gpt-5.4",
@@ -447,6 +471,7 @@ const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS = new Set([
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
+	"gpt-6-astra",
 ]);
 
 function withOpenAiLongContextPricing(cost: Model<Api>["cost"]): Model<Api>["cost"] {
@@ -470,6 +495,14 @@ function withOpenAiLongContextPricing(cost: Model<Api>["cost"]): Model<Api>["cos
 const OPENAI_GPT_56_STANDARD_COSTS: Record<string, ModelCost> = {
 	"gpt-5.6-luna": { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
 	"gpt-5.6-terra": { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
+};
+
+// https://developers.openai.com/api/docs/models/gpt-6-astra
+const OPENAI_GPT_6_ASTRA_STANDARD_COST: ModelCost = {
+	input: 10,
+	output: 50,
+	cacheRead: 1,
+	cacheWrite: 12.5,
 };
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
@@ -591,24 +624,34 @@ function getTogetherThinkingLevelMap(
 	return { ...TOGETHER_TOGGLE_REASONING_LEVEL_MAP };
 }
 
+function isOpenAiGpt6AstraModelId(modelId: string): boolean {
+	return (
+		modelId === "gpt-6-astra" ||
+		modelId === "openai.gpt-6-astra" ||
+		modelId === "global.openai.gpt-6-astra" ||
+		modelId === "us.openai.gpt-6-astra"
+	);
+}
+
 function supportsOpenAiXhigh(modelId: string): boolean {
 	return (
 		modelId.includes("gpt-5.2") ||
 		modelId.includes("gpt-5.3") ||
 		modelId.includes("gpt-5.4") ||
 		modelId.includes("gpt-5.5") ||
-		modelId.includes("gpt-5.6")
+		modelId.includes("gpt-5.6") ||
+		isOpenAiGpt6AstraModelId(modelId)
 	);
 }
 
 function supportsOpenAiMax(model: Model<Api>): boolean {
-	return (
-		model.id.includes("gpt-5.6") &&
-		(model.api === "openai-responses" ||
-			model.api === "azure-openai-responses" ||
-			model.api === "openai-codex-responses" ||
-			model.api === "openai-completions")
-	);
+	const supportedApi =
+		model.api === "openai-responses" ||
+		model.api === "azure-openai-responses" ||
+		model.api === "openai-codex-responses" ||
+		model.api === "openai-completions";
+	return (model.id.includes("gpt-5.6") && supportedApi) ||
+		(isOpenAiGpt6AstraModelId(model.id) && (supportedApi || model.api === "bedrock-converse-stream"));
 }
 
 function isGoogleThinkingApi(model: Model<any>): boolean {
@@ -1020,6 +1063,9 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	) {
 		mergeThinkingLevelMap(model, { off: null });
 	}
+	if (isOpenAiGpt6AstraModelId(model.id)) {
+		mergeThinkingLevelMap(model, { off: null, minimal: null });
+	}
 	if (model.provider === "github-copilot" && model.id.startsWith("gpt-5")) {
 		mergeThinkingLevelMap(model, { minimal: "low" });
 	}
@@ -1120,7 +1166,7 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.provider === "groq" && model.id === "qwen/qwen3.6-27b") {
 		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null, high: "default" });
 	}
-	if (model.provider === "openai-codex" && supportsOpenAiXhigh(model.id)) {
+	if (model.provider === "openai-codex" && supportsOpenAiXhigh(model.id) && !isOpenAiGpt6AstraModelId(model.id)) {
 		mergeThinkingLevelMap(model, { minimal: "low" });
 	}
 	if (
@@ -1287,11 +1333,39 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 				input.push("image");
 			}
 
-			// Convert pricing from $/token to $/million tokens
+			// Convert pricing from $/token to $/million tokens. OpenRouter's `overrides` are
+			// request-wide: once aggregate prompt tokens exceed the threshold, every token in
+			// that request uses the override rather than only the tokens above the threshold.
 			const inputCost = roundCost(parseFloat(model.pricing?.prompt || "0") * 1_000_000);
 			const outputCost = roundCost(parseFloat(model.pricing?.completion || "0") * 1_000_000);
 			const cacheReadCost = roundCost(parseFloat(model.pricing?.input_cache_read || "0") * 1_000_000);
 			const cacheWriteCost = roundCost(parseFloat(model.pricing?.input_cache_write || "0") * 1_000_000);
+			const pricingTiers = model.pricing?.overrides?.flatMap((override) => {
+				const inputTokensAbove = override.min_prompt_tokens;
+				if (inputTokensAbove === undefined) return [];
+				return [
+					{
+						inputTokensAbove,
+						input: roundCost(parseFloat(override.prompt ?? model.pricing?.prompt ?? "0") * 1_000_000),
+						output: roundCost(
+							parseFloat(override.completion ?? model.pricing?.completion ?? "0") * 1_000_000,
+						),
+						cacheRead: roundCost(
+							parseFloat(override.input_cache_read ?? model.pricing?.input_cache_read ?? "0") * 1_000_000,
+						),
+						cacheWrite: roundCost(
+							parseFloat(override.input_cache_write ?? model.pricing?.input_cache_write ?? "0") * 1_000_000,
+						),
+					},
+				];
+			});
+			const cost: ModelCost = {
+				input: inputCost,
+				output: outputCost,
+				cacheRead: cacheReadCost,
+				cacheWrite: cacheWriteCost,
+				...(pricingTiers && pricingTiers.length > 0 ? { tiers: pricingTiers } : {}),
+			};
 
 			const contextWindow = model.top_provider?.context_length || model.context_length || 4096;
 			const thinkingLevelMap = getOpenRouterThinkingLevelMap(model.reasoning);
@@ -1306,12 +1380,7 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 				reasoning: model.supported_parameters?.includes("reasoning") || false,
 				...(thinkingLevelMap && { thinkingLevelMap }),
 				input,
-				cost: {
-					input: inputCost,
-					output: outputCost,
-					cacheRead: cacheReadCost,
-					cacheWrite: cacheWriteCost,
-				},
+				cost,
 				contextWindow,
 				maxTokens: model.top_provider?.max_completion_tokens || 4096,
 			};
@@ -1327,6 +1396,49 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 	}
 }
 
+function getAiGatewayCost(pricing: AiGatewayModel["pricing"]): ModelCost {
+	const toPerMillion = (value: string | number | undefined): number => {
+		const parsed = typeof value === "number" ? value : parseFloat(value ?? "0");
+		return roundCost((Number.isFinite(parsed) ? parsed : 0) * 1_000_000);
+	};
+	const base = {
+		input: toPerMillion(pricing?.input),
+		output: toPerMillion(pricing?.output),
+		cacheRead: toPerMillion(pricing?.input_cache_read),
+		cacheWrite: toPerMillion(pricing?.input_cache_write),
+	};
+	const tierSets = [
+		pricing?.input_tiers,
+		pricing?.output_tiers,
+		pricing?.input_cache_read_tiers,
+		pricing?.input_cache_write_tiers,
+	];
+	const thresholds = [
+		...new Set(tierSets.flatMap((tiers) => tiers?.flatMap((tier) => (tier.min ? [tier.min] : [])) ?? [])),
+	].sort((a, b) => a - b);
+	const tierCost = (tiers: AiGatewayPriceTier[] | undefined, threshold: number, fallback: number): number => {
+		const tier = tiers
+			?.filter((candidate) => candidate.min !== undefined && candidate.min <= threshold)
+			.sort((a, b) => (b.min ?? 0) - (a.min ?? 0))[0];
+		return tier ? toPerMillion(tier.cost) : fallback;
+	};
+
+	return {
+		...base,
+		...(thresholds.length > 0
+			? {
+					tiers: thresholds.map((threshold) => ({
+						inputTokensAbove: threshold - 1,
+						input: tierCost(pricing?.input_tiers, threshold, base.input),
+						output: tierCost(pricing?.output_tiers, threshold, base.output),
+						cacheRead: tierCost(pricing?.input_cache_read_tiers, threshold, base.cacheRead),
+						cacheWrite: tierCost(pricing?.input_cache_write_tiers, threshold, base.cacheWrite),
+					})),
+				}
+			: {}),
+	};
+}
+
 async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from Vercel AI Gateway API...");
@@ -1334,14 +1446,6 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 		if (!response.ok) throw new Error(`Vercel AI Gateway API returned ${response.status}`);
 		const data = await response.json();
 		const models: Model<any>[] = [];
-
-		const toNumber = (value: string | number | undefined): number => {
-			if (typeof value === "number") {
-				return Number.isFinite(value) ? value : 0;
-			}
-			const parsed = parseFloat(value ?? "0");
-			return Number.isFinite(parsed) ? parsed : 0;
-		};
 
 		const items = Array.isArray(data.data) ? (data.data as AiGatewayModel[]) : [];
 		for (const model of items) {
@@ -1354,10 +1458,7 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 				input.push("image");
 			}
 
-			const inputCost = roundCost(toNumber(model.pricing?.input) * 1_000_000);
-			const outputCost = roundCost(toNumber(model.pricing?.output) * 1_000_000);
-			const cacheReadCost = roundCost(toNumber(model.pricing?.input_cache_read) * 1_000_000);
-			const cacheWriteCost = roundCost(toNumber(model.pricing?.input_cache_write) * 1_000_000);
+			const cost = getAiGatewayCost(model.pricing);
 
 			models.push({
 				id: model.id,
@@ -1367,12 +1468,7 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 				provider: "vercel-ai-gateway",
 				reasoning: tags.includes("reasoning"),
 				input,
-				cost: {
-					input: inputCost,
-					output: outputCost,
-					cacheRead: cacheReadCost,
-					cacheWrite: cacheWriteCost,
-				},
+				cost,
 				contextWindow: model.context_window || 4096,
 				maxTokens: model.max_tokens || 4096,
 			});
@@ -2271,11 +2367,13 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				// Claude 4.x and 5.x models route to Anthropic Messages API
 				const isCopilotClaude = /^claude-(haiku|sonnet|opus|fable)-[45]([.\-]|$)/.test(modelId);
-				// Grok, gpt-5, oswe, and MAI-Code models are only served through
+				// Grok, GPT-5, Astra, oswe, and MAI-Code models use
 				// the Copilot /responses endpoint.
 				const needsResponsesApi =
 					modelId.startsWith("grok-") ||
 					modelId.startsWith("gpt-5") ||
+					modelId === "gpt-6-astra" ||
+					modelId === "gpt-6-astra-fast" ||
 					modelId.startsWith("oswe") ||
 					modelId.startsWith("mai-");
 
@@ -2689,7 +2787,33 @@ async function generateModels() {
 	}
 
 	// Add missing gpt models
+	const gpt6AstraOpenAiModel: Model<"openai-responses"> = {
+		id: "gpt-6-astra",
+		name: "GPT-6 Astra",
+		api: "openai-responses",
+		baseUrl: "https://api.openai.com/v1",
+		provider: "openai",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: withOpenAiLongContextPricing(OPENAI_GPT_6_ASTRA_STANDARD_COST),
+		contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+		maxTokens: 128000,
+	};
+	// Provisional Copilot entry requested before its public catalog lists Astra. Reuse the
+	// known model capabilities, not OpenAI billing rates. Copilot's authenticated picker
+	// controls availability and fast entitlement; a provider-published row takes precedence.
+	if (!allModels.some((model) => model.provider === "github-copilot" && model.id === "gpt-6-astra")) {
+		allModels.push({
+			...gpt6AstraOpenAiModel,
+			provider: "github-copilot",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			headers: { ...COPILOT_STATIC_HEADERS },
+		});
+	}
+
 	const missingOpenAiModels: Model<"openai-responses">[] = [
+		gpt6AstraOpenAiModel,
 		{
 			id: "gpt-5.6-sol",
 			name: "GPT-5.6 Sol",
@@ -2746,6 +2870,33 @@ async function generateModels() {
 	];
 	for (const model of missingOpenAiModels) {
 		if (!allModels.some((m) => m.provider === model.provider && m.id === model.id)) {
+			allModels.push(model);
+		}
+	}
+
+	// Codex 0.153.3 advertises these exact Bedrock Mantle and Runtime IDs while AWS's public
+	// catalog and pricing pages have not published Astra yet. Keep the established zero-cost
+	// convention until AWS provides authoritative rates; a future models.dev row with the same ID wins.
+	// https://github.com/openai/codex/blob/83b62a02fab5c0fc797cbc9896c332148f1fd9d0/codex-rs/model-provider/src/amazon_bedrock/catalog.rs
+	// https://github.com/openai/codex/blob/83b62a02fab5c0fc797cbc9896c332148f1fd9d0/codex-rs/model-provider/src/amazon_bedrock/runtime_catalog.rs
+	const missingBedrockAstraModels: Model<"bedrock-converse-stream">[] = [
+		["openai.gpt-6-astra", "GPT-6-Astra"],
+		["global.openai.gpt-6-astra", "GPT-6-Astra (Global)"],
+		["us.openai.gpt-6-astra", "GPT-6-Astra (US cross-region)"],
+	].map(([id, name]) => ({
+		id,
+		name,
+		api: "bedrock-converse-stream",
+		provider: "amazon-bedrock",
+		baseUrl: getBedrockBaseUrl(id),
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+		maxTokens: 128000,
+	}));
+	for (const model of missingBedrockAstraModels) {
+		if (!allModels.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) {
 			allModels.push(model);
 		}
 	}
@@ -2986,6 +3137,18 @@ async function generateModels() {
 			contextWindow: CODEX_GPT_56_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
+		{
+			id: "gpt-6-astra",
+			name: "GPT-6-Astra",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_GPT_6_ASTRA_STANDARD_COST),
+			contextWindow: CODEX_GPT_56_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
 	];
 	allModels.push(...codexModels);
 
@@ -3069,7 +3232,10 @@ async function generateModels() {
 		"gpt-5.6-terra": 1050000,
 	};
 	const azureOpenAiModels: Model<Api>[] = allModels
-		.filter((model) => model.provider === "openai" && model.api === "openai-responses")
+		.filter(
+			(model) =>
+				model.provider === "openai" && model.api === "openai-responses" && model.id !== "gpt-6-astra",
+		)
 		.map((model) => ({
 			...model,
 			api: "azure-openai-responses",
