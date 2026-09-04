@@ -30,7 +30,8 @@ const SETUP_FILE = "test/setup-workflow-durability.ts";
  */
 // Re-measured at 47 when the intercom-stage-paths slices added stage-target modules to
 // the durable/shared graph (workflow-stage-target, possible-stages, path matching).
-const MAX_REACHABLE_MODULES = 47;
+// Re-measured at 48 when embedded Postgres target policy joined the durable graph.
+const MAX_REACHABLE_MODULES = 48;
 
 /**
  * Every static and dynamic import form that can pull a module into the graph.

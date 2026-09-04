@@ -97,7 +97,7 @@ The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or
 Two features work differently on musl:
 
 - **Clipboard:** the musl archives omit a clipboard native binding because `@mariozechner/clipboard` 0.3.9 publishes metadata-only musl stubs without a `.node` payload; Atomic uses Linux clipboard commands and OSC52 fallback instead.
-- **Durable workflows:** the archives omit the glibc-linked `@embedded-postgres/*` binary packages, so durable workflows on Alpine require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker. Without a durable backend, Atomic uses a loud non-durable in-memory fallback.
+- **Durable workflows:** the archives omit the glibc-linked `@embedded-postgres/*` binary packages and instead carry a checksum-pinned Alpine/musl PostgreSQL 18.6 runtime, so durable workflows provision offline without external Postgres or Docker. If no durable backend can be provisioned at all, Atomic still uses a loud non-durable in-memory fallback.
 
 Then start Atomic in the project directory you want it to work on:
 

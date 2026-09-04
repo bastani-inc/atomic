@@ -47,7 +47,10 @@ export const POSTGRES_RUNTIME_ARTIFACTS = {
 	},
 };
 
-const THIRD_PARTY_NOTICE = `This payload includes a PostgreSQL distribution and its bundled runtime libraries.\n\nThe Linux Alpine payloads are redistributed from io.zonky.test.postgres and include ICU, OpenSSL, libxml2, libxslt, LZ4, Zstandard, libstdc++, and libgcc components subject to their respective upstream licenses. The Windows payload is redistributed verbatim from @embedded-postgres/windows-x64 and runs through Windows 11 ARM64 x64 emulation. See runtime-provenance.json for the exact source artifact.\n`;
+const THIRD_PARTY_NOTICE = `This payload includes a PostgreSQL distribution and its bundled runtime libraries.
+
+The Linux Alpine payloads are redistributed from io.zonky.test.postgres and include ICU, OpenSSL, libxml2, libxslt, LZ4, Zstandard, libstdc++, and libgcc components subject to their respective upstream licenses. The Windows payload is redistributed verbatim from @embedded-postgres/windows-x64, includes ICU, OpenSSL, libxml2, libxslt, LZ4, Zstandard, libcurl, libiconv, libintl, and wxWidgets runtime libraries, and runs through Windows 11 ARM64 x64 emulation. See runtime-provenance.json for the exact source artifact. This additive notice does not replace the exact upstream license files included with the payload.
+`;
 
 function digest(path) {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");

@@ -181,6 +181,9 @@ test("Windows staging preserves the upstream package license verbatim and record
 	const provenance = JSON.parse(readFileSync(join(runtime, "runtime-provenance.json"), "utf8"));
 	assert.equal(provenance.emulated, true);
 	assert.match(provenance.emulation, /Windows x64 PostgreSQL.*Windows 11 ARM64/u);
+	const notice = readFileSync(join(runtime, "THIRD-PARTY-NOTICE"), "utf8");
+	assert.match(notice, /Windows payload.*ICU.*OpenSSL.*libcurl.*wxWidgets/u);
+	assert.match(notice, /additive.*does not replace.*exact upstream license/u);
 });
 
 test("npm pack includes the staged payload only because the leaf files list names it", async () => {

@@ -143,6 +143,67 @@ describe("embedded PostgreSQL runtime resolution", () => {
 		assert.equal(result.postgres, join(archive, "bin", "postgres.exe"));
 	});
 
+	test("rejects an archive-local musl payload for a glibc host target", async () => {
+		const archive = packagedRuntime();
+		writeFileSync(join(archive, "runtime-provenance.json"), JSON.stringify({ target: "linux-x64-musl" }));
+		await assert.rejects(
+			loadEmbeddedPostgresBinaries({
+				host: { platform: "linux", arch: "x64", libc: "glibc" },
+				resolvePackage: (specifier) => {
+					if (specifier === "@bastani/atomic-natives/package.json") return packageManifest(archive);
+					throw new Error(`not installed: ${specifier}`);
+				},
+				importPackage: async (specifier) => {
+					throw new Error(`not installed: ${specifier}`);
+				},
+			}),
+			(error: unknown) => {
+				assert.ok(error instanceof Error);
+				assert.match(error.message, /linux\/x64\/glibc \(target linux-x64\)/u);
+				assert.match(error.message, /payload target linux-x64-musl does not match linux-x64/u);
+				return true;
+			},
+		);
+	});
+
+	test("accepts an archive-local payload when provenance matches the host target", async () => {
+		const archive = packagedRuntime();
+		writeFileSync(join(archive, "runtime-provenance.json"), JSON.stringify({ target: "linux-x64-musl" }));
+		const result = await loadEmbeddedPostgresBinaries({
+			host: { platform: "linux", arch: "x64", libc: "musl" },
+			resolvePackage: (specifier) => {
+				if (specifier === "@bastani/atomic-natives/package.json") return packageManifest(archive);
+				throw new Error(`not installed: ${specifier}`);
+			},
+		});
+		assert.equal(result.postgres, join(archive, "bin", "postgres"));
+	});
+
+	test("accepts a legacy archive-local payload without provenance", async () => {
+		const archive = packagedRuntime("win32");
+		const result = await loadEmbeddedPostgresBinaries({
+			host: { platform: "win32", arch: "arm64" },
+			resolvePackage: (specifier) => {
+				if (specifier === "@bastani/atomic-natives/package.json") return packageManifest(archive);
+				throw new Error(`not installed: ${specifier}`);
+			},
+		});
+		assert.equal(result.pg_ctl, join(archive, "bin", "pg_ctl.exe"));
+	});
+
+	test("accepts an archive-local payload with unreadable provenance", async () => {
+		const archive = packagedRuntime("win32");
+		writeFileSync(join(archive, "runtime-provenance.json"), "not json");
+		const result = await loadEmbeddedPostgresBinaries({
+			host: { platform: "win32", arch: "arm64" },
+			resolvePackage: (specifier) => {
+				if (specifier === "@bastani/atomic-natives/package.json") return packageManifest(archive);
+				throw new Error(`not installed: ${specifier}`);
+			},
+		});
+		assert.equal(result.postgres, join(archive, "bin", "postgres.exe"));
+	});
+
 	test("uses the existing platform package only after packaged runtime locations", async () => {
 		const npmRuntime = runtime();
 		const result = await loadEmbeddedPostgresBinaries({

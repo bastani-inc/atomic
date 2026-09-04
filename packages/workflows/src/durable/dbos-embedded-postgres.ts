@@ -2,9 +2,10 @@
  * Embedded Postgres for DBOS workflow durability.
  *
  * When no `DBOS_SYSTEM_DATABASE_URL` is configured, Atomic runs DBOS against
- * its own Postgres instance built from npm-distributed binaries
- * (`@embedded-postgres/<platform>-<arch>`, installed as an optional dependency
- * of `embedded-postgres`). No Docker daemon or system Postgres is required.
+ * its own Postgres instance. An explicit runtime directory takes precedence,
+ * followed by a target-specific `@bastani/atomic-natives` payload (including
+ * archive-local payloads), then the existing `@embedded-postgres/*` packages.
+ * No Docker daemon or system Postgres is required on supported targets.
  *
  * The cluster lives under `~/.atomic/postgres/v<major>` on a dedicated port.
  * Atomic starts Postgres directly and retains an opaque native process lease;
@@ -352,6 +353,24 @@ function binariesFromDirectory(runtimeDirectory: string, platform: NodeJS.Platfo
 	return binaries;
 }
 
+/**
+ * Reject only a readable provenance record that identifies another target.
+ * Missing or unreadable provenance remains compatible with existing archives.
+ */
+function packagedRuntimeTargetMismatch(runtimeDirectory: string, expectedTarget: string): string | undefined {
+	const provenancePath = join(runtimeDirectory, "runtime-provenance.json");
+	if (!existsSync(provenancePath)) return undefined;
+	try {
+		const provenance = JSON.parse(readFileSync(provenancePath, "utf8")) as { readonly target?: string };
+		if (typeof provenance.target === "string" && provenance.target !== expectedTarget) {
+			return `payload target ${provenance.target} does not match ${expectedTarget}`;
+		}
+	} catch {
+		// Older or externally supplied archives may not carry readable provenance.
+	}
+	return undefined;
+}
+
 function resolvePackageManifest(
 	packageName: string,
 	resolvePackage: PackageResolver,
@@ -393,27 +412,37 @@ export async function loadEmbeddedPostgresBinaries(
 			? undefined
 			: resolvePackageManifest(target.nativeLeafPackageName, leafResolver);
 	const explicitRuntime = options.runtimeDirectory ?? process.env.ATOMIC_POSTGRES_RUNTIME_DIR;
-	const candidates: readonly { readonly path?: string; readonly label: string }[] = [
-		...(explicitRuntime === undefined ? [] : [{ path: explicitRuntime, label: explicitRuntime }]),
-		...(target.nativeLeafPackageName === undefined || leafPackage === undefined
-			? []
-			: [
-					{
-						path:
-							leafPackage.manifest === undefined
-								? undefined
-								: join(dirname(leafPackage.manifest), "postgres-runtime"),
-						label: packagedRuntimeCandidate(target.nativeLeafPackageName, leafPackage),
-					},
-				]),
-		{
-			path: rootPackage.manifest === undefined ? undefined : join(dirname(rootPackage.manifest), "postgres-runtime"),
-			label: packagedRuntimeCandidate("@bastani/atomic-natives", rootPackage),
-		},
-	];
+	const candidates: readonly { readonly path?: string; readonly label: string; readonly validateTarget?: boolean }[] =
+		[
+			...(explicitRuntime === undefined ? [] : [{ path: explicitRuntime, label: explicitRuntime }]),
+			...(target.nativeLeafPackageName === undefined || leafPackage === undefined
+				? []
+				: [
+						{
+							path:
+								leafPackage.manifest === undefined
+									? undefined
+									: join(dirname(leafPackage.manifest), "postgres-runtime"),
+							label: packagedRuntimeCandidate(target.nativeLeafPackageName, leafPackage),
+						},
+					]),
+			{
+				path:
+					rootPackage.manifest === undefined ? undefined : join(dirname(rootPackage.manifest), "postgres-runtime"),
+				label: packagedRuntimeCandidate("@bastani/atomic-natives", rootPackage),
+				validateTarget: true,
+			},
+		];
 	for (const candidate of candidates) {
 		searched.push(candidate.label);
 		if (candidate.path === undefined || !existsSync(candidate.path)) continue;
+		if (candidate.validateTarget) {
+			const mismatch = packagedRuntimeTargetMismatch(candidate.path, target.id);
+			if (mismatch !== undefined) {
+				searched[searched.length - 1] += ` (${mismatch})`;
+				continue;
+			}
+		}
 		try {
 			return binariesFromDirectory(candidate.path, host.platform);
 		} catch (error) {
