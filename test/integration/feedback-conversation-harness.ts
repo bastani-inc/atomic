@@ -46,6 +46,13 @@ export async function createFeedbackConversationHarness(): Promise<Harness> {
 	return harness;
 }
 
+export async function settleTurn(
+	harness: Awaited<ReturnType<typeof createFeedbackConversationHarness>>,
+): Promise<void> {
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	while (harness.session.isStreaming) await new Promise((resolve) => setTimeout(resolve, 1));
+}
+
 export function transcriptText(harness: Harness): string {
 	return harness.session.messages.map(getMessageText).join("\n");
 }

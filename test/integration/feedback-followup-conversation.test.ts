@@ -4,15 +4,11 @@ import { getMessageText } from "../../packages/coding-agent/test/suite/harness.t
 import {
 	assistantMessages,
 	createFeedbackConversationHarness,
+	settleTurn,
 	transcriptText,
 } from "./feedback-conversation-harness.ts";
 
 const cleanups: Array<() => void> = [];
-
-async function settleTurn(harness: Awaited<ReturnType<typeof createFeedbackConversationHarness>>): Promise<void> {
-	await new Promise<void>((resolve) => setImmediate(resolve));
-	while (harness.session.isStreaming) await new Promise((resolve) => setTimeout(resolve, 1));
-}
 
 const initialDraft = {
 	kind: "enhancement",
@@ -86,17 +82,34 @@ describe("feedback follow-up conversation", () => {
 		harness.setResponses(prepareThenDisplay());
 		await harness.session.prompt("/feedback Add keyboard navigation");
 		await settleTurn(harness);
-		harness.setResponses([fauxAssistantMessage("Sure, let us discuss color themes instead.")]);
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("feedback_submit_issue", {
+					kind: "enhancement",
+					title: initialDraft.title,
+					body: "### What do you want to change?\n\nAdd keyboard navigation\n\n### Why?\n\nImprove accessibility",
+				}),
+				{ stopReason: "toolUse" },
+			),
+			(context) => {
+				const result = context.messages.findLast((message) => message.role === "toolResult");
+				return fauxAssistantMessage(getMessageText(result));
+			},
+		]);
 
 		await harness.session.prompt("Actually, can we discuss color themes?");
 
 		const messages = harness.session.messages;
-		expect(messages.at(-2)?.role).toBe("user");
+		const latestUser = messages.findLast((message) => message.role === "user");
+		expect(latestUser).toBeDefined();
+		expect(getMessageText(latestUser)).toBe("Actually, can we discuss color themes?");
 		expect(messages.at(-1)?.role).toBe("assistant");
-		expect(getMessageText(messages.at(-1))).toBe("Sure, let us discuss color themes instead.");
+		expect(getMessageText(messages.at(-1))).toContain(
+			"Clear approval to post the most recent draft is required in a new ordinary user message.",
+		);
 		expect(
 			messages.some((message) => message.role === "toolResult" && message.toolName === "feedback_submit_issue"),
-		).toBe(false);
+		).toBe(true);
 		expect(fetcher).not.toHaveBeenCalled();
 	});
 

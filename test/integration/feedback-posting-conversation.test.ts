@@ -4,6 +4,7 @@ import { getMessageText } from "../../packages/coding-agent/test/suite/harness.t
 import {
 	assistantMessages,
 	createFeedbackConversationHarness,
+	settleTurn,
 	transcriptText,
 } from "./feedback-conversation-harness.ts";
 
@@ -16,11 +17,6 @@ const draft = {
 	why: "Improve accessibility",
 } as const;
 const body = "### What do you want to change?\n\nAdd keyboard navigation\n\n### Why?\n\nImprove accessibility";
-
-async function settleTurn(harness: Awaited<ReturnType<typeof createFeedbackConversationHarness>>): Promise<void> {
-	await new Promise<void>((resolve) => setImmediate(resolve));
-	while (harness.session.isStreaming) await new Promise((resolve) => setTimeout(resolve, 1));
-}
 
 function draftResponses(): FauxResponseStep[] {
 	return [
