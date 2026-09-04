@@ -14,8 +14,9 @@
  * non-recoverable initialization failure — stays actionable.
  */
 
-/** The historical wire/UI wording, preserved so nothing that reads `message` changes. */
-export const RECOVERABLE_DISCONNECT_MESSAGE = "Client disconnected";
+/** Model-visible recovery direction for a stale broker socket. */
+export const RECOVERABLE_DISCONNECT_MESSAGE =
+	"Client disconnected. Retry the same Intercom call up to three times to reconnect.";
 
 /**
  * Bound on the `cause` chain walk. Intercom wraps failures with `cause` on the
