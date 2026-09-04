@@ -10,6 +10,7 @@ import { createSyntheticSourceInfo } from "../../packages/coding-agent/src/core/
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import feedback, { FEEDBACK_USAGE } from "../../packages/feedback/index.js";
+import { settleTurn } from "./feedback-conversation-harness.js";
 
 const cleanups: Array<() => void> = [];
 
@@ -51,11 +52,6 @@ async function feedbackHarness(collision = false): Promise<Harness> {
 
 function messageText(harness: Harness): string {
 	return harness.session.messages.map(getMessageText).join("\n");
-}
-
-async function settleTurn(harness: Harness): Promise<void> {
-	await new Promise<void>((resolve) => setImmediate(resolve));
-	while (harness.session.isStreaming) await new Promise((resolve) => setTimeout(resolve, 1));
 }
 
 describe("feedback command conversation entry", () => {
