@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 - Added typed feedback draft validation, deterministic issue formatting, privacy scrubbing, and bounded diagnostic utilities ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Added `/feedback` and a bundled conversational skill to collect bug reports or enhancement requests and prepare editable, privacy-scrubbed drafts without posting them ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Added bug investigation through the existing debugger with a fresh, foreground handoff, bounded privacy-scrubbed diagnostics, extension activity, and path-only worktree disclosure. Unavailable investigations leave an editable draft with honest unknowns ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
-- Added approval-gated, privacy-scrubbed GitHub feedback submission with duplicate protection ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Added approval-gated, privacy-scrubbed GitHub feedback submission with duplicate protection and safe, distinct authentication, permission, rate-limit, validation, network, abort, and malformed-response failures ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 
 ### Fixed
 
