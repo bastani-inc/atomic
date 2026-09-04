@@ -31,14 +31,19 @@ export interface RetryIdentityAttempt {
 	readonly messageId: string;
 	readonly reuseCount: number;
 	readonly expiresAt: number;
+	/** Present only when this attempt explicitly claimed a retained operation. */
+	readonly retryToken?: string;
 }
 
-type ReservationState = "in-flight" | "retained" | "released";
+type ReservationState = "fresh-in-flight" | "retained" | "retry-in-flight" | "settled" | "exhausted" | "released";
 
 interface RetryIdentityReservation {
 	readonly key: string;
 	readonly messageId: string;
+	readonly sessionId: string;
+	readonly action: RetryIdentityAction;
 	readonly expiresAt: number;
+	retryToken?: string;
 	reuseCount: number;
 	state: ReservationState;
 }
@@ -49,6 +54,7 @@ export interface RetryIdentityReservationsOptions {
 	readonly maxReuses?: number;
 	readonly now?: () => number;
 	readonly createId?: () => string;
+	readonly createToken?: () => string;
 }
 
 export class RetryIdentityCapacityError extends Error {
@@ -58,13 +64,30 @@ export class RetryIdentityCapacityError extends Error {
 	}
 }
 
+export type RetryTokenErrorCode = "invalid" | "expired" | "mismatch" | "in_flight" | "settled" | "exhausted";
+
+export class RetryTokenError extends Error {
+	constructor(readonly code: RetryTokenErrorCode) {
+		const reason = {
+			invalid: "is invalid or belongs to another Intercom tool session",
+			expired: "has expired",
+			mismatch: "does not match this Intercom operation",
+			in_flight: "is already claimed by an in-flight retry",
+			settled: "belongs to an operation that is already settled",
+			exhausted: `has exhausted its ${RETRY_IDENTITY_MAX_REUSES} retry attempts`,
+		}[code];
+		super(`Intercom retry token ${reason}; refusing delivery`);
+		this.name = "RetryTokenError";
+	}
+}
+
 function operationKey(input: RetryIdentityInput): string {
 	return JSON.stringify([
 		input.sessionId,
 		input.action,
 		input.target,
 		input.text,
-		canonicalizeAttachmentsForSendSignature(input.attachments),
+		canonicalizeAttachmentsForSendSignature(input.attachments) ?? [],
 		input.replyTo,
 		input.requestedReplyTo,
 		input.expectsReply,
@@ -72,25 +95,20 @@ function operationKey(input: RetryIdentityInput): string {
 }
 
 /**
- * Retains operation identities only across typed recoverable-disconnect retries.
- * Each key owns a FIFO of independently failed operations: later retry calls claim
- * them in retention order, and a failed retry returns to the tail so one identity
- * cannot starve its identical peers.
- *
- * Capacity pressure fails closed. Once one more recoverable operation would exceed
- * the retained-entry bound, all operation starts are refused until every identity
- * that may have been broker-accepted has reached its original deadline. This keeps
- * memory bounded without minting a replacement ID that could duplicate delivery.
+ * Retains message identities only after a typed recoverable disconnect. A fresh
+ * call never consults retained operations: retry reuse requires the opaque token
+ * returned for that exact operation. Tokens and their mappings are process-local,
+ * registration-scoped, bounded, and expire at the original operation deadline.
  */
 export class RetryIdentityReservations {
-	private readonly reservations = new Map<string, RetryIdentityReservation[]>();
+	private readonly tokenReservations = new Map<string, RetryIdentityReservation>();
 	private readonly attemptStates = new WeakMap<RetryIdentityAttempt, RetryIdentityReservation>();
 	private readonly ttlMs: number;
 	private readonly maxEntries: number;
 	private readonly maxReuses: number;
 	private readonly now: () => number;
 	private readonly createId: () => string;
-	private retainedCount = 0;
+	private readonly createToken: () => string;
 	private blockedUntil = 0;
 
 	constructor(options: RetryIdentityReservationsOptions = {}) {
@@ -99,76 +117,151 @@ export class RetryIdentityReservations {
 		this.maxReuses = options.maxReuses ?? RETRY_IDENTITY_MAX_REUSES;
 		this.now = options.now ?? Date.now;
 		this.createId = options.createId ?? randomUUID;
+		this.createToken = options.createToken ?? randomUUID;
 	}
 
-	begin(input: RetryIdentityInput): RetryIdentityAttempt {
+	begin(input: RetryIdentityInput, retryToken?: string): RetryIdentityAttempt {
 		const now = this.now();
+		const key = operationKey(input);
+		// A claim must inspect its own retained record before general pruning so an
+		// expired token is distinguishable from a token that never belonged here.
+		if (retryToken !== undefined) return this.claimRetry(key, retryToken, now);
 		this.prune(now);
 		if (this.blockedUntil > now) throw new RetryIdentityCapacityError();
-		const key = operationKey(input);
-		const queue = this.reservations.get(key);
-		while (queue !== undefined && queue.length > 0) {
-			const reservation = queue.shift();
-			if (reservation === undefined) break;
-			this.retainedCount -= 1;
-			if (queue.length === 0) this.reservations.delete(key);
-			if (reservation.state !== "retained") continue;
-			if (reservation.reuseCount >= this.maxReuses || reservation.expiresAt <= now) {
-				reservation.state = "released";
-				continue;
-			}
-			// Claiming removes this identity from the FIFO while it is in flight, so
-			// a concurrent intentional call cannot share its message ID.
-			reservation.state = "in-flight";
-			reservation.reuseCount += 1;
-			return this.attempt(reservation);
-		}
-		const reservation: RetryIdentityReservation = {
+		return this.attempt({
 			key,
 			messageId: this.createId(),
 			expiresAt: now + this.ttlMs,
+			sessionId: input.sessionId,
+			action: input.action,
 			reuseCount: 0,
-			state: "in-flight",
-		};
-		return this.attempt(reservation);
+			state: "fresh-in-flight",
+		});
 	}
 
-	retainAfterRecoverableDisconnect(attempt: RetryIdentityAttempt): void {
-		const now = this.now();
-		this.prune(now);
-		const reservation = this.currentReservation(attempt);
-		if (reservation === undefined || reservation.state !== "in-flight") return;
-		if (reservation.reuseCount >= this.maxReuses || reservation.expiresAt <= now) {
-			reservation.state = "released";
-			return;
+	/** Validate token ownership/state before any target resolution without consuming a retry. */
+	validateRetryToken(retryToken: string, sessionId: string, action: RetryIdentityAction): number {
+		const reservation = this.tokenReservation(retryToken, this.now());
+		if (reservation.sessionId !== sessionId || reservation.action !== action) {
+			throw new RetryTokenError("mismatch");
 		}
-		if (this.blockedUntil > now || this.retainedCount >= this.maxEntries) {
-			this.enterCapacityRefusal(reservation.expiresAt);
-			reservation.state = "released";
-			return;
-		}
-		// Keep the original attempt's deadline: refreshing here could outlive the
-		// broker record whose retained acknowledgement makes the retry safe.
-		reservation.state = "retained";
-		const queue = this.reservations.get(reservation.key) ?? [];
-		queue.push(reservation);
-		this.reservations.set(reservation.key, queue);
-		this.retainedCount += 1;
+		this.requireClaimable(reservation);
+		return Math.max(0, this.maxReuses - reservation.reuseCount);
+	}
+
+	/** Retain a fresh or claimed attempt after the typed recoverable disconnect. */
+	retainAfterRecoverableDisconnect(attempt: RetryIdentityAttempt): string | undefined {
+		return this.retain(attempt, true);
+	}
+
+	/** Preserve only an explicitly claimed retry after a resolved but inconclusive result. */
+	retainAfterInconclusiveRetry(attempt: RetryIdentityAttempt): string | undefined {
+		return this.retain(attempt, false);
 	}
 
 	release(attempt: RetryIdentityAttempt): void {
 		const reservation = this.currentReservation(attempt);
-		if (reservation === undefined || reservation.state === "released") return;
-		if (reservation.state === "retained") this.removeRetained(reservation);
-		reservation.state = "released";
+		if (reservation === undefined || reservation.state === "released" || reservation.state === "settled") return;
+		if (reservation.retryToken === undefined) {
+			reservation.state = "released";
+			return;
+		}
+		this.finishRetained(reservation, "settled");
+	}
+
+	remainingRetries(attempt: RetryIdentityAttempt): number {
+		const reservation = this.currentReservation(attempt);
+		return reservation === undefined ? 0 : Math.max(0, this.maxReuses - reservation.reuseCount);
+	}
+
+	private claimRetry(key: string, retryToken: string, now: number): RetryIdentityAttempt {
+		const reservation = this.tokenReservation(retryToken, now);
+		if (reservation.key !== key) throw new RetryTokenError("mismatch");
+		this.requireClaimable(reservation);
+		reservation.state = "retry-in-flight";
+		reservation.reuseCount += 1;
+		return this.attempt(reservation);
+	}
+
+	private tokenReservation(retryToken: string, now: number): RetryIdentityReservation {
+		const reservation = this.tokenReservations.get(retryToken);
+		if (reservation === undefined) throw new RetryTokenError("invalid");
+		if (reservation.expiresAt <= now) {
+			this.expire(reservation);
+			throw new RetryTokenError("expired");
+		}
+		return reservation;
+	}
+
+	private requireClaimable(reservation: RetryIdentityReservation): void {
+		if (reservation.state === "settled") throw new RetryTokenError("settled");
+		if (reservation.state === "exhausted" || reservation.reuseCount >= this.maxReuses) {
+			reservation.state = "exhausted";
+			throw new RetryTokenError("exhausted");
+		}
+		if (reservation.state === "retry-in-flight") throw new RetryTokenError("in_flight");
+		if (reservation.state !== "retained") throw new RetryTokenError("invalid");
+	}
+	private retain(attempt: RetryIdentityAttempt, allowFresh: boolean): string | undefined {
+		const now = this.now();
+		this.prune(now);
+		const reservation = this.currentReservation(attempt);
+		if (reservation === undefined) return undefined;
+		const fresh = reservation.state === "fresh-in-flight";
+		if (!fresh && reservation.state !== "retry-in-flight") return undefined;
+		if (fresh && !allowFresh) {
+			reservation.state = "released";
+			return undefined;
+		}
+		if (reservation.expiresAt <= now) {
+			if (reservation.retryToken === undefined) reservation.state = "released";
+			else this.expire(reservation);
+			return undefined;
+		}
+		if (reservation.reuseCount >= this.maxReuses) {
+			if (reservation.retryToken === undefined) reservation.state = "released";
+			else reservation.state = "exhausted";
+			return undefined;
+		}
+		if (fresh) {
+			this.discardSettledTombstonesForCapacity();
+			if (this.blockedUntil > now || this.tokenReservations.size >= this.maxEntries) {
+				this.blockedUntil = Math.max(this.blockedUntil, reservation.expiresAt);
+				reservation.state = "released";
+				throw new RetryIdentityCapacityError();
+			}
+			reservation.retryToken = this.uniqueToken();
+			this.tokenReservations.set(reservation.retryToken, reservation);
+		}
+		reservation.state = "retained";
+		return reservation.retryToken;
+	}
+
+	private discardSettledTombstonesForCapacity(): void {
+		if (this.tokenReservations.size < this.maxEntries) return;
+		for (const [token, reservation] of this.tokenReservations) {
+			if (reservation.state !== "settled") continue;
+			this.tokenReservations.delete(token);
+			if (this.tokenReservations.size < this.maxEntries) return;
+		}
+	}
+
+	private uniqueToken(): string {
+		for (;;) {
+			const token = this.createToken();
+			if (token.length > 0 && !this.tokenReservations.has(token)) return token;
+		}
 	}
 
 	private attempt(reservation: RetryIdentityReservation): RetryIdentityAttempt {
-		const attempt = {
+		const attempt: RetryIdentityAttempt = {
 			key: reservation.key,
 			messageId: reservation.messageId,
 			reuseCount: reservation.reuseCount,
 			expiresAt: reservation.expiresAt,
+			...(reservation.state === "retry-in-flight" && reservation.retryToken !== undefined
+				? { retryToken: reservation.retryToken }
+				: {}),
 		};
 		this.attemptStates.set(attempt, reservation);
 		return attempt;
@@ -179,38 +272,19 @@ export class RetryIdentityReservations {
 		return reservation?.reuseCount === attempt.reuseCount ? reservation : undefined;
 	}
 
-	private removeRetained(reservation: RetryIdentityReservation): void {
-		const queue = this.reservations.get(reservation.key);
-		const index = queue?.indexOf(reservation) ?? -1;
-		if (queue === undefined || index < 0) return;
-		queue.splice(index, 1);
-		this.retainedCount -= 1;
-		if (queue.length === 0) this.reservations.delete(reservation.key);
+	private finishRetained(reservation: RetryIdentityReservation, state: "settled" | "released"): void {
+		reservation.state = state;
 	}
 
-	private enterCapacityRefusal(expiresAt: number): void {
-		this.blockedUntil = Math.max(this.blockedUntil, expiresAt);
-		for (const queue of this.reservations.values()) {
-			for (const reservation of queue) {
-				this.blockedUntil = Math.max(this.blockedUntil, reservation.expiresAt);
-				reservation.state = "released";
-			}
-		}
-		this.reservations.clear();
-		this.retainedCount = 0;
+	private expire(reservation: RetryIdentityReservation): void {
+		if (reservation.retryToken !== undefined) this.tokenReservations.delete(reservation.retryToken);
+		this.finishRetained(reservation, "released");
 	}
 
 	private prune(now: number): void {
 		if (this.blockedUntil <= now) this.blockedUntil = 0;
-		for (const [key, queue] of this.reservations) {
-			const retained = queue.filter((reservation) => {
-				if (reservation.expiresAt > now) return true;
-				reservation.state = "released";
-				this.retainedCount -= 1;
-				return false;
-			});
-			if (retained.length === 0) this.reservations.delete(key);
-			else if (retained.length !== queue.length) this.reservations.set(key, retained);
+		for (const reservation of this.tokenReservations.values()) {
+			if (reservation.expiresAt <= now) this.expire(reservation);
 		}
 	}
 }

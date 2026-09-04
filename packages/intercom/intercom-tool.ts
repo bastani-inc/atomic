@@ -19,7 +19,38 @@ import { resolveSessionTargetId } from "./session-target.js";
 import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
-import { RetryIdentityReservations, type RetryIdentityAttempt } from "./retry-identity.js";
+import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError } from "./retry-identity.js";
+
+function retryTokenGuidance(retryToken: string | undefined, remainingRetries: number): string {
+	if (retryToken === undefined) return "";
+	return ` Retry this exact operation with retryToken \`${retryToken}\` (${remainingRetries} claimed ${remainingRetries === 1 ? "attempt" : "attempts"} remain; the original deadline is unchanged).`;
+}
+
+function retryErrorDetails(retryToken: string | undefined): Record<string, unknown> {
+	return retryToken === undefined ? { error: true } : { error: true, retryToken };
+}
+
+function retainRecoverableRetry(
+	reservations: RetryIdentityReservations,
+	attempt: RetryIdentityAttempt,
+): { readonly retryToken?: string; readonly remainingRetries: number } {
+	const retryToken = reservations.retainAfterRecoverableDisconnect(attempt);
+	return {
+		...(retryToken === undefined ? {} : { retryToken }),
+		remainingRetries: reservations.remainingRetries(attempt),
+	};
+}
+
+function retainInconclusiveRetry(
+	reservations: RetryIdentityReservations,
+	attempt: RetryIdentityAttempt,
+): { readonly retryToken?: string; readonly remainingRetries: number } {
+	const retryToken = reservations.retainAfterInconclusiveRetry(attempt);
+	return {
+		...(retryToken === undefined ? {} : { retryToken }),
+		remainingRetries: reservations.remainingRetries(attempt),
+	};
+}
 
 async function listDirectory(client: IntercomClient, group?: string): Promise<SessionDirectory> {
 	if (typeof client.listDirectory === "function") return client.listDirectory(group);
@@ -178,7 +209,7 @@ A valid target outside the known set queues speculatively with a \`notInKnownSet
 undeliverable at terminal only if never delivered. Use \`ask\` only for a live, reply-capable target.
 Stage paths win over same-named owned subgroups for send/ask; \`list\` with \`group\` continues to
 select the group.
-If a call fails with \`Client disconnected\`, retry the same call up to three times; each retry reconnects the client.
+If a \`send\`, \`ask\`, or \`reply\` fails with \`Client disconnected\`, retry that exact operation with the returned \`retryToken\`, up to three claimed attempts; a call without the token is always a distinct operation.
 
 Usage:
   intercom({ action: "list" })                    → List sessions visible through your groups
@@ -190,6 +221,7 @@ Usage:
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (shared group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
+  intercom({ action: "send", to: "session-name", message: "...", retryToken: "..." }) → Claim the exact retry returned by a retryable failure
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status and all your groups
 
@@ -197,8 +229,7 @@ The "join" action is additive. "default" is the shared default group; "true" and
 "auto" are reserved for subagent auto-groups. Ordinary delivery requires at least
 one shared membership; contact_supervisor remains the only cross-group path.`,
     promptSnippet:
-      "Use to coordinate with other local agent sessions that share an intercom group: discover groups or peers, send updates, ask for help, or check connectivity. Ordinary messages require a shared membership.",
-
+      "Use to coordinate with other local agent sessions that share an intercom group. For a retryable send/ask/reply failure, repeat the exact operation with its returned retryToken; omit retryToken for fresh operations.",
     parameters: Type.Object({
       action: Type.String({
         description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
@@ -218,26 +249,56 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       replyTo: Type.Optional(Type.String({
         description: "Exact pending-ask message ID; disambiguates concurrent asks, including asks from one sender",
       })),
+      retryToken: Type.Optional(Type.String({
+        minLength: 1,
+        maxLength: 128,
+        description: "Opaque token returned after a retryable send/ask/reply failure. Repeat the exact same action and arguments with this token; omit it for every fresh operation.",
+      })),
       group: Type.Optional(Type.String({
         description: "Group name for 'join' or optional targeted 'leave'; read-only group filter for 'list'/'status'. 'send'/'ask' use shared memberships.",
       })),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const toolSessionId = ctx.sessionManager.getSessionId();
+      const { action, to, message, attachments, replyTo, retryToken, group } = params;
+      let retryPreflightRemaining: number | undefined;
+      if (retryToken !== undefined) {
+        if (action !== "send" && action !== "ask" && action !== "reply") {
+          const error = new RetryTokenError("mismatch");
+          return {
+            content: [{ type: "text", text: getErrorMessage(error) }],
+            isError: true,
+            details: { error: true },
+          };
+        }
+        try {
+          retryPreflightRemaining = retryIdentities.validateRetryToken(retryToken, toolSessionId, action);
+        } catch (error) {
+          return {
+            content: [{ type: "text", text: getErrorMessage(error) }],
+            isError: true,
+            details: { error: true },
+          };
+        }
+      }
+
       let connectedClient: IntercomClient;
       try {
         connectedClient = await ensureConnected("tool");
       } catch (error) {
+        const retainedToken = retryToken !== undefined && isRecoverableIntercomDisconnect(error) ? retryToken : undefined;
         return {
-          content: [{ type: "text", text: `Intercom not connected: ${getErrorMessage(error)}` }],
+          content: [{
+            type: "text",
+            text: `Intercom not connected: ${getErrorMessage(error)}${retryTokenGuidance(retainedToken, retryPreflightRemaining ?? 0)}`,
+          }],
           isError: true,
-          details: { error: true },
+          details: retryErrorDetails(retainedToken),
         };
       }
 
-      const toolSessionId = ctx.sessionManager.getSessionId();
       syncPresenceIdentity(toolSessionId);
-      const { action, to, message, attachments, replyTo, group } = params;
       const resolveOwnGroups = (sessions?: readonly SessionInfo[]): string[] => {
         if (Array.isArray(connectedClient.groups)) {
           return connectedClient.groups.map((membership) => normalizeGroup(membership));
@@ -426,21 +487,17 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 
         case "send": {
           if (!to || !message) {
+            const errorText = retryToken === undefined
+              ? "Missing 'to' or 'message' parameter"
+              : getErrorMessage(new RetryTokenError("mismatch"));
             return {
-              content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
+              content: [{ type: "text", text: errorText }],
               isError: true,
               details: { error: true },
             };
           }
+          let retryIdentity: RetryIdentityAttempt | undefined;
           try {
-            const sendTo = await resolveTarget(connectedClient, to) ?? to;
-            if (sendTo === connectedClient.sessionId) {
-              return {
-                content: [{ type: "text", text: "Cannot message the current session" }],
-                isError: true,
-                details: { error: true },
-              };
-            }
             if (!replyTo && deps.confirmSend && ctx.hasUI) {
               const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
               const confirmed = await ctx.ui.confirm(
@@ -455,7 +512,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 };
               }
             }
-            const retryIdentity = retryIdentities.begin({
+            retryIdentity = retryIdentities.begin({
               sessionId: toolSessionId,
               action: "send",
               target: to,
@@ -463,87 +520,120 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               attachments,
               replyTo,
               expectsReply: false,
+            }, retryToken);
+            const sendTo = await resolveTarget(connectedClient, to) ?? to;
+            if (sendTo === connectedClient.sessionId) {
+              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
+              retryIdentity = undefined;
+              return {
+                content: [{
+                  type: "text",
+                  text: `Cannot message the current session${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}`,
+                }],
+                isError: true,
+                details: retryErrorDetails(retained.retryToken),
+              };
+            }
+            const result = await connectedClient.send(sendTo, {
+              messageId: retryIdentity.messageId,
+              logicalTarget: to,
+              text: message,
+              attachments,
+              replyTo,
             });
-            try {
-              const result = await connectedClient.send(sendTo, {
-                messageId: retryIdentity.messageId,
-                logicalTarget: to,
-                text: message,
-                attachments,
-                replyTo,
-              });
+            if (result.queued === true) {
               retryIdentities.release(retryIdentity);
-              if (result.queued === true) {
-                pi.appendEntry("intercom_sent", {
-                  to,
-                  message: { text: message, attachments, replyTo },
-                  messageId: result.id,
-                  timestamp: Date.now(),
-                });
-                const notInKnownSet = result.notInKnownSet === true;
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: notInKnownSet
-                        ? `Message queued for ${to} (not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)`
-                        : `Message queued for ${to}`,
-                    },
-                  ],
-                  isError: false,
-                  details: {
-                    messageId: result.id,
-                    delivered: false,
-                    queued: true,
-                    target: result.target,
-                    position: result.position,
-                    ...(notInKnownSet ? { notInKnownSet: true } : {}),
-                  },
-                };
-              }
-              if (!result.delivered) {
-                const errorText = result.reason ?? "Session may not exist or has disconnected.";
-                return {
-                  content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
-                  isError: true,
-                  details: { messageId: result.id, delivered: false, reason: result.reason },
-                };
-              }
+              retryIdentity = undefined;
               pi.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: result.id,
                 timestamp: Date.now(),
               });
-              if (replyTo) {
-                activeReplyTracker().markReplied(replyTo);
-              }
+              const notInKnownSet = result.notInKnownSet === true;
               return {
-                content: [{ type: "text", text: `Message sent to ${to}` }],
+                content: [{
+                  type: "text",
+                  text: notInKnownSet
+                    ? `Message queued for ${to} (not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)`
+                    : `Message queued for ${to}`,
+                }],
                 isError: false,
-                details: { messageId: result.id, delivered: true },
+                details: {
+                  messageId: result.id,
+                  delivered: false,
+                  queued: true,
+                  target: result.target,
+                  position: result.position,
+                  ...(notInKnownSet ? { notInKnownSet: true } : {}),
+                },
               };
-            } catch (error) {
+            }
+            if (!result.delivered) {
+              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
+              retryIdentity = undefined;
+              const errorText = result.reason ?? "Session may not exist or has disconnected.";
+              return {
+                content: [{
+                  type: "text",
+                  text: `Message to "${to}" was not delivered: ${errorText}${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}`,
+                }],
+                isError: true,
+                details: retryToken === undefined
+                  ? { messageId: result.id, delivered: false, reason: result.reason }
+                  : {
+                      delivered: false,
+                      reason: result.reason,
+                      ...(retained.retryToken === undefined ? {} : { retryToken: retained.retryToken }),
+                    },
+              };
+            }
+            retryIdentities.release(retryIdentity);
+            retryIdentity = undefined;
+            pi.appendEntry("intercom_sent", {
+              to,
+              message: { text: message, attachments, replyTo },
+              messageId: result.id,
+              timestamp: Date.now(),
+            });
+            if (replyTo) activeReplyTracker().markReplied(replyTo);
+            return {
+              content: [{ type: "text", text: `Message sent to ${to}` }],
+              isError: false,
+              details: { messageId: result.id, delivered: true },
+            };
+          } catch (error) {
+            let failure = error;
+            let retained: { readonly retryToken?: string; readonly remainingRetries: number } | undefined;
+            if (retryIdentity !== undefined) {
               if (isRecoverableIntercomDisconnect(error)) {
-                retryIdentities.retainAfterRecoverableDisconnect(retryIdentity);
+                try {
+                  retained = retainRecoverableRetry(retryIdentities, retryIdentity);
+                } catch (retentionError) {
+                  failure = retentionError;
+                }
               } else {
                 retryIdentities.release(retryIdentity);
               }
-              throw error;
             }
-          } catch (error) {
             return {
-              content: [{ type: "text", text: `Failed to send: ${getErrorMessage(error)}` }],
+              content: [{
+                type: "text",
+                text: `Failed to send: ${getErrorMessage(failure)}${retryTokenGuidance(retained?.retryToken, retained?.remainingRetries ?? 0)}`,
+              }],
               isError: true,
-              details: { error: true },
+              details: retryErrorDetails(retained?.retryToken),
             };
           }
         }
 
         case "ask": {
           if (!to) {
+            const errorText = retryToken === undefined
+              ? "Missing 'to' or 'message' parameter"
+              : getErrorMessage(new RetryTokenError("mismatch"));
             return {
-              content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
+              content: [{ type: "text", text: errorText }],
               isError: true,
               details: { error: true },
             };
@@ -551,9 +641,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 
           if (_signal?.aborted) {
             return {
-              content: [{ type: "text", text: "Cancelled" }],
+              content: [{
+                type: "text",
+                text: `Cancelled${retryTokenGuidance(retryToken, retryPreflightRemaining ?? 0)}`,
+              }],
               isError: true,
-              details: { error: true },
+              details: retryErrorDetails(retryToken),
             };
           }
           let wait: ReplyWait | null = null;
@@ -580,6 +673,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 }),
               );
             if (
+              retryToken === undefined &&
               directParentTarget &&
               claimParentAsk(currentSupervisorId ?? metadataSupervisorId ?? to)
             ) {
@@ -590,22 +684,49 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
 
+            if (retryToken !== undefined) {
+              if (!message) throw new RetryTokenError("mismatch");
+              retryIdentity = retryIdentities.begin({
+                sessionId: toolSessionId,
+                action: "ask",
+                target: to,
+                text: message,
+                attachments,
+                replyTo,
+                expectsReply: true,
+              }, retryToken);
+            }
+
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
+              const retained = retryIdentity === undefined
+                ? undefined
+                : retainInconclusiveRetry(retryIdentities, retryIdentity);
+              retryIdentity = undefined;
               return {
-                content: [{ type: "text", text: "Cancelled" }],
+                content: [{
+                  type: "text",
+                  text: `Cancelled${retryTokenGuidance(retained?.retryToken, retained?.remainingRetries ?? 0)}`,
+                }],
                 isError: true,
-                details: { error: true },
+                details: retryErrorDetails(retained?.retryToken),
               };
             }
             if (sendTo === connectedClient.sessionId) {
+              const retained = retryIdentity === undefined
+                ? undefined
+                : retainInconclusiveRetry(retryIdentities, retryIdentity);
+              retryIdentity = undefined;
               return {
-                content: [{ type: "text", text: "Cannot message the current session" }],
+                content: [{
+                  type: "text",
+                  text: `Cannot message the current session${retryTokenGuidance(retained?.retryToken, retained?.remainingRetries ?? 0)}`,
+                }],
                 isError: true,
-                details: { error: true },
+                details: retryErrorDetails(retained?.retryToken),
               };
             }
-            if (metadata && !directParentTarget) {
+            if (retryToken === undefined && metadata && !directParentTarget) {
               const authoritativeParent = [currentSupervisorId, metadataSupervisorId].find(
                 (candidate) => candidate === sendTo,
               );
@@ -626,21 +747,26 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true },
               };
             }
+
 			// Canonical workflow targets must remain canonical on the send path so the
 			// broker can authorize invocation-to-subgroup control. The waiter, however,
 			// correlates the actual inbound stage session identity.
 			const replySender = await resolveReplySender(connectedClient, to, sendTo);
 			if (replySender.kind === "ambiguous") {
+				const retained = retryIdentity === undefined
+					? undefined
+					: retainInconclusiveRetry(retryIdentities, retryIdentity);
+				retryIdentity = undefined;
 				return {
 					content: [{
 						type: "text",
-						text: `Message to "${to}" is ambiguous: ${replySender.reason}. Use the exact target shown by intercom list.`,
+						text: `Message to "${to}" is ambiguous: ${replySender.reason}. Use the exact target shown by intercom list.${retryTokenGuidance(retained?.retryToken, retained?.remainingRetries ?? 0)}`,
 					}],
 					isError: true,
-					details: { error: true },
+					details: retryErrorDetails(retained?.retryToken),
 				};
 			}
-			retryIdentity = retryIdentities.begin({
+			retryIdentity ??= retryIdentities.begin({
 				sessionId: toolSessionId,
 				action: "ask",
 				target: to,
@@ -653,15 +779,18 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 			const replyFrom = replySender.kind === "resolved" ? replySender.sessionId : sendTo;
 			const admission = beginReplyWait(replyFrom, questionId, _signal);
             if (!admission.ok) {
-              retryIdentities.release(retryIdentity);
+              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
               const text = admission.reason === "busy"
                 ? `Too many pending asks (${admission.limit}); reply-wait slots are full`
                 : "Cancelled";
               return {
-                content: [{ type: "text", text }],
+                content: [{
+                  type: "text",
+                  text: `${text}${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}`,
+                }],
                 isError: true,
-                details: { error: true },
+                details: retryErrorDetails(retained.retryToken),
               };
             }
             wait = admission.wait;
@@ -674,8 +803,30 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               expectsReply: true,
             });
 
-            if (!sendResult.delivered) {
+            if (sendResult.queued === true) {
               retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
+              wait.cancel(new Error(`Message queued for ${to}`));
+              pi.appendEntry("intercom_sent", {
+                to,
+                message: { text: message, attachments, replyTo },
+                messageId: sendResult.id,
+                timestamp: Date.now(),
+              });
+              return {
+                content: [{ type: "text", text: `Message queued for ${to}` }],
+                isError: false,
+                details: {
+                  messageId: sendResult.id,
+                  delivered: false,
+                  queued: true,
+                  target: sendResult.target,
+                  position: sendResult.position,
+                },
+              };
+            }
+            if (!sendResult.delivered) {
+              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
               wait.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
@@ -683,16 +834,21 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 								"Cannot ask a workflow stage whose session has not initialized.",
 							);
               return {
-                content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
+                content: [{
+                  type: "text",
+                  text: `Message to "${to}" was not delivered: ${errorText}${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}`,
+                }],
                 isError: true,
-                details: pendingStageAskRefusal
-                  ? {
-                      error: true,
-                      refusal: "pending_stage_ask_unsupported",
-                      recommendedAction: "send",
-                      reason: errorText,
-                    }
-                  : { error: true },
+                details: {
+                  ...(pendingStageAskRefusal
+                    ? {
+                        refusal: "pending_stage_ask_unsupported",
+                        recommendedAction: "send",
+                        reason: errorText,
+                      }
+                    : {}),
+                  ...retryErrorDetails(retained.retryToken),
+                },
               };
             }
             pi.appendEntry("intercom_sent", {
@@ -727,20 +883,27 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               details: {},
             };
           } catch (error) {
-            // Settle only this call's own waiter; a concurrent call's
-            // reservation must never be torn down from this failure path.
             wait?.cancel(toError(error));
+            let failure = error;
+            let retained: { readonly retryToken?: string; readonly remainingRetries: number } | undefined;
             if (retryIdentity !== undefined) {
               if (isRecoverableIntercomDisconnect(error)) {
-                retryIdentities.retainAfterRecoverableDisconnect(retryIdentity);
+                try {
+                  retained = retainRecoverableRetry(retryIdentities, retryIdentity);
+                } catch (retentionError) {
+                  failure = retentionError;
+                }
               } else {
                 retryIdentities.release(retryIdentity);
               }
             }
             return {
-              content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
+              content: [{
+                type: "text",
+                text: `Failed: ${getErrorMessage(failure)}${retryTokenGuidance(retained?.retryToken, retained?.remainingRetries ?? 0)}`,
+              }],
               isError: true,
-              details: { error: true },
+              details: retryErrorDetails(retained?.retryToken),
             };
           }
         }
@@ -757,7 +920,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           let retryIdentity: RetryIdentityAttempt | undefined;
           try {
 			const target = activeReplyTracker().resolveReplyTarget({ to, replyTo });
-			const replySendTo = to ?? target.from.name ?? target.from.id;
+			const replySendTo = to ?? target.from.id;
+			const replyLogicalTarget = to ?? target.from.id;
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -774,25 +938,69 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               replyTo: target.message.id,
               requestedReplyTo: replyTo,
               expectsReply: false,
-            });
-            const result = await connectedClient.send(replySendTo, {
-              messageId: retryIdentity.messageId,
-              logicalTarget: to ?? replySendTo,
-              ...(target.message.expectsReply === true ? { requirePendingReply: true } : {}),
+            }, retryToken);
+            const replyMessageId = retryIdentity.messageId;
+            const sendReply = (targetId: string) => connectedClient.send(targetId, {
+              messageId: replyMessageId,
+              logicalTarget: replyLogicalTarget,
+              ...(target.message.expectsReply === true ? { requirePendingReply: true as const } : {}),
               text: message,
               attachments,
               replyTo: target.message.id,
             });
-            retryIdentities.release(retryIdentity);
-            retryIdentity = undefined;
-            if (!result.delivered) {
-              const errorText = result.reason ?? "Session may not exist or has disconnected.";
+            let result = await sendReply(replySendTo);
+            if (
+              to === undefined &&
+              result.delivered === false &&
+              result.reasonCode === "session_not_found" &&
+              target.from.name !== undefined
+            ) {
+              result = await sendReply(target.from.name);
+            }
+            if (result.queued === true) {
+              retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
+              activeReplyTracker().markReplied(target.message.id);
+              pi.appendEntry("intercom_sent", {
+                to: target.from.name || target.from.id,
+                message: { text: message, attachments, replyTo: target.message.id },
+                messageId: result.id,
+                timestamp: Date.now(),
+              });
               return {
-                content: [{ type: "text", text: `Reply to "${target.from.name || target.from.id}" was not delivered: ${errorText}` }],
-                isError: true,
-                details: { messageId: result.id, delivered: false, reason: result.reason },
+                content: [{ type: "text", text: `Reply queued for ${target.from.name || target.from.id}` }],
+                isError: false,
+                details: {
+                  messageId: result.id,
+                  delivered: false,
+                  queued: true,
+                  replyTo: target.message.id,
+                  target: result.target,
+                  position: result.position,
+                },
               };
             }
+            if (!result.delivered) {
+              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
+              retryIdentity = undefined;
+              const errorText = result.reason ?? "Session may not exist or has disconnected.";
+              return {
+                content: [{
+                  type: "text",
+                  text: `Reply to "${target.from.name || target.from.id}" was not delivered: ${errorText}${retryTokenGuidance(retained.retryToken, retained.remainingRetries)}`,
+                }],
+                isError: true,
+                details: retryToken === undefined
+                  ? { messageId: result.id, delivered: false, reason: result.reason }
+                  : {
+                      delivered: false,
+                      reason: result.reason,
+                      ...(retained.retryToken === undefined ? {} : { retryToken: retained.retryToken }),
+                    },
+              };
+            }
+            retryIdentities.release(retryIdentity);
+            retryIdentity = undefined;
             activeReplyTracker().markReplied(target.message.id);
             pi.appendEntry("intercom_sent", {
               to: target.from.name || target.from.id,
@@ -806,17 +1014,26 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               details: { messageId: result.id, delivered: true, replyTo: target.message.id },
             };
           } catch (error) {
+            let failure = error;
+            let retained: { readonly retryToken?: string; readonly remainingRetries: number } | undefined;
             if (retryIdentity !== undefined) {
               if (isRecoverableIntercomDisconnect(error)) {
-                retryIdentities.retainAfterRecoverableDisconnect(retryIdentity);
+                try {
+                  retained = retainRecoverableRetry(retryIdentities, retryIdentity);
+                } catch (retentionError) {
+                  failure = retentionError;
+                }
               } else {
                 retryIdentities.release(retryIdentity);
               }
             }
             return {
-              content: [{ type: "text", text: `Failed to reply: ${getErrorMessage(error)}` }],
+              content: [{
+                type: "text",
+                text: `Failed to reply: ${getErrorMessage(failure)}${retryTokenGuidance(retained?.retryToken, retained?.remainingRetries ?? 0)}`,
+              }],
               isError: true,
-              details: { error: true },
+              details: retryErrorDetails(retained?.retryToken),
             };
           }
         }

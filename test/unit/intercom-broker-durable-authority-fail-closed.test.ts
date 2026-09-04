@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, test } from "vitest";
+import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { getBrokerDeliveredMessagesPath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 
@@ -122,24 +123,16 @@ test("full durable authority refuses a pending-stage notification before deliver
 	await stopBroker();
 	const authorityPath = getBrokerDeliveredMessagesPath(agentDir);
 	for (const suffix of ["", "-shm", "-wal"]) rmSync(`${authorityPath}${suffix}`, { force: true });
+	const initialized = new DeliveredMessageCache(undefined, undefined, authorityPath);
+	initialized.close();
 	const database = new DatabaseSync(authorityPath);
-	database.exec(`
-		CREATE TABLE delivered_messages (
-			state TEXT NOT NULL CHECK (state IN ('reserved', 'accepted')),
-			message_id TEXT PRIMARY KEY NOT NULL,
-			signature TEXT NOT NULL,
-			delivered_at INTEGER NOT NULL,
-			target_identity TEXT,
-			question_target_session_id TEXT,
-			question_sender_group_identity TEXT
-		) STRICT;
-	`);
 	const insert = database.prepare(
 		"INSERT INTO delivered_messages (state, message_id, signature, delivered_at) VALUES ('accepted', ?, ?, ?)",
 	);
 	const now = Date.now();
 	database.exec("BEGIN");
-	for (let index = 0; index < 10_000; index += 1) insert.run(`retained-${index}`, `signature-${index}`, now);
+	for (let index = 0; index < 10_000; index += 1)
+		insert.run(`retained-${index}`, index.toString(16).padStart(64, "0"), now);
 	database.exec("COMMIT");
 	database.close();
 	await startBroker();

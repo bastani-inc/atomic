@@ -27,7 +27,7 @@ type ToolResult = { content: Array<{ text: string }>; isError: boolean; details?
 type Tool = {
 	execute(
 		id: string,
-		params: { action: string; to?: string; message?: string },
+		params: { action: string; to?: string; message?: string; retryToken?: string },
 		signal: AbortSignal | undefined,
 		update: undefined,
 		ctx: object,
@@ -178,11 +178,15 @@ test("an identical tool retry after broker acceptance and acknowledgement loss i
 	);
 	assert.equal(first.isError, true);
 	assert.match(first.content[0]?.text ?? "", /Client disconnected/);
+	const retryToken = first.details?.retryToken;
+	assert.equal(typeof retryToken, "string", "the recoverable result must expose the retry claim to the model");
+	assert.match(first.content[0]?.text ?? "", /retryToken/);
+	assert.equal(first.details?.messageId, undefined, "recoverable results do not expose the internal message ID");
 	assert.equal(received.length, 1, "the broker accepted and forwarded the first operation");
 
 	const retry = await tool.execute(
 		"model-retry",
-		{ action: "send", to: "recipient", message: "one logical operation" },
+		{ action: "send", to: "recipient", message: "one logical operation", retryToken: retryToken as string },
 		undefined,
 		undefined,
 		context,
@@ -193,6 +197,41 @@ test("an identical tool retry after broker acceptance and acknowledgement loss i
 	assert.equal(attemptedIds[1], attemptedIds[0], "the model retry must retain the accepted operation identity");
 	assert.equal(retry.details?.messageId, attemptedIds[0]);
 	assert.equal(received.length, 1, "the broker must not forward a duplicate delivery");
+	const settledReplay = await tool.execute(
+		"settled-replay",
+		{ action: "send", to: "recipient", message: "one logical operation", retryToken: retryToken as string },
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(settledReplay.isError, true);
+	assert.match(settledReplay.content[0]?.text ?? "", /already settled/);
+	assert.equal(attemptedIds.length, 2, "a settled token must fail before the client send");
+});
+
+test("a byte-identical tokenless call remains distinct while the failed operation is retained", async () => {
+	const recipient = await connect("recipient");
+	recipient.on("message", (_from: SessionInfo, message: Message) => received.push(message));
+	const sender = await connect("sender");
+	const tool = registerTool(sender);
+	dropNextSenderAcknowledgement = true;
+	const params = { action: "send", to: "recipient", message: "identical intentional bytes" };
+
+	const first = await tool.execute("retained-a", params, undefined, undefined, context);
+	const retryToken = first.details?.retryToken;
+	assert.equal(typeof retryToken, "string");
+	const intentional = await tool.execute("fresh-b", params, undefined, undefined, context);
+	assert.equal(intentional.isError, false, intentional.content[0]?.text);
+	const retry = await tool.execute(
+		"claimed-a",
+		{ ...params, retryToken: retryToken as string },
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(retry.isError, false, retry.content[0]?.text);
+	assert.deepEqual(attemptedIds, [received[0]?.id, received[1]?.id, received[0]?.id]);
+	assert.equal(received.length, 2);
 });
 
 test("an intentional identical send after a successful result gets a fresh identity and delivery", async () => {

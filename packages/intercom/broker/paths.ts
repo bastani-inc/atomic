@@ -51,6 +51,11 @@ export function getBrokerDeliveredMessagesPath(agentDir: string = getAgentDir())
   return join(getIntercomDirPath(agentDir), "delivered-messages.sqlite");
 }
 
+/** Owner-only HMAC key paired with durable accepted-operation authority. */
+export function getBrokerDeliveredMessagesKeyPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "delivered-messages.key");
+}
+
 /**
  * Startup/diagnostic log for the detached broker process. The parent opens this file
  * and hands the descriptor to the child as stderr, so a broker that dies before it can

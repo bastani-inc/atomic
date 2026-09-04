@@ -1,11 +1,22 @@
-import { mkdirSync } from "node:fs";
+import { createHmac, randomBytes } from "node:crypto";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
 
 export const DELIVERED_MESSAGE_MAX_ENTRIES = 10_000;
-/** Upper bound for UTF-8 record content retained as acceptance authority. */
+/** Upper bound for persisted authority bytes (signatures are fixed-size HMAC digests). */
 export const DELIVERED_MESSAGE_MAX_BYTES = 64 * 1024 * 1024;
+const AUTHORITY_KEY_BYTES = 32;
+const AUTHORITY_DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
 
 export type DeliveredMessageMatch = "miss" | "match" | "conflict" | "uncertain" | "invalid";
 export type DeliveredMessageRecordResult = "recorded" | "match" | "conflict" | "uncertain" | "capacity" | "invalid";
@@ -54,6 +65,7 @@ function parseStoredMessage(row: Record<string, unknown> | undefined): Delivered
 	if (
 		(row.state !== "reserved" && row.state !== "accepted") ||
 		!validStoredString(row.signature) ||
+		!AUTHORITY_DIGEST_PATTERN.test(row.signature) ||
 		typeof row.delivered_at !== "number" ||
 		!Number.isSafeInteger(row.delivered_at) ||
 		row.delivered_at < 0 ||
@@ -80,17 +92,61 @@ function parseStoredMessage(row: Record<string, unknown> | undefined): Delivered
 	};
 }
 
+/** Authority-key path derived without introducing another user setting. */
+export function getDeliveredMessageAuthorityKeyPath(storagePath: string): string {
+	return storagePath.endsWith(".sqlite") ? `${storagePath.slice(0, -".sqlite".length)}.key` : `${storagePath}.key`;
+}
+
+function restrictMode(path: string, mode: number): void {
+	if (process.platform !== "win32") chmodSync(path, mode);
+}
+
+function restrictExistingAuthorityArtifacts(storagePath: string, keyPath: string): void {
+	for (const path of [storagePath, `${storagePath}-wal`, `${storagePath}-shm`, keyPath]) {
+		if (existsSync(path)) restrictMode(path, 0o600);
+	}
+}
+
+/**
+ * Prepare a paired database and key. A missing half of an existing pair is not
+ * recreated: accepted authority may have been lost, so startup must fail closed.
+ */
+function prepareDurableAuthority(storagePath: string): Buffer | undefined {
+	const directory = dirname(storagePath);
+	const keyPath = getDeliveredMessageAuthorityKeyPath(storagePath);
+	mkdirSync(directory, { recursive: true, mode: 0o700 });
+	restrictMode(directory, 0o700);
+	restrictExistingAuthorityArtifacts(storagePath, keyPath);
+	const databaseExists = existsSync(storagePath);
+	const keyExists = existsSync(keyPath);
+	if (databaseExists !== keyExists) return undefined;
+	if (!databaseExists) {
+		const key = randomBytes(AUTHORITY_KEY_BYTES);
+		writeFileSync(keyPath, key, { flag: "wx", mode: 0o600 });
+		const databaseDescriptor = openSync(storagePath, "wx", 0o600);
+		closeSync(databaseDescriptor);
+		restrictExistingAuthorityArtifacts(storagePath, keyPath);
+		return key;
+	}
+	const key = readFileSync(keyPath);
+	if (key.length !== AUTHORITY_KEY_BYTES) return undefined;
+	return key;
+}
+
 /**
  * Bounded durable operation authority. The broker uses a SQLite-backed instance;
- * tests may omit `storagePath` for an isolated in-memory authority. A reservation
- * is written before forwarding and promoted to accepted after a confirmed write.
- * Live accepted and uncertain records are never evicted: at either bound, new
- * acceptance is refused until TTL cleanup creates room.
+ * tests may omit `storagePath` for an isolated in-memory authority. Durable
+ * signatures are keyed SHA-256 HMACs, so message and attachment content never
+ * reaches SQLite and low-entropy payloads cannot be tested without the paired
+ * owner-only key file. A reservation is written before forwarding and promoted
+ * to accepted after a confirmed write.
  */
 export class DeliveredMessageCache {
 	private readonly delivered = new Map<string, DeliveredMessage>();
 	private retainedBytes = 0;
 	private readonly database?: SqliteDatabase;
+	private readonly authorityKey?: Buffer;
+	private readonly storagePath?: string;
 	private storageInvalid = false;
 
 	constructor(
@@ -100,9 +156,15 @@ export class DeliveredMessageCache {
 		private readonly maxBytes = DELIVERED_MESSAGE_MAX_BYTES,
 	) {
 		if (storagePath === undefined) return;
-		mkdirSync(dirname(storagePath), { recursive: true });
+		this.storagePath = storagePath;
 		let database: SqliteDatabase | undefined;
 		try {
+			const authorityKey = prepareDurableAuthority(storagePath);
+			if (authorityKey === undefined) {
+				this.storageInvalid = true;
+				return;
+			}
+			this.authorityKey = authorityKey;
 			database = new DatabaseSync(storagePath) as unknown as SqliteDatabase;
 			database.exec("PRAGMA busy_timeout = 5000");
 			database.exec("PRAGMA journal_mode = WAL");
@@ -122,8 +184,14 @@ export class DeliveredMessageCache {
 					ON delivered_messages(delivered_at);
 			`);
 			database.prepare("SELECT state, signature, delivered_at, target_identity FROM delivered_messages LIMIT 0").get();
+			restrictExistingAuthorityArtifacts(storagePath, getDeliveredMessageAuthorityKeyPath(storagePath));
 		} catch {
 			database?.close();
+			try {
+				restrictExistingAuthorityArtifacts(storagePath, getDeliveredMessageAuthorityKeyPath(storagePath));
+			} catch {
+				// Storage is already invalid; permission correction is best-effort here.
+			}
 			this.storageInvalid = true;
 			return;
 		}
@@ -131,7 +199,8 @@ export class DeliveredMessageCache {
 	}
 
 	lookup(messageId: string, signature: string, now = Date.now()): DeliveredMessageMatch {
-		return this.lookupEntry(messageId, signature, undefined, false, now);
+		const authority = this.signatureAuthority(signature);
+		return authority === undefined ? "invalid" : this.lookupEntry(messageId, authority, undefined, false, now);
 	}
 
 	lookupForTarget(
@@ -140,7 +209,8 @@ export class DeliveredMessageCache {
 		targetIdentity: string,
 		now = Date.now(),
 	): DeliveredMessageMatch {
-		return this.lookupEntry(messageId, signature, targetIdentity, true, now);
+		const authority = this.signatureAuthority(signature);
+		return authority === undefined ? "invalid" : this.lookupEntry(messageId, authority, targetIdentity, true, now);
 	}
 
 	lookupQuestionTarget(
@@ -149,7 +219,8 @@ export class DeliveredMessageCache {
 		senderGroupIdentity: string,
 		now = Date.now(),
 	): string | undefined {
-		if (this.storageInvalid) return undefined;
+		const authority = this.signatureAuthority(signature);
+		if (authority === undefined) return undefined;
 		this.prune(now);
 		const delivered = this.read(messageId);
 		if (
@@ -157,7 +228,7 @@ export class DeliveredMessageCache {
 			delivered === "invalid" ||
 			delivered.state !== "accepted" ||
 			now - delivered.deliveredAt > this.ttlMs ||
-			delivered.signature !== signature ||
+			delivered.signature !== authority ||
 			delivered.questionRoute?.senderGroupIdentity !== senderGroupIdentity
 		) {
 			return undefined;
@@ -171,7 +242,7 @@ export class DeliveredMessageCache {
 		now = Date.now(),
 		targetIdentity?: string,
 	): DeliveredMessageRecordResult {
-		return this.recordEntry(messageId, { state: "accepted", deliveredAt: now, signature, targetIdentity });
+		return this.recordWithSignature(messageId, { state: "accepted", deliveredAt: now, signature, targetIdentity });
 	}
 
 	recordQuestion(
@@ -181,7 +252,13 @@ export class DeliveredMessageCache {
 		now = Date.now(),
 		targetIdentity?: string,
 	): DeliveredMessageRecordResult {
-		return this.recordEntry(messageId, { state: "accepted", deliveredAt: now, signature, targetIdentity, questionRoute });
+		return this.recordWithSignature(messageId, {
+			state: "accepted",
+			deliveredAt: now,
+			signature,
+			targetIdentity,
+			questionRoute,
+		});
 	}
 
 	reserve(
@@ -190,7 +267,7 @@ export class DeliveredMessageCache {
 		now = Date.now(),
 		targetIdentity?: string,
 	): DeliveredMessageRecordResult {
-		return this.recordEntry(messageId, { state: "reserved", deliveredAt: now, signature, targetIdentity });
+		return this.recordWithSignature(messageId, { state: "reserved", deliveredAt: now, signature, targetIdentity });
 	}
 
 	reserveQuestion(
@@ -200,14 +277,21 @@ export class DeliveredMessageCache {
 		now = Date.now(),
 		targetIdentity?: string,
 	): DeliveredMessageRecordResult {
-		return this.recordEntry(messageId, { state: "reserved", deliveredAt: now, signature, targetIdentity, questionRoute });
+		return this.recordWithSignature(messageId, {
+			state: "reserved",
+			deliveredAt: now,
+			signature,
+			targetIdentity,
+			questionRoute,
+		});
 	}
 
 	accept(messageId: string, signature: string, targetIdentity?: string): DeliveredMessageAcceptResult {
-		if (this.storageInvalid) return "invalid";
+		const authority = this.signatureAuthority(signature);
+		if (authority === undefined) return "invalid";
 		const existing = this.read(messageId);
 		if (existing === undefined || existing === "invalid") return "invalid";
-		if (existing.signature !== signature || existing.targetIdentity !== targetIdentity) return "conflict";
+		if (existing.signature !== authority || existing.targetIdentity !== targetIdentity) return "conflict";
 		if (existing.state === "accepted") return "accepted";
 		if (this.database === undefined) {
 			existing.state = "accepted";
@@ -215,16 +299,18 @@ export class DeliveredMessageCache {
 		}
 		const updated = this.database
 			.prepare("UPDATE delivered_messages SET state = 'accepted' WHERE message_id = ? AND signature = ?")
-			.run(messageId, signature);
+			.run(messageId, authority);
+		this.restrictArtifacts();
 		return Number(updated.changes) === 1 ? "accepted" : "invalid";
 	}
 
 	/** Remove only the exact pre-forward reservation after a proven write failure. */
 	forget(messageId: string, signature: string): void {
-		if (this.storageInvalid) return;
+		const authority = this.signatureAuthority(signature);
+		if (authority === undefined) return;
 		if (this.database === undefined) {
 			const delivered = this.delivered.get(messageId);
-			if (delivered?.signature === signature) {
+			if (delivered?.signature === authority) {
 				this.retainedBytes -= entryByteSize(messageId, delivered);
 				this.delivered.delete(messageId);
 			}
@@ -232,11 +318,27 @@ export class DeliveredMessageCache {
 		}
 		this.database
 			.prepare("DELETE FROM delivered_messages WHERE message_id = ? AND signature = ?")
-			.run(messageId, signature);
+			.run(messageId, authority);
+		this.restrictArtifacts();
 	}
 
 	close(): void {
+		this.restrictArtifacts();
 		this.database?.close();
+		this.restrictArtifacts();
+	}
+
+	private signatureAuthority(signature: string): string | undefined {
+		if (this.storageInvalid || !validStoredString(signature)) return undefined;
+		if (this.storagePath === undefined) return signature;
+		if (this.authorityKey === undefined) return undefined;
+		return createHmac("sha256", this.authorityKey).update(signature).digest("hex");
+	}
+
+	private recordWithSignature(messageId: string, delivered: DeliveredMessage): DeliveredMessageRecordResult {
+		const authority = this.signatureAuthority(delivered.signature);
+		if (authority === undefined) return "invalid";
+		return this.recordEntry(messageId, { ...delivered, signature: authority });
 	}
 
 	private lookupEntry(
@@ -341,6 +443,7 @@ export class DeliveredMessageCache {
 					delivered.questionRoute?.senderGroupIdentity ?? null,
 				);
 			database.exec("COMMIT");
+			this.restrictArtifacts();
 			return "recorded";
 		} catch (error) {
 			try {
@@ -391,5 +494,11 @@ export class DeliveredMessageCache {
 		this.database
 			?.prepare("DELETE FROM delivered_messages WHERE typeof(delivered_at) = 'integer' AND ? - delivered_at > ?")
 			.run(now, this.ttlMs);
+		this.restrictArtifacts();
+	}
+
+	private restrictArtifacts(): void {
+		if (this.storagePath === undefined || this.storageInvalid) return;
+		restrictExistingAuthorityArtifacts(this.storagePath, getDeliveredMessageAuthorityKeyPath(this.storagePath));
 	}
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -137,6 +137,20 @@ test("concurrent durable authorities serialize acceptance without losing records
 	}
 });
 
+test("durable byte accounting charges fixed digest authority rather than plaintext length", () => {
+	const dir = mkdtempSync(join(tmpdir(), "intercom-delivered-digest-bytes-"));
+	const path = join(dir, "accepted.sqlite");
+	try {
+		const cache = new DeliveredMessageCache(100, 3, path, 70);
+		assert.equal(cache.record("one", "x".repeat(1_000_000), 1), "recorded");
+		assert.equal(cache.record("second", "small", 2), "capacity");
+		assert.equal(cache.lookup("one", "x".repeat(1_000_000), 2), "match");
+		cache.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("durable entry and byte pressure preserve existing authority and refuse new acceptance", () => {
 	const dir = mkdtempSync(join(tmpdir(), "intercom-delivered-pressure-"));
 	const path = join(dir, "accepted.sqlite");
@@ -159,26 +173,43 @@ test("malformed durable rows cannot authorize dedupe or question-route rebinding
 	const dir = mkdtempSync(join(tmpdir(), "intercom-delivered-malformed-"));
 	const path = join(dir, "accepted.sqlite");
 	try {
+		const initialized = new DeliveredMessageCache(100, 3, path);
+		initialized.close();
 		const database = new DatabaseSync(path);
 		database.exec(`
-			CREATE TABLE delivered_messages (
-				message_id TEXT PRIMARY KEY NOT NULL,
-				signature,
-				delivered_at,
-				target_identity,
-				question_target_session_id,
-				question_sender_group_identity
-			);
-			INSERT INTO delivered_messages VALUES ('malformed', 42, 1, NULL, 'target', NULL);
+			INSERT INTO delivered_messages (
+				message_id, state, signature, delivered_at, target_identity,
+				question_target_session_id, question_sender_group_identity
+			) VALUES ('malformed', 'accepted', 'not-a-fixed-digest', 1, NULL, 'target', NULL);
 		`);
 		database.close();
 		const cache = new DeliveredMessageCache(100, 3, path);
-		assert.equal(cache.lookup("malformed", "42", 2), "invalid");
-		assert.equal(cache.record("malformed", "42", 2), "invalid");
-		assert.equal(cache.lookupQuestionTarget("malformed", "42", "groups", 2), undefined);
+		assert.equal(cache.lookup("malformed", "any signature", 2), "invalid");
+		assert.equal(cache.record("malformed", "any signature", 2), "invalid");
+		assert.equal(cache.lookupQuestionTarget("malformed", "any signature", "groups", 2), undefined);
 		cache.close();
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("missing or malformed authority pairs fail closed without recreating lost state", () => {
+	for (const state of ["database-only", "key-only", "malformed-key"] as const) {
+		const dir = mkdtempSync(join(tmpdir(), `intercom-delivered-${state}-`));
+		const path = join(dir, "accepted.sqlite");
+		const keyPath = join(dir, "accepted.key");
+		try {
+			if (state !== "key-only") writeFileSync(path, "");
+			if (state !== "database-only") writeFileSync(keyPath, state === "malformed-key" ? "short" : Buffer.alloc(32));
+			const cache = new DeliveredMessageCache(100, 3, path);
+			assert.equal(cache.lookup("unknown", "signature", 1), "invalid");
+			assert.equal(cache.record("new", "signature", 1), "invalid");
+			assert.equal(existsSync(path), state !== "key-only", "a missing database is never silently recreated");
+			assert.equal(existsSync(keyPath), state !== "database-only", "a missing key is never silently recreated");
+			cache.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	}
 });
 
@@ -187,6 +218,7 @@ test("corrupt durable acceptance storage fails closed instead of starting empty"
 	const path = join(dir, "accepted.sqlite");
 	try {
 		writeFileSync(path, "truncated-not-a-database");
+		writeFileSync(join(dir, "accepted.key"), Buffer.alloc(32));
 		const cache = new DeliveredMessageCache(100, 3, path);
 		assert.equal(cache.lookup("unknown", "signature", 1), "invalid");
 		assert.equal(cache.record("new", "signature", 1), "invalid");
@@ -207,6 +239,52 @@ test("durable storage prunes stale records and reopens their bounded capacity", 
 		const replacement = new DeliveredMessageCache(100, 1, path);
 		assert.equal(replacement.record("fresh", "new", 101), "recorded");
 		assert.equal(replacement.lookup("stale", "old", 101), "miss");
+		replacement.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("durable authority stores only a keyed fixed digest and owner-only artifacts", () => {
+	const dir = mkdtempSync(join(tmpdir(), "intercom-delivered-private-"));
+	const intercomDir = join(dir, "intercom");
+	const path = join(intercomDir, "delivered-messages.sqlite");
+	const keyPath = join(intercomDir, "delivered-messages.key");
+	const signature = buildSendSignature("recipient", {
+		text: "TOP-SECRET",
+		attachments: [{ type: "context", name: "credentials", content: "API_KEY=secret" }],
+	});
+	try {
+		const cache = new DeliveredMessageCache(100, 3, path);
+		assert.equal(cache.record("sensitive", signature, 1, "recipient-return"), "recorded");
+		const database = new DatabaseSync(path);
+		const row = database.prepare("SELECT signature FROM delivered_messages WHERE message_id = 'sensitive'").get();
+		assert.match(String(row?.signature), /^[a-f0-9]{64}$/);
+		database.close();
+		for (const artifact of [path, `${path}-wal`, `${path}-shm`, keyPath]) {
+			if (!existsSync(artifact)) continue;
+			const bytes = readFileSync(artifact);
+			assert.equal(bytes.includes("TOP-SECRET"), false, `${artifact} must not persist message text`);
+			assert.equal(bytes.includes("API_KEY=secret"), false, `${artifact} must not persist attachment content`);
+			if (process.platform !== "win32") assert.equal(statSync(artifact).mode & 0o777, 0o600);
+		}
+		assert.equal(existsSync(keyPath), true);
+		if (process.platform !== "win32") assert.equal(statSync(intercomDir).mode & 0o777, 0o700);
+		cache.close();
+		if (process.platform !== "win32") {
+			chmodSync(intercomDir, 0o755);
+			chmodSync(path, 0o644);
+			chmodSync(keyPath, 0o644);
+		}
+
+		const replacement = new DeliveredMessageCache(100, 3, path);
+		assert.equal(replacement.lookupForTarget("sensitive", signature, "recipient-return", 2), "match");
+		assert.equal(replacement.lookupForTarget("sensitive", `${signature}changed`, "recipient-return", 2), "conflict");
+		if (process.platform !== "win32") {
+			assert.equal(statSync(intercomDir).mode & 0o777, 0o700);
+			assert.equal(statSync(path).mode & 0o777, 0o600);
+			assert.equal(statSync(keyPath).mode & 0o777, 0o600);
+		}
 		replacement.close();
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

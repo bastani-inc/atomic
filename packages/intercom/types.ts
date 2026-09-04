@@ -179,4 +179,4 @@ export type BrokerMessage =
   | { type: "error"; error: string }
   | { type: "delivered"; messageId: string; attemptId?: string }
 	| { type: "queued"; messageId: string; attemptId?: string; target: string; position: number }
-	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict"; attemptId?: string };
+	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict" | "session_not_found"; attemptId?: string };

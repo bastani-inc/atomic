@@ -44,7 +44,7 @@ export interface SendResult {
   delivered: boolean;
   queued?: boolean;
   reason?: string;
-	reasonCode?: "message_id_conflict";
+	reasonCode?: "message_id_conflict" | "session_not_found";
 	target?: string;
   position?: number;
   /** D4 speculative accept: the sticky target is not in the run's persisted possible-stage set. */
@@ -579,7 +579,7 @@ export class IntercomClient extends EventEmitter {
 			typeof messageId !== "string" ||
 			(attemptId !== undefined && typeof attemptId !== "string") ||
 			typeof reason !== "string" ||
-			(reasonCode !== undefined && reasonCode !== "message_id_conflict")
+			(reasonCode !== undefined && reasonCode !== "message_id_conflict" && reasonCode !== "session_not_found")
 		) {
 			throw new Error("Invalid delivery_failed message");
 		}

@@ -2,7 +2,7 @@
 // only position from which the stderr cap covers the other modules' own initialization.
 import "./bounded-stderr-install.js";
 import net from "net";
-import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
+import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { createMessageReader } from "./framing.js";
 import { writeMessageIfOpen, writeMessageWithOutcome } from "./socket-writes.js";
@@ -233,7 +233,8 @@ class IntercomBroker {
   private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
 
   constructor() {
-    mkdirSync(INTERCOM_DIR, { recursive: true });
+    mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     if (process.platform !== "win32") {
       try {
         unlinkSync(SOCKET_PATH);

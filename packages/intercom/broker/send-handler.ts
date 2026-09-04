@@ -217,7 +217,13 @@ export function handleBrokerSend(
   if (resolution.kind === "resolved") {
     const target = sessions.get(resolution.session.id);
     if (!target) {
-      write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
+      write(socket, {
+        type: "delivery_failed",
+        messageId: message.id,
+        attemptId,
+        reason: "Session not found",
+        ...(requirePendingReply ? { reasonCode: "session_not_found" as const } : {}),
+      });
       return;
     }
     if (target.info.id === fromSession.info.id) {
@@ -358,7 +364,13 @@ export function handleBrokerSend(
       : ({ type: "message", from: fromSession.info, message } as const);
     const failDelivery = (): void => {
 	  if (reservation === "recorded") deliveredMessages.forget(message.id, signature);
-      write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
+      write(socket, {
+        type: "delivery_failed",
+        messageId: message.id,
+        attemptId,
+        reason: "Session not found",
+        ...(requirePendingReply ? { reasonCode: "session_not_found" as const } : {}),
+      });
     };
 	const reservation = message.expectsReply === true
 		? deliveredMessages.reserveQuestion(
@@ -476,5 +488,8 @@ export function handleBrokerSend(
     messageId: message.id,
     attemptId,
     reason: sessionTargetFailureReason(clientMessage.to, resolution),
+		...(requirePendingReply && resolution.kind === "not_found"
+			? { reasonCode: "session_not_found" as const }
+			: {}),
   });
 }
