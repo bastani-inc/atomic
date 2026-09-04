@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 import {
+	collectFeedbackDiagnostics,
+	type FeedbackDiagnostics,
 	type DraftValidationError,
 	FEEDBACK_REPOSITORY,
 	formatIssueBody,
@@ -30,9 +32,20 @@ const feedbackPrepareParameters = Type.Object({
 	repro: Type.Optional(Type.String()),
 	expected: Type.Optional(Type.String()),
 	version: Type.Optional(Type.String()),
+	extensions: Type.Optional(Type.String()),
+	isolation: Type.Optional(Type.String()),
+	evidence: Type.Optional(Type.String()),
+	unknowns: Type.Optional(Type.String()),
+	debuggerPaths: Type.Optional(Type.String()),
 	change: Type.Optional(Type.String()),
 	why: Type.Optional(Type.String()),
 	how: Type.Optional(Type.String()),
+});
+
+const feedbackDiagnosticsParameters = Type.Object({
+	report: Type.String(),
+	phase: Type.Union([Type.Literal("before"), Type.Literal("after")]),
+	since: Type.Optional(Type.String()),
 });
 
 export default function feedback(pi: ExtensionAPI): void {
@@ -65,6 +78,21 @@ export default function feedback(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerTool<typeof feedbackDiagnosticsParameters, FeedbackDiagnostics>({
+		name: "feedback_collect_diagnostics",
+		label: "Collect feedback diagnostics",
+		description: "Collect a bounded, privacy-scrubbed diagnostic snapshot without modifying the worktree.",
+		parameters: feedbackDiagnosticsParameters,
+		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+			const details = await collectFeedbackDiagnostics(params, {
+				ctx,
+				loadedExtensions: pi.getLoadedExtensions?.() ?? [],
+				exec: (command, args, options) => pi.exec(command, args, { ...options, signal }),
+			});
+			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+		},
+	});
+
 	pi.registerTool<typeof feedbackPrepareParameters, FeedbackPrepareDetails>({
 		name: "feedback_prepare_issue",
 		label: "Prepare feedback issue",
@@ -80,6 +108,11 @@ export default function feedback(pi: ExtensionAPI): void {
 							repro: params.repro ?? "",
 							expected: params.expected,
 							version: params.version,
+							extensions: params.extensions,
+							isolation: params.isolation?.trim() ? params.isolation : "Not tested without extensions",
+							evidence: params.evidence,
+							unknowns: params.unknowns,
+							debuggerPaths: params.debuggerPaths,
 						}
 					: {
 							kind: "enhancement",

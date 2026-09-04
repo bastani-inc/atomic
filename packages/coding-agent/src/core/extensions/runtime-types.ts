@@ -133,6 +133,7 @@ export interface ExtensionRuntimeState {
 	getPendingFlagDefault?: (ownerPath: string, name: string) => boolean | string | undefined;
 	getAllToolsAfterRegistration?: (extension: Extension) => ToolInfo[];
 	getCommandsAfterRegistration?: (extension: Extension) => SlashCommandInfo[];
+	getLoadedExtensions?: () => readonly import("./api-types.ts").LoadedExtensionInfo[];
 	/** Throws when this extension instance is stale after runtime replacement. */
 	getActiveToolsAfterRegistration?: (extension: Extension) => string[];
 	setActiveToolsAfterRegistration?: (extension: Extension, toolNames: string[]) => boolean;

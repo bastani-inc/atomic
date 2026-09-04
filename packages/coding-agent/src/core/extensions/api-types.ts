@@ -9,6 +9,7 @@ import type { CustomMessage } from "../messages.ts";
 import type { ResolvedResource } from "../package-manager.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "../resource-loader.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
+import type { SourceInfo } from "../source-info.ts";
 import type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
@@ -78,6 +79,11 @@ import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
 /** Handler function type for events */
 // biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
 export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
+
+export interface LoadedExtensionInfo {
+	readonly name: string;
+	readonly configurationOrigin: SourceInfo["configurationOrigin"];
+}
 
 /**
  * ExtensionAPI passed to extension factory functions.
@@ -255,6 +261,9 @@ export interface ExtensionAPI {
 
 	/** Get available slash commands in the current session. */
 	getCommands(): SlashCommandInfo[];
+
+	/** Read-only snapshot of successfully loaded extensions for diagnostics. */
+	getLoadedExtensions?(): readonly LoadedExtensionInfo[];
 
 	// =========================================================================
 	// Model and Thinking Level

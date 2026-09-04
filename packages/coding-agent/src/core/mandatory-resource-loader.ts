@@ -1,5 +1,5 @@
 import { getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
-import { getExtensionRuntimeEventBus, loadExtensions } from "./extensions/loader.ts";
+import { getExtensionRuntimeEventBus, loadExtensions, publishLoadedExtensions } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
 import type {
@@ -36,6 +36,7 @@ async function restoreMandatoryExtensions(target: LoadExtensionsResult, cwd: str
 		const detail = loaded.errors.map(({ error }) => error).join("; ") || "extension did not register intercom";
 		throw new Error(`Mandatory bundled Intercom is unavailable: ${detail}`);
 	}
+	publishLoadedExtensions(restored.runtime, restored.extensions);
 	return restored;
 }
 
