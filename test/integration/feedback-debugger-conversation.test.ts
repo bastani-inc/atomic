@@ -9,6 +9,7 @@ import { createHarness, getMessageText, type Harness } from "../../packages/codi
 import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.ts";
 import feedback from "../../packages/feedback/index.ts";
 import { spawnSyncCollect } from "../helpers/runtime.ts";
+import { assistantMessages } from "./feedback-conversation-harness.ts";
 
 const cleanups: Array<() => void> = [];
 const subagentParameters = Type.Object({
@@ -99,7 +100,14 @@ function responses(secret: string, expectSubagent: boolean): FauxResponseStep[] 
 			}),
 			{ stopReason: "toolUse" },
 		),
-		fauxAssistantMessage("Editable draft; please request edits or approve."),
+		(context) => {
+			const result = context.messages.findLast(
+				(message) => message.role === "toolResult" && message.toolName === "feedback_prepare_issue",
+			);
+			return fauxAssistantMessage(
+				`${getMessageText(result)}\n\nThe draft remains editable. Would you like edits or approval?`,
+			);
+		},
 	];
 }
 describe("feedback bug investigation", () => {
@@ -153,12 +161,13 @@ describe("feedback bug investigation", () => {
 		expect(readFileSync(join(root, "untracked.txt"), "utf8")).toBe("untracked user work\n");
 		expect(git(root, "status", "--porcelain")).toContain("tracked.txt");
 		expect(git(root, "status", "--porcelain")).toContain("untracked.txt");
-		const draft = harness.session.messages.map(getMessageText).join("\n");
+		const draft = assistantMessages(harness).at(-1);
 		expect(draft).toContain("Kind: bug");
 		expect(draft).toContain("**Reproduction without extensions:** Not tested without extensions");
 		expect(draft).toContain("**Extension activity:** user-extension");
 		expect(draft).toContain("**Supported evidence:** Investigation completed without a root cause");
 		expect(draft).toContain("**Unknowns:** Root cause remains unknown");
+		expect(draft).toContain("Would you like edits or approval?");
 		expect(draft).toContain("**Debugger-created paths:** debugger-note.txt");
 	});
 	it("records forbidden subagent overrides so the absence check is live", async () => {
@@ -202,8 +211,10 @@ describe("feedback bug investigation", () => {
 			harness.setResponses(responses("no-secret", false));
 			await harness.session.prompt("draft bug feedback");
 			expect(calls).toHaveLength(behavior === "absent" ? 0 : 1);
-			expect(harness.session.messages.map(getMessageText).join("\n")).toContain("Root cause remains unknown");
-			expect(harness.session.messages.map(getMessageText).join("\n")).toContain("Editable draft");
+			const draft = assistantMessages(harness).at(-1);
+			expect(draft).toContain("Root cause remains unknown");
+			expect(draft).toContain("The draft remains editable.");
+			expect(draft).toContain("Would you like edits or approval?");
 			const diagnostics = diagnosticResults(harness).at(-1)?.details as {
 				recentFailures: string[];
 				worktree: { paths: string[] };

@@ -1,7 +1,11 @@
 import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getMessageText } from "../../packages/coding-agent/test/suite/harness.ts";
-import { createFeedbackConversationHarness, transcriptText } from "./feedback-conversation-harness.ts";
+import {
+	assistantMessages,
+	createFeedbackConversationHarness,
+	transcriptText,
+} from "./feedback-conversation-harness.ts";
 
 const cleanups: Array<() => void> = [];
 
@@ -66,11 +70,11 @@ describe("feedback follow-up conversation", () => {
 			(message) => message.role === "toolResult" && message.toolName === "feedback_prepare_issue",
 		);
 		expect(prepared).toHaveLength(2);
-		const rendered = transcriptText(harness);
-		expect(rendered).toContain("## Revised feedback draft");
-		expect(rendered).toContain("Add keyboard navigation without exposing [REDACTED]");
-		expect(rendered).toContain("Would you like edits or approval?");
-		expect(rendered).not.toContain(secret);
+		const revisedDraft = assistantMessages(harness).at(-1);
+		expect(revisedDraft).toContain("## Revised feedback draft");
+		expect(revisedDraft).toContain("Add keyboard navigation without exposing [REDACTED]");
+		expect(revisedDraft).toContain("Would you like edits or approval?");
+		expect(transcriptText(harness)).not.toContain(secret);
 		expect(fetcher).not.toHaveBeenCalled();
 	});
 
@@ -104,7 +108,8 @@ describe("feedback follow-up conversation", () => {
 		harness.setResponses(prepareThenDisplay());
 		await harness.session.prompt("/feedback Add keyboard navigation");
 		await settleTurn(harness);
-		const displayedDraft = transcriptText(harness);
+		const displayedDraft = assistantMessages(harness).at(-1);
+		expect(displayedDraft).toBeDefined();
 
 		harness.setResponses([
 			async () => {
@@ -119,7 +124,7 @@ describe("feedback follow-up conversation", () => {
 			stopReason: "error",
 			errorMessage: "feedback model provider unavailable",
 		});
-		expect(transcriptText(harness)).toContain(displayedDraft);
+		expect(assistantMessages(harness)).toContain(displayedDraft);
 		expect(
 			harness.session.messages.some(
 				(message) => message.role === "toolResult" && message.toolName === "feedback_submit_issue",
@@ -138,7 +143,7 @@ describe("feedback follow-up conversation", () => {
 		expect(getMessageText(harness.session.messages.at(-1))).toBe(
 			"The draft remains editable. Please retry the revision or request different edits.",
 		);
-		expect(transcriptText(harness)).toContain(displayedDraft);
+		expect(assistantMessages(harness)).toContain(displayedDraft);
 		expect(fetcher).not.toHaveBeenCalled();
 	});
 
@@ -150,7 +155,7 @@ describe("feedback follow-up conversation", () => {
 		await harness.session.prompt("/feedback The keyboard experience");
 		await settleTurn(harness);
 		expect(harness.session.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
-		expect(transcriptText(harness)).toContain("Is this a bug you observed or a change you would like?");
+		expect(assistantMessages(harness).at(-1)).toContain("Is this a bug you observed or a change you would like?");
 		expect(harness.session.messages.some((message) => message.role === "toolResult")).toBe(false);
 
 		harness.setResponses(prepareThenDisplay());
@@ -160,6 +165,6 @@ describe("feedback follow-up conversation", () => {
 			(message) => message.role === "toolResult" && message.toolName === "feedback_prepare_issue",
 		);
 		expect(prepared).toHaveLength(1);
-		expect(transcriptText(harness)).toContain("Kind: enhancement");
+		expect(assistantMessages(harness).at(-1)).toContain("Kind: enhancement");
 	});
 });

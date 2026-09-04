@@ -1,7 +1,11 @@
 import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getMessageText } from "../../packages/coding-agent/test/suite/harness.ts";
-import { createFeedbackConversationHarness, transcriptText } from "./feedback-conversation-harness.ts";
+import {
+	assistantMessages,
+	createFeedbackConversationHarness,
+	transcriptText,
+} from "./feedback-conversation-harness.ts";
 
 const cleanups: Array<() => void> = [];
 const token = "test-token-that-must-not-appear";
@@ -83,7 +87,7 @@ describe("feedback posting conversation", () => {
 		expect(fetcher).toHaveBeenCalledTimes(1);
 		const [, init] = fetcher.mock.calls[0] ?? [];
 		expect(JSON.parse(String(init?.body))).toMatchObject({ labels: ["enhancement"], title: draft.title, body });
-		expect(transcriptText(harness)).toContain("Posted: https://github.com/bastani-inc/atomic/issues/42");
+		expect(assistantMessages(harness).at(-1)).toContain("Posted: https://github.com/bastani-inc/atomic/issues/42");
 		expect(transcriptText(harness)).not.toContain(token);
 	});
 
@@ -94,7 +98,8 @@ describe("feedback posting conversation", () => {
 		);
 		vi.stubGlobal("fetch", fetcher);
 		const harness = await displayedDraft();
-		const reviewedDraft = transcriptText(harness);
+		const reviewedDraft = assistantMessages(harness).at(-1);
+		expect(reviewedDraft).toBeDefined();
 		harness.setResponses([
 			fauxAssistantMessage(
 				fauxToolCall("feedback_submit_issue", { kind: "enhancement", title: draft.title, body }),
@@ -117,11 +122,12 @@ describe("feedback posting conversation", () => {
 		if (result?.role !== "toolResult") throw new Error("expected feedback submission result");
 		expect(result.isError).toBe(true);
 		expect(getMessageText(result)).toBe("GitHub authentication failed. The reviewed draft was not posted.");
-		const rendered = transcriptText(harness);
-		expect(rendered).toContain(reviewedDraft);
-		expect(rendered).toContain("draft remains editable; you can retry when ready");
-		expect(rendered).not.toContain("https://github.com/bastani-inc/atomic/issues/");
-		expect(rendered).not.toContain(token);
+		const renderedError = assistantMessages(harness).at(-1);
+		expect(renderedError).toContain("GitHub authentication failed. The reviewed draft was not posted.");
+		expect(renderedError).toContain("draft remains editable; you can retry when ready");
+		expect(assistantMessages(harness)).toContain(reviewedDraft);
+		expect(transcriptText(harness)).not.toContain("https://github.com/bastani-inc/atomic/issues/");
+		expect(transcriptText(harness)).not.toContain(token);
 		expect(harness.session.messages.at(-1)?.role).toBe("assistant");
 	});
 });
