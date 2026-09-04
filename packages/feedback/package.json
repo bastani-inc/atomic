@@ -2,7 +2,7 @@
   "name": "@bastani/feedback",
   "version": "0.0.0",
   "private": true,
-  "description": "Pure feedback issue drafting, validation, formatting, and privacy utilities for Atomic.",
+  "description": "Safe conversational feedback drafting for Atomic.",
   "contributors": [
     "Norin Lavaee",
     "Alex Lavaee"
@@ -12,10 +12,30 @@
   "engines": {
     "bun": ">=1.4.0"
   },
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./index.ts",
+  "types": "./index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./index.ts",
+    "./core": "./src/index.ts"
   },
-  "files": ["src/**/*.ts", "README.md", "CHANGELOG.md"]
+  "files": ["*.ts", "src/**/*.ts", "skills/**/*", "README.md", "CHANGELOG.md"],
+  "atomic": {
+    "extensions": ["./index.ts"],
+    "skills": ["./skills"]
+  },
+  "pi": {
+    "extensions": ["./index.ts"],
+    "skills": ["./skills"]
+  },
+  "peerDependencies": {
+    "@bastani/atomic": "*"
+  },
+  "peerDependenciesMeta": {
+    "@bastani/atomic": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "typebox": "^1.3.7"
+  }
 }
