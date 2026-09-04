@@ -7,7 +7,12 @@ import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/in
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 
-function session(id: string, name: string, socket: net.Socket): BrokerConnectedSession {
+function session(
+	id: string,
+	name: string,
+	socket: net.Socket,
+	registrationReturnAddress?: string,
+): BrokerConnectedSession {
 	const info: SessionInfo = {
 		id,
 		name,
@@ -17,20 +22,25 @@ function session(id: string, name: string, socket: net.Socket): BrokerConnectedS
 		startedAt: 1,
 		lastActivity: 1,
 	};
-	return { socket, info };
+	return {
+		socket,
+		info,
+		...(registrationReturnAddress === undefined ? {} : { registrationReturnAddress }),
+	};
 }
 
 function message(id: string, text = "hello"): Message {
 	return { id, timestamp: 1, content: { text } };
 }
 
-test("broker wire send dedupes identical retries and rejects target, payload, or sender conflicts with attempt IDs", () => {
+test("broker wire send dedupes a reconnect and rejects target, payload, or distinct-sender conflicts", () => {
 	const senderOne = {} as net.Socket;
+	const reconnectedSender = {} as net.Socket;
 	const senderTwo = {} as net.Socket;
 	const recipient = {} as net.Socket;
 	const other = {} as net.Socket;
 	const sessions = new Map<string, BrokerConnectedSession>([
-		["sender-1", session("sender-1", "sender", senderOne)],
+		["sender-1", session("sender-1", "sender", senderOne, "sender-return-1")],
 		["recipient", session("recipient", "recipient", recipient)],
 		["other", session("other", "other", other)],
 	]);
@@ -91,10 +101,35 @@ test("broker wire send dedupes identical retries and rejects target, payload, or
 	assert.equal(writes.filter((entry) => entry.socket === other && entry.message.type === "message").length, 0);
 
 	sessions.delete("sender-1");
-	sessions.set("sender-2", session("sender-2", "sender", senderTwo));
+	sessions.set("sender-reconnected", session("sender-reconnected", "sender", reconnectedSender, "sender-return-1"));
+	handleBrokerSend(
+		reconnectedSender,
+		{ type: "send", to: "recipient", message: message("stable"), attemptId: "attempt-5" },
+		"sender-reconnected",
+		sessions,
+		cache,
+		write,
+	);
+	assert.equal(
+		writes.filter(
+			(entry) =>
+				entry.socket === reconnectedSender &&
+				entry.message.type === "delivered" &&
+				entry.message.attemptId === "attempt-5",
+		).length,
+		1,
+	);
+	assert.equal(
+		writes.filter((entry) => entry.socket === recipient && entry.message.type === "message").length,
+		1,
+		"a reconnected sender receives the retained acknowledgment without duplicate delivery",
+	);
+
+	sessions.delete("sender-reconnected");
+	sessions.set("sender-2", session("sender-2", "sender", senderTwo, "sender-return-2"));
 	handleBrokerSend(
 		senderTwo,
-		{ type: "send", to: "recipient", message: message("stable"), attemptId: "attempt-5" },
+		{ type: "send", to: "recipient", message: message("stable"), attemptId: "attempt-6" },
 		"sender-2",
 		sessions,
 		cache,
@@ -104,14 +139,14 @@ test("broker wire send dedupes identical retries and rejects target, payload, or
 		(entry) =>
 			entry.socket === senderTwo &&
 			entry.message.type === "delivery_failed" &&
-			entry.message.attemptId === "attempt-5",
+			entry.message.attemptId === "attempt-6",
 	)?.message;
 	assert.equal(senderConflict?.type, "delivery_failed");
 	if (senderConflict?.type === "delivery_failed") assert.equal(senderConflict.reasonCode, "message_id_conflict");
 	assert.equal(
 		writes.filter((entry) => entry.socket === recipient && entry.message.type === "message").length,
 		1,
-		"a replacement sender cannot claim another sender's delivered message ID",
+		"a different return identity cannot claim another sender's delivered message ID",
 	);
 });
 

@@ -124,7 +124,8 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
     return;
   }
-	const signature = buildMessageSendSignature(clientMessage.to, message, fromSession.info.id);
+	const senderIdentity = fromSession.registrationReturnAddress ?? fromSession.info.id;
+	const signature = buildMessageSendSignature(clientMessage.to, message, senderIdentity);
 	const deliveredMatch = deliveredMessages.lookup(message.id, signature);
 	if (deliveredMatch === "match") {
 		write(socket, { type: "delivered", messageId: message.id, attemptId });

@@ -24,11 +24,12 @@ export interface RetryIdentityAttempt {
 	readonly key: string;
 	readonly messageId: string;
 	readonly reuseCount: number;
+	readonly expiresAt: number;
 }
 
 interface RetryIdentityReservation {
-	readonly messageId: string;
 	readonly expiresAt: number;
+	readonly messageId: string;
 	reuseCount: number;
 }
 
@@ -78,26 +79,36 @@ export class RetryIdentityReservations {
 		this.prune(now);
 		const key = operationKey(input);
 		const reservation = this.reservations.get(key);
+		// A retry claims the retained identity while it is in flight. Leaving it in
+		// the map would let a concurrent intentional call reuse the same message ID.
 		if (reservation !== undefined && reservation.reuseCount < this.maxReuses) {
+			this.reservations.delete(key);
 			reservation.reuseCount += 1;
-			return { key, messageId: reservation.messageId, reuseCount: reservation.reuseCount };
+			return {
+				key,
+				messageId: reservation.messageId,
+				reuseCount: reservation.reuseCount,
+				expiresAt: reservation.expiresAt,
+			};
 		}
 		if (reservation !== undefined) this.reservations.delete(key);
-		return { key, messageId: this.createId(), reuseCount: 0 };
+		return { key, messageId: this.createId(), reuseCount: 0, expiresAt: now + this.ttlMs };
 	}
 
 	retainAfterRecoverableDisconnect(attempt: RetryIdentityAttempt): void {
 		const now = this.now();
 		this.prune(now);
-		if (attempt.reuseCount >= this.maxReuses) {
+		if (attempt.reuseCount >= this.maxReuses || attempt.expiresAt <= now) {
 			this.release(attempt);
 			return;
 		}
 		const current = this.reservations.get(attempt.key);
 		if (current?.messageId === attempt.messageId) return;
+		// Keep the original attempt's deadline: refreshing here could outlive the
+		// broker record whose retained acknowledgement makes the retry safe.
 		this.reservations.set(attempt.key, {
 			messageId: attempt.messageId,
-			expiresAt: now + this.ttlMs,
+			expiresAt: attempt.expiresAt,
 			reuseCount: attempt.reuseCount,
 		});
 		while (this.reservations.size > this.maxEntries) {

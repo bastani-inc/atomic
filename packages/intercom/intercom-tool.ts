@@ -671,10 +671,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               replyTo,
               expectsReply: true,
             });
-            retryIdentities.release(retryIdentity);
-            retryIdentity = undefined;
 
             if (!sendResult.delivered) {
+              retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
               wait.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
 							const pendingStageAskRefusal = errorText.startsWith(
@@ -700,6 +700,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               timestamp: Date.now(),
             });
             const replyMessage = await wait.promise;
+            retryIdentities.release(retryIdentity);
+            retryIdentity = undefined;
             const replyText = replyMessage.content.text;
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
