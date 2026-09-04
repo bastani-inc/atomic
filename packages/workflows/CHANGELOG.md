@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Durable workflows now resolve checksum-pinned embedded PostgreSQL runtimes on Linux musl x64/ARM64 and Windows ARM64 while preserving explicit database URL precedence, Docker fallback, root privilege dropping, and retained-process shutdown ownership. Windows ARM64 uses the PostgreSQL x64 runtime through Windows 11 x64 emulation.
 - Workflow launch now scans and persists possible literal, patterned, and nested-child stage paths. Sticky name and glob sends deliver to every future matching stage, while `workflow:<rootRunId>/**` broadcasts to live stages and remains queued for future descendants until root termination.
 - Possible future targets and their queued counts now appear in `intercom list`. Valid paths outside the scanned set are accepted with a `notInKnownSet` warning and settle as undeliverable at terminal only when they never matched.
 

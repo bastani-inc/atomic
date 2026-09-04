@@ -391,6 +391,18 @@ jobs:
           mv packages/coding-agent/binaries/atomic-windows-x64.zip "$RUNNER_TEMP/atomic-windows-x64.zip"
           ./scripts/build-binaries.sh --skip-install --skip-package-build --offline-model-data --platform windows-arm64
           mv "$RUNNER_TEMP/atomic-windows-x64.zip" packages/coding-agent/binaries/
+      - name: Verify Windows ARM64 emulated PostgreSQL payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $payload = Join-Path $env:RUNNER_TEMP "atomic-windows-arm64-payload"
+          Expand-Archive packages/coding-agent/binaries/atomic-windows-arm64.zip $payload -Force
+          $runtime = Join-Path $payload "node_modules/@bastani/atomic-natives/postgres-runtime"
+          foreach ($path in @("bin/initdb.exe", "bin/pg_ctl.exe", "bin/postgres.exe", "POSTGRESQL-LICENSE", "EMBEDDED-POSTGRES-UPSTREAM-LICENSE.md", "runtime-provenance.json")) {
+            if (-not (Test-Path (Join-Path $runtime $path))) { throw "Missing emulated PostgreSQL payload path: $path" }
+          }
+          $env:POSTGRES_EXE = Join-Path $runtime "bin/postgres.exe"
+          bun -e 'import { readPortableExecutableMachine } from "./scripts/probe-windows-bytecode.ts"; const machine = readPortableExecutableMachine(process.env.POSTGRES_EXE); if (machine !== 0x8664) throw new Error(`PostgreSQL PE machine 0x${machine.toString(16)} is not x64`); console.log("Windows ARM64 archive carries x64 PostgreSQL for emulation");'
       - name: Upload Windows release archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -486,6 +498,11 @@ jobs:
           bun run --cwd packages/natives create-npm-dirs
           bun run --cwd packages/natives artifacts
           bun run --cwd packages/natives prepublish:native -- --skip-optional-publish
+      - name: Stage embedded PostgreSQL in target native packages
+        run: |
+          node scripts/stage-postgres-runtime.mjs linux-x64-musl packages/natives/npm/linux-x64-musl
+          node scripts/stage-postgres-runtime.mjs linux-arm64-musl packages/natives/npm/linux-arm64-musl
+          node scripts/stage-postgres-runtime.mjs windows-arm64 packages/natives/npm/win32-arm64-msvc
       - name: Install musl archive tooling
         run: |
           sudo apt-get update
@@ -537,6 +554,22 @@ jobs:
           bun run --cwd packages/ai build
           for dir in packages/natives/npm/* packages/natives packages/ai packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
           test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 11
+          for file in npm-packages/*.tgz; do
+            name=$(tar -xOf "$file" package/package.json | jq -r .name)
+            case "$name" in
+              @bastani/atomic-natives-linux-x64-musl|@bastani/atomic-natives-linux-arm64-musl|@bastani/atomic-natives-win32-arm64-msvc)
+                tar -tzf "$file" | grep -q '^package/postgres-runtime/bin/'
+                tar -tzf "$file" | grep -q '^package/postgres-runtime/POSTGRESQL-LICENSE$'
+                tar -tzf "$file" | grep -q '^package/postgres-runtime/runtime-provenance.json$'
+                ;;
+              @bastani/atomic-natives-*)
+                if tar -tzf "$file" | grep -q '^package/postgres-runtime/'; then
+                  echo "Unexpected PostgreSQL payload in $name" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+          done
           bun -e '
             const expected = new Set(["@bastani/atomic-natives-darwin-arm64","@bastani/atomic-natives-darwin-x64","@bastani/atomic-natives-linux-arm64-gnu","@bastani/atomic-natives-linux-arm64-musl","@bastani/atomic-natives-linux-x64-gnu","@bastani/atomic-natives-linux-x64-musl","@bastani/atomic-natives-win32-arm64-msvc","@bastani/atomic-natives-win32-x64-msvc"]);
             const root = await Bun.file("packages/natives/package.json").json();

@@ -32,6 +32,8 @@ bun add -g @bastani/atomic
 
 Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
 
+Embedded PostgreSQL is also available without install scripts or a first-run download. npm-compatible package managers select a target-specific `@bastani/atomic-natives` package containing the runtime on Linux musl x64/ARM64 and Windows ARM64; standalone archives contain only their matching runtime. Both forms are offline at runtime. Windows ARM64 support is Windows x64 PostgreSQL under Windows 11's x64 emulation, not native PostgreSQL ARM64, and requires the Microsoft Visual C++ x64 v14 Redistributable. Windows 10 on ARM cannot run this x64 runtime.
+
 ### Release archive
 
 Alternatively, install the self-contained release archive, which needs no Node.js or package manager.
@@ -95,7 +97,7 @@ The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or
 Two features work differently on musl:
 
 - **Clipboard:** the musl archives omit a clipboard native binding because `@mariozechner/clipboard` 0.3.9 publishes metadata-only musl stubs without a `.node` payload; Atomic uses Linux clipboard commands and OSC52 fallback instead.
-- **Durable workflows:** the archives omit the glibc-linked `@embedded-postgres/*` binary packages, so durable workflows on Alpine require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker. Without a durable backend, Atomic uses a loud non-durable in-memory fallback.
+- **Durable workflows:** the archives omit the glibc-linked `@embedded-postgres/*` binary packages and instead carry a checksum-pinned Alpine/musl PostgreSQL 18.6 runtime, so durable workflows provision offline without external Postgres or Docker. If no durable backend can be provisioned at all, Atomic still uses a loud non-durable in-memory fallback.
 
 Then start Atomic in the project directory you want it to work on:
 

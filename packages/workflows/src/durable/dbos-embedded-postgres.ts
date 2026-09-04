@@ -2,9 +2,10 @@
  * Embedded Postgres for DBOS workflow durability.
  *
  * When no `DBOS_SYSTEM_DATABASE_URL` is configured, Atomic runs DBOS against
- * its own Postgres instance built from npm-distributed binaries
- * (`@embedded-postgres/<platform>-<arch>`, installed as an optional dependency
- * of `embedded-postgres`). No Docker daemon or system Postgres is required.
+ * its own Postgres instance. An explicit runtime directory takes precedence,
+ * followed by a target-specific `@bastani/atomic-natives` payload (including
+ * archive-local payloads), then the existing `@embedded-postgres/*` packages.
+ * No Docker daemon or system Postgres is required on supported targets.
  *
  * The cluster lives under `~/.atomic/postgres/v<major>` on a dedicated port.
  * Atomic starts Postgres directly and retains an opaque native process lease;
@@ -47,6 +48,11 @@ import {
 	type RuntimePublicationLease,
 	resolveEmbeddedRunContext,
 } from "./dbos-embedded-postgres-root.js";
+import {
+	detectCurrentHostLibc,
+	type EmbeddedPostgresHost,
+	resolveEmbeddedPostgresTarget,
+} from "./dbos-embedded-postgres-targets.js";
 import { commandFailureDetail, delay, tcpReachable } from "./local-command.js";
 
 const EMBEDDED_HOST = "127.0.0.1";
@@ -264,29 +270,57 @@ function retainedPostgresSpawner(): RetainedPostgresSpawner {
 }
 
 /**
- * The npm platform packages ship `native/lib` symlinks (e.g.
- * `libicudata.dylib → libicudata.77.1.dylib`) through a `pg-symlinks.json`
- * manifest plus a postinstall script, because npm tarballs cannot contain
- * symlinks. Bun and `--ignore-scripts` installs skip postinstall, so hydrate
- * the links at runtime; fall back to copying when symlinks are unavailable.
+ * npm tarballs cannot contain symlinks. Runtime staging records each link in
+ * `pg-symlinks.json`; recreate it on first use and copy as a last resort on
+ * filesystems that do not permit symlinks.
  */
-function hydrateBinaryLibraryLinks(pgCtlPath: string): void {
-	const packageRoot = dirname(dirname(dirname(pgCtlPath)));
+export function hydrateBinaryLibraryLinks(
+	pgCtlPath: string,
+	createLink: typeof symlinkSync = symlinkSync,
+	copyFile: typeof copyFileSync = copyFileSync,
+): void {
+	let current = dirname(pgCtlPath);
+	let manifestPath: string | undefined;
+	let manifestRoot: string | undefined;
+	for (let depth = 0; depth < 5; depth += 1) {
+		const directManifest = join(current, "pg-symlinks.json");
+		const nativeManifest = join(current, "native", "pg-symlinks.json");
+		if (existsSync(directManifest)) {
+			manifestPath = directManifest;
+			manifestRoot = current;
+			break;
+		}
+		if (existsSync(nativeManifest)) {
+			manifestPath = nativeManifest;
+			manifestRoot = current;
+			break;
+		}
+		current = dirname(current);
+	}
+	if (manifestPath === undefined || manifestRoot === undefined) return;
 	let manifest: readonly { readonly source: string; readonly target: string }[];
 	try {
-		manifest = JSON.parse(readFileSync(join(packageRoot, "native", "pg-symlinks.json"), "utf8")) as typeof manifest;
+		manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as typeof manifest;
 	} catch {
 		return;
 	}
+	const firstSource = manifest[0]?.source;
+	if (
+		firstSource !== undefined &&
+		!existsSync(join(manifestRoot, firstSource)) &&
+		existsSync(join(dirname(manifestRoot), firstSource))
+	) {
+		manifestRoot = dirname(manifestRoot);
+	}
 	for (const { source, target } of manifest) {
-		const absoluteSource = join(packageRoot, source);
-		const absoluteTarget = join(packageRoot, target);
+		const absoluteSource = join(manifestRoot, source);
+		const absoluteTarget = join(manifestRoot, target);
 		if (existsSync(absoluteTarget) || !existsSync(absoluteSource)) continue;
 		try {
-			symlinkSync(relative(dirname(absoluteTarget), absoluteSource), absoluteTarget);
+			createLink(relative(dirname(absoluteTarget), absoluteSource), absoluteTarget);
 		} catch {
 			try {
-				copyFileSync(absoluteSource, absoluteTarget);
+				copyFile(absoluteSource, absoluteTarget);
 			} catch {
 				// Missing optional libraries surface as an initdb/Postgres failure with detail.
 			}
@@ -294,26 +328,151 @@ function hydrateBinaryLibraryLinks(pgCtlPath: string): void {
 	}
 }
 
-async function loadEmbeddedPostgresBinaries(): Promise<EmbeddedPostgresBinaries> {
-	const platform = process.platform === "win32" ? "windows" : process.platform;
-	const packageName = `@embedded-postgres/${platform}-${process.arch}`;
-	let binaries: Partial<EmbeddedPostgresBinaries>;
-	try {
-		binaries = (await import(packageName)) as Partial<EmbeddedPostgresBinaries>;
-	} catch (error) {
-		const detail = error instanceof Error ? error.message : String(error);
-		throw new Error(
-			`Embedded Postgres binaries are unavailable for ${process.platform}/${process.arch} (${packageName}): ${detail}`,
-		);
-	}
-	if (typeof binaries.pg_ctl !== "string" || typeof binaries.initdb !== "string") {
-		throw new Error(`Embedded Postgres package ${packageName} did not export pg_ctl/initdb paths.`);
-	}
-	const postgres = join(dirname(binaries.pg_ctl), process.platform === "win32" ? "postgres.exe" : "postgres");
-	for (const binary of [binaries.pg_ctl, binaries.initdb, postgres]) ensureExecutable(binary);
-	return { pg_ctl: binaries.pg_ctl, initdb: binaries.initdb, postgres };
+type PackageResolver = (specifier: string) => string;
+type PackageImporter = (specifier: string) => Promise<Partial<EmbeddedPostgresBinaries>>;
+
+interface EmbeddedPostgresLoadOptions {
+	readonly host?: EmbeddedPostgresHost;
+	readonly runtimeDirectory?: string;
+	readonly moduleUrl?: string;
+	readonly resolvePackage?: PackageResolver;
+	readonly importPackage?: PackageImporter;
 }
 
+function binariesFromDirectory(runtimeDirectory: string, platform: NodeJS.Platform): EmbeddedPostgresBinaries {
+	const executableSuffix = platform === "win32" ? ".exe" : "";
+	const binaries = {
+		pg_ctl: join(runtimeDirectory, "bin", `pg_ctl${executableSuffix}`),
+		initdb: join(runtimeDirectory, "bin", `initdb${executableSuffix}`),
+		postgres: join(runtimeDirectory, "bin", `postgres${executableSuffix}`),
+	};
+	for (const [name, binary] of Object.entries(binaries)) {
+		if (!existsSync(binary)) throw new Error(`missing bin/${name}${executableSuffix}`);
+		ensureExecutable(binary);
+	}
+	return binaries;
+}
+
+/**
+ * Reject only a readable provenance record that identifies another target.
+ * Missing or unreadable provenance remains compatible with existing archives.
+ */
+function packagedRuntimeTargetMismatch(runtimeDirectory: string, expectedTarget: string): string | undefined {
+	const provenancePath = join(runtimeDirectory, "runtime-provenance.json");
+	if (!existsSync(provenancePath)) return undefined;
+	try {
+		const provenance = JSON.parse(readFileSync(provenancePath, "utf8")) as { readonly target?: string };
+		if (typeof provenance.target === "string" && provenance.target !== expectedTarget) {
+			return `payload target ${provenance.target} does not match ${expectedTarget}`;
+		}
+	} catch {
+		// Older or externally supplied archives may not carry readable provenance.
+	}
+	return undefined;
+}
+
+function resolvePackageManifest(
+	packageName: string,
+	resolvePackage: PackageResolver,
+): { readonly manifest?: string; readonly error?: string } {
+	try {
+		return { manifest: resolvePackage(`${packageName}/package.json`) };
+	} catch (error) {
+		return { error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+function packagedRuntimeCandidate(
+	packageName: string,
+	resolution: { readonly manifest?: string; readonly error?: string },
+): string {
+	return resolution.manifest === undefined
+		? `${packageName}/postgres-runtime (${resolution.error ?? "package is unavailable"})`
+		: join(dirname(resolution.manifest), "postgres-runtime");
+}
+
+export async function loadEmbeddedPostgresBinaries(
+	options: EmbeddedPostgresLoadOptions = {},
+): Promise<EmbeddedPostgresBinaries> {
+	const host = options.host ?? {
+		platform: process.platform,
+		arch: process.arch,
+		libc: detectCurrentHostLibc(),
+	};
+	const target = resolveEmbeddedPostgresTarget(host);
+	const searched: string[] = [];
+	const moduleUrl = options.moduleUrl ?? import.meta.url;
+	const resolvePackage = options.resolvePackage ?? createRequire(moduleUrl).resolve;
+	const rootPackage = resolvePackageManifest("@bastani/atomic-natives", resolvePackage);
+	const leafResolver =
+		options.resolvePackage ??
+		(rootPackage.manifest === undefined ? resolvePackage : createRequire(rootPackage.manifest).resolve);
+	const leafPackage =
+		target.nativeLeafPackageName === undefined
+			? undefined
+			: resolvePackageManifest(target.nativeLeafPackageName, leafResolver);
+	const explicitRuntime = options.runtimeDirectory ?? process.env.ATOMIC_POSTGRES_RUNTIME_DIR;
+	const candidates: readonly { readonly path?: string; readonly label: string; readonly validateTarget?: boolean }[] =
+		[
+			...(explicitRuntime === undefined ? [] : [{ path: explicitRuntime, label: explicitRuntime }]),
+			...(target.nativeLeafPackageName === undefined || leafPackage === undefined
+				? []
+				: [
+						{
+							path:
+								leafPackage.manifest === undefined
+									? undefined
+									: join(dirname(leafPackage.manifest), "postgres-runtime"),
+							label: packagedRuntimeCandidate(target.nativeLeafPackageName, leafPackage),
+						},
+					]),
+			{
+				path:
+					rootPackage.manifest === undefined ? undefined : join(dirname(rootPackage.manifest), "postgres-runtime"),
+				label: packagedRuntimeCandidate("@bastani/atomic-natives", rootPackage),
+				validateTarget: true,
+			},
+		];
+	for (const candidate of candidates) {
+		searched.push(candidate.label);
+		if (candidate.path === undefined || !existsSync(candidate.path)) continue;
+		if (candidate.validateTarget) {
+			const mismatch = packagedRuntimeTargetMismatch(candidate.path, target.id);
+			if (mismatch !== undefined) {
+				searched[searched.length - 1] += ` (${mismatch})`;
+				continue;
+			}
+		}
+		try {
+			return binariesFromDirectory(candidate.path, host.platform);
+		} catch (error) {
+			searched[searched.length - 1] += ` (${error instanceof Error ? error.message : String(error)})`;
+		}
+	}
+
+	if (target.npmPackageName !== undefined) {
+		searched.push(target.npmPackageName);
+		try {
+			const importPackage: PackageImporter = options.importPackage ?? (async (specifier) => await import(specifier));
+			const binaries = await importPackage(target.npmPackageName);
+			if (typeof binaries.pg_ctl !== "string" || typeof binaries.initdb !== "string") {
+				throw new Error("package did not export pg_ctl/initdb paths");
+			}
+			const postgres = join(dirname(binaries.pg_ctl), host.platform === "win32" ? "postgres.exe" : "postgres");
+			for (const binary of [binaries.pg_ctl, binaries.initdb, postgres]) ensureExecutable(binary);
+			return { pg_ctl: binaries.pg_ctl, initdb: binaries.initdb, postgres };
+		} catch (error) {
+			searched[searched.length - 1] += ` (${error instanceof Error ? error.message : String(error)})`;
+		}
+	}
+
+	const libc = host.platform === "linux" ? (host.libc ?? "unknown") : "n/a";
+	throw new Error(
+		`Embedded Postgres binaries are unavailable for ${host.platform}/${host.arch}/${libc} (target ${target.id}). ` +
+			`Searched: ${searched.join(", ")}. Set ATOMIC_POSTGRES_RUNTIME_DIR, configure DBOS_SYSTEM_DATABASE_URL, ` +
+			"or make Docker available for fallback.",
+	);
+}
 /** npm can strip executable bits; restore them only when actually missing. */
 function ensureExecutable(filePath: string): void {
 	try {

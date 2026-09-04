@@ -12,6 +12,7 @@
 
 ### Added
 
+- Embedded PostgreSQL now provisions durable DBOS storage offline at runtime on Linux musl x64/ARM64 and Windows ARM64. npm installs receive only the matching runtime through the platform-specific native package, standalone archives carry only their target runtime, and Windows ARM64 deliberately runs PostgreSQL x64 through Windows 11 x64 emulation rather than claiming native ARM64 support.
 - Added `supportsMidConvoEffort` to custom Anthropic Messages model compatibility settings.
 - Added transcript notices for Anthropic thinking blocks dropped during provider recovery when cache miss notices are enabled.
 - `models.json` now accepts `compat.vllmPriority` on `openai-completions` models. Atomic sends it as the top-level `priority` request field, which vLLM uses to order queued requests when it runs with `--scheduling-policy priority`; lower values are handled earlier and the server default is `0`. Set it on a background or batch model so its long prefills queue behind interactive sessions ([#9004](https://github.com/earendil-works/pi/pull/9004)).

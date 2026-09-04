@@ -67,16 +67,21 @@ test("every compiled target shares the syntax-minified application sidecar", () 
 	assertBuildScriptSyntax();
 });
 
-test("musl archive staging removes embedded-postgres binary leaves", () => {
+test("only musl and Windows ARM64 archives stage target PostgreSQL payloads", () => {
 	const buildScript = readFileSync(buildScriptPath, "utf8");
 	const stagingBlock = buildScript.slice(
 		buildScript.indexOf('cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"'),
-		buildScript.indexOf('atomic_native="$(atomic_native_filename "$platform")'),
+		buildScript.indexOf('atomic_native="$(atomic_native_filename "$platform")"'),
 	);
 
 	assert.match(stagingBlock, /if \[\[ "\$platform" == linux-\*-musl \]\]; then/u);
 	assert.match(stagingBlock, /rm -rf "binaries\/\$platform\/node_modules\/@embedded-postgres"/u);
 	assert.doesNotMatch(stagingBlock, /rm -rf "binaries\/\$platform\/node_modules\/embedded-postgres"/u);
+	assert.match(stagingBlock, /if \[\[ "\$platform" == linux-\*-musl \|\| "\$platform" == windows-arm64 \]\]; then/u);
+	assert.match(
+		stagingBlock,
+		/node \.\.\/\.\.\/scripts\/stage-postgres-runtime\.mjs "\$platform" "binaries\/\$platform\/node_modules\/@bastani\/atomic-natives"/u,
+	);
 	assertBuildScriptSyntax();
 });
 
