@@ -27,8 +27,8 @@
  */
 
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -37,13 +37,16 @@ import { createMessageReader, writeMessage } from "../../packages/intercom/broke
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types.js";
+import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
+
+const BROKER_PROBE_TIMEOUT_MS = 250;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-stale-"));
 const socketPath = getBrokerSocketPath(process.platform, agentDir);
 const brokerLogPath = join(agentDir, "intercom", "broker.log");
-let broker: ChildProcess | undefined;
+const fixture = new IntercomBrokerFixture(agentDir);
 
 class WireClient {
 	readonly received: BrokerMessage[] = [];
@@ -58,6 +61,9 @@ class WireClient {
 	 */
 	constructor(halfOpen = false) {
 		this.socket = net.createConnection({ path: socketPath, allowHalfOpen: halfOpen });
+		fixture.onCleanup(() => {
+			this.socket.destroy();
+		});
 		this.socket.on(
 			"data",
 			createMessageReader(
@@ -107,13 +113,21 @@ class WireClient {
 async function waitForBroker(): Promise<void> {
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
+		fixture.assertRunning();
 		const connected = await new Promise<boolean>((resolveConnected) => {
 			const probe = net.createConnection(socketPath);
+			probe.setTimeout(BROKER_PROBE_TIMEOUT_MS, () => {
+				probe.destroy();
+				resolveConnected(false);
+			});
 			probe.once("connect", () => {
 				probe.destroy();
 				resolveConnected(true);
 			});
-			probe.once("error", () => resolveConnected(false));
+			probe.once("error", () => {
+				probe.destroy();
+				resolveConnected(false);
+			});
 		});
 		if (connected) return;
 		await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
@@ -157,17 +171,20 @@ function brokerLog(): string {
 beforeAll(async () => {
 	mkdirSync(join(agentDir, "intercom"), { recursive: true });
 	const logFd = openSync(brokerLogPath, "w");
-	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
-		stdio: ["ignore", "ignore", logFd],
-	});
-	closeSync(logFd);
+	try {
+		const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
+			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
+			stdio: ["ignore", "ignore", logFd],
+		});
+		fixture.trackBroker(broker);
+	} finally {
+		closeSync(logFd);
+	}
 	await waitForBroker();
 });
 
-afterAll(() => {
-	broker?.kill("SIGTERM");
-	rmSync(agentDir, { recursive: true, force: true });
+afterAll(async () => {
+	await fixture.cleanup();
 });
 
 test("a broker-ended session is retired, and healthy peers keep working without write-after-end", async () => {
