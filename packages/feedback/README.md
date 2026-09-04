@@ -10,7 +10,7 @@ Bug drafts require a title, what happened, and reproduction steps. Enhancement d
 
 Pass text for draft fields. If preparation reports a field error, correct that field and prepare again. Review the prepared title and body before sharing them.
 
-Posting is handled separately by the approval-gated feedback submission boundary.
+The `feedback_submit_issue` tool posts only the latest reviewed draft after clear approval, re-scrubbing it and preventing duplicate submissions.
 
 ## Privacy scrubbing
 

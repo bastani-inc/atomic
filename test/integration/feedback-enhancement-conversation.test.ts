@@ -170,6 +170,7 @@ describe("feedback command conversation entry", () => {
 
 		assert.equal(harness.session.messages.filter((message) => message.role === "toolResult").length, 1);
 		assert.ok(messageText(harness).includes("### What do you want to change?\n\nAdd keyboard navigation"));
+		assert.ok(messageText(harness).includes("Repository: bastani-inc/atomic\nKind: enhancement\n\nKeyboard navigation"));
 		assert.ok(messageText(harness).includes("Would you like edits or approval?"));
 	});
 
