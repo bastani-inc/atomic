@@ -132,6 +132,11 @@ export async function loadExtensionFromFactory(
 	return extension;
 }
 
+export function publishLoadedExtensions(runtime: ExtensionRuntime, extensions: Extension[]): void {
+	runtime.getLoadedExtensions = () =>
+		extensions.map(({ path: name, sourceInfo }) => ({ name, configurationOrigin: sourceInfo.configurationOrigin }));
+}
+
 /**
  * Load extensions from paths.
  */
@@ -151,6 +156,7 @@ async function loadExtensionsInternal(
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const resolvedRuntime = runtime ?? createExtensionRuntime();
 	runtimeEventBuses.set(resolvedRuntime, resolvedEventBus);
+	if (!runtime || !resolvedRuntime.getLoadedExtensions) publishLoadedExtensions(resolvedRuntime, extensions);
 
 	let processedExtensionCount = 0;
 	let lastYieldAt = Date.now();

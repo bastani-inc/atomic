@@ -58,6 +58,7 @@ export type {
 	InstallReactiveWidgetOptions,
 	KeybindingsManager,
 	LoadExtensionsResult,
+	LoadedExtensionInfo,
 	LsToolCallEvent,
 	MarkdownTransformContext,
 	MarkdownTransformer,

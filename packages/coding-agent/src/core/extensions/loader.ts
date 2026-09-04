@@ -7,6 +7,7 @@ export {
 	loadExtensionFromFactory,
 	loadExtensions,
 	loadExtensionsCached,
+	publishLoadedExtensions,
 } from "./loader-core.js";
 export { discoverAndLoadExtensions } from "./loader-discovery.ts";
 export type {

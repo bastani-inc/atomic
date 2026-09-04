@@ -124,6 +124,7 @@ export type {
 	InputSource,
 	KeybindingsManager,
 	LoadExtensionsResult,
+	LoadedExtensionInfo,
 	LsToolCallEvent,
 	LsToolResultEvent,
 	MarkdownTransformContext,

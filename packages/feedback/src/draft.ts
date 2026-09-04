@@ -23,6 +23,11 @@ export interface BugFeedbackDraft {
 	readonly repro: string;
 	readonly expected?: string;
 	readonly version?: string;
+	readonly extensions?: string;
+	readonly isolation?: string;
+	readonly evidence?: string;
+	readonly unknowns?: string;
+	readonly debuggerPaths?: string;
 }
 export interface EnhancementFeedbackDraft {
 	readonly kind: "enhancement";
@@ -49,15 +54,31 @@ function required(field: FeedbackFieldId, label: string, value: string): DraftVa
 function formFields(draft: FeedbackDraft): readonly FeedbackFormFieldDescriptor[] {
 	return draft.kind === "bug" ? BUG_ISSUE_FIELDS : ENHANCEMENT_ISSUE_FIELDS;
 }
-function formValue(draft: FeedbackDraft, id: FeedbackFormFieldId): string | undefined {
+function bugDescription(draft: BugFeedbackDraft): string {
+	const facts = [
+		["Extension activity", draft.extensions],
+		["Reproduction without extensions", draft.isolation],
+		["Supported evidence", draft.evidence],
+		["Unknowns", draft.unknowns],
+		["Debugger-created paths", draft.debuggerPaths],
+	]
+		.filter((fact): fact is [string, string] => Boolean(fact[1]?.trim()))
+		.map(([label, value]) => `**${label}:** ${value}`);
+	return [draft.description, ...facts].join("\n\n");
+}
+function rawFormValue(draft: FeedbackDraft, id: FeedbackFormFieldId): string | undefined {
 	return (draft as FeedbackDraft & Partial<Record<FeedbackFormFieldId, string>>)[id];
+}
+function formValue(draft: FeedbackDraft, id: FeedbackFormFieldId): string | undefined {
+	if (draft.kind === "bug" && id === "description") return bugDescription(draft);
+	return rawFormValue(draft, id);
 }
 export function validateFeedbackDraft(draft: FeedbackDraft): DraftValidationResult {
 	const candidates = [
 		required("title", "Title", draft.title),
 		...formFields(draft)
 			.filter(({ required: isRequired }) => isRequired)
-			.map(({ id, label }) => required(id, label, formValue(draft, id) ?? "")),
+			.map(({ id, label }) => required(id, label, rawFormValue(draft, id) ?? "")),
 	];
 	const errors = candidates.filter((error): error is DraftValidationError => error !== undefined);
 	return errors.length ? { ok: false, errors } : { ok: true, draft };
