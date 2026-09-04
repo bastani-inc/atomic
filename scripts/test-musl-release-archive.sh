@@ -37,7 +37,12 @@ for path in \
     atomic/builtin/workflows/package.json \
     atomic/node_modules/@bastani/atomic-natives/package.json \
     atomic/lib/libgcc_s.so.1 \
-    atomic/lib/libstdc++.so.6; do
+    atomic/lib/libstdc++.so.6 \
+    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/bin/initdb" \
+    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/bin/pg_ctl" \
+    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/POSTGRESQL-LICENSE" \
+    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/ZONKY-APACHE-2.0-LICENSE" \
+    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/runtime-provenance.json"; do
     [[ -e "$workspace/$path" ]] || {
         echo "Missing musl release archive path: $path" >&2
         exit 1
@@ -66,7 +71,35 @@ fi
 SMOKE
 chmod +x "$workspace/smoke.sh"
 
+cat > "$workspace/postgres-smoke.sh" <<'SMOKE'
+#!/bin/sh
+set -eu
+source_runtime="/smoke/atomic/node_modules/@bastani/atomic-natives/postgres-runtime"
+runtime=/tmp/atomic-postgres-runtime
+cp -R "$source_runtime" "$runtime"
+awk -F '"' '/"source":/{source=$4} /"target":/{print source " " $4}' "$runtime/pg-symlinks.json" |
+    while read -r source target; do cp "$runtime/$source" "$runtime/$target"; done
+data=/tmp/atomic-postgres-smoke
+"$runtime/bin/initdb" -D "$data" --auth=trust --no-locale >/tmp/initdb.log
+"$runtime/bin/pg_ctl" -D "$data" -o "-h 127.0.0.1 -p 55439" -w start
+trap '"$runtime/bin/pg_ctl" -D "$data" -m fast -w stop >/dev/null 2>&1 || true' EXIT
+# PostgreSQL's SSLRequest handshake proves a real protocol connection without
+# adding a client package to the deliberately minimal Zonky runtime.
+response=$(printf '\000\000\000\010\004\322\026\057' | nc -w 3 127.0.0.1 55439 | head -c 1)
+test "$response" = N
+"$runtime/bin/pg_ctl" -D "$data" -m fast -w stop
+trap - EXIT
+echo "embedded PostgreSQL initdb/start/connect/shutdown succeeded"
+SMOKE
+chmod +x "$workspace/postgres-smoke.sh"
+chmod -R a+rX "$workspace"
+
 docker run --rm --platform "$docker_platform" \
     -v "$workspace:/smoke:ro" \
     alpine:3.22 \
     /bin/sh /smoke/smoke.sh
+
+docker run --rm --platform "$docker_platform" --user 65534:65534 \
+    -v "$workspace:/smoke:ro" \
+    alpine:3.22 \
+    /bin/sh /smoke/postgres-smoke.sh

@@ -18,10 +18,11 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
    ├─ integrity: tag package version = tag and tag commit subject = `Release <tag>`
    ├─ native-artifacts: eight-platform NAPI matrix
    ├─ linux-binary-smoke + windows-binary-smoke (also builds both shipped
-   │  Windows archives on the Windows runner) + alpine-binary-smoke
-   ├─ build: shrinkwrap/package validation, six non-Windows archives plus the
-   │  Windows-built pair, ten npm tarballs,
-   │  release notes, and SHA256SUMS
+   │  Windows archives on the Windows runner) + alpine-binary-smoke, whose
+   │  x64/ARM64 legs run embedded PostgreSQL initdb, start, connect, and shutdown
+   ├─ build: shrinkwrap/package validation, target PostgreSQL staging in three
+   │  native npm leaves, six non-Windows archives plus the Windows-built pair,
+   │  eleven npm tarballs, release notes, and SHA256SUMS
    ├─ stage-github-release: create a verified draft and refuse to change a
    │  published release
    ├─ publish-npm: tokenless OIDC publication, skipping existing versions
@@ -35,6 +36,8 @@ Manual dispatch on `main`
 ```
 
 This release graph follows pi's draft-first publication shape. Public GitHub Release publication remains last so users never see a release whose npm publication failed.
+
+The release build downloads checksum-pinned PostgreSQL artifacts while preparing packages, never during package installation or first use. Only the `linux-x64-musl`, `linux-arm64-musl`, and `win32-arm64-msvc` native npm leaves receive a `postgres-runtime` payload; the pack verification rejects a missing target payload or one leaking into any other native leaf. Standalone musl and Windows ARM64 archives independently stage the same target-only layout under their archive-local `@bastani/atomic-natives` package. The Alpine smoke legs execute the runtime on both native runner architectures. Windows ARM64 remains content- and architecture-validated only because the available Windows runner is x64; it cannot authoritatively exercise Windows 11 ARM64 x64 emulation.
 
 ## Tests (`test.yml`)
 

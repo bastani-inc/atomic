@@ -444,6 +444,7 @@ interface MuslSmokeProbe {
 	archive: string;
 	argsPath: string;
 	bodyPath: string;
+	postgresBodyPath: string;
 	root: string;
 }
 
@@ -453,7 +454,7 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 	const atomicRoot = join(payloadRoot, "atomic");
 	for (const directory of [
 		join(atomicRoot, "builtin", "workflows"),
-		join(atomicRoot, "node_modules", "@bastani", "atomic-natives"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "bin"),
 		join(atomicRoot, "lib"),
 	]) {
 		makeDirectorySync(directory, { recursive: true });
@@ -464,6 +465,11 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 		join(atomicRoot, "package.json"),
 		join(atomicRoot, "builtin", "workflows", "package.json"),
 		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "package.json"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "bin", "initdb"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "bin", "pg_ctl"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "POSTGRESQL-LICENSE"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "ZONKY-APACHE-2.0-LICENSE"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "runtime-provenance.json"),
 		join(atomicRoot, "lib", "libgcc_s.so.1"),
 		join(atomicRoot, "lib", "libstdc++.so.6"),
 	]) {
@@ -478,25 +484,33 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 	makeDirectorySync(stubDirectory, { recursive: true });
 	const argsPath = join(probeRoot, "docker-args.txt");
 	const bodyPath = join(probeRoot, "smoke-body.sh");
+	const postgresBodyPath = join(probeRoot, "postgres-smoke-body.sh");
 	const stubPath = join(stubDirectory, "docker");
 	writeTextSync(
 		stubPath,
 		`#!/bin/sh
 : "\${ATOMIC_MUSL_DOCKER_ARGS:?}"
 : "\${ATOMIC_MUSL_DOCKER_BODY:?}"
-printf '%s\\n' "$@" > "$ATOMIC_MUSL_DOCKER_ARGS"
+: "\${ATOMIC_MUSL_POSTGRES_BODY:?}"
 mount=
+last=
 for arg do
+    last=$arg
     case "$arg" in
         *:/smoke:ro) mount=\${arg%:/smoke:ro} ;;
     esac
 done
 [ -n "$mount" ]
-cat "$mount/smoke.sh" > "$ATOMIC_MUSL_DOCKER_BODY"
+if [ "$last" = /smoke/smoke.sh ]; then
+    printf '%s\n' "$@" > "$ATOMIC_MUSL_DOCKER_ARGS"
+    cat "$mount/smoke.sh" > "$ATOMIC_MUSL_DOCKER_BODY"
+else
+    cat "$mount/postgres-smoke.sh" > "$ATOMIC_MUSL_POSTGRES_BODY"
+fi
 `,
 	);
 	chmodSync(stubPath, 0o755);
-	return { archive, argsPath, bodyPath, root: probeRoot };
+	return { archive, argsPath, bodyPath, postgresBodyPath, root: probeRoot };
 }
 
 function removeMuslSmokeProbe(probe: MuslSmokeProbe): void {
@@ -534,6 +548,7 @@ test("musl smoke forwards a complete staged shell script through stub docker", (
 					PATH: `${join(probe.root, "stub")}${delimiter}${process.env.PATH ?? ""}`,
 					ATOMIC_MUSL_DOCKER_ARGS: probe.argsPath,
 					ATOMIC_MUSL_DOCKER_BODY: probe.bodyPath,
+					ATOMIC_MUSL_POSTGRES_BODY: probe.postgresBodyPath,
 				},
 			},
 		);
@@ -546,6 +561,11 @@ test("musl smoke forwards a complete staged shell script through stub docker", (
 		assert.match(smoke, /output=\$\(printf '' \| "\$atomic" --no-session 2>&1\)/u);
 		assert.match(smoke, /if echo "\$output" \| grep -q 'Failed to load extension'; then exit 1; fi/u);
 		assert.match(smoke, /No models available\|No model selected\|No API key found/u);
+		const postgresSmoke = readTextSync(probe.postgresBodyPath).toString("utf8");
+		assert.match(postgresSmoke, /bin\/initdb/u);
+		assert.match(postgresSmoke, /bin\/pg_ctl/u);
+		assert.match(postgresSmoke, /nc -w 3 127\.0\.0\.1 55439/u);
+		assert.match(postgresSmoke, /embedded PostgreSQL initdb\/start\/connect\/shutdown succeeded/u);
 	} finally {
 		removeMuslSmokeProbe(probe);
 	}
@@ -576,6 +596,24 @@ test("Alpine smoke covers both musl archives on stock Alpine without runtime pac
 	assert.match(nativeLoad, /require\("\/smoke\/atomic\/node_modules\/@bastani\/atomic-natives"\)/u);
 	assert.match(nativeLoad, /\["glob", "grep"\]/u);
 	assert.match(nativeLoad, /typeof binding\[name\] !== "function"/u);
+});
+
+test("release packaging stages PostgreSQL in exactly the three target native leaves and verifies packed payloads", async () => {
+	const workflow = await readText(publishPath);
+	const build = jobBlock(workflow, "build", "stage-github-release");
+	for (const command of [
+		"linux-x64-musl packages/natives/npm/linux-x64-musl",
+		"linux-arm64-musl packages/natives/npm/linux-arm64-musl",
+		"windows-arm64 packages/natives/npm/win32-arm64-msvc",
+	]) {
+		assert.match(build, new RegExp(`node scripts/stage-postgres-runtime\\.mjs ${command}`, "u"));
+	}
+	assert.match(
+		build,
+		/@bastani\/atomic-natives-linux-x64-musl\|@bastani\/atomic-natives-linux-arm64-musl\|@bastani\/atomic-natives-win32-arm64-msvc/u,
+	);
+	assert.match(build, /package\/postgres-runtime\/POSTGRESQL-LICENSE/u);
+	assert.match(build, /Unexpected PostgreSQL payload/u);
 });
 
 test("musl archive build bundles pinned C++ runtimes and patches payload-local search paths", async () => {

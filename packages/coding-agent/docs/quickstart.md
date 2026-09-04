@@ -32,6 +32,8 @@ bun add -g @bastani/atomic
 
 Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
 
+Embedded PostgreSQL is also available without install scripts or a first-run download. npm-compatible package managers select a target-specific `@bastani/atomic-natives` package containing the runtime on Linux musl x64/ARM64 and Windows ARM64; standalone archives contain only their matching runtime. Both forms are offline at runtime. Windows ARM64 support is Windows x64 PostgreSQL under Windows 11's x64 emulation, not native PostgreSQL ARM64, and requires the Microsoft Visual C++ x64 v14 Redistributable. Windows 10 on ARM cannot run this x64 runtime.
+
 ### Release archive
 
 Alternatively, install the self-contained release archive, which needs no Node.js or package manager.

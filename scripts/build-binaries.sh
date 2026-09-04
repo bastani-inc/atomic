@@ -461,18 +461,23 @@ for platform in "${PLATFORMS[@]}"; do
 
     cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
     if [[ "$platform" == linux-*-musl ]]; then
-        # The embedded-postgres wrapper remains useful for its Docker/in-memory fallback,
-        # but its optional @embedded-postgres/* packages contain glibc binaries only.
+        # npm's Linux leaves contain glibc binaries. Musl archives instead receive
+        # the checksum-pinned Zonky Alpine runtime in the native package below.
         rm -rf "binaries/$platform/node_modules/@embedded-postgres"
     else
         # Every archive is built on one runner, so the shared runtime copy carries that
         # runner's @embedded-postgres binary into all of them. Keep only the leaf that
-        # matches this archive; a foreign one cannot run and the wrapper falls back.
+        # matches this archive. Windows ARM64 receives its x64-emulated tree below.
         embedded_postgres_leaf="$(embedded_postgres_package_name "$platform")"
         embedded_postgres_dir="binaries/$platform/node_modules/@embedded-postgres"
         if [ -d "$embedded_postgres_dir" ]; then
             find "$embedded_postgres_dir" -mindepth 1 -maxdepth 1 -type d ! -name "$embedded_postgres_leaf" -exec rm -rf {} +
         fi
+    fi
+
+    if [[ "$platform" == linux-*-musl || "$platform" == windows-arm64 ]]; then
+        echo "==> Staging embedded PostgreSQL runtime for $platform..."
+        node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives"
     fi
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
     find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
