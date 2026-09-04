@@ -623,7 +623,10 @@ describe("hashline file tool parity", () => {
 				undefined,
 				{} as ExtensionContext,
 			),
-		).rejects.toThrow(/file changed between read and edit|Stale hashline tag/);
+			// The preflight loop now raises the typed conflict rather than a bare Error, so this
+			// asserts the code consumers match on. `writes` staying empty is still the real subject:
+			// no section may be written once any section is known stale.
+		).rejects.toThrow(/FILE_MUTATION_CONFLICT:changed_before_write/);
 		expect(writes).toEqual([]);
 	});
 
@@ -1031,7 +1034,10 @@ describe("hashline file tool parity", () => {
 				undefined,
 				{} as ExtensionContext,
 			),
-		).rejects.toThrow(/not from this session/);
+			// A tag minted in another store is the foreign-snapshot case by definition, so the
+			// engine's "not from this session" prose is now the typed conflict consumers can match.
+			// The rejection itself, and the file staying untouched, are unchanged.
+		).rejects.toThrow(/FILE_MUTATION_CONFLICT:foreign_snapshot/);
 		expect(await readFile(file, "utf8")).toBe("one\ntwo");
 	});
 	it("rejects unsafe integer hashline anchors", () => {

@@ -5,6 +5,7 @@ import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./ext
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
+import { buildMutationRequester } from "./tools/file-mutation-coordinator.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.ts";
 import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
@@ -142,6 +143,16 @@ export function _buildRuntime(
 				]),
 			)
 		: createAllToolDefinitions(this._cwd, {
+				// Resolved per execution for the same reason as `sessionTempDir` below: a
+				// requester captured at construction would keep a stale session id across
+				// fork/branch/resume, which is exactly the relaunch this makes legible.
+				resolveMutationRequester: (toolCallId) =>
+					buildMutationRequester({
+						sessionId: this.sessionManager.getSessionId(),
+						...(this._orchestrationContext ? { orchestration: this._orchestrationContext } : {}),
+						...(this._subagentPolicy?.intercom ? { intercom: this._subagentPolicy.intercom } : {}),
+						toolCallId,
+					}),
 				read: { autoResizeImages },
 				bash: {
 					commandPrefix: shellCommandPrefix,

@@ -100,11 +100,27 @@ function createGondolinReadOps(vm: VM, localCwd: string): ReadOperations {
 
 function createGondolinWriteOps(vm: VM, localCwd: string): WriteOperations {
 	return {
-		writeFile: async (filePath, content) => {
-			await vm.fs.writeFile(toGuestPath(localCwd, filePath), content, { encoding: "utf8" });
+		writeFile: async (filePath, content, options) => {
+			await vm.fs.writeFile(toGuestPath(localCwd, filePath), content, {
+				encoding: "utf8",
+				// `wx` is `O_CREAT | O_EXCL`: create, or fail with `EEXIST` rather than truncate.
+				...(options?.exclusive ? { flag: "wx" } : {}),
+			});
 		},
 		mkdir: async (dirPath) => {
 			await vm.fs.mkdir(toGuestPath(localCwd, dirPath), { recursive: true });
+		},
+		// Reads inside the guest, so the checks `write` runs before overwriting see the same
+		// filesystem the write lands on rather than the host's. Absence is `undefined`; a path
+		// that exists but cannot be read keeps throwing, since it is not a free path.
+		readFile: async (filePath) => {
+			try {
+				return await vm.fs.readFile(toGuestPath(localCwd, filePath), { encoding: "utf8" });
+			} catch (error) {
+				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+					return undefined;
+				throw error;
+			}
 		},
 	};
 }

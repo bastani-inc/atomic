@@ -226,6 +226,19 @@ const proseNames = new Set([
 	"edit",
 	// Terminal UI copy, not a symbol: the interactive working-status label.
 	"Working",
+	// `FileMutationConflict` reason values. They are the strings a conflict message carries,
+	// members of a union type rather than symbols a consumer imports.
+	"no_prior_observation",
+	"changed_since_observation",
+	"target_exists",
+	// The POSIX open flag the exclusive-create path uses, named as the concept rather than as a
+	// symbol this package exports.
+	"O_EXCL",
+	// The literal `FILE_MUTATION_CONFLICT_CODE` holds, which is what appears in the message text.
+	"FILE_MUTATION_CONFLICT",
+	// `WriteOperations` members, defined by an implementation, never exported on their own.
+	"readFile",
+	"writeFile",
 ]);
 
 function unreleasedBlock(changelogPath: string): string {

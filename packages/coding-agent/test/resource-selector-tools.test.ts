@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { isDocumentPath } from "../src/core/tools/read-document-extract.ts";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.ts";
@@ -852,9 +853,14 @@ describe("resource selector tools", () => {
 
 	it("treats existing non-SQLite .db files as plain files", async () => {
 		writeFileSync(join(testDir, "notes.db"), "one\ntwo\n");
+		// The read and the write below share one store because a session gives every tool the
+		// same one. Separate default stores would make the overwrite at the end look like it
+		// came from another session, which is a fact about ownership rather than about whether
+		// a bare `.db` path routes to SQLite.
+		const hashlineStore = createHashlineSnapshotStore();
 		expect(
 			textOutput(
-				await createReadToolDefinition(testDir).execute(
+				await createReadToolDefinition(testDir, { hashlineStore }).execute(
 					"plain-db-read",
 					{ path: "notes.db" },
 					undefined,
@@ -913,7 +919,7 @@ describe("resource selector tools", () => {
 				),
 			),
 		).toContain("two");
-		await createWriteToolDefinition(testDir).execute(
+		await createWriteToolDefinition(testDir, { hashlineStore }).execute(
 			"plain-db-write",
 			{ path: "notes.db", content: "plain\n" },
 			undefined,

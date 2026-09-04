@@ -234,6 +234,15 @@ function createExecutionEnvToolOptions(
 				mkdir: async (path) => {
 					unwrapFileResult(await env.createDir(path));
 				},
+				readFile: async (path) => {
+					const result = await env.readBinaryFile(path);
+					if (result.ok) return Buffer.from(result.value).toString("utf8");
+					// `not_found` is the only code that means the path is free. The rest
+					// (`permission_denied`, `is_directory`, `not_directory`) leave it occupied, so
+					// they have to surface as failures rather than inviting `write` to take it.
+					if (result.error.code === "not_found") return undefined;
+					throw result.error;
+				},
 			},
 		},
 		find: {

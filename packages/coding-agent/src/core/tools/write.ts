@@ -15,11 +15,23 @@ import { getLanguageFromPath, highlightCode } from "../../modes/interactive/them
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { type ConflictBlock, getRegisteredConflictBlocks, parseConflictBlocks } from "./conflict-registry.ts";
+import {
+	assertPriorSessionObservation,
+	computeLiveState,
+	FileMutationConflict,
+	type FileMutationConflictDetails,
+	filesystemErrorCode,
+	isExclusiveCreateCollision,
+	isMissingTargetError,
+	type MutationRequesterResolver,
+} from "./file-mutation-coordinator.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import {
 	createHashlineSnapshotStore,
 	formatHashlineContent,
 	type HashlineSnapshotStore,
+	hashlineStoreKey,
+	normalizeHashlineContent,
 	recordHashlineSnapshot,
 	stripKnownHashlineCopiedContent,
 	stripKnownHashlineCopiedContentWithMeta,
@@ -68,14 +80,41 @@ export interface WriteToolDetails {
 	diagnostics?: unknown;
 }
 
+/** Per-call options for {@link WriteOperations.writeFile}. */
+export interface WriteFileOptions {
+	/**
+	 * Create the file, failing with `EEXIST` if the path is already taken, rather than
+	 * truncating whatever is there. Requested only when the tool has just established that the
+	 * target was absent, so it closes the window between that check and the write.
+	 *
+	 * An implementation that cannot express exclusive create may ignore this and overwrite. It
+	 * then loses only the race against writers outside Atomic, since the mutation queue already
+	 * excludes writers inside it.
+	 */
+	exclusive?: boolean;
+}
+
 /**
  * Pluggable operations for the write tool.
  * Override these to delegate file writing to remote systems (for example SSH).
  */
 export interface WriteOperations {
 	/** Write content to a file */
-	writeFile: (absolutePath: string, content: string) => Promise<void>;
+	writeFile: (absolutePath: string, content: string, options?: WriteFileOptions) => Promise<void>;
 	mkdir: (dir: string) => Promise<void>;
+	/**
+	 * Current content of a path, or `undefined` when nothing is there.
+	 *
+	 * `write` reads before every write, to refuse generated files, to check that this session
+	 * has observed what it is replacing, and to decide between creating and overwriting. Those
+	 * checks have to see the same filesystem the write lands on, so this belongs here rather
+	 * than being read from local disk behind an implementation's back.
+	 *
+	 * Report absence as `undefined` and **reject** for anything else. A path that exists but
+	 * cannot be read is not the same as a free path: returning `undefined` for it would present
+	 * an unreadable file as a fresh create and truncate it.
+	 */
+	readFile: (absolutePath: string) => Promise<string | undefined>;
 }
 
 async function findConflictBlocks(root: string, limit = 100): Promise<ConflictBlock[]> {
@@ -160,14 +199,32 @@ function hashlineHeaderForWrite(path: string, cwd: string, content: string, stor
 	return `[${snapshot.displayPath}#${snapshot.tag}]`;
 }
 const defaultWriteOperations: WriteOperations = {
-	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
+	// `wx` is `O_CREAT | O_EXCL`, so the kernel decides the create race rather than this
+	// process. Without it the absence check above the write is advisory only.
+	writeFile: (path, content, options) =>
+		options?.exclusive
+			? fsWriteFile(path, content, { encoding: "utf-8", flag: "wx" })
+			: fsWriteFile(path, content, "utf-8"),
 	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
+	readFile: async (path) => {
+		try {
+			return await fsReadFile(path, "utf8");
+		} catch (error) {
+			// Only a genuinely free path becomes `undefined`. A directory, a locked file, or a
+			// permissions failure keeps throwing, so the caller reports it rather than treating
+			// an occupied path as available and truncating it.
+			if (isMissingTargetError(error)) return undefined;
+			throw error;
+		}
+	},
 };
 
 export interface WriteToolOptions {
 	/** Custom operations for file writing. Default: local filesystem */
 	operations?: WriteOperations;
 	hashlineStore?: HashlineSnapshotStore;
+	/** Resolves who is being rejected when a mutation conflicts. Diagnostic only. */
+	resolveMutationRequester?: MutationRequesterResolver;
 }
 
 type WriteHighlightCache = {
@@ -317,6 +374,7 @@ export function createWriteToolDefinition(
 ): ToolDefinition<typeof writeSchema, WriteToolDetails | undefined> {
 	const ops = options?.operations ?? defaultWriteOperations;
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	const resolveMutationRequester = options?.resolveMutationRequester;
 	return {
 		name: "write",
 		label: "write",
@@ -327,7 +385,7 @@ export function createWriteToolDefinition(
 		...experimentalToolSamplingProperty(),
 		parameters: writeSchema,
 		async execute(
-			_toolCallId,
+			toolCallId,
 			{ path, content }: { path: string; content: string },
 			signal?: AbortSignal,
 			_onUpdate?,
@@ -417,7 +475,7 @@ export function createWriteToolDefinition(
 				const sourcePath = path.startsWith("local://") ? resolveInternalSelector(path, executionCwd) : undefined;
 				if (sourcePath)
 					return createWriteToolDefinition(executionCwd, options).execute(
-						_toolCallId,
+						toolCallId,
 						{ path: sourcePath, content },
 						signal,
 						_onUpdate,
@@ -437,7 +495,7 @@ export function createWriteToolDefinition(
 			}
 			const absolutePath = resolveToCwd(path, executionCwd);
 			const dir = dirname(absolutePath);
-			return withFileMutationQueue(absolutePath, async () => {
+			return withFileMutationQueue(absolutePath, async (canonicalKey) => {
 				// Do not reject from an abort event listener here: that would release the
 				// mutation queue while an in-flight filesystem operation may still finish.
 				// Checking signal.aborted after each await observes the same aborts while
@@ -451,9 +509,54 @@ export function createWriteToolDefinition(
 				await ops.mkdir(dir);
 				throwIfAborted();
 
-				const existing = await fsReadFile(absolutePath, "utf8").catch(() => undefined);
+				const requester = resolveMutationRequester?.(toolCallId);
+				const conflict = (details: Omit<FileMutationConflictDetails, "path" | "canonicalKey" | "requester">) =>
+					new FileMutationConflict({
+						...details,
+						path,
+						// Registration resolved this already, so a conflict names the target
+						// without paying for a second `realpath` while holding the lock.
+						canonicalKey,
+						...(requester ? { requester } : {}),
+					});
+
+				let existing: string | undefined;
+				try {
+					existing = await ops.readFile(absolutePath);
+				} catch (error) {
+					// The path is occupied by something this reader cannot open: a directory, a
+					// locked file, a permissions failure. Treating that as absence would present it
+					// as a fresh create and truncate it, so it is a conflict rather than a fallback.
+					const causeCode = filesystemErrorCode(error);
+					throw conflict({
+						reason: "target_unreadable",
+						// Nothing about the target can be described once the read fails, and
+						// inventing a size or a tag would be worse than omitting them.
+						...(causeCode ? { causeCode } : {}),
+					});
+				}
 				if (existing !== undefined && hasGeneratedMarker(existing))
 					throw new Error(`Refusing to overwrite generated file: ${path}`);
+				if (existing !== undefined) {
+					// `write` replaces a whole file rather than anchoring to a section, so nothing
+					// in the call itself says what is being replaced. Having recorded that exact
+					// content is the only evidence this session ever saw it, and the store answers
+					// for this session alone, which is what makes another agent's file land here as
+					// a conflict instead of silently losing.
+					//
+					// The read above is reused deliberately: it already happened under the queue,
+					// so re-reading would only widen the window it closes.
+					assertPriorSessionObservation({
+						canonicalKey,
+						storeKey: hashlineStoreKey(absolutePath),
+						path,
+						store: hashlineStore.snapshots,
+						// Normalized because that is the form `record` stored. Comparing raw bytes
+						// would reject every CRLF file the session had read perfectly well.
+						live: normalizeHashlineContent(existing),
+						...(requester ? { requester } : {}),
+					});
+				}
 				const stripped = stripKnownHashlineCopiedContentWithMeta(
 					content,
 					absolutePath,
@@ -462,8 +565,31 @@ export function createWriteToolDefinition(
 					path,
 				);
 				const writeContent = stripped.content;
-				await ops.writeFile(absolutePath, writeContent);
+				if (existing === undefined) {
+					// Nothing was there a moment ago, so this is a create and says so to the
+					// filesystem. The mutation queue already excludes other Atomic writers; `O_EXCL`
+					// covers the rest, and turns what would have been a silent clobber of a file
+					// that appeared in between into a conflict that names it.
+					try {
+						await ops.writeFile(absolutePath, writeContent, { exclusive: true });
+					} catch (error) {
+						if (!isExclusiveCreateCollision(error)) throw error;
+						const appeared = await ops.readFile(absolutePath).catch(() => undefined);
+						throw conflict({
+							reason: "target_exists",
+							// Only describe the file when it can still be read. `computeLiveState`
+							// renders absence for `undefined`, which would contradict the reason.
+							...(appeared !== undefined ? { liveState: computeLiveState(appeared) } : {}),
+						});
+					}
+				} else await ops.writeFile(absolutePath, writeContent);
 				invalidateNativeSearchCache(absolutePath);
+				// Recorded as soon as the bytes land, ahead of the abort check below, because an
+				// abort cancels reporting the result rather than undoing the write. Left until
+				// after it, a cancelled-but-written file would come back as someone else's work on
+				// the next overwrite. The hashline engine already records inside `commit` for the
+				// same reason.
+				const header = hashlineHeaderForWrite(absolutePath, executionCwd, writeContent, hashlineStore);
 				let madeExecutable = false;
 				if (writeContent.startsWith("#!")) {
 					const mode = await fsStat(absolutePath)
@@ -476,7 +602,6 @@ export function createWriteToolDefinition(
 				}
 				throwIfAborted();
 
-				const header = hashlineHeaderForWrite(absolutePath, executionCwd, writeContent, hashlineStore);
 				return {
 					content: [
 						{

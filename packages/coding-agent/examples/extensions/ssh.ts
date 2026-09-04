@@ -64,11 +64,39 @@ function createRemoteReadOps(remote: string, remoteCwd: string, localCwd: string
 function createRemoteWriteOps(remote: string, remoteCwd: string, localCwd: string): WriteOperations {
 	const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
 	return {
-		writeFile: async (p, content) => {
+		writeFile: async (p, content, options) => {
 			const b64 = Buffer.from(content).toString("base64");
-			await sshExec(remote, `echo ${JSON.stringify(b64)} | base64 -d > ${JSON.stringify(toRemote(p))}`);
+			const target = JSON.stringify(toRemote(p));
+			// `set -C` is the shell's noclobber, so `>` on an existing path fails instead of
+			// truncating it. That is the remote equivalent of `O_EXCL`, and it is what keeps the
+			// create path from silently taking a file that appeared since the read below.
+			const redirect = options?.exclusive ? `set -C; base64 -d > ${target}` : `base64 -d > ${target}`;
+			try {
+				await sshExec(remote, `echo ${JSON.stringify(b64)} | { ${redirect}; }`);
+			} catch (error) {
+				// A remote shell reports noclobber as a bare non-zero exit, carrying no `code` to read.
+				// `write` renders an exclusive-create failure as a `target_exists` conflict only when the
+				// rejection carries `EEXIST`, so the collision has to be named here; otherwise this backend
+				// alone surfaces an opaque SSH error where every other one reports a typed conflict.
+				if (!options?.exclusive) throw error;
+				// Re-probe rather than assume the failure was a collision. A permission error, a full disk,
+				// or a dropped connection fail the same write, and each of those stays itself.
+				const probe = await sshExec(remote, `test -e ${target} && echo yes || echo no`).catch(() => undefined);
+				if (probe?.toString().trim() !== "yes") throw error;
+				throw Object.assign(new Error(`EEXIST: file already exists, open '${toRemote(p)}'`), { code: "EEXIST" });
+			}
 		},
 		mkdir: (dir) => sshExec(remote, `mkdir -p ${JSON.stringify(toRemote(dir))}`).then(() => {}),
+		// Reads the same filesystem the write lands on, which is the point: checking the local
+		// disk would let `write` decide what to do about a remote file by looking at a different
+		// machine. A missing path is `undefined`; anything else, including an unreadable one,
+		// stays a failure.
+		readFile: async (p) => {
+			const target = JSON.stringify(toRemote(p));
+			const probe = await sshExec(remote, `test -e ${target} && echo yes || echo no`);
+			if (probe.toString().trim() === "no") return undefined;
+			return (await sshExec(remote, `cat ${target}`)).toString("utf8");
+		},
 	};
 }
 

@@ -30,6 +30,18 @@ export function hashlineDisplayPath(absolutePath: string, cwd: string): string {
 	return toPosixPath(absolutePath);
 }
 
+/**
+ * The key a path's snapshots are filed under in the underlying {@link SnapshotStore}.
+ *
+ * `record` below is the only place that decides this, so anything asking the store about a
+ * path it did not itself record goes through here rather than re-deriving the convention and
+ * drifting from it. Note this is `path.normalize`, not `realpath`: two symlinked spellings of
+ * one file are two keys here, unlike `canonicalMutationKey`.
+ */
+export function hashlineStoreKey(absolutePath: string): string {
+	return normalizePath(absolutePath);
+}
+
 export function normalizeHashlineContent(content: string): string {
 	return content
 		.replace(/^\uFEFF/, "")
@@ -47,7 +59,7 @@ export function createHashlineSnapshotStore(): HashlineSnapshotStore {
 	return {
 		snapshots,
 		record(absolutePath: string, cwd: string, content: string): HashlineSnapshot {
-			const normalizedPath = normalizePath(absolutePath);
+			const normalizedPath = hashlineStoreKey(absolutePath);
 			const normalized = normalizeHashlineContent(content);
 			const displayPath = hashlineDisplayPath(normalizedPath, cwd);
 			const tag = snapshots.record(normalizedPath, normalized);

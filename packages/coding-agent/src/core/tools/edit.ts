@@ -10,7 +10,16 @@ import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { nativeBlockResolver } from "./block-resolver.ts";
 import { EditBatchCoordinator, parallelEditBatchWarning } from "./edit-batch.ts";
 import { generateDiffString, generateUnifiedPatch, normalizeToLF, stripBom } from "./edit-diff.ts";
-import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import {
+	assertLiveMatchesPrepared,
+	computeLiveState,
+	FileMutationConflict,
+	filesystemErrorCode,
+	isMissingTargetError,
+	type MutationRequester,
+	type MutationRequesterResolver,
+} from "./file-mutation-coordinator.ts";
+import { canonicalMutationKey, withFileMutationQueue } from "./file-mutation-queue.ts";
 import {
 	createHashlineSnapshotStore,
 	formatCompactHashlineEditResult,
@@ -19,6 +28,7 @@ import {
 } from "./hashline.ts";
 import {
 	Filesystem,
+	MismatchError,
 	missingSnapshotTagMessage,
 	Patch,
 	Patcher,
@@ -26,6 +36,7 @@ import {
 	type PreparedSection,
 	type WriteResult,
 } from "./hashline-engine/index.ts";
+import { NonMintingSnapshotStore } from "./non-minting-snapshot-store.ts";
 import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";
 import { resolveReadPath } from "./path-utils.ts";
 import { renderToolPath } from "./render-utils.ts";
@@ -200,6 +211,8 @@ const defaultEditOperations: EditOperations = {
 export interface EditToolOptions {
 	operations?: EditOperations;
 	hashlineStore?: HashlineSnapshotStore;
+	/** Resolves who is being rejected when a mutation conflicts. Diagnostic only. */
+	resolveMutationRequester?: MutationRequesterResolver;
 }
 
 type EditToolResultLike = {
@@ -335,17 +348,35 @@ function assertUniquePreparedPaths(prepared: readonly PreparedSection[]): void {
 interface EditCwdScope {
 	readonly fs: EditFilesystem;
 	readonly batcher: EditBatchCoordinator<EditToolResultLike>;
-	applySiblingEdits(siblings: readonly { input: string }[], applySignal?: AbortSignal): Promise<EditToolResultLike>;
+	applySiblingEdits(
+		siblings: readonly { input: string }[],
+		applySignal?: AbortSignal,
+		requester?: MutationRequester,
+	): Promise<EditToolResultLike>;
 }
 
 function createEditCwdScope(cwd: string, ops: EditOperations, hashlineStore: HashlineSnapshotStore): EditCwdScope {
 	const fs = new EditFilesystem(cwd, ops);
-	const patcher = new Patcher({ fs, snapshots: hashlineStore.snapshots, blockResolver: nativeBlockResolver });
+	// Reads delegate to the session store; records are computed and dropped, so a rejection
+	// cannot mint the tag that would validate an identical retry. `recordHashlineSnapshot`
+	// below stays the single writer of provenance.
+	const patcher = new Patcher({
+		fs,
+		snapshots: new NonMintingSnapshotStore(hashlineStore.snapshots),
+		blockResolver: nativeBlockResolver,
+	});
 	const noopCounts = new Map<string, number>();
 	const batcher = new EditBatchCoordinator<EditToolResultLike>();
+	/**
+	 * `requester` is the identity of the call that reached the lock first. #2496 merges
+	 * compatible siblings into one planned mutation, and a conflict rejects that mutation as a
+	 * unit, so naming the batch's holder is accurate. Identity is diagnostic regardless: it
+	 * never decides whether a sibling is admitted.
+	 */
 	async function applySiblingEdits(
 		siblings: readonly { input: string }[],
 		applySignal?: AbortSignal,
+		requester?: MutationRequester,
 	): Promise<EditToolResultLike> {
 		const merged =
 			siblings.length === 1
@@ -354,7 +385,24 @@ function createEditCwdScope(cwd: string, ops: EditOperations, hashlineStore: Has
 		const prepared: PreparedSection[] = [];
 		for (const section of merged.sections) {
 			throwIfAborted(applySignal);
-			prepared.push(await patcher.prepare(section));
+			try {
+				prepared.push(await patcher.prepare(section));
+			} catch (error) {
+				// `hashRecognized` is the engine's own answer to "have I ever recorded this tag
+				// for this path", so the foreign case is read off a typed field rather than
+				// matched out of a message in vendored code. Everything else the engine raises
+				// is left alone: recovery successes and the head/tail drift warning never reach
+				// here, and a stale-but-known tag keeps the engine's own wording.
+				if (!(error instanceof MismatchError) || error.hashRecognized) throw error;
+				throw new FileMutationConflict({
+					reason: "foreign_snapshot",
+					path: section.path,
+					canonicalKey: await canonicalMutationKey(fs.canonicalPath(section.path)),
+					presentedTag: error.expectedFileHash,
+					liveState: computeLiveState(error.fileLines.join("\n")),
+					...(requester ? { requester } : {}),
+				});
+			}
 		}
 		assertUniquePreparedPaths(prepared);
 		const noops = prepared.filter((item) => item.isNoop);
@@ -372,10 +420,40 @@ function createEditCwdScope(cwd: string, ops: EditOperations, hashlineStore: Has
 		}
 		for (const item of prepared) {
 			throwIfAborted(applySignal);
-			if (normalizeToLF(stripBom(await fs.readText(item.section.path)).text) !== item.normalized)
-				throw new Error(
-					`Stale hashline tag for ${item.section.path}: file content changed before write. Re-read before editing.`,
-				);
+			let live: string;
+			try {
+				live = normalizeToLF(stripBom(await fs.readText(item.section.path)).text);
+			} catch (error) {
+				// `prepare` already read this file, so a read failing now means the target changed
+				// state under the patch: deleted, replaced by a directory, locked, or rewritten as
+				// something this reader cannot parse. Those are all race outcomes rather than tool
+				// errors, and letting them escape as raw filesystem errors would hide that from
+				// every consumer that tells conflicts apart from ordinary tool failures.
+				const missing = isMissingTargetError(error);
+				const causeCode = filesystemErrorCode(error);
+				throw new FileMutationConflict({
+					reason: missing ? "target_missing" : "target_unreadable",
+					path: item.section.path,
+					canonicalKey: await canonicalMutationKey(item.canonicalPath),
+					// Only the missing case can describe the target. Once a read fails for any
+					// other cause, its size and tag are unknowable and claiming either is invention.
+					...(missing ? { liveState: computeLiveState(undefined) } : {}),
+					...(causeCode ? { causeCode } : {}),
+					...(requester ? { requester } : {}),
+				});
+			}
+			// Compared before calling the guard so the happy path skips the extra `realpath`
+			// that naming the target canonically costs. The guard still owns the rejection.
+			if (live !== item.normalized) {
+				assertLiveMatchesPrepared({
+					canonicalKey: await canonicalMutationKey(item.canonicalPath),
+					path: item.section.path,
+					prepared: item.normalized,
+					live,
+					...(requester ? { requester } : {}),
+					...(item.section.fileHash ? { presentedTag: item.section.fileHash } : {}),
+				});
+			}
 		}
 		const outputs: string[] = [];
 		let combinedDiff = "",
@@ -399,9 +477,13 @@ function createEditCwdScope(cwd: string, ops: EditOperations, hashlineStore: Has
 					{ cause: error },
 				);
 			}
-			throwIfAborted(applySignal);
 			invalidateNativeSearchCache(result.canonicalPath);
+			// Recorded before the abort check, not after. `commit` has already written, and since
+			// the patcher was made non-minting this call is the only writer of provenance, so
+			// aborting first would leave the session's own bytes on disk with nothing recorded
+			// for them. The next overwrite would then read as another agent's file.
 			const snapshot = recordHashlineSnapshot(result.canonicalPath, cwd, result.after, hashlineStore);
+			throwIfAborted(applySignal);
 			const diffResult = generateDiffString(result.before, result.after);
 			combinedDiff += `${combinedDiff ? "\n" : ""}${diffResult.diff}`;
 			combinedPatch += `${combinedPatch ? "\n" : ""}${generateUnifiedPatch(result.path, result.before, result.after)}`;
@@ -445,7 +527,7 @@ export function createEditToolDefinition(
 		promptGuidelines: [...editToolSystemPromptContribution.guidelines],
 		...experimentalToolSamplingProperty(),
 		parameters: editSchema,
-		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
+		async execute(toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			if (typeof input.input !== "string" || input.input.trim() === "")
 				throw new Error("edit input must be a non-empty hashline script with [PATH#TAG] sections.");
 			const executionCwd = ctx?.cwd || cwd;
@@ -465,7 +547,11 @@ export function createEditToolDefinition(
 						throwIfAborted(signal);
 						const siblings = batcher.takeCompatible(entry);
 						try {
-							const result = await applySiblingEdits(siblings, signal);
+							const result = await applySiblingEdits(
+								siblings,
+								signal,
+								options?.resolveMutationRequester?.(toolCallId),
+							);
 							for (const sibling of siblings) sibling.resolve(result);
 							return result;
 						} catch (error) {

@@ -11,16 +11,21 @@ function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * The read half of `WriteOperations` for tests whose writes land on the real filesystem. These
+ * suites override `writeFile` to control interleaving, not to relocate the files, so the read
+ * has to see the same disk.
+ */
+async function readIfPresent(path: string): Promise<string | undefined> {
+	return readFile(path, "utf8").catch(() => undefined);
+}
+
 function createDeferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve!: () => void;
 	const promise = new Promise<void>((promiseResolve) => {
 		resolve = promiseResolve;
 	});
 	return { promise, resolve };
-}
-
-async function resolvesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
-	return Promise.race([promise.then(() => true), delay(ms).then(() => false)]);
 }
 
 const tempDirs: string[] = [];
@@ -168,8 +173,12 @@ describe("built-in edit and write tools", () => {
 			},
 		});
 		const writeTool = createWriteTool(dir, {
+			// One store per session, shared with the edit tool above, which is what lets `write`
+			// see the snapshot that edit just recorded and overwrite it.
+			hashlineStore: store,
 			operations: {
 				mkdir: async () => {},
+				readFile: readIfPresent,
 				writeFile: async (path, content) => {
 					await delay(10);
 					await writeFile(path, content, "utf8");
@@ -190,12 +199,12 @@ describe("built-in edit and write tools", () => {
 		const filePath = join(dir, "abort-write.txt");
 		const firstWriteStarted = createDeferred();
 		const finishFirstWrite = createDeferred();
-		const secondWriteStarted = createDeferred();
 		let firstWriteSettled = false;
 
 		const writeTool = createWriteTool(dir, {
 			operations: {
 				mkdir: async () => {},
+				readFile: readIfPresent,
 				writeFile: async (path, content) => {
 					if (content === "first\n") {
 						firstWriteStarted.resolve();
@@ -206,7 +215,6 @@ describe("built-in edit and write tools", () => {
 					}
 					if (content === "second\n") {
 						expect(firstWriteSettled).toBe(true);
-						secondWriteStarted.resolve();
 					}
 					await writeFile(path, content, "utf8");
 				},
@@ -219,7 +227,10 @@ describe("built-in edit and write tools", () => {
 		controller.abort();
 
 		const secondWrite = writeTool.execute("call-2", { path: filePath, content: "second\n" });
-		expect(await resolvesWithin(secondWriteStarted.promise, 20)).toBe(false);
+		// Ordering is proven inside the operations fake, which asserts `firstWriteSettled`
+		// before the second write is allowed to proceed. A wall-clock "has not started yet"
+		// check would only restate that weakly, and would pass on a loaded machine even if
+		// the queue released early.
 
 		finishFirstWrite.resolve();
 		await expect(firstWrite).rejects.toThrow("Operation aborted");
@@ -236,7 +247,6 @@ describe("built-in edit and write tools", () => {
 		const tag = store.record(filePath, dir, original).tag;
 		const firstWriteStarted = createDeferred();
 		const finishFirstWrite = createDeferred();
-		const secondWriteStarted = createDeferred();
 		let firstWriteSettled = false;
 
 		const editTool = createEditTool(dir, {
@@ -257,12 +267,15 @@ describe("built-in edit and write tools", () => {
 			},
 		});
 		const writeTool = createWriteTool(dir, {
+			// Shared with the edit tool, so the aborted edit's post-commit snapshot is what this
+			// write is overwriting. The abort cancelled the result, not the bytes.
+			hashlineStore: store,
 			operations: {
 				mkdir: async () => {},
+				readFile: readIfPresent,
 				writeFile: async (path, content) => {
 					if (content === "second\n") {
 						expect(firstWriteSettled).toBe(true);
-						secondWriteStarted.resolve();
 					}
 					await writeFile(path, content, "utf8");
 				},
@@ -279,7 +292,10 @@ describe("built-in edit and write tools", () => {
 		controller.abort();
 
 		const secondWrite = writeTool.execute("call-2", { path: filePath, content: "second\n" });
-		expect(await resolvesWithin(secondWriteStarted.promise, 20)).toBe(false);
+		// Ordering is proven inside the operations fake, which asserts `firstWriteSettled`
+		// before the second write is allowed to proceed. A wall-clock "has not started yet"
+		// check would only restate that weakly, and would pass on a loaded machine even if
+		// the queue released early.
 
 		finishFirstWrite.resolve();
 		await expect(firstEdit).rejects.toThrow("Operation aborted");
