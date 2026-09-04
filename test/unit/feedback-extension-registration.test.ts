@@ -5,9 +5,9 @@ import { test } from "vitest";
 import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
 import type { ExtensionAPI, RegisteredCommand, ToolDefinition } from "../../packages/coding-agent/src/index.js";
 
-test("feedback extension registration matches its bundled command advertisement", () => {
+test("feedback extension registration matches its bundled command advertisement", async () => {
 	let registeredDescription: string | undefined;
-	let submissionParameters: ToolDefinition["parameters"] | undefined;
+	let submissionTool: ToolDefinition | undefined;
 	const toolNames: string[] = [];
 	const api = {
 		registerCommand: ((name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">) => {
@@ -15,7 +15,7 @@ test("feedback extension registration matches its bundled command advertisement"
 		}) as ExtensionAPI["registerCommand"],
 		registerTool: ((tool: ToolDefinition) => {
 			toolNames.push(tool.name);
-			if (tool.name === "feedback_submit_issue") submissionParameters = tool.parameters;
+			if (tool.name === "feedback_submit_issue") submissionTool = tool;
 		}) as ExtensionAPI["registerTool"],
 	} as Pick<ExtensionAPI, "registerCommand" | "registerTool"> as ExtensionAPI;
 
@@ -25,9 +25,16 @@ test("feedback extension registration matches its bundled command advertisement"
 	assert.equal(registeredDescription, FEEDBACK_COMMAND_DESCRIPTION);
 	assert.equal(registeredDescription, advertised?.description);
 	assert.deepEqual(toolNames, ["feedback_collect_diagnostics", "feedback_prepare_issue", "feedback_submit_issue"]);
-	assert.ok(submissionParameters);
+	assert.ok(submissionTool);
 	const exact = { kind: "bug", title: "Reviewed", body: "Reviewed body" };
-	assert.equal(Check(submissionParameters, exact), true);
+	assert.equal(Check(submissionTool.parameters, exact), true);
 	for (const extra of ["repository", "token", "rawContext"])
-		assert.equal(Check(submissionParameters, { ...exact, [extra]: "must not pass" }), false, extra);
+		assert.equal(Check(submissionTool.parameters, { ...exact, [extra]: "must not pass" }), false, extra);
+	const result = await submissionTool.execute("id", exact, undefined, undefined, {
+		sessionManager: { getBranch: () => [] },
+	} as unknown as Parameters<ToolDefinition["execute"]>[4]);
+	assert.equal("isError" in result && result.isError, true);
+	const resultText = result.content[0]?.type === "text" ? result.content[0].text : "";
+	assert.match(resultText, /does not match the most recent prepared draft/u);
+	assert.doesNotMatch(resultText, /github\.com/u);
 });

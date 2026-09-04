@@ -45,11 +45,14 @@ const feedbackPrepareParameters = Type.Object({
 	how: Type.Optional(Type.String()),
 });
 
-const feedbackSubmitParameters = Type.Object({
-	kind: Type.Union([Type.Literal("bug"), Type.Literal("enhancement")]),
-	title: Type.String(),
-	body: Type.String(),
-}, { additionalProperties: false });
+const feedbackSubmitParameters = Type.Object(
+	{
+		kind: Type.Union([Type.Literal("bug"), Type.Literal("enhancement")]),
+		title: Type.String(),
+		body: Type.String(),
+	},
+	{ additionalProperties: false },
+);
 
 const feedbackDiagnosticsParameters = Type.Object({
 	report: Type.String(),
@@ -158,11 +161,14 @@ export default function feedback(pi: ExtensionAPI): void {
 		parameters: feedbackSubmitParameters,
 		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
 			const details = await submitFeedbackIssue(params, {
-				sessionManager: ctx.sessionManager, transport: createGitHubIssueTransport(), signal,
+				sessionManager: ctx.sessionManager,
+				transport: createGitHubIssueTransport(),
+				signal,
 			});
 			return {
 				content: [{ type: "text", text: details.ok ? details.url : details.message }],
-				details, ...(details.ok ? {} : { isError: true }),
+				details,
+				...(details.ok ? {} : { isError: true }),
 			};
 		},
 	});
