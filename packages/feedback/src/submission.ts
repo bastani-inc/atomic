@@ -13,6 +13,7 @@ const messages = {
 	"rate-limit": "GitHub rate-limited the submission. The reviewed draft was not posted.",
 	validation: "GitHub rejected the issue as invalid. The reviewed draft was not posted.",
 	network: "The issue could not be posted because the network request failed.",
+	"unexpected-status": "GitHub returned an unexpected response; the reviewed draft was not posted.",
 	abort: "The issue submission was aborted. The reviewed draft was not posted.",
 	"malformed-response": "GitHub returned an invalid issue response; no success is being reported.",
 	"stale-draft": "The submitted content does not match the most recent prepared draft. Review the latest draft first.",
@@ -35,7 +36,7 @@ export type FeedbackSubmissionRuntime = {
 	readonly transport: IssueSubmissionTransport;
 	readonly signal?: AbortSignal;
 };
-type TransportFailure = "authentication" | "permission" | "rate-limit" | "validation";
+type TransportFailure = "authentication" | "permission" | "rate-limit" | "validation" | "unexpected-status";
 export class IssueTransportError extends Error {
 	constructor(
 		readonly code: TransportFailure,
@@ -186,8 +187,8 @@ function responseFailure(response: Response): IssueTransportError | Error {
 			? response.headers.has("retry-after") || response.headers.get("x-ratelimit-remaining") === "0"
 				? "rate-limit"
 				: "permission"
-			: "network");
-	return code === "network" ? new Error(messages.network) : new IssueTransportError(code, messages[code]);
+			: "unexpected-status");
+	return new IssueTransportError(code, messages[code]);
 }
 export function createGitHubIssueTransport(
 	fetcher: typeof fetch = fetch,
