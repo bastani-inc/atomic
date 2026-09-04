@@ -49,7 +49,6 @@ test("feedback extension registration matches its bundled command advertisement"
 	const result = await submissionTool.execute("id", exact, undefined, undefined, {
 		sessionManager: { getBranch: () => [] },
 	} as unknown as Parameters<ToolDefinition["execute"]>[4]);
-	assert.equal("isError" in result && result.isError, true);
 	const resultText = result.content[0]?.type === "text" ? result.content[0].text : "";
 	assert.match(resultText, /does not match the most recent prepared draft/u);
 	assert.doesNotMatch(resultText, /github\.com/u);

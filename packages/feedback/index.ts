@@ -176,7 +176,6 @@ export default function feedback(pi: ExtensionAPI): void {
 			return {
 				content: [{ type: "text", text: details.ok ? details.url : details.message }],
 				details,
-				...(details.ok ? {} : { isError: true }),
 			};
 		},
 	});
