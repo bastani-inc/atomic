@@ -60,6 +60,14 @@ export interface DurableResumeRuntimeDeps {
 }
 
 export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): DurableResumeRuntime {
+	let retainedBackend: DurableWorkflowBackend | undefined;
+	const ensureReady = async (): Promise<DurableWorkflowBackend> => {
+		const backend = await deps.ensureReady();
+		// Catalogs and completed opens are one logical operation: retain the backend that produced the catalog
+		// so a process-global owner reset cannot make the synchronous open resolve it against a different backend.
+		retainedBackend = backend;
+		return backend;
+	};
 	const hydrateStoredWorkflowCandidates = async (backend: DurableWorkflowBackend, target?: string): Promise<void> => {
 		const ids = deps.store
 			.runs()
@@ -70,11 +78,11 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
 	return {
 		async inspectDurableWorkflow(workflowId) {
-			const backend = await deps.ensureReady();
+			const backend = await ensureReady();
 			return await inspectTargetedDurableWorkflow(backend, workflowId);
 		},
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
-			const backend = await deps.ensureReady();
+			const backend = await ensureReady();
 			if (preparedCatalog.length === 0) {
 				preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
 			}
@@ -98,7 +106,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return getDurableBackend().listResumableWorkflows();
 		},
 		async prepareDurableResumable(workflowId) {
-			const backend = await deps.ensureReady();
+			const backend = await ensureReady();
 			try {
 				await hydrateStoredWorkflowCandidates(backend, workflowId);
 				preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
@@ -108,7 +116,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			}
 		},
 		async prepareDurableCatalog() {
-			const backend = await deps.ensureReady();
+			const backend = await ensureReady();
 			try {
 				await backend.hydrateResumableWorkflows();
 				await hydrateStoredWorkflowCandidates(backend);
@@ -120,7 +128,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			}
 		},
 		async prepareDurableResumableForIds(workflowIds) {
-			const backend = await deps.ensureReady();
+			const backend = await ensureReady();
 			try {
 				preparedCatalog = await prepareTargetedDurableResumable(backend, workflowIds);
 				return preparedCatalog;
@@ -129,7 +137,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			}
 		},
 		async prepareCompletedDurable() {
-			const backend = await deps.ensureReady();
+			const backend = await ensureReady();
 			try {
 				await backend.hydrateResumableWorkflows();
 				await hydrateStoredWorkflowCandidates(backend);
@@ -139,7 +147,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			}
 		},
 		openCompletedDurableWorkflow(workflowId, catalog) {
-			const backend = getDurableBackend();
+			const backend = retainedBackend ?? getDurableBackend();
 			const entry = resolveCatalogEntry(workflowId, catalog ?? []);
 			const handle = backend.getWorkflow(entry?.workflowId ?? workflowId);
 			return openCompletedSnapshot(

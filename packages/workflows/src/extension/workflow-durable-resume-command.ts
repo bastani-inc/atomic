@@ -255,13 +255,6 @@ function openCompleted(
 	catalog: readonly ResumableWorkflowEntry[],
 	beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void,
 ) {
-	if (!catalog.some((entry) => entry.workflowId === workflowId)) {
-		return {
-			ok: false as const,
-			reason: "not_found" as const,
-			message: `No completed durable workflow found for id: ${workflowId}`,
-		};
-	}
 	return (
 		runtime.openCompletedDurableWorkflow?.(workflowId, catalog) ??
 		openCompletedDurableWorkflow(
