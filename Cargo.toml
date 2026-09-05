@@ -35,7 +35,7 @@ portable-pty = "0.9"
 rayon = "1.12"
 smallvec = "1.15"
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.25"
 tree-sitter-python = "0.25"
