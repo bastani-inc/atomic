@@ -73,7 +73,7 @@ This is progressive disclosure: only descriptions are always in context, full in
 
 ### Built-in prompt engineering guidance
 
-The bundled `/skill:prompt-engineer` creates, optimizes, evaluates, and troubleshoots prompts for GPT-6 Astra, GPT-5.6, Claude Opus 5, and Claude Fable 5. It preserves outcomes, safety, permissions, evidence, output, and stopping rules while removing redundant instructions. Its model-specific references cover response length, effort, tool routing, delegation, and grounded progress claims.
+The bundled `/skill:prompt-engineer` creates, optimizes, evaluates, and troubleshoots prompts for GPT and Claude models. Its small routing file points to separate, source-attributed guides for GPT-6 Astra, GPT-5.6, GPT-5.5, Claude Fable 5.1, Claude Fable 5, Claude Opus 5, Claude Opus 4.8, and Claude Sonnet 5. Read the target model's page, or both relevant pages for a migration, without loading every guide. Shared references cover prompt structure, tools, evaluation, and instruction audits; model defaults, effort, verification, and API compatibility stay in their own pages.
 
 Astra guidance distills [OpenAI's model guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) into completion and permission rules, proportionate verification, useful parallel delegation, concise writing, and API migration checks. An instruction audit based on [Eric Provencher's advice](https://x.com/pvncher/status/2095991462416490862) explains how to shorten skill descriptions, use small routing files with optional references, remove obsolete recipes, and define safe local work and stopping points. It preserves binding repository requirements and separates API features from capabilities actually exposed by the host.
 

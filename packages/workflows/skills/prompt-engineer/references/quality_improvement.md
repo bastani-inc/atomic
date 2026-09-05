@@ -4,12 +4,12 @@ Optimize against representative behavior, not prompt aesthetics. Preserve user-v
 
 ## Delete-First Workflow
 
-OpenAI measured leaner system prompts scoring roughly 10–15% higher on internal coding-agent evals while using 41–66% fewer total tokens and costing 33–67% less. Results vary, but the direction is clear: deletion is the default edit.
+OpenAI's [GPT-5.6 guide](gpt_5_6.md) reports leaner system prompts scoring roughly 10–15% higher on internal coding-agent evals while using 41–66% fewer total tokens and costing 33–67% less. Treat these as workload-specific measurements. Test deletions against your own baseline.
 
 ### Delete
 
 - repeated statements of the same rule;
-- generic self-verification nagging and legacy verifier scaffolding;
+- generic self-verification reminders that duplicate the target model's behavior without improving measured outcomes;
 - over-triggering absolutes such as “use this tool in every case” when routing depends on context;
 - step-by-step process narration for behavior the model already performs;
 - examples that do not alter measured behavior;
@@ -79,7 +79,7 @@ For long agent runs, ground status as well as final claims:
 Before reporting progress, audit each claim against a tool result from this session. Report failed, skipped, or unverified work plainly, and call work complete only when the cited validation supports it.
 ```
 
-This compact evidence rule replaces repeated requests to recheck work. Anthropic reports that grounding progress against tool results nearly eliminated fabricated status reports in its tests.
+This evidence rule helps reduce unsupported progress claims; it does not replace required verification. The [Fable 5 guide](claude_fable_5.md) reports benefits from grounding status and separately recommends independent verification for long work. Keep those distinct from Opus 5's advice to remove redundant self-checks.
 
 ## Consistent Output
 
@@ -126,7 +126,7 @@ Safety invariants may use `NEVER` or `MUST`; stylistic preferences and tool judg
 
 ## Model and Effort Regression Checks
 
-Preserve the current model and effort as the baseline before tuning. For GPT-5.6, test the same reasoning effort and one level lower. For GPT-6 Astra, preserve the existing effective effort, or start at `low` when migrating from `none` or `minimal`; verify supported levels before comparing alternatives. For Claude Opus 5 and Claude Fable 5, start from `high`, then compare lower levels where quality holds and higher levels only for capability-sensitive work.
+Preserve the current model and effort as the baseline before tuning. Read the relevant page from the [model table](../SKILL.md#model-guides) for migration defaults and supported controls. Effort names do not imply equal reasoning volume across models. Compare lower levels where quality holds and higher levels only where the gain justifies cost; do not silently change thinking defaults, output budgets, or API compatibility.
 
 Effort is not a substitute for missing success criteria, routing, dependencies, validation, or stop rules. On Opus 5, effort does not reliably control visible response length; use an explicit length and shape contract.
 
