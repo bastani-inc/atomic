@@ -11,6 +11,8 @@ import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifact
 import {
   ACCEPTANCE_MATRIX_CONTRACT,
   CODE_QUALITY_VERIFICATION_GUIDANCE,
+  E2E_VERIFICATION_GUIDANCE,
+  MEDIA_PUBLICATION_GUIDANCE,
   CONTRACT_FIDELITY_AUDIT,
   FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
@@ -386,12 +388,15 @@ export async function runRalphWorkflow(
               ].join("\n"),
             ] as const]
           : []),
+        ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
+        ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
+        ["media_publication", MEDIA_PUBLICATION_GUIDANCE],
         [
           "qa_video_attachment",
           qaVideoAvailable
             ? [
                 `Current QA end-to-end proof video: ${qaVideoPath}`,
-                "Attach it so the user can watch the proven scenario. Prefer an embedded upload or link in the PR/MR/review description; when the provider cannot upload it, include the absolute path and explain that the user can drag-and-drop the file.",
+                "Publish it only after the authorization and privacy checks below. Prefer a native embedded upload when supported; otherwise retain the local artifact and explain the manual attachment option without claiming it is hosted.",
                 "Ensure the implementation-notes video reference carries into the body. Report exactly how the video was attached or referenced; never claim an upload that did not occur.",
               ].join("\n")
             : "No QA end-to-end proof video was produced. Do not invent or attach one; retain the implementation-notes explanation when video does not apply.",

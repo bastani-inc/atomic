@@ -180,7 +180,7 @@ export function renderReviewerPrompt(args: {
     ["project_guidance", [
       "Apply AGENTS.md/CLAUDE.md and nearby code, test, script, config, generated-artifact, and CI conventions; specific project guidance overrides general guidance.",
       "Choose the smallest relevant targeted tests, lint, typecheck, build, generated checks, CI-equivalent scripts, or user-flow proof from repository evidence.",
-      "When dependencies or tools are missing, use repository-approved setup commands rather than bypassing or mocking checks. After reasonable recovery fails, record the limitation in overall_explanation and reviewer_error and do not approve.",
+      "For missing required validation dependencies, use repository-approved setup when the environment permits rather than bypassing or mocking checks. If required evidence remains unavailable after reasonable recovery or a known restriction, record the limitation in overall_explanation and reviewer_error and do not approve. An unavailable optional mechanism alone is not a blocker when adequate objective-relevant proof and authoritative checks are present.",
     ].join("\n")],
     ["finding_contract", [
       "Return every discrete, actionable issue introduced or concretely worsened by this patch that the author would likely fix because it materially affects accuracy, security, performance, or maintainability. Match repository rigor; exclude taste, unsupported intent assumptions, speculation, and intentional changes consistent with the literal contract.",

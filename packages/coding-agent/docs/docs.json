@@ -42,6 +42,7 @@
               "workflows/builtins",
               "workflows/authoring",
               "workflows/reliable-design",
+              "workflows/verification",
               "workflows/operations",
               "workflows/api-reference"
             ]

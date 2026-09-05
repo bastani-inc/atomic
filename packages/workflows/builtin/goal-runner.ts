@@ -46,6 +46,7 @@ import {
   renderGoalOrchestratorPrompt,
 } from "./goal-orchestrator-prompts.js";
 import { renderReviewerPrompt, taggedPrompt } from "./goal-prompts.js";
+import { E2E_VERIFICATION_GUIDANCE, CODE_QUALITY_VERIFICATION_GUIDANCE, MEDIA_PUBLICATION_GUIDANCE } from "./shared-prompts.js";
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -439,6 +440,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       ];
       const prResult = await ctx.task("pull-request", {
         prompt: taggedPrompt([
+          ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
+          ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
+          ["media_publication", MEDIA_PUBLICATION_GUIDANCE],
           [
             "final_report",
             [

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The qlty skill now selects checks from repository/user priorities, preserves existing tools and read-only boundaries, and supports manual offline configuration when initialization or installation is unavailable. It separates prepared configuration from executed checks without weakening authoritative project validation.
+
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes

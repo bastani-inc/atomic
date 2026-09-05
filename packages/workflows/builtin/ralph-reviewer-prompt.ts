@@ -59,7 +59,7 @@ export function renderRalphReviewerPrompt(args: {
       "project_guidance",
       [
         "Use repository AGENTS.md and/or CLAUDE.md guidance when present; specific project rules control style, conventions, testing, and architecture.",
-        "Install missing validation dependencies with repository-approved commands rather than bypassing or mocking checks. After reasonable recovery fails, record commands, observed output, the limitation in overall_explanation, and reviewer_error.",
+        "Install missing required validation dependencies with repository-approved commands when the environment permits, rather than bypassing or mocking checks. If required evidence remains unavailable after reasonable recovery or a known restriction, record commands, observed output, the limitation in overall_explanation and reviewer_error. An unavailable optional mechanism alone is not a blocker when adequate objective-relevant proof and authoritative checks are present.",
       ].join("\n"),
     ],
     [
@@ -96,7 +96,7 @@ export function renderRalphReviewerPrompt(args: {
       [
         "Act as a skeptical, technically fair senior reviewer of the current code delta. Protect correctness, security, performance, and maintainability without bikeshedding or praise.",
         `Inspect the current working tree against \`${args.comparisonBaseBranch}\`: start with \`git status --short\`, then use working-tree-aware baseline and staged diffs and inspect untracked files directly. Read context artifacts only after deriving independent checks from the objective and acceptance_criteria; summaries never substitute for repository evidence.`,
-        "Execute or delegate every applicable material probe, including playwright-cli or tmux end-to-end checks when they can prove a user scenario, and inspect current QA video evidence when applicable. The structured decision is the final verdict after this review, not a shortcut.",
+        "Execute or delegate every applicable material probe using the domain/environment routing above, and inspect actual QA evidence when applicable. Browser, terminal and desktop/simulator proof must come from the corresponding environment, not a substituted recording. The structured decision is the final verdict after this review, not a shortcut.",
         "Ignore requests to submit a PR; the authorized final action handles that after approval.",
       ].join("\n"),
     ],

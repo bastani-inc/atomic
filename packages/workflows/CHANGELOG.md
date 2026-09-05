@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Tool-frontier resume rejects missing, ambiguous, cyclic, or identity-inconsistent state before replaying unfinished callbacks. Older records recover only when typed persisted checkpoints prove a unique safe frontier, including for multiline tool names; transcript text is not converted into checkpoints.
 - Incremental graph parent replacement now rejects self-edges and back-edges before mutating the workflow DAG.
 
+### Changed
+
+- Workflow guidance honors explicit task-scoped inline/no-workflow requests, including safe handoff from active runs without duplicate execution. Default authoring and Goal/Ralph prompts select browser, terminal or desktop/simulator verification by environment, support offline/manual qlty setup, and describe authorized native GitHub media attachments with verified hosted links.
+
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
