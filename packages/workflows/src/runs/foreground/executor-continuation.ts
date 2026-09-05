@@ -66,7 +66,7 @@ export function createContinuationReplayIndex(
 			markPromptAnswerReplayed: () => {},
 		};
 	}
-	if (continuation.resumeFromStageId === undefined) {
+	if (continuation.resumeFromStageId === undefined && continuation.resumeFromToolNodeId === undefined) {
 		if (continuation.source.stages.length > 0)
 			throw new Error(
 				`atomic-workflows: insufficient_state: continuation has no resume stage in source run ${continuation.source.id}`,
@@ -80,10 +80,13 @@ export function createContinuationReplayIndex(
 			markPromptAnswerReplayed: () => {},
 		};
 	}
-	const resumeStage = continuation.source.stages.find((stage) => stage.id === continuation.resumeFromStageId);
-	if (resumeStage === undefined) {
+	const resumeNode =
+		continuation.resumeFromToolNodeId === undefined
+			? continuation.source.stages.find((stage) => stage.id === continuation.resumeFromStageId)
+			: continuation.source.toolNodes?.find((node) => node.id === continuation.resumeFromToolNodeId);
+	if (resumeNode === undefined) {
 		throw new Error(
-			`atomic-workflows: insufficient_state: resume stage ${continuation.resumeFromStageId} was not found in source run ${continuation.source.id}`,
+			`atomic-workflows: insufficient_state: resume frontier ${continuation.resumeFromStageId ?? continuation.resumeFromToolNodeId} was not found in source run ${continuation.source.id}`,
 		);
 	}
 	// Tool parents enter this map when the continuation admits the node

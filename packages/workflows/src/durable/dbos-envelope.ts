@@ -53,6 +53,7 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
 	readonly promptKind?: UiPromptKind;
 	readonly outcomeKind?: "return_success" | "return_failure";
 	readonly throwingFailureError?: string;
+	readonly cancelled?: true;
 	readonly message?: string;
 	readonly promptHash?: string;
 	readonly replayKey?: string;
@@ -108,6 +109,7 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
 			argsHash: t.argsHash,
 			...(t.outcomeKind !== undefined ? { outcomeKind: t.outcomeKind } : {}),
 			...(t.throwingFailureError !== undefined ? { throwingFailureError: t.throwingFailureError } : {}),
+			...(t.cancelled === true ? { cancelled: true as const } : {}),
 			...(t.topology !== undefined
 				? {
 						topology: {
@@ -237,7 +239,8 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 			(env.outcomeKind !== undefined &&
 				env.outcomeKind !== "return_success" &&
 				env.outcomeKind !== "return_failure") ||
-			(env.throwingFailureError !== undefined && typeof env.throwingFailureError !== "string")
+			(env.throwingFailureError !== undefined && typeof env.throwingFailureError !== "string") ||
+			(env.cancelled !== undefined && (env.cancelled !== true || typeof env.throwingFailureError !== "string"))
 		)
 			return undefined;
 		const inspectionArgs =
@@ -262,6 +265,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 			output: env.output,
 			...(env.outcomeKind !== undefined ? { outcomeKind: env.outcomeKind } : {}),
 			...(env.throwingFailureError !== undefined ? { throwingFailureError: env.throwingFailureError } : {}),
+			...(env.cancelled === true ? { cancelled: true as const } : {}),
 			...(topology !== undefined ? { topology } : {}),
 		} as DurableToolCheckpoint;
 	}

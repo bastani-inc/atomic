@@ -132,6 +132,8 @@ export interface DurableToolCheckpoint {
 	 * never used as a replay cache hit, so the call runs again on resume.
 	 */
 	readonly throwingFailureError?: string;
+	/** Inspection-only cancellation, never a replayable tool result. */
+	readonly cancelled?: true;
 	readonly completedAt: number;
 	/** Additive graph topology; omitted by pre-#1991 checkpoints. */
 	readonly topology?: DurableToolTopology;

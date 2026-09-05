@@ -8,6 +8,20 @@ import { describe, test } from "vitest";
 import { GraphFrontierTracker } from "../../packages/workflows/src/runs/shared/graph-inference.js";
 
 describe("GraphFrontierTracker — Phase C", () => {
+	test("rejects a resumed tool back-edge before replacing the valid DAG", () => {
+		const tracker = new GraphFrontierTracker();
+		tracker.onSpawn("tool:prepare", "prepare");
+		tracker.onSettle("tool:prepare");
+		tracker.onSpawn("model", "model");
+		tracker.onSettle("model");
+		tracker.onSpawn("tool:wait", "wait");
+		tracker.onSettle("tool:wait");
+		const before = tracker.getNodes();
+		assert.throws(() => tracker.replaceParents("tool:prepare", ["tool:wait"]), /cycle/);
+		assert.throws(() => tracker.replaceParents("tool:wait", ["tool:wait"]), /cycle/);
+		assert.throws(() => tracker.onSpawn("tool:prepare", "prepare"), /cycle/);
+		assert.deepEqual(tracker.getNodes(), before);
+	});
 	// -------------------------------------------------------------------------
 	// Sequential
 	// -------------------------------------------------------------------------

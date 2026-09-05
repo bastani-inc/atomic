@@ -11,6 +11,7 @@
  */
 
 import { type DurabilityWarningSink, getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
+import { resolveToolResumeFrontier } from "../durable/tool-resume-frontier.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { DetachedRunOpts } from "../runs/background/runner.js";
@@ -98,7 +99,14 @@ export interface ExtensionRuntimeOpts {
 // Public interface
 // ---------------------------------------------------------------------------
 export type ResumeFailedRunResult =
-	| { ok: true; runId: string; sourceRunId: string; resumeFromStageId?: string; message: string }
+	| {
+			ok: true;
+			runId: string;
+			sourceRunId: string;
+			resumeFromStageId?: string;
+			resumeFromToolNodeId?: string;
+			message: string;
+	  }
 	| {
 			ok: false;
 			reason: "run_not_found" | "not_resumable" | "workflow_not_found" | "insufficient_state";
@@ -234,7 +242,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	function resolveResumeStage(
 		source: RunSnapshot,
 		stageId?: string,
-	): { ok: true; stageId?: string } | { ok: false; message: string } {
+	): { ok: true; stageId?: string; toolNodeId?: string } | { ok: false; message: string } {
 		const budgetExceededSource =
 			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
 		if (stageId !== undefined) {
@@ -245,9 +253,13 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				return { ok: false, message: `insufficient_state: stage ${stage.name} is ${stage.status}, not failed` };
 			return { ok: true, stageId: stage.id };
 		}
+		if (source.failedToolNodeId !== undefined && source.failedStageId === undefined) {
+			return resolveToolResumeFrontier(source, getDurableBackend());
+		}
 		const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
 		if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
 		if (budgetExceededSource && source.stages.length === 0) return { ok: true };
+		if ((source.toolNodes?.length ?? 0) > 0) return resolveToolResumeFrontier(source, getDurableBackend());
 		return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
 	}
 
@@ -290,13 +302,14 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			};
 		}
 		const stageMessage = (verb: string, runId: string): string =>
-			`${verb} workflow "${def.name}" from run ${source.id}${resolvedStage.stageId === undefined ? " at workflow start" : ` at stage ${resolvedStage.stageId}`} (run ${runId}).`;
+			`${verb} workflow "${def.name}" from run ${source.id}${resolvedStage.toolNodeId !== undefined ? ` at tool ${resolvedStage.toolNodeId}` : resolvedStage.stageId === undefined ? " at workflow start" : ` at stage ${resolvedStage.stageId}`} (run ${runId}).`;
 		const launchContinuation = (hooks?: Pick<DetachedRunOpts, "onWorkflowStartReady" | "onRawSettled">) =>
 			launchDetachedUntilStartup(def, sourceInputs, {
 				...runOptions(options?.policy),
 				continuation: {
 					source,
 					...(resolvedStage.stageId !== undefined ? { resumeFromStageId: resolvedStage.stageId } : {}),
+					...(resolvedStage.toolNodeId !== undefined ? { resumeFromToolNodeId: resolvedStage.toolNodeId } : {}),
 				},
 				...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 				...(jobs !== undefined ? { jobs } : {}),
@@ -388,6 +401,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				runId: accepted.runId,
 				sourceRunId: source.id,
 				resumeFromStageId: resolvedStage.stageId,
+				...(resolvedStage.toolNodeId !== undefined ? { resumeFromToolNodeId: resolvedStage.toolNodeId } : {}),
 				message: stageMessage("Resuming blocked", accepted.runId),
 			};
 		}
@@ -429,6 +443,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			runId: accepted.runId,
 			sourceRunId: source.id,
 			resumeFromStageId: resolvedStage.stageId,
+			...(resolvedStage.toolNodeId !== undefined ? { resumeFromToolNodeId: resolvedStage.toolNodeId } : {}),
 			message: stageMessage("Resuming failed", accepted.runId),
 		};
 	}

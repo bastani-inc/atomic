@@ -280,9 +280,14 @@ function completedToolNodes(
 				parentIds: Object.freeze(
 					[...(topology?.parentIds ?? [])].map((parentId) => sourceIds.get(parentId) ?? parentId),
 				),
-				replayed: true,
+				...(checkpoint.throwingFailureError === undefined ? { replayed: true } : {}),
 				...(topology === undefined ? { topologyState: "unavailable" as const } : {}),
-				status: failed ? ("failed" as const) : ("cached" as const),
+				status:
+					checkpoint.cancelled === true
+						? ("cancelled" as const)
+						: failed
+							? ("failed" as const)
+							: ("cached" as const),
 				executionOrder: topology?.order ?? firstSequenceByHash.get(checkpoint.argsHash)!,
 				...(topology?.startedAt !== undefined ? { startedAt: topology.startedAt } : {}),
 				endedAt: topology?.endedAt ?? checkpoint.completedAt,

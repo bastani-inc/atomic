@@ -31,9 +31,11 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend.js";
+import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
 import { getDurableBackend } from "./factory.js";
 import { isDurableWorkflowResumable, isForeignLiveWorkflow } from "./resume-eligibility.js";
+import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
 export type ResumeDurableResult =
@@ -191,6 +193,22 @@ export async function resumeDurableWorkflow(
 			message: `invalid_inputs: ${err instanceof Error ? err.message : String(err)}`,
 		};
 	}
+	let toolContinuation: RunOpts["continuation"];
+	if (
+		handle.status === "failed" &&
+		(handle.failedToolNodeId !== undefined ||
+			/^atomic-workflows: ctx\.tool .* aborted by node abort$/.test(handle.error ?? ""))
+	) {
+		const source = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId);
+		const frontier = source === undefined ? undefined : resolveToolResumeFrontier(source, backend);
+		if (frontier?.ok !== true)
+			return {
+				ok: false,
+				reason: "startup_failed",
+				message: frontier?.message ?? `insufficient_state: missing tool frontier in run ${handle.workflowId}`,
+			};
+		toolContinuation = { source: source!, resumeFromToolNodeId: frontier.toolNodeId };
+	}
 	removeDurableResumeShadowRuns(deps.baseRunOpts.store, resolved.workflowId);
 
 	// Claim resume against concurrent deletion through the required transition seam.
@@ -209,6 +227,7 @@ export async function resumeDurableWorkflow(
 		...(handle.origin !== undefined ? { origin: handle.origin } : {}),
 		runId: resolved.workflowId,
 		durableBackend: backend,
+		...(toolContinuation === undefined ? {} : { continuation: toolContinuation }),
 	};
 
 	let launch: ReturnType<typeof launchDetachedUntilStartup>;
