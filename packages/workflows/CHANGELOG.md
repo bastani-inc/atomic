@@ -6,15 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Fixed
-
-- Pending-stage Intercom settlement now skips unrelated runs with no messages to settle. Genuine sweep failures produce one display-only warning per distinct message in interactive sessions instead of repeated console stack traces; headless sessions retain console diagnostics, and pending messages remain available for recovery.
-
-### Changed
-
-- Updated the bundled prompt-engineering skill with GPT-6 Astra prompting and API migration guidance, plus an attributed instruction audit covering concise skill descriptions, selective reference loading, proportionate testing, permission boundaries, and completion criteria.
-- Split prompt-engineering model advice into individually sourced guides for GPT-5.6, GPT-5.5, Claude Fable 5.1, Fable 5, Opus 5, Opus 4.8, and Sonnet 5, alongside Astra. Shared guidance now routes to each model's distinct effort, verification, delegation, and API migration rules.
-
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
@@ -37,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Workflow guidance honors explicit task-scoped inline/no-workflow requests, including safe handoff from active runs without duplicate execution. Default authoring and Goal/Ralph prompts select browser, terminal or desktop/simulator verification by environment, support offline/manual qlty setup, and describe authorized native GitHub media attachments with verified hosted links.
 - Model-pinning guidance now points authored workflows at the measured per-evaluation scores in `packages/coding-agent/docs/models/evals.md` (formerly `artificial-analysis-index.md`), whose task-type picker maps each stage type to the eval that measures it, alongside the role guidance in `model-selection.md`.
 
+- Updated the bundled prompt-engineering skill with GPT-6 Astra prompting and API migration guidance, plus an attributed instruction audit covering concise skill descriptions, selective reference loading, proportionate testing, permission boundaries, and completion criteria.
+- Split prompt-engineering model advice into individually sourced guides for GPT-5.6, GPT-5.5, Claude Fable 5.1, Fable 5, Opus 5, Opus 4.8, and Sonnet 5, alongside Astra. Shared guidance now routes to each model's distinct effort, verification, delegation, and API migration rules.
+
 ### Fixed
 
 - Tool-only workflows no longer emit a `ZERO_STAGES` discovery warning. The static scan now recognizes `ctx.tool()` as tracked graph work without advertising tool nodes as future chat-stage targets.
@@ -49,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Tool-frontier resume rejects missing, ambiguous, cyclic, or identity-inconsistent state before replaying unfinished callbacks. Older records recover only when typed persisted checkpoints prove a unique safe frontier, including for multiline tool names; transcript text is not converted into checkpoints.
 - Incremental graph parent replacement now rejects self-edges and back-edges before mutating the workflow DAG.
 - Tool-frontier continuations reject normal returns and explicit completed exits that skip the exact unfinished tool, and reject replacement model/task and child-workflow execution before side effects. Stage/task worktree setup follows replay selection and live admission. The failure names the pending frontier, preserves source recovery evidence, and does not repeat completed callbacks.
+
+- Pending-stage Intercom settlement now skips unrelated runs with no messages to settle. Genuine sweep failures produce one display-only warning per distinct message in interactive sessions instead of repeated console stack traces; headless sessions retain console diagnostics, and pending messages remain available for recovery.
 
 ## [0.9.18-alpha.3] - 2026-09-01
 

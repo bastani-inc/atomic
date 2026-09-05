@@ -2,14 +2,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- Fullscreen mouse-wheel scrolling moves five times as far while Alt is held, through the Pi TUI 0.85.1 update ([upstream #9166](https://github.com/earendil-works/pi/pull/9166)).
-
-### Changed
-
-- Updated Pi runtime dependencies to 0.85.1, preserving Atomic's CLI startup, published client API, and footer watcher behavior.
-
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
@@ -39,6 +31,8 @@
 - GPT-6-Astra is now selectable through OpenAI, OpenAI Codex, Amazon Bedrock, OpenRouter, and the Vercel AI Gateway. Atomic derives distinct `openai/gpt-6-astra-fast` and `openai-codex/gpt-6-astra-fast` identities through the existing fast-model catalog overlay. The Codex fast identity sends upstream model `gpt-6-astra` with `service_tier: priority` while preserving the `codex_cli_rs` originator, the `model=gpt-6-astra;tier=priority` routing hint, session restore identity, usage attribution, and 2× request-time price accounting. Bedrock publishes the direct, global, and US IDs unchanged and sends `low` through `max` reasoning effort. The current dynamic OpenRouter catalog contributes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`; Vercel contributes `openai/gpt-6-astra` and its own route-less `openai/gpt-6-astra-fast`. Astra accepts text and image input, supports 128,000 output tokens, and retains each provider's long-context pricing above 272,000 aggregate input tokens.
 - Added provisional GitHub Copilot Astra support. `github-copilot/gpt-6-astra-fast` is derived only when the OAuth account catalog advertises that exact ID, and sends the suffixed ID without an OpenAI priority tier. The fallback base entry uses known Astra capabilities and zero costs for unknown Copilot pricing; it does not establish service availability.
 
+- Fullscreen mouse-wheel scrolling moves five times as far while Alt is held, through the Pi TUI 0.85.1 update ([upstream #9166](https://github.com/earendil-works/pi/pull/9166)).
+
 ### Changed
 
 - Updated all upstream Pi runtime dependencies to 0.85.0.
@@ -57,6 +51,8 @@
 - OpenAI Responses models that advertise explicit prompt-cache support, including GPT-5.6 and GPT-6 Astra, now use `prompt_cache_options.ttl: "30m"` for long cache retention. Earlier Responses models retain `prompt_cache_retention: "24h"`; no-cache and short-cache requests continue to omit unsupported fields.
 
 - Interactive model and thinking selections, including cycling shortcuts, now automatically become startup defaults. Scoped-model cycle-list changes also save immediately. Removed the Ctrl+S save-default shortcuts and UI.
+
+- Updated Pi runtime dependencies to 0.85.1, preserving Atomic's CLI startup, published client API, and footer watcher behavior.
 
 ### Fixed
 

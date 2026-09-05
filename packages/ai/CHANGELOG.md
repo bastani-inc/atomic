@@ -4,10 +4,6 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
-### Added
-
-- Added OpenRouter's `microsoft/mai-image-2.6` and `microsoft/mai-image-2.6-flash` image models from the Pi 0.85.1 catalog.
-
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
@@ -26,6 +22,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Added `zai-org/GLM-5.3-Fast` to the Baseten catalog from models.dev.
 - Added GPT-6-Astra to the generated OpenAI and OpenAI Codex catalogs with text and image input, 272,000 default input context, 128,000 maximum output, exact `low` through `max` reasoning efforts, tool search, additional tools, and the published $10 input / $1 cache read / $12.50 cache write / $50 output rates per million tokens. Requests above 272,000 aggregate input carry the published $20 / $2 / $25 / $75 request-wide tier. Amazon Bedrock also gains the exact Codex-advertised `openai.gpt-6-astra`, `global.openai.gpt-6-astra`, and `us.openai.gpt-6-astra` IDs, sends the selected reasoning effort through Converse, and uses zero catalog costs until AWS publishes Astra prices. The current OpenRouter catalog contributes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`; the Vercel AI Gateway contributes `openai/gpt-6-astra` and its provider-owned `openai/gpt-6-astra-fast`. Both dynamic catalogs retain their request-wide long-context prices. Azure OpenAI remains omitted because its authoritative catalog did not advertise Astra.
 - Added a provisional `github-copilot/gpt-6-astra` catalog entry using the Responses API, known Astra capabilities, and zero costs to mark unverified Copilot pricing. Copilot's own models.dev metadata takes precedence when present; account availability and fast sibling entitlement remain controlled by Copilot.
+
+- Added OpenRouter's `microsoft/mai-image-2.6` and `microsoft/mai-image-2.6-flash` image models from the Pi 0.85.1 catalog.
 
 ### Changed
 
