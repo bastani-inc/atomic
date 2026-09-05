@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.18-alpha.6] - 2026-09-04
+
 ### Breaking Changes
 
 - Workflow-stage targets now accept only root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` paths. The legacy `<runId>:<stageKey>` form is refused with a canonical-path migration hint.
