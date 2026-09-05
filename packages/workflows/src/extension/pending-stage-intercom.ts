@@ -26,6 +26,8 @@ import {
 	parseWorkflowStageTarget,
 	type WorkflowStageTarget,
 } from "../shared/workflow-stage-target.js";
+import type { ExtensionAPI } from "./public-types.js";
+import { createWorkflowBackgroundWarningReporter } from "./workflow-background-warning.js";
 
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
@@ -40,7 +42,7 @@ interface WorkflowEventSurface {
 		emit?(event: string, payload: Record<string, unknown>): void;
 		on?(event: string, listener: (payload: unknown) => void): unknown;
 	};
-	on?(event: "session_shutdown", listener: () => void): void;
+	on?: ExtensionAPI["on"];
 }
 
 interface PendingStageMessageEvent {
@@ -80,6 +82,7 @@ interface PendingStageUndeliverableEvent extends Record<string, unknown> {
 export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, activeStore: Store): () => void {
 	let disposed = false;
 	let sweepPromise: Promise<void> = Promise.resolve();
+	const reportWarning = createWorkflowBackgroundWarningReporter(pi);
 	const notifyUndeliverable = async (
 		entry: PendingStageMessage,
 		reason: string,
@@ -137,7 +140,9 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		sweepPromise = sweepPromise
 			.then(() => settleUndeliverablePendingStageMessages(activeStore, notifyUndeliverable))
 			.then(() => undefined)
-			.catch((error: Error) => console.warn("atomic-workflows: pending stage delivery sweep failed", error));
+			.catch((error: Error) =>
+				reportWarning(`atomic-workflows: pending stage delivery sweep failed: ${error.message}`),
+			);
 	};
 	const unsubscribeStore = activeStore.subscribeInvalidation(announceRoutes);
 	announceRoutes();
@@ -758,6 +763,8 @@ export async function settleUndeliverablePendingStageMessages(
 	let settled = 0;
 	const rootBackend = getDurableBackend();
 	for (const run of runs) {
+		// Retained/partial runs with no settlement work need no durable owner.
+		if (!run.pendingStageMessages?.some((entry) => needsUndeliverableSettlement(run, entry))) continue;
 		const backend = durableBackendForRun(rootBackend, runs, run.id);
 		if (backend === undefined) {
 			throw new Error(`atomic-workflows: workflow run ${run.id} has no durable owner for pending-stage settlement`);
