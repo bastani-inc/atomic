@@ -282,8 +282,8 @@ describe("ralph", () => {
 			assert.match(prompt, /frontend changes whose correctness depends on backend\/API behavior/, label);
 			assert.match(prompt, /skill: "playwright-cli"/, label);
 			assert.match(prompt, /skill: "tmux"/, label);
-			assert.match(prompt, /Assume credentials, auth, and environment access/i, label);
-			assert.match(prompt, /unattempted assumption is never valid grounds to skip/i, label);
+			assert.match(prompt, /Choose tools from observed environment capabilities/i, label);
+			assert.match(prompt, /Known offline\/restricted installation is sufficient evidence/i, label);
 		}
 		for (const label of ["reviewer-a", "reviewer-b"] as const) {
 			const prompt = ctx.calls.prompts[label]?.[0] ?? "";
@@ -291,8 +291,8 @@ describe("ralph", () => {
 			assert.match(prompt, /Known QA E2E video path for this run:/, label);
 			assert.match(prompt, /qa-e2e-evidence\.webm/, label);
 			assert.match(prompt, /inspect the actual video before approving/i, label);
-			assert.match(prompt, /assumed-missing credentials/i, label);
-			assert.match(prompt, /exact commands plus observed failure output/i, label);
+			assert.match(prompt, /without prohibited setup attempts/i, label);
+			assert.match(prompt, /bounded launch attempt and observed output/i, label);
 		}
 		assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
 	});

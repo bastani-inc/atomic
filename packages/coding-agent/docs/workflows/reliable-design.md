@@ -2,6 +2,8 @@
 
 Use this guide to turn an objective into an acyclic, evidence-producing workflow with explicit contracts, context boundaries, verification, and stop conditions. Read [Custom Workflow Authoring](/workflows/authoring) first if you have not built a workflow definition yet.
 
+First honor the user's task-scoped [execution-mode choice](/workflows/verification#execution-mode). Explicit inline/no-workflow requests override the routing rubric below, including complex tasks and review loops; preserve the same safety and verification bar without creating a hidden workflow. For workflow authoring, carry the [domain/environment verification and media evidence contract](/workflows/verification) into worker, reviewer and final handoff prompts.
+
 ## Choosing an Execution Shape
 
 "Use a workflow" is not one decision — it covers several execution shapes with different costs and guarantees. This section is written as agent-facing guidance: it is the self-prompt an orchestrating agent should run before the first tool call on a new request, and it doubles as documentation for humans who want to steer that choice explicitly.
@@ -141,7 +143,7 @@ Interpretation:
 - **7+ total, or Iteration = 2, or Verifiability = 2 with a review/approval gate:** a real workflow. Prefer a named workflow when one fits the whole task; otherwise author a custom graph, nesting proven children where sub-problems overlap.
 - **Any single hard signal overrides the arithmetic:** an explicit loop/stop condition, an approval or evidence gate, or a request for durable/background execution puts the task in workflow territory regardless of total score.
 
-The rubric prevents two common misuses: using parent-controlled subagent calls for an ad hoc implement→review→retry pipeline (that is adversarial verification without an engine — use a workflow and let its stages delegate specialists), and unbounded inline reconnaissance — apply the ten-call rule from [When to Use Workflows](/workflows#when-to-use-workflows): save findings to a context file and hand off through `reads`.
+When workflow execution is permitted, use the rubric to select tracked implementation/review loops and transfer bounded reconnaissance through `reads`. It does not override an explicit inline request. In either mode, stop unbounded reconnaissance by recording findings and taking the next concrete in-scope action.
 
 ### Task queues and software factories
 

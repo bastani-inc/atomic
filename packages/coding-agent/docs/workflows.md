@@ -42,7 +42,9 @@ Prefer composing builtin definitions with `ctx.workflow(...)` over copying or re
 
 ## When to Use Workflows
 
-Workflows are the default execution path when a request is non-trivial or combines inherent structure with a verifiable objective — implementation, build, debugging, bug fixes, migrations, features, scoped multi-file edits, docs/code changes where validation matters, and work with dependencies, handoffs, review gates, uncertainty, measurable done criteria, or evidence requirements. Choose a workflow before direct chat when the prompt includes any of these signals:
+Unless the user explicitly chooses inline execution, workflows are the default for non-trivial requests or structured work with a verifiable objective. Requests such as `inline`, `do this directly`, and `don't use a workflow` override that default for the specified task, even when complex. Do not launch a hidden/nested replacement or ask the user to reapprove the choice. Preserve testing, review, evidence, safety and authorization inline. Quoted examples and questions about inline code are not mode instructions. For an active switch, safely hold/stop the affected run and reconcile completed work and in-flight effects before continuing without duplicates; completed work is not undone. See [Verification and evidence](/workflows/verification).
+
+When no opt-out was given, workflow signals include:
 
 - implementation, build, debugging/diagnosis, bug-fix, migration, new-feature, scoped multi-file, or validated docs/code work
 - multiple subtasks, dependencies, handoffs, uncertainty, or parallel/sequential stages
@@ -52,13 +54,13 @@ Workflows are the default execution path when a request is non-trivial or combin
 
 Loop or stop-condition phrasing is an especially strong workflow signal: `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, `run checks and fix until green`, and `keep going until done` define control flow and convergence criteria that should be tracked.
 
-Use direct chat only for tiny, deterministic, low-risk answers or edits where stage tracking clearly costs more than it adds, typically a single-file/no-test/no-review change. Choose direct chat or a workflow based on that fit; reconnaissance is already inline execution. Once workflow fit is clear, limit pre-workflow reconnaissance to the few reads needed to sharpen the objective and validation criteria, and put deeper research or behavior probing inside the run.
+Without an explicit mode preference, direct chat fits tiny, deterministic, low-risk answers or edits where tracking costs more than it adds. Once workflow fit is clear and workflow execution is permitted, keep reconnaissance bounded and put deeper research inside the run.
 
 Workflow-first does not require builtins, monolithic workflows, or a force-fit builtin: a builtin that matches 60% of the task and fights the other 40% is worse than a small custom graph. Discover named builtin, project, user, and package workflows; or author a task-specific TypeScript `workflow({...})` inline with normal coding tools whenever the task needs richer branching, dynamic fan-out, artifacts, structured outputs, child workflows, human input, gates, retries, or loops.
 
 Rich custom workflows can compose the [common workflow patterns](/workflows/reliable-design#common-workflow-patterns): classify and branch at runtime, fan out and synthesize artifacts, run worker/verifier/reducer repair cycles, generate and filter or tournament-rank candidates, and loop until explicit evidence says the work is done. Workflow definitions are composable TypeScript modules — see [Workflow Composition](/workflows/authoring#workflow-composition). Atomic can write the definition, reload workflow resources, and run it for the current task; the workflow tool has no create action.
 
-If inline work drifts past roughly ten exploratory tool calls without an artifact, edit, or commit, or repeats a "verify one more thing" loop, save the findings to a context file and hand the task to the best-fit named or custom workflow through `reads`. Sunk research is transferable, not a reason to continue inline.
+If exploration drifts without progress, save findings and choose a concrete next action. Transfer them through `reads` to a fitting workflow when permitted; continue directly with appropriate validation when inline was requested.
 
 | User need | Use |
 |-----------|-----|

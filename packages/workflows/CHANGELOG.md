@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Incremental graph parent replacement now rejects self-edges and back-edges before mutating the workflow DAG.
 - Tool-frontier continuations reject normal returns and explicit completed exits that skip the exact unfinished tool, and reject replacement model/task and child-workflow execution before side effects. Stage/task worktree setup follows replay selection and live admission. The failure names the pending frontier, preserves source recovery evidence, and does not repeat completed callbacks.
 
+### Changed
+
+- Workflow guidance honors explicit task-scoped inline/no-workflow requests, including safe handoff from active runs without duplicate execution. Default authoring and Goal/Ralph prompts select browser, terminal or desktop/simulator verification by environment, support offline/manual qlty setup, and describe authorized native GitHub media attachments with verified hosted links.
+
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes

@@ -213,9 +213,9 @@ export async function createQaEvidenceVideoPath(runId?: string): Promise<string>
 export function renderQaE2eVideoGuidance(qaVideoPath: string): string {
   return [
     E2E_VERIFICATION_GUIDANCE,
-    `For a user-visible UI scenario, record the QA pass for review. After \`playwright-cli open\`, use \`playwright-cli video-start ${qaVideoPath}\`, annotate with \`playwright-cli video-chapter\` / \`playwright-cli video-show-actions\`, exercise the complete scenario, then run \`playwright-cli video-stop\`. Write to exactly ${qaVideoPath}, overwriting stale evidence.`,
-    `Add a \`## QA E2E Video\` entry to the implementation notes with the absolute path ${qaVideoPath} and one sentence naming the proven scenario. For changes without a user-visible UI scenario, record why video does not apply; never fabricate one.`,
-    "If `playwright-cli` or its browser runtime is unavailable, install it once per the skill (`npm install -g @playwright/cli@latest`, then `npx playwright install chromium` when needed). If a concrete attempt still fails, record the commands, observed failure output, smallest validation performed, and that no video was produced.",
+    `For a browser UI scenario, record the QA pass using playwright-cli video-start ${qaVideoPath} after opening the browser, exercise the complete scenario, then video-stop. For terminal or desktop/simulator scenarios, use the domain-appropriate tool from the guidance above, not a browser substitute. Save compatible video to exactly ${qaVideoPath} when produced; do not rename an incompatible format to look like a video.`,
+    `Add a \`## QA E2E Video\` entry to implementation notes with ${qaVideoPath} only if produced, the verified commit and proven scenario. Otherwise record why video was unavailable or did not apply and reference actual alternate screenshots, pane output or executable proof. Never fabricate evidence.`,
+    "Follow the environment-aware setup policy above: install missing recording tools only when permitted, stop after a bounded failed attempt or known restriction, and record the limitation and available validation. Do not overwrite unrelated artifacts.",
   ].join("\n");
 }
 

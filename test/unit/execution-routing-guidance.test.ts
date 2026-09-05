@@ -38,11 +38,11 @@ const workflowDocumentationPaths = [
 describe("workflow-first execution routing", () => {
 	test("restores workflows as the default for non-trivial verifiable work", () => {
 		for (const phrase of [
-			"default execution path for any non-trivial task",
-			"inherent structure plus an objective you can make verifiable",
+			"Unless the user explicitly chooses inline execution for this task",
+			"default execution path for non-trivial tasks and requests with structure and a verifiable objective",
 			"implementation, build, debug/diagnosis, bug-fix, migration, new-feature",
 			"multiple steps, dependencies, handoffs, uncertainty",
-			"Only skip workflows for tiny, deterministic, low-risk",
+			"Without an explicit execution-mode preference, skip workflows for tiny",
 		]) {
 			expect(modelVisibleRouting).toContain(phrase);
 		}
@@ -52,7 +52,7 @@ describe("workflow-first execution routing", () => {
 		for (const phrase of [
 			"Budget reconnaissance",
 			"roughly ten exploratory tool calls",
-			"Sunk inline research transfers through files",
+			"when inline was requested, continue directly with the same validation bar",
 		]) {
 			expect(modelVisibleRouting).toContain(phrase);
 		}
@@ -83,7 +83,7 @@ describe("workflow-first execution routing", () => {
 	test("supports named and rich inline TypeScript workflows", () => {
 		for (const phrase of [
 			"builtin, project, user, or package",
-			"custom TypeScript `workflow({...})` inline",
+			"custom TypeScript `workflow({...})` with normal coding tools",
 			"reload workflow resources",
 			"Do not force-fit",
 			"deterministic branching",
@@ -622,12 +622,10 @@ describe("workflow-first execution routing", () => {
 	test("continues through blocked status unless human input must settle ambiguity", () => {
 		for (const phrase of [
 			"Treat a blocked run as continuable by default",
-			"A blocked run is a changed condition, not a stop order",
-			"keep the work moving by default",
-			"resume a resumable block",
-			"carries the remaining tracked work past a terminal block",
-			"continue inline only if the remaining work is minimal",
-			"so ambiguous that competing interpretations lead to materially different outcomes",
+			"unless the user requests inline/no-workflow execution",
+			"safely holding/stopping the affected run",
+			"reconciling completed work and in-flight effects",
+			"continuing inline without duplication",
 			"When human input is unavailable",
 			"do not stall on a question",
 			"mine git history, commits, PRs, issues",
@@ -655,15 +653,13 @@ describe("workflow-first execution routing", () => {
 		for (const path of ["packages/coding-agent/docs/workflows/operations.md", "packages/workflows/README.md"]) {
 			const documentation = await readRepositoryFile(path);
 			for (const phrase of [
-				"Treat a blocked run as continuable by default",
-				"resume a resumable block",
-				"continue inline only if the remaining work is minimal",
-				"mine git history, commits, PRs, issues",
-				"continue fully autonomously",
-				"record the assumption",
-				"estimated next steps",
-				"ask the user whether to proceed",
-				"resume with a raised `budget` only after approval",
+				"continuable by default",
+				"inline/no-workflow",
+				"completed work",
+				"in-flight",
+				"authorization",
+				"budget_exceeded",
+				"approval",
 			]) {
 				expect(documentation, path).toContain(phrase);
 			}

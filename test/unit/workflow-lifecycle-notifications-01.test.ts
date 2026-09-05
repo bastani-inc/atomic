@@ -155,10 +155,11 @@ describe("installWorkflowLifecycleNotifications", () => {
 		const content = sent[0]?.content ?? "";
 		assert.equal(sent[0]?.details?.kind, "blocked");
 		assert.equal(sent[0]?.details?.budgetExceeded, undefined);
-		assert.match(content, /Do not treat this as a stopping point/u);
+		assert.match(content, /Unless the user has requested inline\/no-workflow execution/u);
 		assert.match(content, /follow-up workflow/u);
-		assert.match(content, /inline only if what remains is minimal/u);
-		assert.match(content, /mine git history, commits, PRs, issues/u);
+		assert.match(content, /reconcile completed work and in-flight side effects/u);
+		assert.match(content, /continue inline without duplicate execution/u);
+		assert.match(content, /completed work is not undone/u);
 	});
 
 	test("budget-exceeded blocked notices ask the user before proceeding", () => {
@@ -212,7 +213,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.equal(sent[0]?.details?.kind, "blocked");
 		assert.equal(sent[0]?.details?.status, "blocked");
 		assert.match(sent[0]?.details?.error ?? "", /No API key for provider: github-copilot/u);
-		assert.doesNotMatch(sent[0]?.content ?? "", /completed/u);
+		assert.doesNotMatch(sent[0]?.content ?? "", /Workflow "[^"]+" completed/u);
 		assert.match(sent[0]?.content ?? "", /ended blocked.*No API key for provider: github-copilot/u);
 	});
 
@@ -255,7 +256,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.equal(sent[0]?.details?.kind, "blocked");
 		assert.equal(sent[0]?.details?.status, "blocked");
 		assert.match(sent[0]?.details?.error ?? "", /No API key for provider: github-copilot/u);
-		assert.doesNotMatch(sent[0]?.content ?? "", /completed/u);
+		assert.doesNotMatch(sent[0]?.content ?? "", /Workflow "[^"]+" completed/u);
 		assert.match(sent[0]?.content ?? "", /ended blocked.*No API key for provider: github-copilot/u);
 	});
 
