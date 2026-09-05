@@ -25,6 +25,7 @@ export class GraphFrontierTracker {
 	 */
 	onSpawn(stageId: string, stageName: string): string[] {
 		const parents = Array.from(this.frontier);
+		this.assertAcyclicParents(stageId, parents);
 		this.stageParents.set(stageId, parents);
 
 		this.nodes.set(stageId, {
@@ -57,6 +58,7 @@ export class GraphFrontierTracker {
 	 */
 	replaceParents(stageId: string, parentIds: readonly string[]): void {
 		const parents = Array.from(parentIds);
+		this.assertAcyclicParents(stageId, parents);
 		this.stageParents.set(stageId, parents);
 		const node = this.nodes.get(stageId);
 		if (node !== undefined) {
@@ -89,6 +91,18 @@ export class GraphFrontierTracker {
 	/** Get parent IDs for a stage. */
 	getParents(stageId: string): string[] {
 		return this.stageParents.get(stageId) ?? [];
+	}
+
+	private assertAcyclicParents(nodeId: string, parentIds: readonly string[]): void {
+		const pending = [...parentIds];
+		const visited = new Set<string>();
+		while (pending.length > 0) {
+			const parentId = pending.pop()!;
+			if (parentId === nodeId) throw new Error(`atomic-workflows: graph cycle at node ${nodeId}`);
+			if (visited.has(parentId)) continue;
+			visited.add(parentId);
+			pending.push(...(this.stageParents.get(parentId) ?? []));
+		}
 	}
 
 	/** Reset to initial state. */

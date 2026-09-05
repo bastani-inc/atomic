@@ -533,6 +533,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		tracker,
 		run: runSnapshot,
 		sourceToContinuationNodeIds,
+		resumeToolNode: opts.continuation?.source.toolNodes?.find(
+			(node) => node.id === opts.continuation?.resumeFromToolNodeId,
+		),
 		toolControls,
 		toolAdmission,
 		budget,
@@ -825,9 +828,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			),
 		);
 		const failedToolNodeId =
-			selectedMetadata.failedStageId === undefined &&
-			selectedMetadata.failureKind !== "cancelled" &&
-			selectedMetadata.failureDisposition !== "terminal_killed"
+			selectedMetadata.failedStageId === undefined && selectedMetadata.failureDisposition !== "terminal_killed"
 				? catchTerminalEvent?.kind === "failure" && Object.is(catchTerminalEvent.error, err)
 					? (catchTerminalEvent.nodeId ?? observedAdmittedToolFailure?.nodeId)
 					: observedAdmittedToolFailure?.nodeId

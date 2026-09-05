@@ -25,6 +25,7 @@ export async function recordThrowingToolFailure(
 	},
 	error: unknown,
 	attempts: number,
+	cancelled = false,
 ): Promise<{ readonly message: string; readonly failedAt: number }> {
 	const message = workflowToolFailure(error, attempts, false).error.message;
 	const failedAt = Date.now();
@@ -38,6 +39,7 @@ export async function recordThrowingToolFailure(
 		argsHash: identity.argsHash,
 		output: null,
 		throwingFailureError: message,
+		...(cancelled ? { cancelled: true as const } : {}),
 		completedAt: failedAt,
 		topology: {
 			version: DURABLE_TOOL_TOPOLOGY_VERSION,

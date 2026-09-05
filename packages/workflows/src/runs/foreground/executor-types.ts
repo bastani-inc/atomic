@@ -30,6 +30,7 @@ export interface ResolvedInputs extends WorkflowInputValues {}
 export interface RunContinuationOpts {
 	readonly source: RunSnapshot;
 	readonly resumeFromStageId?: string;
+	readonly resumeFromToolNodeId?: string;
 }
 
 export interface StageSessionCheckpointOptions {

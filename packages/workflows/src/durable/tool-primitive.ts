@@ -16,6 +16,7 @@
  */
 
 import { runCallback } from "@bastani/atomic";
+import { isWorkflowToolAbortError } from "../engine/workflow-tool-abort.js";
 import { sleepOrAbort } from "../runs/shared/retry.js";
 import { flattenTruncatedString } from "../shared/flat-string.js";
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
@@ -526,13 +527,9 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 			control.noteCancelled();
 			// A cancelled call never writes a replayable `tool:` checkpoint and never
 			// a `return_failure` outcome, so resume re-executes it at the same
-			// ordinal instead of replaying a cancellation as data. Return mode still
-			// keeps one inspection-only `tool-failure:` record, which the backend
-			// excludes from replay lookup. The record is written for every
-			// cancellation timing — while the callback awaits, when it throws, and
-			// when it fulfills after abort but before persistence — because this
-			// branch runs at most once per logical invocation.
-			if (returnFailure) {
+			// ordinal instead of replaying a cancellation as data. A targeted
+			// abort needs an inspection-only frontier in either failure mode.
+			if (returnFailure || (isWorkflowToolAbortError(cancellation) && cancellation.scope === "node")) {
 				await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
 			}
 			const endedAt = Date.now();
@@ -638,8 +635,7 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 }
 
 /**
- * Persist exactly one inspection-only cancellation record for a
- * `failureMode: "return"` call.
+ * Persist exactly one inspection-only cancellation frontier.
  *
  * The record uses the non-replayable `tool-failure:` id, so
  * `getToolCheckpoint()` still returns undefined and resume re-runs the call. It
@@ -666,6 +662,7 @@ async function recordCancelledToolInspection<T extends WorkflowSerializableValue
 			},
 			cancellation,
 			attempts,
+			true,
 		);
 	} catch {
 		// Inspection metadata is optional; the cancellation itself is authoritative.

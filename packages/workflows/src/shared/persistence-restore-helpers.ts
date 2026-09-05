@@ -366,7 +366,7 @@ function restoreFailedToolNode(value: unknown): ToolNodeSnapshot | undefined {
 		!Number.isInteger(node.ordinal) ||
 		!Array.isArray(node.parentIds) ||
 		!node.parentIds.every((parentId) => typeof parentId === "string") ||
-		node.status !== "failed" ||
+		(node.status !== "failed" && node.status !== "cancelled") ||
 		typeof node.error !== "string"
 	)
 		return undefined;
@@ -377,7 +377,7 @@ function restoreFailedToolNode(value: unknown): ToolNodeSnapshot | undefined {
 		argsHash: node.argsHash,
 		ordinal: node.ordinal,
 		parentIds: Object.freeze([...node.parentIds]),
-		status: "failed",
+		status: node.status,
 		...(typeof node.executionOrder === "number" && Number.isFinite(node.executionOrder)
 			? { executionOrder: node.executionOrder }
 			: {}),

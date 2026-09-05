@@ -36,6 +36,7 @@ export function createAdmittedToolExecutionTracker(
 		observed?: Promise<void>;
 	}> = [];
 	const failures: AdmittedToolFailure[] = [];
+	const cancellations: AdmittedToolFailure[] = [];
 	let nextAdmissionOrder = 0;
 	let state: "OPEN" | "DRAINING" | "CLOSED" = "OPEN";
 	let closing: Promise<void> | undefined;
@@ -104,9 +105,12 @@ export function createAdmittedToolExecutionTracker(
 			const observed = execution.then(
 				() => undefined,
 				(error: unknown) => {
-					// A cancelled node is not a run failure: it must never become the
-					// selected terminal failure nor abort the run controller on drain.
-					if (admission.cancelled) return;
+					// Retain rejection identity for an uncaught outer failure, but do not
+					// select a run failure or abort siblings when authors catch cancellation.
+					if (admission.cancelled) {
+						cancellations.push({ admissionOrder: admission.admissionOrder, error, nodeId: admission.nodeId });
+						return;
+					}
 					recordFailure(admission, error, admission.nodeId);
 					reportDrainFailure();
 				},
@@ -157,7 +161,7 @@ export function createAdmittedToolExecutionTracker(
 			return failures[0];
 		},
 		uniqueFailureFor(error: unknown): AdmittedToolFailure | undefined {
-			const matching = failures.filter((failure) => Object.is(failure.error, error));
+			const matching = [...failures, ...cancellations].filter((failure) => Object.is(failure.error, error));
 			return matching.length === 1 ? matching[0] : undefined;
 		},
 	};
