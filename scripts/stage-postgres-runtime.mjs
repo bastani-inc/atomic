@@ -56,8 +56,8 @@ function digest(path) {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function run(command, args) {
-	const result = spawnSync(command, args, { encoding: "utf8" });
+function run(command, args, { cwd } = {}) {
+	const result = spawnSync(command, args, { encoding: "utf8", cwd });
 	if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
 }
 
@@ -236,9 +236,11 @@ export async function stagePostgresRuntime({
 					`inner checksum mismatch for ${target}: expected ${artifact.innerSha256}, received ${innerActual}`,
 				);
 			}
-			run("tar", ["-xJf", inner, "-C", extracted]);
+			// Paths are relative to `work`: GNU tar (Git for Windows) reads an
+			// absolute `C:\...` argument as `host:path` and tries to connect to "C".
+			run("tar", ["-xJf", artifact.innerEntry, "-C", "extracted"], { cwd: work });
 		} else {
-			run("tar", ["-xzf", archive, "-C", work]);
+			run("tar", ["-xzf", basename(archive), "-C", "."], { cwd: work });
 			const packageDirectory = join(work, "package");
 			const native = join(packageDirectory, "native");
 			if (!existsSync(native)) throw new Error("Windows artifact is missing package/native");
