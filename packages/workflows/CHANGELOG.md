@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Workflow guidance honors explicit task-scoped inline/no-workflow requests, including safe handoff from active runs without duplicate execution. Default authoring and Goal/Ralph prompts select browser, terminal or desktop/simulator verification by environment, support offline/manual qlty setup, and describe authorized native GitHub media attachments with verified hosted links.
+- Model-pinning guidance now points authored workflows at the measured per-evaluation scores in `packages/coding-agent/docs/models/evals.md` (formerly `artificial-analysis-index.md`), whose task-type picker maps each stage type to the eval that measures it, alongside the role guidance in `model-selection.md`.
 
 ## [0.9.18-alpha.6] - 2026-09-04
 

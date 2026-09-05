@@ -69,7 +69,7 @@ Choose the cheapest complete graph. Routing cues are not a reason to add decorat
 
 ### Stage model and thinking-level assignment
 
-Before launching an authored workflow, assign every model stage a **role**, **failure cost**, **primary model**, **thinking level**, and **fallback policy**. Read [Model Selection](/models/model-selection) for the role defaults, but treat thinking levels in benchmark rows as measurement configurations, not production defaults. Reserve `max` for high-cost-of-error roles or an explicit user request; use `high` for demanding mapping, lifecycle analysis, compatibility, planning, synthesis, triage, and repair; use `medium` for user-impact review and final reporting; and keep deterministic checks as tool nodes with no model call.
+Before launching an authored workflow, assign every model stage a **role**, **failure cost**, **primary model**, **thinking level**, and **fallback policy**. Read [Model Selection](/models/model-selection) for the role defaults and [Evals](/models/evals) for the measured per-evaluation scores — its task-type picker maps each stage type (terminal debugging, knowledge-work planning, tool-calling loops, document research, code-reading review) to the eval that measures it and the models that lead it — but treat thinking levels in benchmark rows as measurement configurations, not production defaults. Reserve `max` for high-cost-of-error roles or an explicit user request; use `high` for demanding mapping, lifecycle analysis, compatibility, planning, synthesis, triage, and repair; use `medium` for user-impact review and final reporting; and keep deterministic checks as tool nodes with no model call.
 
 Print this compact assignment before launch, with a short cost/quality rationale for each model stage:
 

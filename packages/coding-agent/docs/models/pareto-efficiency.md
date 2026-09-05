@@ -13,7 +13,7 @@ The axes here are `pass@1` (accuracy) and `average dollars per task` (cost), tak
 Figures are a snapshot of DeepSWE v1.1 using the highest published thinking level for each of the 21 models displayed on the September 3, 2026 leaderboard. They include the August 21 pricing corrections for GPT-5.6 Sol and DeepSeek V4, and GPT-6 Astra's costs are DeepSWE's expected launch pricing rather than billed rates. DeepSWE's own default table view is **Best** — the best-scoring configuration per model — which picks a different row for four models; the frontier under that reading is stated below. DeepSWE publishes a live cost-vs-score scatter, so **read the frontier off the live chart** rather than trusting a static list. **Last compiled: 2026-09-03.**
 </Note>
 
-The [AA review](/models/artificial-analysis-index) is separately dated **2026-09-05**. AA Intelligence Index v4.2 uses weighted intelligence and its own cost per task; AA Coding Agent Index v1.4 uses agent-specific runs across several benchmarks. Neither defines the Datacurve frontier on this page. A September 5 browser check confirmed the September 3 DeepSWE update and Gemini 3.8 Flash's measured row, without recomputing this entire snapshot.
+The [AA review](/models/evals) is separately dated **2026-09-05**. AA Intelligence Index v4.2 uses weighted intelligence and its own cost per task; AA Coding Agent Index v1.4 uses agent-specific runs across several benchmarks. Neither defines the Datacurve frontier on this page. A September 5 browser check confirmed the September 3 DeepSWE update and Gemini 3.8 Flash's measured row, without recomputing this entire snapshot.
 
 ## The frontier
 
@@ -87,4 +87,4 @@ Efficiency is not the only axis. A dominated model can still earn a slot when it
 ## Related
 
 - [Model Selection](/models/model-selection)
-- [Benchmark sources & when to reference each](/models/artificial-analysis-index)
+- [Evals](/models/evals)
