@@ -37,6 +37,19 @@ Reserve absolute language for true invariants. Convert judgment calls into condi
 
 Do not rewrite a working prompt stack and change effort, model, and tools simultaneously; that makes causality impossible to identify.
 
+## Audit accumulated skills and repository instructions
+
+The following audit distills [Eric Provencher's advice on X](https://x.com/pvncher/status/2095991462416490862), read September 5, 2026. It is practitioner guidance for instruction maintenance, not an API specification or a measured guarantee for every model or harness.
+
+- Keep skill descriptions short and specific about when to load them. Prefer "Plan and validate database migrations" to "Use for anything involving databases." Too many broad or competing descriptions make routing harder. Provencher reports that Codex truncates descriptions when too many skills are installed; do not assume Atomic has the same truncation behavior.
+- Keep a multi-purpose skill's root file a small router. Put task-specific procedures and scripts in references, and load only the branch needed. This saves context and avoids unrelated instructions changing the task.
+- Revisit inherited recipes after model upgrades. Replace rigid itineraries for routine judgment with outcomes, necessary dependencies, and completion criteria. Evaluate changes across the models used by repository contributors; guidance that helps Sol or Luna may overconstrain Astra.
+- Review `AGENTS.md` requirements in proportion to the task. A typo fix rarely needs a full repository map or a stack of design documents. Keep contextual pointers current and retain required pre-edit inspection and repository checks; propose changes to binding instructions rather than silently ignoring them.
+- Make permission boundaries concrete. If the environment actually uses disposable local fixtures with no production access, authorize running and repairing those tests as one workflow. Do not generalize that permission to production or publication, and do not ask again at every already-authorized step.
+- Define completion before work starts, including running the implementation, inspecting results, and repairing failures when requested. A first-pass review gate is a deliberate stopping point; remove an accidental gate only when authorized. For broader exploration, state what to investigate and where to stop.
+
+Treat each audit change as a hypothesis. Compare representative tasks, including a small edit and a real approval boundary, before removing a rule globally. OpenAI's [Astra guide](gpt_6_astra.md) adds model-specific advice for excessive testing, early stops, and instruction conflicts.
+
 ## Evaluation Contract
 
 Choose cases that represent normal traffic, hard edge cases, missing evidence, tool failures, and adversarial inputs. Measure:
@@ -105,6 +118,7 @@ Safety invariants may use `NEVER` or `MUST`; stylistic preferences and tool judg
 | Agent stops early | Permission boundary is vague or final plan substitutes for action | Define authorized actions and completion/blocker stop rules |
 | Agent overbuilds | Scope and success criteria are broad | Name the requested scope and exclude unrelated features or refactors |
 | Too much delegation | No size or independence threshold | Add delegation damping and a concurrency cap |
+| Too little delegation on Astra | No explicit permission or independence rule | Allow bounded parallel work when it saves time or improves quality |
 | Long visible answer | No explicit output length contract | Specify preserved content, omissions, sections, and word limit |
 | High latency/cost | Excess prompt text or effort | Delete first, then compare one lower effort level |
 | Long-context miss | Query precedes large documents | Put documents first and query last; Anthropic measured up to ~30% improvement |
@@ -112,7 +126,7 @@ Safety invariants may use `NEVER` or `MUST`; stylistic preferences and tool judg
 
 ## Model and Effort Regression Checks
 
-Preserve the current model and effort as the baseline before tuning. For GPT-5.6, test the same reasoning effort and one level lower. For Claude Opus 5 and Claude Fable 5, start from `high`, then compare lower levels where quality holds and higher levels only for capability-sensitive work.
+Preserve the current model and effort as the baseline before tuning. For GPT-5.6, test the same reasoning effort and one level lower. For GPT-6 Astra, preserve the existing effective effort, or start at `low` when migrating from `none` or `minimal`; verify supported levels before comparing alternatives. For Claude Opus 5 and Claude Fable 5, start from `high`, then compare lower levels where quality holds and higher levels only for capability-sensitive work.
 
 Effort is not a substitute for missing success criteria, routing, dependencies, validation, or stop rules. On Opus 5, effort does not reliably control visible response length; use an explicit length and shape contract.
 

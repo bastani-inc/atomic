@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Pending-stage Intercom settlement now skips unrelated runs with no messages to settle. Genuine sweep failures produce one display-only warning per distinct message in interactive sessions instead of repeated console stack traces; headless sessions retain console diagnostics, and pending messages remain available for recovery.
 
+### Changed
+
+- Updated the bundled prompt-engineering skill with GPT-6 Astra prompting and API migration guidance, plus an attributed instruction audit covering concise skill descriptions, selective reference loading, proportionate testing, permission boundaries, and completion criteria.
+
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes

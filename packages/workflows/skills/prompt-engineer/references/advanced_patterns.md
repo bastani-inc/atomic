@@ -4,6 +4,10 @@ Use these patterns for agents, tools, long context, multi-stage work, or model-s
 
 ## Model-Family Guidance
 
+### GPT-6 Astra
+
+Read [gpt_6_astra.md](gpt_6_astra.md) for current prompting and API migration guidance. Define completion and already-authorized actions clearly, audit conflicting skills, calibrate verification to the change, and allow useful independent delegation. Astra's tendency toward detailed answers and fewer delegates differs from the defaults below.
+
 ### GPT-5.6
 
 - Prefer a lean, outcome-first contract with explicit success criteria, dependencies, tool routes, and stopping conditions. GPT-5-class models follow contracts closely, so remove contradictions and repeated rules.
@@ -43,7 +47,7 @@ Success criteria:
 - decide eligibility from policy and account evidence
 - complete every authorized action
 - return completed_actions, customer_message, and blockers
-Constraints: Keep changes in scope; confirm external, destructive, or costly actions.
+Constraints: Keep changes in scope; confirm external, destructive, or costly actions when authorization is missing.
 Tools: Retrieve policy before deciding; use the account tool only after identity and eligibility are established.
 Output: Lead with the outcome; return the three required fields in valid JSON.
 Stop rules: Answer when required evidence and actions are complete. If one required fact is missing, ask for that smallest field. Stop on a permission or policy block and name it.

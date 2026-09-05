@@ -1,11 +1,11 @@
 ---
 name: prompt-engineer
-description: Create, improve, optimize, evaluate, or troubleshoot prompts for GPT-5.6, Claude Opus 5, and Claude Fable 5.
+description: Write, migrate, or troubleshoot prompts for GPT-6 Astra, GPT-5.6, and current Claude models.
 ---
 
 # Prompt Engineering Skill
 
-Create or revise prompts for current models. Optimize for the intersection of GPT-5.6, Claude Opus 5, and Claude Fable 5 unless the user names one target.
+Create or revise prompts for the user's target model. Keep shared guidance portable across GPT-6 Astra, GPT-5.6, Claude Opus 5, and Claude Fable 5; load model-specific advice only when relevant.
 
 ## Use This Skill For
 
@@ -30,9 +30,10 @@ Create or revise prompts for current models. Optimize for the intersection of GP
 | --- | --- | --- |
 | `references/core_prompting.md` | Creating or repairing any prompt | Clarity, context, roles, success criteria, constraints, output contracts, examples, XML, grounding |
 | `references/advanced_patterns.md` | Building agents, tool workflows, long-context prompts, chains, or model-specific variants | GPT-5.6, Claude Opus 5, Claude Fable 5, tool routing, stopping, delegation, adaptive thinking |
+| `references/gpt_6_astra.md` | Targeting or migrating to GPT-6 Astra | Completion, skill conflicts, testing, delegation, writing, API compatibility |
 | `references/quality_improvement.md` | Optimizing, evaluating, securing, or troubleshooting a prompt | Delete-first workflow, evals, hallucination reduction, consistency, security, regression diagnosis |
 
-Use the exact instruction `Read references/core_prompting.md`, `Read references/advanced_patterns.md`, or `Read references/quality_improvement.md` when loading one of these files.
+Read only the references needed for the task. Resolve their paths from this skill directory.
 
 ## Cross-Model Baseline
 
