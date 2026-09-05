@@ -9,7 +9,7 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const testPath = join(root, ".github/workflows/test.yml");
 
 /** The work jobs the result gate must depend on, in file and `needs` order. */
-const WORK_JOBS = ["suites", "agent-suite", "release-archive", "static-checks"] as const;
+const WORK_JOBS = ["unit-tests", "integration-tests", "agent-suite", "release-archive", "static-checks"] as const;
 
 /** Job blocks keyed by job id, in file order. */
 async function jobs(): Promise<Map<string, string>> {
@@ -112,44 +112,13 @@ test("every work job the gate names exists and is otherwise independent", async 
 	}
 });
 
-/**
- * Per-job wall-clock caps replace the blanket 10/15 minute pair. A cap is a hang
- * detector, and it decays into a false-failure generator as the suites grow: the
- * 8-minute `suites` Linux cap was sized against a 230 s measurement, the job now
- * measures 400 s, and it cancelled a healthy run at 497 s on 31047506585 while
- * the same SHA passed on the pull_request event.
- *
- * A cap must cover the retries its job owns, because a retry replays only the
- * retryable steps: the budget is `setup + 2 x (retryable steps)`, not 2x the
- * whole job. `suites` owns TWO retryable steps (unit and integration), so its
- * worst legitimate run is roughly double its test time.
- *
- * Recent observed per-step costs:
- *   run 33858796656 Windows setup 140 s, unit 475 s, integration 75 s
- *   run 33864468533 Windows setup 103 s, unit 511 s + 494 s retry,
- *                              integration >92 s (41/42 files completed)
- * The remaining integration file is the structural packed-package install and
- * typecheck, so the cancelled partial duration is a lower bound rather than a
- * completed sample. The retry-inclusive calculation is therefore at least
- * 140 + 2*(511 + 92) = 1346 s (22.4 min).
- *
- * The former 20-minute cap expired after the unit retry passed and cancelled
- * integration. Both `suites` legs now share a 28-minute cap: 1.25x that lower
- * bound and effectively the same headroom as the former cap's 1.24x Windows
- * ratio. A single value still avoids encoding per-platform precision these
- * shared 4-vCPU runners do not support.
- *
- * `agent-suite` and `release-archive` keep their pairs: agent-suite still
- * clears its retry-inclusive observations, and release-archive runs no
- * retryable step at all. The Windows `release-archive` cap is 9 minutes because
- * cold setup observed 152 s for `rust-toolchain` and 71 s for checkout,
- * followed by roughly 110 s native build and 40 s archive smoke.
- */
-test("each split job declares its own measured timeout", async () => {
+/** Root-suite caps retain the combined job's headroom, not measured split-job budgets. */
+test("each split job retains its timeout hang detector", async () => {
 	const workflow = await readText(testPath);
 	const blocks = await jobs();
 	const caps: Record<string, [number, number]> = {
-		suites: [28, 28],
+		"unit-tests": [28, 28],
+		"integration-tests": [28, 28],
 		"agent-suite": [8, 12],
 		"release-archive": [5, 9],
 	};
@@ -189,16 +158,40 @@ test("each split job declares its own measured timeout", async () => {
 test("build-consuming steps stay in the job that produced the build", async () => {
 	const blocks = await jobs();
 
-	const suites = jobSteps(blocks.get("suites") as string);
-	assert.ok(stepIndex(suites, "Build @bastani/atomic package") < stepIndex(suites, "Unit tests"));
-	assert.ok(stepIndex(suites, "Unit tests") < stepIndex(suites, "Integration tests"));
-	assert.match(namedStep(suites, "Integration tests"), /ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"/u);
-	assert.match(blocks.get("suites") as string, /uses: actions\/setup-node@/u);
-	// The bundled subagent extension loads the Rust control plane at import, so
-	// both root suites are build-consuming steps for the native binding too.
-	assert.ok(stepIndex(suites, "Build native bindings for the root suites") < stepIndex(suites, "Unit tests"));
-	assert.ok(stepIndex(suites, "Build native bindings for the root suites") < stepIndex(suites, "Integration tests"));
-	assert.match(blocks.get("suites") as string, /uses: dtolnay\/rust-toolchain@/u);
+	for (const [job, suite] of [
+		["unit-tests", "Unit tests"],
+		["integration-tests", "Integration tests"],
+	]) {
+		const block = blocks.get(job) as string;
+		const steps = jobSteps(block);
+		assert.ok(stepIndex(steps, "Build @bastani/atomic package") < stepIndex(steps, suite));
+		assert.ok(stepIndex(steps, "Build native bindings for the root suites") < stepIndex(steps, suite));
+		assert.match(block, /uses: actions\/setup-node@/u);
+		assert.match(block, /uses: dtolnay\/rust-toolchain@/u);
+	}
+	const unit = blocks.get("unit-tests") as string;
+	const integration = blocks.get("integration-tests") as string;
+	assert.match(unit, /--no-retry-file flaky-test-suite-runner\.test\.ts/u);
+	assert.match(unit, /-- npm run test:unit/u);
+	assert.doesNotMatch(unit, /npm run test:integration/u);
+	assert.match(integration, /-- npm run test:integration/u);
+	assert.doesNotMatch(integration, /npm run test:unit/u);
+	for (const block of [unit, integration]) {
+		assert.equal(block.split("run-flaky-test-suite.ts").length - 1, 1);
+		const setup = jobSteps(block);
+		for (const [before, after] of [
+			["Install dependencies", "Alias @earendil-works/pi-ai"],
+			["Alias @earendil-works/pi-ai", "Build @bastani/pi-ai"],
+			["Build @bastani/pi-ai", "Build native bindings"],
+			["Build native bindings", "Build @bastani/atomic package"],
+		]) {
+			assert.ok(stepIndex(setup, before) < stepIndex(setup, after));
+		}
+	}
+	assert.match(
+		namedStep(jobSteps(blocks.get("integration-tests") as string), "Integration tests"),
+		/ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"/u,
+	);
 
 	const agent = jobSteps(blocks.get("agent-suite") as string);
 	assert.ok(
@@ -242,7 +235,7 @@ test("build-consuming steps stay in the job that produced the build", async () =
 /**
  * Dependencies install with `npm ci --ignore-scripts` everywhere, so every work
  * job needs Node. Bun is still set up wherever a `scripts/*.ts`, the release
- * binary compiler, or a Bun-hosted test fixture runs -- which is all four. A job
+ * binary compiler, or a Bun-hosted test fixture runs -- which is all five. A job
  * that installs with npm but never sets Node up would fall back to whatever the
  * runner image happens to ship, which is the drift this guards against.
  */
@@ -276,6 +269,9 @@ test("every diagnostics upload has a job-unique artifact name", async () => {
 		jobSteps(block)
 			.filter((step) => step.includes("actions/upload-artifact@"))
 			.map((step) => {
+				assert.match(step, /if: always\(\)/u);
+				assert.match(step, /retention-days: 14/u);
+				assert.match(step, /if-no-files-found: ignore/u);
 				assertDiagnosticsPath(step);
 				assert.throws(() => assertDiagnosticsPath(step.replace(/^\s+include-hidden-files: true\s*$/mu, "")));
 				assert.throws(() => assertDiagnosticsPath(step.replace("path: .ci-diagnostics/", "path: .")));
@@ -284,7 +280,7 @@ test("every diagnostics upload has a job-unique artifact name", async () => {
 				return (name[1] as string).trim();
 			}),
 	);
-	assert.ok(uploads.length >= 2, "the flaky-suite jobs must still preserve their diagnostics");
+	assert.equal(uploads.length, 3, "unit, integration and package jobs must each preserve diagnostics");
 	assert.equal(new Set(uploads).size, uploads.length, `duplicate artifact names: ${uploads.join(", ")}`);
 	for (const name of uploads) assert.match(name, /^test-diagnostics-[a-z-]+-\$\{\{ matrix\.binary_platform \}\}$/u);
 });

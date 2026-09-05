@@ -29,7 +29,7 @@ const warmPath = join(root, ".github/workflows/warm-toolchain-cache.yml");
 
 /**
  * The `test` job's own topology contracts live in test-workflow-topology.test.ts.
- * It is now a result gate over four concurrent work jobs, and the
+ * It is now a result gate over five concurrent work jobs, and the
  * anti-un-protection assertions belong beside the ones describing that split.
  */
 /**
@@ -811,7 +811,7 @@ test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
 	assert.doesNotMatch(jobBlock(publish, "windows-binary-smoke", "alpine-binary-smoke"), /useblacksmith/u);
 	// Every cross-platform job in test.yml now checks out for itself, so each one
 	// must keep the Linux/non-Linux checkout pair.
-	const crossPlatformJobs = ["suites", "agent-suite", "release-archive"] as const;
+	const crossPlatformJobs = ["unit-tests", "integration-tests", "agent-suite", "release-archive"] as const;
 	const testJobs = new Map(jobBlocks(testWorkflow));
 	for (const block of [
 		jobBlock(publish, "native-artifacts", "linux-binary-smoke"),

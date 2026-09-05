@@ -25,11 +25,11 @@ on:
     branches: [main]
   pull_request:
 
-# The work runs as four concurrent jobs instead of one sequential per-platform
-# job, so the wall clock is the longest *dependent* chain rather than the sum of
-# every step. Steps stay together only when one consumes another's build output:
+# The work runs as five independent jobs. Root suites duplicate setup so neither
+# waits for the other; no shared producer sits on their critical path.
 #
-#   suites          build package -> unit -> integration
+#   unit-tests      build package -> unit
+#   integration-tests build package -> integration
 #   agent-suite     build native bindings -> coding-agent vitest
 #   release-archive build package -> build-binaries.sh -> archive smoke
 #   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
@@ -38,8 +38,8 @@ on:
 # Nothing is passed between jobs as an artifact: waiting for a producer job
 # adds a serial dependency, regardless of how cheaply its output transfers.
 jobs:
-  suites:
-    name: suites (${{ matrix.os }}, ${{ matrix.binary_platform }})
+  unit-tests:
+    name: unit-tests (${{ matrix.os }}, ${{ matrix.binary_platform }})
     strategy:
       matrix:
         include:
@@ -51,30 +51,8 @@ jobs:
             timeout_minutes: 28
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # This job owns TWO retryable steps -- unit and integration each run behind
-    # the bounded flake-retry wrapper -- so its cap must cover a replay of both,
-    # not just one pass. The retry replays only those steps, so the budget is
-    # `setup + 2 x (unit + integration)` rather than 2x the whole job.
-    #
-    # Recent observed per-step costs:
-    #   run 33858796656 Windows  setup 140s, unit 475s, integration 75s
-    #   run 33864468533 Windows  setup 103s, unit 511s + 494s retry,
-    #                               integration >92s (41/42 files completed)
-    # The remaining integration file is the structural packed-package install
-    # and typecheck, so the cancelled partial duration is a lower bound rather
-    # than a completed sample.
-    #
-    # Sizing from the pessimistic observed setup, unit, and partial integration
-    # gives 140 + 2*(511 + 92) = 1346s (22.4 min). Both legs take 28 min, 1.25x
-    # that lower bound and effectively the same headroom as the former 20 min
-    # cap's 1.24x Windows ratio. One shared number remains deliberate: these are
-    # shared 4-vCPU runners, so a per-platform split would encode precision the
-    # measurements do not support and invite one leg to decay independently.
-    #
-    # The former 20 min cap expired after the unit retry passed and cancelled
-    # integration, turning an ordinary flake into an opaque required-job
-    # cancellation. This remains a hang detector, not a performance budget;
-    # shortening the ~8.5 min unit step is still what would buy headroom back.
+    # Retain the combined suites job's 28-minute cap conservatively. This is an
+    # inherited hang detector with retry headroom, not a measured split-job budget.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
@@ -129,10 +107,7 @@ jobs:
       # Measured at 42s Linux / 86s Windows, both inside the existing caps.
       - name: Build native bindings for the root suites
         run: npm run build --workspace=@bastani/atomic-natives
-      # Both suites below consume this build. test/unit/pi-0.82.1-artifacts.test.ts
-      # silently degrades to test.skip when packages/coding-agent/dist is absent,
-      # so moving the unit suite out of this job would lose coverage without
-      # failing anything.
+      # Unit artifact tests require dist/ to retain their full coverage.
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
@@ -141,21 +116,86 @@ jobs:
           bun run scripts/run-flaky-test-suite.ts --label "unit tests (${{ matrix.binary_platform }})"
           --no-retry-file flaky-test-suite-runner.test.ts
           -- npm run test:unit
-      - name: Integration tests (one bounded flake retry)
-        run: >-
-          bun run scripts/run-flaky-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
-          -- npm run test:integration
-        env:
-          # Hard-require the installed-package Node smoke where the package
-          # build above guarantees dist/ exists on both supported hosts.
-          ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
       - name: Upload flaky-test diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # Artifact names must be unique across every job in the run:
           # actions/upload-artifact@v4+ fails the whole run on a duplicate.
-          name: test-diagnostics-suites-${{ matrix.binary_platform }}
+          name: test-diagnostics-unit-tests-${{ matrix.binary_platform }}
+          path: .ci-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  integration-tests:
+    name: integration-tests (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    strategy:
+      matrix:
+        include:
+          - os: blacksmith-4vcpu-ubuntu-2404
+            binary_platform: linux-x64
+            timeout_minutes: 28
+          - os: blacksmith-4vcpu-windows-2025
+            binary_platform: windows-x64
+            timeout_minutes: 28
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    # Inherited hang detector, not a measured split-job budget. Keep retry headroom.
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    steps:
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+        if: runner.os == 'Linux'
+        with:
+          lfs: true
+          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: runner.os != 'Linux'
+        with:
+          lfs: true
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - id: rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        continue-on-error: true
+        timeout-minutes: 4
+        with:
+          toolchain: stable
+      - name: Retry Rust toolchain install
+        if: steps.rust.outcome == 'failure'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        timeout-minutes: 4
+        with:
+          toolchain: stable
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Alias @earendil-works/pi-ai onto the workspace package
+        run: node scripts/alias-pi-ai.mjs
+      - name: Build @bastani/pi-ai
+        run: npm run build --workspace=@bastani/pi-ai
+      - name: Build native bindings for the root suites
+        run: npm run build --workspace=@bastani/atomic-natives
+      - name: Build @bastani/atomic package
+        working-directory: packages/coding-agent
+        run: npm run build
+      - name: Integration tests (one bounded flake retry)
+        run: >-
+          bun run scripts/run-flaky-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
+          -- npm run test:integration
+        env:
+          # Hard-require the installed-package Node smoke on both supported hosts.
+          ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
+      - name: Upload flaky-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-diagnostics-integration-tests-${{ matrix.binary_platform }}
           path: .ci-diagnostics/
           include-hidden-files: true
           if-no-files-found: ignore
@@ -484,7 +524,7 @@ jobs:
   # meaning this context had before.
   test:
     name: test (${{ matrix.os }}, ${{ matrix.binary_platform }})
-    needs: [suites, agent-suite, release-archive, static-checks]
+    needs: [unit-tests, integration-tests, agent-suite, release-archive, static-checks]
     if: always()
     strategy:
       matrix:

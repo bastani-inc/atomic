@@ -107,6 +107,12 @@ default isolation, worker sizing and timeout budgets unchanged when measuring
 test cost. See the [CI measurements](https://github.com/bastani-inc/atomic/blob/main/docs/ci.md#current-critical-path-measured-september-5-2026)
 for local gains and the remaining hosted Linux/Windows validation.
 
+CI runs the complete root unit and integration suites in independent Linux and
+Windows jobs. Each builds its own native and package prerequisites; both required
+result gates wait for every work job and reject failures, cancellations and skips.
+This trades duplicated setup for earlier integration feedback without changing
+test isolation, coverage or retries.
+
 ## Deterministic installs
 
 `@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` so package-manager installs resolve the same dependency tree every time. Contributors working from a source checkout can validate that the checked-in shrinkwrap is up to date with:

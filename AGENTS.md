@@ -35,7 +35,7 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI, and npm trusted publishing requires a GitHub-hosted runner |
 
 **Where this repository deliberately declines pi's shape:** pi's CI is one `ubuntu-latest`
-job with no matrix and no `timeout-minutes`. Do not copy it. This workflow produces nine
+job with no matrix and no `timeout-minutes`. Do not copy it. This workflow produces eleven
 check contexts including full Windows coverage, runs on Blacksmith runners, and carries
 per-job timeout budgets that `test/ci/test-workflow-topology.test.ts` asserts. Adopting pi's
 topology would delete Windows coverage and orphan the two required check contexts. Parity is
