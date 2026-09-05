@@ -32,7 +32,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, test } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
-import { bunExecutable, decodeStream, moduleDir, type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	decodeStream,
+	moduleDir,
+	type SpawnedProcess,
+	spawnProcess,
+	writeFileEnsuringDir,
+} from "../helpers/runtime.js";
 
 /**
  * Structural: this hook compiles and boots the whole coding-agent CLI in a child
@@ -93,6 +100,7 @@ interface RunDetailView {
 	readonly runId: string;
 	readonly name: string;
 	readonly status: string;
+	readonly error?: string;
 	readonly stages: readonly StageView[];
 	readonly tools?: readonly ToolNodeView[];
 	readonly resumable?: boolean;
@@ -325,7 +333,10 @@ function toolNode(run: RunDetailView, name: string): ToolNodeView {
 	return node;
 }
 
-async function runScenario(control: "quit" | "interrupt" = "quit"): Promise<Evidence> {
+async function runScenario(
+	control: "quit" | "interrupt" = "quit",
+	omission?: "return" | "completed",
+): Promise<Evidence> {
 	const root = mkdtempSync(join(tmpdir(), "atomic-issue-2078-"));
 	const projectDir = join(root, "project");
 	const stateDir = join(root, "state");
@@ -396,21 +407,37 @@ async function runScenario(control: "quit" | "interrupt" = "quit"): Promise<Evid
 		const afterQuit = runDetail(quitSurface);
 		const renderedAfterQuit = quitSurface.content;
 
+		if (omission !== undefined) {
+			const source = readFileSync(fixturePath, "utf8");
+			const targetCall = 'const hung = await ctx.tool("hang-tool"';
+			assert.ok(source.includes(targetCall));
+			const earlyReturn =
+				omission === "return"
+					? 'return { hang: "omitted", sibling };'
+					: 'return ctx.exit({ status: "completed" });';
+			await writeFileEnsuringDir(
+				join(projectDir, ".atomic/workflows", FIXTURE),
+				source.replace(targetCall, `${earlyReturn}\n\t\t${targetCall}`),
+			);
+			await cli.prompt("change-flow", "/workflow reload");
+		}
+
 		// 5. Resume: the aborted call must run again while the settled sibling
 		//    replays. Whether that happens is the behavior under test, so the
 		//    wait is bounded and its outcome is recorded rather than thrown —
 		//    a run that quit did not pause simply never re-executes anything,
 		//    and the assertions below say so with the CLI's own words.
 		await cli.prompt("resume", `/workflow resume ${runId}`);
-		const reexecuted = await cli.settle(() => readState().hangExecutions > 1, RESUME_SETTLE_TIMEOUT_MS);
+		const reexecuted =
+			omission === undefined && (await cli.settle(() => readState().hangExecutions > 1, RESUME_SETTLE_TIMEOUT_MS));
 		if (reexecuted) await cli.waitUntil(() => !readState().hangRunning, "the re-executed callback to settle");
 		if (control === "interrupt")
 			await cli.waitUntil(
-				() => cli.runEndings().some((ending) => ending.status === "completed"),
-				"resumed continuation to complete",
+				() => cli.runEndings().some((ending) => ending.runId !== runId),
+				"resumed continuation to settle",
 			);
 		const resumedRunId =
-			control === "interrupt" ? cli.runEndings().findLast((ending) => ending.status === "completed")!.runId : runId;
+			control === "interrupt" ? cli.runEndings().findLast((ending) => ending.runId !== runId)!.runId : runId;
 		const afterResume = runDetail(await statusSurface(cli, "status-resumed", resumedRunId));
 
 		return {
@@ -534,6 +561,26 @@ test(
 			hangRunning: false,
 			hangObservedAbort: true,
 		});
+	},
+	REAL_CLI_SCENARIO_TIMEOUT_MS,
+);
+
+// PR #2864 discussion_r3939119993: use the built CLI and reload an actually edited definition.
+test.each(["return", "completed"] as const)(
+	"built Node runtime refuses %s after changed flow omits the interrupted tool",
+	async (omission) => {
+		const observed = await runScenario("interrupt", omission);
+		assert.equal(
+			observed.afterResume.status,
+			"failed",
+			observed.afterResume.error ?? "omitted frontier cannot succeed",
+		);
+		assert.match(observed.afterResume.error ?? "", /pending frontier was not consumed/);
+		assert.ok(observed.afterResume.error?.includes(toolNode(observed.afterQuit, "hang-tool").id));
+		assert.equal(observed.finalState.siblingExecutions, 1);
+		assert.equal(observed.finalState.hangExecutions, 1);
+		assert.equal(toolNode(observed.afterResume, "sibling-tool").replayed, true);
+		assert.equal(observed.afterResume.result, undefined);
 	},
 	REAL_CLI_SCENARIO_TIMEOUT_MS,
 );
