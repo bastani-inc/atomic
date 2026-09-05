@@ -7,7 +7,7 @@ Atomic uses JSON settings files with project settings overriding global settings
 | `~/.atomic/agent/settings.json` | Global (all projects) |
 | `.atomic/settings.json` | Project (current directory) |
 
-Edit directly or use `/settings` for common options. To save startup model defaults interactively, use `/model` and press Ctrl+S on the desired model; to save the startup thinking level, use `/thinking` and press Ctrl+S. Atomic also reads legacy `~/.pi/agent/settings.json` and `.pi/settings.json` as compatibility fallbacks, with `.atomic` paths taking precedence.
+Edit directly or use `/settings` for common options. Choosing a model or thinking level with `/model`, `/thinking`, or their cycling shortcuts automatically saves it as the startup default. Thinking choices also update the active model's saved thinking level. `/scoped-models` saves cycle-list changes automatically. SDK calls, session restoration, and automatic fallbacks do not overwrite these defaults unless persistence is explicitly requested. Atomic also reads legacy `~/.pi/agent/settings.json` and `.pi/settings.json` as compatibility fallbacks, with `.atomic` paths taking precedence.
 
 ## Project Trust
 
@@ -31,10 +31,10 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `defaultProvider` | string | - | Startup provider (e.g., `"anthropic"`, `"openai"`; saved with Ctrl+S in `/model`, or edited manually) |
-| `defaultModel` | string | - | Startup model ID (saved with Ctrl+S in `/model`, or edited manually) |
-| `defaultThinkingLevel` | string | - | Startup thinking level (saved with Ctrl+S in `/thinking`, or edited manually): `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; the active model must support the selected level |
-| `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; configure from `/settings` → Default thinking level per model, or edit manually |
+| `defaultProvider` | string | - | Startup provider, saved automatically when you switch models interactively |
+| `defaultModel` | string | - | Startup model ID, saved automatically when you switch models interactively |
+| `defaultThinkingLevel` | string | - | Startup thinking level, saved automatically on interactive model/thinking changes: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; clamped to the active model's supported levels |
+| `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; updated automatically on interactive model/thinking changes, or configured from `/settings` → Default thinking level per model |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level. Anthropic, Google, and Bedrock use these natively. OpenAI-compatible models use them when `compat.thinkingTokenBudgetField` (or `supportsThinkingTokenBudget`) is set. |
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses, billed compaction or branch-summary usage, and provider recovery diagnostics such as dropped Anthropic thinking blocks, including when a persisted transcript is resumed |
@@ -109,7 +109,7 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, a Catppuccin built-in, or custom) |
 | `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. |
 | `fullscreenExitOutput` | string | `"transcript"` | Fullscreen exit output: `"transcript"` prints the final transcript and session resume hint, while `"resume-hint"` restores the terminal's previous screen and prints only the resume hint. Settable from `/settings` |
-| `fullscreenCopyOnSelect` | boolean | `true` | Copy fullscreen text selections automatically on mouse release. When `false`, the selection remains highlighted and main-editor Ctrl+X copies it; Ctrl+X falls back to the last assistant message when there is no selection. Settable from `/settings` |
+| `fullscreenCopyOnSelect` | boolean | `true` | Copy fullscreen text selections automatically on mouse release. When `false`, selection only highlights text. Ctrl+X does not copy; `/copy` copies the last assistant message. Settable from `/settings` |
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |

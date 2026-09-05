@@ -51,7 +51,6 @@ describe("scoped models selector", () => {
 						model.enabled = enabledModelIds === null || enabledModelIds.includes(`${provider}/${model.id}`);
 					}
 				},
-				onPersist: () => {},
 				onCancel: () => {},
 			},
 		);

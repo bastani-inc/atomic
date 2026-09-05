@@ -32,7 +32,7 @@ InteractiveModeBase.prototype.updateEditorBorderColor = function (this: Interact
 };
 
 InteractiveModeBase.prototype.cycleThinkingLevel = function (this: InteractiveModeBase): void {
-	const newLevel = this.session.cycleThinkingLevel();
+	const newLevel = this.session.cycleThinkingLevel({ persist: true });
 	if (newLevel === undefined) {
 		this.showStatus("Current model does not support thinking");
 	} else {
@@ -47,7 +47,7 @@ InteractiveModeBase.prototype.cycleModel = async function (
 	direction: "forward" | "backward",
 ): Promise<void> {
 	try {
-		const result = await this.session.cycleModel(direction);
+		const result = await this.session.cycleModel(direction, { persist: true });
 		if (result === undefined) {
 			const msg = this.session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available";
 			this.showStatus(msg);

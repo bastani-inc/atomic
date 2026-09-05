@@ -55,7 +55,6 @@ function applyPersistedThinkingDefault(
 ): void {
 	if (target) {
 		session.settingsManager.setModelThinkingLevel(target.provider, target.modelId, level);
-		return;
 	}
 	session.settingsManager.setDefaultThinkingLevel(level);
 }
@@ -832,6 +831,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
 		this.remoteModelCatalog.apply(catalog);
 		applyPersistedModelDefault(session, model, alreadyInScope);
+		const state = await this.client.getState();
+		if (state.model?.provider === model.provider && state.model.id === model.id) {
+			applyPersistedThinkingDefault(session, state.thinkingLevel, { provider: model.provider, modelId: model.id });
+		}
 	}
 
 	private refreshSessionView(): void {

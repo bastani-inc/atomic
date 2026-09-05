@@ -33,7 +33,6 @@ export class ThinkingSelectorComponent extends Container implements Focusable {
 	private allItems: SelectItem[];
 	private readonly onSelectLevel: (level: ThinkingLevel) => void;
 	private readonly onCancelSelect: () => void;
-	private readonly onSelectAsDefault?: (level: ThinkingLevel) => void;
 	private _focused = false;
 
 	get focused(): boolean {
@@ -49,13 +48,11 @@ export class ThinkingSelectorComponent extends Container implements Focusable {
 		availableLevels: ThinkingLevel[],
 		onSelectLevel: (level: ThinkingLevel) => void,
 		onCancelSelect: () => void,
-		onSelectAsDefault?: (level: ThinkingLevel) => void,
 		defaultThinkingLevel?: ThinkingLevel,
 	) {
 		super();
 		this.onSelectLevel = onSelectLevel;
 		this.onCancelSelect = onCancelSelect;
-		this.onSelectAsDefault = onSelectAsDefault;
 		this.allItems = availableLevels.map((level) => ({
 			value: level,
 			label: `${level === currentLevel ? "✓ " : "  "}${level}`,
@@ -65,7 +62,7 @@ export class ThinkingSelectorComponent extends Container implements Focusable {
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(new Text("Thinking Level", 0, 0));
-		this.addChild(new Text(`${keyDisplayText("app.thinking.cycle")} cycles thinking levels in-session`, 0, 0));
+		this.addChild(new Text(`${keyDisplayText("app.thinking.cycle")} cycles thinking levels`, 0, 0));
 		this.addChild(new Spacer(1));
 		this.searchInput = new Input();
 		this.searchInput.onSubmit = () => this.selectList.handleInput("\r");
@@ -78,7 +75,7 @@ export class ThinkingSelectorComponent extends Container implements Focusable {
 			new Text(
 				theme.fg(
 					"dim",
-					`  ${keyDisplayText("tui.select.confirm")} to select · ${keyDisplayText("app.thinking.save")} to set as default · ${keyDisplayText("tui.select.cancel")} to cancel`,
+					`  ${keyDisplayText("tui.select.confirm")} to select · ${keyDisplayText("tui.select.cancel")} to cancel`,
 				),
 				0,
 				0,
@@ -108,11 +105,6 @@ export class ThinkingSelectorComponent extends Container implements Focusable {
 
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
-		if (kb.matches(keyData, "app.thinking.save") && this.onSelectAsDefault) {
-			const item = this.selectList.getSelectedItem();
-			if (item) this.onSelectAsDefault(item.value as ThinkingLevel);
-			return;
-		}
 		if (
 			kb.matches(keyData, "tui.select.up") ||
 			kb.matches(keyData, "tui.select.down") ||

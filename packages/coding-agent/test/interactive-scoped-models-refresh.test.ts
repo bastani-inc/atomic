@@ -145,17 +145,28 @@ describe("scoped models cache-first refresh", () => {
 
 	it("uses settings saved while refresh is in flight", async () => {
 		const cached = model("cached", "Cached");
+		const otherCached = model("other", "Other Cached");
 		const refreshed = model("refreshed", "Refreshed");
-		const refresh = await openSelector([cached], { configuredPatterns: ["cached-provider/*"] });
+		const refresh = await openSelector([cached, otherCached], {
+			configuredPatterns: ["cached-provider/cached"],
+		});
+		expect(stripAnsi(refresh.selector.render(100).join("\n"))).toContain("1/2 enabled");
+		expect(refresh.setEnabledModels).not.toHaveBeenCalled();
 
-		refresh.selector.handleInput("\x13");
-		expect(refresh.setEnabledModels).toHaveBeenCalledWith(undefined);
+		// Enable all while the refresh is pending; the change saves automatically.
+		refresh.selector.handleInput("\x01");
+		expect(refresh.setEnabledModels).toHaveBeenCalledExactlyOnceWith(undefined);
+		expect(refresh.setScopedModels).toHaveBeenCalledExactlyOnceWith([]);
 
-		refresh.complete([cached, refreshed], { aborted: false, errors: new Map() });
+		refresh.complete([cached, otherCached, refreshed], { aborted: false, errors: new Map() });
 		await vi.waitFor(() => {
 			const rendered = stripAnsi(refresh.selector.render(100).join("\n"));
+			expect(rendered).toContain("Model catalogs refreshed.");
+			expect(rendered).toContain("✓ refreshed [cached-provider]");
 			expect(rendered).toContain("all enabled");
 		});
+		expect(refresh.setEnabledModels).toHaveBeenCalledExactlyOnceWith(undefined);
+		expect(refresh.setScopedModels).toHaveBeenCalledExactlyOnceWith([]);
 	});
 
 	it("keeps a user-selected cached scope when refresh drops its model", async () => {

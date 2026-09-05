@@ -17,7 +17,6 @@ export interface AppKeybindings {
 	"app.exit": true;
 	"app.suspend": true;
 	"app.thinking.cycle": true;
-	"app.thinking.save": true;
 	"app.model.cycleForward": true;
 	"app.model.cycleBackward": true;
 	"app.model.select": true;
@@ -27,7 +26,6 @@ export interface AppKeybindings {
 	"app.editor.external": true;
 	"app.message.followUp": true;
 	"app.message.dequeue": true;
-	"app.message.copy": true;
 	"app.clipboard.pasteImage": true;
 	"app.session.new": true;
 	"app.session.tree": true;
@@ -42,7 +40,6 @@ export interface AppKeybindings {
 	"app.session.rename": true;
 	"app.session.delete": true;
 	"app.session.deleteNoninvasive": true;
-	"app.models.save": true;
 	"app.models.enableAll": true;
 	"app.models.clearAll": true;
 	"app.models.toggleProvider": true;
@@ -103,10 +100,6 @@ export const KEYBINDINGS = {
 		defaultKeys: "shift+tab",
 		description: "Cycle thinking level",
 	},
-	"app.thinking.save": {
-		defaultKeys: "ctrl+s",
-		description: "Save thinking level",
-	},
 	"app.model.cycleForward": {
 		defaultKeys: "ctrl+p",
 		description: "Cycle to next model",
@@ -136,10 +129,6 @@ export const KEYBINDINGS = {
 	"app.message.dequeue": {
 		defaultKeys: windowsKeybindings ? "alt+q" : "alt+up",
 		description: "Restore queued messages",
-	},
-	"app.message.copy": {
-		defaultKeys: "ctrl+x",
-		description: "Copy fullscreen selection or last agent message",
 	},
 	"app.clipboard.pasteImage": {
 		defaultKeys: windowsKeybindings ? "alt+v" : "ctrl+v",
@@ -184,10 +173,6 @@ export const KEYBINDINGS = {
 	"app.session.deleteNoninvasive": {
 		defaultKeys: "ctrl+backspace",
 		description: "Delete session when query is empty",
-	},
-	"app.models.save": {
-		defaultKeys: "ctrl+s",
-		description: "Save model selection",
 	},
 	"app.models.enableAll": {
 		defaultKeys: "ctrl+a",

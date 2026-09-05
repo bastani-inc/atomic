@@ -332,7 +332,7 @@ declare module "./interactive-mode-base.ts" {
 		showSettingsSelector(): void;
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		handleThinkingCommand(searchTerm?: string): void;
-		selectThinkingLevel(level: ThinkingLevel, persist: boolean): void;
+		selectThinkingLevel(level: ThinkingLevel): void;
 		showThinkingSelector(): void;
 		findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined>;
 		getModelCandidates(): Promise<Model<Api>[]>;
@@ -376,7 +376,7 @@ declare module "./interactive-mode-base.ts" {
 		getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined;
 		handleImportCommand(text: string): Promise<void>;
 		handleShareCommand(): Promise<void>;
-		handleCopyCommand(options?: { preferSelection?: boolean }): Promise<void>;
+		handleCopyCommand(): Promise<void>;
 		handleNameCommand(text: string): void;
 		handleSessionCommand(): void;
 		handleChangelogCommand(): void;
@@ -384,8 +384,6 @@ declare module "./interactive-mode-base.ts" {
 		getEditorKeyDisplay(action: Keybinding): string;
 		jumpToTranscriptEnd(): void;
 		setFullscreenCopyOnSelect(enabled: boolean): void;
-		getFullscreenCopyOnSelect(): boolean | undefined;
-		copyActiveFullscreenSelection(): Promise<boolean | undefined>;
 		handleHotkeysCommand(): void;
 		handleClearCommand(): Promise<void>;
 		handleDebugCommand(): void;

@@ -62,7 +62,7 @@ InteractiveModeBase.prototype.handleModelCommand = async function (
 	const model = await this.findExactModelMatch(searchTerm);
 	if (model) {
 		try {
-			await this.session.setModel(model);
+			await this.session.setModel(model, { persist: true });
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
 			this.showStatus(`Model: ${model.id}`);
@@ -171,9 +171,9 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			this.settingsManager,
 			this.session.modelRuntime,
 			this.session.scopedModels,
-			async (model, persist) => {
+			async (model) => {
 				try {
-					await this.session.setModel(model, { persist });
+					await this.session.setModel(model, { persist: true });
 					await this.updateAvailableProviderCount();
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
@@ -255,15 +255,12 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 				onChange: (enabledIds) => {
 					selectionChanged = true;
 					updateSessionModels(enabledIds);
-				},
-				onPersist: (enabledIds) => {
 					const allEnabled =
 						enabledIds !== null &&
 						enabledIds.length === availableModels.length &&
 						enabledIds.every((id) => availableModelIds.has(id));
 					const newPatterns = enabledIds === null || allEnabled ? undefined : enabledIds;
 					this.settingsManager.setEnabledModels(newPatterns ? [...newPatterns] : undefined);
-					this.showStatus("Model selection saved to settings");
 				},
 				onCancel: () => {
 					done();
@@ -387,24 +384,20 @@ InteractiveModeBase.prototype.handleThinkingCommand = function (this: Interactiv
 		this.showError(`Unknown thinking level "${searchTerm}". Available levels: ${levels.join(", ")}.`);
 		return;
 	}
-	this.selectThinkingLevel(level, false);
+	this.selectThinkingLevel(level);
 };
 
-InteractiveModeBase.prototype.selectThinkingLevel = function (
-	this: InteractiveModeBase,
-	level: ThinkingLevel,
-	persist: boolean,
-): void {
-	this.session.setThinkingLevel(level, { persist });
+InteractiveModeBase.prototype.selectThinkingLevel = function (this: InteractiveModeBase, level: ThinkingLevel): void {
+	this.session.setThinkingLevel(level, { persist: true });
 	this.footer.invalidate();
 	this.updateEditorBorderColor();
-	this.showStatus(persist ? `Default thinking level: ${level}` : `Thinking level: ${level}`);
+	this.showStatus(`Thinking level: ${level}`);
 };
 
 InteractiveModeBase.prototype.showThinkingSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
-		const select = (level: ThinkingLevel, persist: boolean) => {
-			this.selectThinkingLevel(level, persist);
+		const select = (level: ThinkingLevel) => {
+			this.selectThinkingLevel(level);
 			done();
 		};
 		const model = this.session.model;
@@ -413,9 +406,8 @@ InteractiveModeBase.prototype.showThinkingSelector = function (this: Interactive
 		const selector = new ThinkingSelectorComponent(
 			this.session.thinkingLevel,
 			availableLevels,
-			(level) => select(level, false),
+			select,
 			() => done(),
-			(level) => select(level, true),
 			resolveThinkingSelectorDefault(rawDefault, availableLevels, model),
 		);
 		return { component: selector, focus: selector };

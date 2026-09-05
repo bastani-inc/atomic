@@ -320,6 +320,9 @@ describe("RPC persist boundary", () => {
 		assert.equal(engine.settingsManager.getDefaultModel(), "faux-2");
 		assert.equal(host.settingsManager.getDefaultProvider(), next.provider);
 		assert.equal(host.settingsManager.getDefaultModel(), "faux-2");
+		assert.equal(engine.settingsManager.getDefaultThinkingLevel(), engine.session.thinkingLevel);
+		assert.equal(host.settingsManager.getDefaultThinkingLevel(), engine.session.thinkingLevel);
+		assert.equal(host.settingsManager.getModelThinkingLevel(next.provider, next.id), engine.session.thinkingLevel);
 	});
 
 	it("does not save settings defaults when the isolated engine proxy setModel omits persist", async () => {
@@ -532,5 +535,7 @@ describe("RPC persist boundary", () => {
 		assert.equal(engine.session.model?.id, "faux-2");
 		assert.equal(engine.settingsManager.getDefaultModel(), "faux-2");
 		assert.equal(host.settingsManager.getDefaultModel(), "faux-2");
+		assert.equal(host.settingsManager.getDefaultThinkingLevel(), result?.thinkingLevel);
+		assert.equal(engine.settingsManager.getDefaultThinkingLevel(), result?.thinkingLevel);
 	});
 });

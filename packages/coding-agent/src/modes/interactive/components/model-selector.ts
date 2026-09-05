@@ -55,7 +55,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private currentModel?: Model<Api>;
 	private defaultModelKey?: string;
 	private modelRuntime: ModelRuntime;
-	private onSelectCallback: (model: Model<Api>, persist: boolean) => void;
+	private onSelectCallback: (model: Model<Api>) => void;
 	private onCancelCallback: () => void;
 	private errorMessage?: string;
 	private tui: TUI;
@@ -74,7 +74,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		_settingsManager: SettingsManager,
 		modelRuntime: ModelRuntime,
 		scopedModels: ReadonlyArray<ScopedModelItem>,
-		onSelect: (model: Model<Api>, persist: boolean) => void,
+		onSelect: (model: Model<Api>) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
 	) {
@@ -115,7 +115,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.searchInput.onSubmit = () => {
 			// Enter on search input selects the first filtered item
 			if (this.filteredModels[this.selectedIndex]) {
-				this.handleSelect(this.filteredModels[this.selectedIndex].model, false);
+				this.handleSelect(this.filteredModels[this.selectedIndex].model);
 			}
 		};
 		this.addChild(this.searchInput);
@@ -129,7 +129,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(
 			new Text(
-				`${keyHint("tui.select.confirm", "select")} ${theme.fg("muted", "·")} ${keyHint("app.models.save", "set as default")} ${theme.fg("muted", "·")} ${keyHint("tui.select.cancel", "cancel")}`,
+				`${keyHint("tui.select.confirm", "select")} ${theme.fg("muted", "·")} ${keyHint("tui.select.cancel", "cancel")}`,
 				1,
 				0,
 			),
@@ -339,16 +339,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.selectedIndex = this.selectedIndex === this.filteredModels.length - 1 ? 0 : this.selectedIndex + 1;
 			this.updateList();
 		}
-		// Ctrl+S persists the selected model as the startup default
-		else if (kb.matches(keyData, "app.models.save")) {
-			const selectedModel = this.filteredModels[this.selectedIndex];
-			if (selectedModel) this.handleSelect(selectedModel.model, true);
-		}
 		// Enter
 		else if (kb.matches(keyData, "tui.select.confirm")) {
 			const selectedModel = this.filteredModels[this.selectedIndex];
 			if (selectedModel) {
-				this.handleSelect(selectedModel.model, false);
+				this.handleSelect(selectedModel.model);
 			}
 		}
 		// Escape or Ctrl+C
@@ -364,9 +359,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		return true;
 	}
 
-	private handleSelect(model: Model<Api>, persist: boolean): void {
+	private handleSelect(model: Model<Api>): void {
 		this.dispose();
-		this.onSelectCallback(model, persist);
+		this.onSelectCallback(model);
 	}
 
 	getSearchInput(): Input {

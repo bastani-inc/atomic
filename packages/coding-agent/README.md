@@ -176,8 +176,8 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | Command | Description |
 |---------|-------------|
 | `/login`, `/logout` | OAuth authentication |
-| `/model` | Switch models; Ctrl+S in the picker saves the startup default |
-| `/thinking` | Switch thinking level; Ctrl+S in the picker saves the startup default |
+| `/model` | Switch models and automatically save the startup default |
+| `/thinking` | Switch thinking level and automatically save the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
 | `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
