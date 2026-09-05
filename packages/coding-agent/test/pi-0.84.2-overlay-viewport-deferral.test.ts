@@ -741,3 +741,23 @@ describe("fullscreen fixtures do not depend on TERM", () => {
 		}
 	});
 });
+
+for (const mountOverlay of [false, true]) {
+	// Pi #9166: exercise Atomic's actual fullscreen adapter, including declined overlay input.
+	test(`Pi 0.85.1 Alt-wheel scrolls five times farther with overlay=${mountOverlay}`, () => {
+		const fixture = createFixture({ mountOverlay });
+		try {
+			const { top } = anchorAtEnd(fixture);
+			fixture.terminal.input(WHEEL_UP);
+			fixture.tui.renderNow();
+			const ordinaryDistance = top - fixture.transcript.scrollTop;
+			expect(ordinaryDistance).toBeGreaterThan(0);
+			anchorAtEnd(fixture);
+			fixture.terminal.input("\x1b[<72;10;2M");
+			fixture.tui.renderNow();
+			expect(top - fixture.transcript.scrollTop).toBe(ordinaryDistance * 5);
+		} finally {
+			fixture.stop();
+		}
+	});
+}

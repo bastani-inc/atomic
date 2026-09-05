@@ -195,6 +195,21 @@ describe("ImagesModels", () => {
 		await expect(models.refresh()).resolves.toBeUndefined();
 	});
 
+	it("exposes the Pi 0.85.1 MAI-Image-2.6 variants with upstream capabilities and input prices", () => {
+		const models = builtinImagesModels({ authContext: fakeAuthContext({}) });
+		for (const [id, inputCost] of [
+			["microsoft/mai-image-2.6", 5],
+			["microsoft/mai-image-2.6-flash", 1.75],
+		] as const) {
+			const model = models.getModel("openrouter", id);
+			expect(model).toBeDefined();
+			expect(model?.api).toBe("openrouter-images");
+			expect(model?.input).toEqual(["text", "image"]);
+			expect(model?.output).toEqual(["image"]);
+			expect(model?.cost.input).toBe(inputCost);
+		}
+	});
+
 	it("builtinImagesModels registers the openrouter provider with its catalog", async () => {
 		const models = builtinImagesModels({ authContext: fakeAuthContext({ OPENROUTER_API_KEY: "or-key" }) });
 		const providers = models.getProviders();

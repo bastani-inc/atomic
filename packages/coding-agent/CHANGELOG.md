@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Fullscreen mouse-wheel scrolling moves five times as far while Alt is held, through the Pi TUI 0.85.1 update ([upstream #9166](https://github.com/earendil-works/pi/pull/9166)).
+
+### Changed
+
+- Updated Pi runtime dependencies to 0.85.1, preserving Atomic's CLI startup, published client API, and footer watcher behavior.
+
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
