@@ -1,0 +1,5 @@
+config_version = "0"
+
+# Supplemental built-in analysis; npm run check remains the lint/typecheck gate.
+exclude_patterns = ["**/node_modules/**", "**/dist/**", "**/target/**", "**/binaries/**"]
+test_patterns = ["**/test/**", "**/*.test.*"]

@@ -96,6 +96,23 @@ npm run test:scripts              # Run the repository script tests under node -
 npm run test --workspace=@bastani/atomic -- test/specific.test.ts
 ```
 
+Root Vitest projects install a fresh in-memory durable backend before every test.
+Durability initialization imports the backend and its process owner rather than
+preloading the DBOS factory or the Atomic host. A test that needs host prototype
+installers must import those real modules explicitly rather than depend on a
+side effect of shared setup. Test-local backend overrides still use the factory's
+injection seam, and the next test receives a fresh backend without resetting
+unrelated initialization or warning state. Keep the global artifact/native setups,
+default isolation, worker sizing and timeout budgets unchanged when measuring
+test cost. See the [CI measurements](https://github.com/bastani-inc/atomic/blob/main/docs/ci.md#current-critical-path-measured-september-5-2026)
+for local gains and the remaining hosted Linux/Windows validation.
+
+CI runs the complete root unit and integration suites in independent Linux and
+Windows jobs. Each builds its own native and package prerequisites; both required
+result gates wait for every work job and reject failures, cancellations and skips.
+This trades duplicated setup for earlier integration feedback without changing
+test isolation, coverage or retries.
+
 ## Deterministic installs
 
 `@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` so package-manager installs resolve the same dependency tree every time. Contributors working from a source checkout can validate that the checked-in shrinkwrap is up to date with:

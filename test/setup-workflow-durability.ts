@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach } from "vitest";
-import { createInMemoryTestBackend, setDurableBackend } from "../packages/workflows/src/durable/factory.js";
+import { InMemoryDurableBackend } from "../packages/workflows/src/durable/backend.js";
+import { getDurableBackendProcessOwner } from "../packages/workflows/src/durable/backend-process-owner.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../packages/workflows/src/shared/workflow-artifact-env.js";
 
 /**
@@ -46,5 +47,7 @@ if (process.env[ENV_WORKFLOW_ARTIFACT_DIR] === undefined) {
  * DBOS adapter.
  */
 beforeEach(() => {
-	setDurableBackend(createInMemoryTestBackend());
+	// Match the factory's injection seam without eagerly loading DBOS and the host
+	// into every isolated test file. Do not reset initialized/pending/warning state.
+	getDurableBackendProcessOwner().injectedBackend = new InMemoryDurableBackend();
 });

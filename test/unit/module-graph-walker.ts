@@ -135,8 +135,10 @@ function stringLiteralValue(node: unknown): string | undefined {
 	return undefined;
 }
 
-function isTypeOnlyImport(node: BabelNode): boolean {
+function isTypeOnlyImport(node: BabelNode, verbatimModuleSyntax: boolean): boolean {
 	if (node.importKind === "type") return true;
+	// Verbatim emit keeps `import { type T }` as a side-effect import.
+	if (verbatimModuleSyntax) return false;
 	const specifiers = (node.specifiers as BabelNode[] | undefined) ?? [];
 	if (specifiers.length === 0) return false;
 	return specifiers.every((specifier) => specifier.importKind === "type");
@@ -200,8 +202,11 @@ const SCOPE_NODE_TYPES = new Set([
 	"StaticBlock",
 ]);
 
-/** Every runtime module request a file makes, with type-only edges already removed. */
-export function runtimeRequestsOf(filePath: string): RuntimeRequest[] {
+/** Runtime requests; opt into verbatim import retention for consumers using that emit policy. */
+export function runtimeRequestsOf(
+	filePath: string,
+	options: { readonly verbatimModuleSyntax?: boolean } = {},
+): RuntimeRequest[] {
 	const ast = parseFile(filePath);
 	const requests: RuntimeRequest[] = [];
 
@@ -418,7 +423,7 @@ export function runtimeRequestsOf(filePath: string): RuntimeRequest[] {
 					else if (imported === "default") scope.bindings.set(local, { kind: "module-object" });
 					else scope.bindings.set(local, { kind: "other" });
 				}
-				if (!isTypeOnlyImport(node)) record("import", node.source);
+				if (!isTypeOnlyImport(node, options.verbatimModuleSyntax === true)) record("import", node.source);
 				return;
 			}
 			case "ExportNamedDeclaration":
