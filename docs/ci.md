@@ -200,42 +200,56 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 
 ### Per-job time limits
 
-The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang
-detector with room for the bounded flake retries it owns: `unit-tests` and
-`integration-tests` each retain 28/28, `agent-suite` 8/12, `release-archive` 5/9,
-`static-checks` 6, gate 5. Root-suite caps conservatively retain the former combined job's headroom; they are not newly measured split-job budgets. The topology contract pins every value.
+Job caps use the latest two completed CI runs available at calibration time:
+[33997174167](https://github.com/bastani-inc/atomic/actions/runs/33997174167)
+(main, `c77de93380`) and
+[33997819241](https://github.com/bastani-inc/atomic/actions/runs/33997819241)
+(PR, `bafc6ebd17`). Both succeeded. Run `33998194502` was still in progress
+and was excluded rather than treating unfinished durations as measurements.
 
-A cap has to cover the retries its job owns. `scripts/run-flaky-test-suite.ts`
-replays only the step it wraps, so the budget is `setup + 2 × (retryable steps)`
-rather than 2× the whole job. The former `suites` job wrapped **two** steps;
-each new root-suite job now owns one independently retryable step.
+For each job/platform, the cap in minutes is
+`ceil(max(run_1_seconds, run_2_seconds) × 1.5 / 60)`. Durations come from
+GitHub's job `completedAt - startedAt`, including setup and teardown but not
+time queued for a runner. Whole-minute rounding provides at least 50% headroom.
 
-Recent Windows observations show why the old value no longer covered that
-contract. Run `33858796656` used 140 s before its suites, 475 s for unit, and
-75 s for integration. On run `33864468533`, setup took 103 s, unit took 511 s
-and its passing retry took another 494 s, then the 20-minute job cap cancelled
-integration after more than 92 s with 41 of 42 files complete. The outstanding
-file was the structural packed-package install and typecheck, so 92 s is a lower
-bound rather than a completed integration sample.
+| Job | Platform | Run 33997174167 | Run 33997819241 | Timeout |
+| --- | --- | ---: | ---: | ---: |
+| Unit tests | Linux | 371 s | 367 s | 10 min |
+| Unit tests | Windows | 526 s | 511 s | 14 min |
+| Integration tests | Linux | 112 s | 118 s | 3 min |
+| Integration tests | Windows | 195 s | 195 s | 5 min |
+| Agent suite | Linux | 226 s | 216 s | 6 min |
+| Agent suite | Windows | 331 s | 327 s | 9 min |
+| Release archive | Linux | 76 s | 80 s | 2 min |
+| Release archive | Windows | 138 s | 135 s | 4 min |
+| Static checks | Linux | 78 s | 88 s | 3 min |
+| Final test gate | Linux matrix label | 4 s | 3 s | 1 min |
+| Final test gate | Windows matrix label | 4 s | 5 s | 1 min |
 
-Using the pessimistic observed values, the retry-inclusive floor is
-`140 + 2 × (511 + 92) = 1346 s` (22.4 min). Both former `suites` legs therefore received
-one 28-minute cap: 1.25× that floor, effectively the same headroom as the old
-cap's 1.24× Windows ratio when it was introduced. A per-platform split would
-again encode precision these shared 4-vCPU runners do not support and invite one
-leg to decay independently.
+Both final gate legs execute on Linux. The topology contract pins the caps and
+the sampled matrix-job maxima used to calculate them.
 
-`agent-suite` keeps its 8/12 pair because it still clears its retry-inclusive
-observations, and `release-archive` keeps 5/9 because it runs no retryable step
-at all; its Windows cap is 9 because cold setup observed a 152 s Rust toolchain
-acquisition and 71 s checkout before the roughly 110 s native build and 40 s
-archive smoke. A cap that cancels a passing retried run is worse than a late hang
-detection.
+These are two-run wall-clock limits, not a guarantee that a full suite retry or
+a cold-cache toolchain download will fit. Bounded retries remain enabled but
+share the job's remaining time. This replaces the older retry-inclusive and
+cold-setup allowances; recalibrate with fresh evidence if those paths exceed
+the new limits. No test coverage, retry count, or per-test timeout changes.
 
-These caps are wall-clock ceilings, not performance budgets. Shortening the
-~8.5 min unit step is what buys headroom back; raising a cap again should come
-with fresh measurements, and the contract test bounds every cap at 28 minutes
-so that stays a deliberate decision.
+The unchanged npm policy allows 85 seconds for one stalled request and its two
+retries: `3 × 25 s + 2 × 5 s` maximum backoff. The contract checks that this is
+less than the smallest **npm-installing** job cap (120 seconds, Linux release
+archive); the 60-second result gate never runs npm. The former one-third-of-a-job
+guarantee no longer applies: 255 seconds cannot fit into
+120 seconds. Even one 85-second allowance may not fit after setup and other
+work, and an install may make multiple requests. The job deadline wins; this
+contract does not guarantee that npm retries or the install will finish.
+
+Existing individual step limits remain unchanged: Rust installation and its
+retry each allow 4 minutes, and PR-only Mintlify validation allows 5 minutes.
+The enclosing job deadline always wins, even when a step's own limit is longer.
+The main-branch sample skipped Mintlify; the PR sample ran it in 10 seconds.
+Skipped steps are not zero-duration performance samples. Publish and CodeQL
+workflow limits are outside this calibration.
 
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name. All three upload steps explicitly set `include-hidden-files: true`, producing six platform-specific artifacts: files inside a dot-prefixed directory are hidden on Linux and Windows, and the default previously excluded every diagnostic. Keep `path: .ci-diagnostics/` narrow rather than enabling hidden uploads across the workspace. The `always()` condition, 14-day retention and `if-no-files-found: ignore` remain, so a job failing before test execution need not produce an artifact. Restoring uploads may add a small upload cost; it is an observability fix, not a speedup.
 

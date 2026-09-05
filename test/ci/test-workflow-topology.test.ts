@@ -112,15 +112,15 @@ test("every work job the gate names exists and is otherwise independent", async 
 	}
 });
 
-/** Root-suite caps retain the combined job's headroom, not measured split-job budgets. */
-test("each split job retains its timeout hang detector", async () => {
+/** Ceil the slower job duration from runs 33997174167 / 33997819241 plus 50% headroom. */
+test("each split job retains its measured timeout hang detector", async () => {
 	const workflow = await readText(testPath);
 	const blocks = await jobs();
 	const caps: Record<string, [number, number]> = {
-		"unit-tests": [28, 28],
-		"integration-tests": [28, 28],
-		"agent-suite": [8, 12],
-		"release-archive": [5, 9],
+		"unit-tests": [Math.ceil((371 * 1.5) / 60), Math.ceil((526 * 1.5) / 60)],
+		"integration-tests": [Math.ceil((118 * 1.5) / 60), Math.ceil((195 * 1.5) / 60)],
+		"agent-suite": [Math.ceil((226 * 1.5) / 60), Math.ceil((331 * 1.5) / 60)],
+		"release-archive": [Math.ceil((80 * 1.5) / 60), Math.ceil((138 * 1.5) / 60)],
 	};
 	for (const [job, [linux, windows]] of Object.entries(caps)) {
 		const block = blocks.get(job) as string;
@@ -140,13 +140,13 @@ test("each split job retains its timeout hang detector", async () => {
 		assert.match(block, /timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}/u, job);
 		assert.match(block, /fail-fast: false/u, job);
 	}
-	assert.match(blocks.get("static-checks") as string, /^[ \t]+timeout-minutes: 6$/mu);
-	assert.match(blocks.get("test") as string, /^[ \t]+timeout-minutes: 5$/mu);
+	assert.match(blocks.get("static-checks") as string, /^[ \t]+timeout-minutes: 3$/mu);
+	assert.match(blocks.get("test") as string, /^[ \t]+timeout-minutes: 1$/mu);
 	// A cap is still a hang detector: it must bound a stuck job to minutes rather
 	// than GitHub's six-hour default. The bound is the largest cap the current
 	// measurements justify, so raising one further has to come with new numbers.
 	for (const [, value] of workflow.matchAll(/^\s+timeout_minutes: (\d+)$/gmu)) {
-		assert.ok(Number(value) <= 28, `cap ${value} is too loose to detect a hang`);
+		assert.ok(Number(value) <= 14, `cap ${value} is too loose to detect a hang`);
 	}
 });
 
