@@ -65,14 +65,16 @@ export function createWorkflowStageFactory(input: {
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly createMcpScope: (stageId: string, options: StageOptions | undefined) => StageMcpScope;
 	readonly takeTerminalArtifacts?: (replayKey: string) => readonly WorkflowArtifact[] | undefined;
-}): (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) => StageContextWithMeta {
-	return (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope): StageContextWithMeta => {
+	readonly assertLiveWorkAllowed?: () => void;
+}): (
+	name: string,
+	options?: StageOptions,
+	stageFailFastScope?: ParallelFailFastScope,
+	prepareLiveOptions?: () => StageOptions | undefined,
+) => StageContextWithMeta {
+	return (name, options, stageFailFastScope, prepareLiveOptions): StageContextWithMeta => {
 		input.exit.throwIfWorkflowExitSelected();
-		options = stageOptionsWithGitWorktree(
-			stageOptionsWithInputDefaults(options, input.inputRuntimeDefaults),
-			input.workflowInvocationCwd,
-			input.gitWorktreeSetupCache,
-		);
+		options = stageOptionsWithInputDefaults(options, input.inputRuntimeDefaults);
 		const stageId = options?.durableStageId ?? crypto.randomUUID();
 		const provisionalParentIds = input.tracker.onSpawn(stageId, name);
 		const scopedParentIds =
@@ -96,6 +98,14 @@ export function createWorkflowStageFactory(input: {
 		const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
 		const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;
 		const shouldReplay = replaySource !== undefined;
+		if (!shouldReplay) {
+			input.assertLiveWorkAllowed?.();
+			options = stageOptionsWithGitWorktree(
+				prepareLiveOptions?.() ?? options,
+				input.workflowInvocationCwd,
+				input.gitWorktreeSetupCache,
+			);
+		}
 		const replayStageOptions: StageOptions | undefined =
 			executeReplaySource?.sessionFile === undefined
 				? options

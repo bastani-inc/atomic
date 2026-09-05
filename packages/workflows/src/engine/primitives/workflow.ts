@@ -86,6 +86,7 @@ export function createChildWorkflowRunner(input: {
 				return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
 			}
 
+			runtime.assertLiveWorkAllowed?.();
 			const childInputs = resolveAndValidateInputs(
 				child.inputs,
 				options.inputs ?? {},

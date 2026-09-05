@@ -515,6 +515,8 @@ Fresh processes hydrate the same typed DBOS checkpoints before resume. Older rec
 
 Restored session lifecycle entries may omit completed tool nodes. Resume fills those missing graph nodes from retained typed durable checkpoints while preserving the session's existing nodes for validation. It does not replace corrupt local parent edges with a different graph. Tool names, including line terminators, are preserved verbatim and require the same typed frontier evidence.
 
+A tool-frontier continuation must reach and consume the exact unfinished tool before reporting `completed`, whether the body returns normally or calls `ctx.exit({ status: "completed" })`. Omitting the call, including by changing control flow, fails with `insufficient_state: replay topology mismatch` and the pending tool's exact ID. A substituted tool is rejected before its callback runs. While that frontier is pending, completed model and child-workflow predecessors can replay, but new model stages, tasks, and child workflows cannot execute in its place. Stage and task worktree setup also waits for live admission. Replaying completed predecessors alone is not proof of completion. The failed continuation publishes no successful run result; the retained source remains available for inspection and, on fresh-ID continuation, another resume after restoring the matching flow. Quit, kill, caught targeted cancellation, and intentional non-completed exits retain their existing behavior.
+
 To load a locally patched runtime from its checkout:
 
 ```bash
@@ -529,7 +531,7 @@ Start a new process; `/workflow reload` rediscovering workflow definitions does 
 The bounded, offline loading/recovery checks are:
 
 ```bash
-npm run test:integration -- test/integration/workflow-tool-abort-resume.test.ts test/integration/workflow-tool-node-quit-cli.test.ts
+npm run test:integration -- test/integration/workflow-tool-abort-resume.test.ts test/integration/workflow-tool-frontier-consumption.test.ts test/integration/workflow-tool-node-quit-cli.test.ts
 ```
 
 These cover public interrupt/resume, typed legacy recovery and rejection, a fresh DBOS adapter, and the built Node CLI with a fixture provider. The CLI fixture uses an isolated in-memory backend, not the production database or a release workflow.

@@ -48,19 +48,28 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		stageFailFastScope?: ParallelFailFastScope,
 	): Promise<WorkflowTaskResult> => {
 		runtime.exit.throwIfWorkflowExitSelected();
-		const runTaskOnce = async (taskOptions: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+		const runTaskOnce = async (
+			taskOptions: WorkflowTaskOptions,
+			prepareLiveOptions?: () => WorkflowTaskOptions,
+		): Promise<WorkflowTaskResult> => {
 			runtime.exit.throwIfWorkflowExitSelected();
-			const resolvedTaskOptions =
-				stageOptionsWithGitWorktree(
-					stageOptionsWithInputDefaults(taskOptions, runtime.inputRuntimeDefaults),
-					runtime.workflowInvocationCwd,
-					runtime.gitWorktreeSetupCache,
-				) ?? taskOptions;
+			let resolvedTaskOptions =
+				stageOptionsWithInputDefaults(taskOptions, runtime.inputRuntimeDefaults) ?? taskOptions;
 			const stageOptions = taskStageOptions(resolvedTaskOptions);
 			const stageHandle = runtime.spawnStage(name, {
 				kind: "agent",
 				...(stageOptions !== undefined ? { options: stageOptions } : {}),
 				...(stageFailFastScope !== undefined ? { failFastScope: stageFailFastScope } : {}),
+				prepareLiveOptions: () => {
+					const preparedOptions = prepareLiveOptions?.() ?? taskOptions;
+					resolvedTaskOptions =
+						stageOptionsWithGitWorktree(
+							stageOptionsWithInputDefaults(preparedOptions, runtime.inputRuntimeDefaults),
+							runtime.workflowInvocationCwd,
+							runtime.gitWorktreeSetupCache,
+						) ?? preparedOptions;
+					return taskStageOptions(resolvedTaskOptions);
+				},
 			});
 			const stage = stageHandle.context;
 			const promptText =
@@ -96,28 +105,32 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		};
 
 		if (options.worktree !== true) return runTaskOnce(options);
-		const prepared = prepareTaskWorktrees(
-			[{ ...options, name }],
-			{ ...options, worktree: true },
-			`${runtime.runId}-${name}-${crypto.randomUUID()}`,
-			name,
-			runtime.workflowInvocationCwd,
-			runtime.worktreeSymlinkDirectories,
-		);
-		const preparedTask = prepared.tasks[0]!;
+		let prepared: ReturnType<typeof prepareTaskWorktrees> | undefined;
 		let collected: readonly WorkflowArtifact[] | undefined;
 		const collect = () => {
-			collected ??= collectWorktreeDiffs(prepared, options.artifacts !== false).artifacts;
+			collected ??=
+				prepared === undefined ? [] : collectWorktreeDiffs(prepared, options.artifacts !== false).artifacts;
 			return collected;
 		};
-		const replayKey = preparedTask.durableReplayKey;
-		if (replayKey !== undefined) runtime.registerTerminalArtifactCollector(replayKey, collect);
 		try {
-			const result = await runTaskOnce(preparedTask);
+			const result = await runTaskOnce(options, () => {
+				prepared = prepareTaskWorktrees(
+					[{ ...options, name }],
+					{ ...options, worktree: true },
+					`${runtime.runId}-${name}-${crypto.randomUUID()}`,
+					name,
+					runtime.workflowInvocationCwd,
+					runtime.worktreeSymlinkDirectories,
+				);
+				const preparedTask = prepared.tasks[0]!;
+				if (preparedTask.durableReplayKey !== undefined)
+					runtime.registerTerminalArtifactCollector(preparedTask.durableReplayKey, collect);
+				return preparedTask;
+			});
 			const artifacts = collect();
 			return artifacts.length === 0 ? result : { ...result, artifacts: [...(result.artifacts ?? []), ...artifacts] };
 		} finally {
-			cleanupPreparedWorktrees(prepared);
+			if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
 		}
 	};
 }

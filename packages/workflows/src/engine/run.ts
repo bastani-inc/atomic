@@ -377,6 +377,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		opts,
 		classifyExecutorFailure,
 		drainWorkflowExitCleanups: exit.drainWorkflowExitCleanups,
+		assertSuccessfulCompletion: () => assertFrontierConsumed(),
 	});
 	const checkpointIdGenerator = createCheckpointIdGenerator();
 	const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
@@ -476,6 +477,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		worktreeSymlinkDirectories: opts.config?.worktree?.symlinkDirectories,
 		exit,
 		classifyExecutorFailure,
+		assertLiveWorkAllowed: () => assertFrontierConsumed(),
 		rootBudget,
 		budget,
 	});
@@ -522,24 +524,25 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		continuationSourceId: opts.continuation?.source.id,
 		...(persistedPossibleStages === undefined ? {} : { possibleStages: persistedPossibleStages }),
 	});
-	const { tool, admittedTools, abandonInFlightAsCancelled, observedQuitCancellation } = createTrackedToolPrimitive({
-		workflowId: runId,
-		...(opts.continuation === undefined ? {} : { checkpointSourceWorkflowId: opts.continuation.source.id }),
-		backend: durableBackend,
-		nextCheckpointId: checkpointIdGenerator,
-		controller: ownController,
-		terminalEvents,
-		store: activeStore,
-		tracker,
-		run: runSnapshot,
-		sourceToContinuationNodeIds,
-		resumeToolNode: opts.continuation?.source.toolNodes?.find(
-			(node) => node.id === opts.continuation?.resumeFromToolNodeId,
-		),
-		toolControls,
-		toolAdmission,
-		budget,
-	});
+	const { tool, admittedTools, assertFrontierConsumed, abandonInFlightAsCancelled, observedQuitCancellation } =
+		createTrackedToolPrimitive({
+			workflowId: runId,
+			...(opts.continuation === undefined ? {} : { checkpointSourceWorkflowId: opts.continuation.source.id }),
+			backend: durableBackend,
+			nextCheckpointId: checkpointIdGenerator,
+			controller: ownController,
+			terminalEvents,
+			store: activeStore,
+			tracker,
+			run: runSnapshot,
+			sourceToContinuationNodeIds,
+			resumeToolNode: opts.continuation?.source.toolNodes?.find(
+				(node) => node.id === opts.continuation?.resumeFromToolNodeId,
+			),
+			toolControls,
+			toolAdmission,
+			budget,
+		});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
 	/**
 	 * Suspend the executor for a whole-run graceful quit.
@@ -749,6 +752,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		assertWorkflowCreatedExecution(runSnapshot);
 		await durableBackend.flush(runId);
 		const returned = classifyReturnedRunStatus(result, runSnapshot);
+		if (returned.status === "completed") assertFrontierConsumed();
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		appendRunEndWhenRecorded(opts.persistence, recorded, {
 			runId,

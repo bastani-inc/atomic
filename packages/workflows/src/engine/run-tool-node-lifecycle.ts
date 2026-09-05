@@ -18,7 +18,7 @@ import { isWorkflowToolAbortError, type WorkflowGracefulQuitSignal } from "./wor
 type ToolNodeLifecycle = Pick<
 	CreateToolPrimitiveInput,
 	"onNodeStart" | "onNodeRunning" | "onNodeEnd" | "onNodeSettle" | "runTopology"
->;
+> & { readonly assertFrontierConsumed: () => void };
 
 export function createToolNodeLifecycle(input: {
 	readonly store: Store;
@@ -40,6 +40,13 @@ export function createToolNodeLifecycle(input: {
 	const replayedToolNodeIds = new Set<string>();
 	let pendingFrontier = input.resumeToolNode;
 	return {
+		assertFrontierConsumed: () => {
+			if (pendingFrontier !== undefined) {
+				throw new Error(
+					`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for unfinished tool ${pendingFrontier.id}: pending frontier was not consumed`,
+				);
+			}
+		},
 		onNodeStart: (node) => {
 			const frontier = node.replayed === true ? undefined : pendingFrontier;
 			if (
@@ -140,6 +147,7 @@ export function createTrackedToolPrimitive(input: {
 }): {
 	readonly tool: WorkflowToolPrimitive;
 	readonly admittedTools: AdmittedToolExecutionTracker;
+	readonly assertFrontierConsumed: () => void;
 	/** Abandon still-unsettled tool executions and publish them as cancelled. */
 	readonly abandonInFlightAsCancelled: (reason: unknown) => readonly string[];
 	/**
@@ -221,5 +229,11 @@ export function createTrackedToolPrimitive(input: {
 		},
 		{ once: true },
 	);
-	return { tool, admittedTools, abandonInFlightAsCancelled, observedQuitCancellation: () => observedQuit };
+	return {
+		tool,
+		admittedTools,
+		assertFrontierConsumed: lifecycle.assertFrontierConsumed,
+		abandonInFlightAsCancelled,
+		observedQuitCancellation: () => observedQuit,
+	};
 }

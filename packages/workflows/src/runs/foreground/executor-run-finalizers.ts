@@ -21,6 +21,7 @@ export function createRunFinalizers(input: {
 	readonly opts: RunOpts;
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly drainWorkflowExitCleanups: (reason?: string) => Promise<void>;
+	readonly assertSuccessfulCompletion: () => void;
 }): RunFinalizers {
 	const finalizeWorkflowExitValidationFailure = (err: unknown, exitReason?: string): RunResult => {
 		const failure = input.classifyExecutorFailure(err);
@@ -75,6 +76,7 @@ export function createRunFinalizers(input: {
 
 		let outputs: WorkflowOutputValues | undefined;
 		try {
+			if (signal.status === "completed") input.assertSuccessfulCompletion();
 			outputs = normalizeWorkflowExitOutput(input.def.name, signal.outputSnapshot);
 			assertWorkflowExitOutputs(input.def.name, outputs, input.def.outputs);
 		} catch (err) {
