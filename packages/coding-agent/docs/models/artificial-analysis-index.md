@@ -8,7 +8,7 @@ description: "The external benchmarks that inform Atomic model selection — Art
 Atomic's model-selection docs are keyed to two live external benchmark sources rather than a hand-maintained table of scores. This page lists each benchmark, what it measures, and **when to reference it** for a given workflow role — so the docs stay useful as new models ship without a manual rewrite every time.
 
 <Warning>
-No single benchmark is the source of truth. Use these as inputs and validate against Atomic's own workflow evals — public suites test different task distributions than real engineering loops. When Atomic's numbers disagree with a public index, Atomic's evals win. The DeepSWE snapshot used by the linked model-selection pages was updated September 3, 2026 and was re-read from the live source on **2026-09-03**. The Artificial Analysis sections below were **last reviewed 2026-09-01** and were not re-fetched in that pass.
+No single benchmark is the source of truth. Validate these inputs against Atomic's own workflow evals, whose task distribution is closer to the work you intend to run. Artificial Analysis was re-fetched on **2026-09-05**, including its September 4 Intelligence Index revision. The linked DeepSWE tables retain their **2026-09-03** compilation date. A separate DeepSWE browser check on **2026-09-05** confirmed the September 3 source update and Gemini 3.8 Flash's measured row; this AA refresh does not claim to revalidate every DeepSWE configuration.
 </Warning>
 
 ## The two sources at a glance
@@ -16,7 +16,7 @@ No single benchmark is the source of truth. Use these as inputs and validate aga
 | Source | URL | What it is | Reference it for |
 | --- | --- | --- | --- |
 | DeepSWE | [deepswe.datacurve.ai](https://deepswe.datacurve.ai/) | Long-horizon, contamination-free software-engineering tasks (113 tasks, 91 repos, 5 languages), all run on `mini-swe-agent` for consistency | The primary signal for coding-agent routing: real `pass@1`, cost, output tokens, and agent steps on engineering-loop work |
-| Artificial Analysis | [artificialanalysis.ai](https://artificialanalysis.ai/) | Cross-provider intelligence, coding, and agentic indices plus per-capability breakdowns | Cross-domain intelligence, tool use, knowledge reliability, long context, and non-coding capabilities |
+| Artificial Analysis | [artificialanalysis.ai](https://artificialanalysis.ai/) | Model intelligence and professional capability indices, individual evaluations, and a separate coding-agent leaderboard | Cross-domain intelligence, tool use, knowledge reliability, long context, and agent/model comparisons |
 
 ## DeepSWE — coding-agent performance
 
@@ -27,55 +27,71 @@ DeepSWE is the closest public proxy for what Atomic actually does. Tasks are wri
 - **When to reference:** default weighting for debugger, worker, and any code-writing role. This is the table that drives [Model Selection](/models/model-selection) and [Pareto Efficiency](/models/pareto-efficiency).
 - **Watch:** cost and step count, not just score — a model that passes but takes 268 steps (e.g. sonnet-5) is a poor worker even at a good pass rate, and the two accuracy leaders sit at opposite ends of that axis: Gemini 3.8 Flash leads the highest-published-effort reading the linked pages use at 166 average steps, while the live default Best view's leader, GPT-6 Astra [xhigh], averages 29.
 
-## Artificial Analysis — intelligence and capability breakdown
+## Artificial Analysis: current measures
 
-Artificial Analysis separates performance by benchmark, which lets a workflow pick the model that is strong at the *specific* thing a role needs. Reference the individual evaluations, not just the composite index.
+### Intelligence Index v4.2
 
-### Composite indices
+The [September 4, 2026 announcement](https://artificialanalysis.ai/articles/artificial-analysis-intelligence-index-v4-2) and [current methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking), retrieved 2026-09-05, identify **Artificial Analysis Intelligence Index v4.2**. It adds AA-Briefcase and GDP.pdf, removes GPQA Diamond from this index, upgrades AA-LCR to v1.1, improves SciCode grading, and rebalances the weights. It also revises GDPval-AA v2 and AA-Briefcase Elo sampling and anchoring. Do not compare scores across index revisions as though only the models changed. The announcement describes v5 as upcoming, not current.
 
-- **Intelligence Index (v4.1.1)** — composite of the nine evaluations below, weighted across four categories: Agents 34%, Coding 24%, Scientific Reasoning 24%, General 18%. Use as a first-pass filter when a new model appears.
-- **Coding Index** — coding-weighted sub-index. Cross-check against DeepSWE.
-- **Agentic Index** — tool use, planning, autonomy, complex problem solving. The best AA signal for orchestrator and reviewer roles.
+The ten evaluations and their contributions are:
 
-### Individual evaluations — what each measures and when to reference
+| Category and total weight | Evaluation | Index weight | Use it for |
+| --- | --- | --- | --- |
+| Agents, 30% | AA-Briefcase | 15% | Multi-week knowledge-work projects and file deliverables |
+| Agents | GDPval-AA v2 | 10% | Economically realistic professional work |
+| Agents | 𝜏³-Banking | 5% | Tool use and customer interaction |
+| Coding, 20% | Terminal-Bench v2.1 | 10% | Terminal execution and debugging |
+| Coding | SciCode | 10% | Scientific programming |
+| Scientific Reasoning, 20% | Humanity's Last Exam | 10% | Hard reasoning and knowledge |
+| Scientific Reasoning | CritPt | 10% | Physics reasoning |
+| General, 30% | AA-Omniscience | 15% | Knowledge accuracy, 10%, and non-hallucination, 5%, as separate components |
+| General | GDP.pdf | 10% | Professional document reasoning; headline All-pass requires every criterion to pass |
+| General | AA-LCR v1.1 | 5% | Long-context reasoning |
 
-| Benchmark | Measures | Reference it for |
+This is primarily a text-based, English-language suite, not a universal measure of multimodal or multilingual quality. The [additional evaluations](https://artificialanalysis.ai/methodology/intelligence-benchmarking#additional-evaluations), such as AutomationBench-AA, AA-AnalystAgent and ITBench-AA, can be better matches for SaaS workflows, spreadsheet analysis or incident diagnosis. Their presence on the site does not make them Intelligence Index components. GPQA Diamond also remains visible separately and in the Engineering capability index.
+
+### Coding Agent Index v1.4 is a different comparison
+
+The [Artificial Analysis Coding Agent Index](https://artificialanalysis.ai/agents/coding-agents) evaluates named **agent + model + settings** combinations, not interchangeable base-model rows. Its [methodology](https://artificialanalysis.ai/methodology/coding-agents-benchmarking), retrieved 2026-09-05, identifies **v1.4**, current since August 2026. It equally weights DeepSWE, Terminal-Bench v2.1 and SWE-Atlas-QnA. Those components contain 113, 89 and 124 tasks respectively, each with three attempts per task. Per-evaluation pass@1 averages attempts within a task, then tasks within an evaluation. Reward-hacked Terminal-Bench attempts receive zero.
+
+Cost and execution time instead pool task attempts across the suite. Cost uses pay-per-token API pricing, including supported cache charges, not subscription-plan prices. Execution time is measured wall time; missing telemetry is excluded from the relevant average, not treated as zero. Agent defaults apply unless the row specifies other settings.
+
+AA's DeepSWE component uses the DeepSWE dataset with the named agent. It is not the same experiment as Datacurve's `mini-swe-agent` leaderboard. Neither its component score nor its composite belongs in the [DeepSWE frontier](/models/pareto-efficiency).
+
+Earlier versions of these docs referred to a base-model **Coding Index** and **Agentic Index**. Neither is listed in the current [capability directory](https://artificialanalysis.ai/models/capabilities) or [capability methodology](https://artificialanalysis.ai/methodology/capability-indices) inspected on 2026-09-05. We therefore do not assign them a current version or silently rename either to Coding Agent Index. Use the named coding and agentic evaluations above instead.
+
+### Professional capability indices
+
+The current directory lists Finance & Accounting, Strategy & Ops, Legal, Healthcare & Medical, Engineering, and Economics. The [capability methodology](https://artificialanalysis.ai/methodology/capability-indices) specifies domain-dependent components and weights, rather than a single shared formula. It displays no version identifier. Use the matching domain index when its task mix fits your work.
+
+### Price, task cost and latency
+
+Read the [definitions](https://artificialanalysis.ai/methodology#definitions) and [API performance methodology](https://artificialanalysis.ai/methodology/performance-benchmarking), retrieved 2026-09-05, before comparing efficiency charts:
+
+- Token prices are USD per million native tokens. AA's blended price assumes cache-hit, input and output tokens in a **7:2:1** ratio. That synthetic mix is not your workflow's bill.
+- Intelligence Index cost per task uses actual token consumption, provider prices and typical measured cache hit rates, weighted by the index's evaluation weights. It is neither the total cost of running the suite nor DeepSWE dollars per task.
+- Output speed uses standardized `o200k_base` tokens after the first chunk. The default workload is **10k input tokens**; the usual displayed result is the median over **72 hours**. The **100k** workload instead uses a **14-day** median. These are API measurements, not coding-agent completion times.
+- Time to first token can mean the first reasoning token. Time to first answer token includes thinking time. Compare these separately from output speed when interactive latency matters.
+- The homepage's Intelligence Index **Time per Task** estimates weighted decode time from output tokens and speed; it excludes TTFT and overhead. Do not call it measured end-to-end wall time. The Coding Agent Index execution-time metric does measure wall time.
+
+## Role to benchmark map
+
+| Role | Primary evidence | Cross-check |
 | --- | --- | --- |
-| GDPval-AA v2 | Agentic real-world work tasks | Orchestrator / planner roles doing economically realistic work |
-| τ³-Banking | Agentic tool use | Tool-heavy workflows and function-calling reliability |
-| Terminal-Bench v2.1 | Agentic coding & terminal use | Debugger and shell-driven workers |
-| SciCode | Coding (scientific) | Code-writing roles in technical domains |
-| Humanity's Last Exam | Reasoning & knowledge | Hard planning / judgment gates |
-| GPQA Diamond | Scientific reasoning | Research roles in technical domains |
-| CritPt | Physics reasoning | Physics/engineering-heavy tasks |
-| AA-Omniscience | Knowledge accuracy & non-hallucination | Research and any role where a confident wrong answer is costly |
-| AA-LCR | Long-context reasoning | Large-codebase research and long-session work |
+| Debugger / coding worker | Datacurve DeepSWE pass@1, cost and steps | AA Terminal-Bench; Coding Agent Index with the actual agent identified |
+| Reviewer / judgment gate | Task-specific Atomic evals and DeepSWE for code judgments | AA-Briefcase and knowledge reliability for broader judgments |
+| Planner / orchestrator | AA-Briefcase, GDPval-AA v2 | 𝜏³-Banking for tool interaction |
+| Research | AA-LCR v1.1, GDP.pdf | AA-Omniscience accuracy and non-hallucination |
+| Domain-specific work | Matching AA capability index | Its component evaluations |
 
-### Capability indices
-
-Artificial Analysis also publishes per-domain capability indices — **Agentic, Coding, Finance & Accounting, Strategy & Ops, Legal, Healthcare & Medical, Engineering, Economics**. When a workflow is domain-specific, pick by the matching capability index rather than the general Intelligence Index.
-
-## Role → benchmark map
-
-A quick lookup for which benchmark to weight per role:
-
-| Role | Primary benchmark | Secondary |
-| --- | --- | --- |
-| Debugger | DeepSWE pass@1 | Terminal-Bench v2.1 |
-| Worker / cheap loop | DeepSWE cost & steps | — |
-| Reviewer / judgment gate | DeepSWE pass@1 | AA Agentic Index |
-| Planner / orchestrator | AA Agentic Index, GDPval-AA v2 | τ³-Banking (tool use) |
-| Research | AA-LCR (long context) | AA-Omniscience (reliability) |
-| Domain-specific work | Matching AA capability index | — |
+See [Model Selection](/models/model-selection) for a small dated shortlist and production effort guidance. Benchmark settings are measurement configurations, not instructions to raise every role's effort.
 
 ## Keeping the docs fresh
 
-flora131's guidance on this issue: point the model at the live benchmark URLs and describe what each measures and when to reference it, rather than hardcoding scores that go stale on every release.
-
-1. Treat the model-selection pages as timestamped snapshots that read *from* the live sources above.
-2. When a new model appears on DeepSWE or Artificial Analysis, add it by pulling its numbers from the source — the frontier may move (as the gpt-5.6 family did).
-3. Mark a model **unmeasured** only if it is absent from both sources; unmeasured models may still be operational defaults.
-4. Prefer generating the docs and any future routing policy from the same underlying data, so documentation and routing cannot drift apart.
+1. Record each source's retrieval date separately from its publication or snapshot date. Follow the rendered charts and methodology, not just an old article's score.
+2. Preserve exact model, reasoning configuration, agent, benchmark version and units. A changed index or agent can change the ranking without a new model release.
+3. Say **unmeasured on the named benchmark and date**. Missing text extraction is not evidence of absence; inspect the rendered page. Never transfer a predecessor's score.
+4. Check the configured catalog and live provider access separately. These docs do not change runtime routing or model defaults.
 
 ## Related
 

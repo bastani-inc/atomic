@@ -13,6 +13,8 @@ The axes here are `pass@1` (accuracy) and `average dollars per task` (cost), tak
 Figures are a snapshot of DeepSWE v1.1 using the highest published thinking level for each of the 21 models displayed on the September 3, 2026 leaderboard. They include the August 21 pricing corrections for GPT-5.6 Sol and DeepSeek V4, and GPT-6 Astra's costs are DeepSWE's expected launch pricing rather than billed rates. DeepSWE's own default table view is **Best** — the best-scoring configuration per model — which picks a different row for four models; the frontier under that reading is stated below. DeepSWE publishes a live cost-vs-score scatter, so **read the frontier off the live chart** rather than trusting a static list. **Last compiled: 2026-09-03.**
 </Note>
 
+The [AA review](/models/artificial-analysis-index) is separately dated **2026-09-05**. AA Intelligence Index v4.2 uses weighted intelligence and its own cost per task; AA Coding Agent Index v1.4 uses agent-specific runs across several benchmarks. Neither defines the Datacurve frontier on this page. A September 5 browser check confirmed the September 3 DeepSWE update and Gemini 3.8 Flash's measured row, without recomputing this entire snapshot.
+
 ## The frontier
 
 Three displayed highest-effort model configurations sit on the frontier, from the cheapest measured task cost to the accuracy ceiling:
@@ -52,7 +54,7 @@ DeepSWE's August 21, 2026 changelog says these DeepSeek costs use peak rates and
 - **claude-fable-5 [max]**: Sol is more accurate and much cheaper; GLM-5.3 comes within a point for less than one fifth of the task cost. This row is Fable 5 only; `claude-fable-5-1` is still unmeasured in the September 3, 2026 snapshot and has no measured position on the frontier.
 - **kimi-k3 [max]**: GLM-5.3 matches its rounded score and is $0.66 cheaper; Kimi remains useful for Moonshot-family diversity.
 - **gpt-5.5 [xhigh]** and **grok-4.6 [xhigh]**: Luna matches their rounded 67% for $0.61.
-- **gemini-3.7-flash [high]**: Luna is two points more accurate and costs less than one third as much. This row is Gemini 3.7 Flash only; `gemini-3.8-flash` became generally available September 2, 2026, after this snapshot, and has no measured position on the frontier.
+- **gemini-3.7-flash [high]**: Luna is two points more accurate and costs less than one third as much. This row is Gemini 3.7 Flash only. Gemini 3.8 Flash has its own measured `[high]` row and frontier position above; it does not inherit its predecessor's result.
 - **muse-spark-1.2 [xhigh]**: GLM-5.3 Flash is eight points more accurate and costs $3.46 less.
 - **claude-opus-4.8 [max]** and **claude-sonnet-5 [max]**: each is dominated on both cost and accuracy.
 - **qwen3.8-max [xhigh]**, **gemini-3.6-flash [high]**, **gemini-3.5-flash [high]**, and **glm-5.2 [max]**: each has a cheaper, more accurate displayed alternative.
@@ -73,7 +75,7 @@ Efficiency is not the only axis. A dominated model can still earn a slot when it
 - **glm-5.3 [max]** remains the best open-weights point; the new frontier ceiling is closed-weights, so the open-weights niche survives the frontier change intact.
 - **gemini-3.8-flash [high]** holds the frontier ceiling but is Google-family and step-heavy at 166 average steps; pair it with a model from another family for fallback diversity rather than routing every stage through one provider.
 - **claude-fable-5** remains useful where Anthropic-family behavior is specifically wanted, such as the quality-first, unbenchmarked design chain.
-- **claude-fable-5-1** is available in Atomic's catalog but was released September 1, 2026 and is still absent from the September 3, 2026 snapshot, so it is unmeasured here and holds no frontier position. Its published cache-read price is $0.25 per million tokens against Fable 5's $1.00, which can change the economics of a long cached-prefix session, but that is a price fact and not an accuracy result. Evaluate it before substituting it for a measured configuration.
+- **claude-fable-5-1** is available in Atomic's catalog but is absent from the September 3, 2026 Datacurve snapshot, so it has no position on this frontier. It is measured by AA Intelligence Index and by AA with Claude Code, as detailed in the [September 5 AA cross-check](/models/model-selection#aa-cross-check-for-current-candidates). Those results justify evaluation for quality-first work, not importing an AA score or cost into this DeepSWE chart. Its cache pricing may matter for long sessions, but a token-price discount is not a measured cost-per-task saving or accuracy result.
 - **Unmeasured models** may remain operational defaults when a family lacks current DeepSWE or Artificial Analysis coverage, but they should not inherit a predecessor's score.
 
 ## How to use this
