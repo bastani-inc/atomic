@@ -248,6 +248,11 @@ export function createExtensionAPI(
 			return runtime.getCommandsAfterRegistration?.(extension) ?? runtime.getCommands();
 		},
 
+		getLoadedExtensions() {
+			assertActive();
+			return runtime.getLoadedExtensions?.() ?? [];
+		},
+
 		setModel(model) {
 			assertActive();
 			return runtime.setModel(model);

@@ -2,7 +2,12 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
-import { loadExtensionFromFactory, loadExtensionsCached, type WorkflowResourceProvider } from "./extensions/loader.ts";
+import {
+	loadExtensionFromFactory,
+	loadExtensionsCached,
+	publishLoadedExtensions,
+	type WorkflowResourceProvider,
+} from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
@@ -42,6 +47,7 @@ export async function loadFinalExtensionSet(
 		endTimingSpan(inlineExtensionsSpan);
 		extensionsResult.extensions.push(...inlineExtensions.extensions);
 		extensionsResult.errors.push(...inlineExtensions.errors);
+		publishLoadedExtensions(extensionsResult.runtime, extensionsResult.extensions);
 		return extensionsResult;
 	}
 
@@ -83,6 +89,7 @@ export async function loadFinalExtensionSet(
 		errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
 		runtime: preTrustExtensions.runtime,
 	};
+	publishLoadedExtensions(extensionsResult.runtime, orderedExtensions);
 	return extensionsResult;
 }
 
