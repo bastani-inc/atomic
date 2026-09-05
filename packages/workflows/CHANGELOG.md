@@ -6,18 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Fixed
-
-- Uncaught targeted `ctx.tool` aborts now retain the failed tool identity and an inspection-only cancellation frontier. Public resume, including fresh DBOS hydration and session lifecycle restoration, replays completed work and retries the unfinished tool without fabricating a model stage.
-- Tool-frontier resume rejects missing, ambiguous, cyclic, or identity-inconsistent state before replaying unfinished callbacks. Older records recover only when typed persisted checkpoints prove a unique safe frontier, including for multiline tool names; transcript text is not converted into checkpoints.
-- Incremental graph parent replacement now rejects self-edges and back-edges before mutating the workflow DAG.
-- Tool-frontier continuations reject normal returns and explicit completed exits that skip the exact unfinished tool, and reject replacement model/task and child-workflow execution before side effects. Stage/task worktree setup follows replay selection and live admission. The failure names the pending frontier, preserves source recovery evidence, and does not repeat completed callbacks.
-
-### Changed
-
-- Workflow guidance honors explicit task-scoped inline/no-workflow requests, including safe handoff from active runs without duplicate execution. Default authoring and Goal/Ralph prompts select browser, terminal or desktop/simulator verification by environment, support offline/manual qlty setup, and describe authorized native GitHub media attachments with verified hosted links.
-- Model-pinning guidance now points authored workflows at the measured per-evaluation scores in `packages/coding-agent/docs/models/evals.md` (formerly `artificial-analysis-index.md`), whose task-type picker maps each stage type to the eval that measures it, alongside the role guidance in `model-selection.md`.
-
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
@@ -37,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The stage-chat jump indicator now uses the same `↓ Jump to latest message · <shortcut>` copy as the fullscreen transcript overlay.
 - Updated Goal/Ralph orchestration, Ralph prompt engineering and research, and Open Claude Design to GPT-6 Astra at `high`; Goal reviewers and Ralph reviewer B use Astra at `xhigh`, while Ralph reviewer A uses Claude Fable 5.1 at `high`. Added Astra and Fable 5.1 fallbacks while retaining role-specific provider order and reasoning levels. Ralph research now places Fable 5 before Sol, and reviewer B places Sol after Fable 5 and Fugu before GPT-5.5 in its OpenRouter group.
 
+- Workflow guidance honors explicit task-scoped inline/no-workflow requests, including safe handoff from active runs without duplicate execution. Default authoring and Goal/Ralph prompts select browser, terminal or desktop/simulator verification by environment, support offline/manual qlty setup, and describe authorized native GitHub media attachments with verified hosted links.
+- Model-pinning guidance now points authored workflows at the measured per-evaluation scores in `packages/coding-agent/docs/models/evals.md` (formerly `artificial-analysis-index.md`), whose task-type picker maps each stage type to the eval that measures it, alongside the role guidance in `model-selection.md`.
+
 ### Fixed
 
 - Tool-only workflows no longer emit a `ZERO_STAGES` discovery warning. The static scan now recognizes `ctx.tool()` as tracked graph work without advertising tool nodes as future chat-stage targets.
@@ -44,6 +35,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A stage whose queued Intercom messages can no longer be delivered now fails instead of running forever. `stage-runner-controller` awaits `pendingStageDelivery.ready()` with no timeout, and only a successful drain ever settled it — so when Intercom exhausted its bounded warm-up retries the stage stayed `running` with nothing owning recovery. `createWorkflowPendingStageDelivery` now implements the delivery contract's `fail(reason)`: the first reason wins, `ready()` settles exactly once with a `WorkflowPendingStageDeliveryFailedError` (`code: "pending_stage_delivery_failed"`) carrying the run id, stage id, and stage name, and the stage reaches a deterministic non-retryable `failed` outcome whose error names it. That outcome is now non-retryable by construction rather than by wording: the stage lifecycle refuses a terminal delivery failure as a model failure at both decision sites, so no same-model retry is spent, no fallback candidate is walked, and no `[fallback]` warning blames a model for a stage that would have been refused the same instructions by every candidate. The delivery owner's reason is kept on the error's `reason` property instead of as `cause`, because the shared classifier walks `cause` and Intercom's reason nests the transport error that lost the broker — which made a dead delivery read as a retryable `network_timeout`. A terminal failure latched before the controller's first `ready()` is honored, an unobserved rejection does not surface as an unhandled rejection, a stage with nothing queued still short-circuits and runs, and a drain requested after the latch is a no-op so queued steering stays queued rather than being marked delivered. The session attached just before the gate is disposed and detached on that failure, so a later `ensureSession()` cannot hand back a stage session that skipped its queued instructions.
 - Workflow durability degradation now appears as a display-only warning notification for interactive and RPC actions instead of being written to the console; print and headless actions still receive an actionable console diagnostic when no usable UI exists.
 - In-flight durable resume, catalog preparation, and completed-workflow opening now keep using the backend selected by initialization instead of re-reading mutable factory state after an asynchronous boundary, preventing a concurrent backend reset from stranding the operation with a not-ready error while preserving distinct malformed, stale, and missing-target diagnostics.
+
+- Uncaught targeted `ctx.tool` aborts now retain the failed tool identity and an inspection-only cancellation frontier. Public resume, including fresh DBOS hydration and session lifecycle restoration, replays completed work and retries the unfinished tool without fabricating a model stage.
+- Tool-frontier resume rejects missing, ambiguous, cyclic, or identity-inconsistent state before replaying unfinished callbacks. Older records recover only when typed persisted checkpoints prove a unique safe frontier, including for multiline tool names; transcript text is not converted into checkpoints.
+- Incremental graph parent replacement now rejects self-edges and back-edges before mutating the workflow DAG.
+- Tool-frontier continuations reject normal returns and explicit completed exits that skip the exact unfinished tool, and reject replacement model/task and child-workflow execution before side effects. Stage/task worktree setup follows replay selection and live admission. The failure names the pending frontier, preserves source recovery evidence, and does not repeat completed callbacks.
 
 ## [0.9.18-alpha.3] - 2026-09-01
 
