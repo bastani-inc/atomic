@@ -62,13 +62,11 @@ test("selector badges the clamped default rather than leaving no item marked", (
 		available,
 		() => {},
 		() => {},
-		() => {},
 		rawDefault,
 	);
 	const clamped = new ThinkingSelectorComponent(
 		"off",
 		available,
-		() => {},
 		() => {},
 		() => {},
 		resolveThinkingSelectorDefault(rawDefault, available, model),
@@ -140,20 +138,13 @@ test("keeps the current thinking level marked while browsing", () => {
 	expect(getLevelRow("high")?.startsWith("→   high")).toBe(true);
 });
 
-test("uses the configured save binding", () => {
-	setKeybindings(new KeybindingsManager({ "app.thinking.save": "ctrl+r" }));
-	const saveDefault = vi.fn();
-	const selector = new ThinkingSelectorComponent(
-		"medium",
-		["medium", "high"],
-		() => {},
-		() => {},
-		saveDefault,
-	);
-
-	expect(stripAnsi(selector.render(120).join("\n"))).toContain("ctrl+r to set as default");
+test("has no save-default shortcut or hint", () => {
+	setKeybindings(new KeybindingsManager());
+	const select = vi.fn();
+	const selector = new ThinkingSelectorComponent("medium", ["medium", "high"], select, () => {});
+	expect(stripAnsi(selector.render(120).join("\n"))).not.toContain("set as default");
 	selector.handleInput("\x13");
-	expect(saveDefault).not.toHaveBeenCalled();
-	selector.handleInput("\x12");
-	expect(saveDefault).toHaveBeenCalledWith("medium");
+	expect(select).not.toHaveBeenCalled();
+	selector.handleInput("\r");
+	expect(select).toHaveBeenCalledWith("medium");
 });

@@ -56,7 +56,6 @@ describe("issue #3217 scoped model ordering", () => {
 				onChange: (enabledModelIds) => {
 					changes.push(enabledModelIds);
 				},
-				onPersist: () => {},
 				onCancel: () => {},
 			},
 		);
@@ -114,7 +113,6 @@ describe("issue #3217 scoped model ordering", () => {
 				onChange: (enabledModelIds) => {
 					changes.push(enabledModelIds);
 				},
-				onPersist: () => {},
 				onCancel: () => {},
 			},
 		);

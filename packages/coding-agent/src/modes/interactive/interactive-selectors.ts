@@ -135,7 +135,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 					this.settingsManager.setBashInterceptorEnabled(enabled);
 				},
 				onThinkingLevelChange: (level) => {
-					this.session.setThinkingLevel(level);
+					this.session.setThinkingLevel(level, { persist: true });
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
 				},

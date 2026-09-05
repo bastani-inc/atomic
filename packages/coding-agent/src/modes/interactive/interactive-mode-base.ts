@@ -239,15 +239,6 @@ export class InteractiveModeBase {
 		if (this.renderer.mode === "fullscreen") this.renderer.setCopyOnSelect(enabled);
 	}
 
-	getFullscreenCopyOnSelect(): boolean | undefined {
-		return this.renderer.mode === "fullscreen" ? this.renderer.getCopyOnSelect() : undefined;
-	}
-
-	async copyActiveFullscreenSelection(): Promise<boolean | undefined> {
-		if (this.renderer.mode !== "fullscreen" || !this.renderer.hasActiveSelection()) return undefined;
-		return this.renderer.copyActiveSelectionToClipboard();
-	}
-
 	private readonly onRightClickPaste = (): void => {
 		void this.handleRightClickPaste();
 	};

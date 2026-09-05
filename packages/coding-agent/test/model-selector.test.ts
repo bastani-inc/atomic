@@ -59,8 +59,7 @@ describe("model selector", () => {
 		selector.dispose();
 	});
 
-	it("uses the configured save binding", async () => {
-		setKeybindings(new KeybindingsManager({ "app.models.save": "ctrl+r" }));
+	it("has no save-default shortcut or hint", async () => {
 		harness = await createHarness();
 		const currentModel = harness.getModel()!;
 		const saveDefault = vi.fn();
@@ -74,11 +73,11 @@ describe("model selector", () => {
 			() => {},
 		);
 
-		expect(stripAnsi(selector.render(120).join("\n"))).toContain("ctrl+r set as default");
+		expect(stripAnsi(selector.render(120).join("\n"))).not.toContain("set as default");
 		selector.handleInput("\x13");
 		expect(saveDefault).not.toHaveBeenCalled();
-		selector.handleInput("\x12");
-		expect(saveDefault).toHaveBeenCalledWith(currentModel, true);
+		selector.handleInput("\r");
+		expect(saveDefault).toHaveBeenCalledWith(currentModel);
 		selector.dispose();
 	});
 });

@@ -126,7 +126,7 @@ export async function setModel(
 	}
 
 	// Re-clamp thinking level for new model's capabilities
-	this.setThinkingLevel(thinkingLevel);
+	this.setThinkingLevel(thinkingLevel, options);
 	this._refreshBaseSystemPromptFromActiveTools();
 
 	this._emitModelChanged(nextModel, previousModel, "set");
@@ -184,7 +184,7 @@ export async function _cycleScopedModel(
 	// - Explicit scoped model thinking level overrides current session level
 	// - Undefined scoped model thinking level inherits the current session preference
 	// setThinkingLevel clamps to model capabilities.
-	this.setThinkingLevel(thinkingLevel);
+	this.setThinkingLevel(thinkingLevel, options);
 	this._refreshBaseSystemPromptFromActiveTools();
 
 	this._emitModelChanged(nextModel, currentModel, "cycle");
@@ -220,7 +220,7 @@ export async function _cycleAvailableModel(
 	}
 
 	// Re-clamp thinking level for new model's capabilities
-	this.setThinkingLevel(thinkingLevel);
+	this.setThinkingLevel(thinkingLevel, options);
 	this._refreshBaseSystemPromptFromActiveTools();
 
 	this._emitModelChanged(selectedModel, currentModel, "cycle");
@@ -242,7 +242,6 @@ export async function _cycleAvailableModel(
 function persistThinkingLevel(session: AgentSession, level: ThinkingLevel): void {
 	if (session.model) {
 		session.settingsManager.setModelThinkingLevel(session.model.provider, session.model.id, level);
-		return;
 	}
 	session.settingsManager.setDefaultThinkingLevel(level);
 }

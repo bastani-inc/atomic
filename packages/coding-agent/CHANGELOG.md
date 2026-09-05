@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Interactive model and thinking selections, including cycling shortcuts, now automatically become startup defaults. Scoped-model cycle-list changes also save immediately. Removed the Ctrl+S save-default shortcuts and UI.
+
+### Removed
+
+- Removed the Ctrl+X copy-message/selection action to avoid confusion with workflow navigation. `/copy` and automatic mouse-selection copying remain available.
+
 ### Fixed
 
 - Resumed workflows can no longer report completion after changed control flow omits their unfinished durable tool. Normal returns and explicit completed exits require exact frontier consumption. New model/task and child-workflow execution, including stage/task worktree setup, is rejected while that frontier is pending; completed work stays cached and cancellation controls retain precedence.

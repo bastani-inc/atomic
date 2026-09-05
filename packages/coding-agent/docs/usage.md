@@ -34,7 +34,6 @@ While ordinary agent work is active, the exact one-cell `∀` remains visible an
 | Shell command | `!command` runs and sends output to the model |
 | Hidden shell command | `!!command` runs without sending output to the model |
 | External editor | CTRL+G opens `$VISUAL` or `$EDITOR` |
-| Copy selection/message | Ctrl+X copies a retained fullscreen selection when `fullscreenCopyOnSelect` is disabled; otherwise it copies the last assistant message |
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
@@ -45,8 +44,8 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | Command | Description |
 |---------|-------------|
 | `/login`, `/logout` | Manage OAuth or API-key credentials |
-| `/model` | Switch models; Ctrl+S in the picker saves the startup default |
-| `/thinking` | Switch thinking level; Ctrl+S in the picker saves the startup default |
+| `/model` | Switch models and automatically save the startup default |
+| `/thinking` | Switch thinking level and automatically save the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
 | `/workflow` | List/run workflows; manage runs (connect/inspect/pause/interrupt/quit/resume); reload workflow resources |
 | `/settings` | Theme, message delivery, transport, and other preferences |
@@ -233,7 +232,7 @@ For raw credential exports, stdout is empty on every non-zero exit but one. Once
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
 
-Interactive sessions always use fullscreen: the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures go first to a focused workflow graph or stage chat overlay; events those overlays do not consume fall through to the alternate-screen viewport. Non-overlay focused components do not block pi-tui's mouse path, so transcript scrolling, scrollbar interaction, and drag selection still work. Selection copies automatically by default; disable `fullscreenCopyOnSelect` to retain it for Ctrl+X. Ctrl+X closes workflow tool detail to the graph, clears a scoped-model selection, returns stage chat to its graph, or returns a workflow graph to main chat before the main editor may copy. `/copy` always copies the last assistant message. The `fullscreenExitOutput` setting controls what exiting prints: `"transcript"` (the default) paints the final transcript plus a session resume hint on the main screen, while `"resume-hint"` restores the previous screen and prints only the resume hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
+Interactive sessions always use fullscreen: the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures go first to a focused workflow graph or stage chat overlay; events those overlays do not consume fall through to the alternate-screen viewport. Non-overlay focused components do not block pi-tui's mouse path, so transcript scrolling, scrollbar interaction, and drag selection still work. Selection copies automatically by default; disable `fullscreenCopyOnSelect` to highlight text without copying. Ctrl+X closes workflow tool detail to the graph, clears a scoped-model selection, returns stage chat to its graph, or returns a workflow graph to main chat. It does not copy. `/copy` always copies the last assistant message. The `fullscreenExitOutput` setting controls what exiting prints: `"transcript"` (the default) paints the final transcript plus a session resume hint on the main screen, while `"resume-hint"` restores the previous screen and prints only the resume hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
 
 In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
 

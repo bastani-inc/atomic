@@ -83,16 +83,14 @@ export interface ModelsConfig {
 }
 
 export interface ModelsCallbacks {
-	/** Called whenever the enabled model set or order changes (session-only, no persist) */
+	/** Called whenever the enabled model set or order changes. */
 	onChange: (enabledModelIds: string[] | null) => void | Promise<void>;
-	/** Called when user wants to persist current selection to settings */
-	onPersist: (enabledModelIds: string[] | null) => void | Promise<void>;
 	onCancel: () => void;
 }
 
 /**
  * Component for enabling/disabling models for Ctrl+P cycling.
- * Changes are session-only until explicitly persisted with Ctrl+S.
+ * Changes are saved automatically by the caller.
  */
 export class ScopedModelsSelectorComponent extends Container implements Focusable {
 	private modelsById: Map<string, Model<Api>> = new Map();
@@ -115,7 +113,6 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 	private footerText: Text;
 	private callbacks: ModelsCallbacks;
 	private maxVisible = 8;
-	private isDirty = false;
 	private refreshStatusText?: Text;
 	constructor(config: ModelsConfig, callbacks: ModelsCallbacks) {
 		super();
@@ -134,7 +131,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("accent", theme.bold("Model Configuration")), 0, 0));
-		this.addChild(new Text(theme.fg("muted", `Session-only. ${keyText("app.models.save")} Save Settings.`), 0, 0));
+		this.addChild(new Text(theme.fg("muted", "Changes are saved automatically."), 0, 0));
 		this.addChild(new Spacer(1));
 
 		// Search input
@@ -202,12 +199,9 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			`${keyText("app.models.clearAll")} Clear`,
 			`${keyText("app.models.toggleProvider")} Provider`,
 			`${keyText("app.models.reorderUp")}/${keyText("app.models.reorderDown")} Reorder`,
-			`${keyText("app.models.save")} Save`,
 			countText,
 		];
-		return this.isDirty
-			? theme.fg("dim", `  ${parts.join(" · ")} `) + theme.fg("warning", "(unsaved)")
-			: theme.fg("dim", `  ${parts.join(" · ")}`);
+		return theme.fg("dim", `  ${parts.join(" · ")}`);
 	}
 
 	private refresh(): void {
@@ -304,7 +298,6 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 				// Only move if within bounds
 				if (newIndex >= 0 && newIndex < this.enabledIds.length) {
 					this.enabledIds = move(this.enabledIds, item.fullId, delta);
-					this.isDirty = true;
 					this.selectedIndex += delta;
 					this.refresh();
 					this.notifyChange();
@@ -318,7 +311,6 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			const item = this.filteredItems[this.selectedIndex];
 			if (item) {
 				this.enabledIds = toggle(this.enabledIds, this.allIds, item.fullId);
-				this.isDirty = true;
 				this.refresh();
 				this.notifyChange();
 			}
@@ -329,7 +321,6 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		if (kb.matches(data, "app.models.enableAll")) {
 			const targetIds = this.searchInput.getValue() ? this.filteredItems.map((i) => i.fullId) : undefined;
 			this.enabledIds = enableAll(this.enabledIds, this.allIds, targetIds);
-			this.isDirty = true;
 			this.refresh();
 			this.notifyChange();
 			return true;
@@ -339,7 +330,6 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		if (kb.matches(data, "app.models.clearAll")) {
 			const targetIds = this.searchInput.getValue() ? this.filteredItems.map((i) => i.fullId) : undefined;
 			this.enabledIds = clearAll(this.enabledIds, this.allIds, targetIds);
-			this.isDirty = true;
 			this.refresh();
 			this.notifyChange();
 			return true;
@@ -355,18 +345,9 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 				this.enabledIds = allEnabled
 					? clearAll(this.enabledIds, this.allIds, providerIds)
 					: enableAll(this.enabledIds, this.allIds, providerIds);
-				this.isDirty = true;
 				this.refresh();
 				this.notifyChange();
 			}
-			return true;
-		}
-
-		// Save/persist to settings
-		if (kb.matches(data, "app.models.save")) {
-			this.callbacks.onPersist(this.enabledIds === null ? null : [...this.enabledIds]);
-			this.isDirty = false;
-			this.footerText.setText(this.getFooterText());
 			return true;
 		}
 
