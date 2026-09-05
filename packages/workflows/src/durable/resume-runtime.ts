@@ -197,7 +197,7 @@ export async function resumeDurableWorkflow(
 	if (
 		handle.status === "failed" &&
 		(handle.failedToolNodeId !== undefined ||
-			/^atomic-workflows: ctx\.tool .* aborted by node abort$/.test(handle.error ?? ""))
+			/^atomic-workflows: ctx\.tool .* aborted by node abort$/s.test(handle.error ?? ""))
 	) {
 		const source = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId);
 		const frontier = source === undefined ? undefined : resolveToolResumeFrontier(source, backend);

@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Uncaught targeted `ctx.tool` aborts now retain the failed tool identity and an inspection-only cancellation frontier. Public resume, including fresh DBOS hydration, replays completed work and retries the unfinished tool without fabricating a model stage.
-- Tool-frontier resume rejects missing, ambiguous, cyclic, or identity-inconsistent state before replaying unfinished callbacks. Older records recover only when typed persisted checkpoints prove a unique safe frontier; transcript text is not converted into checkpoints.
+- Uncaught targeted `ctx.tool` aborts now retain the failed tool identity and an inspection-only cancellation frontier. Public resume, including fresh DBOS hydration and session lifecycle restoration, replays completed work and retries the unfinished tool without fabricating a model stage.
+- Tool-frontier resume rejects missing, ambiguous, cyclic, or identity-inconsistent state before replaying unfinished callbacks. Older records recover only when typed persisted checkpoints prove a unique safe frontier, including for multiline tool names; transcript text is not converted into checkpoints.
 - Incremental graph parent replacement now rejects self-edges and back-edges before mutating the workflow DAG.
 
 ## [0.9.18-alpha.6] - 2026-09-04

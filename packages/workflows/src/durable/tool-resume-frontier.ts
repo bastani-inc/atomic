@@ -1,5 +1,6 @@
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 
 export type ToolResumeFrontier =
 	| { readonly ok: true; readonly toolNodeId: string }
@@ -11,7 +12,7 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 		ok: false,
 		message: `insufficient_state: ${detail} in run ${source.id}`,
 	});
-	const tools = source.toolNodes ?? [];
+	const tools = [...(source.toolNodes ?? [])];
 	const candidates = tools.filter((node) =>
 		source.failedToolNodeId === undefined
 			? (node.status === "cancelled" || node.status === "failed") &&
@@ -33,6 +34,15 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 		frontier.topologyState === "unavailable"
 	)
 		return fail("invalid tool frontier identity");
+	// Lifecycle restoration retains failed tools, not completed tool nodes. Fill
+	// only absent nodes from typed checkpoints; never replace local graph evidence.
+	const handle = backend.getWorkflow(source.id);
+	if (handle !== undefined) {
+		const persisted = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === source.id);
+		if (persisted === undefined) return fail("invalid persisted tool frontier topology");
+		const localIds = new Set(tools.map((node) => node.id));
+		tools.push(...(persisted.toolNodes ?? []).filter((node) => !localIds.has(node.id)));
+	}
 	const nodes = [...source.stages, ...tools];
 	const byId = new Map(nodes.map((node) => [node.id, node]));
 	if (byId.size !== nodes.length) return fail("duplicate graph node identity");

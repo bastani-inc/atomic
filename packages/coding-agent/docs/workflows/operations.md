@@ -513,6 +513,8 @@ After `workflow({ action: "interrupt", runId, stageId: "tool:<argsHash>" })`, in
 
 Fresh processes hydrate the same typed DBOS checkpoints before resume. Older records without `failedToolNodeId` are accepted only when the retained graph and inspection-only tool failure record identify one unfinished node matching the terminal targeted-abort error, with completed predecessor checkpoints intact. Missing checkpoints, multiple unfinished frontiers, corrupt identities, and cyclic or missing parent edges fail closed with `insufficient_state`. Error text alone, model/chat transcript text, and generic status tool-result snapshots are not executable recovery state.
 
+Restored session lifecycle entries may omit completed tool nodes. Resume fills those missing graph nodes from retained typed durable checkpoints while preserving the session's existing nodes for validation. It does not replace corrupt local parent edges with a different graph. Tool names, including line terminators, are preserved verbatim and require the same typed frontier evidence.
+
 To load a locally patched runtime from its checkout:
 
 ```bash
