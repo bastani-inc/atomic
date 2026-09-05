@@ -35,8 +35,8 @@ on:
 #   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
 #   test            result gate; carries the two required check contexts
 #
-# Nothing is passed between jobs as an artifact: rebuilding in parallel is
-# cheaper in wall clock than serializing on an upload/download pair.
+# Nothing is passed between jobs as an artifact: waiting for a producer job
+# adds a serial dependency, regardless of how cheaply its output transfers.
 jobs:
   suites:
     name: suites (${{ matrix.os }}, ${{ matrix.binary_platform }})
@@ -157,6 +157,7 @@ jobs:
           # actions/upload-artifact@v4+ fails the whole run on a duplicate.
           name: test-diagnostics-suites-${{ matrix.binary_platform }}
           path: .ci-diagnostics/
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 
@@ -178,16 +179,15 @@ jobs:
     # SHA; the first split run measured 138s / 349s. Linux moves 6 -> 8 min
     # (480s, 2.17x of the 221s worst observation) because 6 min had decayed to
     # 1.6x, the same drift that cancelled `suites`. Windows stays at 12 min
-    # (720s), still 2.06x the 349s worst case this job has ever produced. This
-    # is the critical path of the whole workflow, so it is the chain to shard
-    # first if a further cut is wanted.
+    # (720s), 2.06x that historical 349s observation. Current PR samples put
+    # the critical path on `suites`, usually its Windows unit step. Keep these
+    # retry-inclusive caps; sharding is prohibited by the testing contract.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         if: runner.os == 'Linux'
         with:
-          # The only LFS fixtures in the repository live under
-          # packages/coding-agent/test/fixtures, so this job genuinely needs them.
+          # Package LFS assets include session fixtures and the runtime PNG.
           lfs: true
           fetch-depth: 0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -239,6 +239,7 @@ jobs:
         with:
           name: test-diagnostics-agent-suite-${{ matrix.binary_platform }}
           path: .ci-diagnostics/
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 
@@ -411,8 +412,8 @@ jobs:
 
   static-checks:
     name: static-checks (linux-x64)
-    # Platform-independent checks. They need no Rust toolchain, so they run once
-    # on Linux instead of twice.
+    # Platform-independent checks run once on Linux. The CI project's native
+    # global setup still builds a missing binding, so a cold job needs Rust.
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 6
     steps:

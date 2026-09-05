@@ -3,6 +3,7 @@ import { test } from "vitest";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-process-lifecycle.ts";
+import "../../packages/coding-agent/src/modes/interactive/interactive-extension-runtime.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-bash-compact.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";

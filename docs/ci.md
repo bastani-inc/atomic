@@ -8,7 +8,7 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomi
 Pull request / selected branch push
 └─ test.yml (four concurrent work jobs + one result gate)
    ├─ suites (Linux, Windows): build package -> unit -> integration
-   ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node, then Bun)
+   ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
    └─ test (2 legs): result gate carrying both required contexts
@@ -58,6 +58,66 @@ failure above, not a fix for it.
 
 Its work runs as four independent jobs so the wall clock is one job's longest dependent chain rather than the sum of every step in file order.
 
+### Current critical path, measured September 5, 2026
+
+A sample of 32 completed PR-triggered `Tests` runs created September 4–5 puts
+the critical path on `suites`, usually Windows. These job execution times retain
+failed, retried and cancelled runs; they are not sums of concurrent jobs:
+
+| Job | Linux p50 / p90 | Windows p50 / p90 |
+| --- | ---: | ---: |
+| `suites` | 475 / 779.9 s | 726 / 1202.8 s |
+| `agent-suite` | 217.5 / 264.6 s | 340 / 472.9 s |
+| `release-archive` | 77 / 90.9 s | 142.5 / 188.2 s |
+| `static-checks` | 94 / 104.8 s | not run |
+
+Creation-to-result-gate wall time was 737 s median and 840.2 s p90 for the 15
+successful runs without internal retry. The 14 completed runs classified as
+retried measured 1131 / 1401.8 s; two failed and one cancelled run remain in
+the sample separately. There were 21 wrapper retry events across 15 runs,
+including the cancelled run. These include four coding-agent retries omitted by
+the original root-suite-only summary. Three older whole-workflow reruns were
+collected separately, not pooled into these PR-run distributions. Queue-to-first-work was
+10 s median; the gate tail was 13.5 s. Retry and unit execution dominate, not npm
+installation. The Windows unit step measured 493 s median across 31 executed
+primary-sample steps, including retries and failed attempts.
+
+The per-file durable setup now imports the in-memory backend and process owner
+directly instead of eagerly loading the DBOS factory and its aliased host graph.
+It still installs a fresh backend before every test, preserves other owner state,
+and leaves both global setups and test isolation unchanged. Tests needing host
+prototype installers import those real modules explicitly. The import-graph
+guard follows the actual Vitest aliases and compiler setting: statement-level
+`import type` erases, but `import { type T }` still evaluates its dependency under
+`verbatimModuleSyntax`. A real Vite transform/runtime regression covers that distinction.
+
+Local full-unit measurements on macOS arm64, Node 22.23.2 and Bun 1.4.2 were
+137.08 s before and 118.61 s after, a 13.5% wall reduction and 14.8% CPU reduction.
+A reverse-order runtime comparison on the same updated test inventory measured
+140.00 s for the original setup versus 119.53 s for the new setup, reducing wall
+time by 14.6% and CPU by 14.9%. Every original case identity, multiplicity and
+status was retained; those timing runs included four new regression cases. Both retained
+23 existing skips and the same pre-existing `extension.test.ts` validation-warning
+failure; they are performance measurements, not an all-green suite claim.
+A fifth regression covering actual transform/runtime behavior was added during review.
+Current local validation with a fresh, command-scoped `ATOMIC_CODING_AGENT_DIR`
+passed all 7,589 active tests with the same 23 skips. This excludes ambient personal
+resources while retaining project, bundled and explicit package fixtures; the
+pre-existing one-second polling assumption remains unfixed. That environment's
+timing must not be mixed into the before/after comparison. Most of the apparent
+setup-phase reduction moves to test-module import; only the whole-run wall and
+CPU differences above are claimed as savings.
+
+Applying the local wall range to the 493 s Windows unit median projects roughly
+66–72 s saved per attempt, not a measured hosted gain. Linux/Windows A/B timing
+and the restored artifact upload still need a normal authorized CI run. The
+fastest successful sampled gate was 687 s: this change does not demonstrate
+sub-five-minute CI. Investigating recurring retry causes is the next priority;
+native caching needs a deliberate cache-policy amendment and trust validation,
+and larger runners need measured billing tradeoffs rather than linear vCPU claims.
+
+### Historical split-job estimates
+
 | Job | Platforms | Chain | Linux | Windows |
 | --- | --- | --- | ---: | ---: |
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
@@ -106,19 +166,19 @@ The saving is nevertheless about 15 s, not the estimated 205 s, because the sequ
 
 On both runs the critical path was Windows `agent-suite`, whose real cost is 349–380 s rather than the 232 s the estimate assumed. Run 1 also fired the unit step's one bounded flake retry on both platforms, from two different pre-existing flakes that each passed on the retry.
 
-The structural result still stands and is what matters for the next decision: wall clock is now dominated by **two** steps instead of fourteen. Sharding `coding-agent vitest` therefore has a direct effect where before the split it would have been diluted by everything else in the job. Each shard must repeat the native binding build, so the arithmetic to beat is `setup + native build + vitest/2`. Confirm the steady-state numbers over more runs first.
+These initial split-run samples explain the topology change, not today's bottleneck. The current critical-path measurements above supersede the earlier recommendation to shard `agent-suite`; sharding is not permitted by the current testing contract.
 
 ### Why steps are grouped this way
 
-Steps stay in one job only when one consumes another's build output. Nothing is passed between jobs as an artifact, because rebuilding in parallel is cheaper in wall clock than serializing on an upload/download pair.
+Steps stay in one job only when one consumes another's build output. Nothing is passed between jobs as an artifact because waiting for a producer job introduces a serial dependency. The dependency edge can lengthen the critical path; this is not a claim that uploading and downloading the bytes costs more than recompiling.
 
 - `test/unit/pi-0.82.1-artifacts.test.ts` gates its assertions on `packages/coding-agent/dist` and degrades to `test.skip` with a warning when the build has not run, so the unit suite must stay behind the package build. Moving it into a build-less job would lose coverage without failing anything.
-- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`, so `suites` is the only job that installs Node.
+- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`. All four work-job definitions install Node; `suites` owns this package smoke.
 - `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `npm run build --workspace=@bastani/atomic-natives`.
-- `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. `suites` and `static-checks` need no Rust at all.
+- `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. `suites` also builds native bindings explicitly. The CI project's native global setup builds a missing binding in `static-checks`, so a cold static job needs Rust despite having no explicit toolchain step.
 - `agent-suite` runs the coding-agent package in one step; its SQLite selectors resolve `node:sqlite` on both runtimes (Bun ships it from 1.4.0, the repository's Bun floor).
 
-No suite uses `--parallel`, `--shard`, `--concurrent`, or `--max-concurrency`. `--parallel` implies `--isolate`, and 20 files in `test/unit` import 108 sibling `*.test.ts` files, so a fresh module registry per file re-executes those tests: 5407 executions against 4426 distinct tests, with the duplicates scored twice by the duration guard, once under contention. `--shard` is deterministic and roughly 1.85x faster locally, but it buys no wall clock while Windows `agent-suite` is the critical path. If a further cut is wanted, shard vitest first, then unit; that is worth roughly 70 s for a 60 % increase in runner count.
+No suite uses `--parallel`, `--shard`, `--concurrent`, or `--max-concurrency`. Twenty unit files still import 108 sibling `*.test.ts` files, so an isolated module registry executes those registrations again. Those executions and their per-attempt diagnostics are intentional retained coverage here. Keep default isolation and worker sizing; do not remove duplicate executions, serialize suites or introduce worker caps to manufacture a timing improvement.
 
 ### The `test` job is a result gate
 
@@ -176,7 +236,7 @@ These caps are wall-clock ceilings, not performance budgets. Shortening the
 with fresh measurements, and the contract test bounds every cap at 28 minutes
 so that stays a deliberate decision.
 
-Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
+Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name. Both upload steps explicitly set `include-hidden-files: true`: files inside a dot-prefixed directory are hidden on Linux and Windows, and the default previously excluded every diagnostic. Keep `path: .ci-diagnostics/` narrow rather than enabling hidden uploads across the workspace. The `always()` condition, 14-day retention and `if-no-files-found: ignore` remain, so a job failing before test execution need not produce an artifact. Restoring uploads may add a small upload cost; it is an observability fix, not a speedup.
 
 Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
 

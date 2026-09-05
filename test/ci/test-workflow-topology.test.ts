@@ -266,11 +266,19 @@ test("every work job installs with npm ci and sets up both runtimes it uses", as
  * same artifact name, and three jobs previously emitted the identical
  * `test-diagnostics-<platform>` name.
  */
+function assertDiagnosticsPath(step: string): void {
+	assert.match(step, /^\s+path: \.ci-diagnostics\/\s*$/mu);
+	assert.match(step, /^\s+include-hidden-files: true\s*$/mu);
+}
+
 test("every diagnostics upload has a job-unique artifact name", async () => {
 	const uploads = [...(await jobs())].flatMap(([job, block]) =>
 		jobSteps(block)
 			.filter((step) => step.includes("actions/upload-artifact@"))
 			.map((step) => {
+				assertDiagnosticsPath(step);
+				assert.throws(() => assertDiagnosticsPath(step.replace(/^\s+include-hidden-files: true\s*$/mu, "")));
+				assert.throws(() => assertDiagnosticsPath(step.replace("path: .ci-diagnostics/", "path: .")));
 				const name = /^\s+name: (.+)$/mu.exec(step);
 				assert.ok(name, `${job}: upload-artifact step declares no artifact name`);
 				return (name[1] as string).trim();
