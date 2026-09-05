@@ -45,14 +45,14 @@ jobs:
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
             binary_platform: linux-x64
-            timeout_minutes: 28
+            timeout_minutes: 10
           - os: blacksmith-4vcpu-windows-2025
             binary_platform: windows-x64
-            timeout_minutes: 28
+            timeout_minutes: 14
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # Retain the combined suites job's 28-minute cap conservatively. This is an
-    # inherited hang detector with retry headroom, not a measured split-job budget.
+    # ceil(1.5 x slower job duration / 60) from runs 33997174167 and 33997819241.
+    # Measurements and retry/cold-cache limitations are recorded in docs/ci.md.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
@@ -135,13 +135,13 @@ jobs:
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
             binary_platform: linux-x64
-            timeout_minutes: 28
+            timeout_minutes: 3
           - os: blacksmith-4vcpu-windows-2025
             binary_platform: windows-x64
-            timeout_minutes: 28
+            timeout_minutes: 5
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # Inherited hang detector, not a measured split-job budget. Keep retry headroom.
+    # Two-run maximum plus 50% headroom, rounded up to minutes; see docs/ci.md.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
@@ -208,20 +208,13 @@ jobs:
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
             binary_platform: linux-x64
-            timeout_minutes: 8
+            timeout_minutes: 6
           - os: blacksmith-4vcpu-windows-2025
             binary_platform: windows-x64
-            timeout_minutes: 12
+            timeout_minutes: 9
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # Measured on sha 772a373: 154s / 250s in the green run 31047542976, and a
-    # worst observation of 221s Linux / 270s Windows across both events on that
-    # SHA; the first split run measured 138s / 349s. Linux moves 6 -> 8 min
-    # (480s, 2.17x of the 221s worst observation) because 6 min had decayed to
-    # 1.6x, the same drift that cancelled `suites`. Windows stays at 12 min
-    # (720s), 2.06x that historical 349s observation. Current PR samples put
-    # the critical path on `suites`, usually its Windows unit step. Keep these
-    # retry-inclusive caps; sharding is prohibited by the testing contract.
+    # Two-run maximum plus 50% headroom, rounded up to minutes; see docs/ci.md.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
@@ -290,16 +283,13 @@ jobs:
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
             binary_platform: linux-x64
-            timeout_minutes: 5
+            timeout_minutes: 2
           - os: blacksmith-4vcpu-windows-2025
             binary_platform: windows-x64
-            timeout_minutes: 9
+            timeout_minutes: 4
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # The warm sample measured 162s, but cold acquisition consumed 152s for
-    # rust-toolchain and 71s for checkout, on top of ~110s native build and
-    # ~40s archive smoke: an observed tail near 6m50s versus a healthy 4m04s.
-    # Keep 9m of headroom for that cold toolchain tail.
+    # Two-run maximum plus 50% headroom, rounded up to minutes; see docs/ci.md.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
@@ -455,7 +445,7 @@ jobs:
     # Platform-independent checks run once on Linux. The CI project's native
     # global setup still builds a missing binding, so a cold job needs Rust.
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 6
+    timeout-minutes: 3
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         with:
@@ -535,7 +525,7 @@ jobs:
             binary_platform: windows-x64
       fail-fast: false
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
+    timeout-minutes: 1
     steps:
       - name: Require every work job to have succeeded
         shell: bash
