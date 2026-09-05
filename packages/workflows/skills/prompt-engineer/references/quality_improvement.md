@@ -4,12 +4,12 @@ Optimize against representative behavior, not prompt aesthetics. Preserve user-v
 
 ## Delete-First Workflow
 
-OpenAI measured leaner system prompts scoring roughly 10–15% higher on internal coding-agent evals while using 41–66% fewer total tokens and costing 33–67% less. Results vary, but the direction is clear: deletion is the default edit.
+OpenAI's [GPT-5.6 guide](gpt_5_6.md) reports leaner system prompts scoring roughly 10–15% higher on internal coding-agent evals while using 41–66% fewer total tokens and costing 33–67% less. Treat these as workload-specific measurements. Test deletions against your own baseline.
 
 ### Delete
 
 - repeated statements of the same rule;
-- generic self-verification nagging and legacy verifier scaffolding;
+- generic self-verification reminders that duplicate the target model's behavior without improving measured outcomes;
 - over-triggering absolutes such as “use this tool in every case” when routing depends on context;
 - step-by-step process narration for behavior the model already performs;
 - examples that do not alter measured behavior;
@@ -36,6 +36,19 @@ Reserve absolute language for true invariants. Convert judgment calls into condi
 5. Add the smallest targeted instruction for the remaining measured failure.
 
 Do not rewrite a working prompt stack and change effort, model, and tools simultaneously; that makes causality impossible to identify.
+
+## Audit accumulated skills and repository instructions
+
+The following audit distills [Eric Provencher's advice on X](https://x.com/pvncher/status/2095991462416490862), read September 5, 2026. It is practitioner guidance for instruction maintenance, not an API specification or a measured guarantee for every model or harness.
+
+- Keep skill descriptions short and specific about when to load them. Prefer "Plan and validate database migrations" to "Use for anything involving databases." Too many broad or competing descriptions make routing harder. Provencher reports that Codex truncates descriptions when too many skills are installed; do not assume Atomic has the same truncation behavior.
+- Keep a multi-purpose skill's root file a small router. Put task-specific procedures and scripts in references, and load only the branch needed. This saves context and avoids unrelated instructions changing the task.
+- Revisit inherited recipes after model upgrades. Replace rigid itineraries for routine judgment with outcomes, necessary dependencies, and completion criteria. Evaluate changes across the models used by repository contributors; guidance that helps Sol or Luna may overconstrain Astra.
+- Review `AGENTS.md` requirements in proportion to the task. A typo fix rarely needs a full repository map or a stack of design documents. Keep contextual pointers current and retain required pre-edit inspection and repository checks; propose changes to binding instructions rather than silently ignoring them.
+- Make permission boundaries concrete. If the environment actually uses disposable local fixtures with no production access, authorize running and repairing those tests as one workflow. Do not generalize that permission to production or publication, and do not ask again at every already-authorized step.
+- Define completion before work starts, including running the implementation, inspecting results, and repairing failures when requested. A first-pass review gate is a deliberate stopping point; remove an accidental gate only when authorized. For broader exploration, state what to investigate and where to stop.
+
+Treat each audit change as a hypothesis. Compare representative tasks, including a small edit and a real approval boundary, before removing a rule globally. OpenAI's [Astra guide](gpt_6_astra.md) adds model-specific advice for excessive testing, early stops, and instruction conflicts.
 
 ## Evaluation Contract
 
@@ -66,7 +79,7 @@ For long agent runs, ground status as well as final claims:
 Before reporting progress, audit each claim against a tool result from this session. Report failed, skipped, or unverified work plainly, and call work complete only when the cited validation supports it.
 ```
 
-This compact evidence rule replaces repeated requests to recheck work. Anthropic reports that grounding progress against tool results nearly eliminated fabricated status reports in its tests.
+This evidence rule helps reduce unsupported progress claims; it does not replace required verification. The [Fable 5 guide](claude_fable_5.md) reports benefits from grounding status and separately recommends independent verification for long work. Keep those distinct from Opus 5's advice to remove redundant self-checks.
 
 ## Consistent Output
 
@@ -105,6 +118,7 @@ Safety invariants may use `NEVER` or `MUST`; stylistic preferences and tool judg
 | Agent stops early | Permission boundary is vague or final plan substitutes for action | Define authorized actions and completion/blocker stop rules |
 | Agent overbuilds | Scope and success criteria are broad | Name the requested scope and exclude unrelated features or refactors |
 | Too much delegation | No size or independence threshold | Add delegation damping and a concurrency cap |
+| Too little delegation on Astra | No explicit permission or independence rule | Allow bounded parallel work when it saves time or improves quality |
 | Long visible answer | No explicit output length contract | Specify preserved content, omissions, sections, and word limit |
 | High latency/cost | Excess prompt text or effort | Delete first, then compare one lower effort level |
 | Long-context miss | Query precedes large documents | Put documents first and query last; Anthropic measured up to ~30% improvement |
@@ -112,7 +126,7 @@ Safety invariants may use `NEVER` or `MUST`; stylistic preferences and tool judg
 
 ## Model and Effort Regression Checks
 
-Preserve the current model and effort as the baseline before tuning. For GPT-5.6, test the same reasoning effort and one level lower. For Claude Opus 5 and Claude Fable 5, start from `high`, then compare lower levels where quality holds and higher levels only for capability-sensitive work.
+Preserve the current model and effort as the baseline before tuning. Read the relevant page from the [model table](../SKILL.md#model-guides) for migration defaults and supported controls. Effort names do not imply equal reasoning volume across models. Compare lower levels where quality holds and higher levels only where the gain justifies cost; do not silently change thinking defaults, output budgets, or API compatibility.
 
 Effort is not a substitute for missing success criteria, routing, dependencies, validation, or stop rules. On Opus 5, effort does not reliably control visible response length; use an explicit length and shape contract.
 

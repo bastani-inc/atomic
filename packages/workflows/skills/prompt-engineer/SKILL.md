@@ -1,68 +1,55 @@
 ---
 name: prompt-engineer
-description: Create, improve, optimize, evaluate, or troubleshoot prompts for GPT-5.6, Claude Opus 5, and Claude Fable 5.
+description: Write, evaluate, migrate, or troubleshoot prompts for GPT and Claude models.
 ---
 
-# Prompt Engineering Skill
+# Prompt engineering
 
-Create or revise prompts for current models. Optimize for the intersection of GPT-5.6, Claude Opus 5, and Claude Fable 5 unless the user names one target.
-
-## Use This Skill For
-
-- Writing task, system, agent, or tool prompts
-- Improving consistency, accuracy, security, structure, or cost
-- Migrating legacy prompts to current models
-- Selecting examples, XML structure, prompt chains, or model effort
-- Diagnosing prompt regressions or tool-routing failures
+Create or revise prompts for the user's target model. Keep the common prompt portable and load only the relevant model guide. Each model page distills its official source into practical instructions; defaults, effort levels, and API features do not transfer automatically between models or providers.
 
 ## Workflow
 
-1. Establish the user-visible outcome, audience, use case, model family, authorization boundaries, required output, and representative failure cases. Ask only for information whose absence would materially change the prompt.
-2. Read the relevant references below.
-3. Delete obsolete or redundant guidance before adding text.
-4. Shape complex prompts as `Role · Goal · Success criteria · Constraints · Tools · Output · Stop rules`; omit sections that do not change behavior.
-5. Test one surgical change at a time on representative inputs. Compare task success, output validity, tool behavior, latency, tokens, and cost.
-6. Deliver the revised prompt plus a brief change summary and validation plan. Keep the response focused: lead with the prompt or outcome, retain decisions and caveats, and omit background that does not change the user's next action.
+1. Establish the outcome, audience, model, authorization, output, and representative failures. Ask only for missing information that materially changes the prompt.
+2. Read the needed shared reference and the target model's page below. Resolve paths from this skill directory.
+3. Remove obsolete or redundant guidance before adding text. Preserve binding requirements.
+4. For complex prompts, use `Role · Goal · Success criteria · Constraints · Tools · Output · Stop rules`; omit sections that do not change behavior.
+5. Change one prompt or configuration variable at a time and compare representative cases. Measure task success, output validity, tool behavior, latency, tokens, and cost where available.
+6. Deliver the revised prompt, a brief change summary, and validation evidence or a plan. Label checks that were not run.
 
-## Progressive Disclosure
+## Shared references
 
-| Read | When | Covers |
+| Read | When |
+| --- | --- |
+| `references/core_prompting.md` | Defining clarity, context, roles, output, examples, or grounding |
+| `references/advanced_patterns.md` | Designing agents, tool routing, delegation, long context, or handoffs |
+| `references/quality_improvement.md` | Auditing accumulated skills/repository instructions, optimizing, evaluating, securing, or troubleshooting prompts |
+
+## Model guides
+
+| Target | Read | Main distinctions |
 | --- | --- | --- |
-| `references/core_prompting.md` | Creating or repairing any prompt | Clarity, context, roles, success criteria, constraints, output contracts, examples, XML, grounding |
-| `references/advanced_patterns.md` | Building agents, tool workflows, long-context prompts, chains, or model-specific variants | GPT-5.6, Claude Opus 5, Claude Fable 5, tool routing, stopping, delegation, adaptive thinking |
-| `references/quality_improvement.md` | Optimizing, evaluating, securing, or troubleshooting a prompt | Delete-first workflow, evals, hallucination reduction, consistency, security, regression diagnosis |
+| GPT-6 Astra | `references/gpt_6_astra.md` | Completion and approval pauses, instruction sensitivity, proportionate verification, API migration |
+| GPT-5.6, Sol, Terra, Luna | `references/gpt_5_6.md` | Lean prompts, concise defaults, effort sweep, pro mode, programmatic tools, caching |
+| GPT-5.5 | `references/gpt_5_5.md` | Outcome-first baseline, retrieval limits, explicit validation, assistant phase replay |
+| Claude Fable 5.1 | `references/claude_fable_5_1.md` | Progress visibility, batching, thinking-history binding, completion and output budget |
+| Claude Fable 5 | `references/claude_fable_5.md` | Long-run completion, grounded progress, task-sized independent verification, refusal handling |
+| Claude Opus 5 | `references/claude_opus_5.md` | Separate response length from effort, remove redundant verification, bound delegation |
+| Claude Opus 4.8 | `references/claude_opus_4_8.md` | Explicit adaptive thinking, literal scope, tool triggering, design alternatives |
+| Claude Sonnet 5 | `references/claude_sonnet_5.md` | Changed thinking default, unsupported manual budgets/sampling, literal scope and review recall |
 
-Use the exact instruction `Read references/core_prompting.md`, `Read references/advanced_patterns.md`, or `Read references/quality_improvement.md` when loading one of these files.
+For a migration, read both source and target pages when both are listed. For a cross-model prompt, keep common requirements in the main contract and isolate only the differences that affect behavior. Do not load every page for a single-model task.
 
-## Cross-Model Baseline
+## Common rules
 
-- State the destination and completion bar; leave routine path selection to the model.
+- State the result and completion bar; leave routine path selection to the model.
 - Give relevant context and a short reason for important constraints.
-- Reserve `ALWAYS`, `NEVER`, `MUST`, and `only` for safety rules, required fields, forbidden actions, and other true invariants. Use decision rules for judgment calls.
-- Specify user-facing or machine-consumed output length, sections, format, and validation requirements.
-- Use consistent descriptive XML tags when a prompt mixes instructions, context, examples, or documents. Tags are optional for simple prompts.
-- Use 3–5 relevant, diverse examples when examples measurably improve format, tone, or edge-case behavior; remove examples that do not change behavior.
-- For high-stakes or grounded work, require claims to cite available evidence, permit uncertainty, and define what happens when evidence is missing.
-- Do not prefill the final assistant response: Claude 4.6 and later return a 400 error. Use explicit format instructions, structured outputs, tools, or post-processing instead.
-- Do not request internal reasoning as response text. On Claude Fable 5 this can trigger `reasoning_extraction` and force fallback; request conclusions, evidence, observed behavior, citations, or validation results instead.
-- In instruction text, prefer “consider,” “evaluate,” or “assess” over “think” and its variants, especially for configurations with model thinking disabled.
+- Reserve absolute language for true invariants such as safety, permission, required fields, and forbidden actions. Use conditional rules for judgment calls.
+- Specify output length, sections, format, and validation when the user or a parser depends on them. Use schemas for machine output where supported.
+- Use descriptive XML tags to separate mixed instructions, context, examples, and untrusted documents when helpful. Simple prompts need no markup.
+- Keep examples only when they improve measured behavior. Ensure they obey the written contract.
+- Require evidence for consequential claims, permit uncertainty, and define what happens when evidence is missing.
+- Request conclusions, evidence, observed behavior, and validation results. Do not ask the model to reconstruct private reasoning in response text.
+- Calibrate verification and delegation to the model and task. Preserve required checks, real approval gates, and the harness's concurrency and execution rules.
+- Validate API compatibility before recommending parameters. A provider capability is not proof that Atomic or another host exposes it.
 
-## Quick Selection Guide
-
-| Need | Primary approach | Reference |
-| --- | --- | --- |
-| Better clarity or tone | Outcome, audience, context, specific role | `references/core_prompting.md` |
-| Reliable shape | Explicit output contract, schema, relevant examples | `references/core_prompting.md` |
-| Complex autonomous task | Agentic structure plus success and stop rules | `references/advanced_patterns.md` |
-| Tool-choice failures | Context-dependent routing and prerequisite rules | `references/advanced_patterns.md` |
-| Long documents | Documents first, query last, source metadata | `references/advanced_patterns.md` |
-| Deep analysis | Adaptive thinking and calibrated effort | `references/advanced_patterns.md` |
-| Multi-stage workflow | Focused prompt chain with explicit handoffs | `references/advanced_patterns.md` |
-| Hallucinations | Evidence scope, citations, uncertainty behavior | `references/quality_improvement.md` |
-| Inconsistent output | Schema, examples, parser validation | `references/quality_improvement.md` |
-| Security or injection risk | Policy boundaries, input controls, layered defenses | `references/quality_improvement.md` |
-| Excess cost or latency | Delete-first optimization and effort sweep | `references/quality_improvement.md` |
-
-## Invariants
-
-Prompting reduces but does not eliminate errors. Validate critical outputs with domain-appropriate checks, especially in high-stakes applications. Preserve safety, business, evidence, permission, and downstream parser constraints while optimizing.
+Prompting reduces errors but does not eliminate them. Preserve safety, business, evidence, permission, and downstream parser constraints while optimizing.
