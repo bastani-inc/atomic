@@ -847,8 +847,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           childMetadata?.supervisor,
           supervisorAuthorizations.ownerToken,
           readSubagentMessageSource(runtimeContext?.subagentPolicy),
+          // Origin controls workflow authority, not membership or child inheritance.
+          resolveSessionHomeGroup(),
         );
-        clientRegistrationGroup = normalizeGroup(registration.group);
+        clientRegistrationGroup = resolveSessionHomeGroup();
         await supervisorAuthorizations.restore(nextClient);
         for (const [runId, route] of pendingStageRoutes) {
           await registerPendingStageRoute(nextClient, runId, route);

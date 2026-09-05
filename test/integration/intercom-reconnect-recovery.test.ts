@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, test, vi } from "vitest";
+import type { PendingStageMessageRequest } from "../../packages/intercom/broker/client.js";
 import { sleep } from "../helpers/runtime.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -343,6 +344,175 @@ afterAll(() => {
 	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
 	rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
+
+test("an ordinary host controls a second invocation after joining the first and re-registering", async () => {
+	const groupA = "workflow:16adff11-b761-44b7-b265-cd84e5e89b20";
+	const runB = "f5f1d680-cfc0-429e-a511-a6c5f0029dc4";
+	const groupB = `workflow:${runB}`;
+	const stageTarget = `${groupB}/reviewer`;
+	const host = extensionFixture("multigroup-host-session", "multigroup-host", { intercomGroup: "default" });
+	intercomHeavy(host.pi as never);
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const sessionInfo = { cwd: repoRoot, model: "test", pid: process.pid, startedAt: 1, lastActivity: 1 };
+	const requests: PendingStageMessageRequest[] = [];
+	const received = Promise.withResolvers<void>();
+	stage.on("message", () => received.resolve());
+	owner.on("pending_stage_message", (request: PendingStageMessageRequest) => {
+		requests.push(request);
+		owner.respondPendingStageMessage(
+			request.requestId,
+			request.live
+				? { outcome: "forward", target: request.target }
+				: { outcome: "queued", position: requests.length },
+		);
+	});
+	try {
+		await host.start();
+		assert.equal((await host.execute({ action: "join", group: groupA })).isError, false);
+		const firstPid = await waitForBrokerPid();
+		killBroker(firstPid);
+		await waitForBrokerPid(firstPid);
+		await waitFor("the multigroup host to re-register without a tool call", async () =>
+			(await probeSessionNames()).includes("multigroup-host") ? true : undefined,
+		);
+
+		await owner.connect({ ...sessionInfo, name: "invocation-b-owner", group: groupB });
+		owner.registerPendingStageRoute(runB, groupB, "multigroup-capability", [
+			{
+				stageId: "reviewer",
+				stageName: "reviewer",
+				target: stageTarget,
+				group: `${groupB}/isolated`,
+				lifecycle: "running",
+				routeEligible: true,
+			},
+		]);
+		await owner.listSessions();
+		await stage.connect({ ...sessionInfo, name: "isolated-reviewer", group: `${groupB}/isolated` });
+		await stage.registerLiveWorkflowStageRoute(runB, ["reviewer"], "multigroup-capability");
+		const joined = await host.execute({ action: "join", group: groupB });
+		assert.equal(joined.isError, false, joined.content[0]?.text);
+		const status = await host.execute({ action: "status" });
+		assert.ok(status.content[0]?.text.includes(groupA));
+		assert.ok(status.content[0]?.text.includes(groupB));
+		const direct = await host.execute({ action: "send", to: owner.sessionId!, message: "direct works" });
+		assert.equal(direct.details.delivered, true, direct.content[0]?.text);
+
+		for (const target of [`${groupB}/**`, `${groupB}/review-*`, `${groupB}/future`]) {
+			const sent = await host.execute({ action: "send", to: target, message: `control ${target}` });
+			assert.equal(sent.details.queued, true, sent.content[0]?.text);
+		}
+		const listed = await host.execute({ action: "list", group: `${groupB}/isolated` });
+		assert.ok(listed.content[0]?.text.includes(stageTarget), listed.content[0]?.text);
+		const live = await host.execute({ action: "send", to: stageTarget, message: "live control" });
+		assert.equal(live.details.delivered, true, live.content[0]?.text);
+		await received.promise;
+		assert.equal((await host.execute({ action: "leave", group: groupA })).isError, false);
+		const afterLeave = await host.execute({ action: "send", to: `${groupB}/**`, message: "still control B" });
+		assert.equal(afterLeave.details.queued, true, afterLeave.content[0]?.text);
+		assert.deepEqual(
+			requests.map((request) => request.target),
+			[`${groupB}/**`, `${groupB}/review-*`, `${groupB}/future`, stageTarget, `${groupB}/**`],
+		);
+	} finally {
+		await stage.disconnect();
+		await owner.disconnect();
+		await host.shutdown();
+	}
+});
+
+test.each(["", "/worker"])(
+	"a workflow stage in invocation subgroup '%s' cannot gain control by joining and reconnecting",
+	async (suffix) => {
+		const runA = "82a2d5fd-56a5-4bc9-93ef-27c5e857c74d";
+		const homeGroup = `workflow:${runA}${suffix}`;
+		const runB = "6e55df27-a9d9-43a2-87d9-49f16b669c74";
+		const groupB = `workflow:${runB}`;
+		const stageTarget = `${groupB}/reviewer`;
+		const worker = extensionFixture("multigroup-worker-session", "multigroup-worker", {
+			intercomGroup: homeGroup,
+			kind: "workflow-stage",
+			workflowRunId: runA,
+			workflowStageId: "worker",
+			workflowStageName: "worker",
+		});
+		intercomHeavy(worker.pi as never);
+		const owner = new IntercomClient();
+		const stage = new IntercomClient();
+		const sessionInfo = { cwd: repoRoot, model: "test", pid: process.pid, startedAt: 1, lastActivity: 1 };
+		const requests: PendingStageMessageRequest[] = [];
+		owner.on("pending_stage_message", (request: PendingStageMessageRequest) => {
+			requests.push(request);
+			owner.respondPendingStageMessage(
+				request.requestId,
+				request.live ? { outcome: "forward", target: request.target } : { outcome: "queued", position: 1 },
+			);
+		});
+		const connectVictim = async () => {
+			await owner.connect({ ...sessionInfo, name: "victim-owner", group: groupB });
+			owner.registerPendingStageRoute(runB, groupB, "victim-capability", [
+				{
+					stageId: "reviewer",
+					stageName: "reviewer",
+					target: stageTarget,
+					group: `${groupB}/isolated`,
+					lifecycle: "running",
+					routeEligible: true,
+				},
+			]);
+			await owner.listSessions();
+			await stage.connect({ ...sessionInfo, name: "victim-stage", group: `${groupB}/isolated` });
+			await stage.registerLiveWorkflowStageRoute(runB, ["reviewer"], "victim-capability");
+		};
+		const assertIsolated = async () => {
+			const registration = (await owner.listSessions()).find((session) => session.name === "multigroup-worker");
+			assert.ok(registration);
+			assert.deepEqual(
+				registration.groups,
+				suffix ? [groupB, "default"] : [groupB],
+				"reconnect must not restore a deliberately left home group",
+			);
+			const direct = await worker.execute({
+				action: "send",
+				to: owner.sessionId!,
+				message: "joined member traffic",
+			});
+			assert.equal(direct.details.delivered, true, direct.content[0]?.text);
+			for (const target of [`${groupB}/**`, `${groupB}/review-*`, `${groupB}/future`, stageTarget]) {
+				const sent = await worker.execute({ action: "send", to: target, message: "must not gain control" });
+				assert.equal(sent.isError, true, `worker gained control of ${target}: ${sent.content[0]?.text}`);
+				assert.match(sent.content[0]?.text ?? "", /different intercom group/);
+			}
+			const listed = await worker.execute({ action: "list", group: `${groupB}/isolated` });
+			assert.ok(!listed.content[0]?.text.includes(stageTarget), listed.content[0]?.text);
+			assert.deepEqual(requests, [], "unauthorized operations must never reach the route owner");
+		};
+		try {
+			await worker.start();
+			assert.equal((await worker.execute({ action: "join", group: groupB })).isError, false);
+			// Cover both reclassification as another invocation owner and as an ordinary host.
+			if (suffix) assert.equal((await worker.execute({ action: "join", group: "default" })).isError, false);
+			assert.equal((await worker.execute({ action: "leave", group: homeGroup })).isError, false);
+			await connectVictim();
+			await assertIsolated();
+			await stage.disconnect();
+			await owner.disconnect();
+			const firstPid = await waitForBrokerPid();
+			killBroker(firstPid);
+			await waitForBrokerPid(firstPid);
+			await connectVictim();
+			await waitFor("the workflow worker to re-register", async () =>
+				(await owner.listSessions()).some((session) => session.name === "multigroup-worker") ? true : undefined,
+			);
+			await assertIsolated();
+		} finally {
+			await stage.disconnect();
+			await owner.disconnect();
+			await worker.shutdown();
+		}
+	},
+);
 
 test("a failed background reconnect still recovers the session with no intercom tool call", async () => {
 	const forced = failFirstConnectAttempt("background");

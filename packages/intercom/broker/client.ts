@@ -231,6 +231,7 @@ export class IntercomClient extends EventEmitter {
     supervisor?: SupervisorRegistration,
     supervisorOwnerToken?: string,
     messageSource?: Message["source"],
+    registrationGroup?: string,
   ): Promise<void> {
     if (this.socket) {
       return Promise.reject(new Error("Already connected"));
@@ -360,6 +361,7 @@ export class IntercomClient extends EventEmitter {
         writeMessage(socket, {
           type: "register",
           session,
+          ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
           ...(supervisor ? { supervisor } : {}),
           ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),

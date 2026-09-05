@@ -184,6 +184,11 @@ intercom({
 
 To coordinate two plain chat sessions without changing startup config, have each call `intercom({ action: "join", group: "NAME" })`. Joining adds a membership without changing the session ID or removing existing memberships. Calls to `list`, `send`, and `ask` can then reach any session sharing at least one membership. Use `intercom({ action: "groups" })` to discover every available name, connected-session count, and membership marker. Call `intercom({ action: "leave", group: "NAME" })` to remove one membership while keeping the others, or bare `leave` to reset to the original home group. `contact_supervisor` keeps its dedicated capability-based cross-group behavior.
 
+Joined memberships survive broker reconnects without replacing the session's
+startup identity. An ordinary host can therefore control several joined workflow
+invocations, while a workflow worker cannot gain another invocation's parent-control
+authority by joining its group and reconnecting.
+
 **Worker finds something unexpected — escalates and waits:**
 ```typescript
 intercom({

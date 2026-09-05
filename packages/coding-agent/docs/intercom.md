@@ -169,6 +169,15 @@ intercom({ action: "join", group: "api-review" })
 
 Joining is additive: existing memberships remain active, and the broker updates presence without changing the session ID. Use `intercom({ action: "groups" })` to discover all available names and membership markers. `intercom({ action: "leave", group: "api-review" })` removes only that membership; `intercom({ action: "leave" })` resets to the home group resolved at startup. Rejected or unacknowledged changes leave client and inheritance state unchanged. Ordinary delivery requires a shared membership, while `contact_supervisor` retains its capability-based cross-group path.
 
+An ordinary host session can join several workflow invocation groups and send to
+each group's `workflow:<rootRunId>/**` target, including after a broker reconnect.
+Reconnection preserves the session's startup identity separately from its joined
+memberships; joining a workflow does not turn the host into a workflow worker.
+Groups explicitly left stay absent after reconnect; the startup identity is not
+automatically added back to the membership list.
+Actual workflow workers retain their original invocation boundary across reconnects:
+joining another group does not grant that invocation's parent-control authority.
+
 Sent and received messages are recorded in session history as `intercom_sent` / `intercom_received` entries.
 
 ### Targeting Sessions and Pending Workflow Stages

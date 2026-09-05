@@ -1183,6 +1183,10 @@ class IntercomBroker {
         if (!isSessionRegistration(clientMessage.session)) {
           throw new Error("Invalid register message");
         }
+		if (clientMessage.registrationGroup !== undefined &&
+			(typeof clientMessage.registrationGroup !== "string" || clientMessage.registrationGroup.trim().length === 0)) {
+			throw new Error("Invalid registration group");
+		}
 		if (clientMessage.returnAddress !== undefined &&
 			(typeof clientMessage.returnAddress !== "string" || clientMessage.returnAddress.length === 0)) {
 			throw new Error("Invalid return address");
@@ -1222,7 +1226,8 @@ class IntercomBroker {
         this.sessions.set(id, {
           socket,
           info,
-          registrationGroup: legacyGroup,
+          registrationGroup: typeof clientMessage.registrationGroup === "string"
+            ? normalizeGroup(clientMessage.registrationGroup) : legacyGroup,
 			...(typeof info.name === "string" && info.name.trim().length > 0
 				? { registrationName: info.name.trim() }
 				: {}),

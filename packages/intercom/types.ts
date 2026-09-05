@@ -100,6 +100,8 @@ export type ClientMessage =
 			session: Omit<SessionInfo, "id">;
 			/** Internal host-owned identity retained across broker reconnects. */
 			returnAddress?: string;
+			/** Immutable session origin; separate from mutable group memberships. Legacy clients use session.group. */
+			registrationGroup?: string;
 			supervisor?: SupervisorRegistration;
 			supervisorOwnerToken?: string;
 	  }
