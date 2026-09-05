@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added OpenRouter's `microsoft/mai-image-2.6` and `microsoft/mai-image-2.6-flash` image models from the Pi 0.85.1 catalog.
+
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
