@@ -3,10 +3,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.js";
+import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.js";
+import { buildSystemPrompt } from "../../packages/coding-agent/src/core/system-prompt.js";
+import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import goal from "../../packages/workflows/builtin/goal.js";
 import ralph from "../../packages/workflows/builtin/ralph.js";
 import { renderQaE2eVideoGuidance } from "../../packages/workflows/builtin/ralph-core.js";
 import { DEFAULT_PROMPT_GUIDANCE } from "../../packages/workflows/src/extension/workflow-prompts.js";
+import { registerWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool-registration.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 const approval = JSON.stringify({
@@ -103,6 +109,73 @@ for (const name of ["goal", "ralph"] as const) {
 			}
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+}
+
+for (const order of [["workflow", "subagent"], ["subagent", "workflow"], ["subagent"]] as const) {
+	test(`registered base guidance honors complex inline requests and retains defaults: ${order.join(" then ")}`, async () => {
+		const tools: Array<{ name: string; promptGuidelines?: string[] }> = [];
+		const shutdown: Array<() => Promise<void>> = [];
+		const pi = {
+			registerTool(tool: (typeof tools)[number]) {
+				tools.push(tool);
+			},
+		};
+		try {
+			for (const name of order) {
+				if (name === "subagent") {
+					const extension = await loadExtensionFromFactory(
+						registerSubagentExtension,
+						process.cwd(),
+						createEventBus(),
+						createExtensionRuntime(),
+					);
+					shutdown.push(async () => {
+						for (const handler of extension.handlers.get("session_shutdown") ?? []) await handler();
+					});
+					const tool = extension.tools.get("subagent");
+					assert.ok(tool, "actual subagent extension registers the tool");
+					tools.push(tool.definition);
+				} else
+					registerWorkflowTool(
+						pi,
+						async () => ({ action: "list", items: [] }),
+						async (_policy, run) => run(),
+					);
+			}
+			assert.deepEqual(
+				tools.map((tool) => tool.name),
+				[...order],
+			);
+			assert.ok(
+				tools.every((tool) => tool.promptGuidelines?.length),
+				"use actual registered guidance",
+			);
+			const prompt = buildSystemPrompt({
+				cwd: process.cwd(),
+				selectedTools: ["read", "bash", ...order],
+				promptGuidelines: tools.flatMap((tool) => tool.promptGuidelines ?? []),
+			});
+			assert.ok(prompt.includes("**Subagent orchestration**"));
+			assert.equal(
+				prompt.includes("**Workflows**"),
+				order.some((name) => name === "workflow"),
+			);
+			assert.doesNotMatch(
+				prompt,
+				/Because workflows are the default[\s\S]*use a workflow and let its stages delegate specialists/,
+			);
+			executionModeContract(prompt);
+			assert.match(
+				prompt,
+				/Unless the user explicitly chooses inline execution[\s\S]*workflows are the default for non-trivial structured work/,
+			);
+			assert.match(prompt, /even (?:when complex|for complex)/);
+			assert.match(prompt, /testing, review and evidence inline/);
+			assert.match(prompt, /Do not claim (?:already-)?completed work was undone/);
+		} finally {
+			for (const stop of shutdown) await stop();
 		}
 	});
 }

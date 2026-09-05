@@ -5,6 +5,7 @@
 ### Changed
 
 - The qlty skill now selects checks from repository/user priorities, preserves existing tools and read-only boundaries, and supports manual offline configuration when initialization or installation is unavailable. It separates prepared configuration from executed checks without weakening authoritative project validation.
+- Subagent default guidance now honors task-scoped inline/no-workflow requests, including complex work, while preserving testing, review, safety and reconciliation of active workflow effects.
 
 ## [0.9.18-alpha.6] - 2026-09-04
 

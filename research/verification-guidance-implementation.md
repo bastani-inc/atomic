@@ -23,6 +23,25 @@ The goal is to implement every prompt, workflow-prompt, skill and documentation 
 | 45 | Relevant Vitest and npm run check; signed clean checkout; independent review later | Commands, signed SHA, status; reviewers own approval |
 | 45 | Separate PR, exact-head CI/review before merge, release gated on both merges | Later authorized parent action, not this child |
 
+## Consolidated review repair acceptance
+
+The three round-one P2 findings shared one defect: independently registered subagent guidance still mandated workflow execution. The repair changes that source and adds complete-composition regression/evaluation evidence; all original rows above remain binding.
+
+| Required repair check | Current oracle |
+| --- | --- |
+| Remove unconditional subagent redirect at its source | `packages/subagents/src/extension/prompt-guidance.ts` now conditions its own default on no task-scoped inline opt-out |
+| Workflow then subagent registration | Registered-base Vitest case and rebuilt-extension probe pass |
+| Subagent then workflow registration | Registered-base Vitest case and rebuilt-extension probe pass |
+| Subagent-only availability | Registered-base Vitest case and rebuilt-extension probe pass without importing workflow guidance into the prompt |
+| Complex `inline` request | Composed contract assertions pass; evaluation 1 re-evaluated in all three configurations |
+| `do this directly` | Exact literal assertion; evaluation 2 re-evaluated in all three configurations |
+| `don't use a workflow` | Exact literal assertion; evaluation 2 re-evaluated in all three configurations |
+| No opt-out | Conditional workflow default retained; evaluation 6 re-evaluated in all three configurations |
+| Scoped/quoted inputs, safety and reconciliation | Composed contract assertions and manual evaluations 3-5 retain the existing rules |
+| Shipped assets reflect corrected source | `npm run build` and actual built-extension registration/composition probe pass |
+| Durable red/green and authoritative checks | 3 failures before repair; 7 focused tests and 163 broader tests pass afterward; npm check/build/docs pass |
+| Signed clean delivery | Exact commit/signature and final status belong to the delivery receipt, not a self-referential source note |
+
 ## Interface and state decisions
 
 No runtime APIs, fields, optionality, return identities, ordering or duplicate behavior change. Prompt inputs and evidence paths remain verbatim. Configuration is preserved rather than overwritten. The execution-mode change is instruction guidance, not a new parser or runtime state machine. An active switch requires reconciliation before further execution; a quoted request does not transition state. Existing safety and authorization boundaries apply in every state.
@@ -31,7 +50,7 @@ No runtime APIs, fields, optionality, return identities, ordering or duplicate b
 
 Parent setup: npm ci --ignore-scripts and npm run build passed. Correct branch docs/workflow-verification-guidance at prerequisite merge 27fff253b382819f576f9f7b12f8e21625dc25a0.
 
-Final commands in this checkout:
+First implementation commands in this checkout, rerun for the repair below:
 
 ```sh
 npx vitest --run --project unit test/unit/verification-guidance.test.ts test/unit/builtin-workflows-goal*.test.ts test/unit/builtin-workflows-ralph*.test.ts test/unit/execution-routing-guidance.test.ts test/unit/builtin-workflow-steering-propagation.test.ts test/unit/workflow-lifecycle-notifications-*.test.ts
@@ -41,7 +60,7 @@ npm run docs:check --workspace=@bastani/atomic
 git diff --check
 ```
 
-Results: 160 tests passed in 16 files. Existing Vite dynamic-import warning in builtin-workflow-steering-propagation.test.ts remains non-failing. Check passed Biome, root/package typechecks and shrinkwrap verification. Build regenerated ignored shipped assets successfully. Docs link validation passed 45 pages. Diff whitespace check passed. Logs: /tmp/verification-final-tests.log, /tmp/verification-final-check.log and /tmp/verification-final-build.log.
+Results at 91997ecebd: 160 tests passed in 16 files. Existing Vite dynamic-import warning in builtin-workflow-steering-propagation.test.ts remained non-failing. Check passed Biome, root/package typechecks and shrinkwrap verification. Build regenerated ignored shipped assets successfully. Docs link validation passed 45 pages. Diff whitespace check passed. Logs: /tmp/verification-final-tests.log, /tmp/verification-final-check.log and /tmp/verification-final-build.log.
 
 The new test inspects actual dispatched Goal/Ralph worker, reviewer and authorized final PR prompts. It does not add a test-side steering wrapper. Prompt assertions establish wiring and instruction contracts, not stochastic model compliance. Existing tests changed only where their former absolute workflow/credential wording conflicts with this contract, or where a broad `completed` match accidentally matched the new reconciliation text instead of the lifecycle status. Runtime logic is unchanged.
 
@@ -147,3 +166,46 @@ This amendment is an external gate, not a runtime change here. No files from tha
 ## Deferred
 
 Existing CONTRIBUTING.md/DEV_SETUP.md release-age and DEV_SETUP.md Bun SQLite documentation drift is unrelated and unchanged.
+
+## Consolidated review repair evidence
+
+Root cause: subagents/src/extension/index.ts registers its own prompt guidance independently of the workflow package. The workflow-only test never composed that contribution, so its unconditional redirect survived the first implementation. The new regression collects actual tool registrations, loads the subagent factory through the real extension loader, and calls `buildSystemPrompt` without adding an exception in the test. It covers both registration orders and subagent-only availability.
+
+`npx vitest --run --project unit test/unit/verification-guidance.test.ts` initially exited 1 with 3 failed / 4 passed. Each failure was the retained redirect at the new no-contradiction assertion; /tmp/verification-repair-red.log contains the emitted prompts and stack at line 144 of the initial fixture. The fixed source passed 7/7. Initial formatting and fake-API fixture typing errors were corrected without changing the regression assertions; the final fixture uses the actual extension loader instead of casting a partial API. The source fix is three conditional guidance bullets, not a parser or runtime transition change.
+
+Final validation reran the command block above: **163 tests / 16 files passed**, `npm run check`, `npm run build` and docs validation of **45 pages** passed. Logs: /tmp/verification-repair-{green,tests,check,build,docs}.log. The existing Vite dynamic-import warning and Biome informational `noUselessStringRaw` notice in the unchanged CI contract test are not failures. `qlty check --no-upgrade-check packages/subagents/src/extension/prompt-guidance.ts test/unit/verification-guidance.test.ts` exited 99: `Qlty must be set up in this repository. Try: qlty init`. No repository configuration was adopted, as required; this is not qlty lint coverage. Authoritative Biome/type/shrinkwrap checks passed.
+
+User-facing verification.md already documents the exact repaired behavior and stays unchanged. The subagent Unreleased section gains its missing shipped-default entry; no released section changes. Manual evaluation cases 1-6 were reapplied to all three actual compositions and now explicitly acknowledge the missed baseline contradiction. They remain manual instruction evaluations, not sampled model responses. Prior domain/qlty/media evidence and limitations remain unchanged.
+
+### Repeatable built prompt check
+
+After `npm run build`, run this from the checkout. It loads the shipped bundles through the built extension loader, constructs the built base prompt and shuts down each owned registration. It does not launch a workflow, subagent or model call.
+
+```sh
+node --input-type=module <<'JS'
+import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const dist = resolve('packages/coding-agent/dist');
+const { loadExtensions } = await import(pathToFileURL(resolve(dist, 'core/extensions/loader.js')).href);
+const { buildSystemPrompt } = await import(pathToFileURL(resolve(dist, 'core/system-prompt.js')).href);
+for (const order of [['workflows', 'subagents'], ['subagents', 'workflows'], ['subagents']]) {
+  const { extensions, errors } = await loadExtensions(order.map(name => resolve(dist, `builtin/${name}/src/extension/index.bundle.mjs`)), process.cwd());
+  try {
+    assert.deepEqual(errors, []);
+    const tools = extensions.flatMap(extension => [...extension.tools.values()].map(tool => tool.definition));
+    assert.deepEqual(tools.map(tool => tool.name), order.map(name => name.slice(0, -1)));
+    const prompt = buildSystemPrompt({ cwd: process.cwd(), selectedTools: ['read', 'bash', ...tools.map(tool => tool.name)], promptGuidelines: tools.flatMap(tool => tool.promptGuidelines ?? []) });
+    assert.doesNotMatch(prompt, /Because workflows are the default[\s\S]*use a workflow and let its stages delegate specialists/);
+    assert.match(prompt, /Unless the user explicitly chooses inline execution[\s\S]*workflows are the default for non-trivial structured work/);
+    for (const literal of ['"inline"', '"do this directly"', '"don\'t use a workflow"']) assert.ok(prompt.includes(literal));
+    for (const clause of ['even for complex tasks', 'testing, review and evidence inline', 'safety and authorization constraints', 'Quoted examples and questions about inline code are not execution-mode instructions', 'reconcile completed work and in-flight side effects', 'without duplicate execution']) assert.ok(prompt.includes(clause));
+    console.log(`PASS built ${order.join(' then ')}`);
+  } finally {
+    for (const extension of extensions) for (const handler of extension.handlers.get('session_shutdown') ?? []) await handler({ type: 'session_shutdown' });
+  }
+}
+JS
+```
+
+Observed: all three `PASS built` lines, exit 0. The equivalent artifact-producing probe `/tmp/verification-repair-built-probe.mjs` also passed and saved the complete prompts to `/tmp/verification-repair-built-workflows-subagents.txt`, `/tmp/verification-repair-built-subagents-workflows.txt` and `/tmp/verification-repair-built-subagents.txt`; output is in `/tmp/verification-repair-built.log`.
