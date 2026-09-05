@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,15 +11,16 @@ import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import { type PeerDisconnectNotice, routePeerDisconnect } from "../../packages/intercom/peer-disconnect-routing.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types.js";
+import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
+
+const BROKER_PROBE_TIMEOUT_MS = 250;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-peer-disconnect-"));
 const socketPath = getBrokerSocketPath(process.platform, agentDir);
-const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
-process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
-const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
-let broker: ChildProcess | undefined;
+const fixture = new IntercomBrokerFixture(agentDir);
+let IntercomClient: typeof import("../../packages/intercom/broker/client.js").IntercomClient;
 
 class WireClient {
 	readonly received: BrokerMessage[] = [];
@@ -27,6 +28,9 @@ class WireClient {
 	private consumed = new Set<number>();
 
 	constructor() {
+		fixture.onCleanup(() => {
+			this.socket.destroy();
+		});
 		this.socket.on(
 			"data",
 			createMessageReader(
@@ -71,13 +75,21 @@ class WireClient {
 async function waitForBroker(): Promise<void> {
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
+		fixture.assertRunning();
 		const connected = await new Promise<boolean>((resolveConnected) => {
 			const probe = net.createConnection(socketPath);
+			probe.setTimeout(BROKER_PROBE_TIMEOUT_MS, () => {
+				probe.destroy();
+				resolveConnected(false);
+			});
 			probe.once("connect", () => {
 				probe.destroy();
 				resolveConnected(true);
 			});
-			probe.once("error", () => resolveConnected(false));
+			probe.once("error", () => {
+				probe.destroy();
+				resolveConnected(false);
+			});
 		});
 		if (connected) return;
 		await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
@@ -105,18 +117,18 @@ const disconnected = (replyTo: string, peerSessionId: string, peerName?: string)
 });
 
 beforeAll(async () => {
-	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
+	fixture.overrideAgentDir();
+	({ IntercomClient } = await import("../../packages/intercom/broker/client.js"));
+	const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
 		stdio: "ignore",
 	});
+	fixture.trackBroker(broker);
 	await waitForBroker();
 });
 
-afterAll(() => {
-	broker?.kill("SIGTERM");
-	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
-	rmSync(agentDir, { recursive: true, force: true });
+afterAll(async () => {
+	await fixture.cleanup();
 });
 
 test("broker emits exact idempotent peer_disconnected frames for graceful and abrupt target exits", async () => {
@@ -232,6 +244,7 @@ test("broker emits exact idempotent peer_disconnected frames for graceful and ab
 
 test("real client stays connected when a pending peer disconnects", async () => {
 	const asker = new IntercomClient();
+	fixture.onCleanup(() => asker.disconnect());
 	const target = new WireClient();
 	const errors: Error[] = [];
 	asker.on("error", (error: Error) => errors.push(error));
@@ -259,6 +272,7 @@ test("real client stays connected when a pending peer disconnects", async () => 
 
 test("real client rejects the exact waiter when its target disconnects", async () => {
 	const asker = new IntercomClient();
+	fixture.onCleanup(() => asker.disconnect());
 	const target = new WireClient();
 	const slot = new ReplyWaiterRegistry();
 	const targetName = "waiter-release-target";
