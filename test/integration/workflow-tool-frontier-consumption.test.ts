@@ -42,6 +42,18 @@ test.each(
 		"default-exit",
 		"caught-exit",
 		"replacement",
+		"replacement-model",
+		"replacement-child",
+		"durable-replacement-model",
+		"durable-replacement-child",
+		"budget-replacement-child",
+		"replacement-task",
+		"replacement-chain",
+		"replacement-parallel",
+		"replacement-stage-worktree",
+		"replacement-task-worktree",
+		"cached-child",
+		"cached-task",
 		"failed",
 		"blocked",
 		"cancelled",
@@ -62,6 +74,19 @@ test.each(
 		let modelCalls = 0;
 		let targetCalls = 0;
 		let replacementCalls = 0;
+		let completedChildCalls = 0;
+		let completedTaskCalls = 0;
+		const child = workflow({
+			name: "completed-child",
+			description: "replay a completed child before the frontier",
+			inputs: {},
+			outputs: {},
+			run: async (childCtx) => {
+				completedChildCalls++;
+				await childCtx.tool("child-effect", {}, async () => true);
+				return {};
+			},
+		});
 		let omitTarget = false;
 		const beforeKill = Promise.withResolvers<void>();
 		let awaitingKill = false;
@@ -70,6 +95,7 @@ test.each(
 			description: "offline frontier consumption regression",
 			inputs: {},
 			outputs: { status: Type.Optional(Type.String()) },
+			...(ending.startsWith("budget-") ? { budget: { maxDurationMs: 60_000 } } : {}),
 			run: async (ctx) => {
 				await Promise.all(
 					["sibling-a", "sibling-b"].map((name) =>
@@ -80,6 +106,8 @@ test.each(
 					),
 				);
 				if (mixed) await ctx.stage("completed-model").prompt("completed-model");
+				if (ending === "cached-child") await ctx.workflow(child);
+				if (ending === "cached-task") await ctx.task("completed-task", { prompt: "completed-task" });
 				if (omitTarget && ending === "kill") {
 					awaitingKill = true;
 					await beforeKill.promise;
@@ -99,6 +127,36 @@ test.each(
 						return ctx.exit({ status: ending, reason: "  deliberate\n" });
 					if (ending === "returned-failed") return { status: "failed" };
 					if (ending === "returned-blocked") return { status: "blocked" };
+					if (ending.endsWith("replacement-child"))
+						await ctx.workflow(
+							workflow({
+								name: "replacement-child",
+								description: "must not execute before the tool frontier",
+								inputs: {},
+								outputs: {},
+								run: async (childCtx) => {
+									await childCtx.tool("replacement-effect", {}, async () => {
+										replacementCalls++;
+										return true;
+									});
+									return {};
+								},
+							}),
+						);
+					if (ending === "replacement-stage-worktree")
+						await ctx.stage("replacement-worktree", { gitWorktreeDir: ctx.cwd }).prompt("replacement");
+					if (ending === "replacement-task-worktree")
+						await ctx.task("replacement-worktree", {
+							prompt: "replacement",
+							worktree: true,
+							gitWorktreeDir: ctx.cwd,
+						});
+					if (ending.endsWith("replacement-model")) await ctx.stage("replacement-model").prompt("replacement");
+					if (ending === "replacement-task") await ctx.task("replacement-task", { prompt: "replacement" });
+					if (ending === "replacement-chain")
+						await ctx.chain([{ name: "replacement-chain", prompt: "replacement" }]);
+					if (ending === "replacement-parallel")
+						await ctx.parallel([{ name: "replacement-parallel", prompt: "replacement" }]);
 					if (ending === "replacement")
 						await ctx.tool("replacement", {}, async () => {
 							replacementCalls++;
@@ -129,7 +187,8 @@ test.each(
 			adapters: {
 				prompt: {
 					prompt: async (text) => {
-						modelCalls++;
+						if (text === "completed-task") completedTaskCalls++;
+						else modelCalls++;
 						return text;
 					},
 				},
@@ -250,6 +309,8 @@ test.each(
 		assert.ok(retried.ok, retried.message);
 		await waitFor(() => store.runs().some((run) => run.id === retried.runId && run.endedAt !== undefined));
 		assert.equal(store.runs().find((run) => run.id === retried.runId)?.status, "completed");
+		assert.equal(completedChildCalls, ending === "cached-child" ? 1 : 0);
+		assert.equal(completedTaskCalls, ending === "cached-task" ? 1 : 0);
 		assert.deepEqual([completedCalls, modelCalls, targetCalls], [2, mixed ? 1 : 0, 2]);
 	},
 );

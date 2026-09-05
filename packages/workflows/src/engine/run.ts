@@ -477,6 +477,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		worktreeSymlinkDirectories: opts.config?.worktree?.symlinkDirectories,
 		exit,
 		classifyExecutorFailure,
+		assertLiveWorkAllowed: () => assertFrontierConsumed(),
 		rootBudget,
 		budget,
 	});

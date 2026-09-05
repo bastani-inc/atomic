@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Resumed workflows can no longer report completion after changed control flow omits their unfinished durable tool. Normal returns and explicit completed exits now require exact frontier consumption, while completed work stays cached and cancellation controls retain precedence.
+- Resumed workflows can no longer report completion after changed control flow omits their unfinished durable tool. Normal returns and explicit completed exits require exact frontier consumption. New model/task and child-workflow execution, including stage/task worktree setup, is rejected while that frontier is pending; completed work stays cached and cancellation controls retain precedence.
 
 ## [0.9.18-alpha.6] - 2026-09-04
 

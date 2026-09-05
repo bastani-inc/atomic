@@ -45,12 +45,15 @@ export interface EngineRuntimeInput {
 	readonly budget: RunBudgetController;
 	readonly rootBudget: RunBudgetController;
 	readonly classifyExecutorFailure: LiveStageRuntime["classifyExecutorFailure"];
+	readonly assertLiveWorkAllowed?: () => void;
 }
 
 export interface EngineSpawnAgentStageOptions {
 	readonly kind?: "agent";
 	readonly options?: StageOptions;
 	readonly failFastScope?: ParallelFailFastScope;
+	/** Resolve side-effecting task setup only after replay and live admission. */
+	readonly prepareLiveOptions?: () => StageOptions | undefined;
 }
 
 export interface EngineSpawnWorkflowBoundaryOptions {
@@ -90,11 +93,13 @@ export class EngineRuntime {
 	readonly rootBudget: RunBudgetController;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
+	readonly assertLiveWorkAllowed?: () => void;
 	private readonly terminalArtifactCollectors = new Map<string, () => readonly WorkflowArtifact[]>();
 	private readonly spawnAgentStage: (
 		name: string,
 		options?: StageOptions,
 		stageFailFastScope?: ParallelFailFastScope,
+		prepareLiveOptions?: () => StageOptions | undefined,
 	) => StageContextWithMeta;
 	private readonly spawnWorkflowBoundary: (
 		name: string,
@@ -119,6 +124,7 @@ export class EngineRuntime {
 		this.rootBudget = input.rootBudget;
 		this.gitWorktreeSetupCache = input.gitWorktreeSetupCache;
 		this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
+		this.assertLiveWorkAllowed = input.assertLiveWorkAllowed;
 
 		// The runtime only wires host-injected ports; stage sessions are still
 		// created lazily by the stage runner through input.adapters.agentSession.
@@ -140,6 +146,7 @@ export class EngineRuntime {
 			budget: input.budget,
 			exit: input.exit,
 			classifyExecutorFailure: input.classifyExecutorFailure,
+			assertLiveWorkAllowed: input.assertLiveWorkAllowed,
 			createMcpScope: (stageId, options) => this.createMcpScope(stageId, options),
 			takeTerminalArtifacts: (replayKey) => this.takeTerminalArtifacts(replayKey),
 		});
@@ -165,7 +172,10 @@ export class EngineRuntime {
 				boundary: this.spawnWorkflowBoundary(name, opts.replayKey, opts.identity),
 			};
 		}
-		return { kind: "agent", context: this.spawnAgentStage(name, opts.options, opts.failFastScope) };
+		return {
+			kind: "agent",
+			context: this.spawnAgentStage(name, opts.options, opts.failFastScope, opts.prepareLiveOptions),
+		};
 	}
 
 	registerTerminalArtifactCollector(replayKey: string, collect: () => readonly WorkflowArtifact[]): void {
