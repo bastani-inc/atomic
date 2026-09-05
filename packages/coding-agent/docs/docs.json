@@ -56,7 +56,7 @@
               "models",
               "models/model-selection",
               "models/pareto-efficiency",
-              "models/artificial-analysis-index"
+              "models/evals"
             ]
           },
           "custom-provider"

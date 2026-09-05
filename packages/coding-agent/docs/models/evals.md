@@ -1,11 +1,11 @@
 ---
-title: "Benchmark Sources"
-description: "The external benchmarks that inform Atomic model selection — Artificial Analysis and DeepSWE — broken down per benchmark with the measured numbers: what each measures, who scores what, and when to reference it."
+title: "Evals"
+description: "The external evals that inform Atomic model selection — Artificial Analysis and DeepSWE — broken down per benchmark with the measured numbers: what each measures, who scores what, and when to reference it."
 ---
 
-# Benchmark Sources
+# Evals
 
-Atomic's model-selection docs are keyed to two live external benchmark sources rather than a hand-maintained table of scores. This page lists each benchmark, what it measures, the measured numbers for the models in Atomic's catalog, and **when to reference it** for a given workflow role — so an agent authoring a workflow can pick a model for a task type from evidence rather than from an aggregate rank.
+Atomic's model-selection docs are keyed to two live external eval sources rather than a hand-maintained table of scores. This page lists each eval, what it measures, the measured numbers for the models in Atomic's catalog, and **when to reference it** for a given workflow role — so an agent authoring a workflow can pick a model for a task type from evidence rather than from an aggregate rank.
 
 <Warning>
 No single benchmark is the source of truth. Validate these inputs against Atomic's own workflow evals, whose task distribution is closer to the work you intend to run. Artificial Analysis was re-fetched on **2026-09-05**, including its September 4 Intelligence Index revision; the per-evaluation scores, leaderboard rows and Coding Agent Index rows below were read from the rendered charts on that date. The DeepSWE leaderboard rows below retain their **2026-09-03** compilation date and were read from the live page on **2026-09-05**. Every number is a rounded value as displayed by the source; unrounded values and confidence intervals live on the linked pages.

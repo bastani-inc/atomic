@@ -135,6 +135,7 @@ describe("workflow-first execution routing", () => {
 		const authoringGuidance = workflowGuidance.join("\n");
 		for (const phrase of [
 			"packages/coding-agent/docs/models/model-selection.md",
+			"packages/coding-agent/docs/models/evals.md",
 			'workflow({ action: "models" })',
 			"returned `fullId` values as model strings",
 			"availableThinkingLevels",
@@ -715,6 +716,7 @@ describe("workflow-first execution routing", () => {
 			"documented task requirement",
 			"Do not choose an ad hoc model merely for diversity",
 			"packages/coding-agent/docs/models/model-selection.md",
+			"packages/coding-agent/docs/models/evals.md",
 			'workflow({ action: "models" })',
 			"Pin only a returned fullId",
 			"thinking level listed for that entry",
