@@ -2,18 +2,6 @@
 
 ## [Unreleased]
 
-### Changed
-
-- Interactive model and thinking selections, including cycling shortcuts, now automatically become startup defaults. Scoped-model cycle-list changes also save immediately. Removed the Ctrl+S save-default shortcuts and UI.
-
-### Removed
-
-- Removed the Ctrl+X copy-message/selection action to avoid confusion with workflow navigation. `/copy` and automatic mouse-selection copying remain available.
-
-### Fixed
-
-- Resumed workflows can no longer report completion after changed control flow omits their unfinished durable tool. Normal returns and explicit completed exits require exact frontier consumption. New model/task and child-workflow execution, including stage/task worktree setup, is rejected while that frontier is pending; completed work stays cached and cancellation controls retain precedence.
-
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
@@ -60,6 +48,8 @@
 - The `edit` tool's model-facing hashline guidance now includes compact worked examples and anti-patterns for commonly rejected patch shapes, and correctly identifies native Rust tree-sitter block resolution as primary with the brace/indent heuristic as its fallback. The hashline reference documentation is now a specification covering inputs, verified tolerated shapes, outputs, worked examples, limits, literal error messages, and warnings.
 - OpenAI Responses models that advertise explicit prompt-cache support, including GPT-5.6 and GPT-6 Astra, now use `prompt_cache_options.ttl: "30m"` for long cache retention. Earlier Responses models retain `prompt_cache_retention: "24h"`; no-cache and short-cache requests continue to omit unsupported fields.
 
+- Interactive model and thinking selections, including cycling shortcuts, now automatically become startup defaults. Scoped-model cycle-list changes also save immediately. Removed the Ctrl+S save-default shortcuts and UI.
+
 ### Fixed
 
 - Fixed configurable save keybindings in the model and thinking selectors ([#8797](https://github.com/earendil-works/pi/issues/8797)).
@@ -83,6 +73,12 @@
 - Fixed branch summaries failing when reasoning consumes a 2048-token output cap by raising the cap to 4096 tokens, clamped to the model's `maxTokens` ([#8845](https://github.com/earendil-works/pi/issues/8845)).
 - Pinned managed fd downloads on darwin/x64 to 10.3.0, matching upstream pi's known-good archive for that host ([#8708](https://github.com/earendil-works/pi/issues/8708)).
 - Fixed model catalog refresh errors in the `/model` selector rendering without the blank line used by the corresponding success status.
+
+- Resumed workflows can no longer report completion after changed control flow omits their unfinished durable tool. Normal returns and explicit completed exits require exact frontier consumption. New model/task and child-workflow execution, including stage/task worktree setup, is rejected while that frontier is pending; completed work stays cached and cancellation controls retain precedence.
+
+### Removed
+
+- Removed the Ctrl+X copy-message/selection action to avoid confusion with workflow navigation. `/copy` and automatic mouse-selection copying remain available.
 
 ## [0.9.18-alpha.5] - 2026-09-01
 

@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-### Changed
-
-- The qlty skill now selects checks from repository/user priorities, preserves existing tools and read-only boundaries, and supports manual offline configuration when initialization or installation is unavailable. It separates prepared configuration from executed checks without weakening authoritative project validation.
-- Subagent default guidance now honors task-scoped inline/no-workflow requests, including complex work, while preserving testing, review, safety and reconciliation of active workflow effects.
-- Orchestrator guidance for agents without a declared model now cites the measured per-evaluation scores in `packages/coding-agent/docs/models/evals.md` by task type, in addition to the role guidance in `model-selection.md`.
-
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes
@@ -18,6 +12,10 @@
 
 - Subagent labels now render the complete selected model ID, including `-fast`, without appending a separate `fast` badge.
 - Updated bundled agents to GPT-6 Astra at `low`, with debugger at `xhigh`. Added Astra and Claude Fable 5.1 provider fallbacks ahead of older models. Locator roles now use the same ordered fallback chain as the other ordinary agents, including Sol, GPT-5.5, and Opus 4.8 at `medium`.
+
+- The qlty skill now selects checks from repository/user priorities, preserves existing tools and read-only boundaries, and supports manual offline configuration when initialization or installation is unavailable. It separates prepared configuration from executed checks without weakening authoritative project validation.
+- Subagent default guidance now honors task-scoped inline/no-workflow requests, including complex work, while preserving testing, review, safety and reconciliation of active workflow effects.
+- Orchestrator guidance for agents without a declared model now cites the measured per-evaluation scores in `packages/coding-agent/docs/models/evals.md` by task type, in addition to the role guidance in `model-selection.md`.
 
 ### Fixed
 

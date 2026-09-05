@@ -73,11 +73,12 @@ describe("model selector catalog refresh status", () => {
 		expect(refreshed).toContain("Model catalogs refreshed.");
 	});
 
-	it("explains session selection and default persistence", async () => {
+	it("shows selection and cancel hints without a save-default shortcut", async () => {
 		const selector = createSelector(async () => ({ aborted: false, errors: new Map() }));
 		const rendered = await renderedAfterWork(selector);
 		expect(rendered).toContain("select");
-		expect(rendered).toContain("set as default");
+		expect(rendered).not.toContain("set as default");
+		expect(rendered).not.toContain("ctrl+s");
 		expect(rendered).toContain("cancel");
 	});
 
