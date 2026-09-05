@@ -41,6 +41,7 @@ const packageSources: readonly PackageSource[] = [
 	{ name: "@bastani/mcp", root: join(repositoryRoot, "packages/mcp") },
 	{ name: "@bastani/web-access", root: join(repositoryRoot, "packages/web-access") },
 	{ name: "@bastani/intercom", root: join(repositoryRoot, "packages/intercom") },
+	{ name: "@bastani/feedback", root: join(repositoryRoot, "packages/feedback") },
 ];
 const sourceFilePattern = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 const specifierExtensionPattern = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;

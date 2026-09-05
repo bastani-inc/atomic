@@ -329,6 +329,8 @@ jobs:
             builtin/web-access/index.bundle.mjs \
             builtin/intercom/package.json \
             builtin/intercom/index.bundle.mjs \
+            builtin/feedback/package.json \
+            builtin/feedback/index.bundle.mjs \
             node_modules/@bastani/atomic-natives/package.json \
             node_modules/@bastani/atomic-natives/native/index.js \
             node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
@@ -381,6 +383,8 @@ jobs:
             "builtin/web-access/index.bundle.mjs",
             "builtin/intercom/package.json",
             "builtin/intercom/index.bundle.mjs",
+            "builtin/feedback/package.json",
+            "builtin/feedback/index.bundle.mjs",
             "node_modules/@bastani/atomic-natives/package.json",
             "node_modules/@bastani/atomic-natives/native/index.js",
             "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
