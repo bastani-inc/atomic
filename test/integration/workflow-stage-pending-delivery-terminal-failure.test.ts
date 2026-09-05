@@ -140,7 +140,7 @@ test("a stage whose pending Intercom delivery fails terminally becomes a failed 
 	assert.equal(stage.modelAttempts?.[0]?.success, false);
 	assert.equal(stage.warnings, undefined, "no [fallback] warning blames a model for a delivery failure");
 	assert.match(String(stage.error), /stage "reviewer"/);
-	assert.match(String(stage.error), new RegExp(WARM_UP_EXHAUSTED.replace(/\./g, "\\.")));
+	assert.ok(String(stage.error).includes(WARM_UP_EXHAUSTED));
 
 	const queued = store.pendingStageMessagesFor(result.runId, "reviewer");
 	assert.equal(queued.length, 1, "the steering is not dropped");
