@@ -556,19 +556,24 @@ jobs:
           test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 11
           for file in npm-packages/*.tgz; do
             name=$(tar -xOf "$file" package/package.json | jq -r .name)
+            # List once into a file: `tar -tzf | grep -q` closes the pipe on the first
+            # match, tar dies with "stdout: write error", and pipefail fails the step.
+            listing=$(mktemp)
+            tar -tzf "$file" > "$listing"
             case "$name" in
               @bastani/atomic-natives-linux-x64-musl|@bastani/atomic-natives-linux-arm64-musl|@bastani/atomic-natives-win32-arm64-msvc)
-                tar -tzf "$file" | grep -q '^package/postgres-runtime/bin/'
-                tar -tzf "$file" | grep -q '^package/postgres-runtime/POSTGRESQL-LICENSE$'
-                tar -tzf "$file" | grep -q '^package/postgres-runtime/runtime-provenance.json$'
+                grep -q '^package/postgres-runtime/bin/' "$listing"
+                grep -q '^package/postgres-runtime/POSTGRESQL-LICENSE$' "$listing"
+                grep -q '^package/postgres-runtime/runtime-provenance.json$' "$listing"
                 ;;
               @bastani/atomic-natives-*)
-                if tar -tzf "$file" | grep -q '^package/postgres-runtime/'; then
+                if grep -q '^package/postgres-runtime/' "$listing"; then
                   echo "Unexpected PostgreSQL payload in $name" >&2
                   exit 1
                 fi
                 ;;
             esac
+            rm -f "$listing"
           done
           bun -e '
             const expected = new Set(["@bastani/atomic-natives-darwin-arm64","@bastani/atomic-natives-darwin-x64","@bastani/atomic-natives-linux-arm64-gnu","@bastani/atomic-natives-linux-arm64-musl","@bastani/atomic-natives-linux-x64-gnu","@bastani/atomic-natives-linux-x64-musl","@bastani/atomic-natives-win32-arm64-msvc","@bastani/atomic-natives-win32-x64-msvc"]);
