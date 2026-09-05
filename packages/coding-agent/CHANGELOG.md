@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.18-alpha.7] - 2026-09-05
+
 ### Added
 
 - Fullscreen mouse-wheel scrolling moves five times as far while Alt is held, through the Pi TUI 0.85.1 update ([upstream #9166](https://github.com/earendil-works/pi/pull/9166)).

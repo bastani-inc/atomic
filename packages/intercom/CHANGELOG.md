@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.18-alpha.7] - 2026-09-05
+
 ### Fixed
 
 - Host sessions that join multiple workflow groups retain workflow broadcast and pending-stage routing after reconnecting. Registration now preserves the startup home group instead of treating the most recently joined group as the session's origin; workflow workers still cannot gain another invocation's control authority through joins or reconnects.
