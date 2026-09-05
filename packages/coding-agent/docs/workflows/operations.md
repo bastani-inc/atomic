@@ -561,6 +561,8 @@ The supported explicit recovery route is operator reconciliation followed, if au
 
 Set `ATOMIC_POSTGRES_RUNTIME_DIR` to a complete extracted runtime containing `bin/initdb`, `bin/pg_ctl`, and `bin/postgres` to override packaged runtime discovery, including in air-gapped deployments. Otherwise DBOS/Postgres durability requires no setup on supported local platforms. To use an existing Postgres database, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic; that explicit URL retains precedence over embedded provisioning. Atomic provisions embedded Postgres next (with drop-privilege support when running as root on Linux), then Docker as a platform fallback. The DBOS SDK ships with `@bastani/atomic`. If no durable backend can be provisioned, workflows run on a process-local in-memory backend with a loud non-durable warning — never on the legacy per-workflow file store under `~/.atomic/workflow-durable` — and cross-process resume is unavailable until Postgres provisioning is fixed. Interactive and RPC actions show the warning as a display-only notification that is not added to agent/model context. Print and other headless actions, where no usable UI exists, write the actionable diagnostic to the console instead.
 
+Pending-stage Intercom cleanup checks durable ownership only for runs with messages that need settlement. Repeated failures with the same message produce one warning per extension instance. Interactive hosts receive a display-only notification, never a console stack trace, even if notification delivery fails; headless hosts retain a console diagnostic. Pending messages are not discarded when cleanup fails.
+
 ```bash
 export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
 ```
