@@ -85,6 +85,29 @@ describe("embedded PostgreSQL target policy", () => {
 			/Linux musl architecture riscv64/u,
 		);
 	});
+	test("ordinary targets resolve their native leaves without narrowing legacy host fallback", () => {
+		for (const [platform, arch, suffix] of [
+			["linux", "x64", "linux-x64-gnu"],
+			["linux", "arm64", "linux-arm64-gnu"],
+			["darwin", "x64", "darwin-x64"],
+			["darwin", "arm64", "darwin-arm64"],
+			["win32", "x64", "win32-x64-msvc"],
+		] as const) {
+			assert.equal(
+				resolveEmbeddedPostgresTarget({ platform, arch }).nativeLeafPackageName,
+				`@bastani/atomic-natives-${suffix}`,
+			);
+		}
+		assert.equal(
+			resolveEmbeddedPostgresTarget({ platform: "linux", arch: "ia32", libc: "unknown" }).npmPackageName,
+			"@embedded-postgres/linux-ia32",
+		);
+		assert.equal(
+			resolveEmbeddedPostgresTarget({ platform: "freebsd", arch: "x64" }).npmPackageName,
+			"@embedded-postgres/freebsd-x64",
+		);
+		assert.equal(detectLinuxLibc({ glibcVersionRuntime: "2.39", muslLoaderExists: true }), "glibc");
+	});
 });
 
 describe("embedded PostgreSQL runtime resolution", () => {

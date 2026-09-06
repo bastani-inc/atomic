@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	chmodSync,
 	copyFileSync,
 	existsSync,
 	lstatSync,
@@ -10,8 +11,10 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	realpathSync,
 	rmSync,
+	symlinkSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -23,6 +26,36 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const licenseDirectory = join(scriptDirectory, "postgres-runtime-licenses");
 
 export const POSTGRES_RUNTIME_ARTIFACTS = {
+	"linux-x64": {
+		url: "https://registry.npmjs.org/@embedded-postgres/linux-x64/-/linux-x64-18.4.0-beta.17.tgz",
+		sha256: "795d587bb466423385db256dc81e61f2ee40c9e10efde21e881f3e997dd1bdb2",
+		version: "18.4.0-beta.17",
+		kind: "npm",
+	},
+	"linux-arm64": {
+		url: "https://registry.npmjs.org/@embedded-postgres/linux-arm64/-/linux-arm64-18.4.0-beta.17.tgz",
+		sha256: "5c2c5ba809d0f47d1bebaf46c2ea01e1fe7017beb28618e009016500107f9cea",
+		version: "18.4.0-beta.17",
+		kind: "npm",
+	},
+	"darwin-x64": {
+		url: "https://registry.npmjs.org/@embedded-postgres/darwin-x64/-/darwin-x64-18.4.0-beta.17.tgz",
+		sha256: "cd6fde78af989a5ebb6eb863655471f9536af7d0b0778a729f9e297221a661e7",
+		version: "18.4.0-beta.17",
+		kind: "npm",
+	},
+	"darwin-arm64": {
+		url: "https://registry.npmjs.org/@embedded-postgres/darwin-arm64/-/darwin-arm64-18.4.0-beta.17.tgz",
+		sha256: "1f68ab0148346d99e045a54497f72fa22f487618c97ca70fa373441d1ab1a4d3",
+		version: "18.4.0-beta.17",
+		kind: "npm",
+	},
+	"windows-x64": {
+		url: "https://registry.npmjs.org/@embedded-postgres/windows-x64/-/windows-x64-18.4.0-beta.17.tgz",
+		sha256: "21fc0b0fbf2d7aebbf0472cdab2f6741b39b8156a477daef7dbc52becdb7c6ba",
+		version: "18.4.0-beta.17",
+		kind: "npm",
+	},
 	"linux-x64-musl": {
 		url: "https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-linux-amd64-alpine/18.6.0/embedded-postgres-binaries-linux-amd64-alpine-18.6.0.jar",
 		sha256: "1568b3805c3a3b99b5f4f0d7f6cf16e2a39075462ed47a614bfbabd92508350d",
@@ -49,7 +82,7 @@ export const POSTGRES_RUNTIME_ARTIFACTS = {
 
 const THIRD_PARTY_NOTICE = `This payload includes a PostgreSQL distribution and its bundled runtime libraries.
 
-The Linux Alpine payloads are redistributed from io.zonky.test.postgres and include ICU, OpenSSL, libxml2, libxslt, LZ4, Zstandard, libstdc++, and libgcc components subject to their respective upstream licenses. The Windows payload is redistributed verbatim from @embedded-postgres/windows-x64, includes ICU, OpenSSL, libxml2, libxslt, LZ4, Zstandard, libcurl, libiconv, libintl, and wxWidgets runtime libraries, and runs through Windows 11 ARM64 x64 emulation. See runtime-provenance.json for the exact source artifact. This additive notice does not replace the exact upstream license files included with the payload.
+The Linux Alpine payloads are redistributed from io.zonky.test.postgres and include ICU, OpenSSL, libxml2, libxslt, LZ4, Zstandard, libstdc++, and libgcc components subject to their respective upstream licenses. The glibc Linux and macOS payloads are redistributed from @embedded-postgres and include their bundled libraries and licenses. The Windows payload is redistributed verbatim from @embedded-postgres/windows-x64, includes ICU, OpenSSL, libxml2, libxslt, LZ4, Zstandard, libcurl, libiconv, libintl, and wxWidgets runtime libraries, and uses Windows 11 ARM64 x64 emulation only on ARM64. See runtime-provenance.json for the exact source artifact. This additive notice does not replace the exact upstream license files included with the payload.
 `;
 
 function digest(path) {
@@ -117,12 +150,17 @@ export async function download(
 
 function copyTree(source, destination) {
 	const stat = lstatSync(source);
+	if (stat.isSymbolicLink()) {
+		symlinkSync(readlinkSync(source), destination);
+		return;
+	}
 	if (stat.isDirectory()) {
 		mkdirSync(destination, { recursive: true });
 		for (const name of readdirSync(source)) copyTree(join(source, name), join(destination, name));
 		return;
 	}
 	copyFileSync(source, destination);
+	chmodSync(destination, stat.mode & 0o777);
 }
 
 function replaceSymlinksWithManifest(root, directory, manifest) {
@@ -151,25 +189,49 @@ function addPayloadToPackageFiles(packageRoot) {
 }
 function validatePostgresArchitecture(target, postgresPath) {
 	const binary = readFileSync(postgresPath);
-	if (target === "windows-arm64") {
+	if (target.startsWith("windows-")) {
 		if (binary.length < 0x40 || binary.toString("ascii", 0, 2) !== "MZ") {
-			throw new Error("Windows ARM64 payload postgres.exe is not a PE executable");
+			throw new Error(`${target} payload is not a PE executable`);
 		}
 		const peOffset = binary.readUInt32LE(0x3c);
-		if (binary.toString("binary", peOffset, peOffset + 4) !== "PE\0\0") {
-			throw new Error("Windows ARM64 payload postgres.exe has no PE signature");
+		if (peOffset + 6 > binary.length || binary.toString("binary", peOffset, peOffset + 4) !== "PE\0\0") {
+			throw new Error(`${target} payload has no PE signature`);
 		}
 		const machine = binary.readUInt16LE(peOffset + 4);
 		if (machine !== 0x8664)
-			throw new Error(`Windows ARM64 payload PostgreSQL must be x64 PE (received 0x${machine.toString(16)})`);
+			throw new Error(`${target} payload PostgreSQL must be x64 PE (received 0x${machine.toString(16)})`);
 		return;
 	}
-	if (binary.length < 20 || binary.toString("hex", 0, 4) !== "7f454c46") {
-		throw new Error(`${target} payload postgres is not an ELF executable`);
+	if (target.startsWith("darwin-")) {
+		const expectedCpu = target.endsWith("x64") ? 0x01000007 : 0x0100000c;
+		if (binary.length >= 8 && binary.readUInt32LE(0) === 0xfeedfacf && binary.readUInt32LE(4) === expectedCpu) return;
+		// Upstream macOS packages contain universal binaries. Require a real matching slice.
+		if (binary.length >= 8 && binary.readUInt32BE(0) === 0xcafebabe) {
+			const count = binary.readUInt32BE(4);
+			for (let i = 0; i < count && 8 + (i + 1) * 20 <= binary.length; i += 1) {
+				const offset = binary.readUInt32BE(8 + i * 20 + 8);
+				const size = binary.readUInt32BE(8 + i * 20 + 12);
+				if (
+					size >= 8 &&
+					offset + size <= binary.length &&
+					binary.readUInt32LE(offset) === 0xfeedfacf &&
+					binary.readUInt32LE(offset + 4) === expectedCpu
+				)
+					return;
+			}
+		}
+		throw new Error(`${target} payload does not contain the expected Mach-O CPU`);
 	}
-	const expectedMachine = target === "linux-x64-musl" ? 62 : 183;
+	if (binary.length < 20 || binary.toString("hex", 0, 4) !== "7f454c46" || binary[4] !== 2 || binary[5] !== 1) {
+		throw new Error(`${target} payload postgres is not a little-endian ELF64 executable`);
+	}
+	const expectedMachine = target.includes("x64") ? 62 : 183;
 	const machine = binary.readUInt16LE(18);
-	const expectedLoader = target === "linux-x64-musl" ? "/lib/ld-musl-x86_64.so.1" : "/lib/ld-musl-aarch64.so.1";
+	const expectedLoader = target.endsWith("musl")
+		? `/lib/ld-musl-${target.includes("x64") ? "x86_64" : "aarch64"}.so.1`
+		: target.includes("x64")
+			? "/lib64/ld-linux-x86-64.so.2"
+			: "/lib/ld-linux-aarch64.so.1";
 	if (machine !== expectedMachine || !binary.includes(Buffer.from(expectedLoader))) {
 		throw new Error(
 			`${target} payload does not match ELF machine ${expectedMachine} and interpreter ${expectedLoader}`,
@@ -207,13 +269,87 @@ function writeLicensesAndProvenance(destination, target, artifact, upstreamLicen
 	);
 }
 
+function runtimePath(root, path) {
+	if (
+		typeof path !== "string" ||
+		path.length === 0 ||
+		path.startsWith("/") ||
+		path.includes("\\") ||
+		path.includes(":") ||
+		path.split("/").some((part) => part === ".." || part === ".")
+	) {
+		throw new Error(`invalid runtime path: ${path}`);
+	}
+	return join(root, path);
+}
+
+function validatePayload(root, target) {
+	const suffix = target.startsWith("windows-") ? ".exe" : "";
+	for (const name of ["postgres", "initdb", "pg_ctl"]) {
+		const path = join(root, "bin", `${name}${suffix}`);
+		if (!existsSync(path)) throw new Error(`staged artifact is missing bin/${name}${suffix}`);
+		validatePostgresArchitecture(target, path);
+		if (!suffix) chmodSync(path, lstatSync(path).mode | 0o555);
+	}
+	if (!existsSync(join(root, "lib")) || readdirSync(join(root, "lib")).length === 0)
+		throw new Error("runtime is missing libraries");
+	if (!["share/postgres.bki", "share/postgresql/postgres.bki"].some((path) => existsSync(join(root, path))))
+		throw new Error("runtime is missing cluster catalog postgres.bki");
+	const links = JSON.parse(readFileSync(join(root, "pg-symlinks.json"), "utf8"));
+	const targets = new Map();
+	for (const { source, target: link } of links) {
+		const sourcePath = runtimePath(root, source);
+		runtimePath(root, link);
+		if (!existsSync(sourcePath) || !lstatSync(sourcePath).isFile()) throw new Error(`missing link source: ${source}`);
+		if (targets.has(link) && targets.get(link) !== source) throw new Error(`conflicting runtime link: ${link}`);
+		targets.set(link, source);
+	}
+}
+
+/** Producer-only validation; deliberately not applied to user/legacy runtime overrides. */
+export function validatePostgresRuntime(root, target, artifact = POSTGRES_RUNTIME_ARTIFACTS[target]) {
+	if (!Object.hasOwn(POSTGRES_RUNTIME_ARTIFACTS, target))
+		throw new Error(`unsupported PostgreSQL runtime target: ${target}`);
+	validatePayload(root, target);
+	const provenance = JSON.parse(readFileSync(join(root, "runtime-provenance.json"), "utf8"));
+	if (
+		provenance.target !== target ||
+		provenance.sha256 !== artifact.sha256 ||
+		provenance.upstreamUrl !== artifact.url ||
+		provenance.upstreamVersion !== artifact.version ||
+		provenance.emulated !== (target === "windows-arm64")
+	)
+		throw new Error(`runtime provenance mismatch for ${target}`);
+	for (const name of [
+		"POSTGRESQL-LICENSE",
+		"THIRD-PARTY-NOTICE",
+		artifact.kind === "zonky" ? "ZONKY-APACHE-2.0-LICENSE" : "EMBEDDED-POSTGRES-UPSTREAM-LICENSE.md",
+	]) {
+		if (!readFileSync(join(root, name)).length) throw new Error(`empty runtime license: ${name}`);
+	}
+	const inventory = JSON.parse(readFileSync(join(root, "payload-files.json"), "utf8"));
+	if (inventory.length === 0) throw new Error("empty runtime inventory");
+	for (const { path, sha256 } of inventory) {
+		if (digest(runtimePath(root, path)) !== sha256) throw new Error(`runtime file checksum mismatch: ${path}`);
+	}
+}
+
+function payloadInventory(root, directory = root) {
+	return readdirSync(directory).flatMap((name) => {
+		const path = join(directory, name);
+		return lstatSync(path).isDirectory()
+			? payloadInventory(root, path)
+			: [{ path: relative(root, path).split("\\").join("/"), sha256: digest(path) }];
+	});
+}
 export async function stagePostgresRuntime({
 	target,
 	packageRoot,
 	artifactFile,
 	artifact = POSTGRES_RUNTIME_ARTIFACTS[target],
 }) {
-	if (artifact === undefined) throw new Error(`unsupported PostgreSQL runtime target: ${target}`);
+	if (!Object.hasOwn(POSTGRES_RUNTIME_ARTIFACTS, target) || artifact === undefined)
+		throw new Error(`unsupported PostgreSQL runtime target: ${target}`);
 	const work = mkdtempSync(join(tmpdir(), "atomic-postgres-runtime-"));
 	try {
 		const archive = join(work, basename(new URL(artifact.url).pathname));
@@ -243,24 +379,28 @@ export async function stagePostgresRuntime({
 			run("tar", ["-xzf", basename(archive), "-C", "."], { cwd: work });
 			const packageDirectory = join(work, "package");
 			const native = join(packageDirectory, "native");
-			if (!existsSync(native)) throw new Error("Windows artifact is missing package/native");
+			if (!existsSync(native)) throw new Error("artifact is missing package/native");
 			for (const name of readdirSync(native)) copyTree(join(native, name), join(extracted, name));
 			const license = join(packageDirectory, "LICENSE.md");
-			if (existsSync(license)) upstreamLicense = license;
+			if (!existsSync(license)) throw new Error("artifact is missing upstream LICENSE.md");
+			upstreamLicense = license;
 		}
 
-		const suffix = target === "windows-arm64" ? ".exe" : "";
-		for (const binary of ["postgres", "initdb", "pg_ctl"]) {
-			if (!existsSync(join(extracted, "bin", `${binary}${suffix}`))) {
-				throw new Error(`staged artifact is missing bin/${binary}${suffix}`);
-			}
-		}
-		validatePostgresArchitecture(target, join(extracted, "bin", `postgres${suffix}`));
-		const symlinks = [];
+		// Validate all entrypoints, not just postgres: a mixed payload must fail here.
+		const manifestPath = join(extracted, "pg-symlinks.json");
+		const symlinks = existsSync(manifestPath)
+			? JSON.parse(readFileSync(manifestPath, "utf8")).map(({ source, target }) => ({
+					source: source.replace(/^native\//u, ""),
+					target: target.replace(/^native\//u, ""),
+				}))
+			: [];
 		replaceSymlinksWithManifest(extracted, extracted, symlinks);
 		symlinks.sort((left, right) => left.target.localeCompare(right.target));
 		writeFileSync(join(extracted, "pg-symlinks.json"), `${JSON.stringify(symlinks, null, 2)}\n`);
 		writeLicensesAndProvenance(extracted, target, artifact, upstreamLicense);
+		validatePayload(extracted, target);
+		writeFileSync(join(extracted, "payload-files.json"), `${JSON.stringify(payloadInventory(extracted), null, 2)}\n`);
+		validatePostgresRuntime(extracted, target, artifact);
 
 		const destination = join(resolve(packageRoot), "postgres-runtime");
 		rmSync(destination, { recursive: true, force: true });
@@ -277,6 +417,10 @@ async function main(args) {
 	const [target, packageRoot, ...rest] = args;
 	if (!target || !packageRoot) {
 		throw new Error("usage: stage-postgres-runtime.mjs <target> <native-package-root> [--artifact <path>]");
+	}
+	if (rest.includes("--validate")) {
+		validatePostgresRuntime(join(resolve(packageRoot), "postgres-runtime"), target);
+		return;
 	}
 	const artifactIndex = rest.indexOf("--artifact");
 	await stagePostgresRuntime({

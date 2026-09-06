@@ -157,9 +157,11 @@ export async function configureDbosDurableBackend(config?: {
 }
 
 export async function importDbosSdk(): Promise<DbosStatic> {
-	const spec = "@dbos-inc/dbos-sdk";
 	try {
-		const mod = await import(spec);
+		// Keep a literal lazy import so builtin bundling includes the SDK and its
+		// transitive JS dependencies. Compiled Bun cannot load unregistered bare
+		// imports (including the SDK's ESM dependencies) from disk builtins.
+		const mod = await import("@dbos-inc/dbos-sdk");
 		const dbos = (mod as { readonly DBOS?: DbosStatic }).DBOS;
 		if (dbos === undefined) throw new Error("@dbos-inc/dbos-sdk did not export DBOS");
 		return dbos;

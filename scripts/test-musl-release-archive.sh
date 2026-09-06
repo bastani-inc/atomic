@@ -80,16 +80,35 @@ cp -R "$source_runtime" "$runtime"
 awk -F '"' '/"source":/{source=$4} /"target":/{print source " " $4}' "$runtime/pg-symlinks.json" |
     while read -r source target; do cp "$runtime/$source" "$runtime/$target"; done
 data=/tmp/atomic-postgres-smoke
-"$runtime/bin/initdb" -D "$data" --auth=trust --no-locale >/tmp/initdb.log
+"$runtime/bin/initdb" -D "$data" -U postgres --auth=trust --no-locale >/tmp/initdb.log
 "$runtime/bin/pg_ctl" -D "$data" -o "-h 127.0.0.1 -p 55439" -w start
 trap '"$runtime/bin/pg_ctl" -D "$data" -m fast -w stop >/dev/null 2>&1 || true' EXIT
 # PostgreSQL's SSLRequest handshake proves a real protocol connection without
 # adding a client package to the deliberately minimal Zonky runtime.
 response=$(printf '\000\000\000\010\004\322\026\057' | nc -w 3 127.0.0.1 55439 | head -c 1)
 test "$response" = N
+# A trust-authenticated v3 protocol client using only stock BusyBox. Pipeline
+# startup, query and terminate; the server processes them in wire order.
+query() {
+    sql="$1"
+    length=$((${#sql} + 5))
+    {
+        printf '\000\000\000\051\000\003\000\000user\000postgres\000database\000postgres\000\000'
+        printf 'Q\000\000\000'
+        printf "\\$(printf '%03o' "$length")"
+        printf '%s\000' "$sql"
+        printf 'X\000\000\000\004'
+    } | nc -w 3 127.0.0.1 55439
+}
+query "CREATE TABLE atomic_durability_probe (value text); INSERT INTO atomic_durability_probe VALUES ('persisted-row')" > /tmp/insert.out
+"$runtime/bin/pg_ctl" -D "$data" -m fast -w stop
+"$runtime/bin/pg_ctl" -D "$data" -o "-h 127.0.0.1 -p 55439" -w start
+query "SELECT value FROM atomic_durability_probe" > /tmp/select.out
+grep -aq 'persisted-row' /tmp/select.out
 "$runtime/bin/pg_ctl" -D "$data" -m fast -w stop
 trap - EXIT
 echo "embedded PostgreSQL initdb/start/connect/shutdown succeeded"
+echo "SQL insert/restart/persisted row/final owned stop succeeded"
 SMOKE
 chmod +x "$workspace/postgres-smoke.sh"
 chmod -R a+rX "$workspace"

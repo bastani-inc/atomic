@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Whole-run pause/interrupt during initialization or between-node awaits now retain the same live executor for explicit resume instead of becoming quit. Later tracked work, cached replay, and completion wait for resume; untracked JavaScript or I/O may still finish. Executor-only quit retires the owner, and zero-progress quits remain nonresumable. Cross-process resume still requires durable progress.
 - Executor-only whole-run pause now holds already-live nested child owners as well, preventing their next tracked step or completion until resume. Descendants remain held while the root's durable resume is acknowledged; child-scoped controls preserve sibling isolation.
 - Preserved the original selected tool failure when cancellation arrives later, restored closed-admission errors for retained tool calls, and drained cancelled child boundaries before the parent returns. Durable resume replaces abandoned detached executors without replacing surviving live paused owners.
+- Fixed embedded PostgreSQL discovery in Bun-compiled installations and ordinary native npm leaves, including nested installs, while retaining explicit database/runtime overrides and legacy package fallback.
 
 ## [0.9.18] - 2026-09-05
 

@@ -1,4 +1,12 @@
-export type PostgresRuntimeTarget = "linux-x64-musl" | "linux-arm64-musl" | "windows-arm64";
+export type PostgresRuntimeTarget =
+	| "linux-x64"
+	| "linux-arm64"
+	| "linux-x64-musl"
+	| "linux-arm64-musl"
+	| "darwin-x64"
+	| "darwin-arm64"
+	| "windows-x64"
+	| "windows-arm64";
 
 export interface ZonkyPostgresArtifact {
 	url: string;
@@ -16,7 +24,14 @@ export interface WindowsEmulatedPostgresArtifact {
 	kind: "windows-x64-emulated";
 }
 
-export type PostgresRuntimeArtifact = ZonkyPostgresArtifact | WindowsEmulatedPostgresArtifact;
+export interface NpmPostgresArtifact {
+	url: string;
+	sha256: string;
+	version: string;
+	kind: "npm";
+}
+
+export type PostgresRuntimeArtifact = ZonkyPostgresArtifact | WindowsEmulatedPostgresArtifact | NpmPostgresArtifact;
 
 export const POSTGRES_RUNTIME_ARTIFACTS: Record<PostgresRuntimeTarget, PostgresRuntimeArtifact>;
 
@@ -37,3 +52,10 @@ export function stagePostgresRuntime(options: {
 	artifactFile?: string;
 	artifact?: PostgresRuntimeArtifact;
 }): Promise<string>;
+
+/** Validate a produced runtime, including its pinned provenance and complete file inventory. */
+export function validatePostgresRuntime(
+	root: string,
+	target: PostgresRuntimeTarget,
+	artifact?: PostgresRuntimeArtifact,
+): void;

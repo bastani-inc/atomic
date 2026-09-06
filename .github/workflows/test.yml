@@ -347,6 +347,7 @@ jobs:
           rm -rf "$smoke_dir"
           mkdir -p "$smoke_dir"
           tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$smoke_dir"
+          node scripts/smoke-postgres-runtime.mjs "$smoke_dir/atomic/node_modules/@bastani/atomic-natives" linux-x64
           "$smoke_dir/atomic/atomic" --version
           bun run scripts/assert-builtin-set.ts "$smoke_dir/atomic/builtin"
           for required_path in \
@@ -395,6 +396,8 @@ jobs:
           Remove-Item -Recurse -Force $smokeDir -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $smokeDir | Out-Null
           Expand-Archive -Path packages/coding-agent/binaries/atomic-windows-x64.zip -DestinationPath $smokeDir
+          node scripts/smoke-postgres-runtime.mjs (Join-Path $smokeDir "node_modules/@bastani/atomic-natives") windows-x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $atomic = Join-Path $smokeDir "atomic.exe"
           & $atomic --version
           if ($LASTEXITCODE -ne 0) {

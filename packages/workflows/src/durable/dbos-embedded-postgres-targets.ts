@@ -66,9 +66,20 @@ export function resolveEmbeddedPostgresTarget(host: EmbeddedPostgresHost): Embed
 
 	const platform = host.platform === "win32" ? "windows" : host.platform;
 	const id = `${platform}-${host.arch}`;
+	const nativeSuffix =
+		host.arch === "x64" || host.arch === "arm64"
+			? host.platform === "linux"
+				? `linux-${host.arch}-gnu`
+				: host.platform === "darwin"
+					? id
+					: host.platform === "win32"
+						? `win32-${host.arch}-msvc`
+						: undefined
+			: undefined;
 	return {
 		id,
 		bundledDirectory: id,
+		nativeLeafPackageName: nativeSuffix === undefined ? undefined : `@bastani/atomic-natives-${nativeSuffix}`,
 		npmPackageName: `@embedded-postgres/${id}`,
 		emulated: false,
 	};

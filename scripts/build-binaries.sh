@@ -317,21 +317,6 @@ atomic_native_filename() {
     esac
 }
 
-# The @embedded-postgres leaf that can actually run on each archive. `embedded-postgres`
-# publishes no arm64 Windows package, so windows-arm64 names one that never matches and
-# every leaf is pruned.
-embedded_postgres_package_name() {
-    case "$1" in
-        darwin-arm64) echo "darwin-arm64" ;;
-        darwin-x64) echo "darwin-x64" ;;
-        linux-x64) echo "linux-x64" ;;
-        linux-arm64) echo "linux-arm64" ;;
-        windows-x64) echo "windows-x64" ;;
-        windows-arm64) echo "windows-arm64" ;;
-        *) echo "Unknown platform: $1" >&2; return 1 ;;
-    esac
-}
-
 esbuild_package_name() {
     case "$1" in
         darwin-arm64) echo "darwin-arm64" ;;
@@ -428,6 +413,8 @@ stage_musl_runtime() {
     cp -L "$MUSL_RUNTIME_STAGE_DIR/usr/lib/libstdc++.so.6" "$payload_dir/lib/libstdc++.so.6"
 
     local patched_count=0
+    # PostgreSQL already carries its own C++ libraries and relative search paths.
+    # Keep its verified bytes identical to the scriptless npm runtime.
     while IFS= read -r -d '' elf_file; do
         local needed
         if ! needed="$(patchelf --print-needed "$elf_file" 2>/dev/null)"; then
@@ -457,7 +444,7 @@ stage_musl_runtime() {
         esac
         patchelf --set-rpath "$next_rpath" "$elf_file"
         patched_count=$((patched_count + 1))
-    done < <(find "$payload_dir" -type f \( -path "$payload_dir/atomic" -o -name '*.node' -o -name '*.so' -o -name '*.so.*' \) -print0)
+    done < <(find "$payload_dir" -type f ! -path "$payload_dir/node_modules/@bastani/atomic-natives/postgres-runtime/*" \( -path "$payload_dir/atomic" -o -name '*.node' -o -name '*.so' -o -name '*.so.*' \) -print0)
 
     [[ "$patched_count" -gt 0 ]] || {
         echo "No musl payload ELF declared libgcc_s.so.1 or libstdc++.so.6: $platform" >&2
@@ -511,25 +498,11 @@ for platform in "${PLATFORMS[@]}"; do
     else
         echo "==> esbuild native package unavailable for $platform (--skip-deps)"
     fi
-    if [[ "$platform" == linux-*-musl ]]; then
-        # npm's Linux leaves contain glibc binaries. Musl archives instead receive
-        # the checksum-pinned Zonky Alpine runtime in the native package below.
-        rm -rf "binaries/$platform/node_modules/@embedded-postgres"
-    else
-        # Every archive is built on one runner, so the shared runtime copy carries that
-        # runner's @embedded-postgres binary into all of them. Keep only the leaf that
-        # matches this archive. Windows ARM64 receives its x64-emulated tree below.
-        embedded_postgres_leaf="$(embedded_postgres_package_name "$platform")"
-        embedded_postgres_dir="binaries/$platform/node_modules/@embedded-postgres"
-        if [ -d "$embedded_postgres_dir" ]; then
-            find "$embedded_postgres_dir" -mindepth 1 -maxdepth 1 -type d ! -name "$embedded_postgres_leaf" -exec rm -rf {} +
-        fi
-    fi
-
-    if [[ "$platform" == linux-*-musl || "$platform" == windows-arm64 ]]; then
-        echo "==> Staging embedded PostgreSQL runtime for $platform..."
-        node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives"
-    fi
+    # Acquire by archive target, never by the optional packages installed on this host.
+    # Compiled builtins resolve this filesystem payload without a bare JS import.
+    rm -rf "binaries/$platform/node_modules/@embedded-postgres"
+    echo "==> Staging embedded PostgreSQL runtime for $platform..."
+    node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives"
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
     find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
     atomic_native="$(atomic_native_filename "$platform")"
@@ -548,6 +521,7 @@ for platform in "${PLATFORMS[@]}"; do
         echo "==> Bundling musl C++ runtime for $platform..."
         stage_musl_runtime "$platform" "binaries/$platform"
     fi
+    node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives" --validate
 
     # Last gate before the archive is created: no package staged here may declare a platform
     # this archive cannot run. Atomic 0.9.12 shipped @esbuild/linux-x64 in the arm64 archives.
