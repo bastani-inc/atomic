@@ -256,6 +256,16 @@ export class StageSessionController {
 	private pendingCreationResumeMessage: string | undefined;
 	private readonly messageAdmission = new StageMessageAdmission();
 	private readonly deliveryActivity = new StageDeliveryActivity();
+	private outputStarts = new WeakMap<StageSessionRuntime, number>();
+
+	beginOutputGeneration(): void {
+		this.outputStarts = new WeakMap();
+	}
+
+	outputGenerationMessages(): StageSessionRuntime["messages"] {
+		if (!this.session) return [];
+		return this.session.messages.slice(this.outputStarts.get(this.session) ?? this.session.messages.length);
+	}
 
 	constructor(
 		private readonly opts: StageRunnerOpts,
@@ -1376,6 +1386,7 @@ export class StageSessionController {
 				continue;
 			}
 			const promptStartIndex = activeSession.messages.length;
+			if (!this.outputStarts.has(activeSession)) this.outputStarts.set(activeSession, promptStartIndex);
 			this.lastPromptStartIndex = promptStartIndex;
 			this.unresolvedContextOverflowMessage = undefined;
 			try {

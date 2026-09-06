@@ -25,6 +25,18 @@ export function extractMessageText(message: AgentSession["messages"][number]): s
 	return "";
 }
 
+/** Completed answers in one output generation; tool progress remains transcript-only. */
+export function assistantArtifactTextForGeneration(messages: AgentSession["messages"]): string {
+	const answers = messages.flatMap((message) => {
+		if (message.role !== "assistant") return [];
+		if (message.stopReason !== "stop" && message.stopReason !== "length") return [];
+		if (message.content.some((block) => block.type === "toolCall")) return [];
+		const text = extractMessageText(message);
+		return text.length > 0 ? [text] : [];
+	});
+	return answers.map((text, index) => (index === 0 ? text : `\n\n## Supplement ${index}\n\n${text}`)).join("");
+}
+
 export function lastAssistantTextFromMessages(messages: AgentSession["messages"]): string | undefined {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index];
