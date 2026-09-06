@@ -572,6 +572,8 @@ Set `ATOMIC_POSTGRES_RUNTIME_DIR` to a complete extracted runtime containing `bi
 
 Packaged payloads include the complete library/share trees, executable modes, scriptless library-link metadata, licenses, and `runtime-provenance.json`. Release packaging rejects missing files, checksum failures, and mismatched CPU/libc/target payloads before shipping. Keep the whole extracted installation when moving an archive; copying only the `atomic` executable is insufficient. `ATOMIC_POSTGRES_RUNTIME_DIR` continues to accept complete legacy runtime directories without provenance, and an incomplete override falls through to installed candidates. A packaging failure does not require deleting or reinitializing your existing v18 cluster.
 
+The producer validates `payload-files.json` against the complete packaged file set and checks its digest recorded in provenance, detecting added files and inventory-entry removals as well as changed bytes. These checks detect packaging corruption; they are not a signature or proof of authenticity. Release smoke checks retain the same startup and SQL deadlines, capture child-command output in files so inherited Windows handles cannot hold a pipe open, and retry only confirmed port collisions (up to three attempts, with owned-cluster cleanup before retry).
+
 Pending-stage Intercom cleanup checks durable ownership only for runs with messages that need settlement. Repeated failures with the same message produce one warning per extension instance. Interactive hosts receive a display-only notification, never a console stack trace, even if notification delivery fails; headless hosts retain a console diagnostic. Pending messages are not discarded when cleanup fails.
 
 ```bash

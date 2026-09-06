@@ -189,9 +189,14 @@ test("musl C++ relocation leaves the self-contained PostgreSQL payload checksums
 		mkdirSync(join(payload, "node_modules/@bastani/atomic-natives/postgres-runtime/lib"), { recursive: true });
 		writeFileSync(pgLib, "pinned postgres library");
 		writeFileSync(join(payload, "binding.node"), "binding");
-		const selected = spawnSyncCollect(["bash", "-c", selection], { env: { ...process.env, payload_dir: payload } });
+		// Production passes a shell-relative binaries/$platform path. Passing a
+		// native Windows path instead makes find treat backslashes as glob escapes.
+		const selected = spawnSyncCollect(["bash", "-c", selection], {
+			cwd: payload,
+			env: { ...process.env, payload_dir: "." },
+		});
 		assert.equal(selected.exitCode, 0, selected.stderr.toString());
-		assert.deepEqual(selected.stdout.toString().split("\0").filter(Boolean), [join(payload, "binding.node")]);
+		assert.deepEqual(selected.stdout.toString().split("\0").filter(Boolean), ["./binding.node"]);
 	} finally {
 		rmSync(payload, { recursive: true, force: true });
 	}

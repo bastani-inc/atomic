@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 // Executable release gate: only the supplied package's runtime may back this cluster.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import pg from "pg";
+import { runSmokeCommand, startOnAvailablePort } from "./smoke-postgres-process.mjs";
 import { validatePostgresRuntime } from "./stage-postgres-runtime.mjs";
 
 const [packagePath, target] = process.argv.slice(2);
@@ -25,13 +24,25 @@ const env = { ...process.env, HOME: work, USERPROFILE: work };
 delete env.DBOS_SYSTEM_DATABASE_URL;
 delete env.ATOMIC_POSTGRES_RUNTIME_DIR;
 function command(path, args) {
-	return execFileSync(path, args, {
-		cwd: work,
-		env,
-		encoding: "utf8",
-		timeout: 30_000,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	return runSmokeCommand(path, args, { cwd: work, env });
+}
+function stop(allowStopped = false) {
+	try {
+		command(binaries.pg_ctl, ["-D", data, "-m", "fast", "-w", "-t", "20", "stop"]);
+	} catch (error) {
+		if (!allowStopped) throw error;
+		try {
+			command(binaries.pg_ctl, ["-D", data, "status"]);
+		} catch (statusError) {
+			// pg_ctl status 3 confirms this initialized, privately owned cluster is down.
+			if (!statusError.code && statusError.status === 3) {
+				started = false;
+				return;
+			}
+		}
+		throw error;
+	}
+	started = false;
 }
 try {
 	const modulePath = join(work, "resolver.mjs");
@@ -65,32 +76,31 @@ try {
 	assert.match(command(binaries.postgres, ["--version"]), /PostgreSQL\) 18\./u);
 	command(binaries.initdb, ["-D", data, "-U", "postgres", "--auth=trust", "--no-locale", "--encoding=UTF8"]);
 	assert.equal(readFileSync(join(data, "PG_VERSION"), "utf8").trim(), "18");
-	const listener = createServer();
-	await new Promise((done, reject) => {
-		listener.once("error", reject);
-		listener.listen(0, "127.0.0.1", done);
-	});
-	const port = listener.address().port;
-	await new Promise((done) => listener.close(done));
-	const start = () => {
+	let port;
+	let starts = 0;
+	const start = (candidate) => {
+		// A fresh log prevents a previous collision from masking a later real failure.
+		const log = join(work, `postgres-${++starts}.log`);
 		// Set ownership intent before start so a partially successful command is cleaned up.
 		started = true;
-		command(binaries.pg_ctl, [
-			"-D",
-			data,
-			"-l",
-			join(work, "postgres.log"),
-			"-o",
-			`-h 127.0.0.1 -p ${port}`,
-			"-w",
-			"-t",
-			"20",
-			"start",
-		]);
-	};
-	const stop = () => {
-		command(binaries.pg_ctl, ["-D", data, "-m", "fast", "-w", "-t", "20", "stop"]);
-		started = false;
+		try {
+			command(binaries.pg_ctl, [
+				"-D",
+				data,
+				"-l",
+				log,
+				"-o",
+				`-h 127.0.0.1 -p ${candidate}`,
+				"-w",
+				"-t",
+				"20",
+				"start",
+			]);
+		} catch (error) {
+			error.postgresLog = existsSync(log) ? readFileSync(log, "utf8") : "";
+			error.message += `\n${error.postgresLog}`;
+			throw error;
+		}
 	};
 	const query = async (sql) => {
 		const client = new pg.Client({
@@ -107,12 +117,12 @@ try {
 			await client.end();
 		}
 	};
-	start();
+	port = await startOnAvailablePort(start, () => stop(true));
 	await query(
 		"CREATE TABLE atomic_durability_probe (value text); INSERT INTO atomic_durability_probe VALUES ('persisted across restart')",
 	);
 	stop();
-	start();
+	port = await startOnAvailablePort(start, () => stop(true));
 	assert.deepEqual((await query("SELECT value FROM atomic_durability_probe")).rows, [
 		{ value: "persisted across restart" },
 	]);
@@ -121,8 +131,7 @@ try {
 } finally {
 	if (started && binaries) {
 		try {
-			command(binaries.pg_ctl, ["-D", data, "-m", "fast", "-w", "-t", "20", "stop"]);
-			started = false;
+			stop(true);
 		} catch (error) {
 			console.error(`Owned cluster cleanup failed; retained at ${work}: ${error.message}`);
 		}

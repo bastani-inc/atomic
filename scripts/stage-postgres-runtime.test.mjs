@@ -278,6 +278,7 @@ test("staging records symlinks and copies exact licenses and provenance", async 
 		sha256: fixture.artifact.sha256,
 		innerEntry: fixture.artifact.innerEntry,
 		innerSha256: fixture.artifact.innerSha256,
+		payloadInventorySha256: sha256(join(runtime, "payload-files.json")),
 		emulated: false,
 	});
 });
@@ -599,4 +600,52 @@ test("every archive assembly replaces host optional leaves with a complete targe
 			fixture.artifact,
 		);
 	}
+});
+
+test("runtime validation rejects an untracked library", async () => {
+	const root = temporaryDirectory("atomic-pg-inventory-extra-");
+	const fixture = npmArtifact(root, "linux-x64");
+	const runtime = await stagePostgresRuntime({
+		target: "linux-x64",
+		packageRoot: packageDirectory(root),
+		artifactFile: fixture.path,
+		artifact: fixture.artifact,
+	});
+	validatePostgresRuntime(runtime, "linux-x64", fixture.artifact);
+	writeFileSync(join(runtime, "lib", "unexpected.so"), "untracked library");
+	assert.throws(() => validatePostgresRuntime(runtime, "linux-x64", fixture.artifact), /inventory/u);
+});
+
+test("runtime validation rejects a removed library even when its inventory entry is removed too", async () => {
+	const root = temporaryDirectory("atomic-pg-inventory-omission-");
+	const fixture = npmArtifact(root, "linux-x64", (native) => {
+		writeFileSync(join(native, "lib", "required.so"), "required library without links");
+	});
+	const runtime = await stagePostgresRuntime({
+		target: "linux-x64",
+		packageRoot: packageDirectory(root),
+		artifactFile: fixture.path,
+		artifact: fixture.artifact,
+	});
+	validatePostgresRuntime(runtime, "linux-x64", fixture.artifact);
+	rmSync(join(runtime, "lib", "required.so"));
+	const inventoryPath = join(runtime, "payload-files.json");
+	const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
+	writeFileSync(inventoryPath, JSON.stringify(inventory.filter(({ path }) => path !== "lib/required.so")));
+	assert.throws(() => validatePostgresRuntime(runtime, "linux-x64", fixture.artifact), /inventory checksum/u);
+});
+
+test("runtime validation still rejects altered provenance outside the inventory digest", async () => {
+	const root = temporaryDirectory("atomic-pg-provenance-tamper-");
+	const fixture = npmArtifact(root, "linux-x64");
+	const runtime = await stagePostgresRuntime({
+		target: "linux-x64",
+		packageRoot: packageDirectory(root),
+		artifactFile: fixture.path,
+		artifact: fixture.artifact,
+	});
+	const path = join(runtime, "runtime-provenance.json");
+	const provenance = JSON.parse(readFileSync(path, "utf8"));
+	writeFileSync(path, JSON.stringify({ ...provenance, innerSha256: "unexpected digest" }));
+	assert.throws(() => validatePostgresRuntime(runtime, "linux-x64", fixture.artifact), /provenance mismatch/u);
 });

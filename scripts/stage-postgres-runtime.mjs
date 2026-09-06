@@ -247,6 +247,11 @@ function writeLicensesAndProvenance(destination, target, artifact, upstreamLicen
 		copyFileSync(upstreamLicense, join(destination, "EMBEDDED-POSTGRES-UPSTREAM-LICENSE.md"));
 	}
 	writeFileSync(join(destination, "THIRD-PARTY-NOTICE"), THIRD_PARTY_NOTICE);
+	// The inventory cannot hash itself or the provenance that seals its digest.
+	writeFileSync(
+		join(destination, "payload-files.json"),
+		`${JSON.stringify(payloadInventory(destination), null, 2)}\n`,
+	);
 	writeFileSync(
 		join(destination, "runtime-provenance.json"),
 		`${JSON.stringify(
@@ -257,6 +262,7 @@ function writeLicensesAndProvenance(destination, target, artifact, upstreamLicen
 				sha256: artifact.sha256,
 				innerEntry: artifact.innerEntry,
 				innerSha256: artifact.innerSha256,
+				payloadInventorySha256: digest(join(destination, "payload-files.json")),
 				emulated: artifact.kind === "windows-x64-emulated",
 				emulation:
 					artifact.kind === "windows-x64-emulated"
@@ -317,6 +323,10 @@ export function validatePostgresRuntime(root, target, artifact = POSTGRES_RUNTIM
 		provenance.sha256 !== artifact.sha256 ||
 		provenance.upstreamUrl !== artifact.url ||
 		provenance.upstreamVersion !== artifact.version ||
+		provenance.innerEntry !== artifact.innerEntry ||
+		provenance.innerSha256 !== artifact.innerSha256 ||
+		provenance.emulation !==
+			(target === "windows-arm64" ? "Windows x64 PostgreSQL under Windows 11 ARM64 x64 emulation" : undefined) ||
 		provenance.emulated !== (target === "windows-arm64")
 	)
 		throw new Error(`runtime provenance mismatch for ${target}`);
@@ -327,8 +337,19 @@ export function validatePostgresRuntime(root, target, artifact = POSTGRES_RUNTIM
 	]) {
 		if (!readFileSync(join(root, name)).length) throw new Error(`empty runtime license: ${name}`);
 	}
-	const inventory = JSON.parse(readFileSync(join(root, "payload-files.json"), "utf8"));
-	if (inventory.length === 0) throw new Error("empty runtime inventory");
+	const inventoryPath = join(root, "payload-files.json");
+	if (digest(inventoryPath) !== provenance.payloadInventorySha256)
+		throw new Error("runtime inventory checksum mismatch");
+	const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
+	if (!Array.isArray(inventory) || inventory.length === 0) throw new Error("empty or invalid runtime inventory");
+	const expectedPaths = new Set(inventory.map(({ path }) => path));
+	const actualPaths = payloadInventory(root).map(({ path }) => path);
+	if (
+		expectedPaths.size !== inventory.length ||
+		actualPaths.length !== expectedPaths.size ||
+		actualPaths.some((path) => !expectedPaths.has(path))
+	)
+		throw new Error("runtime inventory does not match packaged files");
 	for (const { path, sha256 } of inventory) {
 		if (digest(runtimePath(root, path)) !== sha256) throw new Error(`runtime file checksum mismatch: ${path}`);
 	}
@@ -336,10 +357,12 @@ export function validatePostgresRuntime(root, target, artifact = POSTGRES_RUNTIM
 
 function payloadInventory(root, directory = root) {
 	return readdirSync(directory).flatMap((name) => {
+		if (directory === root && ["payload-files.json", "runtime-provenance.json"].includes(name)) return [];
 		const path = join(directory, name);
-		return lstatSync(path).isDirectory()
-			? payloadInventory(root, path)
-			: [{ path: relative(root, path).split("\\").join("/"), sha256: digest(path) }];
+		const stat = lstatSync(path);
+		if (stat.isDirectory()) return payloadInventory(root, path);
+		if (!stat.isFile()) throw new Error(`runtime inventory contains a non-file: ${path}`);
+		return [{ path: relative(root, path).split("\\").join("/"), sha256: digest(path) }];
 	});
 }
 export async function stagePostgresRuntime({
@@ -397,9 +420,8 @@ export async function stagePostgresRuntime({
 		replaceSymlinksWithManifest(extracted, extracted, symlinks);
 		symlinks.sort((left, right) => left.target.localeCompare(right.target));
 		writeFileSync(join(extracted, "pg-symlinks.json"), `${JSON.stringify(symlinks, null, 2)}\n`);
-		writeLicensesAndProvenance(extracted, target, artifact, upstreamLicense);
 		validatePayload(extracted, target);
-		writeFileSync(join(extracted, "payload-files.json"), `${JSON.stringify(payloadInventory(extracted), null, 2)}\n`);
+		writeLicensesAndProvenance(extracted, target, artifact, upstreamLicense);
 		validatePostgresRuntime(extracted, target, artifact);
 
 		const destination = join(resolve(packageRoot), "postgres-runtime");
