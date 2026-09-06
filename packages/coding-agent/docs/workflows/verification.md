@@ -29,6 +29,19 @@ When a mechanism cannot run, continue available authoritative repository checks,
 
 [herdr's CLI](https://herdr.dev/docs/cli-reference/) talks to a running server. Discover your isolated test pane with `herdr pane list`. `herdr pane run <pane_id> <command>` submits a command with Enter; `herdr pane send-text` alone does not submit. `herdr pane read <pane_id> --source visible` returns the screen text. For bounded waits use `herdr pane wait-output <pane_id> --match <text> --timeout 10000`. Do not confuse pane output with an agent lifecycle status or infer success from `idle`. Check installed version/help and host support before use. Do not take over unrelated panes.
 
+### Reproduce stage skill terminal evidence
+
+From an Atomic source checkout, install dependencies with `npm ci --ignore-scripts` and run `npm run build`. With Node, Bun, tmux and a POSIX shell on PATH, run the committed driver:
+
+```sh
+node test/fixtures/stage-chat-skill-driver.mjs --evidence-dir /tmp/stage-skills-80 --columns 80 --rows 24
+node test/fixtures/stage-chat-skill-driver.mjs --evidence-dir /tmp/stage-skills-48 --columns 48 --rows 16
+```
+
+Use a fresh evidence directory for each run; existing directories are refused. The driver executes `test/fixtures/stage-chat-skill-terminal.ts` directly with Bun, not `bun build`. No provider credentials are needed. It waits for the real editor to clear and the notice to render after each `/tasks` command before typing the next command, then verifies stage-local skill selection and invocation. Captures, assertions, render barriers and session events stay in the requested directory. Failures retain diagnostics and clean up the dedicated tmux session.
+
+The small driver contract tests run in the normal unit suite. The actual tmux scenario is an explicit local verification command, not an automatic CI terminal test. This POSIX driver does not establish Windows coverage.
+
 ### Desktop safety
 
 The [OpenAI CUA sample](https://github.com/openai/openai-cua-sample-app#first-run) distinguishes JavaScript Playwright browser control from Python PyAutoGUI desktop input. It is an optional sample requiring API/model access, not a prerequisite for every GUI test. Follow its [Python quickstart and interruption guidance](https://github.com/openai/openai-cua-sample-app/blob/main/python-app/README.md).

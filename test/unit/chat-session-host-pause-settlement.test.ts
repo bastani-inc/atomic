@@ -196,3 +196,116 @@ for (const submitTiming of ["before", "after"] as const) {
 		}
 	});
 }
+
+test("disabled chat composers still dispatch local slash commands, but disposed hosts do not", async () => {
+	const commands: string[] = [];
+	const host = new ChatSessionHost({
+		style,
+		editorTheme,
+		isDisabled: () => true,
+		commands: {
+			async handleSlashCommand(text) {
+				commands.push(text);
+				return true;
+			},
+		},
+	});
+	try {
+		await host.submit("auto", "/quit");
+		assert.deepEqual(commands, ["/quit"]);
+		host.dispose();
+		await host.submit("auto", "/tasks");
+		assert.deepEqual(commands, ["/quit"]);
+	} finally {
+		host.dispose();
+	}
+});
+
+test.each(["idle", "streaming", "local"] as const)("warnings clear on later %s input, not cleanup", async (path) => {
+	const host = new ChatSessionHost({
+		style,
+		editorTheme,
+		isStreaming: () => path === "streaming",
+		commands: {
+			async prompt() {},
+			async steer() {},
+			handleSlashCommand: () => true,
+		},
+	});
+	try {
+		host.showWarning("Task inspection is unavailable in this host.");
+		host.clearBusyForTerminalWorkflowStage();
+		assert.equal(host.statusText(), "Task inspection is unavailable in this host.");
+		await host.submit("auto", path === "local" ? "/quit" : "next input");
+		assert.equal(host.statusText(), "");
+		host.clearBusyForTerminalWorkflowStage();
+		assert.equal(host.statusText(), "");
+	} finally {
+		host.dispose();
+	}
+});
+
+test.each(["auto", "followUp"] as const)("interrupt settlement retains %s intent and new warnings", async (mode) => {
+	const release = Promise.withResolvers<void>();
+	const calls: Array<{ text?: string; mode?: string }> = [];
+	const host = new ChatSessionHost({
+		style,
+		editorTheme,
+		commands: {
+			interrupt: () => release.promise,
+			async resume(text, submitMode) {
+				calls.push({ text, mode: submitMode });
+				host.showWarning("Unknown skill selector after pause");
+			},
+		},
+	});
+	try {
+		const interrupt = host.interrupt();
+		const submit = host.submit(mode, "/skill:fixture@unknown");
+		assert.deepEqual(calls, []);
+		release.resolve();
+		await Promise.all([interrupt, submit]);
+		assert.deepEqual(calls, [{ text: "/skill:fixture@unknown", mode }]);
+		assert.equal(host.statusText(), "Unknown skill selector after pause");
+	} finally {
+		release.resolve();
+		host.dispose();
+	}
+});
+
+// RFC #2884: local task inspection must not release an Escape pause or enter model context.
+test.each(["auto", "followUp"] as const)("task commands stay local during %s interrupt settlement", async (mode) => {
+	const release = Promise.withResolvers<void>();
+	const calls: string[] = [];
+	const host = new ChatSessionHost({
+		style,
+		editorTheme,
+		isStreaming: () => true,
+		commands: {
+			interrupt: () => release.promise,
+			async handleSlashCommand(text) {
+				calls.push(`local:${text}`);
+				return true;
+			},
+			async resume(text) {
+				calls.push(`resume:${text}`);
+			},
+		},
+	});
+	try {
+		host.handleInput("\x1b");
+		for (const text of ["/tasks", "/tasks detail 7"]) {
+			host.setInputText(text);
+			void host.submit(mode);
+			await waitForMicrotasks();
+			assert.equal(calls.at(-1), `local:${text}`);
+			assert.equal(host.inputText(), "");
+		}
+		release.resolve();
+		await waitForMicrotasks();
+		assert.deepEqual(calls, ["local:/tasks", "local:/tasks detail 7"]);
+	} finally {
+		release.resolve();
+		host.dispose();
+	}
+});

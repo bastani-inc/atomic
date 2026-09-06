@@ -5,10 +5,16 @@
 ### Added
 
 - Fullscreen mouse-wheel scrolling moves five times as far while Alt is held, through the Pi TUI 0.85.1 update ([upstream #9166](https://github.com/earendil-works/pi/pull/9166)).
+- Editable workflow stage chats now discover source-qualified skills from their own session catalog and expand `/skill:` submissions once through stage admission, preserving Enter/Ctrl+F delivery and literal human-input answers. Skill diagnostics remain in the stage chat; blocked, archived, and replayed stages stay read-only.
 
 ### Changed
 
 - Updated Pi runtime dependencies to 0.85.1, preserving Atomic's CLI startup, published client API, and footer watcher behavior.
+- `/tasks` in an attached stage chat is now a local inspection command, never a model message, including while an Escape interruption settles. Hosts without a task inspector report that it is unavailable.
+
+### Fixed
+
+- Workflow skill autocomplete no longer reattaches and checkpoints the stage for every completion request. Concurrent lazy discovery requests share one attachment.
 
 ## [0.9.18-alpha.6] - 2026-09-04
 

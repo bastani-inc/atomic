@@ -71,6 +71,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			opts.editorFactory,
 			this.editorCallbacks(),
 		);
+		if (opts.autocompleteProvider) this.state.editor?.setAutocompleteProvider?.(opts.autocompleteProvider);
 		this.syncAnimationTick();
 	}
 
@@ -266,6 +267,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	statusText(): string {
 		return this.state.statusMessage;
+	}
+
+	showWarning(message: string): void {
+		this.state.statusMessage = message;
+		this.state.lastWarningMessage = message;
+		this.state.requestRender?.();
 	}
 
 	scrollToBottom(): void {

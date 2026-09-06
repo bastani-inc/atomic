@@ -14,13 +14,17 @@ import {
 	type ExtensionRunner,
 	fuzzyFilter,
 	getModelSearchText,
-	parseGitUrl,
 	type ResourceDiagnostic,
 	type SlashCommand,
 	type SourceInfo,
 } from "./interactive-mode-deps.ts";
 import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
 import { getLoginProviderCompletions } from "./login-provider-options.ts";
+import {
+	getAutocompleteSourceTag,
+	getSessionSkillCommands,
+	prefixAutocompleteDescription,
+} from "./skill-command-autocomplete.ts";
 
 const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 
@@ -128,28 +132,7 @@ InteractiveModeBase.prototype.getAutocompleteSourceTag = function (
 	this: InteractiveModeBase,
 	sourceInfo?: SourceInfo,
 ): string | undefined {
-	if (!sourceInfo) {
-		return undefined;
-	}
-
-	const scopePrefix = sourceInfo.scope === "user" ? "u" : sourceInfo.scope === "project" ? "p" : "t";
-	const source = sourceInfo.source.trim();
-
-	if (source === "auto" || source === "local" || source === "cli") {
-		return scopePrefix;
-	}
-
-	if (source.startsWith("npm:")) {
-		return `${scopePrefix}:${source}`;
-	}
-
-	const gitSource = parseGitUrl(source);
-	if (gitSource) {
-		const ref = gitSource.ref ? `@${gitSource.ref}` : "";
-		return `${scopePrefix}:git:${gitSource.host}/${gitSource.path}${ref}`;
-	}
-
-	return scopePrefix;
+	return getAutocompleteSourceTag(sourceInfo);
 };
 
 InteractiveModeBase.prototype.prefixAutocompleteDescription = function (
@@ -157,11 +140,7 @@ InteractiveModeBase.prototype.prefixAutocompleteDescription = function (
 	description: string | undefined,
 	sourceInfo?: SourceInfo,
 ): string | undefined {
-	const sourceTag = this.getAutocompleteSourceTag(sourceInfo);
-	if (!sourceTag) {
-		return description;
-	}
-	return description ? `[${sourceTag}] ${description}` : `[${sourceTag}]`;
+	return prefixAutocompleteDescription(description, sourceInfo);
 };
 
 InteractiveModeBase.prototype.getBuiltInCommandConflictDiagnostics = function (
@@ -320,15 +299,13 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 
 	// Build skill commands from session.skills (if enabled)
 	this.skillCommands.clear();
-	const skillCommandList: SlashCommand[] = [];
+	const skillCommandList = getSessionSkillCommands({
+		resourceLoader: this.session.resourceLoader,
+		settingsManager: this.settingsManager,
+	});
 	if (this.settingsManager.getEnableSkillCommands()) {
 		for (const command of getSkillCatalog(this.session.resourceLoader).commands) {
-			const commandName = `skill:${command.name}`;
-			this.skillCommands.set(commandName, command.skill.filePath);
-			skillCommandList.push({
-				name: commandName,
-				description: this.prefixAutocompleteDescription(command.description, command.sourceInfo),
-			});
+			this.skillCommands.set(`skill:${command.name}`, command.skill.filePath);
 		}
 	}
 

@@ -47,6 +47,9 @@ async function registerIsolatedTests(): Promise<void> {
 
 	mock.module("@bastani/atomic", () => ({
 		ChatSessionHost: TestComponent,
+		classifyChatCommand: () => assert.fail("graph overlay checks must not classify stage-chat commands"),
+		createSessionSkillAutocompleteProvider: () =>
+			assert.fail("graph overlay checks must not create skill completion"),
 		TranscriptFollowIndicator: TestComponent,
 		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
 		keyHint: (key: string) => key,

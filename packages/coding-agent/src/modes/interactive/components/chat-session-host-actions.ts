@@ -1,6 +1,7 @@
 import type { AgentSessionQueuePauseControl } from "../../../core/agent-session-methods.ts";
 import type { BashExecutionMessage } from "../../../core/messages.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
+import { classifyChatCommand } from "../skill-command-autocomplete.ts";
 import type { ChatMessageEntry } from "./chat-message-renderer.ts";
 import { setChatSessionEditorText } from "./chat-session-host-editor.ts";
 import {
@@ -71,6 +72,7 @@ async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscript
 	state: ChatSessionHostState<TExtraEntry>,
 	settlement: Promise<void>,
 	text: string,
+	mode: ChatSessionSubmitMode,
 ): Promise<void> {
 	const editorText = state.inputBuffer;
 	try {
@@ -79,10 +81,10 @@ async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscript
 		syncChatSessionAnimationTick(state);
 		state.requestRender?.();
 		await settlement;
-		await requiredChatSessionCommand(state, "resume")(text);
+		await requiredChatSessionCommand(state, "resume")(text, mode);
 		if (state.inputBuffer === editorText) setChatSessionEditorText(state, "");
 		state.sdkBusy = false;
-		state.statusMessage = "";
+		if (state.statusMessage === "resuming…") state.statusMessage = "";
 	} catch (err) {
 		state.sdkBusy = false;
 		state.statusMessage = errorMessage(err);
@@ -98,11 +100,24 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	mode: ChatSessionSubmitMode = "auto",
 	submittedText?: string,
 ): Promise<void> {
+	if (state.disposed) return;
 	const text = (submittedText ?? state.inputBuffer).trim();
 	if (!text) return;
+	if (state.statusMessage === state.lastWarningMessage) state.statusMessage = "";
+	state.lastWarningMessage = undefined;
+	// Task inspection is local even while Escape is settling. It must never release
+	// the pause or fall through to model delivery; other slash commands keep their order.
+	if (classifyChatCommand(text) === "tasks") {
+		if (!(await state.commands.handleSlashCommand?.(text))) {
+			notifyChatSessionWarning(state, "Task inspection is unavailable in this host.");
+		}
+		setChatSessionEditorText(state, "");
+		state.requestRender?.();
+		return;
+	}
 	const interruptSettlement = state.interruptSettlement;
 	if (interruptSettlement !== undefined) {
-		await submitAfterInterruptSettlement(state, interruptSettlement, text);
+		await submitAfterInterruptSettlement(state, interruptSettlement, text, mode);
 		return;
 	}
 	if (state.interruptFailureMessage !== undefined) {
@@ -142,7 +157,8 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	const agentSession = state.getAgentSession?.();
 	const nativeQueuePaused = supportsQueuedMessagePause(agentSession) && agentSession.queuedMessagesPaused;
 	const isStreaming = isChatSessionStreaming(state);
-	const shouldAppendOptimisticUser = mode === "auto" && !isStreaming;
+	// The session publishes the expanded skill block; a raw optimistic signature cannot reconcile with it.
+	const shouldAppendOptimisticUser = mode === "auto" && !isStreaming && classifyChatCommand(text) !== "skill";
 	const optimisticSignature = shouldAppendOptimisticUser ? userMessageSignature(text) : undefined;
 	if (optimisticSignature !== undefined) {
 		state.liveChat.appendUserText(text);
@@ -157,9 +173,9 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			state.statusMessage = "resuming…";
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();
-			await requiredChatSessionCommand(state, "resume")(text);
+			await requiredChatSessionCommand(state, "resume")(text, mode);
 			state.sdkBusy = false;
-			state.statusMessage = "";
+			if (state.statusMessage === "resuming…") state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
 			return;
 		}
@@ -172,7 +188,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			await state.commands.ensureAttached?.();
 			await requiredChatSessionPromptCommand(state)(text, mode);
 			state.sdkBusy = false;
-			state.statusMessage = "";
+			if (state.statusMessage === "resuming…") state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
 			return;
 		}
@@ -358,6 +374,10 @@ async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,
 ): Promise<void> {
+	if (classifyChatCommand(text) === "skill" && state.commands.submitUserMessage) {
+		await state.commands.submitUserMessage(text, "auto");
+		return;
+	}
 	const agentSession = state.getAgentSession?.();
 	if (agentSession?.isStreaming) {
 		await agentSession.prompt(text, { streamingBehavior: "steer" });
@@ -370,6 +390,10 @@ async function queueChatSessionFollowUp<TExtraEntry extends ChatTranscriptEntryL
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,
 ): Promise<void> {
+	if (classifyChatCommand(text) === "skill" && state.commands.submitUserMessage) {
+		await state.commands.submitUserMessage(text, "followUp");
+		return;
+	}
 	const agentSession = state.getAgentSession?.();
 	if (agentSession?.isStreaming) {
 		await agentSession.prompt(text, { streamingBehavior: "followUp" });

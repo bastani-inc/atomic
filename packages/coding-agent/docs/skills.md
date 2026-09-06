@@ -111,7 +111,7 @@ Qualified selection is exact. An unknown or ambiguous qualified selector reports
 
 Subagent definitions and per-call `skills` overrides accept these same selectors. Live in-process children resolve them from their own loader catalog after resource reload; a missing or ambiguous selector is reported in the child result instead of silently selecting the bare skill. The parent-only `subagent` orchestration skill cannot be injected into a child, including qualified aliases such as `subagent@builtin`. Extensions can read the same catalog through `ctx.getSkillCatalog()`.
 
-Arguments after the command are appended to the skill content as `User: <args>`.
+Arguments after the command are trimmed and appended after the expanded skill block, without a `User:` prefix. The block records the selected skill's file location, candidate identity, and base directory for relative references.
 
 Toggle skill commands via `/settings` in interactive mode or in `settings.json`:
 
@@ -120,6 +120,22 @@ Toggle skill commands via `/settings` in interactive mode or in `settings.json`:
   "enableSkillCommands": true
 }
 ```
+
+### Skills in workflow stage chats
+
+An editable attached stage chat supports the same `/skill:<selector> [arguments]` commands. Its suggestions come from that stage's effective catalog and settings, not the main chat's catalog. Source tags use the main chat format: `[p]` for project, `[u]` for user, and `[t]` for temporary resources, with npm or Git source details when available. After the stage's resources reload, the next completion request reads the updated catalog and qualified aliases.
+
+Completion reuses an already attached session without reattaching or checkpointing it for each keystroke. If attachment is needed, overlapping requests share that attachment and then read the current catalog. The stage adapter provides `/skill:` discovery and Tab completion of relative paths rooted at the stage session cwd. It does not provide `@` file-mention suggestions.
+
+Enter starts a turn when idle or steers a streaming turn. Ctrl+F keeps follow-up intent. The stage session expands the command once through its admission route; skill-relative references use the skill directory while ordinary tools keep the stage cwd. Turning off `enableSkillCommands` hides suggestions but does not disable manually typed skill commands. Unknown bare selectors pass through as text; unknown or ambiguous qualified selectors and file-read failures show diagnostics in the attached chat without selecting another skill.
+
+The native session pause gate still takes precedence over expansion. If that gate closes during asynchronous attachment, the command is queued as literal text, just as in main chat; releasing that queue does not retroactively expand it. A composer that observes the pause before submission resumes first and then uses normal skill expansion. To invoke a command retained literally by this race, restore it to the editor and submit after resuming.
+
+Mounted human-input and custom prompts own their input, so answers starting `/skill:` remain literal. Blocked stages, read-only archives, and replay cannot admit skill messages. An explicitly opened editable post-mortem chat can invoke its own skills without restarting workflow execution. Skills do not grant tools, workspace access, or permission to launch workflows or subagents, and unrelated parent slash commands are not forwarded. A host without stage command metadata reports that discovery is unavailable rather than borrowing another session's catalog.
+
+Custom stage hosts must expose admission-aware `sendUserMessage` to support invocation. Without it, skill submission reports that user-message admission is unavailable instead of falling back to unguarded `prompt`, `steer`, or `followUp` calls.
+
+See [workflow stage chat controls](/workflows/operations#skills-in-attached-stage-chats) for the distinction between skill messages and local view commands.
 
 ## Skill Structure
 

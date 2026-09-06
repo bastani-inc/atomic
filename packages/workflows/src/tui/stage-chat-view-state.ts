@@ -1,4 +1,4 @@
-import { type AgentSessionEvent, ChatSessionHost } from "@bastani/atomic";
+import { type AgentSessionEvent, ChatSessionHost, classifyChatCommand } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -6,6 +6,7 @@ import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { createPromptCardState } from "./prompt-card.js";
 import { resolveStageChatViewportRows } from "./stage-chat-layout.js";
+import { stageSkillAutocomplete, submitStageSkillCommand } from "./stage-chat-skill-commands.js";
 import { hideMountedCustomUi, releaseMountedCustomUi, showCustomUi } from "./stage-chat-view-custom-ui.js";
 import {
 	invalidateStageChatDeliveryLifecycles,
@@ -186,11 +187,14 @@ function installFocusHold(ctx: StageChatViewContext): void {
 function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): ChatSessionHost<NoticeEntry> {
 	return new ChatSessionHost<NoticeEntry>({
 		style: chatHostStyle(ctx),
+		autocompleteProvider: stageSkillAutocomplete(ctx),
 		commands: {
+			submitUserMessage: (text, mode) => submitStageSkillCommand(ctx, text, mode),
 			ensureAttached: async () => {
 				await liveHandle(ctx)?.ensureAttached();
 			},
 			prompt: async (text, mode) => {
+				if (classifyChatCommand(text) === "skill") return submitStageSkillCommand(ctx, text, mode);
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
 				// Typed Enter is a steering intent even when this chat reads the
@@ -237,12 +241,22 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				}
 				await handle.agentSession?.abort();
 			},
-			resume: async (message) => {
+			resume: async (message, mode = "auto") => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
 				ctx.localPaused = true;
-				await handle.resume(message);
-				ctx.localPaused = false;
+				let succeeded = false;
+				try {
+					if (message && classifyChatCommand(message) === "skill") {
+						await submitStageSkillCommand(ctx, message, mode, true);
+					} else {
+						await handle.resume(message);
+					}
+					succeeded = true;
+				} finally {
+					ctx.localPaused =
+						!succeeded && (currentStage(ctx)?.status === "paused" || liveHandle(ctx)?.status === "paused");
+				}
 			},
 			runBash: async (request) => {
 				const handle = liveHandle(ctx);
