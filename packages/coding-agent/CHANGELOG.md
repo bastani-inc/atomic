@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `reason: "project_trust"` to `ui_prompt_start` and `ui_prompt_end` for the built-in `/trust` selector in both interactive modes, so status integrations can observe the wait. Startup and resume-time trust prompts remain outside this contract. ([#2873](https://github.com/bastani-inc/atomic/issues/2873))
+- Added `reason: "project_trust"` to `UIPromptStartEvent` and `UIPromptEndEvent` for the built-in `/trust` selector in both interactive modes, so status integrations can observe the wait. Isolated mode retains paired notifications until the current engine binds, without delaying the trust decision. Startup and resume-time trust prompts remain outside this contract. ([#2873](https://github.com/bastani-inc/atomic/issues/2873))
 
 ## [0.9.19-alpha.1] - 2026-09-06
 

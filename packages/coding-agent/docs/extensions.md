@@ -644,7 +644,7 @@ pi.on("agent_settled", async (_event, ctx) => {
 These notification-only events wrap blocking user-facing prompts. Each event has `reason: "ui_prompt" | "project_trust"`, the prompt `kind`, and the prompt `title` when available. Host and status integrations can use the pair to distinguish waiting for the user from active work.
 
 - `ui_prompt`: extension prompts opened through `ctx.ui.select()`, `ctx.ui.confirm()`, `ctx.ui.input()`, `ctx.ui.editor()`, and `ctx.ui.custom()`.
-- `project_trust`: the built-in `/trust` selector. In isolated interactive mode, the host forwards these notifications to the engine's extension subscribers.
+- `project_trust`: the built-in `/trust` selector. In isolated interactive mode, the host forwards these notifications to the engine's extension subscribers. If the current engine has not bound yet, the transport retains the start and end in order until it binds, even if the selector closes first. This does not delay the trust decision; retiring that engine discards its pending notifications.
 
 Startup and resume-time trust prompts are not covered. The separate [`project_trust`](#project_trust) decision hook and its limited UI context do not emit this lifecycle pair. Attaching subscribers does not replay earlier notifications. Adding the new reason does not change when Atomic asks for trust or how it resolves a decision.
 

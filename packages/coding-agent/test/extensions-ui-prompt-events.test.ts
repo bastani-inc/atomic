@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
@@ -18,6 +18,7 @@ import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-b
 import { EngineProjectTrustService } from "../src/modes/interactive-engine/engine-project-trust.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import {
+	INTERACTIVE_ENGINE_PROTOCOL_VERSION,
 	type InteractiveEngineCommand,
 	parseInteractiveEngineCommand,
 } from "../src/modes/interactive-engine/protocol.js";
@@ -25,6 +26,7 @@ import "../src/modes/interactive/interactive-extension-runtime.ts";
 import "../src/modes/interactive/interactive-session-routing.ts";
 import type { TrustSelectorComponent } from "../src/modes/interactive/components/trust-selector.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { RpcClient } from "../src/modes/rpc/rpc-client.js";
 
 type UIPromptEvent = UIPromptStartEvent | UIPromptEndEvent;
 
@@ -464,6 +466,130 @@ function createIsolatedTrustRuntime(runner: ExtensionRunner) {
 		},
 	};
 }
+
+async function createUnboundTrustTransport(runner: ExtensionRunner) {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-trust-transport-"));
+	const child = join(dir, "engine.mjs");
+	// The peer exposes readiness before binding and discards control notifications
+	// until get_commands releases the bind gate. A second request is a FIFO barrier.
+	writeFileSync(
+		child,
+		`import { createInterface } from "node:readline";
+const output = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+let bound = false;
+output({ type: "engine_ready", protocolVersion: ${INTERACTIVE_ENGINE_PROTOCOL_VERSION}, pid: process.pid });
+createInterface({ input: process.stdin }).on("line", (line) => {
+	const command = JSON.parse(line);
+	if (command.type === "get_commands") {
+		if (!bound) { bound = true; output({ type: "engine_bound" }); }
+		output({ type: "response", command: command.type, id: command.id, success: true, data: { commands: [] } });
+	} else if (bound && command.type.startsWith("engine_project_trust_")) {
+		output({ type: "extension_ui_request", id: command.componentId, method: "notify", message: line, notifyType: "info" });
+	}
+});`,
+	);
+	const service = new EngineProjectTrustService(() => runner);
+	const commands: InteractiveEngineCommand[] = [];
+	const client = new RpcClient({
+		cliPath: child,
+		runtimeExecutable: process.execPath,
+		interactiveEngine: { onDiagnostic: (diagnostic) => assert.fail(diagnostic.message) },
+	});
+	client.onExtensionUIRequest((request) => {
+		const command = parseInteractiveEngineCommand(request.message!);
+		assert.ok(command);
+		commands.push(command);
+		assert.equal(service.handleLine(request.message!), true);
+	});
+	client.onGenerationEnded(() => service.dispose());
+	const runtime = new IsolatedInteractiveRuntime(
+		{ session: {}, services: {}, diagnostics: [] } as never,
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+		client,
+	);
+	await client.start();
+	return {
+		client,
+		runtime,
+		commands,
+		bind: async () => {
+			await client.getCommands();
+			await client.waitForInteractiveEngineBound();
+			await client.getCommands();
+			await flushNotifications();
+		},
+		close: async () => {
+			await client.stop();
+			rmSync(dir, { recursive: true, force: true });
+		},
+	};
+}
+
+// #2873 / PR #2890: pre-bind /trust completion must not lose the paired notifications.
+test("isolated trust decisions complete before binding and deliver the queued pair in order", async () => {
+	const { runner, events } = await createRunner();
+	runner.setUIContext(createUI(), "tui");
+	const probe = await createUnboundTrustTransport(runner);
+	try {
+		const result = { trusted: false };
+		const title = "  Project trust\nraw title  ";
+		assert.equal(await probe.runtime.withProjectTrustPrompt("select", title, async () => result), result);
+		assert.deepEqual(events, []);
+		await probe.bind();
+		assert.deepEqual(events, [
+			{ type: "ui_prompt_start", reason: "project_trust", kind: "select", title },
+			{ type: "ui_prompt_end", reason: "project_trust", kind: "select", title },
+		]);
+		assert.equal(probe.commands.length, 2);
+		assert.equal(probe.commands[0].componentId, probe.commands[1].componentId);
+	} finally {
+		await probe.close();
+	}
+});
+
+// #2873: transport retirement must discard queued starts and fence delayed ends.
+test("isolated trust transport never replays retired notifications into a replacement", async () => {
+	for (const initiallyBound of [false, true]) {
+		const { runner, events } = await createRunner();
+		runner.setUIContext(createUI(), "tui");
+		const probe = await createUnboundTrustTransport(runner);
+		try {
+			if (initiallyBound) await probe.bind();
+			const oldDecision = deferred<boolean>();
+			const oldPrompt = probe.runtime.withProjectTrustPrompt("confirm", "Old", () => oldDecision.promise);
+			if (initiallyBound) await probe.bind();
+			await probe.client.stop();
+			await flushNotifications();
+			assert.equal(events.length, initiallyBound ? 2 : 0);
+			const retiredCount = events.length;
+			await probe.client.start();
+			const newDecision = deferred<boolean>();
+			const newPrompt = probe.runtime.withProjectTrustPrompt("input", "", () => newDecision.promise);
+			await probe.bind();
+			assert.deepEqual(events.slice(retiredCount), [
+				{ type: "ui_prompt_start", reason: "project_trust", kind: "input", title: "" },
+			]);
+			oldDecision.resolve(false);
+			assert.equal(await oldPrompt, false);
+			await probe.bind();
+			assert.equal(events.length, retiredCount + 1, "stale end cannot close the current span");
+			newDecision.resolve(true);
+			assert.equal(await newPrompt, true);
+			await probe.bind();
+			assert.deepEqual(events.at(-1), {
+				type: "ui_prompt_end",
+				reason: "project_trust",
+				kind: "input",
+				title: "",
+			});
+			assert.equal(events.length, retiredCount + 2);
+		} finally {
+			await probe.close();
+		}
+	}
+});
 
 // #2873: the isolated host must notify the child runner, not its empty local runner.
 test("isolated host trust waits reach subscribers and coalesce with extension prompts", async () => {
