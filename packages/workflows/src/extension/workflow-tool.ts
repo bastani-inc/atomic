@@ -80,6 +80,7 @@ export function makeExecuteWorkflowTool(
 		signal?: AbortSignal,
 		onRunAccepted?: (runId: string) => void,
 	): Promise<WorkflowToolResult> {
+		signal?.throwIfAborted();
 		const action = args.action ?? "run";
 		const runId = args.runId ?? "";
 		if (isWorkflowStageToolContext(ctx)) {
@@ -92,7 +93,10 @@ export function makeExecuteWorkflowTool(
 			};
 		}
 		const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
-		const getRuntime = (): ExtensionRuntime => (typeof runtime === "function" ? runtime(ctx) : runtime);
+		const getRuntime = (): ExtensionRuntime => {
+			signal?.throwIfAborted();
+			return typeof runtime === "function" ? runtime(ctx) : runtime;
+		};
 		const awaitRequest = <T>(operation: Promise<T>): Promise<T> => raceWorkflowRequestAbort(operation, signal);
 		const ensureWorkflowResourcesVisible = async (): Promise<void> => {
 			try {
@@ -197,7 +201,9 @@ export function makeExecuteWorkflowTool(
 			case "interrupt":
 				return awaitRequest(workflowInterruptAction(args));
 			case "resume":
-				return awaitRequest(workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded }));
+				return awaitRequest(
+					workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded, signal, onRunAccepted }),
+				);
 			default: {
 				const _exhaustive: never = action;
 				throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);

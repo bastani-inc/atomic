@@ -1,6 +1,7 @@
 import { getDurableBackend } from "../durable/factory.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import { toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
 import { interruptAllRuns, interruptRun, pauseAllRuns, pauseRun, resumeRun } from "../runs/background/status.js";
@@ -31,6 +32,8 @@ export interface WorkflowControlActionDeps {
 	getRuntime: () => ExtensionRuntime;
 	policy: WorkflowExecutionPolicy;
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void;
+	signal?: AbortSignal;
+	onRunAccepted?: (runId: string) => void;
 }
 
 function controlFailure(
@@ -76,7 +79,10 @@ export async function workflowPauseAction(args: WorkflowToolArgs): Promise<Workf
 				action,
 				runId: "--all",
 				status: paused > 0 ? "paused" : "noop",
-				message: paused > 0 ? `Paused ${paused} run(s).` : "No in-flight runs to pause.",
+				message: [
+					paused > 0 ? `Paused ${paused} run(s).` : "No in-flight runs to pause.",
+					...results.flatMap((result) => (result.ok && result.message !== undefined ? [result.message] : [])),
+				].join("\n"),
 			};
 		} catch (error) {
 			return controlFailure(action, "--all", error);
@@ -106,7 +112,7 @@ export async function workflowPauseAction(args: WorkflowToolArgs): Promise<Workf
 					action,
 					runId: result.runId,
 					status: "paused",
-					message: `Paused ${result.paused.length} stage(s) on run ${result.runId}.`,
+					message: result.message ?? `Paused ${result.paused.length} stage(s) on run ${result.runId}.`,
 				}
 			: {
 					action,
@@ -152,7 +158,7 @@ function bulkQuitFailureMessage(results: Awaited<ReturnType<typeof quitAllRuns>>
 	const outcomes = results
 		.map((result) =>
 			result.ok
-				? `${result.runId}: quit${abandonedToolSuffix(result.abandonedTools)}`
+				? (result.message ?? `${result.runId}: quit${abandonedToolSuffix(result.abandonedTools)}`)
 				: `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`,
 		)
 		.join(", ");
@@ -253,7 +259,9 @@ export async function workflowQuitAction(args: WorkflowToolArgs): Promise<Workfl
 				failures.length > 0
 					? bulkQuitFailureMessage(results)
 					: quitCount > 0
-						? `Quit ${quitCount} run(s); resume with /workflow resume.`
+						? successes.some((result) => result.message !== undefined)
+							? successes.map((result) => result.message ?? `Run ${result.runId} quit.`).join("\n")
+							: `Quit ${quitCount} run(s); resume with /workflow resume.`
 						: "No in-flight runs to quit.",
 		};
 	}
@@ -270,7 +278,9 @@ export async function workflowQuitAction(args: WorkflowToolArgs): Promise<Workfl
 				action,
 				runId: result.runId,
 				status: "paused",
-				message: `Run ${result.runId} quit and can be resumed with /workflow resume.${cancelledToolSummary(result)}`,
+				message:
+					result.message ??
+					`Run ${result.runId} quit and can be resumed with /workflow resume.${cancelledToolSummary(result)}`,
 			};
 		}
 		return {
@@ -303,7 +313,10 @@ export async function workflowInterruptAction(args: WorkflowToolArgs): Promise<W
 				action,
 				runId: "--all",
 				status: interrupted > 0 ? "paused" : "noop",
-				message: interrupted > 0 ? `Interrupted ${interrupted} run(s).` : "No in-flight runs to interrupt.",
+				message: [
+					interrupted > 0 ? `Interrupted ${interrupted} run(s).` : "No in-flight runs to interrupt.",
+					...results.flatMap((result) => (result.ok && result.message !== undefined ? [result.message] : [])),
+				].join("\n"),
 			};
 		} catch (error) {
 			return controlFailure(action, "--all", error);
@@ -324,9 +337,11 @@ export async function workflowInterruptAction(args: WorkflowToolArgs): Promise<W
 				action,
 				runId: result.runId,
 				status: "paused",
-				message: stage.stageId
-					? `Stage ${stage.stageId} interrupted on run ${result.runId} and can be resumed.`
-					: `Run ${result.runId} interrupted and can be resumed.`,
+				message:
+					result.message ??
+					(stage.stageId
+						? `Stage ${stage.stageId} interrupted on run ${result.runId} and can be resumed.`
+						: `Run ${result.runId} interrupted and can be resumed.`),
 			};
 		}
 		return {
@@ -342,22 +357,29 @@ export async function workflowInterruptAction(args: WorkflowToolArgs): Promise<W
 
 async function resumeDurableShadow(
 	runId: string,
-	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
+	deps: Pick<
+		WorkflowControlActionDeps,
+		"getRuntime" | "policy" | "ensureWorkflowResourcesLoaded" | "signal" | "onRunAccepted"
+	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
 	const runtime = deps.getRuntime();
 	let warning: string | undefined;
 	try {
 		await deps.ensureWorkflowResourcesLoaded();
+		deps.signal?.throwIfAborted();
 		// Targeted read: the shadow run id is exact, so avoid a full catalog scan.
 		if (runtime.prepareDurableResumableForIds !== undefined) await runtime.prepareDurableResumableForIds([runId]);
 		else await runtime.prepareDurableResumable(runId);
 	} catch (error) {
 		warning = formatWorkflowResourceLoadWarning(error);
 	}
+	deps.signal?.throwIfAborted();
 	const resumed = await runtime.resumeDurableWorkflow(runId, {
 		policy: deps.policy,
 		actor: "agent",
+		signal: deps.signal,
+		onRunAccepted: deps.onRunAccepted,
 		...(budget === undefined ? {} : { budget }),
 	});
 	const message = warning === undefined ? resumed.message : `${warning}\n\n${resumed.message}`;
@@ -371,13 +393,16 @@ async function resumeDurableShadow(
 
 async function resumePreparedDurableTarget(
 	runId: string,
-	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy">,
+	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "signal" | "onRunAccepted">,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
 	try {
+		deps.signal?.throwIfAborted();
 		const resumed = await deps.getRuntime().resumeDurableWorkflow(runId, {
 			policy: deps.policy,
 			actor: "agent",
+			signal: deps.signal,
+			onRunAccepted: deps.onRunAccepted,
 			...(budget === undefined ? {} : { budget }),
 		});
 		return {
@@ -393,17 +418,22 @@ async function resumePreparedDurableTarget(
 async function resolveExplicitDurableTarget(
 	target: string,
 	args: WorkflowToolArgs,
-	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
+	deps: Pick<
+		WorkflowControlActionDeps,
+		"getRuntime" | "policy" | "ensureWorkflowResourcesLoaded" | "signal" | "onRunAccepted"
+	>,
 	liveRuns: readonly RunSnapshot[] = [],
 ): Promise<WorkflowToolResult> {
 	const runtime = deps.getRuntime();
 	let durable: readonly ResumableWorkflowEntry[];
 	try {
 		await deps.ensureWorkflowResourcesLoaded();
+		deps.signal?.throwIfAborted();
 		durable = await runtime.prepareDurableResumable(target);
 	} catch (error) {
 		return controlFailure("resume", target, error);
 	}
+	deps.signal?.throwIfAborted();
 	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, []);
 	if (resolved.kind === "malformed") {
 		return { action: "resume", runId: target, status: "noop", message: resolved.message };
@@ -440,8 +470,12 @@ async function resolveExplicitDurableTarget(
 
 export async function workflowResumeAction(
 	args: WorkflowToolArgs,
-	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
+	deps: Pick<
+		WorkflowControlActionDeps,
+		"getRuntime" | "policy" | "ensureWorkflowResourcesLoaded" | "signal" | "onRunAccepted"
+	>,
 ): Promise<WorkflowToolResult> {
+	deps.signal?.throwIfAborted();
 	const target = resolveToolRunTarget(args, "No active run to resume.");
 	if (target.kind === "all")
 		return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
@@ -469,9 +503,10 @@ export async function workflowResumeAction(
 			message: `Workflow ${target.runId} has no durable checkpoint or pending prompt progress and is not resumable.`,
 		};
 	}
-	if (!backend.isWorkflowLoadable(target.runId)) {
+	if (toolControlRegistry.runControl(target.runId) === undefined && !backend.isWorkflowLoadable(target.runId)) {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();
+			deps.signal?.throwIfAborted();
 			const runtime = deps.getRuntime();
 			if (runtime.prepareDurableResumableForIds !== undefined)
 				await runtime.prepareDurableResumableForIds([target.runId]);
@@ -479,6 +514,7 @@ export async function workflowResumeAction(
 		} catch {
 			// Compatibility preparation remains best-effort before the authoritative check.
 		}
+		deps.signal?.throwIfAborted();
 		if (!backend.isWorkflowLoadable(target.runId)) {
 			store.removeRun(target.runId);
 			return { action: "resume", runId: target.runId, status: "noop", message: `Run not found: ${target.runId}` };
@@ -505,9 +541,12 @@ export async function workflowResumeAction(
 		} catch (error) {
 			warning = formatWorkflowResourceLoadWarning(error);
 		}
+		deps.signal?.throwIfAborted();
 		const continuation = await deps.getRuntime().resumeFailedRun(stageRunId, stage.stageId, {
 			policy: deps.policy,
 			actor: "agent",
+			signal: deps.signal,
+			onRunAccepted: deps.onRunAccepted,
 			...(args.budget === undefined ? {} : { budget: args.budget }),
 		});
 		const message = warning === undefined ? continuation.message : `${warning}\n\n${continuation.message}`;

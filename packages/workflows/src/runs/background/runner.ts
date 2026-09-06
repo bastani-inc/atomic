@@ -22,6 +22,7 @@ import type {
 	WorkflowInputValues,
 	WorkflowOutputValues,
 } from "../../shared/types.js";
+import { WorkflowRequestTimeoutError } from "../../shared/workflow-request-timeout.js";
 import type { RunOpts, RunResult } from "../foreground/executor.js";
 import { run as syncRun } from "../foreground/executor.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
@@ -48,6 +49,8 @@ export interface DetachedAccepted {
 }
 
 export interface DetachedRunOpts extends Omit<RunOpts, "signal" | "cancellation" | "deferWorkflowStart"> {
+	/** Caller cancellation owns initialization only, until startup is acknowledged. */
+	startupSignal?: AbortSignal;
 	/**
 	 * Override CancellationRegistry (default: singleton cancellationRegistry).
 	 */
@@ -101,6 +104,7 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	inputs: Readonly<Record<string, unknown>>,
 	opts: DetachedRunOpts = {},
 ): DetachedAccepted {
+	opts.startupSignal?.throwIfAborted();
 	const registry = opts.cancellation ?? defaultCancellationRegistry;
 	const tracker = opts.jobs ?? defaultJobTracker;
 
@@ -109,11 +113,17 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 
 	// 2. Create AbortController for this run
 	const controller = new AbortController();
-
-	// 3. Register in cancellation registry BEFORE starting background promise
-	//    so any concurrent abort() calls issued immediately after runDetached()
-	//    are not lost.
-	registry.register(runId, controller);
+	const cancelStartup = (): void => {
+		if (!(opts.startupSignal?.reason instanceof WorkflowRequestTimeoutError)) {
+			controller.abort(opts.startupSignal?.reason);
+		}
+	};
+	let startupDetached = false;
+	const detachStartup = (): void => {
+		if (startupDetached) return;
+		startupDetached = true;
+		opts.startupSignal?.removeEventListener("abort", cancelStartup);
+	};
 
 	// 4. Build executor opts — inject runId seam, signal, and node-local
 	//    store-backed HIL. Background runs must NOT route ctx.ui.* through pi.ui
@@ -121,7 +131,15 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	//    records prompts on synthetic workflow nodes and the attached stage chat
 	//    drives the response. Destructure `jobs`/`cancellation`/`ui` out so
 	//    they're not forwarded to RunOpts twice.
-	const { jobs: _jobs, cancellation: _cancellation, ui: _ui, store: storeOverride, onRawSettled, ...restOpts } = opts;
+	const {
+		jobs: _jobs,
+		cancellation: _cancellation,
+		ui: _ui,
+		store: storeOverride,
+		onRawSettled,
+		startupSignal: _startupSignal,
+		...restOpts
+	} = opts;
 	const store: Store = storeOverride ?? defaultStore;
 	const execOpts: RunOpts = {
 		...restOpts,
@@ -131,6 +149,10 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 		store,
 		usePromptNodesForUi: opts.executionMode !== "non_interactive",
 		deferWorkflowStart: true,
+		onWorkflowStartReady: () => {
+			detachStartup();
+			opts.onWorkflowStartReady?.();
+		},
 	};
 
 	// 5-7. Register the job BEFORE starting the executor, so a registration
@@ -145,8 +167,11 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	});
 	const jobEntry: JobEntry = { runId, controller, promise: voidPromise };
 	try {
+		opts.startupSignal?.addEventListener("abort", cancelStartup, { once: true });
+		registry.register(runId, controller);
 		tracker.register(jobEntry);
 	} catch (error) {
+		detachStartup();
 		controller.abort(error);
 		registry.unregister(runId, controller);
 		settleJob();
@@ -156,6 +181,7 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	try {
 		backgroundPromise = syncRun(def, inputs, execOpts);
 	} catch (error) {
+		detachStartup();
 		controller.abort(error);
 		registry.unregister(runId, controller);
 		tracker.unregister(runId, jobEntry);
@@ -168,6 +194,7 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 		} catch {
 			// Settlement observers must not become unhandled rejections.
 		} finally {
+			detachStartup();
 			registry.unregister(runId, controller);
 			tracker.unregister(runId, jobEntry);
 			settleJob();

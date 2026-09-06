@@ -18,6 +18,8 @@ export interface AdmittedToolExecutionTracker {
 }
 
 export interface AdmittedToolExecutionTrackerOptions {
+	/** Cancellation closes admission immediately, even while an ancestor drains. */
+	readonly signal?: AbortSignal;
 	readonly onFailureObserved?: (failure: AdmittedToolFailure) => void;
 	readonly onFailureDuringDrain?: (failure: AdmittedToolFailure) => void;
 }
@@ -89,7 +91,7 @@ export function createAdmittedToolExecutionTracker(
 
 	return {
 		track<T>(execution: Promise<T>): AdmittedToolExecutionAdmission {
-			if (state === "CLOSED") {
+			if (state === "CLOSED" || options.signal?.aborted) {
 				const error = new Error("atomic-workflows: ctx.tool admission is closed for this run");
 				void execution.catch(() => undefined);
 				return { accepted: false, error, bindNode(): void {}, noteCancelled(): void {} };

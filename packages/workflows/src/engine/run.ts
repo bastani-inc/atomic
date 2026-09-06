@@ -10,6 +10,7 @@ import {
 	createStageReplayKeyGenerator,
 } from "../durable/stage-primitive.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
+import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
 import {
 	findWorkflowExitSignal,
 	parentWorkflowExitAbortReason,
@@ -47,6 +48,7 @@ import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
+import { raceAbort } from "../shared/abort.js";
 import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
@@ -54,6 +56,7 @@ import { coercePossibleStages } from "../shared/possible-stages.js";
 import { store as defaultStore } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
+	StageOptions,
 	WorkflowDefinition,
 	WorkflowInputValues,
 	WorkflowOutputValues,
@@ -82,6 +85,7 @@ import {
 	durableRunTopology,
 	recordDurableActiveStage,
 } from "./run-durable-topology.js";
+import { deferStageUntilRunRelease } from "./run-paused-stage.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createRunTerminalEventArbiter } from "./run-terminal-event.js";
 import { finalizeTerminalFailure } from "./run-terminal-failure.js";
@@ -94,6 +98,7 @@ import {
 	findWorkflowGracefulQuit,
 	isWorkflowToolAbortError,
 	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+	WorkflowGracefulQuitError,
 	type WorkflowGracefulQuitSignal,
 } from "./workflow-tool-abort.js";
 
@@ -163,17 +168,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		{ once: true },
 	);
 	const callerSignal = opts.signal;
-	if (callerSignal) {
-		if (callerSignal.aborted) ownController.abort(callerSignal.reason);
-		else
-			callerSignal.addEventListener(
-				"abort",
-				() => {
-					ownController.abort(callerSignal.reason);
-				},
-				{ once: true },
-			);
-	}
+	const onCallerAbort = (): void => ownController.abort(callerSignal?.reason);
 	const exit = createWorkflowExitManager({ runId, exitScope, controller: ownController });
 	// Durable child operations stay on stacked scoped views, while cached graph
 	// reconstruction keeps the physical root backend through arbitrary depth.
@@ -316,32 +311,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		classifiedFailures.set(error, classified);
 		return classified;
 	};
-	activeStore.recordRunStart(runSnapshot);
 	// Only the registration's owner may remove it, and only while it is still the
 	// registered controller: an abandoned executor finalizing late must not evict
 	// the replacement run that now owns this id.
 	const ownsCancellationRegistration = opts.signal === undefined && opts.cancellation !== undefined;
-	if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);
-	opts.onRunStart?.(runSnapshot);
-	if (opts.persistence) {
-		appendRunStart(opts.persistence, {
-			runId,
-			name: def.name,
-			inputs: resolvedInputs,
-			...(runSnapshot.parentRunId !== undefined ? { parentRunId: runSnapshot.parentRunId } : {}),
-			...(runSnapshot.parentStageId !== undefined ? { parentStageId: runSnapshot.parentStageId } : {}),
-			...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
-			...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
-			...(runSnapshot.origin !== undefined ? { origin: runSnapshot.origin } : {}),
-			...(runSnapshot.resumeFromStageId !== undefined ? { resumeFromStageId: runSnapshot.resumeFromStageId } : {}),
-			...(runSnapshot.accumulatedDurationMs !== undefined
-				? { accumulatedDurationMs: runSnapshot.accumulatedDurationMs }
-				: {}),
-			...(runSnapshot.budget !== undefined ? { budget: runSnapshot.budget } : {}),
-			...(runSnapshot.budgetState !== undefined ? { budgetState: runSnapshot.budgetState } : {}),
-			ts: runSnapshot.startedAt,
-		});
-	}
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
 	const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs),
@@ -364,6 +337,15 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		tracker,
 		stageRegistry: () => stageRegistry,
 	});
+	const waitForRunRelease = async (): Promise<void> => {
+		await scheduler.waitForRunRelease();
+		ownController.signal.throwIfAborted();
+	};
+	const whenRunning = <T>(call: () => Promise<T>): Promise<T> => {
+		if (scheduler.isRunPaused()) return waitForRunRelease().then(() => whenRunning(call));
+		if (ownController.signal.aborted) return Promise.reject(ownController.signal.reason);
+		return call();
+	};
 	ownController.signal.addEventListener(
 		"abort",
 		() => scheduler.rejectReleaseBarriers(ownController.signal.reason ?? new Error("atomic-workflows: run aborted")),
@@ -590,6 +572,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		workflowId: runId,
 		backend: durableBackend,
 		nextCheckpointId: checkpointIdGenerator,
+		beforeCall: () => {
+			ownController.signal.throwIfAborted();
+			return scheduler.isRunPaused() ? waitForRunRelease() : undefined;
+		},
 		...(opts.usePromptNodesForUi === true
 			? {
 					onReplay: async (request: Parameters<ReturnType<typeof buildPromptNodeUiAdapter>["replayDurable"]>[0]) =>
@@ -606,6 +592,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		completedStageReplayKeys,
 		sourceToReplayedNodeIds: sourceToContinuationNodeIds,
 	});
+	const recordCachedStage: typeof cachedStage.record = (...args) => {
+		ownController.signal.throwIfAborted();
+		cachedStage.record(...args);
+	};
 	const durableIntercomGroup = (replayKey: string, stageId: string | undefined): string | undefined => {
 		const stages = activeStore.runs().find((candidate) => candidate.id === runId)?.stages ?? [];
 		return stages.find((stage) => (stageId !== undefined && stage.id === stageId) || stage.replayKey === replayKey)
@@ -618,7 +608,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 		durableIntercomGroup,
 		task: taskRunners.task,
-		recordCachedTask: cachedStage.record,
+		recordCachedTask: recordCachedStage,
 		signal: ownController.signal,
 		registerTailControl: (registration) => {
 			registration.controller.signal.addEventListener(
@@ -647,84 +637,192 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		setChildDurableInvocation: (invocation) => {
 			pendingChildDurableInvocation = invocation;
 		},
-		recordCachedStage: cachedStage.record,
+		recordCachedStage,
 		runTopology: durableRunTopology(runSnapshot),
 		workflow,
 	});
+	const pendingChildWorkflows = new Set<Promise<unknown>>();
+	const durableStage = createDurableStagePrimitive({
+		workflowId: runId,
+		backend: durableBackend,
+		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+		durableIntercomGroup,
+		recordCachedStage,
+		stage: (name, options, replayKey) => {
+			const stage = runtime.stage(name, options);
+			const stageId = activeStore
+				.runs()
+				.find((r) => r.id === runId)
+				?.stages.at(-1)?.id;
+			if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
+			return stage;
+		},
+	});
+	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
+	const chain = createChainPrimitive({ runtime, task: gatedTask });
+	const parallel = createParallelPrimitive({ runtime, task: gatedTask });
+	const ui = buildExitGatedUiContext({
+		opts,
+		throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
+		durableUi: durableUiDeps,
+		baseFromPromptNodes: getPromptNodeUi,
+	});
+	let pausedExit: Promise<never> | undefined;
 	const ctx: WorkflowRunContext<TInputs> = {
 		inputs: resolvedInputs as TInputs,
 		runId,
 		get cwd() {
 			return resolveWorkflowCwd();
 		},
-		exit: exit.exit,
-		ui: buildExitGatedUiContext({
-			opts,
-			throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
-			durableUi: durableUiDeps,
-			baseFromPromptNodes: getPromptNodeUi,
-		}),
-		stage: createDurableStagePrimitive({
-			workflowId: runId,
-			backend: durableBackend,
-			nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
-			durableIntercomGroup,
-			recordCachedStage: cachedStage.record,
-			stage: (name, options, replayKey) => {
-				const stage = runtime.stage(name, options);
-				const stageId = activeStore
-					.runs()
-					.find((r) => r.id === runId)
-					?.stages.at(-1)?.id;
-				if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
-				return stage;
-			},
-		}),
-		task: durableTask,
-		chain: createChainPrimitive({ runtime, task: durableTask }),
-		parallel: createParallelPrimitive({ runtime, task: durableTask }),
-		workflow: durableWorkflow,
-		tool,
+		exit: (options) => {
+			if (scheduler.isRunPaused()) {
+				pausedExit ??= whenRunning(async () => exit.exit(options));
+				void pausedExit.catch(() => {});
+				throw new Error("Workflow exit is waiting for explicit resume");
+			}
+			return exit.exit(options);
+		},
+		ui,
+		stage: (name: string, options?: StageOptions) => {
+			ownController.signal.throwIfAborted();
+			if (!scheduler.isRunPaused()) return durableStage(name, options);
+			// Reserve declaration order now, even if methods are invoked in reverse.
+			const replayKey = stageReplayKeyGenerator(name);
+			return deferStageUntilRunRelease({
+				name,
+				create: () => durableStage(name, options, replayKey),
+				isPaused: scheduler.isRunPaused,
+				waitForRelease: waitForRunRelease,
+				signal: ownController.signal,
+			});
+		},
+		task: gatedTask,
+		chain: (...args) => whenRunning(() => chain(...args)),
+		parallel: (...args) => whenRunning(() => parallel(...args)),
+		workflow: (...args) =>
+			whenRunning(() => {
+				const pending = durableWorkflow(...args);
+				pendingChildWorkflows.add(pending);
+				const settled = (): void => {
+					pendingChildWorkflows.delete(pending);
+				};
+				void pending.then(settled, settled);
+				return pending;
+			}),
+		tool: (...args) => {
+			// Let the tool's admission tracker own terminal rejection and observation.
+			if (!scheduler.isRunPaused()) return tool(...args);
+			const pending = whenRunning(() => tool(...args));
+			void pending.catch(() => {});
+			return pending;
+		},
 		...(opts.models !== undefined ? { models: opts.models } : {}),
 	};
+	const runtimeSettled = Promise.withResolvers<void>();
+	let pausePersistence: Promise<void> | undefined;
+	const persistRunControl = async (status: "paused" | "running"): Promise<void> => {
+		ownController.signal.throwIfAborted();
+		if (opts.parentRun !== undefined || durableBackend.getWorkflow(runId) === undefined) return;
+		if (
+			!(await transitionDurableWorkflowStatus(durableBackend, runId, ["running", "paused"], status, undefined, true))
+		) {
+			throw new Error(`Workflow ${runId} refused the durable ${status} transition`);
+		}
+		recordRunTimingCheckpoint(durableBackend, runSnapshot);
+		await durableBackend.flush(runId);
+	};
+	const unregisterRunControl = toolControls.registerRun(runId, {
+		get paused() {
+			return scheduler.isRunPaused();
+		},
+		pause: () => {
+			ownController.signal.throwIfAborted();
+			scheduler.pauseRun();
+			activeStore.recordRunPaused(runId, undefined, { resumable: true });
+			pausePersistence = persistRunControl("paused");
+			return pausePersistence;
+		},
+		resume: async () => {
+			await pausePersistence;
+			await persistRunControl("running");
+			ownController.signal.throwIfAborted();
+			activeStore.recordRunResumed(runId, undefined, { source: "run_control" });
+			scheduler.releaseRun();
+		},
+		quit: () => {
+			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
+			return runtimeSettled.promise;
+		},
+	});
 	terminalEvents.register();
 	try {
-		if (opts.deferWorkflowStart === true) {
-			await nextEventLoopTurn();
-			if (ownController.signal.aborted) {
-				await admittedTools.closeAndDrain();
-				const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
-				if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
-				const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
-				if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
-				return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
-			}
+		if (callerSignal?.aborted) onCallerAbort();
+		else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+		activeStore.recordRunStart(runSnapshot);
+		if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);
+		opts.onRunStart?.(runSnapshot);
+		if (opts.persistence) {
+			appendRunStart(opts.persistence, {
+				runId,
+				name: def.name,
+				inputs: resolvedInputs,
+				...(runSnapshot.parentRunId !== undefined ? { parentRunId: runSnapshot.parentRunId } : {}),
+				...(runSnapshot.parentStageId !== undefined ? { parentStageId: runSnapshot.parentStageId } : {}),
+				...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
+				...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
+				...(runSnapshot.origin !== undefined ? { origin: runSnapshot.origin } : {}),
+				...(runSnapshot.resumeFromStageId !== undefined
+					? { resumeFromStageId: runSnapshot.resumeFromStageId }
+					: {}),
+				...(runSnapshot.accumulatedDurationMs !== undefined
+					? { accumulatedDurationMs: runSnapshot.accumulatedDurationMs }
+					: {}),
+				...(runSnapshot.budget !== undefined ? { budget: runSnapshot.budget } : {}),
+				...(runSnapshot.budgetState !== undefined ? { budgetState: runSnapshot.budgetState } : {}),
+				ts: runSnapshot.startedAt,
+			});
 		}
-		await admitDurableRootRun({
-			backend: durableBackend,
-			runId,
-			isChildRun: opts.parentRun !== undefined,
-			registration:
-				durableRootRegistration === undefined
-					? undefined
-					: {
-							...durableRootRegistration,
-							...workflowInvocationMetadata(
-								inputRuntimeDefaults,
-								workflowInvocationCwd,
-								gitWorktreeSetupCache,
-								runSnapshot.origin,
-							),
-						},
-		});
+		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
+		while (scheduler.isRunPaused()) await waitForRunRelease();
+		ownController.signal.throwIfAborted();
+		await raceAbort(
+			admitDurableRootRun({
+				backend: durableBackend,
+				runId,
+				isChildRun: opts.parentRun !== undefined,
+				registration:
+					durableRootRegistration === undefined
+						? undefined
+						: {
+								...durableRootRegistration,
+								...workflowInvocationMetadata(
+									inputRuntimeDefaults,
+									workflowInvocationCwd,
+									gitWorktreeSetupCache,
+									runSnapshot.origin,
+								),
+							},
+			}),
+			ownController.signal,
+		);
+		while (scheduler.isRunPaused()) await waitForRunRelease();
+		ownController.signal.throwIfAborted();
 		if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
 		const sourceFrontierStage = opts.continuation?.source;
 		const sourceFrontierId = sourceFrontierStage?.failedStageId ?? opts.continuation?.resumeFromStageId;
 		const startupFrontierStage =
 			sourceFrontierStage?.stages.find((stage) => stage.id === sourceFrontierId)?.name ?? "workflow frontier";
 		if (budget.enabled) await budget.stopAtBoundaryAsync(startupFrontierStage);
-		const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
+		while (scheduler.isRunPaused()) await waitForRunRelease();
+		ownController.signal.throwIfAborted();
+		const rawResult = await raceAbort(
+			runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx)),
+			ownController.signal,
+		);
+		while (scheduler.isRunPaused()) await waitForRunRelease();
 		await admittedTools.closeAndDrain();
+		while (scheduler.isRunPaused()) await waitForRunRelease();
+		if (pausedExit !== undefined) await pausedExit;
 		budget.rethrowIfSystemOwnedStop(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
 		const normalTerminalEvent = terminalEvents.winner();
 		if (normalTerminalEvent?.kind === "cancellation") {
@@ -750,7 +848,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		const result = normalizeWorkflowRunOutput(def.name, rawResult);
 		assertWorkflowRunOutputs(def.name, result, def.outputs);
 		assertWorkflowCreatedExecution(runSnapshot);
-		await durableBackend.flush(runId);
+		await raceAbort(durableBackend.flush(runId), ownController.signal);
+		while (scheduler.isRunPaused()) await waitForRunRelease();
+		ownController.signal.throwIfAborted();
 		const returned = classifyReturnedRunStatus(result, runSnapshot);
 		if (returned.status === "completed") assertFrontierConsumed();
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
@@ -774,8 +874,26 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			{ status: returned.status, result, error: returned.error },
 			opts.onRunEnd,
 		);
-	} catch (err) {
-		terminalEvents.selectFailure(err);
+	} catch (error) {
+		let err = error;
+		// A non-cooperative body/admission may reject while paused. Keep its
+		// settlement on this owner until resume; explicit cancellation still wins.
+		try {
+			while (scheduler.isRunPaused()) await waitForRunRelease();
+			if (pausedExit !== undefined) await pausedExit;
+		} catch (stop) {
+			err = stop;
+		}
+		const selectedTerminalEvent = terminalEvents.selectFailure(err);
+		// The abort race may settle before the failed tool's rejection reaches
+		// the body. A later cancellation must not replace its already-selected error.
+		if (
+			selectedTerminalEvent.kind === "failure" &&
+			ownController.signal.aborted &&
+			Object.is(err, ownController.signal.reason)
+		) {
+			err = selectedTerminalEvent.error;
+		}
 		// Graceful quit is a suspension, not a terminal outcome: `quitRun` owns the
 		// paused/resumable record, so the executor must not write a terminal store
 		// or durable status here. The admission reason comes first so author code
@@ -787,6 +905,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			findWorkflowGracefulQuit(ownController.signal.reason);
 		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
 		await admittedTools.closeAndDrain();
+		// Racing the author body must not race past admitted child teardown and
+		// its boundary checkpoint publication on cancellation.
+		if (ownController.signal.aborted) await Promise.allSettled([...pendingChildWorkflows]);
 		if (err instanceof WorkflowBudgetExceededError) {
 			const pendingBudgetError = await budget.awaitPendingWrapUp();
 			const selectedBudgetError = pendingBudgetError ?? err;
@@ -870,6 +991,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			onRunEnd: opts.onRunEnd,
 		});
 	} finally {
+		callerSignal?.removeEventListener("abort", onCallerAbort);
+		runtimeSettled.resolve();
+		unregisterRunControl();
 		try {
 			await finalizeDurableTerminalStatus({
 				runId,

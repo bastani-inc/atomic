@@ -15,6 +15,11 @@ export function isTerminalStage(stage: StageSnapshot): boolean {
 
 export interface StageScheduler {
 	readonly tracker: GraphFrontierTracker;
+	/** Executor-only pause: retains this scheduler without creating a graph node. */
+	isRunPaused(): boolean;
+	pauseRun(): void;
+	releaseRun(): void;
+	waitForRunRelease(): Promise<void>;
 	stageById(stageId: string): StageSnapshot | undefined;
 	setStageParentIds(stage: StageSnapshot, parentIds: readonly string[]): void;
 	descendantsOf(stageId: string): StageSnapshot[];
@@ -41,6 +46,7 @@ export function createStageScheduler(input: {
 }): StageScheduler {
 	const releaseBarriers = new Map<string, ReleaseBarrier>();
 	const cascadePauseOwners = new Map<string, Set<string>>();
+	let runBarrier: ReleaseBarrier | undefined;
 
 	const makeReleaseBarrier = (): ReleaseBarrier => {
 		const resolver = Promise.withResolvers<void>();
@@ -164,6 +170,8 @@ export function createStageScheduler(input: {
 	};
 
 	const rejectReleaseBarriers = (reason: unknown): void => {
+		runBarrier?.reject(reason);
+		runBarrier = undefined;
 		cascadePauseOwners.clear();
 		for (const [stageId, barrier] of releaseBarriers) {
 			releaseBarriers.delete(stageId);
@@ -187,6 +195,18 @@ export function createStageScheduler(input: {
 
 	return {
 		tracker: input.tracker,
+		isRunPaused: () => runBarrier !== undefined,
+		pauseRun: () => {
+			runBarrier ??= makeReleaseBarrier();
+		},
+		releaseRun: () => {
+			const barrier = runBarrier;
+			runBarrier = undefined;
+			barrier?.resolve();
+		},
+		waitForRunRelease: async () => {
+			while (runBarrier !== undefined) await runBarrier.promise;
+		},
 		stageById,
 		setStageParentIds,
 		descendantsOf,

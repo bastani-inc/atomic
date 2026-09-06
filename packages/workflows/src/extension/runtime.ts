@@ -141,7 +141,7 @@ export interface RuntimeDispatchOptions {
 	readonly actor?: WorkflowActor;
 	/** Run-level budget override used when a continuation is launched. */
 	readonly budget?: WorkflowBudget;
-	/** Cancels only the public request/admission wait, never detached execution after acknowledgement. */
+	/** Cancels initialization before acknowledgement; acknowledged execution stays detached. */
 	readonly signal?: AbortSignal;
 	/** Reports the exact detached identity before startup admission is awaited. */
 	readonly onRunAccepted?: (runId: string) => void;
@@ -268,6 +268,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		stageId?: string,
 		options?: RuntimeDispatchOptions,
 	): Promise<ResumeFailedRunResult> {
+		options?.signal?.throwIfAborted();
 		const source = activeStore.runs().find((run) => run.id === sourceRunId);
 		if (source === undefined) {
 			return { ok: false, reason: "run_not_found", message: `run not found: ${sourceRunId}` };
@@ -306,6 +307,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		const launchContinuation = (hooks?: Pick<DetachedRunOpts, "onWorkflowStartReady" | "onRawSettled">) =>
 			launchDetachedUntilStartup(def, sourceInputs, {
 				...runOptions(options?.policy),
+				startupSignal: options?.signal,
 				continuation: {
 					source,
 					...(resolvedStage.stageId !== undefined ? { resumeFromStageId: resolvedStage.stageId } : {}),
@@ -362,6 +364,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				};
 			}
 			const { accepted } = launch;
+			options?.onRunAccepted?.(accepted.runId);
 			const admission = await launch.wait;
 			if (!admission.started) {
 				const startupError = workflowStartupFailureMessage(
@@ -416,6 +419,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			};
 		}
 		const { accepted } = launch;
+		options?.onRunAccepted?.(accepted.runId);
 		const admission = await launch.wait;
 		if (!admission.started) {
 			const startupError = workflowStartupFailureMessage(
@@ -454,7 +458,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		},
 
 		async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
+			options?.signal?.throwIfAborted();
 			await raceWorkflowRequestAbort(ensureDbosReady(), options?.signal);
+			options?.signal?.throwIfAborted();
 			const defaultSessionDir = resolveDefaultStageSessionDir?.();
 			return dispatch(args, {
 				registry,
@@ -476,7 +482,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			});
 		},
 
-		resumeFailedRun,
+		resumeFailedRun: (sourceRunId, stageId, options) =>
+			raceWorkflowRequestAbort(resumeFailedRun(sourceRunId, stageId, options), options?.signal),
 		...createDurableResumeRuntime({
 			registry,
 			store: activeStore,

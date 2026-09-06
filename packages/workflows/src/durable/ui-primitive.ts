@@ -58,6 +58,8 @@ export interface DurableUiDeps {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly nextCheckpointId: () => string;
+	/** Gate live/replayed UI after capturing the author's synchronous callsite. */
+	readonly beforeCall?: () => Promise<void> | undefined;
 	readonly onReplay?: (request: DurableUiReplayRequest) => Promise<void>;
 }
 
@@ -159,6 +161,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 	return {
 		async input(promptText: string): Promise<string> {
 			const callerStack = new Error().stack;
+			for (let wait = deps.beforeCall?.(); wait !== undefined; wait = deps.beforeCall?.()) await wait;
 			const identity = nextIdentity("input", promptText, callerStack);
 			const hit = cached(identity);
 			if (typeof hit === "string") {
@@ -178,6 +181,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 		},
 		async confirm(message: string): Promise<boolean> {
 			const callerStack = new Error().stack;
+			for (let wait = deps.beforeCall?.(); wait !== undefined; wait = deps.beforeCall?.()) await wait;
 			const identity = nextIdentity("confirm", message, callerStack);
 			const hit = cached(identity);
 			if (typeof hit === "boolean") {
@@ -197,6 +201,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 		},
 		async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
 			const callerStack = new Error().stack;
+			for (let wait = deps.beforeCall?.(); wait !== undefined; wait = deps.beforeCall?.()) await wait;
 			const identity = nextIdentity("select", message, callerStack, [...options]);
 			const hit = cached(identity);
 			if (typeof hit === "string") {
@@ -216,6 +221,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 		},
 		async editor(initial?: string): Promise<string> {
 			const callerStack = new Error().stack;
+			for (let wait = deps.beforeCall?.(); wait !== undefined; wait = deps.beforeCall?.()) await wait;
 			const identity = nextIdentity("editor", initial ?? "", callerStack, initial ?? null);
 			const hit = cached(identity);
 			if (typeof hit === "string") {
@@ -235,6 +241,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 		},
 		async custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
 			const callerStack = new Error().stack;
+			for (let wait = deps.beforeCall?.(); wait !== undefined; wait = deps.beforeCall?.()) await wait;
 			const replayIdentity = options?.replayIdentity ?? factory?.name ?? "custom";
 			const identity = nextIdentity("custom", replayIdentity, callerStack, { replayIdentity });
 			const hit = cachedCustom(identity);

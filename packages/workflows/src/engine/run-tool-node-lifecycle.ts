@@ -162,6 +162,7 @@ export function createTrackedToolPrimitive(input: {
 } {
 	let observedQuit: WorkflowGracefulQuitSignal | undefined;
 	const admittedTools = createAdmittedToolExecutionTracker({
+		signal: input.controller.signal,
 		onFailureObserved: ({ error, nodeId }) => {
 			input.terminalEvents.selectFailure(error, nodeId);
 		},

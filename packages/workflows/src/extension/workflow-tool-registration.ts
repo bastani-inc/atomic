@@ -1,3 +1,4 @@
+import { WorkflowRequestTimeoutError } from "../shared/workflow-request-timeout.js";
 import type { ExtensionAPI, PiExecuteContext, PiToolOpts, WorkflowToolArgs } from "./public-types.js";
 import { renderCall } from "./render-call.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
@@ -73,7 +74,7 @@ async function executeWithWorkflowToolDeadline(
 		timer = setTimeout(() => {
 			const result = workflowToolTimeoutResult(params, timeoutMs, acceptedRunId);
 			resolve(result);
-			deadlineController.abort(new Error(result.error));
+			deadlineController.abort(new WorkflowRequestTimeoutError(result.error));
 		}, timeoutMs);
 	});
 	try {
