@@ -94,6 +94,18 @@ export function attachInteractiveEngineHost(
 	};
 }
 
+/** Route host-owned trust waits to the runner that actually owns the subscribers. */
+export function withHostProjectTrustPrompt<T>(
+	runtime: AgentSessionRuntime,
+	kind: "select" | "confirm" | "input",
+	title: string,
+	run: () => Promise<T>,
+): Promise<T> {
+	return runtime instanceof IsolatedInteractiveRuntime
+		? runtime.withProjectTrustPrompt(kind, title, run)
+		: runtime.session.extensionRunner.withProjectTrustPrompt(kind, title, run);
+}
+
 export async function waitForInteractiveEngineBound(runtime: AgentSessionRuntime): Promise<void> {
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return;
 	await runtime.waitUntilBound();

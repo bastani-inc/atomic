@@ -22,6 +22,7 @@ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
+import { EngineProjectTrustService } from "../interactive-engine/engine-project-trust.js";
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
@@ -70,6 +71,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const renderService = interactiveEngineChild ? new EngineRenderService(writeRawStdout) : undefined;
 	const sessionPicker = interactiveEngineChild ? new EngineSessionPickerService(writeRawStdout) : undefined;
 	const inputForm = interactiveEngineChild ? new EngineInputFormService(writeRawStdout) : undefined;
+	const projectTrust = interactiveEngineChild
+		? new EngineProjectTrustService(() => runtimeHost.session.extensionRunner)
+		: undefined;
 	const reloadCoordinator = keybindings
 		? new KeybindingsReloadCoordinator<AgentSession>(
 				keybindings,
@@ -116,6 +120,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		});
 
 	runtimeHost.setRebindSession(async () => {
+		projectTrust?.dispose();
 		await sessionBinding.rebindSession();
 	});
 
@@ -150,6 +155,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		renderService?.dispose();
 		sessionPicker?.dispose();
 		inputForm?.dispose();
+		projectTrust?.dispose();
 		outputBuffer.dispose();
 		await runtimeHost.dispose();
 		if (signal !== "SIGTERM") {
@@ -192,12 +198,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 					)
 			: undefined,
 		handleInteractiveEngineLine:
-			customUi || renderService || sessionPicker || inputForm
+			customUi || renderService || sessionPicker || inputForm || projectTrust
 				? (line) =>
 						customUi?.handleLine(line) === true ||
 						renderService?.handleLine(line) === true ||
 						sessionPicker?.handleLine(line) === true ||
-						inputForm?.handleLine(line) === true
+						inputForm?.handleLine(line) === true ||
+						projectTrust?.handleLine(line) === true
 				: undefined,
 	});
 

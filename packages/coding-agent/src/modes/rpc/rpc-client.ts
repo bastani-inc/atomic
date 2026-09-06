@@ -81,6 +81,8 @@ export class RpcClient extends RpcClientApi {
 	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	private latestEngineKeybindingState: EngineKeybindingState | undefined;
 	private readonly pendingEngineMessages = new GenerationBuffer<InteractiveEngineMessage>();
+	private readonly pendingProjectTrustFrames = new GenerationBuffer<string>();
+	private boundGeneration = 0;
 	private readonly pendingRequests = new RpcPendingRequests();
 	/** Bumped by every explicit stop; a restart holds a permit across its own stop. */
 	private restartRevision = 0;
@@ -306,6 +308,15 @@ export class RpcClient extends RpcClientApi {
 
 	sendInteractiveEngineCommand(command: InteractiveEngineCommand): void {
 		const writer = this.stdinWriter;
+		if (command.type === "engine_project_trust_start" || command.type === "engine_project_trust_end") {
+			if (this.generation <= this.lastEndedGeneration) return;
+			// The terminal can open and close /trust while the engine is still binding.
+			// Retain both frames, without delaying the host-owned decision.
+			if (this.engineMonitor && this.boundGeneration !== this.generation) {
+				this.pendingProjectTrustFrames.push(this.generation, serializeInteractiveEngineFrame(command));
+				return;
+			}
+		}
 		if (!writer) return;
 		const frame = serializeInteractiveEngineFrame(command);
 		if (
@@ -426,6 +437,12 @@ export class RpcClient extends RpcClientApi {
 		if (generation !== this.generation || generation <= this.lastEndedGeneration) return;
 		if (message.type === "engine_heartbeat") this.options.interactiveEngine?.onHeartbeat?.();
 		if (message.type === "engine_ready") this.enginePid = message.pid;
+		if (message.type === "engine_bound") {
+			this.boundGeneration = generation;
+			for (const frame of this.pendingProjectTrustFrames.drain(generation)) {
+				if (this.stdinWriter) this.bestEffort(this.stdinWriter.write(frame), "project trust notification");
+			}
+		}
 		if (message.type === "engine_keybindings_reloaded") this.latestEngineKeybindingState = message.state;
 		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);
 		else if (message.type === "engine_activity_finished") this.activeActivityIds.delete(message.activityId);
@@ -470,6 +487,7 @@ export class RpcClient extends RpcClientApi {
 		// while it is closing that very generation's components.
 		this.pendingEngineMessages.dropGeneration(generation);
 		this.pendingExtensionUIRequests.dropGeneration(generation);
+		this.pendingProjectTrustFrames.dropGeneration(generation);
 		for (const listener of [...this.generationEndedListeners]) listener(event);
 	}
 	private failTransport(rawError: Error): void {
