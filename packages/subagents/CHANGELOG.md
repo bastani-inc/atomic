@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-09-05
+
+Cumulative release of the `0.9.18-alpha.6` prerelease. Per-change details remain in the unchanged prerelease section below.
+
+### Breaking Changes
+
+- Removed `fastMode` from result, progress, runtime, artifact, and run-history metadata. Select fast inference with a canonical `-fast` model ID in model or fallback fields, such as `openai-codex/gpt-5.6-sol-fast:medium`.
+
+### Changed
+
+- Labels show the complete selected model ID without a separate fast badge.
+- Bundled agents use GPT-6 Astra at low, with debugger at xhigh. Added Astra and Claude Fable 5.1 fallbacks ahead of older models, and aligned locator fallback chains with ordinary agents, including Sol, GPT-5.5, and Opus 4.8 at medium.
+- The qlty skill follows repository/user priorities, preserves authoritative checks and read-only boundaries, supports offline/manual setup, and distinguishes prepared configuration from executed checks.
+- Default guidance honors task-scoped inline/no-workflow requests while retaining testing, review, safety, and reconciliation of active workflow effects. Model selection for unpinned agents consults task-specific measured evals alongside role guidance.
+
+### Fixed
+
+- Completing workflow stages cancel their still-running single, parallel, and detached subagents. Children retain interrupted/abort outcomes and cleanup, late findings no longer reach parent chat, and exact ownership preserves other stages' traffic. Already-submitted Intercom sends keep receipts/retry identities; detached children still notify while their owning stage is live ([#2840](https://github.com/bastani-inc/atomic/issues/2840)).
+
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes

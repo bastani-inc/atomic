@@ -4,6 +4,31 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-09-05
+
+Cumulative release of the `0.9.18-alpha.3` through `0.9.18-alpha.7` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- Workflow-stage targets require root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` paths. Legacy `<runId>:<stageKey>` targets fail with a migration hint.
+
+### Added
+
+- Added literal, run-ID, and glob stage-path routing, sticky delivery to future matches, and `workflow:<rootRunId>/**` broadcasts to live and future descendants until root termination.
+- `intercom list` shows persisted possible future targets and queued counts. Valid unknown paths queue with `notInKnownSet` warnings and produce terminal undeliverable notices only if never delivered. Tool guidance, skills, and docs teach path discovery and live-only asks.
+
+### Fixed
+
+- Fixed invocation control across isolated workflow subgroups, pending-stage roster discovery and delivery, correlated live replies, registration-based authorization, and sibling/cross-run isolation. Queued sends render as successful, not failed ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
+- Background reconnects retry with bounded backoff after releasing ownership, restore stage visibility/routing, and close failed accepted connections instead of accumulating stale registrations. Host sessions retain their startup home group across joins and reconnects, preserving multi-workflow control without granting workers cross-invocation authority.
+- Recoverable disconnects during lazy initialization, stage warm-up, advisory subagent authorization, or event relays no longer produce misleading stage/UI failures. Registered transport resets enter typed recovery; unrelated protocol, auth, configuration, and terminal errors remain actionable.
+- Stage warm-up owns bounded retries. Exhaustion settles queued delivery with a stage-scoped terminal failure instead of hanging or printing into the host transcript. No model retry/fallback is spent, queued messages remain available, late drains are safe, and stages without queued messages still start.
+- Brokers retire ended sockets before routing more traffic. Delivery waits for socket-write acknowledgement, so failed writes cannot claim success, open reply authority, poison retry identity, or inflate sticky-broadcast receipts.
+- Recoverable disconnects on send/ask/reply return opaque `retryToken` values for explicit exact-operation retries. Tokenless identical calls remain distinct. Tokens allow three claimed attempts within the original 11-minute deadline, retain identity after inconclusive nondelivery, preserve implicit reply correlation, and reject invalid or mismatched claims before side effects. Capacity is reserved before new operations begin.
+- Retry signatures survive reconnects while preserving caller-visible target and argument distinctions. Local subagent result relays reserve deduplication identity before delivery and fail closed on conflicts, capacity, and uncertain acceptance.
+- Broker acceptance records use keyed SHA-256 HMACs rather than plaintext signatures, keeping message and attachment text out of SQLite/WAL/SHM. POSIX directories/files use owner-only modes; key/database mismatch and corruption fail closed. The 12-minute durability and 10,000-record/64 MiB limits remain enforced.
+- Closed stages suppress late messages from their own cancelled subagents without dropping other stages' traffic; already-submitted sends preserve receipts and retry identities ([#2840](https://github.com/bastani-inc/atomic/issues/2840)).
+
 ## [0.9.18-alpha.7] - 2026-09-05
 
 ### Fixed

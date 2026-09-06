@@ -4,6 +4,44 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-09-05
+
+Cumulative release of the `0.9.18-alpha.5` through `0.9.18-alpha.7` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- `createGatewayBindingFetch` requires `binding.fetch()` and forwards requests verbatim. The `gateway(id).run(...)` fallback is removed, `baseUrl` and `gateway` options are ignored, and bindings without `fetch()` fail at construction. Set model base URLs to `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}` ([#8287](https://github.com/earendil-works/pi/pull/8287)).
+- Fast inference is explicit `Model.fastRoute` metadata, not a name suffix. Responses adapters accept the canonical model, send its route's upstream ID, enforce its declared tier even against caller options, and price priority using its base model. A route without a tier sends none. Payload hooks that replace the body with a non-object or change the route's model or tier now fail. Models without routes retain caller-controlled tiers and hooks.
+- GitHub Copilot exposes route-bearing fast models only when OAuth `fastModelIds` advertises the exact ID. Provider-owned names ending in `-fast` remain ordinary models governed by `availableModelIds`.
+
+### Added
+
+- Added Claude Fable 5.1 with provider-specific pricing, a 1M-token context window, 128K output, always-on adaptive thinking, and exactly `low`, `medium`, `high`, `xhigh`, and `max` efforts. Added its server-side fallback targets, Claude Opus 4.8 and Opus 5, and compatibility controls for thinking binding, forced tool choice, and temperature.
+- Added Gemini 3.8 Flash across supported provider catalogs, including GitHub Copilot. Google and Vertex use a 1,048,576-token context window and 65,536 output tokens with low, medium, and high thinking; other providers retain their own metadata. Added Copilot Claude Fable 5/5.1 and Baseten `zai-org/GLM-5.3-Fast`.
+- Added GPT-6-Astra on OpenAI, OpenAI Codex, Bedrock, OpenRouter, and Vercel AI Gateway, retaining provider-owned IDs, reasoning levels, pricing, and request-wide long-context tiers. Added a provisional Copilot entry with zero costs for unverified pricing; account availability still depends on Copilot's authenticated catalog.
+- Added OpenRouter `microsoft/mai-image-2.6` and `microsoft/mai-image-2.6-flash` image models.
+- Added public `DocumentContent` PDF input for Anthropic Messages and Bedrock Converse. Unsupported models receive a visible placeholder; non-PDF MIME types are rejected, and token estimates measure the encoded document payload.
+- Added public `FallbackContent`, per-turn Anthropic effort persistence, historical effort markers, signed-thinking recovery, and diagnostics for thinking blocks dropped at request start or after server-side fallback.
+- Added `ModelFastRoute`, `resolveRequestedServiceTier`, and `assertPayloadPreservesFastRoute`, plus `AssistantMessageFrameEncoder` and `reduceAssistantMessageFrames` for compact, replayable stream progress.
+- Added `compat.vllmPriority` for servers using priority scheduling, `supportsMaxOutputTokens` for Responses gateways that reject the output cap, and compatibility flags for unsupported temperature and forced-tool-choice fields.
+
+### Changed
+
+- Exported `./utils/*` subpaths for Pi 0.85 runtime packages.
+- Qwen3.8 Max and Flash thinking choices follow models.dev on Qwen Token Plan providers, offering low, medium, and xhigh without off.
+- Responses models supporting `prompt_cache_options`, including Astra, use `ttl: "30m"` for long retention. Earlier models keep the 24-hour legacy field; short and explicit no-cache modes retain capability checks.
+- Assistant-frame reduction reconstructs owned block values rather than deleting fields on externally supplied content, preserving output and field order.
+
+### Fixed
+
+- Fixed Claude Fable temperature rejection across Anthropic, Bedrock, OpenRouter, and Copilot, including sampling defaults that reintroduced `temperature`, `top_p`, or `top_k`. Forced tool choices on Fable 5.1 now fail explicitly across supported APIs, including all OpenAI forcing shapes and Bedrock requests without tools; auto and none remain unchanged.
+- Fixed first-party Anthropic model switches and Fable 5.1 prefix changes by preserving eligible signed reasoning and letting the API drop incompatible blocks. Disabled thinking no longer sends the interleaved-thinking beta, and recovery diagnostics survive empty later reports or failed streams.
+- Fixed mid-stream Anthropic fallback attribution, replay, and billing. Handoff markers survive, serving-model prices apply, earlier output-producing attempts are charged once, and pre-handoff reasoning and unexecuted calls/results are dropped together. Faux-provider replay keeps content indices aligned around fallback markers.
+- Fixed Fable 5.1 OAuth requests rejected as `claude_code_version_too_old` by advertising the verified minimum Claude Code version, `2.1.251`.
+- Fixed Copilot Claude Fable routing through Anthropic Messages and all Fireworks GLM models through OpenAI-compatible completions. Removed retired xAI `grok-build-0.1` and restored Qwen3.8 Flash on Qwen Token Plan Individual.
+- Fixed Codex SSE terminal events without a trailing blank line and assistant-frame start snapshots losing `providerThinkingLevel`.
+- Fixed `NO_PROXY` matching for root domains, subdomains, IPv6, port-scoped entries, and wildcard entries.
+
 ## [0.9.18-alpha.7] - 2026-09-05
 
 ### Added
