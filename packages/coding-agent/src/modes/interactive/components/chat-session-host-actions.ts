@@ -105,6 +105,16 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	if (!text) return;
 	if (state.statusMessage === state.lastWarningMessage) state.statusMessage = "";
 	state.lastWarningMessage = undefined;
+	// Task inspection is local even while Escape is settling. It must never release
+	// the pause or fall through to model delivery; other slash commands keep their order.
+	if (classifyChatCommand(text) === "tasks") {
+		if (!(await state.commands.handleSlashCommand?.(text))) {
+			notifyChatSessionWarning(state, "Task inspection is unavailable in this host.");
+		}
+		setChatSessionEditorText(state, "");
+		state.requestRender?.();
+		return;
+	}
 	const interruptSettlement = state.interruptSettlement;
 	if (interruptSettlement !== undefined) {
 		await submitAfterInterruptSettlement(state, interruptSettlement, text, mode);

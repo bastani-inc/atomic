@@ -14,7 +14,7 @@ export function stageSkillAutocomplete(ctx: StageChatViewContext) {
 	return createSessionSkillAutocompleteProvider(
 		async () => {
 			const handle = liveHandle(ctx);
-			if (!handle || isBlocked(ctx)) return undefined;
+			if (!handle || isBlocked(ctx)) throw new Error("This stage chat is not editable.");
 			await handle.ensureAttached();
 			assertComposerAdmission(ctx, handle);
 			return handle.agentSession;

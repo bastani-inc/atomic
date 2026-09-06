@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { buildSkillCatalog, SessionManager } from "@bastani/atomic";
+import { buildSkillCatalog, CustomEditor, SessionManager } from "@bastani/atomic";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { test, vi } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
@@ -13,6 +14,8 @@ import { ensurePostMortemStageHandle } from "../../packages/workflows/src/runs/f
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { createStageSkillFixture, submitStageSkillText } from "../fixtures/stage-chat-skill-session.js";
 import { FakePromptEditor, makeFakeKeybindings, makeTestTui } from "../unit/stage-chat-view-helpers.js";
 
@@ -277,6 +280,99 @@ test("blocked and archived stage composers cannot submit a skill and tasks remai
 		assert.deepEqual(fixture.stage.session.getFollowUpMessages(), []);
 	} finally {
 		await fixture.cleanup();
+	}
+});
+
+test("Escape-settling stage task inspection never resumes or admits list/detail commands", async () => {
+	const harness = await createHarness({ settings: { retry: { enabled: false } } });
+	const started = Promise.withResolvers<void>();
+	const aborted = Promise.withResolvers<void>();
+	const releaseAbort = Promise.withResolvers<void>();
+	const abort = new AbortController();
+	const store = createStore();
+	const registry = createStageControlRegistry();
+	harness.setResponses([
+		async (_context, options) => {
+			started.resolve();
+			options?.signal?.addEventListener("abort", () => aborted.resolve(), { once: true });
+			await releaseAbort.promise;
+			return fauxAssistantMessage("Interrupted fixture turn.");
+		},
+	]);
+	const running = run(
+		workflow({
+			name: "task-inspection-pause",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await ctx.stage("inspect").prompt("Hold until Escape abort settles.");
+				return {};
+			},
+		}),
+		{},
+		{
+			store,
+			stageControlRegistry: registry,
+			signal: abort.signal,
+			adapters: {
+				agentSession: {
+					async create() {
+						return harness.session as StageSessionRuntime;
+					},
+				},
+			},
+		},
+	);
+	let view: StageChatView | undefined;
+	try {
+		await started.promise;
+		const snapshot = store.runs()[0]!;
+		const handle = registry.get(snapshot.id, snapshot.stages[0]!.id)!;
+		assert.ok(handle);
+		let editor: CustomEditor | undefined;
+		view = new StageChatView({
+			store,
+			runId: snapshot.id,
+			stageId: handle.stageId,
+			handle,
+			workflowName: "task-inspection-pause",
+			graphTheme: deriveGraphTheme({}),
+			onDetach() {},
+			onClose() {},
+			piTui: makeTestTui(24),
+			piKeybindings: new KeybindingsManager({}),
+			piEditorFactory: (tui, theme, bindings) => {
+				editor = new CustomEditor(tui, theme, bindings as KeybindingsManager);
+				return editor;
+			},
+		});
+		view.handleInput("\x1b");
+		await aborted.promise;
+		assert.equal(harness.session.queuedMessagesPaused, true);
+		const before = getUserTexts(harness);
+		for (const command of ["/tasks", "/tasks detail 7"]) {
+			submitStageSkillText(view, command);
+			await vi.waitFor(() => {
+				assert.equal(editor?.getText(), "");
+				assert.equal(view?._statusMessage, "Task inspection is unavailable in this host.");
+			});
+			assert.deepEqual(getUserTexts(harness), before);
+			assert.deepEqual(harness.session.getSteeringMessages(), []);
+			assert.deepEqual(harness.session.getFollowUpMessages(), []);
+		}
+		releaseAbort.resolve();
+		await vi.waitFor(() => assert.equal(handle.status, "paused"));
+		assert.equal(harness.session.queuedMessagesPaused, true);
+		assert.deepEqual(getUserTexts(harness), before);
+		assert.equal(store.runs()[0]!.status, "paused");
+	} finally {
+		releaseAbort.resolve();
+		view?.dispose();
+		abort.abort();
+		await running;
+		registry.clear();
+		harness.cleanup();
 	}
 });
 

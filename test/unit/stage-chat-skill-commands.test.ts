@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import { type AgentSession, buildSkillCatalog } from "@bastani/atomic";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { createSessionSkillAutocompleteProvider } from "../../packages/coding-agent/src/modes/interactive/skill-command-autocomplete.js";
-import { createStageSkillFixture } from "../fixtures/stage-chat-skill-session.js";
-import { FakePromptEditor, flush, makeFakeKeybindings, makeTestTui, StageUiBroker } from "./stage-chat-view-helpers.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+import { createStageSkillFixture, submitStageSkillText } from "../fixtures/stage-chat-skill-session.js";
+import {
+	FakePromptEditor,
+	flush,
+	makeFakeKeybindings,
+	makeHandle,
+	makeTestTui,
+	StageUiBroker,
+	setupRun,
+} from "./stage-chat-view-helpers.js";
 
 test("#2884 stage skill suggestions use the attached catalog and source metadata, including qualified alternatives", async () => {
 	const fixture = await createStageSkillFixture();
@@ -69,6 +80,54 @@ test("#2884 missing metadata is explicit and cancelled discovery publishes no re
 	assert.equal(warnings.length, 1);
 });
 
+test.each(["blocked", "archived", "disposed", "missing metadata"] as const)(
+	"#2884 stage discovery distinguishes %s from missing command metadata",
+	async (state) => {
+		const store = createStore();
+		setupRun(
+			store,
+			"run-1",
+			"stage-a",
+			state === "blocked" ? "blocked" : state === "archived" ? "completed" : "running",
+		);
+		let provider: AutocompleteProvider | undefined;
+		class Editor extends FakePromptEditor {
+			setAutocompleteProvider(value: AutocompleteProvider) {
+				provider = value;
+			}
+		}
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			graphTheme: deriveGraphTheme({}),
+			handle: state === "archived" ? undefined : { ...handle, isDisposed: state === "disposed" },
+			onDetach() {},
+			onClose() {},
+			piTui: makeTestTui(24),
+			piKeybindings: makeFakeKeybindings(),
+			piEditorFactory: () => new Editor(),
+		});
+		try {
+			assert.ok(provider);
+			assert.equal(
+				await provider.getSuggestions(["/skill:fi"], 0, 9, { signal: new AbortController().signal }),
+				null,
+			);
+			assert.equal(
+				view._statusMessage,
+				state === "missing metadata"
+					? "Skill discovery unavailable: this stage host does not expose its session command metadata."
+					: "Skill discovery unavailable: This stage chat is not editable.",
+			);
+		} finally {
+			view.dispose();
+		}
+	},
+);
+
 test("#2884 mounted stage editor replaces inherited parent completion with stage-bound discovery", async () => {
 	const fixture = await createStageSkillFixture();
 	try {
@@ -126,5 +185,33 @@ test("#2884 mounted custom questions receive slash-looking input literally befor
 		assert.equal(fixture.stage.session.getSteeringMessages().length, 0);
 	} finally {
 		await fixture.cleanup();
+	}
+});
+
+test("#2884 a skill admission refusal after resume does not leave a running chat visually paused", async () => {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	const { handle } = makeHandle(undefined, [], "paused");
+	handle.sendUserMessage = async () => {
+		throw new Error("Fixture skill admission refused after resume");
+	};
+	const view = new StageChatView({
+		store,
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		graphTheme: deriveGraphTheme({}),
+		handle,
+		onDetach() {},
+		onClose() {},
+	});
+	try {
+		assert.match(view.render(120).join("\n"), /PAUSED/);
+		submitStageSkillText(view, "/skill:fixture refused");
+		await vi.waitFor(() => assert.equal(view._statusMessage, "Fixture skill admission refused after resume"));
+		assert.equal(handle.status, "running");
+		assert.doesNotMatch(view.render(120).join("\n"), /PAUSED/);
+	} finally {
+		view.dispose();
 	}
 });

@@ -272,3 +272,40 @@ test.each(["auto", "followUp"] as const)("interrupt settlement retains %s intent
 		host.dispose();
 	}
 });
+
+// RFC #2884: local task inspection must not release an Escape pause or enter model context.
+test.each(["auto", "followUp"] as const)("task commands stay local during %s interrupt settlement", async (mode) => {
+	const release = Promise.withResolvers<void>();
+	const calls: string[] = [];
+	const host = new ChatSessionHost({
+		style,
+		editorTheme,
+		isStreaming: () => true,
+		commands: {
+			interrupt: () => release.promise,
+			async handleSlashCommand(text) {
+				calls.push(`local:${text}`);
+				return true;
+			},
+			async resume(text) {
+				calls.push(`resume:${text}`);
+			},
+		},
+	});
+	try {
+		host.handleInput("\x1b");
+		for (const text of ["/tasks", "/tasks detail 7"]) {
+			host.setInputText(text);
+			void host.submit(mode);
+			await waitForMicrotasks();
+			assert.equal(calls.at(-1), `local:${text}`);
+			assert.equal(host.inputText(), "");
+		}
+		release.resolve();
+		await waitForMicrotasks();
+		assert.deepEqual(calls, ["local:/tasks", "local:/tasks detail 7"]);
+	} finally {
+		release.resolve();
+		host.dispose();
+	}
+});

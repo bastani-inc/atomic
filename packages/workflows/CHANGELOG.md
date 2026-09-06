@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Updated the bundled prompt-engineering skill with GPT-6 Astra prompting and API migration guidance, plus an attributed instruction audit covering concise skill descriptions, selective reference loading, proportionate testing, permission boundaries, and completion criteria.
 - Split prompt-engineering model advice into individually sourced guides for GPT-5.6, GPT-5.5, Claude Fable 5.1, Fable 5, Opus 5, Opus 4.8, and Sonnet 5, alongside Astra. Shared guidance now routes to each model's distinct effort, verification, delegation, and API migration rules.
-- `/tasks` in an attached stage chat is now reserved for local inspection and no longer enters model context. Hosts without a task inspector report that it is unavailable.
+- `/tasks` in an attached stage chat is now reserved for local inspection and no longer enters model context, including during interrupt settlement. Hosts without a task inspector report that it is unavailable.
 
 ## [0.9.18-alpha.6] - 2026-09-04
 

@@ -245,12 +245,18 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
 				ctx.localPaused = true;
-				if (message && classifyChatCommand(message) === "skill") {
-					await submitStageSkillCommand(ctx, message, mode, true);
-				} else {
-					await handle.resume(message);
+				let succeeded = false;
+				try {
+					if (message && classifyChatCommand(message) === "skill") {
+						await submitStageSkillCommand(ctx, message, mode, true);
+					} else {
+						await handle.resume(message);
+					}
+					succeeded = true;
+				} finally {
+					ctx.localPaused =
+						!succeeded && (currentStage(ctx)?.status === "paused" || liveHandle(ctx)?.status === "paused");
 				}
-				ctx.localPaused = false;
 			},
 			runBash: async (request) => {
 				const handle = liveHandle(ctx);
