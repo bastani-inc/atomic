@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-09-05
+
+Cumulative release of the `0.9.18-alpha.3` through `0.9.18-alpha.7` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- Workflow-stage Intercom targets require root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` paths. Legacy `<runId>:<stageKey>` targets fail with a migration hint.
+- Removed `fastMode` from task results, stage snapshots, fallback metadata, and durable records. Pin canonical `-fast` model IDs explicitly; normal and fast IDs remain separate ordered fallback candidates.
+
+### Added
+
+- Added checksum-pinned embedded PostgreSQL on Linux musl x64/ARM64 and Windows ARM64, retaining explicit database URL precedence, Docker fallback, privilege dropping, and process-owned shutdown. Windows ARM64 uses PostgreSQL x64 through Windows 11 emulation.
+- Launch persists possible literal, patterned, and nested-child stage paths. Sticky sends reach future matches, root broadcasts reach live and future descendants until termination, and `intercom list` shows possible targets and queued counts. Valid unknown paths queue with warnings and settle as undeliverable only if never matched.
+- Status, list/detail views, and the `BACKGROUND` panel identify materialized pending stages, expose exact targets only when delivery is available, and distinguish unavailable delivery explicitly.
+
+### Changed
+
+- Heartbeat and stage guidance use one authoritative path broadcast for shared scope changes, teach discovery/globs/live-only asks, and distinguish orchestration from cross-cutting extension policy with explicit companion dependencies.
+- Goal/Ralph orchestration, Ralph prompt engineering/research, and Open Claude Design use Astra at high. Goal reviewers and Ralph reviewer B use Astra at xhigh; reviewer A uses Fable 5.1 at high. Added both model families to role-specific fallback chains and updated Ralph research/reviewer ordering.
+- Guidance honors task-scoped inline requests, reconciles active runs without duplicate execution, chooses verification by browser/terminal/desktop environment, supports offline qlty setup, and requires verified hosted links for authorized GitHub media uploads. Model-pinning advice consults measured task-specific evals alongside role guidance.
+- Expanded the prompt-engineering skill with sourced Astra prompting/API migration guidance and separate GPT-5.6, GPT-5.5, Fable 5.1, Fable 5, Opus 5, Opus 4.8, and Sonnet 5 guides. Shared instructions cover selective references, proportionate verification, permission boundaries, and completion criteria.
+- Stage chat uses the same jump-to-latest copy and shortcut as fullscreen chat.
+
+### Fixed
+
+- Fixed invocation-owned stage groups, collision-free identities, durable-resume identity preservation, and isolated Goal/Ralph reviewers. Pending target/ID displays wrap without truncating usable addresses; ended runs no longer advertise delivery, and narrow widgets preserve tool/elapsed metadata with accurate overflow counts ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
+- Tool-only workflows no longer produce `ZERO_STAGES` warnings or advertise tool nodes as chat-stage targets.
+- Structured-output exhaustion now advances the model fallback chain. Each candidate gets the prompt plus three corrective follow-ups; failed attempts remain recorded and successful model metadata persists immediately ([#2812](https://github.com/bastani-inc/atomic/issues/2812)).
+- Exhausted queued Intercom delivery fails its stage deterministically without model retries or fallback. The first failure settles readiness once, preserves queued steering, disposes the refused session, and handles pre-latched failures and late drains safely.
+- Durability degradation uses display-only warnings in interactive/RPC sessions and actionable console diagnostics in headless mode. Pending-message sweeps skip unrelated runs, deduplicate interactive warnings, and preserve messages for recovery.
+- In-flight resume, catalog preparation, and completed-run opening retain the backend selected during initialization rather than failing after concurrent mutable-state changes.
+- Targeted durable-tool aborts retain exact unfinished-tool identity and an inspection-only cancellation frontier. Resume, DBOS hydration, and session restoration replay completed work and retry that tool without fabricating model stages. Invalid or ambiguous checkpoint state fails before callbacks; older state requires typed checkpoint proof, not transcript inference.
+- Graph parent replacement rejects self-edges and cycles before mutation. Tool-frontier continuations reject completion that skips the unfinished tool and reject replacement model/task or child-workflow work before side effects, including worktree setup. Recovery evidence and completed callbacks remain intact.
+
 ## [0.9.18-alpha.7] - 2026-09-05
 
 ### Fixed

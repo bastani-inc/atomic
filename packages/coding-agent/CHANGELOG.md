@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-09-05
+
+Cumulative release of the `0.9.18-alpha.1` through `0.9.18-alpha.7` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- Replaced `/fast` with selectable canonical `-fast` model IDs. Removed its selector, `codexFastMode.chat`/`codexFastMode.workflow` settings, `ATOMIC_CODEX_FAST_MODE`, scope inheritance, toggle-state exports, settings-manager methods, and the environment-sourced settings-override layer without a compatibility shim. Select a fast model explicitly; effective settings now merge global then project settings.
+- Fast-routing APIs now live in `core/fast-model-routing.ts` and `core/fast-model-routing-transport.ts`, with package-root exports retained for the replacement APIs. `usesChatGptCodexTransport` and `usesFirstPartyCodexRouting` remain; `withCodexFastRouteHeaders` derives identity from route metadata rather than an enabled flag.
+- Cloudflare AI Gateway binding transport requires `binding.fetch()` and no longer falls back to `gateway(id).run(...)`.
+- `WorkflowPendingStageDelivery` now requires `fail(reason: Error): void` so delivery owners can settle exhausted recovery instead of leaving stages parked forever.
+- Removed the experimental remote-session lease API, transcript projection helpers, and harness factory. `@bastani/atomic/client` now re-exports the service-addressed `@earendil-works/pi-client` API.
+
+### Added
+
+- Added explicit fast model variants to `/model`, `--list-models`, workflow catalogs, scoped lists, session restore, fallback candidates, usage, and attempt records. Thinking suffixes remain supported. OpenAI and Codex variants send the base upstream ID with priority tier; Copilot exposes only account-advertised fast IDs and sends them without an OpenAI tier.
+- Added fast-specific `modelOverrides`, derivation APIs, `ModelRuntime.getFastModelVariantDiagnostics()`, and `getWarning()`. Existing provider, custom, or extension-owned IDs win collisions and produce actionable startup/catalog warnings. Route metadata, not a name suffix, grants fast behavior.
+- Added GPT-6-Astra across OpenAI, Codex, Bedrock, OpenRouter, and Vercel, including derived first-party fast variants, provider-specific pricing, long-context tiers, and provisional account-gated Copilot support. Added Gemini 3.8 Flash, Claude Fable 5.1, Copilot Claude Fable 5/5.1, and Baseten GLM-5.3-Fast with provider-owned metadata and availability.
+- Embedded PostgreSQL now supports offline durable storage on Linux musl x64/ARM64 and Windows ARM64. Windows ARM64 uses PostgreSQL x64 through Windows 11 emulation; installs and standalone archives carry only the matching runtime.
+- Added `supportsMidConvoEffort` and `compat.vllmPriority` custom-model settings, and transcript notices for dropped Anthropic thinking when cache-miss notices are enabled.
+- Added a clickable fullscreen `Jump to latest message` overlay with the configured shortcut. Holding Alt makes fullscreen mouse-wheel scrolling move five times as far ([upstream #9166](https://github.com/earendil-works/pi/pull/9166)).
+- Documented Zed terminal keybindings for Kitty-protocol modified keys ([#8828](https://github.com/earendil-works/pi/pull/8828)).
+
+### Changed
+
+- Updated Pi runtime dependencies to 0.85.1, preserving Atomic startup, client API, and footer watchers. Fullscreen search uses the cached index and visible-match highlighting introduced in Pi 0.85.0.
+- Startup paints the themed identity and focused editor before isolated-engine readiness. First submissions wait for optional resources, Escape cancels a waiting submission, and `/reload` retries extension failures without publishing failed candidates' host-managed state.
+- Compiled/bundled builds reuse native-imported builtin extension factories across reloads while editable extensions and workflows retain content-hash invalidation. Standalone builds use syntax-minified shared sidecars and bytecode launchers, including Windows.
+- Interactive model, thinking, cycling, and scoped-list selections save as startup defaults immediately. Selectors keep active choices marked while browsing; scoped lists use consistent toggles and strike through unavailable models. Removed Ctrl+S save-default UI.
+- The working indicator reads `Working`, preserving Atomic's animated status row. The centered jump overlay no longer consumes a transcript row, and workflow stage chat uses matching copy and shortcuts.
+- `ModelRuntime` enforces first-party Codex routing for standalone stream/complete calls too. Fast derivation excludes unsupported adapters and extension-owned transports, Copilot restore requires account entitlement and a base catalog model, and all provider catalog accessors agree on derived variants. Labels show the canonical model ID without a redundant fast badge.
+- Claude on Anthropic and Bedrock accepts PDF input through the bundled AI library, with visible placeholders elsewhere. Interactive sessions do not yet produce document blocks; Bedrock requires citations for full visual understanding.
+- Updated hashline edit guidance with worked examples, rejected-shape warnings, and a specification of native block resolution. Model-selection references record the August 26 DeepSWE snapshot, corrected prices and Pareto choices, and Fable 5.1's unmeasured status. Compaction docs explain why `preserve_recent` preserves text and tool exchanges but resets signed reasoning.
+- Capable Responses models use `prompt_cache_options.ttl: "30m"` for long retention; older models retain the 24-hour legacy control.
+
+### Fixed
+
+- Fixed Windows x64 and ARM64 archives crashing before startup in `0.9.18-alpha.1` ([#2781](https://github.com/bastani-inc/atomic/pull/2781)).
+- Restored startup resource listings, source-path expansion, slash-prefixed prompt labels, isolated-child extension inventory, deterministic collision labels, overlap warnings, and consistent hidden-resource handling across platforms.
+- Fixed in-memory forks during running tools, lost compaction boundaries after forks, session import filename collisions, RPC aborts not cancelling manual compaction, and concurrent `/share` exports overwriting temporary files.
+- Builtin tools resolve relative paths against an extension's `ctx.cwd`, including matching search hashline tags. Write confirmations no longer mislabel UTF-16 counts as bytes or discard user prose merely because it begins with `Successfully wrote to`.
+- Fixed Claude Fable thinking-level routing on Copilot, Fireworks GLM endpoint routing, Fable 5.1 prefix/model-switch recovery, exact reasoning-byte restoration, unsupported sampling fields and forced tool choices, fallback replay and serving-model billing, and persisted thinking-drop notices on resume. Custom Responses gateways can disable `max_output_tokens`.
+- Fixed managed fd/rg downloads behind GitHub API quotas, selected static musl archives on Linux x64/ARM64, and pinned darwin/x64 fd to 10.3.0. Fixed proxied plain-HTTP requests hanging after tool calls and signal-killed subprocesses appearing successful.
+- Fixed JPEG EXIF orientation detection, skills disappearing when bash exists without read, and model-refresh errors missing their status spacing. Jump-overlay clicks preserve other mouse reports in the same input chunk.
+- Raised branch-summary output to 4096 tokens, clamped to model limits, to avoid reasoning exhausting the previous cap ([#8845](https://github.com/earendil-works/pi/issues/8845)).
+- Resumed workflows cannot report completion or start replacement work while skipping their exact unfinished durable tool. Completed work remains cached and cancellation retains precedence.
+
+### Removed
+
+- Removed `/atomic`. Use `/workflow list`, `/changelog`, and `/hotkeys` instead.
+- Removed Ctrl+X copy-message/selection to avoid workflow-navigation conflicts. `/copy` and automatic mouse-selection copying remain.
+
 ## [0.9.18-alpha.7] - 2026-09-05
 
 ### Added
