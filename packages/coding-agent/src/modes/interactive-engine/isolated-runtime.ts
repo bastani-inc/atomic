@@ -201,6 +201,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			const session = super.session;
+			if (
+				state.projectTrusted !== undefined &&
+				session.settingsManager.isProjectTrusted() !== state.projectTrusted
+			) {
+				// The child owns trust hooks/decisions. The host only mirrors their result.
+				session.settingsManager.setProjectTrusted(state.projectTrusted);
+				await session.settingsManager.reload();
+				await session.resourceLoader.reload();
+				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
+			}
 			this.remoteModelCatalog.apply(catalog);
 			this.remoteModelCatalog.patch(session);
 			(session.agent.state as { model?: Model<Api> }).model = state.model;
@@ -466,11 +476,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.health.publish(diagnostic);
 	}
 
-	override async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
-		const result = await this.client.switchSession(sessionPath);
+	override async switchSession(
+		sessionPath: string,
+		options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
+	): Promise<{ cancelled: boolean }> {
+		const result = await this.client.switchSession(sessionPath, options?.cwdOverride);
 		if (!result.cancelled) {
-			await super.switchSession(sessionPath);
+			await super.switchSession(sessionPath, { cwdOverride: options?.cwdOverride });
 			await this.initializeFromEngine();
+			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());
 		}
 		return result;
 	}

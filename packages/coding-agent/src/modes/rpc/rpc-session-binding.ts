@@ -1,6 +1,7 @@
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import type { ProjectTrustContext } from "../../core/extensions/index.ts";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
@@ -26,6 +27,7 @@ interface RpcSessionBindingOptions {
 
 export class RpcSessionBinding {
 	private session: AgentSession;
+	private boundRunner: AgentSession["extensionRunner"] | undefined;
 	private unsubscribe?: () => void;
 	private unsubscribeBackpressure?: () => void;
 	private readonly runtimeHost: AgentSessionRuntime;
@@ -60,6 +62,33 @@ export class RpcSessionBinding {
 		this.inputForm = inputForm;
 		this.reloadCoordinator = reloadCoordinator;
 		this.session = runtimeHost.session;
+		this.runtimeHost.setProjectTrustContextFactory((cwd) => this.createProjectTrustContext(cwd));
+	}
+
+	private createProjectTrustContext(cwd: string): ProjectTrustContext {
+		const runner = this.runtimeHost.session.extensionRunner;
+		const ui = runner.getUIContext();
+		const hasUI = this.customUi !== undefined;
+		return {
+			cwd,
+			mode: hasUI ? "tui" : "rpc",
+			hasUI,
+			ui: {
+				select: (title, options, opts) =>
+					hasUI
+						? runner.withProjectTrustPrompt("select", title, () => ui.select(title, options, opts))
+						: Promise.resolve(undefined),
+				confirm: (title, message, opts) =>
+					hasUI
+						? runner.withProjectTrustPrompt("confirm", title, () => ui.confirm(title, message, opts))
+						: Promise.resolve(false),
+				input: (title, placeholder, opts) =>
+					hasUI
+						? runner.withProjectTrustPrompt("input", title, () => ui.input(title, placeholder, opts))
+						: Promise.resolve(undefined),
+				notify: (message, type) => ui.notify(message, type),
+			},
+		};
 	}
 
 	get currentSession(): AgentSession {
@@ -67,6 +96,7 @@ export class RpcSessionBinding {
 	}
 
 	async rebindSession(): Promise<void> {
+		if (this.session === this.runtimeHost.session && this.boundRunner === this.session.extensionRunner) return;
 		this.session = this.runtimeHost.session;
 		this.disposeSubscriptions();
 		const session = this.session;
@@ -148,13 +178,16 @@ export class RpcSessionBinding {
 			await waitForRawStdoutBackpressure();
 		});
 		this.reloadCoordinator?.publishCurrentState(session);
+		this.boundRunner = session.extensionRunner;
 	}
 
 	/** Load and atomically publish the optional resource set after the minimal interactive engine binds. */
 	async loadDeferredResources(): Promise<void> {
 		const session = this.session;
 		try {
-			await session.reload({ reason: "startup", failOnExtensionErrors: true });
+			if (!(await this.runtimeHost.completeStartup())) {
+				await session.reload({ reason: "startup", failOnExtensionErrors: true });
+			}
 		} catch (error) {
 			for (const extensionError of session.resourceLoader.getExtensions().errors) {
 				this.output({
@@ -171,6 +204,7 @@ export class RpcSessionBinding {
 	}
 
 	disposeSubscriptions(): void {
+		this.boundRunner = undefined;
 		this.unsubscribe?.();
 		this.unsubscribeBackpressure?.();
 		this.footerDataProvider?.dispose();

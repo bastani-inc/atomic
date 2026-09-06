@@ -160,6 +160,7 @@ export function createRpcCommandHandler({
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
+					projectTrusted: session.settingsManager.isProjectTrusted(),
 					resourceOverlaps: extensionResult.overlaps ?? [],
 					resourceExtensions: extensionResult.extensions.map((extension) => ({
 						path: extension.path,
@@ -398,7 +399,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "switch_session": {
-				const result = await runtimeHost.switchSession(command.sessionPath);
+				const result = await runtimeHost.switchSession(command.sessionPath, { cwdOverride: command.cwdOverride });
 				if (!result.cancelled) {
 					await rebindSession();
 				}

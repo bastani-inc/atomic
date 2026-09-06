@@ -47,7 +47,7 @@ InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function (
 InteractiveModeBase.prototype.completeDeferredStartup = async function (this: InteractiveModeBase): Promise<void> {
 	try {
 		await this.bindCurrentSessionExtensions();
-		await this.session.reload({ reason: "startup" });
+		if (!(await this.runtimeHost.completeStartup())) await this.session.reload({ reason: "startup" });
 		this.applyRuntimeSettings();
 		// Initial transcript rows precede deferred extension loading, so rebuild them
 		// against the new extension registry before releasing startup output.

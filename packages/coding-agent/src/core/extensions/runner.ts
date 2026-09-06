@@ -359,10 +359,31 @@ export class ExtensionRunner {
 		});
 	}
 
+	private readonly pendingUIPromptNotifications = new Set<Promise<void>>();
+
 	private emitUIPromptEvent(event: Extract<RunnerEmitEvent, { type: "ui_prompt_start" | "ui_prompt_end" }>): void {
-		queueMicrotask(() => {
-			void this.emit(event);
+		const delivery = Promise.resolve().then(async () => {
+			await this.emit(event);
 		});
+		this.pendingUIPromptNotifications.add(delivery);
+		void delivery.finally(() => this.pendingUIPromptNotifications.delete(delivery)).catch(() => {});
+	}
+
+	/** Settle only the deliveries pending at this boundary, without delaying prompt UI. */
+	async flushUIPromptNotifications(timeoutMs: number): Promise<{ timedOut: boolean }> {
+		const pending = [...this.pendingUIPromptNotifications];
+		if (pending.length === 0) return { timedOut: false };
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				Promise.allSettled(pending).then(() => ({ timedOut: false })),
+				new Promise<{ timedOut: boolean }>((resolve) => {
+					timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	getUIContext(): ExtensionUIContext {
@@ -516,6 +537,22 @@ export class ExtensionRunner {
 			navigateTree: (targetId, options) => this.navigateTreeHandler(targetId, options),
 			switchSession: (sessionPath, options) => this.switchSessionHandler(sessionPath, options),
 			reload: () => this.reloadHandler(),
+		};
+	}
+
+	/** Keep startup reporters bound while adding the now-authorized extension set. */
+	attachStartupExtensions(extensions: Extension[]): () => Promise<void> {
+		const newcomers = extensions.filter((extension) => !this.extensions.includes(extension));
+		this.extensions = [...this.extensions, ...newcomers];
+		return async () => {
+			await runResourceRegistrationBatch(this.runtime, () =>
+				runGenericHandlers(
+					this.extensions.filter((extension) => newcomers.includes(extension)),
+					this.createContext(),
+					{ type: "session_start", reason: "startup" },
+					(error) => this.emitError(error),
+				),
+			);
 		};
 	}
 

@@ -4,6 +4,7 @@ import { type AgentSession, setRegisteredThemes, stopThemeWatcher } from "./inte
 
 InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (this: InteractiveModeBase): Promise<void> {
 	const uiContext = this.createExtensionUIContext();
+	this.runtimeHost.setProjectTrustContextFactory((cwd) => this.createProjectTrustContext(cwd));
 	await this.session.bindExtensions({
 		uiContext,
 		mode: "tui",

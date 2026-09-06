@@ -123,6 +123,7 @@ export function _buildRuntime(
 		activeToolNames?: string[];
 		flagValues?: Map<string, boolean | string>;
 		includeAllExtensionTools?: boolean;
+		preserveRunner?: boolean;
 	},
 ): void {
 	const autoResizeImages = this.settingsManager.getImageAutoResize();
@@ -180,20 +181,22 @@ export function _buildRuntime(
 		}
 	}
 
-	this._extensionRunner = new ExtensionRunner(
-		extensionsResult.extensions,
-		extensionsResult.runtime,
-		this._cwd,
-		this.sessionManager,
-		new ModelRegistry(this._modelRuntime),
-		this._orchestrationContext,
-		this._subagentPolicy,
-	);
-	if (this._extensionRunnerRef) {
-		this._extensionRunnerRef.current = this._extensionRunner;
+	if (!options.preserveRunner) {
+		this._extensionRunner = new ExtensionRunner(
+			extensionsResult.extensions,
+			extensionsResult.runtime,
+			this._cwd,
+			this.sessionManager,
+			new ModelRegistry(this._modelRuntime),
+			this._orchestrationContext,
+			this._subagentPolicy,
+		);
+		if (this._extensionRunnerRef) {
+			this._extensionRunnerRef.current = this._extensionRunner;
+		}
+		this._bindExtensionCore(this._extensionRunner);
+		this._applyExtensionBindings(this._extensionRunner);
 	}
-	this._bindExtensionCore(this._extensionRunner);
-	this._applyExtensionBindings(this._extensionRunner);
 
 	const defaultActiveToolNames = this._baseToolsOverride
 		? Object.keys(this._baseToolsOverride)
