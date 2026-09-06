@@ -200,19 +200,22 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 
 ### Per-job time limits
 
-Job caps use the latest two completed CI runs available at calibration time:
+The initial job caps used the latest two completed CI runs available at calibration time:
 [33997174167](https://github.com/bastani-inc/atomic/actions/runs/33997174167)
 (main, `c77de93380`) and
 [33997819241](https://github.com/bastani-inc/atomic/actions/runs/33997819241)
 (PR, `bafc6ebd17`). Both succeeded. Run `33998194502` was still in progress
 and was excluded rather than treating unfinished durations as measurements.
+Those samples and caps remain unchanged except for Windows release archive,
+whose September 6 recalibration uses the explicitly identified runs below.
 
 For each job/platform, the cap in minutes is
 `ceil(max(run_1_seconds, run_2_seconds) × 1.5 / 60)`. Durations come from
 GitHub's job `completedAt - startedAt`, including setup and teardown but not
-time queued for a runner. Whole-minute rounding provides at least 50% headroom.
+time queued for a runner. Whole-minute rounding provides at least 50% headroom
+over the observed duration, not over an unobserved completion after a timeout.
 
-| Job | Platform | Run 33997174167 | Run 33997819241 | Timeout |
+| Job | Platform | Sample 1 (33997174167 unless noted) | Sample 2 (33997819241 unless noted) | Timeout |
 | --- | --- | ---: | ---: | ---: |
 | Unit tests | Linux | 371 s | 367 s | 10 min |
 | Unit tests | Windows | 526 s | 511 s | 14 min |
@@ -221,13 +224,36 @@ time queued for a runner. Whole-minute rounding provides at least 50% headroom.
 | Agent suite | Linux | 226 s | 216 s | 6 min |
 | Agent suite | Windows | 331 s | 327 s | 9 min |
 | Release archive | Linux | 76 s | 80 s | 2 min |
-| Release archive | Windows | 138 s | 135 s | 4 min |
+| Release archive | Windows | 147 s (34021439230) | 244 s (34035777039; timeout-censored) | 7 min |
 | Static checks | Linux | 78 s | 88 s | 3 min |
 | Final test gate | Linux matrix label | 4 s | 3 s | 1 min |
 | Final test gate | Windows matrix label | 4 s | 5 s | 1 min |
 
 Both final gate legs execute on Linux. The topology contract pins the caps and
 the sampled matrix-job maxima used to calculate them.
+
+The Windows release-archive cap previously used 138 s / 135 s samples, yielding
+4 minutes. In PR #2887, [run 34035777039, job 101493452122](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122)
+(`fe3263c73`) was cancelled after 244 s against that 240 s cap, despite every
+recorded step succeeding. The base [run 34021439230](https://github.com/bastani-inc/atomic/actions/runs/34021439230)
+(main, `e9faa47f9`) took 147 s. The step-level comparison is:
+
+| Windows step | Base run 34021439230 | PR run 34035777039 |
+| --- | ---: | ---: |
+| Build native release binary | 75 s | 124 s |
+| Smoke test Windows release archive | 17 s | 36 s |
+
+Each archive now stages and validates its own pinned PostgreSQL payload; the
+Windows smoke also executes the SQL persistence/restart gate. Its final smoke
+step succeeded from `2026-09-06T13:24:01Z` to `2026-09-06T13:24:37Z`. These are
+structural additions to the measured work, with setup/checkout/install variance
+also contributing; removing the smoke would discard coverage rather than fix
+the budget. Applying the same rule gives `ceil(max(147, 244) × 1.5 / 60) = 7`
+minutes for Windows only. **244 s is a timeout-censored observation, not a
+successful uncapped job duration.** A fresh successful Windows CI run is still
+needed to validate end-to-end headroom. Linux's 2-minute cap, all other job caps,
+the 14-minute hang-detector ceiling, required contexts, smoke tests and per-test
+thresholds are unchanged.
 
 These are two-run wall-clock limits, not a guarantee that a full suite retry or
 a cold-cache toolchain download will fit. Bounded retries remain enabled but

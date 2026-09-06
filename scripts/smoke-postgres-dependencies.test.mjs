@@ -28,7 +28,23 @@ test("the smoke CLI reaches usage validation with npm's linked layout and an emp
 				JSON.stringify({ name, version: dependencies[name], type: "module", main: "index.js" }),
 			);
 			writeFileSync(join(directory, "index.js"), source);
-			fixtureDependencies[name] = `file:${directory}`;
+			// npm 10.9.4 misresolves linked file: directories; tarballs retain the linked install layout.
+			// Use a separate packing cache so the install cache below starts empty.
+			const packed = execFileSync(
+				"npm",
+				[
+					"pack",
+					"--silent",
+					"--ignore-scripts",
+					"--offline",
+					"--pack-destination",
+					join(root, "fixtures"),
+					"--cache",
+					join(root, "npm-pack-cache"),
+				],
+				{ cwd: directory, encoding: "utf8" },
+			).trim();
+			fixtureDependencies[name] = `file:${join(root, "fixtures", packed)}`;
 		}
 		writeFileSync(
 			join(root, "package.json"),
