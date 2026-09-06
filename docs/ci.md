@@ -224,7 +224,7 @@ over the observed duration, not over an unobserved completion after a timeout.
 | Agent suite | Linux | 226 s | 216 s | 6 min |
 | Agent suite | Windows | 331 s | 327 s | 9 min |
 | Release archive | Linux | 76 s | 80 s | 2 min |
-| Release archive | Windows | 147 s (34021439230) | 244 s (34035777039; timeout-censored) | 7 min |
+| Release archive | Windows | 244 s (34035777039; timeout-censored) | 149 s (34037177374; success) | 7 min |
 | Static checks | Linux | 78 s | 88 s | 3 min |
 | Final test gate | Linux matrix label | 4 s | 3 s | 1 min |
 | Final test gate | Windows matrix label | 4 s | 5 s | 1 min |
@@ -238,22 +238,26 @@ The Windows release-archive cap previously used 138 s / 135 s samples, yielding
 recorded step succeeding. The base [run 34021439230](https://github.com/bastani-inc/atomic/actions/runs/34021439230)
 (main, `e9faa47f9`) took 147 s. The step-level comparison is:
 
-| Windows step | Base run 34021439230 | PR run 34035777039 |
-| --- | ---: | ---: |
-| Build native release binary | 75 s | 124 s |
-| Smoke test Windows release archive | 17 s | 36 s |
+| Windows step | Base run 34021439230 | PR run 34035777039 | Repair run 34037177374 |
+| --- | ---: | ---: | ---: |
+| Build native release binary | 75 s | 124 s | 73 s |
+| Smoke test Windows release archive | 17 s | 36 s | 18 s |
 
 Each archive now stages and validates its own pinned PostgreSQL payload; the
-Windows smoke also executes the SQL persistence/restart gate. Its final smoke
-step succeeded from `2026-09-06T13:24:01Z` to `2026-09-06T13:24:37Z`. These are
-structural additions to the measured work, with setup/checkout/install variance
-also contributing; removing the smoke would discard coverage rather than fix
-the budget. Applying the same rule gives `ceil(max(147, 244) × 1.5 / 60) = 7`
-minutes for Windows only. **244 s is a timeout-censored observation, not a
-successful uncapped job duration.** A fresh successful Windows CI run is still
-needed to validate end-to-end headroom. Linux's 2-minute cap, all other job caps,
-the 14-minute hang-detector ceiling, required contexts, smoke tests and per-test
-thresholds are unchanged.
+Windows smoke also executes the SQL persistence/restart gate. The cancelled
+run's final smoke step succeeded from `2026-09-06T13:24:01Z` to
+`2026-09-06T13:24:37Z`. After recalibration, [run 34037177374, job 101497265311](https://github.com/bastani-inc/atomic/actions/runs/34037177374/job/101497265311)
+at `e113615a0` completed successfully in 149 s, including its unchanged Windows
+smoke from `2026-09-06T13:50:27Z` to `2026-09-06T13:50:45Z`. The faster build
+and smoke show that the earlier step deltas were not fixed intrinsic costs of
+the added work; runner/setup/download variance matters too.
+
+Retaining both latest observations gives `ceil(max(244, 149) × 1.5 / 60) = 7`
+minutes for Windows only. The successful run demonstrates completion with
+headroom; it does not erase the slower observation or prove cold-cache/retry
+headroom. The 244 s sample remains timeout-censored, not a successful uncapped
+duration. Linux's 2-minute cap, all other job caps, the 14-minute hang-detector
+ceiling, required contexts, smoke tests and per-test thresholds are unchanged.
 
 These are two-run wall-clock limits, not a guarantee that a full suite retry or
 a cold-cache toolchain download will fit. Bounded retries remain enabled but

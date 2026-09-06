@@ -117,7 +117,7 @@ test("each split job retains its measured timeout hang detector", async () => {
 	const workflow = await readText(testPath);
 	const blocks = await jobs();
 	// Runs 33997174167 / 33997819241, except Windows release-archive recalibrated for PR #2887:
-	// run 34021439230 took 147s; run 34035777039, job 101493452122, was timeout-censored at 244s.
+	// Run 34035777039, job 101493452122, was timeout-censored at 244s; run 34037177374 succeeded in 149s.
 	const caps: Record<string, [number, number]> = {
 		"unit-tests": [Math.ceil((371 * 1.5) / 60), Math.ceil((526 * 1.5) / 60)],
 		"integration-tests": [Math.ceil((118 * 1.5) / 60), Math.ceil((195 * 1.5) / 60)],
