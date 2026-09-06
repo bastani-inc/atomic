@@ -140,6 +140,7 @@ Cumulative release of the `0.9.18-alpha.1` through `0.9.18-alpha.7` prereleases.
 - Fixed branch summaries failing when reasoning consumes a 2048-token output cap by raising the cap to 4096 tokens, clamped to the model's `maxTokens` ([#8845](https://github.com/earendil-works/pi/issues/8845)).
 - Pinned managed fd downloads on darwin/x64 to 10.3.0, matching upstream pi's known-good archive for that host ([#8708](https://github.com/earendil-works/pi/issues/8708)).
 - Fixed model catalog refresh errors in the `/model` selector rendering without the blank line used by the corresponding success status.
+- Fixed Anthropic Messages tool requests advertising root object-union parameter schemas without fields by projecting their branch fields into Anthropic-compatible object schemas ([#2190](https://github.com/bastani-inc/atomic/pull/2190) by [@elefthei](https://github.com/elefthei)).
 
 - Resumed workflows can no longer report completion after changed control flow omits their unfinished durable tool. Normal returns and explicit completed exits require exact frontier consumption. New model/task and child-workflow execution, including stage/task worktree setup, is rejected while that frontier is pending; completed work stays cached and cancellation controls retain precedence.
 
