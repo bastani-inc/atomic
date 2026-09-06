@@ -97,6 +97,7 @@ export interface RuntimeBuildOptions {
 	activeToolNames?: string[];
 	flagValues?: Map<string, boolean | string>;
 	includeAllExtensionTools?: boolean;
+	preserveRunner?: boolean;
 }
 
 export interface AgentSessionQueuePauseControl {
@@ -278,6 +279,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;
 	reload(options?: AgentSessionReloadOptions): Promise<void>;
+	completeStartupResources(resourceLoader: ResourceLoader): Promise<void>;
 
 	_isRetryableError(message: AssistantMessage): boolean;
 	_isFallbackableError(message: AssistantMessage): boolean;
@@ -396,6 +398,7 @@ export interface AgentSessionPublicSurface
 		| "bindExtensions"
 		| "refreshCurrentModelFromRegistry"
 		| "reload"
+		| "completeStartupResources"
 		| "abortRetry"
 		| "setAutoRetryEnabled"
 		| "executeBash"

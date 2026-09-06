@@ -43,7 +43,7 @@ import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runt
 import {
 	type AgentSessionRuntimeDiagnostic,
 	createAgentSessionFromServices,
-	createAgentSessionServices,
+	prepareAgentSessionServices,
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
@@ -51,7 +51,12 @@ import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
-import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
+import {
+	findInitialModel,
+	resolveModelScope,
+	resolveModelScopeWithDiagnostics,
+	resolveRestoredModelReference,
+} from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
@@ -459,7 +464,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
 	let deferredExtensionLoad = false;
 	let forceEagerInteractiveEngineResources = false;
-	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => (await prepareRuntime(options))();
+	const prepareRuntime: NonNullable<CreateAgentSessionRuntimeFactory["prepareResume"]> = async ({
 		cwd,
 		agentDir,
 		sessionManager,
@@ -472,8 +478,19 @@ export async function main(argv: string[], options?: MainOptions) {
 		const initialProjectTrusted =
 			parsed.projectTrustOverride ?? cachedProjectTrust ?? storedProjectTrust ?? !hasTrustInputs;
 		const shouldResolveProjectTrust =
-			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustInputs;
+			!isolateInteractiveHost &&
+			parsed.projectTrustOverride === undefined &&
+			cachedProjectTrust === undefined &&
+			hasTrustInputs;
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
+		const existingSession = sessionManager.buildSessionContext();
+		const deferStartupTrust =
+			sessionStartEvent === undefined &&
+			!isolateInteractiveHost &&
+			(trustPromptMode === "interactive" || engineEnv.child === "1") &&
+			(shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0);
+		let completeStartupReload: (() => Promise<void>) | undefined;
+		let startupTrustContext: typeof projectTrustContext;
 		const resolvedExtensionPathCount = resolvedExtensionPaths?.length ?? 0;
 		const hasSystemPromptInput = parsed.systemPrompt !== undefined || (parsed.appendSystemPrompt?.length ?? 0) > 0;
 		const resolvedResourcePathCount =
@@ -491,6 +508,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			unknownFlagCount: parsed.unknownFlags.size,
 		});
 		const deferExtensions =
+			!deferStartupTrust &&
 			!isolateInteractiveHost &&
 			(deferInteractiveEngineResources ||
 				computeDeferExtensions({
@@ -509,12 +527,13 @@ export async function main(argv: string[], options?: MainOptions) {
 					model: parsed.model,
 				}));
 		if (sessionStartEvent === undefined) {
-			deferredExtensionLoad = deferExtensions;
+			deferredExtensionLoad = deferExtensions || deferStartupTrust;
 			startupEarlyInputCapture ??= startEarlyInputCapture({
 				enabled: appMode === "interactive" && deferExtensions && deprecationWarnings.length === 0,
 			});
 		}
 		const getProjectTrustContext = () =>
+			startupTrustContext ??
 			projectTrustContext ??
 			createProjectTrustContext({
 				cwd,
@@ -522,15 +541,21 @@ export async function main(argv: string[], options?: MainOptions) {
 				settingsManager: runtimeSettingsManager,
 				hasUI: sessionStartEvent === undefined && trustPromptMode === "interactive",
 			});
-		const services = await createAgentSessionServices({
+		let migrateAfterTrust = false;
+		const completeServices = await prepareAgentSessionServices({
 			cwd,
 			agentDir,
 			settingsManager: runtimeSettingsManager,
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions: deferExtensions
 				? { deferExtensions: true, deferResources: true }
-				: shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
+				: shouldResolveProjectTrust || (!isolateInteractiveHost && (resolvedExtensionPaths?.length ?? 0) > 0)
 					? {
+							deferProjectTrust: deferStartupTrust
+								? (complete) => {
+										completeStartupReload = complete;
+									}
+								: undefined,
 							resolveProjectTrust: shouldResolveProjectTrust
 								? async ({ extensionsResult }) => {
 										const trusted = await resolveProjectTrusted({
@@ -543,7 +568,7 @@ export async function main(argv: string[], options?: MainOptions) {
 										});
 										projectTrustByCwd.set(cwd, trusted);
 										if (trusted && !initialProjectTrusted) {
-											runMigrations(cwd, { projectTrusted: true });
+											migrateAfterTrust = true;
 										}
 										return trusted;
 									}
@@ -584,80 +609,159 @@ export async function main(argv: string[], options?: MainOptions) {
 				extensionFactories: isolateInteractiveHost ? undefined : extensionFactories,
 			},
 		});
-		if (isolateInteractiveHost) limitMandatoryIntercomToTool(services.resourceLoader);
-		const { settingsManager, modelRuntime, resourceLoader } = services;
-		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
-			...services.diagnostics,
-			...collectSettingsDiagnostics(settingsManager, "runtime creation"),
-			...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
-				type: "error" as const,
-				message: `Failed to load extension "${path}": ${error}`,
-			})),
-		];
-		const modelPatterns = isolateInteractiveHost ? undefined : (parsed.models ?? settingsManager.getEnabledModels());
-		const scopedModels =
-			modelPatterns && modelPatterns.length > 0
-				? deferredExtensionLoad
-					? (await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime)).scopedModels
-					: await resolveModelScope(modelPatterns, modelRuntime)
-				: [];
-		const sessionArgs = isolateInteractiveHost
-			? { ...parsed, provider: undefined, model: undefined, apiKey: undefined, models: undefined }
-			: parsed;
-		const {
-			options: sessionOptions,
-			cliThinkingFromModel,
-			diagnostics: sessionOptionDiagnostics,
-		} = buildSessionOptions(
-			sessionArgs,
-			scopedModels,
-			sessionManager.buildSessionContext().messages.length > 0,
-			modelRuntime,
-			settingsManager,
-		);
-		diagnostics.push(...sessionOptionDiagnostics);
+		return async () => {
+			if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
+			const services = await completeServices();
+			if (isolateInteractiveHost) limitMandatoryIntercomToTool(services.resourceLoader);
+			const { settingsManager, modelRuntime, resourceLoader } = services;
+			const diagnostics: AgentSessionRuntimeDiagnostic[] = [
+				...services.diagnostics,
+				...collectSettingsDiagnostics(settingsManager, "runtime creation"),
+				...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
+					type: "error" as const,
+					message: `Failed to load extension "${path}": ${error}`,
+				})),
+			];
+			const modelPatterns = isolateInteractiveHost
+				? undefined
+				: (parsed.models ?? settingsManager.getEnabledModels());
+			const scopedModels =
+				modelPatterns && modelPatterns.length > 0
+					? deferredExtensionLoad
+						? (await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime)).scopedModels
+						: await resolveModelScope(modelPatterns, modelRuntime)
+					: [];
+			const sessionArgs = isolateInteractiveHost
+				? { ...parsed, provider: undefined, model: undefined, apiKey: undefined, models: undefined }
+				: parsed;
+			const {
+				options: sessionOptions,
+				cliThinkingFromModel,
+				diagnostics: sessionOptionDiagnostics,
+			} = buildSessionOptions(
+				sessionArgs,
+				scopedModels,
+				sessionManager.buildSessionContext().messages.length > 0,
+				modelRuntime,
+				settingsManager,
+			);
+			if (!deferStartupTrust) diagnostics.push(...sessionOptionDiagnostics);
 
-		if (parsed.apiKey && !isolateInteractiveHost) {
-			if (!sessionOptions.model) {
-				diagnostics.push({
-					type: "error",
-					message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
-				});
-			} else {
-				// Bound the complete CLI key operation—from credential mutation through
-				// provider-scoped catalog refresh—with the established model-refresh budget.
-				const apiKeySignal = AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS);
-				await applyCliRuntimeApiKey(modelRuntime, sessionOptions.model.provider, parsed.apiKey, apiKeySignal);
+			if (parsed.apiKey && !isolateInteractiveHost && !deferStartupTrust) {
+				if (!sessionOptions.model) {
+					diagnostics.push({
+						type: "error",
+						message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
+					});
+				} else {
+					// Bound the complete CLI key operation—from credential mutation through
+					// provider-scoped catalog refresh—with the established model-refresh budget.
+					const apiKeySignal = AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS);
+					await applyCliRuntimeApiKey(modelRuntime, sessionOptions.model.provider, parsed.apiKey, apiKeySignal);
+				}
 			}
-		}
 
-		const created = await createAgentSessionFromServices({
-			services,
-			sessionManager,
-			sessionStartEvent,
-			model: sessionOptions.model,
-			thinkingLevel: sessionOptions.thinkingLevel,
-			scopedModels: sessionOptions.scopedModels,
-			tools: sessionOptions.tools,
-			excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
-			noTools: sessionOptions.noTools,
-			customTools: sessionOptions.customTools,
-		});
-		if (deferInteractiveEngineResources && !created.session.model) {
-			created.session.dispose();
-			forceEagerInteractiveEngineResources = true;
-			return createRuntime({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext });
-		}
-		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
-		if (created.session.model && cliThinkingOverride) {
-			created.session.setThinkingLevel(created.session.thinkingLevel);
-		}
-		return {
-			...created,
-			services,
-			diagnostics,
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+				model: sessionOptions.model,
+				thinkingLevel: sessionOptions.thinkingLevel,
+				scopedModels: sessionOptions.scopedModels,
+				tools: sessionOptions.tools,
+				excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
+				noTools: sessionOptions.noTools,
+				customTools: sessionOptions.customTools,
+			});
+			if (completeStartupReload) {
+				const completeReload = completeStartupReload;
+				let completion: Promise<void> | undefined;
+				services.completeStartup = (context) =>
+					(completion ??= (async () => {
+						startupTrustContext = context;
+						await completeReload();
+						if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
+						const finalServices = await completeServices();
+						const extensionErrors = finalServices.resourceLoader.getExtensions().errors;
+						if (extensionErrors.length > 0) {
+							throw new Error(
+								`Failed to load extensions: ${extensionErrors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`,
+							);
+						}
+						services.resourceLoader = finalServices.resourceLoader;
+						services.diagnostics = finalServices.diagnostics;
+						const patterns = parsed.models ?? settingsManager.getEnabledModels();
+						const finalScope = patterns?.length ? await resolveModelScope(patterns, modelRuntime) : [];
+						const finalSelection = buildSessionOptions(
+							parsed,
+							finalScope,
+							existingSession.messages.length > 0,
+							modelRuntime,
+							settingsManager,
+						);
+						finalServices.diagnostics.push(...finalSelection.diagnostics);
+						let finalModel = finalSelection.options.model;
+						if (!finalModel && existingSession.messages.length > 0 && existingSession.model) {
+							finalModel = await resolveRestoredModelReference(
+								existingSession.model.provider,
+								existingSession.model.modelId,
+								modelRuntime,
+							);
+						}
+						finalModel ??= (
+							await findInitialModel({
+								scopedModels: [],
+								isContinuing: existingSession.messages.length > 0,
+								defaultProvider: settingsManager.getDefaultProvider(),
+								defaultModelId: settingsManager.getDefaultModel(),
+								defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
+								modelThinkingLevels: settingsManager.getAllModelThinkingLevels(),
+								modelRuntime,
+							})
+						).model;
+						if (parsed.apiKey && finalModel)
+							await applyCliRuntimeApiKey(
+								modelRuntime,
+								finalModel.provider,
+								parsed.apiKey,
+								AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS),
+							);
+						created.session.setScopedModels(finalScope);
+						if (finalModel) {
+							created.session.agent.state.model = finalModel;
+							sessionManager.appendModelChange(finalModel.provider, finalModel.id);
+							created.session.setThinkingLevel(
+								finalSelection.options.thinkingLevel ??
+									(existingSession.messages.length > 0 ? created.session.thinkingLevel : undefined) ??
+									settingsManager.getModelThinkingLevel(finalModel.provider, finalModel.id) ??
+									settingsManager.getDefaultThinkingLevel() ??
+									created.session.thinkingLevel,
+							);
+						}
+						await created.session.completeStartupResources(finalServices.resourceLoader);
+						for (const diagnostic of finalServices.diagnostics) reportDiagnostics([diagnostic]);
+					})().catch((error) => {
+						completion = undefined;
+						throw error;
+					}));
+			}
+			if (deferInteractiveEngineResources && !services.completeStartup && !created.session.model) {
+				created.session.dispose();
+				forceEagerInteractiveEngineResources = true;
+				return createRuntime({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext });
+			}
+			const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
+			if (created.session.model && cliThinkingOverride) {
+				created.session.setThinkingLevel(created.session.thinkingLevel);
+			}
+			return {
+				...created,
+				services,
+				diagnostics,
+			};
 		};
 	};
+	createRuntime.prepareResume = prepareRuntime;
 	time("createRuntimeFactory");
 	const runtimeCreationSpan = startTimingSpan("createAgentSessionRuntime");
 	const runtime = await createRuntimeForMode(
@@ -739,7 +843,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 	time("createAgentSession");
 
-	if (appMode !== "interactive" && !session.model) {
+	if (appMode !== "interactive" && !session.model && !(engineEnv.child === "1" && services.completeStartup)) {
 		console.error(chalk.red(formatNoModelsAvailableMessage()));
 		startupEarlyInputCapture?.consume();
 		process.exit(1);

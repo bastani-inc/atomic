@@ -109,7 +109,7 @@ export type RpcCommand =
 	// Session
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "export_html"; outputPath?: string }
-	| { id?: string; type: "switch_session"; sessionPath: string }
+	| { id?: string; type: "switch_session"; sessionPath: string; cwdOverride?: string }
 	| { id?: string; type: "import_session"; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "fork"; entryId: string }
 	| { id?: string; type: "clone" }
@@ -189,6 +189,8 @@ export interface RpcSessionState {
 	messageCount: number;
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
+	/** Authoritative engine trust state; absent on older RPC peers. */
+	projectTrusted?: boolean;
 	resourceOverlaps?: ResourceOverlap[];
 	resourceExtensions?: RpcResourceExtension[];
 }

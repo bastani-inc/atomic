@@ -10,6 +10,7 @@ import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
 import type {
 	ExtensionFactory,
 	ExtensionUIContext,
+	ProjectTrustContext,
 	UIPromptEndEvent,
 	UIPromptKind,
 	UIPromptStartEvent,
@@ -23,6 +24,7 @@ import {
 } from "../src/modes/interactive-engine/protocol.js";
 import "../src/modes/interactive/interactive-extension-runtime.ts";
 import "../src/modes/interactive/interactive-session-routing.ts";
+import "../src/modes/interactive/interactive-extension-context.ts";
 import type { TrustSelectorComponent } from "../src/modes/interactive/components/trust-selector.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -361,6 +363,23 @@ test("pending lifecycle handlers do not delay prompt display or settlement", asy
 	endHandler.resolve();
 });
 
+test("prompt settlement waits for slow observers but bounds hung observers independently of end delivery", async () => {
+	const observer = deferred<void>();
+	const { runner, events } = await createRunner({ onStart: () => observer.promise });
+	runner.setUIContext(createUI());
+	await runner.withProjectTrustPrompt("confirm", "Trust", async () => true);
+	await flushNotifications();
+	assert.deepEqual(
+		events.map((event) => event.type),
+		["ui_prompt_start", "ui_prompt_end"],
+	);
+	assert.deepEqual(await runner.flushUIPromptNotifications(10), { timedOut: true });
+	const settlement = runner.flushUIPromptNotifications(1_000);
+	observer.resolve();
+	assert.deepEqual(await settlement, { timedOut: false });
+	assert.deepEqual(await runner.flushUIPromptNotifications(0), { timedOut: false });
+});
+
 test("rebinding the UI context closes the old span without corrupting the new span", async () => {
 	const { runner, events } = await createRunner();
 	const oldPrompt = deferred<string | undefined>();
@@ -572,4 +591,42 @@ test("trust prompt failures and rebinding preserve one matching end", async () =
 		{ type: "ui_prompt_start", reason: "project_trust", kind: "select", title: "Rebound" },
 		{ type: "ui_prompt_end", reason: "project_trust", kind: "select", title: "Rebound" },
 	]);
+});
+
+// #2873: the in-process trust factory must use the same lifecycle as child RPC trust UI.
+test("in-process trust UI reports all limited dialog methods", async () => {
+	const { runner, events } = await createRunner();
+	const ui = createUI({
+		select: async () => "yes",
+		confirm: async () => true,
+		input: async () => "yes",
+	});
+	runner.setUIContext(ui, "tui");
+	const host = { session: { extensionRunner: runner }, createExtensionUIContext: () => ui };
+	const createContext = Reflect.get(InteractiveModeBase.prototype, "createProjectTrustContext") as (
+		this: typeof host,
+		cwd: string,
+	) => ProjectTrustContext;
+	const context = createContext.call(host, process.cwd());
+	assert.equal(await context.ui.select("Select trust", ["yes"]), "yes");
+	assert.equal(await context.ui.confirm("Confirm trust", "Continue?"), true);
+	assert.equal(await context.ui.input("Input trust"), "yes");
+	await flushNotifications();
+	assert.deepEqual(
+		events,
+		["select", "confirm", "input"].flatMap((kind) => [
+			{
+				type: "ui_prompt_start",
+				reason: "project_trust",
+				kind,
+				title: `${kind[0].toUpperCase()}${kind.slice(1)} trust`,
+			},
+			{
+				type: "ui_prompt_end",
+				reason: "project_trust",
+				kind,
+				title: `${kind[0].toUpperCase()}${kind.slice(1)} trust`,
+			},
+		]),
+	);
 });

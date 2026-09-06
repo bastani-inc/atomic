@@ -4,7 +4,12 @@
 
 ### Added
 
-- Added `reason: "project_trust"` to `ui_prompt_start` and `ui_prompt_end` for the built-in `/trust` selector in both interactive modes, so status integrations can observe the wait. Startup and resume-time trust prompts remain outside this contract. ([#2873](https://github.com/bastani-inc/atomic/issues/2873))
+- Added `reason: "project_trust"` to `ui_prompt_start` and `ui_prompt_end` for the built-in `/trust` selector in both interactive modes, so status integrations can observe the wait. ([#2873](https://github.com/bastani-inc/atomic/issues/2873))
+
+### Fixed
+
+- Prepare resume trust before disposing the outgoing session, preserve it on failed preflight, and allow pending prompt observers up to 1,000 ms to settle without delaying dialog display or answers. Isolated resume uses child-local trust UI and forwards missing-directory overrides without serializing callbacks. ([#2873](https://github.com/bastani-inc/atomic/issues/2873))
+- Startup trust waits now reach existing prompt lifecycle handlers with a live session context, including isolated-engine and borrowed-source dialogs. Only trust-safe extensions load before authorization; approval retains their session and factories, starts newly authorized extensions once, and does not replay earlier waits. ([#2873](https://github.com/bastani-inc/atomic/issues/2873))
 
 ## [0.9.19-alpha.1] - 2026-09-06
 

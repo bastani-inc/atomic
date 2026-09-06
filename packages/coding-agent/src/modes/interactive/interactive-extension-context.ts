@@ -137,14 +137,18 @@ InteractiveModeBase.prototype.createProjectTrustContext = function (
 	cwd: string,
 ): ProjectTrustContext {
 	const ui = this.createExtensionUIContext();
+	const runner = this.session.extensionRunner;
 	return {
 		cwd,
 		mode: "tui",
 		hasUI: true,
 		ui: {
-			select: ui.select,
-			confirm: ui.confirm,
-			input: ui.input,
+			select: (title, options, opts) =>
+				runner.withProjectTrustPrompt("select", title, () => ui.select(title, options, opts)),
+			confirm: (title, message, opts) =>
+				runner.withProjectTrustPrompt("confirm", title, () => ui.confirm(title, message, opts)),
+			input: (title, placeholder, opts) =>
+				runner.withProjectTrustPrompt("input", title, () => ui.input(title, placeholder, opts)),
 			notify: ui.notify,
 		},
 	};

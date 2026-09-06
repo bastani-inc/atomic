@@ -3,7 +3,7 @@ import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
-import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type { ProjectTrustContext, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { ModelRuntime } from "./model-runtime.js";
 import {
@@ -12,6 +12,7 @@ import {
 	type ResourceLoader,
 	type ResourceLoaderReloadOptions,
 } from "./resource-loader.ts";
+import { prepareDefaultResourceLoaderReload } from "./resource-loader-reload.ts";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -79,11 +80,14 @@ export interface AgentSessionServices {
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
+	/** Complete interactive trust after the safe session has a live UI binding. */
+	completeStartup?: (context: ProjectTrustContext) => Promise<void>;
 }
 
 function applyExtensionFlagValues(
 	resourceLoader: ResourceLoader,
 	extensionFlagValues: Map<string, boolean | string> | undefined,
+	allowUnknownFlags = false,
 ): AgentSessionRuntimeDiagnostic[] {
 	if (!extensionFlagValues) {
 		return [];
@@ -123,7 +127,7 @@ function applyExtensionFlagValues(
 		});
 	}
 
-	if (unknownFlags.length > 0) {
+	if (unknownFlags.length > 0 && !allowUnknownFlags) {
 		diagnostics.push({
 			type: "error",
 			message: `Unknown option${unknownFlags.length === 1 ? "" : "s"}: ${unknownFlags.map((name) => `--${name}`).join(", ")}`,
@@ -141,6 +145,13 @@ function applyExtensionFlagValues(
 export async function createAgentSessionServices(
 	options: CreateAgentSessionServicesOptions,
 ): Promise<AgentSessionServices> {
+	return (await prepareAgentSessionServices(options))();
+}
+
+/** Prepare trust now; construct approved resources and register providers on continuation. */
+export async function prepareAgentSessionServices(
+	options: CreateAgentSessionServicesOptions,
+): Promise<() => Promise<AgentSessionServices>> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const modelRuntimeSpan = startTimingSpan("createAgentSessionServices.modelRuntime");
@@ -162,38 +173,52 @@ export async function createAgentSessionServices(
 		settingsManager,
 	});
 	const reloadSpan = startTimingSpan("createAgentSessionServices.resourceLoader.reload");
-	await defaultResourceLoader.reload(options.resourceLoaderReloadOptions);
-	const resourceLoader = await withMandatoryResourceLoader(defaultResourceLoader, cwd);
-	endTimingSpan(reloadSpan);
+	const completeReload = await prepareDefaultResourceLoaderReload(
+		defaultResourceLoader,
+		options.resourceLoaderReloadOptions,
+	);
+	let initialServices = true;
+	return async () => {
+		await completeReload();
+		const resourceLoader = await withMandatoryResourceLoader(defaultResourceLoader, cwd);
+		endTimingSpan(reloadSpan);
 
-	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
-	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
-	const extensionsResult = resourceLoader.getExtensions();
-	for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
-		try {
-			const providerId = "provider" in registration ? registration.provider.id : registration.name;
-			if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
-			else modelRuntime.registerProvider(registration.name, registration.config);
-			extensionsResult.runtime.extensionProviderIds.add(providerId);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			diagnostics.push({ type: "error", message: `Extension "${registration.extensionPath}" error: ${message}` });
+		const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
+		const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
+		const extensionsResult = resourceLoader.getExtensions();
+		for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
+			try {
+				const providerId = "provider" in registration ? registration.provider.id : registration.name;
+				if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
+				else modelRuntime.registerProvider(registration.name, registration.config);
+				extensionsResult.runtime.extensionProviderIds.add(providerId);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				diagnostics.push({ type: "error", message: `Extension "${registration.extensionPath}" error: ${message}` });
+			}
 		}
-	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
-	endTimingSpan(providerSpan);
-	const catalogRestoreSpan = startTimingSpan("createAgentSessionServices.restoreModelCatalogs");
-	await modelRuntime.refresh({ allowNetwork: false });
-	endTimingSpan(catalogRestoreSpan);
-	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
+		extensionsResult.runtime.pendingProviderRegistrations = [];
+		endTimingSpan(providerSpan);
+		const catalogRestoreSpan = startTimingSpan("createAgentSessionServices.restoreModelCatalogs");
+		await modelRuntime.refresh({ allowNetwork: false });
+		endTimingSpan(catalogRestoreSpan);
+		diagnostics.push(
+			...applyExtensionFlagValues(
+				resourceLoader,
+				options.extensionFlagValues,
+				Boolean(options.resourceLoaderReloadOptions?.deferProjectTrust && initialServices),
+			),
+		);
+		initialServices = false;
 
-	return {
-		cwd,
-		agentDir,
-		modelRuntime,
-		settingsManager,
-		resourceLoader,
-		diagnostics,
+		return {
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager,
+			resourceLoader,
+			diagnostics,
+		};
 	};
 }
 

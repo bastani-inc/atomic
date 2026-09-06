@@ -492,6 +492,20 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 	await publication.release();
 }
 
+/** Publish approved startup resources without replacing the session or restarting safe reporters. */
+export async function completeStartupResources(this: AgentSession, resourceLoader: ResourceLoader): Promise<void> {
+	this._resourceLoader = resourceLoader;
+	const startNewcomers = this._extensionRunner.attachStartupExtensions(resourceLoader.getExtensions().extensions);
+	this._buildRuntime({
+		activeToolNames: this.getActiveToolNames(),
+		includeAllExtensionTools: true,
+		preserveRunner: true,
+	});
+	this.refreshCurrentModelFromRegistry();
+	await startNewcomers();
+	await this.extendResourcesFromExtensions("startup");
+}
+
 // =========================================================================
 // Auto-Retry
 // =========================================================================
@@ -503,6 +517,7 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 
 export const agentSessionExtensionBindingsMethods = {
 	bindExtensions,
+	completeStartupResources,
 	extendResourcesFromExtensions,
 	buildExtensionResourcePaths,
 	getExtensionSourceLabel,

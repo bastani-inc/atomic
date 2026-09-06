@@ -117,8 +117,105 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			}
 		});
 
-		return { runtimeHost, faux };
+		return { runtimeHost, faux, createRuntime };
 	}
+
+	it("prepares resume with a live outgoing context and preserves it on preflight failure", async () => {
+		let shutdowns = 0;
+		const { runtimeHost, createRuntime } = await createRuntimeHost((pi) => {
+			pi.on("session_shutdown", () => {
+				shutdowns++;
+			});
+		});
+		const outgoing = runtimeHost.session;
+		const target = SessionManager.create(runtimeHost.cwd);
+		target.appendMessage({ role: "user", content: "saved", timestamp: Date.now() });
+		target.appendMessage(fauxAssistantMessage("saved"));
+		const targetPath = target.getSessionFile()!;
+		let preparations = 0;
+		createRuntime.prepareResume = async (options) => {
+			preparations++;
+			expect(outgoing.sessionManager.getCwd()).toBe(runtimeHost.cwd);
+			expect(shutdowns).toBe(0);
+			expect(options.projectTrustContext?.cwd).toBe(runtimeHost.cwd);
+			throw new Error("trust preflight failed");
+		};
+		await expect(
+			runtimeHost.switchSession(targetPath, {
+				projectTrustContextFactory: (cwd) => ({
+					cwd,
+					mode: "print",
+					hasUI: false,
+					ui: {
+						select: async () => undefined,
+						confirm: async () => false,
+						input: async () => undefined,
+						notify: () => {},
+					},
+				}),
+			}),
+		).rejects.toThrow("trust preflight failed");
+		expect(preparations).toBe(1);
+		expect(shutdowns).toBe(0);
+		expect(runtimeHost.session).toBe(outgoing);
+		createRuntime.prepareResume = async (options) => {
+			expect(shutdowns).toBe(0);
+			return async () => {
+				expect(shutdowns).toBe(1);
+				return createRuntime(options);
+			};
+		};
+		expect(await runtimeHost.switchSession(targetPath)).toEqual({ cancelled: false });
+		expect(runtimeHost.session).not.toBe(outgoing);
+	});
+
+	it("delivers trust waits to a live context before answering and settles observers before shutdown", async () => {
+		let answer!: () => void;
+		const prompt = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		let releaseObserver!: () => void;
+		const observer = new Promise<void>((resolve) => {
+			releaseObserver = resolve;
+		});
+		let started!: () => void;
+		const start = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const events: string[] = [];
+		const { runtimeHost, createRuntime } = await createRuntimeHost((pi) => {
+			pi.on("ui_prompt_start", async (event, ctx) => {
+				expect(event.reason).toBe("project_trust");
+				expect(ctx.sessionManager.getCwd()).toBe(ctx.cwd);
+				events.push("start");
+				started();
+				await observer;
+				expect(ctx.sessionManager.getCwd()).toBe(ctx.cwd);
+				events.push("settled");
+			});
+			pi.on("ui_prompt_end", () => {
+				events.push("end");
+			});
+			pi.on("session_shutdown", () => {
+				events.push("shutdown");
+			});
+		});
+		const target = SessionManager.create(runtimeHost.cwd);
+		target.appendMessage(fauxAssistantMessage("saved"));
+		createRuntime.prepareResume = async (options) => {
+			await runtimeHost.session.extensionRunner.withProjectTrustPrompt("confirm", "Trust", () => prompt);
+			return () => createRuntime(options);
+		};
+		const replacement = runtimeHost.switchSession(target.getSessionFile()!);
+		await start;
+		expect(events).toEqual(["start"]);
+		answer();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(events).toEqual(["start", "end"]);
+		releaseObserver();
+		await replacement;
+		expect(events).toEqual(["start", "end", "settled", "shutdown"]);
+	});
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];

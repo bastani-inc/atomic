@@ -173,3 +173,42 @@ describe("isolated interactive engine session replacement", () => {
 		}
 	});
 });
+
+// #2873: trust resolution belongs to the child; the host mirrors the decision without re-prompting.
+test("isolated host applies authoritative trust once per change", async () => {
+	const harness = await createHarness();
+	try {
+		harness.settingsManager.setProjectTrusted(false);
+		const probe = createUnresponsiveEngineClient();
+		let trusted = false;
+		probe.client.getState = async () => ({ ...createState(), projectTrusted: trusted });
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async () => {
+				throw new Error("unexpected replacement");
+			},
+			probe.client as never,
+		);
+		const reloadSettings = vi.spyOn(harness.settingsManager, "reload");
+		const reloadResources = vi.spyOn(harness.session.resourceLoader, "reload").mockResolvedValue();
+		await runtime.initializeFromEngine();
+		expect(harness.settingsManager.isProjectTrusted()).toBe(false);
+		expect(reloadSettings).not.toHaveBeenCalled();
+		trusted = true;
+		await runtime.initializeFromEngine();
+		expect(harness.settingsManager.isProjectTrusted()).toBe(true);
+		expect(reloadSettings).toHaveBeenCalledTimes(1);
+		expect(reloadResources).toHaveBeenCalledTimes(1);
+		await runtime.initializeFromEngine();
+		expect(reloadSettings).toHaveBeenCalledTimes(1);
+		trusted = false;
+		await runtime.initializeFromEngine();
+		expect(harness.settingsManager.isProjectTrusted()).toBe(false);
+		expect(reloadSettings).toHaveBeenCalledTimes(2);
+	} finally {
+		harness.cleanup();
+	}
+});
