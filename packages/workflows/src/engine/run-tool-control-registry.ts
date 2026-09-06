@@ -45,6 +45,9 @@ export interface ToolControlHandle {
 
 /** Executor control for initialization and between-node awaits; never a graph node. */
 export interface WorkflowRunControlHandle {
+	readonly paused: boolean;
+	pause(): Promise<void>;
+	resume(): Promise<void>;
 	quit(): Promise<void>;
 }
 

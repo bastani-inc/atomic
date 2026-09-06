@@ -1,6 +1,7 @@
 import { getDurableBackend } from "../durable/factory.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import { toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { interruptAllRuns, interruptRun, pauseRun, resumeRun } from "../runs/background/status.js";
@@ -364,7 +365,8 @@ export async function handleRunControlCommand(
 				exactBeforePreparation.parentRunId === undefined &&
 				exactHasPausedState &&
 				shadow === "not_shadow" &&
-				backend.isWorkflowLoadable(exactBeforePreparation.id)
+				(toolControlRegistry.runControl(exactBeforePreparation.id) !== undefined ||
+					backend.isWorkflowLoadable(exactBeforePreparation.id))
 			) {
 				// Exact top-level live state is authoritative. Avoid scanning the
 				// potentially large completed catalog while preserving the established

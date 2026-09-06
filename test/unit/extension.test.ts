@@ -74,15 +74,6 @@ function getSessionBeforeSwitchHandler(): SessionBeforeSwitchHandler {
 	return handler;
 }
 
-async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (predicate()) return;
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-	assert.equal(predicate(), true);
-}
-
 beforeEach(() => {
 	stageControlRegistry.clear();
 	store.clear();
@@ -301,6 +292,7 @@ test("session_start warns when discovered workflows fail validation", async () =
 
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void> | void>();
 		const notifications: Array<{ message: string; type?: string }> = [];
+		const discoveryWarning = Promise.withResolvers<void>();
 		const pi: ExtensionAPI = {
 			registerTool: () => undefined,
 			registerCommand: () => undefined,
@@ -323,13 +315,18 @@ test("session_start warns when discovered workflows fail validation", async () =
 				ui: {
 					notify: (message: string, type?: "info" | "warning" | "error") => {
 						notifications.push({ message, type });
+						if (message.includes("Workflow discovery diagnostics")) discoveryWarning.resolve();
 					},
 				},
 			},
 		);
 
-		await waitForCondition(() =>
+		// Discovery intentionally outlives session_start. Await its public notification
+		// within this test's existing budget, not a separate load-sensitive 1s poll.
+		await discoveryWarning.promise;
+		assert.equal(
 			notifications.some((entry) => entry.message.includes("Workflow discovery diagnostics")),
+			true,
 		);
 		const warning = notifications.find((entry) => entry.message.includes("Workflow discovery diagnostics"));
 		assert.notEqual(warning, undefined);

@@ -150,9 +150,9 @@ export function createDurableStagePrimitive(input: {
 	readonly stage: (name: string, options: StageOptions | undefined, replayKey: string) => StageContext;
 	readonly durableIntercomGroup?: (replayKey: string, stageId: string | undefined) => string | undefined;
 	readonly recordCachedStage?: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint) => void;
-}): (name: string, options?: StageOptions) => StageContext {
-	return (name: string, options?: StageOptions): StageContext => {
-		const replayKey = input.nextReplayKey(name);
+}): (name: string, options?: StageOptions, reservedReplayKey?: string) => StageContext {
+	return (name: string, options?: StageOptions, reservedReplayKey?: string): StageContext => {
+		const replayKey = reservedReplayKey ?? input.nextReplayKey(name);
 		const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey);
 		if (cached !== undefined) {
 			input.recordCachedStage?.(name, replayKey, cached);

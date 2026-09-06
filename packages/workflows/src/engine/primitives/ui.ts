@@ -2,6 +2,7 @@ import { type DurableUiDeps, wrapUiWithDurable } from "../../durable/ui-primitiv
 import { makeHeadlessUnavailableUIContext, normalizeUIContext } from "../../runs/foreground/executor-hil.js";
 import type { RunOpts } from "../../runs/foreground/executor-types.js";
 import type { WorkflowUIContext as AuthoringWorkflowUIContext } from "../../shared/authoring-contract-ui.js";
+import { withPromptCallerStack } from "../../shared/prompt-callsite-context.js";
 import type { WorkflowCustomUiFactory, WorkflowCustomUiOptions, WorkflowUIContext } from "../../shared/types.js";
 
 export interface BuildExitGatedUiContextInput {
@@ -29,26 +30,33 @@ export function buildExitGatedUiContext(input: BuildExitGatedUiContextInput): Wo
 	const promptNodeReplay = input.opts.usePromptNodesForUi === true && input.opts.continuation !== undefined;
 	const durableBase =
 		input.durableUi !== undefined && !promptNodeReplay ? wrapUiWithDurable(base, input.durableUi) : base;
+	const invoke = <T>(call: () => Promise<T>): Promise<T> => {
+		input.throwIfWorkflowExitSelected();
+		if (!promptNodeReplay || input.durableUi?.beforeCall === undefined) return call();
+		// This path bypasses the durable UI wrapper. Preserve its author callsite
+		// while waiting, just as that wrapper does before cached/live admission.
+		return withPromptCallerStack(new Error().stack, async () => {
+			for (let wait = input.durableUi?.beforeCall?.(); wait !== undefined; wait = input.durableUi?.beforeCall?.())
+				await wait;
+			input.throwIfWorkflowExitSelected();
+			return call();
+		});
+	};
 	return {
 		async input(promptText: string): Promise<string> {
-			input.throwIfWorkflowExitSelected();
-			return await durableBase.input(promptText);
+			return await invoke(() => durableBase.input(promptText));
 		},
 		async confirm(message: string): Promise<boolean> {
-			input.throwIfWorkflowExitSelected();
-			return await durableBase.confirm(message);
+			return await invoke(() => durableBase.confirm(message));
 		},
 		async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
-			input.throwIfWorkflowExitSelected();
-			return await durableBase.select(message, options);
+			return await invoke(() => durableBase.select(message, options));
 		},
 		async editor(initial?: string): Promise<string> {
-			input.throwIfWorkflowExitSelected();
-			return await durableBase.editor(initial);
+			return await invoke(() => durableBase.editor(initial));
 		},
 		async custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
-			input.throwIfWorkflowExitSelected();
-			return await durableBase.custom(factory, options);
+			return await invoke(() => durableBase.custom(factory, options));
 		},
 	};
 }

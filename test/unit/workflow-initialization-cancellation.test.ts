@@ -12,7 +12,7 @@ import { createCancellationRegistry } from "../../packages/workflows/src/runs/ba
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
-import { interruptRun, pauseRun } from "../../packages/workflows/src/runs/background/status.js";
+import { interruptRun, pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
@@ -175,8 +175,9 @@ for (const control of [quitRun, interruptRun, pauseRun]) {
 			description: "",
 			inputs: {},
 			outputs: {},
-			run: async () => {
+			run: async (ctx) => {
 				calls += 1;
+				await ctx.tool("after-initialization", {}, async () => "done");
 				return {};
 			},
 		});
@@ -187,13 +188,26 @@ for (const control of [quitRun, interruptRun, pauseRun]) {
 			const result = await control(accepted.runId, { store, toolControlRegistry: toolControls });
 			assert.equal(result.ok, true);
 			assert.equal(store.runs()[0]?.status, "paused");
+			// PR #2885: pause/interrupt must retain the live initialization owner, not quit it.
+			if (control !== quitRun) {
+				assert.equal(store.runs()[0]?.exitReason, undefined);
+				assert.notEqual(store.runs()[0]?.resumable, false);
+				admission.resolve();
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.equal(calls, 0);
+				assert.equal(jobs.get(accepted.runId), job);
+				assert.deepEqual(store.runs()[0]?.stages, []);
+				assert.deepEqual(store.runs()[0]?.toolNodes, []);
+				await resumeRun(accepted.runId, { store, toolControlRegistry: toolControls });
+				await job.promise;
+				assert.equal(store.runs()[0]?.status, "completed");
+			}
 		} finally {
 			admission.resolve();
+			job.controller.abort();
 			await job.promise;
 		}
-		assert.equal(calls, 0);
-		assert.deepEqual(store.runs()[0]?.stages, []);
-		assert.deepEqual(store.runs()[0]?.toolNodes, []);
+		assert.equal(calls, control === quitRun ? 0 : 1);
 	});
 }
 

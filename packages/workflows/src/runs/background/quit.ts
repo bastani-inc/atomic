@@ -135,10 +135,10 @@ export async function quitRun(
 	// When no node can acknowledge control, the executor owns the await itself.
 	// Abort synchronously before yielding so no later ctx.* call can slip in.
 	let runtimeQuit: Promise<void> | undefined;
-	if (handles.length === 0 && !hasLiveToolWork && promptStages.length === 0 && !hasPausedState) {
+	if (handles.length === 0 && !hasLiveToolWork && promptStages.length === 0) {
 		const runtimeControl = toolControls.runControl(runId);
-		if (runtimeControl === undefined) return { ok: false, runId, reason: "no_active_stages" };
-		runtimeQuit = runtimeControl.quit();
+		if (runtimeControl !== undefined) runtimeQuit = runtimeControl.quit();
+		else if (!hasPausedState) return { ok: false, runId, reason: "no_active_stages" };
 	}
 
 	const paused: StageSnapshot[] = [];

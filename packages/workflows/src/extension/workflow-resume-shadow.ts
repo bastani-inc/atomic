@@ -2,6 +2,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { getLoadableDurableWorkflow } from "../durable/workflow-status-transition.js";
+import { toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { type JobTracker, jobTracker } from "../runs/background/job-tracker.js";
 import { type StageControlRegistry, stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
@@ -24,6 +25,14 @@ export function classifyDurableResumeShadow(
 	deps: DurableResumeShadowDeps = {},
 ): DurableResumeShadowClassification {
 	const backend = deps.backend ?? getDurableBackend();
+	// Quit may detach an abandoned executor before its finally unregisters the
+	// run control. Only an open admission boundary still represents a live owner;
+	// surviving paused stages/jobs are checked separately below.
+	if (
+		toolControlRegistry.runControl(run.id) !== undefined &&
+		toolControlRegistry.admissionBoundary(run.id)?.closed !== true
+	)
+		return "not_shadow";
 	const handle = getLoadableDurableWorkflow(backend, run.id);
 	if (handle?.status !== "paused" && handle?.status !== "running") return "not_shadow";
 	const jobs = deps.jobs ?? jobTracker;

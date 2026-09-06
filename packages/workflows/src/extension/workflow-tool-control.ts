@@ -1,6 +1,7 @@
 import { getDurableBackend } from "../durable/factory.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import { toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
 import { interruptAllRuns, interruptRun, pauseAllRuns, pauseRun, resumeRun } from "../runs/background/status.js";
@@ -502,7 +503,7 @@ export async function workflowResumeAction(
 			message: `Workflow ${target.runId} has no durable checkpoint or pending prompt progress and is not resumable.`,
 		};
 	}
-	if (!backend.isWorkflowLoadable(target.runId)) {
+	if (toolControlRegistry.runControl(target.runId) === undefined && !backend.isWorkflowLoadable(target.runId)) {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();
 			deps.signal?.throwIfAborted();

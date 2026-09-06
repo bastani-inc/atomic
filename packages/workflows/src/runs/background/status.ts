@@ -23,6 +23,7 @@ import { store as defaultStore } from "../../shared/store.js";
 import { readGraphStoreSnapshot } from "../../shared/store-observation.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, WorkflowActor } from "../../shared/store-types.js";
 import type { WorkflowPersistencePort } from "../../shared/types.js";
+import { authoritativeWorkflowChildRunId, reciprocalWorkflowRootRunId } from "../../shared/workflow-run-ownership.js";
 import type { StageControlRegistry } from "../foreground/stage-control-registry.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../foreground/stage-control-registry.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
@@ -189,6 +190,31 @@ export function killAllRuns(opts?: {
 		killRun(r.id, { store: activeStore, cancellation: opts?.cancellation, persistence: opts?.persistence }),
 	);
 }
+
+/** Live owners include node-less children that the expanded display graph omits. */
+function ownedRuntimeControls(activeStore: Store, toolControls: ToolControlRegistry, runId: string) {
+	const runById = new Map(activeStore.runs().map((run) => [run.id, run]));
+	const rootRunId = reciprocalWorkflowRootRunId(runById, runId);
+	const ownedIds = new Set([runId]);
+	for (const ownerId of ownedIds) {
+		for (const stage of runById.get(ownerId)?.stages ?? []) {
+			const child = runById.get(authoritativeWorkflowChildRunId(stage) ?? "");
+			if (
+				child?.parentRunId === ownerId &&
+				child.parentStageId === stage.id &&
+				rootRunId !== undefined &&
+				reciprocalWorkflowRootRunId(runById, child.id) === rootRunId
+			) {
+				ownedIds.add(child.id);
+			}
+		}
+	}
+	return [...ownedIds].flatMap((controlRunId) => {
+		const handle = toolControls.runControl(controlRunId);
+		return handle !== undefined && runById.get(controlRunId)?.endedAt === undefined ? [{ controlRunId, handle }] : [];
+	});
+}
+
 // ---------------------------------------------------------------------------
 // resumeRun
 // ---------------------------------------------------------------------------
@@ -207,6 +233,7 @@ export async function resumeRun(
 	opts?: {
 		store?: Store;
 		stageControlRegistry?: StageControlRegistry;
+		toolControlRegistry?: ToolControlRegistry;
 		/** When supplied, resume only this stage within the run. */
 		stageId?: string;
 		/** Optional resume message forwarded to each resumed stage. */
@@ -222,6 +249,28 @@ export async function resumeRun(
 
 	if (!run) return { ok: false, runId, reason: "not_found" };
 
+	const runtimeControls =
+		opts?.stageId === undefined
+			? ownedRuntimeControls(activeStore, opts?.toolControlRegistry ?? defaultToolControlRegistry, runId).filter(
+					({ handle }) => handle.paused,
+				)
+			: [];
+	if (runtimeControls.length > 0) {
+		// Parent first: persist its durable running transition before releasing any child.
+		for (const { handle } of runtimeControls) await handle.resume();
+		activeStore.recordRunResumed(runId, undefined, {
+			source: "run_control",
+			...(opts?.actor === undefined ? {} : { actor: opts.actor }),
+		});
+		return {
+			ok: true,
+			runId,
+			snapshot: structuredClone(activeStore.runs().find((candidate) => candidate.id === runId) ?? run),
+			resumed: [],
+			mode: "paused",
+			message: `Resumed workflow runtime on ${runId}.`,
+		};
+	}
 	const resumed: StageSnapshot[] = [];
 	const aggregateRootRunId = aggregateWorkflowRootRunId(activeStore, runId);
 	let partialFailureMessage: string | undefined;
@@ -452,14 +501,21 @@ export async function pauseRun(
 	);
 	if (handles.length === 0) {
 		const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
+		const runtimeControls = ownedRuntimeControls(activeStore, toolControls, runId);
+		const activeRunIds = new Set([...controlRunIds, ...runtimeControls.map(({ controlRunId }) => controlRunId)]);
 		if (
-			toolControls.runControl(runId) !== undefined &&
-			controlRunIds.every((id) => toolControls.active(id).length === 0 && registry.run(id).stages().length === 0)
+			runtimeControls.some(({ controlRunId }) => controlRunId === runId) &&
+			[...activeRunIds].every((id) => toolControls.active(id).length === 0 && registry.run(id).stages().length === 0)
 		) {
-			const quit = await quitRun(runId, { ...opts, store: activeStore, toolControlRegistry: toolControls });
-			return quit.ok
-				? { ok: true, runId, paused: quit.paused, ...(quit.message === undefined ? {} : { message: quit.message }) }
-				: quit;
+			// Install every barrier synchronously, before awaiting durable pause acknowledgement.
+			await Promise.all(runtimeControls.map(({ handle }) => handle.pause()));
+			activeStore.recordRunPaused(runId, undefined, actorMetadata);
+			return {
+				ok: true,
+				runId,
+				paused: [],
+				message: `Run ${runId} paused. Resume with /workflow resume on this live process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume. Cross-process resume requires durable checkpoint or pending prompt progress.`,
+			};
 		}
 		return { ok: false, runId, reason: "no_active_stages" };
 	}
@@ -532,7 +588,10 @@ export async function interruptRun(
 			return { ok: false, runId: quit.runId, reason: quit.reason };
 		}
 	}
-	return pauseRun(runId, opts);
+	const result = await pauseRun(runId, opts);
+	return result.ok && result.message !== undefined
+		? { ...result, message: `Run ${runId} interrupted. ${result.message}` }
+		: result;
 }
 
 /** Interrupt all in-flight runs without removing them from history/status. */

@@ -9,7 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Interrupting a workflow tool call during initialization now cancels its startup owner instead of leaving an empty, uncontrollable running root. Resume preparation respects cancellation, and already-aborted requests cannot begin actions. Accepted request timeouts and acknowledged background execution retain their existing behavior.
-- Whole-run controls can stop initialization and between-node awaits without stage/tool handles. Delayed completion and cached replay cannot revive stopped runs; zero-progress stops no longer advertise unavailable resume, and results disclose untracked work that may still finish.
+- Whole-run pause/interrupt during initialization or between-node awaits now retain the same live executor for explicit resume instead of becoming quit. Later tracked work, cached replay, and completion wait for resume; untracked JavaScript or I/O may still finish. Executor-only quit retires the owner, and zero-progress quits remain nonresumable. Cross-process resume still requires durable progress.
+- Executor-only whole-run pause now holds already-live nested child owners as well, preventing their next tracked step or completion until resume. Descendants remain held while the root's durable resume is acknowledged; child-scoped controls preserve sibling isolation.
+- Preserved the original selected tool failure when cancellation arrives later, restored closed-admission errors for retained tool calls, and drained cancelled child boundaries before the parent returns. Durable resume replaces abandoned detached executors without replacing surviving live paused owners.
 
 ## [0.9.18] - 2026-09-05
 
