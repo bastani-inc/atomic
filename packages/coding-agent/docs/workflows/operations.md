@@ -182,6 +182,8 @@ Mounted HIL and custom prompts take precedence: a `/skill:` answer is literal pr
 
 `/tasks` is reserved for local task inspection, not a skill or model message. On hosts without the task inspector it reports `Task inspection is unavailable in this host.` and sends nothing to the model.
 
+The shared chat host owns this local-command dispatch, including during interrupt settlement. Its host callback is the task-inspector integration point; stage session extension commands named `/tasks` do not override this reserved view action. Skill completion itself reuses the attached session and does not checkpoint it on each keystroke. The stage completion adapter does not offer `@` file-mention suggestions.
+
 ## Monitor and Control Runs
 
 The workflow tool exposes lifecycle controls for non-interactive use:

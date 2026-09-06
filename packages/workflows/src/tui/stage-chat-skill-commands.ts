@@ -3,6 +3,9 @@ import type { StageControlHandle } from "../runs/foreground/stage-control-regist
 import { currentStage, isBlocked, liveHandle } from "./stage-chat-view-state.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
+// Share only in-flight attachment work, never session/catalog results, even across panes.
+const pendingSkillAttachments = new WeakMap<StageControlHandle, Promise<void>>();
+
 function assertComposerAdmission(ctx: StageChatViewContext, handle: StageControlHandle): void {
 	if (liveHandle(ctx) !== handle || isBlocked(ctx)) throw new Error("This stage chat is not editable.");
 	if (ctx.mountedCustomUi || currentStage(ctx)?.pendingPrompt) {
@@ -15,7 +18,14 @@ export function stageSkillAutocomplete(ctx: StageChatViewContext) {
 		async () => {
 			const handle = liveHandle(ctx);
 			if (!handle || isBlocked(ctx)) throw new Error("This stage chat is not editable.");
-			await handle.ensureAttached();
+			if (handle.agentSession === undefined) {
+				let attachment = pendingSkillAttachments.get(handle);
+				if (!attachment) {
+					attachment = handle.ensureAttached().finally(() => pendingSkillAttachments.delete(handle));
+					pendingSkillAttachments.set(handle, attachment);
+				}
+				await attachment;
+			}
 			assertComposerAdmission(ctx, handle);
 			return handle.agentSession;
 		},

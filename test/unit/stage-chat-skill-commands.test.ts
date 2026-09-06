@@ -151,6 +151,72 @@ test("#2884 mounted stage editor replaces inherited parent completion with stage
 	}
 });
 
+test.each(["blocked", "disposed", "question"] as const)(
+	"#2884 lazy discovery rechecks %s admission after attachment without a parent fallback",
+	async (state) => {
+		const fixture = await createStageSkillFixture();
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		let pending: ReturnType<AutocompleteProvider["getSuggestions"]> | undefined;
+		try {
+			let session: AgentSession | undefined;
+			let disposed = false;
+			const { handle: emptyHandle } = makeHandle();
+			const handle = {
+				...emptyHandle,
+				get agentSession() {
+					return session;
+				},
+				get isDisposed() {
+					return disposed;
+				},
+			};
+			let provider: AutocompleteProvider | undefined;
+			class Editor extends FakePromptEditor {
+				setAutocompleteProvider(value: AutocompleteProvider) {
+					provider = value;
+				}
+			}
+			const view = fixture.mount({
+				handle,
+				piTui: makeTestTui(24),
+				piKeybindings: makeFakeKeybindings(),
+				piEditorFactory: () => new Editor(),
+			});
+			// This host has not exposed a session during mount; discovery resolves it lazily.
+			handle.ensureAttached = async () => {
+				entered.resolve();
+				await release.promise;
+				session = fixture.stage.session;
+			};
+			assert.ok(provider);
+			assert.equal(handle.agentSession, undefined);
+			pending = provider.getSuggestions(["/skill:fi"], 0, 9, { signal: new AbortController().signal });
+			await entered.promise;
+			if (state === "disposed") disposed = true;
+			else if (state === "blocked") {
+				fixture.store.recordStageEnd(fixture.runId, { ...fixture.store.runs()[0]!.stages[0]!, status: "blocked" });
+			} else {
+				fixture.store.recordStagePendingPrompt(fixture.runId, fixture.stageId, {
+					id: "question-during-discovery",
+					kind: "input",
+					message: "Answer this stage question",
+					createdAt: Date.now(),
+				});
+			}
+			release.resolve();
+			assert.equal(await pending, null);
+			assert.match(view._statusMessage, state === "question" ? /mounted stage question owns input/ : /not editable/);
+			assert.equal(fixture.main.session.messages.length, 0);
+			assert.equal(fixture.userTexts().length, 1);
+		} finally {
+			release.resolve();
+			await pending;
+			await fixture.cleanup();
+		}
+	},
+);
+
 test("#2884 mounted custom questions receive slash-looking input literally before composer commands", async () => {
 	const fixture = await createStageSkillFixture();
 	try {

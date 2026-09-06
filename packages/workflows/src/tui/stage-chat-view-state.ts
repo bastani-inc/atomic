@@ -531,10 +531,6 @@ export function isReadOnlyArchive(
 }
 
 async function handleSlashCommand(ctx: StageChatViewContext, text: string): Promise<boolean> {
-	if (classifyChatCommand(text) === "tasks") {
-		ctx.chatHost.showWarning("Task inspection is unavailable in this host.");
-		return true;
-	}
 	const [command, ...rest] = text.trim().split(/\s+/);
 	switch (command) {
 		case "/compact": {

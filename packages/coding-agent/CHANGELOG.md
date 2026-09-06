@@ -12,6 +12,10 @@
 - Updated Pi runtime dependencies to 0.85.1, preserving Atomic's CLI startup, published client API, and footer watcher behavior.
 - `/tasks` in an attached stage chat is now a local inspection command, never a model message, including while an Escape interruption settles. Hosts without a task inspector report that it is unavailable.
 
+### Fixed
+
+- Workflow skill autocomplete no longer reattaches and checkpoints the stage for every completion request. Concurrent lazy discovery requests share one attachment.
+
 ## [0.9.18-alpha.6] - 2026-09-04
 
 ### Breaking Changes

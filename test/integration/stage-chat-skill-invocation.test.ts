@@ -42,6 +42,67 @@ test("editable stage chat expands its skill once into one admitted stage message
 	}
 });
 
+// RFC #2884 / S6 F1: discovery is read-only once the stage session is attached.
+test("incremental real stage editor skill discovery does not attach or checkpoint and observes reload", async () => {
+	const fixture = await createStageSkillFixture();
+	const attach = vi.spyOn(fixture.handle, "ensureAttached");
+	const checkpoint = vi.spyOn(fixture.store, "recordStageSession");
+	try {
+		let provider: AutocompleteProvider | undefined;
+		class Editor extends CustomEditor {
+			override setAutocompleteProvider(value: AutocompleteProvider) {
+				provider = value;
+				super.setAutocompleteProvider(value);
+			}
+		}
+		const view = fixture.mount({
+			piTui: makeTestTui(24),
+			piKeybindings: new KeybindingsManager({}),
+			piEditorFactory: (tui, theme, keybindings) => new Editor(tui, theme, keybindings as KeybindingsManager),
+		});
+		// Mount's compaction hydration is a separate attachment, not editor discovery.
+		await Promise.all(attach.mock.results.map((result) => result.value));
+		await vi.waitFor(() => assert.equal(fixture.handle.isStreaming, false));
+		assert.equal(fixture.handle.agentSession, fixture.stage.session);
+		assert.ok(provider);
+		const capturedProvider = provider;
+		const suggestions = vi.spyOn(capturedProvider, "getSuggestions");
+		attach.mockClear();
+		checkpoint.mockClear();
+		for (const character of "/skill:fi") {
+			const before = suggestions.mock.calls.length;
+			view.handleInput(character);
+			await vi.waitFor(() => assert.ok(suggestions.mock.calls.length > before));
+			await Promise.all(suggestions.mock.results.slice(before).map((result) => result.value));
+		}
+		assert.equal(attach.mock.calls.length, 0, "typing must not reattach an available session");
+		assert.equal(checkpoint.mock.calls.length, 0, "typing must not checkpoint the stage session");
+		const query = () =>
+			capturedProvider.getSuggestions(["/skill:fi"], 0, 9, { signal: new AbortController().signal });
+		assert.deepEqual(
+			(await query())?.items.map((item) => item.value),
+			["skill:fixture", "skill:fixture@project", "skill:fixture@user"],
+		);
+		fixture.setCatalog(buildSkillCatalog([fixture.userSkill]));
+		await fixture.stage.session.reload();
+		const reloaded = await query();
+		assert.deepEqual(
+			reloaded?.items.map((item) => item.value),
+			["skill:fixture"],
+		);
+		assert.match(reloaded?.items[0]?.description ?? "", /stage-user/);
+		assert.doesNotMatch(reloaded?.items[0]?.description ?? "", /main-project/);
+		assert.equal(attach.mock.calls.length, 0, "reload must not reattach the session for discovery");
+		assert.equal(checkpoint.mock.calls.length, 0);
+		assert.equal(fixture.userTexts().length, 1);
+		assert.equal(fixture.main.session.messages.length, 0);
+	} finally {
+		attach.mockRestore();
+		checkpoint.mockRestore();
+		await fixture.cleanup();
+	}
+});
+
 test("streaming Enter and Ctrl+F use stage admission and retain their distinct expanded queues", async () => {
 	const fixture = await createStageSkillFixture();
 	const started = Promise.withResolvers<void>();
@@ -525,32 +586,173 @@ test("equivalent stage and main catalogs resolve the same qualified skill conten
 	}
 });
 
-test("lazy stage skill discovery failures are contained and diagnosed in the attached chat", async () => {
+// RFC #2884 / S6 F1: a retained stage exposes no session until its adapter resolves.
+test("concurrent lazy discovery across stage panes attaches once and keeps the reloaded catalog live", async () => {
 	const fixture = await createStageSkillFixture();
+	const registry = createStageControlRegistry();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let restored: Awaited<ReturnType<typeof createHarness>> | undefined;
+	const checkpoint = vi.spyOn(fixture.store, "recordStageSession");
 	try {
+		await fixture.handle.ensureAttached();
+		await vi.waitFor(() => assert.equal(fixture.handle.isStreaming, false));
+		const file = fixture.stage.session.sessionFile;
+		assert.ok(file);
+		const snapshot = { ...fixture.store.runs()[0]!.stages[0]!, status: "completed" as const, endedAt: Date.now() };
+		fixture.store.recordStageEnd(fixture.runId, snapshot);
+		const resolved = ensurePostMortemStageHandle(fixture.runId, snapshot, {
+			registry,
+			cwd: fixture.directory,
+			adapters: {
+				agentSession: {
+					async create() {
+						entered.resolve();
+						await release.promise;
+						restored = await createHarness({
+							resourceLoader: fixture.loader,
+							sessionManager: SessionManager.open(file),
+							fauxProvider: { api: "stage-skill-lazy", provider: "stage-skill-lazy" },
+						});
+						return restored.session as StageSessionRuntime;
+					},
+				},
+			},
+		});
+		assert.ok(resolved.ok);
+		const attach = vi.spyOn(resolved.handle, "ensureAttached");
+		const providers: AutocompleteProvider[] = [];
+		class Editor extends FakePromptEditor {
+			setAutocompleteProvider(value: AutocompleteProvider) {
+				providers.push(value);
+			}
+		}
+		for (let pane = 0; pane < 2; pane++)
+			fixture.mount({
+				handle: resolved.handle,
+				piTui: makeTestTui(24),
+				piKeybindings: makeFakeKeybindings(),
+				piEditorFactory: () => new Editor(),
+			});
+		assert.equal(providers.length, 2);
+		assert.equal(resolved.handle.agentSession, undefined);
+		assert.equal(attach.mock.calls.length, 0);
+		checkpoint.mockClear();
+		const query = (provider: AutocompleteProvider) =>
+			provider.getSuggestions(["/skill:fi"], 0, 9, { signal: new AbortController().signal });
+		const pending = providers.flatMap((provider) => Array.from({ length: 3 }, () => query(provider)));
+		await entered.promise;
+		const attachCalls = attach.mock.calls.length;
+		release.resolve();
+		for (const result of await Promise.all(pending)) {
+			assert.deepEqual(
+				result?.items.map((item) => item.value),
+				["skill:fixture", "skill:fixture@project", "skill:fixture@user"],
+			);
+		}
+		assert.equal(attachCalls, 1, "concurrent discovery must single-flight by stage handle, including across panes");
+		assert.equal(checkpoint.mock.calls.length, 0, "postmortem discovery must not mutate workflow storage");
+		assert.ok(restored);
+		assert.equal(resolved.handle.agentSession, restored.session);
+		fixture.setCatalog(buildSkillCatalog([fixture.userSkill]));
+		await restored.session.reload();
+		for (const provider of providers) {
+			const reloaded = await query(provider);
+			assert.deepEqual(
+				reloaded?.items.map((item) => item.value),
+				["skill:fixture"],
+			);
+			assert.match(reloaded?.items[0]?.description ?? "", /stage-user/);
+		}
+		assert.equal(attach.mock.calls.length, 1);
+		assert.equal(checkpoint.mock.calls.length, 0);
+		assert.equal(fixture.main.session.messages.length, 0);
+	} finally {
+		release.resolve();
+		checkpoint.mockRestore();
+		registry.clear();
+		restored?.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("lazy stage skill discovery failures are contained, diagnosed and retryable in the attached chat", async () => {
+	const fixture = await createStageSkillFixture();
+	const registry = createStageControlRegistry();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let restored: Awaited<ReturnType<typeof createHarness>> | undefined;
+	try {
+		await fixture.handle.ensureAttached();
+		await vi.waitFor(() => assert.equal(fixture.handle.isStreaming, false));
+		const file = fixture.stage.session.sessionFile;
+		assert.ok(file);
+		const snapshot = { ...fixture.store.runs()[0]!.stages[0]!, status: "completed" as const, endedAt: Date.now() };
+		fixture.store.recordStageEnd(fixture.runId, snapshot);
+		let creations = 0;
+		const resolved = ensurePostMortemStageHandle(fixture.runId, snapshot, {
+			registry,
+			cwd: fixture.directory,
+			adapters: {
+				agentSession: {
+					async create() {
+						if (++creations === 1) {
+							entered.resolve();
+							await release.promise;
+							throw new Error("Stage fixture lazy attachment failed");
+						}
+						restored = await createHarness({
+							resourceLoader: fixture.loader,
+							sessionManager: SessionManager.open(file),
+							fauxProvider: { api: "stage-skill-lazy-retry", provider: "stage-skill-lazy-retry" },
+						});
+						return restored.session as StageSessionRuntime;
+					},
+				},
+			},
+		});
+		assert.ok(resolved.ok);
+		const attach = vi.spyOn(resolved.handle, "ensureAttached");
 		let provider: AutocompleteProvider | undefined;
 		class Editor extends FakePromptEditor {
 			setAutocompleteProvider(value: AutocompleteProvider) {
 				provider = value;
 			}
 		}
-		fixture.handle.ensureAttached = async () => {
-			throw new Error("Stage fixture lazy attachment failed");
-		};
 		const view = fixture.mount({
+			handle: resolved.handle,
 			piTui: makeTestTui(24),
 			piKeybindings: makeFakeKeybindings(),
 			piEditorFactory: () => new Editor(),
 		});
 		assert.ok(provider);
-		assert.equal(await provider.getSuggestions(["/skill:fi"], 0, 9, { signal: new AbortController().signal }), null);
+		const capturedProvider = provider;
+		assert.equal(resolved.handle.agentSession, undefined, "failure must exercise an actually absent session");
+		assert.equal(creations, 0);
+		const query = () =>
+			capturedProvider.getSuggestions(["/skill:fi"], 0, 9, { signal: new AbortController().signal });
+		const pending = Array.from({ length: 3 }, query);
+		await entered.promise;
+		release.resolve();
+		assert.deepEqual(await Promise.all(pending), [null, null, null]);
+		assert.equal(attach.mock.calls.length, 1);
+		assert.equal(resolved.handle.agentSession, undefined);
 		assert.match(
 			view.render(140).map(stripVTControlCharacters).join("\n"),
 			/Skill discovery unavailable: Stage fixture lazy attachment failed/,
 		);
+		assert.match((await query())?.items[0]?.description ?? "", /stage-project/);
+		assert.equal(creations, 2, "a rejected lazy resolution must be retryable");
+		assert.ok(restored);
+		assert.equal(resolved.handle.agentSession, restored.session);
+		assert.match((await query())?.items[0]?.description ?? "", /stage-project/);
+		assert.equal(attach.mock.calls.length, 2, "successful retry must leave discovery read-only");
 		assert.equal(fixture.userTexts().length, 1);
 		assert.equal(fixture.main.session.messages.length, 0);
 	} finally {
+		release.resolve();
+		registry.clear();
+		restored?.cleanup();
 		await fixture.cleanup();
 	}
 });
