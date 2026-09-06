@@ -79,7 +79,7 @@ function productionSession(overrides: Partial<StageSessionRuntime>): StageSessio
 afterEach(() => setDurableBackend(undefined));
 
 describe("graceful workflow quit acknowledgement", () => {
-	test("between stages reports no controllable stage instead of claiming resumable pause", async () => {
+	test("between stages quit suspends the executor and fences the next stage", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		const store = createStore();
@@ -117,12 +117,23 @@ describe("graceful workflow quit acknowledgement", () => {
 
 		const result = await quitRun(runId, { store, stageControlRegistry: registry });
 
-		assert.deepEqual(result, { ok: false, runId, reason: "no_active_stages" });
-		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "running");
-		assert.equal(backend.getWorkflow(runId)?.status, "running");
+		assert.equal(result.ok, true);
+		assert.match(result.ok ? (result.message ?? "") : "", /untracked.*may still finish.*Resume with/);
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.resumable, true);
+		assert.equal((await execution).status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
 
 		releaseWorkflow.resolve();
-		assert.equal((await execution).status, "completed");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(
+			store
+				.runs()
+				.find((candidate) => candidate.id === runId)
+				?.stages.map((stage) => stage.name),
+			["first"],
+		);
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
 	});
 
 	test("same-run quit settles every stage pause and aggregates stage-specific failures", async () => {
@@ -309,7 +320,10 @@ describe("graceful workflow quit acknowledgement", () => {
 			],
 		);
 		const rejected = results?.find((result) => !result.ok && result.runId === "quit-reject-fast");
-		assert.match(rejected !== undefined && "message" in rejected ? rejected.message : "", /pause failed fast/);
+		assert.match(
+			rejected !== undefined && "message" in rejected ? (rejected.message ?? "") : "",
+			/pause failed fast/,
+		);
 		assert.equal(store.runs().find((run) => run.id === "quit-reject-fast")?.status, "running");
 		assert.equal(store.runs().find((run) => run.id === "quit-ack-late")?.status, "paused");
 	});

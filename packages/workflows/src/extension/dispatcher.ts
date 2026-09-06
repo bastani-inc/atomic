@@ -98,7 +98,7 @@ export interface DispatcherOpts {
 	cwd?: string;
 	/** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
 	defaultSessionDir?: string;
-	/** Cancels only startup admission waiting; the detached run keeps its own lifecycle. */
+	/** Explicit caller cancellation owns startup; acknowledgement detaches execution. */
 	signal?: AbortSignal;
 	/** Reports the exact detached identity before startup admission is awaited. */
 	onRunAccepted?: (runId: string) => void;
@@ -115,6 +115,7 @@ export interface DispatcherOpts {
  * Returns a typed `WorkflowToolResult` — no broad catch, no success-shaped errors.
  */
 export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Promise<WorkflowToolResult> {
+	opts.signal?.throwIfAborted();
 	const action = args.action ?? "run";
 	const name = args.workflow ?? "";
 	const inputs = args.inputs ?? {};
@@ -230,6 +231,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					...(opts.origin === undefined ? {} : { origin: opts.origin }),
 					...(possibleStages === undefined ? {} : { possibleStages }),
 					runId,
+					startupSignal: opts.signal,
 				});
 			} catch (error) {
 				return failedRunResult(def.name, runId, error instanceof Error ? error.message : String(error));
@@ -240,6 +242,16 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			if (!admission.started) {
 				const activeStore = opts.store ?? defaultStore;
 				const snapshot = activeStore.runs().find((run) => run.id === accepted.runId);
+				if (snapshot?.status === "paused" && snapshot.exitReason === "quit") {
+					return {
+						action: "run",
+						name: accepted.name,
+						runId: accepted.runId,
+						status: "paused",
+						message: `Workflow run ${accepted.runId} was quit before startup admission. Inspect status before retrying.`,
+						stages: [],
+					};
+				}
 				const error = workflowStartupFailureMessage(
 					admission,
 					snapshot?.error,

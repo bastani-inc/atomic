@@ -137,7 +137,7 @@ export async function handleRunControlCommand(
 				const outcomes = results
 					.map((result) =>
 						result.ok
-							? `${result.runId}: quit`
+							? (result.message ?? `${result.runId}: quit`)
 							: `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`,
 					)
 					.join(", ");
@@ -146,9 +146,11 @@ export async function handleRunControlCommand(
 				else fail(message);
 			} else if (changed > 0) {
 				print(
-					action === "quit"
-						? `Quit ${changed} run(s); resume with /workflow resume.`
-						: `Interrupted ${changed} run(s).`,
+					successes.some((result) => result.message !== undefined)
+						? successes.map((result) => result.message ?? `Run ${result.runId} stopped.`).join("\n")
+						: action === "quit"
+							? `Quit ${changed} run(s); resume with /workflow resume.`
+							: `Interrupted ${changed} run(s).`,
 				);
 			} else {
 				fail(`No in-flight runs to ${action}.`);
@@ -172,7 +174,8 @@ export async function handleRunControlCommand(
 			}
 			try {
 				const result = await quitRun(resolved.runId, { actor: "user" });
-				if (result.ok) print(`Run ${result.runId} quit and can be resumed with /workflow resume.`);
+				if (result.ok)
+					print(result.message ?? `Run ${result.runId} quit and can be resumed with /workflow resume.`);
 				else if (result.reason === "already_ended") print(`Run ${result.runId} already ended.`);
 				else if (result.reason === "no_active_stages") {
 					fail(`No controllable stages on run ${result.runId}; the run remains active.`);
@@ -194,7 +197,7 @@ export async function handleRunControlCommand(
 		}
 		try {
 			const result = await interruptRun(resolved.runId);
-			if (result.ok) print(`Run ${result.runId} interrupted and can be resumed.`);
+			if (result.ok) print(result.message ?? `Run ${result.runId} interrupted and can be resumed.`);
 			else
 				fail(
 					result.reason === "not_found"
@@ -462,9 +465,10 @@ export async function handleRunControlCommand(
 				}
 				if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
 				print(
-					result.paused.length === 0
-						? `No stages were paused on run ${stageRunId}.`
-						: `Paused ${result.paused.length} stage(s) on run ${stageRunId}: ${result.paused.map((stage) => stage.name).join(", ")}`,
+					result.message ??
+						(result.paused.length === 0
+							? `No stages were paused on run ${stageRunId}.`
+							: `Paused ${result.paused.length} stage(s) on run ${stageRunId}: ${result.paused.map((stage) => stage.name).join(", ")}`),
 				);
 			} catch (error) {
 				fail(`Failed to pause run ${stageRunId}: ${error instanceof Error ? error.message : String(error)}`);

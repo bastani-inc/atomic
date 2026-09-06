@@ -273,7 +273,8 @@ function metaLine(
 	if (run.endedAt !== undefined) {
 		return elapsedLabel(run, now);
 	}
-	if (isQuitRun(run)) return "quit · resumable via /workflow resume";
+	if (isQuitRun(run))
+		return run.resumable === false ? "quit · not resumable" : "quit · resumable via /workflow resume";
 	if (effectiveRunStatus(run) === "blocked") return "blocked · resumable via /workflow resume";
 	const prefix: string[] = [modeLabel(run)];
 	const prog = progressLabel(run);

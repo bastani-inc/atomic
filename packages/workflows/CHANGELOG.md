@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Interrupting a workflow tool call during initialization now cancels its startup owner instead of leaving an empty, uncontrollable running root. Resume preparation respects cancellation, and already-aborted requests cannot begin actions. Accepted request timeouts and acknowledged background execution retain their existing behavior.
+- Whole-run controls can stop initialization and between-node awaits without stage/tool handles. Delayed completion and cached replay cannot revive stopped runs; zero-progress stops no longer advertise unavailable resume, and results disclose untracked work that may still finish.
+
 ## [0.9.18] - 2026-09-05
 
 Cumulative release of the `0.9.18-alpha.3` through `0.9.18-alpha.7` prereleases. Per-change details remain in the unchanged prerelease sections below.

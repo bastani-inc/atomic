@@ -73,6 +73,7 @@ export type PauseResult =
 			ok: true;
 			runId: string;
 			paused: readonly StageSnapshot[];
+			message?: string;
 	  }
 	| {
 			ok: false;
@@ -404,6 +405,7 @@ export async function pauseRun(
 	opts?: {
 		store?: Store;
 		stageControlRegistry?: StageControlRegistry;
+		toolControlRegistry?: ToolControlRegistry;
 		/** Pause only this stage. */
 		stageId?: string;
 		/** Who requested this pause. Omitted for internal callers. */
@@ -448,7 +450,19 @@ export async function pauseRun(
 			.filter((handle) => handle.status === "running" || handle.status === "pending")
 			.map((handle) => ({ controlRunId, handle })),
 	);
-	if (handles.length === 0) return { ok: false, runId, reason: "no_active_stages" };
+	if (handles.length === 0) {
+		const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
+		if (
+			toolControls.runControl(runId) !== undefined &&
+			controlRunIds.every((id) => toolControls.active(id).length === 0 && registry.run(id).stages().length === 0)
+		) {
+			const quit = await quitRun(runId, { ...opts, store: activeStore, toolControlRegistry: toolControls });
+			return quit.ok
+				? { ok: true, runId, paused: quit.paused, ...(quit.message === undefined ? {} : { message: quit.message }) }
+				: quit;
+		}
+		return { ok: false, runId, reason: "no_active_stages" };
+	}
 
 	const paused: StageSnapshot[] = [];
 	const pausedRunIds = new Set<string>();

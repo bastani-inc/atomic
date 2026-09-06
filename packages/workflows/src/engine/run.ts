@@ -47,6 +47,7 @@ import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
+import { raceAbort } from "../shared/abort.js";
 import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
@@ -94,6 +95,7 @@ import {
 	findWorkflowGracefulQuit,
 	isWorkflowToolAbortError,
 	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+	WorkflowGracefulQuitError,
 	type WorkflowGracefulQuitSignal,
 } from "./workflow-tool-abort.js";
 
@@ -163,17 +165,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		{ once: true },
 	);
 	const callerSignal = opts.signal;
-	if (callerSignal) {
-		if (callerSignal.aborted) ownController.abort(callerSignal.reason);
-		else
-			callerSignal.addEventListener(
-				"abort",
-				() => {
-					ownController.abort(callerSignal.reason);
-				},
-				{ once: true },
-			);
-	}
+	const onCallerAbort = (): void => ownController.abort(callerSignal?.reason);
 	const exit = createWorkflowExitManager({ runId, exitScope, controller: ownController });
 	// Durable child operations stay on stacked scoped views, while cached graph
 	// reconstruction keeps the physical root backend through arbitrary depth.
@@ -316,32 +308,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		classifiedFailures.set(error, classified);
 		return classified;
 	};
-	activeStore.recordRunStart(runSnapshot);
 	// Only the registration's owner may remove it, and only while it is still the
 	// registered controller: an abandoned executor finalizing late must not evict
 	// the replacement run that now owns this id.
 	const ownsCancellationRegistration = opts.signal === undefined && opts.cancellation !== undefined;
-	if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);
-	opts.onRunStart?.(runSnapshot);
-	if (opts.persistence) {
-		appendRunStart(opts.persistence, {
-			runId,
-			name: def.name,
-			inputs: resolvedInputs,
-			...(runSnapshot.parentRunId !== undefined ? { parentRunId: runSnapshot.parentRunId } : {}),
-			...(runSnapshot.parentStageId !== undefined ? { parentStageId: runSnapshot.parentStageId } : {}),
-			...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
-			...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
-			...(runSnapshot.origin !== undefined ? { origin: runSnapshot.origin } : {}),
-			...(runSnapshot.resumeFromStageId !== undefined ? { resumeFromStageId: runSnapshot.resumeFromStageId } : {}),
-			...(runSnapshot.accumulatedDurationMs !== undefined
-				? { accumulatedDurationMs: runSnapshot.accumulatedDurationMs }
-				: {}),
-			...(runSnapshot.budget !== undefined ? { budget: runSnapshot.budget } : {}),
-			...(runSnapshot.budgetState !== undefined ? { budgetState: runSnapshot.budgetState } : {}),
-			ts: runSnapshot.startedAt,
-		});
-	}
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
 	const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs),
@@ -606,6 +576,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		completedStageReplayKeys,
 		sourceToReplayedNodeIds: sourceToContinuationNodeIds,
 	});
+	const recordCachedStage: typeof cachedStage.record = (...args) => {
+		ownController.signal.throwIfAborted();
+		cachedStage.record(...args);
+	};
 	const durableIntercomGroup = (replayKey: string, stageId: string | undefined): string | undefined => {
 		const stages = activeStore.runs().find((candidate) => candidate.id === runId)?.stages ?? [];
 		return stages.find((stage) => (stageId !== undefined && stage.id === stageId) || stage.replayKey === replayKey)
@@ -618,7 +592,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 		durableIntercomGroup,
 		task: taskRunners.task,
-		recordCachedTask: cachedStage.record,
+		recordCachedTask: recordCachedStage,
 		signal: ownController.signal,
 		registerTailControl: (registration) => {
 			registration.controller.signal.addEventListener(
@@ -647,7 +621,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		setChildDurableInvocation: (invocation) => {
 			pendingChildDurableInvocation = invocation;
 		},
-		recordCachedStage: cachedStage.record,
+		recordCachedStage,
 		runTopology: durableRunTopology(runSnapshot),
 		workflow,
 	});
@@ -669,7 +643,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			backend: durableBackend,
 			nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 			durableIntercomGroup,
-			recordCachedStage: cachedStage.record,
+			recordCachedStage,
 			stage: (name, options, replayKey) => {
 				const stage = runtime.stage(name, options);
 				const stageId = activeStore
@@ -687,43 +661,75 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		tool,
 		...(opts.models !== undefined ? { models: opts.models } : {}),
 	};
+	const runtimeSettled = Promise.withResolvers<void>();
+	const unregisterRunControl = toolControls.registerRun(runId, {
+		quit: () => {
+			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
+			return runtimeSettled.promise;
+		},
+	});
 	terminalEvents.register();
 	try {
-		if (opts.deferWorkflowStart === true) {
-			await nextEventLoopTurn();
-			if (ownController.signal.aborted) {
-				await admittedTools.closeAndDrain();
-				const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
-				if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
-				const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
-				if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
-				return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
-			}
+		if (callerSignal?.aborted) onCallerAbort();
+		else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+		activeStore.recordRunStart(runSnapshot);
+		if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);
+		opts.onRunStart?.(runSnapshot);
+		if (opts.persistence) {
+			appendRunStart(opts.persistence, {
+				runId,
+				name: def.name,
+				inputs: resolvedInputs,
+				...(runSnapshot.parentRunId !== undefined ? { parentRunId: runSnapshot.parentRunId } : {}),
+				...(runSnapshot.parentStageId !== undefined ? { parentStageId: runSnapshot.parentStageId } : {}),
+				...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
+				...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
+				...(runSnapshot.origin !== undefined ? { origin: runSnapshot.origin } : {}),
+				...(runSnapshot.resumeFromStageId !== undefined
+					? { resumeFromStageId: runSnapshot.resumeFromStageId }
+					: {}),
+				...(runSnapshot.accumulatedDurationMs !== undefined
+					? { accumulatedDurationMs: runSnapshot.accumulatedDurationMs }
+					: {}),
+				...(runSnapshot.budget !== undefined ? { budget: runSnapshot.budget } : {}),
+				...(runSnapshot.budgetState !== undefined ? { budgetState: runSnapshot.budgetState } : {}),
+				ts: runSnapshot.startedAt,
+			});
 		}
-		await admitDurableRootRun({
-			backend: durableBackend,
-			runId,
-			isChildRun: opts.parentRun !== undefined,
-			registration:
-				durableRootRegistration === undefined
-					? undefined
-					: {
-							...durableRootRegistration,
-							...workflowInvocationMetadata(
-								inputRuntimeDefaults,
-								workflowInvocationCwd,
-								gitWorktreeSetupCache,
-								runSnapshot.origin,
-							),
-						},
-		});
+		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
+		ownController.signal.throwIfAborted();
+		await raceAbort(
+			admitDurableRootRun({
+				backend: durableBackend,
+				runId,
+				isChildRun: opts.parentRun !== undefined,
+				registration:
+					durableRootRegistration === undefined
+						? undefined
+						: {
+								...durableRootRegistration,
+								...workflowInvocationMetadata(
+									inputRuntimeDefaults,
+									workflowInvocationCwd,
+									gitWorktreeSetupCache,
+									runSnapshot.origin,
+								),
+							},
+			}),
+			ownController.signal,
+		);
+		ownController.signal.throwIfAborted();
 		if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
 		const sourceFrontierStage = opts.continuation?.source;
 		const sourceFrontierId = sourceFrontierStage?.failedStageId ?? opts.continuation?.resumeFromStageId;
 		const startupFrontierStage =
 			sourceFrontierStage?.stages.find((stage) => stage.id === sourceFrontierId)?.name ?? "workflow frontier";
 		if (budget.enabled) await budget.stopAtBoundaryAsync(startupFrontierStage);
-		const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
+		ownController.signal.throwIfAborted();
+		const rawResult = await raceAbort(
+			runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx)),
+			ownController.signal,
+		);
 		await admittedTools.closeAndDrain();
 		budget.rethrowIfSystemOwnedStop(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
 		const normalTerminalEvent = terminalEvents.winner();
@@ -750,7 +756,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		const result = normalizeWorkflowRunOutput(def.name, rawResult);
 		assertWorkflowRunOutputs(def.name, result, def.outputs);
 		assertWorkflowCreatedExecution(runSnapshot);
-		await durableBackend.flush(runId);
+		await raceAbort(durableBackend.flush(runId), ownController.signal);
+		ownController.signal.throwIfAborted();
 		const returned = classifyReturnedRunStatus(result, runSnapshot);
 		if (returned.status === "completed") assertFrontierConsumed();
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
@@ -870,6 +877,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			onRunEnd: opts.onRunEnd,
 		});
 	} finally {
+		callerSignal?.removeEventListener("abort", onCallerAbort);
+		runtimeSettled.resolve();
+		unregisterRunControl();
 		try {
 			await finalizeDurableTerminalStatus({
 				runId,

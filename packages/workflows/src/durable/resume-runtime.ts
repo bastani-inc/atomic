@@ -62,6 +62,8 @@ export interface ResumeDurableDeps {
 	readonly resolveDefinition?: (name: string, cwd: string | undefined) => Promise<WorkflowDefinition | undefined>;
 	/** Job tracker used by the detached resume launch. */
 	readonly jobs?: JobTracker;
+	readonly signal?: AbortSignal;
+	readonly onRunAccepted?: (runId: string) => void;
 }
 
 /** Hydrate current DBOS metadata and checkpoints before synchronous replay reads. */
@@ -104,6 +106,7 @@ export async function resumeDurableWorkflow(
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
+	deps.signal?.throwIfAborted();
 	const backend = deps.durableBackend ?? getDurableBackend();
 	const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
 	const resolved = resolveDurableEntry(workflowId, resolvedCatalog);
@@ -209,6 +212,7 @@ export async function resumeDurableWorkflow(
 			};
 		toolContinuation = { source: source!, resumeFromToolNodeId: frontier.toolNodeId };
 	}
+	deps.signal?.throwIfAborted();
 	removeDurableResumeShadowRuns(deps.baseRunOpts.store, resolved.workflowId);
 
 	// Claim resume against concurrent deletion through the required transition seam.
@@ -234,6 +238,7 @@ export async function resumeDurableWorkflow(
 	try {
 		launch = launchDetachedUntilStartup(def, inputs, {
 			...resumeRunOpts,
+			startupSignal: deps.signal,
 			...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
 		});
 	} catch (error) {
@@ -246,6 +251,7 @@ export async function resumeDurableWorkflow(
 		};
 	}
 	const { accepted } = launch;
+	deps.onRunAccepted?.(accepted.runId);
 	const admission = await launch.wait;
 	if (!admission.started) {
 		const snapshot = deps.baseRunOpts.store?.runs().find((run) => run.id === accepted.runId);

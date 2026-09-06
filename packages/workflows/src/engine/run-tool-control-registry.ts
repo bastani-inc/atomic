@@ -43,6 +43,11 @@ export interface ToolControlHandle {
 	abort(scope: WorkflowToolAbortScope): WorkflowToolAbortError;
 }
 
+/** Executor control for initialization and between-node awaits; never a graph node. */
+export interface WorkflowRunControlHandle {
+	quit(): Promise<void>;
+}
+
 export interface ToolControlRegistry {
 	/** Register an in-flight node; the returned disposer unregisters it. */
 	register(registration: ToolControlRegistration): () => void;
@@ -57,6 +62,8 @@ export interface ToolControlRegistry {
 	 */
 	registerAdmissionBoundary(runId: string, boundary: ToolAdmissionBoundary): () => void;
 	admissionBoundary(runId: string): ToolAdmissionBoundary | undefined;
+	registerRun(runId: string, handle: WorkflowRunControlHandle): () => void;
+	runControl(runId: string): WorkflowRunControlHandle | undefined;
 	/** Drop every registration. Used on session/store teardown and by tests. */
 	clear(): void;
 }
@@ -64,6 +71,7 @@ export interface ToolControlRegistry {
 export function createToolControlRegistry(): ToolControlRegistry {
 	const byRun = new Map<string, Map<string, ToolControlHandle>>();
 	const admissionByRun = new Map<string, ToolAdmissionBoundary>();
+	const runControls = new Map<string, WorkflowRunControlHandle>();
 
 	const makeHandle = (registration: ToolControlRegistration): ToolControlHandle => ({
 		runId: registration.runId,
@@ -119,9 +127,17 @@ export function createToolControlRegistry(): ToolControlRegistry {
 		admissionBoundary(runId: string): ToolAdmissionBoundary | undefined {
 			return admissionByRun.get(runId);
 		},
+		registerRun(runId, handle) {
+			runControls.set(runId, handle);
+			return () => {
+				if (runControls.get(runId) === handle) runControls.delete(runId);
+			};
+		},
+		runControl: (runId) => runControls.get(runId),
 		clear(): void {
 			byRun.clear();
 			admissionByRun.clear();
+			runControls.clear();
 		},
 	};
 }

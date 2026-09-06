@@ -24,6 +24,7 @@ import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { discoverWorkflows } from "./discovery.js";
+import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 
 export interface DurableResumeRuntime {
 	resumeDurableWorkflow(
@@ -32,6 +33,8 @@ export interface DurableResumeRuntime {
 			readonly policy?: WorkflowExecutionPolicy;
 			readonly actor?: WorkflowActor;
 			readonly budget?: WorkflowBudget;
+			readonly signal?: AbortSignal;
+			readonly onRunAccepted?: (runId: string) => void;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -82,25 +85,35 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return await inspectTargetedDurableWorkflow(backend, workflowId);
 		},
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
-			const backend = await ensureReady();
-			if (preparedCatalog.length === 0) {
-				preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
-			}
-			const resolved = resolveCatalogEntry(workflowId, preparedCatalog);
-			if (resolved !== undefined) await backend.hydrateWorkflow(resolved.workflowId);
-			const adapterDeps: ResumeDurableDeps = {
-				registry: deps.registry,
-				baseRunOpts: {
-					...deps.baseRunOpts(options?.policy),
-					...(options?.budget === undefined ? {} : { budget: options.budget }),
-					...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
-				},
-				durableBackend: backend,
-				resolveDefinition: async (name, cwd) =>
-					(await discoverWorkflows({ cwd: cwd ?? deps.runtimeCwd })).registry.get(name),
-				...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
-			};
-			return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, preparedCatalog);
+			options?.signal?.throwIfAborted();
+			return raceWorkflowRequestAbort(
+				(async () => {
+					const backend = await ensureReady();
+					options?.signal?.throwIfAborted();
+					if (preparedCatalog.length === 0) {
+						preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
+					}
+					options?.signal?.throwIfAborted();
+					const resolved = resolveCatalogEntry(workflowId, preparedCatalog);
+					if (resolved !== undefined) await backend.hydrateWorkflow(resolved.workflowId);
+					const adapterDeps: ResumeDurableDeps = {
+						registry: deps.registry,
+						signal: options?.signal,
+						onRunAccepted: options?.onRunAccepted,
+						baseRunOpts: {
+							...deps.baseRunOpts(options?.policy),
+							...(options?.budget === undefined ? {} : { budget: options.budget }),
+							...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
+						},
+						durableBackend: backend,
+						resolveDefinition: async (name, cwd) =>
+							(await discoverWorkflows({ cwd: cwd ?? deps.runtimeCwd })).registry.get(name),
+						...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
+					};
+					return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, preparedCatalog);
+				})(),
+				options?.signal,
+			);
 		},
 		listDurableResumable(): readonly ResumableWorkflowEntry[] {
 			return getDurableBackend().listResumableWorkflows();

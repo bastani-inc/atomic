@@ -307,7 +307,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 				? fmtDuration(elapsedRunMs(run, now))
 				: undefined;
 
-	if (isQuitRun(run)) return "resumable via /workflow resume";
+	if (isQuitRun(run)) return run.resumable === false ? "not resumable" : "resumable via /workflow resume";
 	if (effectiveRunStatus(run) === "running") {
 		if (isChain) parts.push(`${done}/${total}`);
 		const labels = runningStageLabels(run);
