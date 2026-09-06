@@ -1,6 +1,7 @@
 import type { AgentSessionQueuePauseControl } from "../../../core/agent-session-methods.ts";
 import type { BashExecutionMessage } from "../../../core/messages.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
+import { classifyChatCommand } from "../skill-command-autocomplete.js";
 import type { ChatMessageEntry } from "./chat-message-renderer.ts";
 import { setChatSessionEditorText } from "./chat-session-host-editor.ts";
 import {
@@ -98,6 +99,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	mode: ChatSessionSubmitMode = "auto",
 	submittedText?: string,
 ): Promise<void> {
+	if (state.disposed || state.isDisabled?.()) return;
 	const text = (submittedText ?? state.inputBuffer).trim();
 	if (!text) return;
 	const interruptSettlement = state.interruptSettlement;
@@ -142,7 +144,8 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	const agentSession = state.getAgentSession?.();
 	const nativeQueuePaused = supportsQueuedMessagePause(agentSession) && agentSession.queuedMessagesPaused;
 	const isStreaming = isChatSessionStreaming(state);
-	const shouldAppendOptimisticUser = mode === "auto" && !isStreaming;
+	// The session publishes the expanded skill block; a raw optimistic signature cannot reconcile with it.
+	const shouldAppendOptimisticUser = mode === "auto" && !isStreaming && classifyChatCommand(text) !== "skill";
 	const optimisticSignature = shouldAppendOptimisticUser ? userMessageSignature(text) : undefined;
 	if (optimisticSignature !== undefined) {
 		state.liveChat.appendUserText(text);
@@ -159,7 +162,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			state.requestRender?.();
 			await requiredChatSessionCommand(state, "resume")(text);
 			state.sdkBusy = false;
-			state.statusMessage = "";
+			if (state.statusMessage === "resuming…") state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
 			return;
 		}
@@ -172,7 +175,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			await state.commands.ensureAttached?.();
 			await requiredChatSessionPromptCommand(state)(text, mode);
 			state.sdkBusy = false;
-			state.statusMessage = "";
+			if (state.statusMessage === "resuming…") state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
 			return;
 		}
@@ -358,6 +361,10 @@ async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,
 ): Promise<void> {
+	if (classifyChatCommand(text) === "skill" && state.commands.submitUserMessage) {
+		await state.commands.submitUserMessage(text, "auto");
+		return;
+	}
 	const agentSession = state.getAgentSession?.();
 	if (agentSession?.isStreaming) {
 		await agentSession.prompt(text, { streamingBehavior: "steer" });
@@ -370,6 +377,10 @@ async function queueChatSessionFollowUp<TExtraEntry extends ChatTranscriptEntryL
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,
 ): Promise<void> {
+	if (classifyChatCommand(text) === "skill" && state.commands.submitUserMessage) {
+		await state.commands.submitUserMessage(text, "followUp");
+		return;
+	}
 	const agentSession = state.getAgentSession?.();
 	if (agentSession?.isStreaming) {
 		await agentSession.prompt(text, { streamingBehavior: "followUp" });

@@ -82,7 +82,7 @@ export interface StageControlHandle {
 	 */
 	sendUserMessage?(
 		text: string,
-		options?: { readonly deliverAs?: "steer" | "followUp" },
+		options?: import("../../shared/types.js").StageSendUserMessageOptions,
 		beforeDelivery?: () => void,
 	): Promise<StageUserMessageDeliveryAction>;
 

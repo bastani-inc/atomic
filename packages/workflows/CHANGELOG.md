@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Attached stage chats now suggest stage-local `/skill:` commands with source metadata, qualified selectors, and refreshed catalogs after resource reload. Idle, steering, and follow-up submissions reuse session expansion once, retain stage admission and HIL ownership, and show skill diagnostics locally. Explicit editable post-mortem chats can invoke skills without reopening workflow execution.
+- `StageSendUserMessageOptions.expandPromptTemplates` opts native stage-session delivery into existing command and skill/template expansion; ordinary programmatic messages remain literal by default.
+
 ### Fixed
 
 - Pending-stage Intercom settlement now skips unrelated runs with no messages to settle. Genuine sweep failures produce one display-only warning per distinct message in interactive sessions instead of repeated console stack traces; headless sessions retain console diagnostics, and pending messages remain available for recovery.

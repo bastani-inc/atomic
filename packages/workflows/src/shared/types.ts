@@ -28,6 +28,8 @@ export type StageUserMessageDelivery = "steer" | "followUp";
 export interface StageSendUserMessageOptions {
 	/** Delivery mode to use when the stage session is already streaming. Defaults to followUp. */
 	readonly deliverAs?: StageUserMessageDelivery;
+	/** Opt in to existing session command/template expansion. Ordinary programmatic messages stay literal. */
+	readonly expandPromptTemplates?: boolean;
 }
 
 export type WorkflowModelValue = NonNullable<CreateAgentSessionOptions["model"]> | string;

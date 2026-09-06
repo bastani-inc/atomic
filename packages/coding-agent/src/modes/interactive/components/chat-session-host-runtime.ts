@@ -172,7 +172,7 @@ export function clearChatSessionBusyForTerminalWorkflowStage<TExtraEntry extends
 		state.transcriptComponent.invalidate();
 	}
 	state.liveChat.clearPendingTools();
-	state.statusMessage = "";
+	if (state.statusMessage !== state.lastWarningMessage) state.statusMessage = "";
 	syncChatSessionAnimationTick(state);
 }
 

@@ -457,6 +457,11 @@ export {
 	WorkingStatusComponent,
 	type WorkingStatusComponentOptions,
 } from "./modes/interactive/components/index.ts";
+export {
+	classifyChatCommand,
+	createSessionSkillAutocompleteProvider,
+	getSessionSkillCommands,
+} from "./modes/interactive/skill-command-autocomplete.js";
 // Theme utilities for custom tools and extensions
 export {
 	getLanguageFromPath,

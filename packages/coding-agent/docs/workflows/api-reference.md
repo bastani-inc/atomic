@@ -831,13 +831,18 @@ Runs the lower-level completion adapter and returns text. Completion options can
 ```typescript
 stage.sendUserMessage(
   content: string | readonly (StageTextContent | StageImageContent)[],
-  options?: { readonly deliverAs?: "steer" | "followUp" },
+  options?: {
+    readonly deliverAs?: "steer" | "followUp";
+    readonly expandPromptTemplates?: boolean;
+  },
 ): Promise<void>;
 ```
 
 Sends a normal follow-on user turn to the retained stage session. This method starts a turn immediately when the session is idle and not controlled-paused; while streaming, it queues a follow-up by default or sends steering when `deliverAs: "steer"`. During controlled pause it joins the raw hold and does not start a turn.
 
 `deliverAs: "steer"` is consumed after the current assistant response finishes its whole tool batch and before the next model request; `deliverAs: "followUp"` is consumed only when the agent would otherwise stop. Each queue is FIFO in admission order, and steering keeps priority over an earlier-submitted follow-up.
+
+Native session delivery is literal by default. Set `expandPromptTemplates: true` to opt into the session's existing skill/prompt-template expansion and registered extension-command dispatch; a command may be handled without creating a user turn. Stage admission still applies before delivery. The attached stage composer opts into this path for `/skill:` invocations only; ordinary programmatic messages keep the default. Custom adapters must implement the option to provide equivalent behavior.
 
 Native sessions accept strings or text/image content blocks. Non-native fallback adapters accept only strings and reject block arrays; `deliverAs` affects streaming delivery only, and follow-on turns retain the stage MCP scope.
 

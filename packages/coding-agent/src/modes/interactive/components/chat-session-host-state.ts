@@ -47,6 +47,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	transcript: ChatSessionHostEntry<TExtraEntry>[] = [];
 	extraEntries: TExtraEntry[] = [];
 	statusMessage = "";
+	/** Explicit diagnostics survive busy-state cleanup, but are not restored after later input. */
+	lastWarningMessage: string | undefined;
 	isBashMode = false;
 	localBashRunning = false;
 	sdkBusy = false;

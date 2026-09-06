@@ -44,6 +44,8 @@ export type ChatSessionSubmitMode = "auto" | "followUp";
 export interface ChatSessionHostCommands {
 	ensureAttached?: () => Promise<void>;
 	prompt?: (text: string, mode: ChatSessionSubmitMode) => Promise<void>;
+	/** Host-owned admission route, used instead of raw SDK streaming shortcuts. */
+	submitUserMessage?: (text: string, mode: ChatSessionSubmitMode) => Promise<void>;
 	steer?: (text: string) => Promise<void>;
 	followUp?: (text: string) => Promise<void>;
 	interrupt?: () => Promise<void>;
@@ -71,6 +73,7 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	tui?: TUI;
 	keybindings?: unknown;
 	editorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
+	autocompleteProvider?: import("@earendil-works/pi-tui").AutocompleteProvider;
 	editorTheme: EditorTheme;
 	getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
 	getCwd?: () => string;

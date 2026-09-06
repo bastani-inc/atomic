@@ -85,6 +85,9 @@ export async function sendStageUserMessage(
 		try {
 			const delivery = activeSession.sendUserMessage(content, {
 				...(deliverAs === undefined ? {} : { deliverAs }),
+				...(options?.expandPromptTemplates === undefined
+					? {}
+					: { expandPromptTemplates: options.expandPromptTemplates }),
 				__workflowDelivery: {
 					promptStarted: ownership?.observe ?? promptStarted,
 					delivered(action) {

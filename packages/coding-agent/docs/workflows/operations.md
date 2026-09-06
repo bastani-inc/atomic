@@ -172,6 +172,16 @@ At the supported 40-column terminal minimum, attached stage chats keep the `ctrl
 
 Human-in-the-loop prompts appear as awaiting-input nodes in the workflow graph, not as ordinary chat modals — see [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input) for how to find and answer them.
 
+### Skills in attached stage chats
+
+Use `/skill:<selector> [arguments]` in an editable stage composer, including qualified selectors such as `/skill:review@project`. Completion reads that stage's own resource catalog and `enableSkillCommands` setting, with the same source tags as main chat. The next completion request reflects a stage resource reload. If the host cannot expose stage command metadata, it reports discovery as unavailable instead of substituting main-chat resources.
+
+Enter starts an idle turn or steers a streaming turn; Ctrl+F preserves follow-up delivery. The command stays bound to the submitted stage even if you switch panes. Its session performs the existing expansion once, including the selected skill's location, candidate identity, base directory, and trimmed arguments. Relative skill references use the skill directory; tools retain the stage cwd and restrictions. Manually typed commands still work when suggestions are disabled. Unknown bare selectors pass through unchanged, while qualified-resolution and file-read errors appear in the attached chat.
+
+Mounted HIL and custom prompts take precedence: a `/skill:` answer is literal prompt input. Blocked stages, read-only archives, and replay do not admit skill messages. Explicit editable [post-mortem chat](#post-mortem-chat-vs-execution-resume) can use its own skills, but cannot revive a workflow node or change the completed DAG. Skill invocation grants no additional delegation or tool authority and does not forward unrelated commands to the parent chat.
+
+`/tasks` is reserved for local task inspection, not a skill or model message. On hosts without the task inspector it reports `Task inspection is unavailable in this host.` and sends nothing to the model.
+
 ## Monitor and Control Runs
 
 The workflow tool exposes lifecycle controls for non-interactive use:
