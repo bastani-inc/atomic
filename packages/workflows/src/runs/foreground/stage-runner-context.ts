@@ -1,8 +1,12 @@
 import { createStructuredOutputCapture, runCallback } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
-import type { StageExecutionMeta } from "../../shared/types.js";
+import type { StageExecutionMeta, StageOutputOptions } from "../../shared/types.js";
 import { StageSessionController } from "./stage-runner-controller.js";
-import { assistantArtifactTextForToolCall, assistantMessage } from "./stage-runner-messages.js";
+import {
+	assistantArtifactTextForGeneration,
+	assistantArtifactTextForToolCall,
+	assistantMessage,
+} from "./stage-runner-messages.js";
 import {
 	finalizePromptOutput,
 	splitPromptOptions,
@@ -44,17 +48,37 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 	let lastFinalizedMessageCount: number | undefined;
 	let structuredArtifactFinalized = false;
 	let adapterMessages = [] as InternalStageContext["messages"];
+	let artifactOptions: StageOutputOptions | undefined;
+	let artifactClosed = false;
+	let artifactText: string | undefined;
+	let continuing = false;
+
+	async function exportArtifact(): Promise<string> {
+		const text = assistantArtifactTextForGeneration(controller.outputGenerationMessages());
+		if (text !== artifactText || lastFinalizedOutput === undefined) {
+			lastFinalizedOutput = await finalizePromptOutput(
+				text,
+				artifactOptions!,
+				runtimeCwd(),
+				runId,
+				controller.currentSession?.messages,
+			);
+			artifactText = text;
+			lastAssistantText = lastFinalizedOutput;
+		}
+		return lastFinalizedOutput!;
+	}
 
 	function runtimeCwd(): string {
 		return typeof effectiveStageOptions?.cwd === "string" ? effectiveStageOptions.cwd : process.cwd();
 	}
 
 	function finalizedOutputIsCurrent(): boolean {
+		if (lastFinalizedOutput === undefined) return false;
+		if (artifactOptions !== undefined || structuredArtifactFinalized) return true;
 		return (
-			lastFinalizedOutput !== undefined &&
-			(structuredArtifactFinalized ||
-				lastFinalizedMessageCount === undefined ||
-				controller.currentSession?.messages.length === lastFinalizedMessageCount)
+			lastFinalizedMessageCount === undefined ||
+			controller.currentSession?.messages.length === lastFinalizedMessageCount
 		);
 	}
 
@@ -62,6 +86,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		name: stageName,
 
 		async prompt(text, options) {
+			if (continuing && artifactOptions) options = { ...options, ...artifactOptions };
 			const { sdkOptions, outputOptions } = splitPromptOptions(options);
 			validatePromptOutputOptions(outputOptions);
 			const hasOutputArtifact = typeof outputOptions.output === "string" && outputOptions.output.length > 0;
@@ -73,6 +98,13 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 					"atomic-workflows: stage schema supports one prompt() call per stage context because structured_output may be called exactly once. Create a new ctx.stage(...) for each additional schema-backed prompt.",
 				);
 			}
+			if (!continuing) {
+				controller.beginOutputGeneration();
+				artifactOptions = undefined;
+				artifactClosed = false;
+				artifactText = undefined;
+			}
+			if (hasOutputArtifact && !structuredOutputCapture && !adapters.prompt) artifactOptions = outputOptions;
 			if (adapters.prompt) {
 				if (structuredOutputCapture) {
 					throw new Error(
@@ -154,6 +186,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				return executionSnapshot.value as never;
 			}
 			await controller.promptWithFallback(promptText, sdkOptions);
+			if (artifactOptions) return (await exportArtifact()) as never;
 			const rawText = controller.lastAssistantText(lastAssistantText) ?? "";
 			lastAssistantText = await finalizePromptOutput(
 				rawText,
@@ -167,7 +200,17 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			return lastAssistantText;
 		},
 
+		async __continuePrompt(text) {
+			continuing = true;
+			try {
+				return await this.prompt(text);
+			} finally {
+				continuing = false;
+			}
+		},
+
 		async complete(text, completeOpts) {
+			artifactOptions = undefined;
 			if (adapters.complete) {
 				lastFinalizedOutput = undefined;
 				lastFinalizedMessageCount = undefined;
@@ -263,7 +306,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		},
 
 		async navigateTree(targetId, options) {
-			return (await controller.ensureSession()).navigateTree(targetId, options);
+			return controller.navigateTree(targetId, options);
 		},
 
 		async compact() {
@@ -304,6 +347,11 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
 		async __closeGeneration() {
 			await controller.closeGeneration();
+			if (artifactOptions && !artifactClosed) {
+				await exportArtifact();
+				artifactClosed = true;
+			}
+			return artifactOptions ? lastFinalizedOutput : undefined;
 		},
 
 		__sessionMeta() {

@@ -115,7 +115,7 @@ export function createTrackedStageCaller(input: {
 			if (suppressQueuedContinuation) runtime.state.suppressQueuedUserMessageContinuation = true;
 			try {
 				result = (await runtime.raceStageSessionHeartbeat(
-					raceAbort(runtime.innerCtx.prompt(RESUME_CONTINUATION_PROMPT), runtime.signal),
+					raceAbort(runtime.innerCtx.__continuePrompt(RESUME_CONTINUATION_PROMPT), runtime.signal),
 				)) as T;
 			} finally {
 				if (suppressQueuedContinuation) runtime.state.suppressQueuedUserMessageContinuation = false;
@@ -254,7 +254,7 @@ export function createTrackedStageCaller(input: {
 							runtime.state.chatAnswerObservedThisTurn = false;
 							if (decision.message !== undefined) {
 								result = (await runtime.raceStageSessionHeartbeat(
-									raceAbort(runtime.innerCtx.prompt(decision.message), runtime.signal),
+									raceAbort(runtime.innerCtx.__continuePrompt(decision.message), runtime.signal),
 								)) as T;
 								if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 							} else {
@@ -301,7 +301,8 @@ export function createTrackedStageCaller(input: {
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
 			if (afterBudget.kind === "exhausted" && runtime.budget.enabled)
 				await runtime.budget.stopAtBoundaryAsync(runtime.name);
-			await runtime.innerCtx.__closeGeneration();
+			const finalizedArtifact = await runtime.innerCtx.__closeGeneration();
+			if (typeof result === "string" && finalizedArtifact !== undefined) result = finalizedArtifact as T;
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			if (
 				trackStageLifecycle &&

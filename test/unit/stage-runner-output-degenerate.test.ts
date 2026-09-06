@@ -93,7 +93,9 @@ test("every receipt names the artifact and the transcript with its access patter
 
 test("the runtime states the artifact contract so prompts do not have to", () => {
 	const withOutput = stageOutputInstruction({ output: "/tmp/report.md" });
-	assert.match(withOutput, /final message is saved verbatim as its artifact/);
+	assert.match(withOutput, /completed answers are saved as its artifact/);
+	assert.match(withOutput, /numbered supplements, not replacements/);
+	assert.match(withOutput, /Tool-call progress is transcript-only/);
 	assert.match(withOutput, /rather than a pointer to it/);
 	assert.match(withOutput, /Files you write yourself are not the artifact/);
 

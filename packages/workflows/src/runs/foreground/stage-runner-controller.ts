@@ -27,6 +27,7 @@ import { nextRetryDecision, sleepOrAbort } from "../shared/retry.js";
 import { isWorkflowPendingStageDeliveryFailure } from "./pending-stage-delivery.js";
 import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
+import { StageArtifactCapture } from "./stage-runner-artifact-capture.js";
 import { candidateLabel, effectiveCandidateReasoning, modelAttemptReasoning } from "./stage-runner-candidate.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import {
@@ -256,6 +257,28 @@ export class StageSessionController {
 	private pendingCreationResumeMessage: string | undefined;
 	private readonly messageAdmission = new StageMessageAdmission();
 	private readonly deliveryActivity = new StageDeliveryActivity();
+	private readonly artifactCapture = new StageArtifactCapture();
+
+	beginOutputGeneration(): void {
+		this.artifactCapture.reset();
+	}
+
+	outputGenerationMessages(): StageSessionRuntime["messages"] {
+		return this.artifactCapture.messages();
+	}
+
+	async navigateTree(
+		...args: Parameters<StageSessionRuntime["navigateTree"]>
+	): ReturnType<StageSessionRuntime["navigateTree"]> {
+		const session = await this.ensureSession();
+		// Preserve answers from snapshot-only adapters before replacing their context.
+		this.artifactCapture.messages();
+		try {
+			return await session.navigateTree(...args);
+		} finally {
+			this.artifactCapture.rememberContext(session);
+		}
+	}
 
 	constructor(
 		private readonly opts: StageRunnerOpts,
@@ -479,6 +502,7 @@ export class StageSessionController {
 		const pending = this.activeCreation ?? this.sessionPromise;
 		const session = pending ? await pending : this.session;
 		await session?.closeWorkflowStageGeneration?.();
+		this.artifactCapture.close();
 	}
 
 	async promptWithFallback(
@@ -515,7 +539,9 @@ export class StageSessionController {
 				const resumedText = this.pendingCreationResumeMessage;
 				this.pendingCreationResumeMessage = undefined;
 				await this.promptWithThrownErrorRetry(activeSession, resumedText ?? text, sdkOptions);
+				this.artifactCapture.settleAttempt(true);
 			} catch (error) {
+				this.artifactCapture.settleAttempt(false);
 				if (error instanceof StageSessionCreationCancelled) return;
 				throw error;
 			}
@@ -878,6 +904,7 @@ export class StageSessionController {
 		sdkOptions: PromptOptions | undefined,
 	): Promise<{ readonly terminalScanStartIndex: number }> {
 		let retryAttempt = 0;
+		this.artifactCapture.beginAttempt(activeSession);
 		let nextText = text;
 		let retryAdmittedPrompt = false;
 		let retainedPrompt: StageSessionRuntime["messages"][number] | undefined;
@@ -1331,6 +1358,7 @@ export class StageSessionController {
 		}
 		this.unsubscribeTerminateWatcher?.();
 		this.unsubscribeTerminateWatcher = result.session.subscribe((event) => {
+			this.artifactCapture.onEvent(result.session, event);
 			const terminatingId = terminatingToolCallId(event);
 			if (terminatingId !== undefined) this.terminatingToolCallIds.add(terminatingId);
 			this.unresolvedContextOverflowMessage =
@@ -1423,6 +1451,7 @@ export class StageSessionController {
 			const { terminalScanStartIndex } = await this.promptWithThrownErrorRetry(resumedSession, text, sdkOptions);
 			const terminalFailure = latestTerminalAssistantFailureSince(resumedSession.messages, terminalScanStartIndex);
 			if (terminalFailure === undefined || this.capturedStructuredOutputForAttempt()) {
+				this.artifactCapture.settleAttempt(true);
 				const usage = this.takeAttemptUsage(resumedSession);
 				this.modelAttempts.push({
 					model: resumedLabel,
@@ -1438,6 +1467,7 @@ export class StageSessionController {
 			throw new WorkflowPromptModelFailure(terminalFailure);
 		} catch (err) {
 			if (this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err)) {
+				this.artifactCapture.settleAttempt(true);
 				const usage = this.takeAttemptUsage(resumedSession);
 				this.modelAttempts.push({
 					model: resumedLabel,
@@ -1450,6 +1480,7 @@ export class StageSessionController {
 				this.notifySuccessfulModelFallbackMeta();
 				return true;
 			}
+			this.artifactCapture.settleAttempt(false);
 			const message = errorMessage(err);
 			const usage = this.takeAttemptUsage(resumedSession);
 			this.modelAttempts.push({
@@ -1502,6 +1533,7 @@ export class StageSessionController {
 			this.recordSuccessfulAttempt(candidate);
 			return "handled";
 		}
+		this.artifactCapture.settleAttempt(false);
 		const usage = this.takeAttemptUsage(this.session);
 		this.modelAttempts.push({
 			model: candidate.id,
@@ -1534,6 +1566,7 @@ export class StageSessionController {
 	}
 
 	private recordSuccessfulAttempt(candidate: WorkflowResolvedModelCandidate): void {
+		this.artifactCapture.settleAttempt(true);
 		const usage = this.takeAttemptUsage(this.session);
 		this.modelAttempts.push({
 			model: candidate.id,

@@ -152,6 +152,8 @@ export interface StageRunnerOpts {
 }
 
 export interface InternalStageContext extends StageContext {
+	/** Internal executor continuation of the current output generation. */
+	__continuePrompt(text: string): Promise<string>;
 	/** Internal cleanup hook; intentionally omitted from the public StageContext type. */
 	__dispose(): Promise<void>;
 	/** Internal result snapshot hook for the workflow store/TUI. */
@@ -185,7 +187,7 @@ export interface InternalStageContext extends StageContext {
 	/** Internal: synchronously reject new detached traffic without waiting for active work. */
 	__sealGeneration(): void;
 	/** Internal: atomically stop detached traffic admission and drain admitted work. */
-	__closeGeneration(): Promise<void>;
+	__closeGeneration(): Promise<string | undefined>;
 	/** Internal: snapshot of currently-known SDK session metadata. */
 	__sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined };
 	/** Internal: live coding-agent session when the adapter returned one. */
