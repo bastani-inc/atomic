@@ -10,6 +10,7 @@ import {
 	createStageContext,
 	type StageSessionRuntime,
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { StageSessionController } from "../../packages/workflows/src/runs/foreground/stage-runner-controller.js";
 import { readText, removePathSync } from "../helpers/runtime.js";
 import { assistantMessageWithUsage, makeMockSession } from "./stage-runner-helpers.js";
 
@@ -132,5 +133,67 @@ test("continuation fallback retains accepted report but discards failed attempt 
 		await context.__dispose();
 		harness.cleanup();
 		if (transcriptPath) removePathSync(transcriptPath, { force: true });
+	}
+});
+
+test("closed generation capture ignores retained chat and resets for the next authored generation", async () => {
+	const report = "Original report";
+	const replacement = "New authored report";
+	const harness = await createHarnessWithExtensions({
+		settings: { compaction: { enabled: false }, retry: { enabled: false }, sessionSummary: { enabled: false } },
+		extensionFactories: [
+			(pi) => {
+				pi.on("session_before_compact", () => ({ compactedText: "[User]: retained chat was compacted" }));
+			},
+		],
+		responses: [
+			report,
+			...Array.from({ length: 8 }, (_, index) => `Later chat ${index}\n${"Context\n".repeat(100)}`),
+			replacement,
+		],
+	});
+	await harness.session.bindExtensions({});
+	const options = {
+		stageId: "closed-capture",
+		stageName: "closed-capture",
+		runId: `closed-capture-${harness.session.sessionId}`,
+		adapters: {
+			agentSession: {
+				async create() {
+					return harness.session as unknown as StageSessionRuntime;
+				},
+			},
+		},
+	};
+	const controller = new StageSessionController(
+		options,
+		{ ...options, stageOptions: undefined },
+		undefined,
+		undefined,
+	);
+	try {
+		controller.beginOutputGeneration();
+		await controller.promptWithFallback("Report", undefined);
+		await controller.closeGeneration();
+		const captured = structuredClone(controller.outputGenerationMessages());
+		assert.equal(captured.length, 1);
+		for (let index = 0; index < 8; index += 1) await harness.session.sendUserMessage(`Later question ${index}`);
+		assert.equal(harness.faux.callCount, 9);
+		await harness.session.compact({ preserve_recent: 0 });
+		assert.equal(harness.session.messages.filter((message) => message.role === "assistant").length, 0);
+		assert.deepEqual(controller.outputGenerationMessages(), captured, "closed capture must not retain later chat");
+		await controller.closeGeneration();
+		assert.deepEqual(controller.outputGenerationMessages(), captured);
+		controller.beginOutputGeneration();
+		await controller.promptWithFallback("A new authored report", undefined);
+		await controller.closeGeneration();
+		assert.equal(controller.outputGenerationMessages().length, 1);
+		assert.equal(controller.lastAssistantText(undefined), replacement);
+		const answer = controller.outputGenerationMessages()[0];
+		assert.ok(answer?.role === "assistant");
+		assert.deepEqual(answer.content, [{ type: "text", text: replacement }]);
+	} finally {
+		await controller.disposeAll();
+		harness.cleanup();
 	}
 });

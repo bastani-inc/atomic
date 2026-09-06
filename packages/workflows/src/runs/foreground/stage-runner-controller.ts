@@ -267,6 +267,19 @@ export class StageSessionController {
 		return this.artifactCapture.messages();
 	}
 
+	async navigateTree(
+		...args: Parameters<StageSessionRuntime["navigateTree"]>
+	): ReturnType<StageSessionRuntime["navigateTree"]> {
+		const session = await this.ensureSession();
+		// Preserve answers from snapshot-only adapters before replacing their context.
+		this.artifactCapture.messages();
+		try {
+			return await session.navigateTree(...args);
+		} finally {
+			this.artifactCapture.rememberContext(session);
+		}
+	}
+
 	constructor(
 		private readonly opts: StageRunnerOpts,
 		private readonly meta: StageExecutionMeta,
@@ -489,6 +502,7 @@ export class StageSessionController {
 		const pending = this.activeCreation ?? this.sessionPromise;
 		const session = pending ? await pending : this.session;
 		await session?.closeWorkflowStageGeneration?.();
+		this.artifactCapture.close();
 	}
 
 	async promptWithFallback(

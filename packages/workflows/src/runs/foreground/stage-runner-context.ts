@@ -306,7 +306,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		},
 
 		async navigateTree(targetId, options) {
-			return (await controller.ensureSession()).navigateTree(targetId, options);
+			return controller.navigateTree(targetId, options);
 		},
 
 		async compact() {

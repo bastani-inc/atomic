@@ -8,32 +8,50 @@ export class StageArtifactCapture {
 	private seen = new WeakSet<Message>();
 	private accepted: Message[] = [];
 	private provisional: Message[] | undefined;
+	private receivesMessageEvents = false;
+	private closed = false;
 
 	reset(): void {
 		this.session = undefined;
 		this.seen = new WeakSet();
 		this.accepted = [];
 		this.provisional = undefined;
+		this.receivesMessageEvents = false;
+		this.closed = false;
 	}
 
 	beginAttempt(session: StageSessionRuntime): void {
+		if (this.closed) return;
 		if (this.session === session) this.scan();
 		else {
 			this.session = session;
+			this.receivesMessageEvents = false;
 			this.rememberContext();
 		}
 		this.provisional = [];
 	}
 
 	settleAttempt(success: boolean): void {
+		if (this.closed) return;
 		this.scan();
 		if (success) this.accepted.push(...(this.provisional ?? []));
 		this.provisional = undefined;
 	}
 
+	close(): void {
+		this.scan();
+		this.closed = true;
+		this.session = undefined;
+		this.seen = new WeakSet();
+		this.provisional = undefined;
+	}
+
 	onEvent(session: StageSessionRuntime, event: StageSessionEvent): void {
 		if (session !== this.session) return;
-		if (event.type === "message_end") this.capture(event.message);
+		if (event.type === "message_end") {
+			this.receivesMessageEvents = true;
+			this.capture(event.message);
+		}
 		// Retained context can be reconstructed with new objects by compaction.
 		// Those objects are context, not newly produced answers.
 		if (event.type === "compaction_end") this.rememberContext();
@@ -44,11 +62,15 @@ export class StageArtifactCapture {
 		return this.accepted;
 	}
 
-	private rememberContext(): void {
+	rememberContext(session = this.session): void {
+		if (session !== this.session) return;
 		for (const message of this.session?.messages ?? []) this.seen.add(message);
 	}
 
 	private scan(): void {
+		// Message events are authoritative when available: navigation can restore
+		// unseen historical messages without producing any new answer.
+		if (this.receivesMessageEvents) return;
 		// Deterministic adapters may expose messages without emitting events.
 		for (const message of this.session?.messages ?? []) this.capture(message);
 	}

@@ -7,9 +7,13 @@ import type { StageAdmittedCustomMessage } from "../../packages/coding-agent/src
 import { createHarness } from "../../packages/coding-agent/test/test-harness.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
-import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import {
+	createStageContext,
+	type StageSessionRuntime,
+} from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { fileExists, readText, removePathSync } from "../helpers/runtime.js";
+import { assistantMessageWithUsage } from "../unit/stage-runner-helpers.js";
 
 const REPORT =
 	"# Complete report\n\nFinding one: completed stages publish results.\nFinding two: replay has several paths.";
@@ -224,6 +228,90 @@ test.each(["custom", "user"])(
 				"file-only must not inline the handoff",
 			);
 		} finally {
+			producer.cleanup();
+			consumer.cleanup();
+			if (transcriptPath) removePathSync(transcriptPath, { force: true });
+		}
+	},
+);
+
+test.each([
+	[true, false],
+	[true, true],
+	[false, false],
+	[false, true],
+])(
+	"navigation excludes old branch history from downstream output, with events=%s continuation=%s",
+	async (emitsEvents, continueAfterNavigation) => {
+		const producer = await createHarness({
+			settings: { compaction: { enabled: false }, retry: { enabled: false }, sessionSummary: { enabled: false } },
+			responses: [REPORT, CLARIFICATION],
+		});
+		// A compatible adapter can expose completed messages without emitting events.
+		if (!emitsEvents) producer.session.subscribe = () => () => {};
+		const history = assistantMessageWithUsage("HISTORY-ONLY unrelated branch answer", {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: 0,
+		});
+		assert.ok(history.role === "assistant");
+		producer.sessionManager.appendMessage({ role: "user", content: "An old task", timestamp: 0 });
+		const oldLeaf = producer.sessionManager.appendMessage(history);
+		producer.sessionManager.resetLeaf();
+		producer.agent.state.messages = producer.sessionManager.buildSessionContext().messages;
+		assert.equal(producer.session.messages.length, 0);
+		const output = join(producer.tempDir, "navigated report.md");
+		const context = createStageContext({
+			stageId: "navigation",
+			stageName: "navigation",
+			runId: `navigation-${producer.session.sessionId}`,
+			adapters: {
+				agentSession: {
+					async create() {
+						return producer.session as unknown as StageSessionRuntime;
+					},
+				},
+			},
+		});
+		let consumedArtifact: string | undefined;
+		const readArtifact: AgentTool = {
+			name: "read_artifact",
+			label: "Read artifact",
+			description: "Read the producer's saved output",
+			parameters: Type.Object({}),
+			async execute() {
+				consumedArtifact = await readText(output);
+				return { content: [{ type: "text", text: consumedArtifact }], details: {} };
+			},
+		};
+		const consumer = await createHarness({
+			settings: { compaction: { enabled: false }, retry: { enabled: false }, sessionSummary: { enabled: false } },
+			baseToolsOverride: { read_artifact: readArtifact },
+			responses: [{ toolCalls: [{ id: "read", name: "read_artifact", args: {} }] }, "Read complete"],
+		});
+		consumer.session.setActiveToolsByName(["read_artifact"]);
+		let transcriptPath: string | undefined;
+		try {
+			const initial = await context.prompt("Report on the current task", { output, outputMode: "file-only" });
+			transcriptPath = initial.match(/^Transcript saved to: (.+) \([^\n]+\)\./m)?.[1];
+			assert.equal(await readText(output), REPORT);
+			assert.equal((await context.navigateTree(oldLeaf, { summarize: false })).cancelled, false);
+			assert.equal(producer.session.getLastAssistantText(), "HISTORY-ONLY unrelated branch answer");
+			assert.equal(producer.faux.callCount, 1, "navigation did not produce a new answer");
+			if (continueAfterNavigation) await context.__continuePrompt("Clarify the current report");
+			const receipt = await context.__closeGeneration();
+			assert.ok(receipt?.startsWith(`Output saved to: ${output} (`));
+			await consumer.session.prompt(`Read the producer artifact. ${receipt}`);
+			const expected = continueAfterNavigation ? `${REPORT}\n\n## Supplement 1\n\n${CLARIFICATION}` : REPORT;
+			assert.equal(consumedArtifact, expected, "downstream must receive only newly generated answers");
+			assert.equal(await readText(output), expected);
+			assert.equal(producer.faux.callCount, continueAfterNavigation ? 2 : 1);
+			assert.equal(consumer.faux.callCount, 2);
+			assert.equal(await context.__closeGeneration(), receipt);
+		} finally {
+			await context.__dispose();
 			producer.cleanup();
 			consumer.cleanup();
 			if (transcriptPath) removePathSync(transcriptPath, { force: true });
