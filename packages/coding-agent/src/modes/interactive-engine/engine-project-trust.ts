@@ -20,11 +20,7 @@ export class EngineProjectTrustService {
 		}
 		if (command?.type !== "engine_project_trust_start") return false;
 		if (this.active.has(command.componentId)) return true;
-		void this.getRunner().withProjectTrustPrompt(
-			command.kind,
-			command.title,
-			() => new Promise<void>((resolve) => this.active.set(command.componentId, resolve)),
-		);
+		this.active.set(command.componentId, this.getRunner().beginProjectTrustPrompt(command.kind, command.title));
 		return true;
 	}
 

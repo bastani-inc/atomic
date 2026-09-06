@@ -307,6 +307,11 @@ export class ExtensionRunner {
 		return this.withUIPrompt(this.uiPromptBinding, kind, title, run, "project_trust");
 	}
 
+	/** Begin a host-owned trust span whose end arrives as a separate control frame. */
+	beginProjectTrustPrompt(kind: UIPromptKind, title: string): () => void {
+		return this.beginUIPrompt(kind, title, "project_trust");
+	}
+
 	private withUIPrompt<T>(
 		binding: number,
 		kind: UIPromptKind,
@@ -315,7 +320,20 @@ export class ExtensionRunner {
 		reason: "ui_prompt" | "project_trust" = "ui_prompt",
 	): Promise<T> {
 		if (binding !== this.uiPromptBinding) return run();
+		const finish = this.beginUIPrompt(kind, title, reason);
+		try {
+			return run().finally(finish);
+		} catch (error) {
+			finish();
+			throw error;
+		}
+	}
 
+	private beginUIPrompt(
+		kind: UIPromptKind,
+		title: string | undefined,
+		reason: "ui_prompt" | "project_trust",
+	): () => void {
 		let prompt = this.activeUIPrompt;
 		if (!prompt) {
 			prompt = { depth: 0, reason, kind, title };
@@ -330,7 +348,7 @@ export class ExtensionRunner {
 		prompt.depth += 1;
 
 		let finished = false;
-		const finish = () => {
+		return () => {
 			if (finished) return;
 			finished = true;
 			if (this.activeUIPrompt !== prompt) return;
@@ -338,13 +356,6 @@ export class ExtensionRunner {
 			prompt.depth -= 1;
 			if (prompt.depth === 0) this.endActiveUIPrompt(prompt);
 		};
-
-		try {
-			return run().finally(finish);
-		} catch (error) {
-			finish();
-			throw error;
-		}
 	}
 
 	private endActiveUIPrompt(prompt = this.activeUIPrompt): void {

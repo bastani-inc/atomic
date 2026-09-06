@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { test } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
@@ -26,7 +27,9 @@ import "../src/modes/interactive/interactive-extension-runtime.ts";
 import "../src/modes/interactive/interactive-session-routing.ts";
 import type { TrustSelectorComponent } from "../src/modes/interactive/components/trust-selector.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.js";
 import { RpcClient } from "../src/modes/rpc/rpc-client.js";
+import { createRpcInputScheduler } from "../src/modes/rpc/rpc-input-scheduler.js";
 
 type UIPromptEvent = UIPromptStartEvent | UIPromptEndEvent;
 
@@ -549,6 +552,27 @@ test("isolated trust decisions complete before binding and deliver the queued pa
 	}
 });
 
+// #2873 / PR #2890: the transport must retain both completed dialogs, not just their frames.
+test("isolated trust transport delivers two sequential pre-bind lifecycle pairs", async () => {
+	const { runner, events } = await createRunner();
+	const probe = await createUnboundTrustTransport(runner);
+	try {
+		await probe.runtime.withProjectTrustPrompt("select", "First", async () => false);
+		await probe.runtime.withProjectTrustPrompt("select", "Second", async () => false);
+		assert.deepEqual(events, []);
+		await probe.bind();
+		assert.equal(probe.commands.length, 4);
+		assert.deepEqual(events, [
+			{ type: "ui_prompt_start", reason: "project_trust", kind: "select", title: "First" },
+			{ type: "ui_prompt_end", reason: "project_trust", kind: "select", title: "First" },
+			{ type: "ui_prompt_start", reason: "project_trust", kind: "select", title: "Second" },
+			{ type: "ui_prompt_end", reason: "project_trust", kind: "select", title: "Second" },
+		]);
+	} finally {
+		await probe.close();
+	}
+});
+
 // #2873: transport retirement must discard queued starts and fence delayed ends.
 test("isolated trust transport never replays retired notifications into a replacement", async () => {
 	for (const initiallyBound of [false, true]) {
@@ -637,6 +661,38 @@ test("isolated trust notification failures and retired generations never block a
 	probe.failTransport();
 	assert.equal(await probe.runtime.withProjectTrustPrompt("select", "Project trust", async () => true), true);
 	assert.equal(probe.commands.length, 1);
+});
+
+// #2873 / PR #2890: completed pre-bind dialogs are sequential even in one input chunk.
+test("batched trust frames preserve separate spans for sequential dialogs", async () => {
+	const { runner, events } = await createRunner();
+	const service = new EngineProjectTrustService(() => runner);
+	const input = new PassThrough();
+	const commands: InteractiveEngineCommand[] = [
+		{ type: "engine_project_trust_start", componentId: "first", kind: "select", title: "First" },
+		{ type: "engine_project_trust_end", componentId: "first" },
+		{ type: "engine_project_trust_start", componentId: "second", kind: "confirm", title: "  Second\n " },
+		{ type: "engine_project_trust_end", componentId: "second" },
+	];
+	const detach = attachJsonlLineReader(
+		input,
+		createRpcInputScheduler(async (line) => {
+			assert.equal(service.handleLine(line), true);
+		}),
+	);
+	try {
+		input.end(commands.map((command) => `${JSON.stringify(command)}\n`).join(""));
+		await flushNotifications();
+		assert.deepEqual(events, [
+			{ type: "ui_prompt_start", reason: "project_trust", kind: "select", title: "First" },
+			{ type: "ui_prompt_end", reason: "project_trust", kind: "select", title: "First" },
+			{ type: "ui_prompt_start", reason: "project_trust", kind: "confirm", title: "  Second\n " },
+			{ type: "ui_prompt_end", reason: "project_trust", kind: "confirm", title: "  Second\n " },
+		]);
+	} finally {
+		detach();
+		service.dispose();
+	}
 });
 
 test("trust control frames reject malformed payloads and tolerate duplicate delivery", async () => {
