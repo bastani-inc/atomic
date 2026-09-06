@@ -641,14 +641,20 @@ pi.on("agent_settled", async (_event, ctx) => {
 
 #### ui_prompt_start / ui_prompt_end
 
-These notification-only events wrap blocking user-facing extension prompts opened through `ctx.ui.select()`, `ctx.ui.confirm()`, `ctx.ui.input()`, `ctx.ui.editor()`, and `ctx.ui.custom()`. Each event has `reason: "ui_prompt"`, the prompt `kind`, and the prompt `title` when that method accepts one. Host and status integrations can use the pair to report that Atomic is waiting for the user instead of still working.
+These notification-only events wrap blocking user-facing prompts. Each event has `reason: "ui_prompt" | "project_trust"`, the prompt `kind`, and the prompt `title` when available. Host and status integrations can use the pair to distinguish waiting for the user from active work.
 
-Atomic coalesces nested or overlapping prompts into one outer span. The end event keeps the outer prompt's kind and title and fires after every prompt in that span settles, including rejected promises and synchronous failures. Rebinding the host UI context closes an active span before a prompt from the new context can begin.
+- `ui_prompt`: extension prompts opened through `ctx.ui.select()`, `ctx.ui.confirm()`, `ctx.ui.input()`, `ctx.ui.editor()`, and `ctx.ui.custom()`.
+- `project_trust`: the built-in `/trust` selector. In isolated interactive mode, the host forwards these notifications to the engine's extension subscribers.
 
-Handlers run best-effort from the microtask queue. Atomic does not await them before opening or closing the prompt, so a slow handler cannot delay the UI.
+Startup and resume-time trust prompts are not covered. The separate [`project_trust`](#project_trust) decision hook and its limited UI context do not emit this lifecycle pair. Attaching subscribers does not replay earlier notifications. Adding the new reason does not change when Atomic asks for trust or how it resolves a decision.
+
+Atomic coalesces nested or overlapping prompts, including mixed reasons, into one shared outer span. The end event retains the original outer prompt's reason, kind, and title and fires after every prompt in the span settles, including rejected promises and synchronous failures. Cancelling or disposing the `/trust` selector ends its wait. Rebinding the host UI context closes an active span before a prompt from the new context can begin. Notifications are not replayed to a replacement engine if the engine exits while a host selector is open.
+
+Handlers run best-effort from the microtask queue. Atomic does not await them before opening or closing the prompt, so notifications do not block the UI.
 
 ```typescript
 pi.on("ui_prompt_start", (event) => {
+  // event.reason - "ui_prompt" | "project_trust"
   // event.kind - "select" | "confirm" | "input" | "editor" | "custom"
   // event.title - prompt title when available
 });

@@ -59,12 +59,13 @@ export type SessionCompactFailedEventRootExport = Assert<
 >;
 
 export type UIPromptKindRootExport = Assert<Equal<UIPromptKind, "select" | "confirm" | "input" | "editor" | "custom">>;
+// #2873: the public lifecycle payload also identifies host-owned /trust waits.
 export type UIPromptStartEventRootExport = Assert<
 	Equal<
 		UIPromptStartEvent,
 		{
 			type: "ui_prompt_start";
-			reason: "ui_prompt";
+			reason: "ui_prompt" | "project_trust";
 			kind: UIPromptKind;
 			title?: string;
 		}
@@ -75,7 +76,7 @@ export type UIPromptEndEventRootExport = Assert<
 		UIPromptEndEvent,
 		{
 			type: "ui_prompt_end";
-			reason: "ui_prompt";
+			reason: "ui_prompt" | "project_trust";
 			kind: UIPromptKind;
 			title?: string;
 		}

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
@@ -255,6 +256,30 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	sendEngineCommand(command: InteractiveEngineCommand): void {
 		this.client.sendInteractiveEngineCommand(command);
+	}
+
+	/** Report a native host trust dialog to the extension runner in this engine generation. */
+	async withProjectTrustPrompt<T>(
+		kind: "select" | "confirm" | "input",
+		title: string,
+		run: () => Promise<T>,
+	): Promise<T> {
+		const generation = this.client.getGeneration();
+		const componentId = randomUUID();
+		const notify = (command: InteractiveEngineCommand) => {
+			if (this.disposed || generation !== this.client.getGeneration()) return;
+			try {
+				this.sendEngineCommand(command);
+			} catch {
+				// Status notification failure must not prevent a host-owned trust decision.
+			}
+		};
+		notify({ type: "engine_project_trust_start", componentId, kind, title });
+		try {
+			return await run();
+		} finally {
+			notify({ type: "engine_project_trust_end", componentId });
+		}
 	}
 
 	getRemoteCommands(): readonly RpcSlashCommand[] {

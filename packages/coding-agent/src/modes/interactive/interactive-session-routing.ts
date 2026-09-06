@@ -1,3 +1,4 @@
+import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.js";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -69,25 +70,38 @@ InteractiveModeBase.prototype.showTrustSelector = function (this: InteractiveMod
 	const cwd = this.sessionManager.getCwd();
 	const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
 	const savedDecision = trustStore.getEntry(cwd);
-	this.showSelector((done) => {
-		const selector = new TrustSelectorComponent({
-			cwd,
-			savedDecision,
-			projectTrusted: this.settingsManager.isProjectTrusted(),
-			onSelect: (selection) => {
-				trustStore.setMany(selection.updates);
-				done();
-				this.showStatus(
-					`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
-				);
-			},
-			onCancel: () => {
-				done();
-				this.ui.requestRender();
-			},
-		});
-		return { component: selector, focus: selector };
-	});
+	void withHostProjectTrustPrompt(
+		this.runtimeHost,
+		"select",
+		"Project trust",
+		() =>
+			new Promise<void>((resolve) => {
+				this.showSelector((done) => {
+					const selector = new TrustSelectorComponent({
+						cwd,
+						savedDecision,
+						projectTrusted: this.settingsManager.isProjectTrusted(),
+						onSelect: (selection) => {
+							try {
+								trustStore.setMany(selection.updates);
+							} catch (error) {
+								this.showError(error instanceof Error ? error.message : String(error));
+								return;
+							}
+							done();
+							this.showStatus(
+								`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+							);
+						},
+						onCancel: () => {
+							done();
+							this.ui.requestRender();
+						},
+					});
+					return { component: selector, focus: selector, dispose: resolve };
+				});
+			}),
+	).catch((error: Error) => this.showError(error.message));
 };
 
 InteractiveModeBase.prototype.showTreeSelector = async function (

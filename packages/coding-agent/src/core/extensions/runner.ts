@@ -153,7 +153,9 @@ export class ExtensionRunner {
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 	private uiPromptBinding = 0;
-	private activeUIPrompt: { depth: number; kind: UIPromptKind; title: string | undefined } | undefined;
+	private activeUIPrompt:
+		| { depth: number; reason: "ui_prompt" | "project_trust"; kind: UIPromptKind; title: string | undefined }
+		| undefined;
 
 	constructor(
 		extensions: Extension[],
@@ -300,21 +302,27 @@ export class ExtensionRunner {
 		};
 	}
 
+	/** Track a host-owned trust dialog using the current session's prompt lifecycle. */
+	withProjectTrustPrompt<T>(kind: UIPromptKind, title: string, run: () => Promise<T>): Promise<T> {
+		return this.withUIPrompt(this.uiPromptBinding, kind, title, run, "project_trust");
+	}
+
 	private withUIPrompt<T>(
 		binding: number,
 		kind: UIPromptKind,
 		title: string | undefined,
 		run: () => Promise<T>,
+		reason: "ui_prompt" | "project_trust" = "ui_prompt",
 	): Promise<T> {
 		if (binding !== this.uiPromptBinding) return run();
 
 		let prompt = this.activeUIPrompt;
 		if (!prompt) {
-			prompt = { depth: 0, kind, title };
+			prompt = { depth: 0, reason, kind, title };
 			this.activeUIPrompt = prompt;
 			this.emitUIPromptEvent({
 				type: "ui_prompt_start",
-				reason: "ui_prompt",
+				reason,
 				kind,
 				...(title === undefined ? {} : { title }),
 			});
@@ -345,7 +353,7 @@ export class ExtensionRunner {
 		prompt.depth = 0;
 		this.emitUIPromptEvent({
 			type: "ui_prompt_end",
-			reason: "ui_prompt",
+			reason: prompt.reason,
 			kind: prompt.kind,
 			...(prompt.title === undefined ? {} : { title: prompt.title }),
 		});

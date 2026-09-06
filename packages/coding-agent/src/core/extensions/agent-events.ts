@@ -65,18 +65,18 @@ export interface AgentSettledEvent {
 
 export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
 
-/** Fired when Atomic starts waiting on a blocking user-facing extension UI prompt. */
+/** Fired when Atomic starts waiting on a blocking extension UI prompt or the built-in /trust selector. */
 export interface UIPromptStartEvent {
 	type: "ui_prompt_start";
-	reason: "ui_prompt";
+	reason: "ui_prompt" | "project_trust";
 	kind: UIPromptKind;
 	title?: string;
 }
 
-/** Fired when Atomic is no longer waiting on a blocking user-facing extension UI prompt. */
+/** Fired when Atomic is no longer waiting on a blocking extension UI prompt or the built-in /trust selector. */
 export interface UIPromptEndEvent {
 	type: "ui_prompt_end";
-	reason: "ui_prompt";
+	reason: "ui_prompt" | "project_trust";
 	kind: UIPromptKind;
 	title?: string;
 }
