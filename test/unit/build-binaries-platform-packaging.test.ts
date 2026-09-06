@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,17 +67,16 @@ test("every compiled target shares the syntax-minified application sidecar", () 
 	assertBuildScriptSyntax();
 });
 
-test("only musl and Windows ARM64 archives stage target PostgreSQL payloads", () => {
+test("all archives stage target PostgreSQL payloads independently of installed host leaves", () => {
 	const buildScript = readFileSync(buildScriptPath, "utf8");
 	const stagingBlock = buildScript.slice(
 		buildScript.indexOf('cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"'),
 		buildScript.indexOf('atomic_native="$(atomic_native_filename "$platform")"'),
 	);
 
-	assert.match(stagingBlock, /if \[\[ "\$platform" == linux-\*-musl \]\]; then/u);
+	assert.doesNotMatch(stagingBlock, /if \[\[ "\$platform" == linux-\*-musl/u);
 	assert.match(stagingBlock, /rm -rf "binaries\/\$platform\/node_modules\/@embedded-postgres"/u);
 	assert.doesNotMatch(stagingBlock, /rm -rf "binaries\/\$platform\/node_modules\/embedded-postgres"/u);
-	assert.match(stagingBlock, /if \[\[ "\$platform" == linux-\*-musl \|\| "\$platform" == windows-arm64 \]\]; then/u);
 	assert.match(
 		stagingBlock,
 		/node \.\.\/\.\.\/scripts\/stage-postgres-runtime\.mjs "\$platform" "binaries\/\$platform\/node_modules\/@bastani\/atomic-natives"/u,
@@ -178,4 +177,27 @@ test("tagged payload builds do not fetch unpublished natives and re-alias pi-ai 
 	assert.match(restoreBlock, /build_pi_ai/u);
 
 	assertBuildScriptSyntax();
+});
+
+test("musl C++ relocation leaves the self-contained PostgreSQL payload checksums intact", () => {
+	const source = readFileSync(buildScriptPath, "utf8");
+	const selection = source.match(/done < <\((find "\$payload_dir"[^\n]*)\)/u)?.[1];
+	assert.ok(selection, "missing musl ELF selection");
+	const payload = mkdtempSync(join(tmpdir(), "atomic-pg-rpath-"));
+	try {
+		const pgLib = join(payload, "node_modules/@bastani/atomic-natives/postgres-runtime/lib/libicu.so.1");
+		mkdirSync(join(payload, "node_modules/@bastani/atomic-natives/postgres-runtime/lib"), { recursive: true });
+		writeFileSync(pgLib, "pinned postgres library");
+		writeFileSync(join(payload, "binding.node"), "binding");
+		// Production passes a shell-relative binaries/$platform path. Passing a
+		// native Windows path instead makes find treat backslashes as glob escapes.
+		const selected = spawnSyncCollect(["bash", "-c", selection], {
+			cwd: payload,
+			env: { ...process.env, payload_dir: "." },
+		});
+		assert.equal(selected.exitCode, 0, selected.stderr.toString());
+		assert.deepEqual(selected.stdout.toString().split("\0").filter(Boolean), ["./binding.node"]);
+	} finally {
+		rmSync(payload, { recursive: true, force: true });
+	}
 });

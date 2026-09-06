@@ -152,8 +152,9 @@ describe("archive architecture guard", () => {
 			stagingLoop,
 			/bun run \.\.\/\.\.\/packages\/coding-agent\/scripts\/assert-archive-architecture\.ts "binaries\/\$platform" --platform "\$platform"/u,
 		);
-		// Pruning the foreign embedded-postgres leaves is what lets the guard stay strict.
-		assert.match(stagingLoop, /embedded_postgres_leaf="\$\(embedded_postgres_package_name "\$platform"\)"/u);
+		// Every archive removes host leaves and stages a verified target runtime.
+		assert.match(stagingLoop, /rm -rf "binaries\/\$platform\/node_modules\/@embedded-postgres"/u);
+		assert.match(stagingLoop, /stage-postgres-runtime\.mjs "\$platform"/u);
 		// Chord's esbuild dependency must receive the archive target's native package, not the host's.
 		assert.match(stagingLoop, /esbuild_leaf="\$\(esbuild_package_name "\$platform"\)"/u);
 		assert.match(stagingLoop, /rm -rf "binaries\/\$platform\/node_modules\/@esbuild"/u);

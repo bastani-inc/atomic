@@ -601,22 +601,24 @@ test("Alpine smoke covers both musl archives on stock Alpine without runtime pac
 	assert.match(nativeLoad, /typeof binding\[name\] !== "function"/u);
 });
 
-test("release packaging stages PostgreSQL in exactly the three target native leaves and verifies packed payloads", async () => {
+test("release packaging stages PostgreSQL in all eight native leaves and validates packed payloads", async () => {
 	const workflow = await readText(publishPath);
 	const build = jobBlock(workflow, "build", "stage-github-release");
 	for (const command of [
+		"linux-x64 packages/natives/npm/linux-x64-gnu",
+		"linux-arm64 packages/natives/npm/linux-arm64-gnu",
+		"darwin-x64 packages/natives/npm/darwin-x64",
+		"darwin-arm64 packages/natives/npm/darwin-arm64",
+		"windows-x64 packages/natives/npm/win32-x64-msvc",
 		"linux-x64-musl packages/natives/npm/linux-x64-musl",
 		"linux-arm64-musl packages/natives/npm/linux-arm64-musl",
 		"windows-arm64 packages/natives/npm/win32-arm64-msvc",
 	]) {
 		assert.match(build, new RegExp(`node scripts/stage-postgres-runtime\\.mjs ${command}`, "u"));
 	}
-	assert.match(
-		build,
-		/@bastani\/atomic-natives-linux-x64-musl\|@bastani\/atomic-natives-linux-arm64-musl\|@bastani\/atomic-natives-win32-arm64-msvc/u,
-	);
+	assert.match(build, /@bastani\/atomic-natives-\*/u);
 	assert.match(build, /package\/postgres-runtime\/POSTGRESQL-LICENSE/u);
-	assert.match(build, /Unexpected PostgreSQL payload/u);
+	assert.match(build, /stage-postgres-runtime\.mjs.*--validate/u);
 });
 
 test("musl archive build bundles pinned C++ runtimes and patches payload-local search paths", async () => {
@@ -1034,4 +1036,17 @@ test("CI runs every test suite, because no hook gates a push", async () => {
 			`.github/workflows/test.yml never runs \`npm run ${script}\`; with no push gate, a suite CI skips is a suite nothing runs`,
 		);
 	}
+});
+
+test("existing hardware jobs execute PostgreSQL SQL persistence gates without changing the platform matrix", async () => {
+	const workflow = await readText(publishPath);
+	for (const job of ["native-artifacts", "linux-binary-smoke", "windows-binary-smoke"]) {
+		assert.match(jobBlock(workflow, job), /smoke-postgres-runtime\.mjs/u);
+	}
+	const alpine = await readText(join(root, "scripts/test-musl-release-archive.sh"));
+	assert.match(alpine, /initdb.*-U postgres/u);
+	assert.match(alpine, /CREATE TABLE atomic_durability_probe/u);
+	assert.match(alpine, /INSERT INTO atomic_durability_probe/u);
+	assert.match(alpine, /SELECT value FROM atomic_durability_probe/u);
+	assert.match(alpine, /persisted-row/u);
 });

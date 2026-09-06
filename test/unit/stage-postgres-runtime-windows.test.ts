@@ -40,6 +40,10 @@ test("stages a Windows-shaped PostgreSQL tarball end to end from a caller-suppli
 		for (const binary of ["postgres", "initdb", "pg_ctl"]) {
 			writeFileSync(join(native, `${binary}.exe`), minimalX64PortableExecutable());
 		}
+		mkdirSync(join(source, "package", "native", "lib"));
+		writeFileSync(join(source, "package", "native", "lib", "libpq.dll"), "library");
+		mkdirSync(join(source, "package", "native", "share"));
+		writeFileSync(join(source, "package", "native", "share", "postgres.bki"), "catalog");
 		writeFileSync(join(source, "package", "LICENSE.md"), "upstream license\n");
 		const archive = join(root, "windows-x64-test.tgz");
 		execFileSync("tar", ["-czf", "windows-x64-test.tgz", "-C", "source", "package"], { cwd: root });

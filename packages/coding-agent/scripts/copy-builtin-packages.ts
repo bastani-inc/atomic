@@ -85,6 +85,11 @@ const HOST_PROVIDED_EXTERNALS = [
 	"@sinclair/typebox",
 	"@sinclair/typebox/*",
 	"proper-lockfile",
+	// DBOS loads these optional telemetry integrations only when explicitly enabled.
+	// They are not installed dependencies; keep them optional when bundling its SDK.
+	"@opentelemetry/*",
+	"winston",
+	"winston-transport",
 ];
 
 const SELF_CONTAINED_BUILTIN_PLUGINS: Bun.BunPlugin[] = [

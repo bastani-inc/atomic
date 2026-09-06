@@ -112,15 +112,17 @@ test("every work job the gate names exists and is otherwise independent", async 
 	}
 });
 
-/** Ceil the slower job duration from runs 33997174167 / 33997819241 plus 50% headroom. */
+/** Ceil the sampled maximum plus 50% headroom; measurements and censoring caveats live in docs/ci.md. */
 test("each split job retains its measured timeout hang detector", async () => {
 	const workflow = await readText(testPath);
 	const blocks = await jobs();
+	// Runs 33997174167 / 33997819241, except Windows release-archive recalibrated for PR #2887:
+	// Run 34035777039, job 101493452122, was timeout-censored at 244s; run 34037177374 succeeded in 149s.
 	const caps: Record<string, [number, number]> = {
 		"unit-tests": [Math.ceil((371 * 1.5) / 60), Math.ceil((526 * 1.5) / 60)],
 		"integration-tests": [Math.ceil((118 * 1.5) / 60), Math.ceil((195 * 1.5) / 60)],
 		"agent-suite": [Math.ceil((226 * 1.5) / 60), Math.ceil((331 * 1.5) / 60)],
-		"release-archive": [Math.ceil((80 * 1.5) / 60), Math.ceil((138 * 1.5) / 60)],
+		"release-archive": [Math.ceil((80 * 1.5) / 60), Math.ceil((244 * 1.5) / 60)],
 	};
 	for (const [job, [linux, windows]] of Object.entries(caps)) {
 		const block = blocks.get(job) as string;

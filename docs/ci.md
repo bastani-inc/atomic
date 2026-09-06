@@ -21,7 +21,7 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
    ├─ linux-binary-smoke + windows-binary-smoke (also builds both shipped
    │  Windows archives on the Windows runner) + alpine-binary-smoke, whose
    │  x64/ARM64 legs run embedded PostgreSQL initdb, start, connect, and shutdown
-   ├─ build: shrinkwrap/package validation, target PostgreSQL staging in three
+   ├─ build: shrinkwrap/package validation, target PostgreSQL staging in all eight
    │  native npm leaves, six non-Windows archives plus the Windows-built pair,
    │  eleven npm tarballs, release notes, and SHA256SUMS
    ├─ stage-github-release: create a verified draft and refuse to change a
@@ -38,7 +38,7 @@ Manual dispatch on `main`
 
 This release graph follows pi's draft-first publication shape. Public GitHub Release publication remains last so users never see a release whose npm publication failed.
 
-The release build downloads checksum-pinned PostgreSQL artifacts while preparing packages, never during package installation or first use. Only the `linux-x64-musl`, `linux-arm64-musl`, and `win32-arm64-msvc` native npm leaves receive a `postgres-runtime` payload; the pack verification rejects a missing target payload or one leaking into any other native leaf. Standalone musl and Windows ARM64 archives independently stage the same target-only layout under their archive-local `@bastani/atomic-natives` package. The Alpine smoke legs execute the runtime on both native runner architectures. Windows ARM64 remains content- and architecture-validated only because the available Windows runner is x64; it cannot authoritatively exercise Windows 11 ARM64 x64 emulation.
+The release build downloads checksum-pinned PostgreSQL artifacts while preparing packages, never during package installation or first use. All eight native npm leaves receive a `postgres-runtime` payload. Pack verification extracts each tarball and validates target provenance, executable architecture/libc, required libraries/catalog/licenses, and the payload file checksums; missing or wrong payloads fail packaging. Every standalone archive independently stages its target under the archive-local `@bastani/atomic-natives` package rather than relying on host-installed optional leaves. Existing native Linux glibc and macOS runners exercise scriptless pack/install and SQL persistence across restart; Linux and Windows x64 archive jobs do the same against extracted runtime paths. The Alpine smoke legs execute initdb, protocol queries, restart, and persisted-row checks on both native runner architectures. Windows ARM64 remains content- and architecture-validated only because the available Windows runner is x64; it cannot authoritatively exercise Windows 11 ARM64 x64 emulation.
 
 ## Tests (`test.yml`)
 
@@ -200,19 +200,22 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 
 ### Per-job time limits
 
-Job caps use the latest two completed CI runs available at calibration time:
+The initial job caps used the latest two completed CI runs available at calibration time:
 [33997174167](https://github.com/bastani-inc/atomic/actions/runs/33997174167)
 (main, `c77de93380`) and
 [33997819241](https://github.com/bastani-inc/atomic/actions/runs/33997819241)
 (PR, `bafc6ebd17`). Both succeeded. Run `33998194502` was still in progress
 and was excluded rather than treating unfinished durations as measurements.
+Those samples and caps remain unchanged except for Windows release archive,
+whose September 6 recalibration uses the explicitly identified runs below.
 
 For each job/platform, the cap in minutes is
 `ceil(max(run_1_seconds, run_2_seconds) × 1.5 / 60)`. Durations come from
 GitHub's job `completedAt - startedAt`, including setup and teardown but not
-time queued for a runner. Whole-minute rounding provides at least 50% headroom.
+time queued for a runner. Whole-minute rounding provides at least 50% headroom
+over the observed duration, not over an unobserved completion after a timeout.
 
-| Job | Platform | Run 33997174167 | Run 33997819241 | Timeout |
+| Job | Platform | Sample 1 (33997174167 unless noted) | Sample 2 (33997819241 unless noted) | Timeout |
 | --- | --- | ---: | ---: | ---: |
 | Unit tests | Linux | 371 s | 367 s | 10 min |
 | Unit tests | Windows | 526 s | 511 s | 14 min |
@@ -221,13 +224,40 @@ time queued for a runner. Whole-minute rounding provides at least 50% headroom.
 | Agent suite | Linux | 226 s | 216 s | 6 min |
 | Agent suite | Windows | 331 s | 327 s | 9 min |
 | Release archive | Linux | 76 s | 80 s | 2 min |
-| Release archive | Windows | 138 s | 135 s | 4 min |
+| Release archive | Windows | 244 s (34035777039; timeout-censored) | 149 s (34037177374; success) | 7 min |
 | Static checks | Linux | 78 s | 88 s | 3 min |
 | Final test gate | Linux matrix label | 4 s | 3 s | 1 min |
 | Final test gate | Windows matrix label | 4 s | 5 s | 1 min |
 
 Both final gate legs execute on Linux. The topology contract pins the caps and
 the sampled matrix-job maxima used to calculate them.
+
+The Windows release-archive cap previously used 138 s / 135 s samples, yielding
+4 minutes. In PR #2887, [run 34035777039, job 101493452122](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122)
+(`fe3263c73`) was cancelled after 244 s against that 240 s cap, despite every
+recorded step succeeding. The base [run 34021439230](https://github.com/bastani-inc/atomic/actions/runs/34021439230)
+(main, `e9faa47f9`) took 147 s. The step-level comparison is:
+
+| Windows step | Base run 34021439230 | PR run 34035777039 | Repair run 34037177374 |
+| --- | ---: | ---: | ---: |
+| Build native release binary | 75 s | 124 s | 73 s |
+| Smoke test Windows release archive | 17 s | 36 s | 18 s |
+
+Each archive now stages and validates its own pinned PostgreSQL payload; the
+Windows smoke also executes the SQL persistence/restart gate. The cancelled
+run's final smoke step succeeded from `2026-09-06T13:24:01Z` to
+`2026-09-06T13:24:37Z`. After recalibration, [run 34037177374, job 101497265311](https://github.com/bastani-inc/atomic/actions/runs/34037177374/job/101497265311)
+at `e113615a0` completed successfully in 149 s, including its unchanged Windows
+smoke from `2026-09-06T13:50:27Z` to `2026-09-06T13:50:45Z`. The faster build
+and smoke show that the earlier step deltas were not fixed intrinsic costs of
+the added work; runner/setup/download variance matters too.
+
+Retaining both latest observations gives `ceil(max(244, 149) × 1.5 / 60) = 7`
+minutes for Windows only. The successful run demonstrates completion with
+headroom; it does not erase the slower observation or prove cold-cache/retry
+headroom. The 244 s sample remains timeout-censored, not a successful uncapped
+duration. Linux's 2-minute cap, all other job caps, the 14-minute hang-detector
+ceiling, required contexts, smoke tests and per-test thresholds are unchanged.
 
 These are two-run wall-clock limits, not a guarantee that a full suite retry or
 a cold-cache toolchain download will fit. Bounded retries remain enabled but

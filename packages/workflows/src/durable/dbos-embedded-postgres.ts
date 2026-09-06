@@ -452,6 +452,19 @@ export async function loadEmbeddedPostgresBinaries(
 
 	if (target.npmPackageName !== undefined) {
 		searched.push(target.npmPackageName);
+		// Compiled Bun cannot import an unregistered bare package from a disk ESM
+		// builtin, even when its bytes are installed. Manifest resolution still
+		// works there: keep binary paths anchored to the package on disk.
+		if (options.importPackage === undefined) {
+			const legacy = resolvePackageManifest(target.npmPackageName, resolvePackage);
+			if (legacy.manifest !== undefined) {
+				try {
+					return binariesFromDirectory(join(dirname(legacy.manifest), "native"), host.platform);
+				} catch {
+					// Nonstandard/older wrappers retain their existing import API below.
+				}
+			}
+		}
 		try {
 			const importPackage: PackageImporter = options.importPackage ?? (async (specifier) => await import(specifier));
 			const binaries = await importPackage(target.npmPackageName);

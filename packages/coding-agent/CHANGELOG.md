@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored offline embedded PostgreSQL discovery in compiled archives and bundled target-selected runtimes for all eight supported archive/npm platforms, preserving scriptless installs and existing v18 clusters. Windows ARM64 continues to require Windows 11 x64 emulation.
+
 ## [0.9.18] - 2026-09-05
 
 Cumulative release of the `0.9.18-alpha.1` through `0.9.18-alpha.7` prereleases. Per-change details remain in the unchanged prerelease sections below.
