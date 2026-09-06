@@ -125,7 +125,7 @@ Toggle skill commands via `/settings` in interactive mode or in `settings.json`:
 
 An editable attached stage chat supports the same `/skill:<selector> [arguments]` commands. Its suggestions come from that stage's effective catalog and settings, not the main chat's catalog. Source tags use the main chat format: `[p]` for project, `[u]` for user, and `[t]` for temporary resources, with npm or Git source details when available. After the stage's resources reload, the next completion request reads the updated catalog and qualified aliases.
 
-Completion reuses an already attached session without reattaching or checkpointing it for each keystroke. If attachment is needed, overlapping requests share that attachment and then read the current catalog. This stage adapter provides skill-command discovery only; it does not provide `@` file-mention suggestions.
+Completion reuses an already attached session without reattaching or checkpointing it for each keystroke. If attachment is needed, overlapping requests share that attachment and then read the current catalog. The stage adapter provides `/skill:` discovery and Tab completion of relative paths rooted at the stage session cwd. It does not provide `@` file-mention suggestions.
 
 Enter starts a turn when idle or steers a streaming turn. Ctrl+F keeps follow-up intent. The stage session expands the command once through its admission route; skill-relative references use the skill directory while ordinary tools keep the stage cwd. Turning off `enableSkillCommands` hides suggestions but does not disable manually typed skill commands. Unknown bare selectors pass through as text; unknown or ambiguous qualified selectors and file-read failures show diagnostics in the attached chat without selecting another skill.
 
@@ -135,7 +135,7 @@ Mounted human-input and custom prompts own their input, so answers starting `/sk
 
 Custom stage hosts must expose admission-aware `sendUserMessage` to support invocation. Without it, skill submission reports that user-message admission is unavailable instead of falling back to unguarded `prompt`, `steer`, or `followUp` calls.
 
-See [workflow stage chat controls](workflows/operations.md#skills-in-attached-stage-chats) for the distinction between skill messages and local view commands.
+See [workflow stage chat controls](/workflows/operations#skills-in-attached-stage-chats) for the distinction between skill messages and local view commands.
 
 ## Skill Structure
 

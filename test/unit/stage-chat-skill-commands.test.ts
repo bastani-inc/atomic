@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { type AgentSession, buildSkillCatalog } from "@bastani/atomic";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { test, vi } from "vitest";
@@ -7,6 +8,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { createStageSkillFixture, submitStageSkillText } from "../fixtures/stage-chat-skill-session.js";
+import { writeFileEnsuringDir } from "../helpers/runtime.js";
 import {
 	FakePromptEditor,
 	flush,
@@ -34,6 +36,42 @@ test("#2884 stage skill suggestions use the attached catalog and source metadata
 		assert.ok(suggestions);
 		const applied = provider.applyCompletion([text], 0, text.length, suggestions.items[1]!, suggestions.prefix);
 		assert.equal(applied.lines[0], "/skill:fixture@project ");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("#2884 stage completion includes stage-cwd Tab paths but no @ file mentions", async () => {
+	const fixture = await createStageSkillFixture();
+	try {
+		await writeFileEnsuringDir(
+			join(fixture.stage.session.sessionManager.getCwd(), "stage-only-marker.txt"),
+			"stage marker",
+		);
+		const provider = createSessionSkillAutocompleteProvider(async () => fixture.stage.session);
+		const text = "see ./stage-only";
+		assert.equal(provider.shouldTriggerFileCompletion?.([text], 0, text.length), true);
+		const result = await provider.getSuggestions([text], 0, text.length, {
+			signal: new AbortController().signal,
+			force: true,
+		});
+		assert.deepEqual(
+			result?.items.map((item) => item.value),
+			["./stage-only-marker.txt"],
+		);
+		assert.ok(result);
+		const applied = provider.applyCompletion([text], 0, text.length, result.items[0]!, result.prefix);
+		assert.equal(applied.lines[0], "see ./stage-only-marker.txt");
+		for (const force of [false, true]) {
+			const query = "@stage-only";
+			const mentions = await provider.getSuggestions([query], 0, query.length, {
+				signal: new AbortController().signal,
+				force,
+			});
+			assert.deepEqual(mentions?.items ?? [], []);
+		}
+		assert.equal(fixture.userTexts().length, 1);
+		assert.equal(fixture.main.session.messages.length, 0);
 	} finally {
 		await fixture.cleanup();
 	}
