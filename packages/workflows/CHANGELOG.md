@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.19-alpha.1] - 2026-09-06
+
 ### Fixed
 
 - Interrupting a workflow tool call during initialization now cancels its startup owner instead of leaving an empty, uncontrollable running root. Resume preparation respects cancellation, and already-aborted requests cannot begin actions. Accepted request timeouts and acknowledged background execution retain their existing behavior.
