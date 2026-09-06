@@ -205,9 +205,8 @@ export function notifyChatSessionStatus<TExtraEntry extends ChatTranscriptEntryL
 }
 
 /**
- * The prompt command is the one command that needs the submitting key's mode,
- * so it has its own accessor rather than a `text`-only signature that would
- * drop it.
+ * Prompt requires the submitting key's mode; resume accepts it optionally for
+ * hosts that preserve submission intent across a pause.
  */
 export function requiredChatSessionPromptCommand<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
@@ -221,7 +220,7 @@ export function requiredChatSessionPromptCommand<TExtraEntry extends ChatTranscr
 export function requiredChatSessionCommand<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	name: "steer" | "followUp" | "resume",
-): (text?: string) => Promise<void> {
+): (text?: string, mode?: ChatSessionSubmitMode) => Promise<void> {
 	switch (name) {
 		case "steer":
 			return async (text) => {
@@ -234,9 +233,9 @@ export function requiredChatSessionCommand<TExtraEntry extends ChatTranscriptEnt
 				await state.commands.followUp(text ?? "");
 			};
 		case "resume":
-			return async (text) => {
+			return async (text, mode) => {
 				if (!state.commands.resume) throw new Error("no resume command configured for this chat session");
-				await state.commands.resume(text);
+				await state.commands.resume(text, mode);
 			};
 	}
 }

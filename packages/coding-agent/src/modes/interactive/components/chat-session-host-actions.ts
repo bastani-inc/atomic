@@ -1,7 +1,7 @@
 import type { AgentSessionQueuePauseControl } from "../../../core/agent-session-methods.ts";
 import type { BashExecutionMessage } from "../../../core/messages.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
-import { classifyChatCommand } from "../skill-command-autocomplete.js";
+import { classifyChatCommand } from "../skill-command-autocomplete.ts";
 import type { ChatMessageEntry } from "./chat-message-renderer.ts";
 import { setChatSessionEditorText } from "./chat-session-host-editor.ts";
 import {
@@ -72,6 +72,7 @@ async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscript
 	state: ChatSessionHostState<TExtraEntry>,
 	settlement: Promise<void>,
 	text: string,
+	mode: ChatSessionSubmitMode,
 ): Promise<void> {
 	const editorText = state.inputBuffer;
 	try {
@@ -80,10 +81,10 @@ async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscript
 		syncChatSessionAnimationTick(state);
 		state.requestRender?.();
 		await settlement;
-		await requiredChatSessionCommand(state, "resume")(text);
+		await requiredChatSessionCommand(state, "resume")(text, mode);
 		if (state.inputBuffer === editorText) setChatSessionEditorText(state, "");
 		state.sdkBusy = false;
-		state.statusMessage = "";
+		if (state.statusMessage === "resuming…") state.statusMessage = "";
 	} catch (err) {
 		state.sdkBusy = false;
 		state.statusMessage = errorMessage(err);
@@ -99,12 +100,14 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	mode: ChatSessionSubmitMode = "auto",
 	submittedText?: string,
 ): Promise<void> {
-	if (state.disposed || state.isDisabled?.()) return;
+	if (state.disposed) return;
 	const text = (submittedText ?? state.inputBuffer).trim();
 	if (!text) return;
+	if (state.statusMessage === state.lastWarningMessage) state.statusMessage = "";
+	state.lastWarningMessage = undefined;
 	const interruptSettlement = state.interruptSettlement;
 	if (interruptSettlement !== undefined) {
-		await submitAfterInterruptSettlement(state, interruptSettlement, text);
+		await submitAfterInterruptSettlement(state, interruptSettlement, text, mode);
 		return;
 	}
 	if (state.interruptFailureMessage !== undefined) {
@@ -160,7 +163,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			state.statusMessage = "resuming…";
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();
-			await requiredChatSessionCommand(state, "resume")(text);
+			await requiredChatSessionCommand(state, "resume")(text, mode);
 			state.sdkBusy = false;
 			if (state.statusMessage === "resuming…") state.statusMessage = "";
 			syncChatSessionAnimationTick(state);

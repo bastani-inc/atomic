@@ -24,7 +24,7 @@ import {
 	getAutocompleteSourceTag,
 	getSessionSkillCommands,
 	prefixAutocompleteDescription,
-} from "./skill-command-autocomplete.js";
+} from "./skill-command-autocomplete.ts";
 
 const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 

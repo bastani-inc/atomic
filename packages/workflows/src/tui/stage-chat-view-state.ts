@@ -241,12 +241,12 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				}
 				await handle.agentSession?.abort();
 			},
-			resume: async (message) => {
+			resume: async (message, mode = "auto") => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
 				ctx.localPaused = true;
 				if (message && classifyChatCommand(message) === "skill") {
-					await submitStageSkillCommand(ctx, message, "auto", true);
+					await submitStageSkillCommand(ctx, message, mode, true);
 				} else {
 					await handle.resume(message);
 				}

@@ -35,6 +35,9 @@ export async function submitStageSkillCommand(
 	assertComposerAdmission(ctx, handle);
 	await handle.ensureAttached();
 	assertComposerAdmission(ctx, handle);
+	if (!handle.sendUserMessage) {
+		throw new Error("Skill invocation unavailable: this stage host does not expose user-message admission.");
+	}
 	let diagnostic: string | undefined;
 	const unsubscribe = handle.agentSession?.extensionRunner?.onError((error) => {
 		if (error.event !== "skill_expansion") return;
@@ -46,21 +49,14 @@ export async function submitStageSkillCommand(
 			await handle.resume(undefined, () => assertComposerAdmission(ctx, handle));
 			assertComposerAdmission(ctx, handle);
 		}
-		if (handle.sendUserMessage) {
-			await handle.sendUserMessage(
-				text,
-				{
-					deliverAs: mode === "followUp" ? "followUp" : "steer",
-					expandPromptTemplates: true,
-				},
-				() => assertComposerAdmission(ctx, handle),
-			);
-		} else if (handle.isStreaming) {
-			if (mode === "followUp") await handle.followUp(text);
-			else await handle.steer(text);
-		} else {
-			await handle.prompt(text);
-		}
+		await handle.sendUserMessage(
+			text,
+			{
+				deliverAs: mode === "followUp" ? "followUp" : "steer",
+				expandPromptTemplates: true,
+			},
+			() => assertComposerAdmission(ctx, handle),
+		);
 	} finally {
 		unsubscribe?.();
 		if (diagnostic) ctx.chatHost.showWarning(diagnostic);

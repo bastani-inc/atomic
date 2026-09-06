@@ -461,7 +461,7 @@ export {
 	classifyChatCommand,
 	createSessionSkillAutocompleteProvider,
 	getSessionSkillCommands,
-} from "./modes/interactive/skill-command-autocomplete.js";
+} from "./modes/interactive/skill-command-autocomplete.ts";
 // Theme utilities for custom tools and extensions
 export {
 	getLanguageFromPath,

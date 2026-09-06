@@ -75,6 +75,29 @@ test("streaming Enter and Ctrl+F use stage admission and retain their distinct e
 	}
 });
 
+test.each([false, true])("skill invocation refuses a handle without admission support (paused=%s)", async (paused) => {
+	const fixture = await createStageSkillFixture();
+	try {
+		if (paused) await fixture.handle.pause();
+		fixture.handle.sendUserMessage = undefined;
+		const view = fixture.mount();
+		fixture.stage.appendResponses([fauxAssistantMessage("Unsafe fallback must not run.")]);
+		submitStageSkillText(view, "/skill:fixture unsupported-admission");
+		await vi.waitFor(() =>
+			assert.match(
+				view.render(140).map(stripVTControlCharacters).join("\n"),
+				/Skill invocation unavailable:.*admission/,
+			),
+		);
+		assert.equal(fixture.userTexts().length, 1);
+		assert.deepEqual(fixture.stage.session.getSteeringMessages(), []);
+		assert.deepEqual(fixture.stage.session.getFollowUpMessages(), []);
+		if (paused) assert.equal(fixture.store.runs()[0]!.stages[0]!.status, "paused");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("streaming skill input cannot bypass a refusal at the stage admission boundary", async () => {
 	const fixture = await createStageSkillFixture();
 	const started = Promise.withResolvers<void>();
@@ -436,19 +459,26 @@ test("lazy stage skill discovery failures are contained and diagnosed in the att
 	}
 });
 
-test("resuming a paused stage with a typed skill admits its expanded content once", async () => {
+test.each(["steer", "followUp"] as const)("paused stage skill retains %s intent and expands once", async (mode) => {
 	const fixture = await createStageSkillFixture();
 	try {
 		await fixture.handle.pause();
 		assert.equal(fixture.store.runs()[0]!.stages[0]!.status, "paused");
+		const deliveries: Array<string | undefined> = [];
+		const admit = fixture.handle.sendUserMessage!.bind(fixture.handle);
+		fixture.handle.sendUserMessage = (text, options, beforeDelivery) => {
+			deliveries.push(options?.deliverAs);
+			return admit(text, options, beforeDelivery);
+		};
 		const view = fixture.mount();
 		fixture.stage.appendResponses([fauxAssistantMessage("Resumed stage skill acknowledged.")]);
-		submitStageSkillText(view, "/skill:fixture paused-args");
+		submitStageSkillText(view, "/skill:fixture paused-args", mode === "followUp" ? "\x06" : "\r");
 		await vi.waitFor(() => assert.equal(fixture.userTexts().length, 2));
 		const text = fixture.userTexts()[1]!;
 		assert.match(text, /STAGE SKILL BODY/);
 		assert.ok(text.endsWith("\n\npaused-args"));
 		assert.equal(text.match(/<skill name=/g)?.length, 1);
+		assert.deepEqual(deliveries, [mode]);
 		assert.equal(fixture.main.session.messages.length, 0);
 	} finally {
 		await fixture.cleanup();
@@ -512,3 +542,78 @@ test.each(["stage", "native queue"] as const)(
 		}
 	},
 );
+
+test("a resolvable skill submitted to an already-paused native queue resumes and expands once", async () => {
+	const fixture = await createStageSkillFixture();
+	try {
+		fixture.stage.session.pauseQueuedMessages();
+		const view = fixture.mount();
+		fixture.stage.appendResponses([fauxAssistantMessage("Native queue resumed skill acknowledged.")]);
+		submitStageSkillText(view, "/skill:fixture native-paused-args");
+		await vi.waitFor(() => {
+			assert.equal(fixture.userTexts().length, 2);
+			assert.equal(fixture.stage.session.isStreaming, false);
+		});
+		const text = fixture.userTexts()[1]!;
+		assert.equal(fixture.stage.session.queuedMessagesPaused, false);
+		assert.match(text, /STAGE SKILL BODY/);
+		assert.equal(text.match(/<skill name=/g)?.length, 1);
+		assert.ok(text.endsWith("\n\nnative-paused-args"));
+		assert.equal(fixture.main.session.messages.length, 0);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test.each(["steer", "followUp"] as const)("native pause race queues/releases raw %s skills like main", async (mode) => {
+	const fixture = await createStageSkillFixture();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	try {
+		const view = fixture.mount();
+		const attach = fixture.handle.ensureAttached.bind(fixture.handle);
+		fixture.handle.ensureAttached = async () => {
+			entered.resolve();
+			await release.promise;
+			await attach();
+		};
+		const command = "/skill:fixture pause-race-args";
+		submitStageSkillText(view, command, mode === "followUp" ? "\x06" : "\r");
+		// Mount precedes the barrier: this attachment is submission's await, after
+		// ChatSessionHost has sampled an unpaused native queue.
+		await entered.promise;
+		assert.equal(fixture.stage.session.queuedMessagesPaused, false);
+		fixture.stage.session.pauseQueuedMessages();
+		release.resolve();
+		const queue = (session: typeof fixture.stage.session) =>
+			mode === "followUp" ? session.getFollowUpMessages() : session.getSteeringMessages();
+		await vi.waitFor(() => assert.deepEqual(queue(fixture.stage.session), [command]));
+		assert.equal(fixture.userTexts().length, 1);
+
+		// The session pause gate intentionally precedes skill expansion. Equivalent
+		// main/stage catalogs must retain the same raw payload, not UI-expand twice.
+		fixture.main.session.resourceLoader.getSkillCatalog = () => fixture.catalog;
+		fixture.main.session.pauseQueuedMessages();
+		await fixture.main.session.prompt(command, { streamingBehavior: mode });
+		assert.deepEqual(queue(fixture.main.session), queue(fixture.stage.session));
+		assert.equal(fixture.main.session.messages.length, 0);
+
+		for (const harness of [fixture.main, fixture.stage]) {
+			harness.appendResponses([
+				fauxAssistantMessage("Release turn acknowledged."),
+				fauxAssistantMessage("Raw queued input acknowledged."),
+			]);
+			assert.equal(await harness.session.resumeQueuedMessages(), true);
+			assert.deepEqual(queue(harness.session), [command]);
+			await harness.session.prompt("Release the queued comparison input.");
+			const skillMessages = getUserTexts(harness).filter((text) => text.includes("pause-race-args"));
+			assert.deepEqual(skillMessages, [command]);
+			assert.doesNotMatch(skillMessages[0]!, /<skill name=/);
+		}
+	} finally {
+		release.resolve();
+		fixture.stage.session.clearQueue();
+		fixture.main.session.clearQueue();
+		await fixture.cleanup();
+	}
+});

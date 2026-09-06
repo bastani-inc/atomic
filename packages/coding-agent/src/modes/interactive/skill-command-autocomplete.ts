@@ -1,8 +1,8 @@
 import { type AutocompleteProvider, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
-import type { AgentSession } from "../../core/agent-session.js";
-import { getSkillCatalog } from "../../core/skill-catalog.js";
-import type { SourceInfo } from "../../core/source-info.js";
-import { parseGitUrl } from "../../utils/git.js";
+import type { AgentSession } from "../../core/agent-session.ts";
+import { getSkillCatalog } from "../../core/skill-catalog.ts";
+import type { SourceInfo } from "../../core/source-info.ts";
+import { parseGitUrl } from "../../utils/git.ts";
 
 export function getAutocompleteSourceTag(sourceInfo?: SourceInfo): string | undefined {
 	if (!sourceInfo) return undefined;

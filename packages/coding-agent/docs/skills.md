@@ -127,7 +127,11 @@ An editable attached stage chat supports the same `/skill:<selector> [arguments]
 
 Enter starts a turn when idle or steers a streaming turn. Ctrl+F keeps follow-up intent. The stage session expands the command once through its admission route; skill-relative references use the skill directory while ordinary tools keep the stage cwd. Turning off `enableSkillCommands` hides suggestions but does not disable manually typed skill commands. Unknown bare selectors pass through as text; unknown or ambiguous qualified selectors and file-read failures show diagnostics in the attached chat without selecting another skill.
 
+The native session pause gate still takes precedence over expansion. If that gate closes during asynchronous attachment, the command is queued as literal text, just as in main chat; releasing that queue does not retroactively expand it. A composer that observes the pause before submission resumes first and then uses normal skill expansion. To invoke a command retained literally by this race, restore it to the editor and submit after resuming.
+
 Mounted human-input and custom prompts own their input, so answers starting `/skill:` remain literal. Blocked stages, read-only archives, and replay cannot admit skill messages. An explicitly opened editable post-mortem chat can invoke its own skills without restarting workflow execution. Skills do not grant tools, workspace access, or permission to launch workflows or subagents, and unrelated parent slash commands are not forwarded. A host without stage command metadata reports that discovery is unavailable rather than borrowing another session's catalog.
+
+Custom stage hosts must expose admission-aware `sendUserMessage` to support invocation. Without it, skill submission reports that user-message admission is unavailable instead of falling back to unguarded `prompt`, `steer`, or `followUp` calls.
 
 See [workflow stage chat controls](workflows/operations.md#skills-in-attached-stage-chats) for the distinction between skill messages and local view commands.
 

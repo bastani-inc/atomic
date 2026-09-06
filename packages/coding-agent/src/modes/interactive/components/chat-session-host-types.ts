@@ -49,7 +49,7 @@ export interface ChatSessionHostCommands {
 	steer?: (text: string) => Promise<void>;
 	followUp?: (text: string) => Promise<void>;
 	interrupt?: () => Promise<void>;
-	resume?: (message?: string) => Promise<void>;
+	resume?: (message?: string, mode?: ChatSessionSubmitMode) => Promise<void>;
 	runBash?: (request: ChatSessionHostBashRequest) => Promise<BashResult>;
 	abortBash?: () => void | Promise<void>;
 	abortCompaction?: () => void | Promise<void>;
