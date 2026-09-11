@@ -14,6 +14,78 @@ export interface ScrubbedFeedback {
 function escaped(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
+type CredentialScrubResult = {
+	text: string;
+	replacements: Array<{ category: "credential-assignment"; count: number }>;
+};
+type RedactionRule =
+	| { readonly category: string; readonly pattern: RegExp; readonly replacement: string }
+	| { readonly category: "credential-assignment"; readonly scrub: (text: string) => CredentialScrubResult };
+const credentialAssignment = /(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)/giu;
+function scrubCredentialAssignments(input: string): CredentialScrubResult {
+	const matches: Array<{ start: number; end: number; replacement: string }> = [];
+	let coveredUntil = 0;
+	credentialAssignment.lastIndex = 0;
+	for (const match of input.matchAll(credentialAssignment)) {
+		const assignmentStart = match.index ?? 0;
+		if (assignmentStart < coveredUntil) continue;
+		const prefix = match[0];
+		const valueStart = assignmentStart + prefix.length;
+		const first = input[valueStart];
+		if (first === '"' || first === "'") {
+			const quote = first;
+			let cursor = valueStart + 1;
+			let hasContent = false;
+			let closed = false;
+			while (cursor < input.length && input[cursor] !== "\r" && input[cursor] !== "\n") {
+				const character = input[cursor];
+				if (character === "\\") {
+					const escaped = input[cursor + 1];
+					if (escaped === undefined || escaped === "\r" || escaped === "\n") break;
+					if (escaped !== "\\") hasContent = true;
+					cursor += 2;
+					continue;
+				}
+				if (character === quote) {
+					closed = true;
+					cursor += 1;
+					break;
+				}
+				hasContent = true;
+				cursor += 1;
+			}
+			const value = input.slice(valueStart + 1, closed ? cursor - 1 : cursor);
+			if (hasContent && value !== REDACTION_PLACEHOLDER) {
+				matches.push({
+					start: valueStart,
+					end: cursor,
+					replacement: `${quote}${REDACTION_PLACEHOLDER}${quote}`,
+				});
+				coveredUntil = cursor;
+			}
+			continue;
+		}
+		if (first === undefined || first === "\r" || first === "\n" || /\s/u.test(first)) continue;
+		let end = valueStart;
+		while (end < input.length && !/[\s]/u.test(input[end] ?? "")) end += 1;
+		const value = input.slice(valueStart, end);
+		if (value.length >= 6 && value !== REDACTION_PLACEHOLDER) {
+			matches.push({ start: valueStart, end, replacement: REDACTION_PLACEHOLDER });
+			coveredUntil = end;
+		}
+	}
+	if (matches.length === 0) return { text: input, replacements: [] };
+	let text = "";
+	let cursor = 0;
+	for (const match of matches) {
+		text += input.slice(cursor, match.start) + match.replacement;
+		cursor = match.end;
+	}
+	return {
+		text: text + input.slice(cursor),
+		replacements: [{ category: "credential-assignment", count: matches.length }],
+	};
+}
 const rules = [
 	{
 		category: "private-key",
@@ -22,7 +94,7 @@ const rules = [
 	},
 	{
 		category: "url-credentials",
-		pattern: /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/:@]*:[^\s/@]+@/giu,
+		pattern: /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+.-]*:\/\/)(?!\[REDACTED\]@)[^\s/?#@]+@/giu,
 		replacement: `$1${REDACTION_PLACEHOLDER}@`,
 	},
 	{ category: "anthropic-token", pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/gu, replacement: REDACTION_PLACEHOLDER },
@@ -39,23 +111,24 @@ const rules = [
 			/\b(?:AIza[\w-]{35}|eyJ[\w-]{8,}(?:\.[\w-]{8,}){2}|(?:xox[abposr]|glpat|xai)-[\w-]{10,}|(?:sk_live_|hf_|npm_)\w{16,})/gu,
 		replacement: REDACTION_PLACEHOLDER,
 	},
-	{
-		category: "credential-assignment", // Reaches apiKey/GEMINI_API_KEY; knowingly overmatches ordinary *key identifiers.
-		pattern:
-			/(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)(?:(['"])(?!\[REDACTED\]\2)(?:(?:(?:\\[^\r\n])|(?!\2)[^\r\n\\])+\2|(?=[^\r\n\\"]*[^\r\n\\"])(?:(?:\\[^\r\n])|(?!\2)[^\r\n\\])+)|([A-Za-z0-9+/=_-]{6,}(?:\.[A-Za-z0-9+/=_-]+)*))/giu,
-		replacement: `$1$2${REDACTION_PLACEHOLDER}$2`,
-	},
+	{ category: "credential-assignment", scrub: scrubCredentialAssignments },
 	{
 		category: "home-directory",
 		pattern: new RegExp(`(?<!\\w)(?:${escaped(homedir())}|(?:\\w:)?[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+)`, "giu"),
 		replacement: "~",
 	},
-] as const satisfies readonly { category: string; pattern: RegExp; replacement: string }[];
+] as const satisfies readonly RedactionRule[];
 export type RedactionCategory = (typeof rules)[number]["category"];
 
 function scrub(text: string): { text: string; replacements: RedactionSummary[] } {
 	const replacements: RedactionSummary[] = [];
 	for (const rule of rules) {
+		if ("scrub" in rule) {
+			const result = rule.scrub(text);
+			text = result.text;
+			replacements.push(...result.replacements);
+			continue;
+		}
 		const count = text.match(rule.pattern)?.length ?? 0;
 		text = text.replace(rule.pattern, rule.replacement);
 		if (count) replacements.push({ category: rule.category, count });

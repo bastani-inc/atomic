@@ -96,6 +96,28 @@ describe("feedback privacy core", () => {
 		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
 		assert.doesNotMatch(JSON.stringify(result), /sensitive-value/u);
 	});
+	test("redacts complete unquoted and escaped credential values", () => {
+		const cases = [
+			["PASSWORD=p@ssw0rd!", "PASSWORD=[REDACTED]"],
+			["TOKEN=abcdef!secret-suffix", "TOKEN=[REDACTED]"],
+			[`apiKey="${String.fromCharCode(92)}sensitive-value`, 'apiKey="[REDACTED]"'],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			assert.doesNotMatch(JSON.stringify(result), /p@ssw0rd|secret-suffix|sensitive-value/u);
+		}
+	});
+	test("scrubs username-only URL userinfo without matching query text", () => {
+		const result = scrubFeedback("safe", "https://opaque-access-token@example.invalid/path");
+		assert.equal(result.body, "https://[REDACTED]@example.invalid/path");
+		assert.deepEqual(result.replacements, [{ category: "url-credentials", count: 1 }]);
+		const query = scrubFeedback("safe", "https://example.invalid/path?ref=user:pass@evil");
+		assert.equal(query.body, "https://example.invalid/path?ref=user:pass@evil");
+		assert.deepEqual(query.replacements, []);
+	});
 
 	test("scrubs PGP and truncation-orphaned private-key blocks and bare provider tokens", () => {
 		const tokens = [
