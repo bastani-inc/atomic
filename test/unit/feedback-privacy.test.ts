@@ -136,6 +136,50 @@ describe("feedback privacy core", () => {
 		);
 		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 6 }]);
 	});
+	test("scrubs line-leading bare credential labels without treating prose as assignments", () => {
+		const cases = [
+			["password: s3cr3tValue", "password: [REDACTED]"],
+			["password = s3cr3tValue", "password = [REDACTED]"],
+			["  password: indented-secret", "  password: [REDACTED]"],
+			["- token: listed-secret", "- token: [REDACTED]"],
+			["1. password: numbered-secret", "1. password: [REDACTED]"],
+			[
+				"db:\n  user: admin\n  password: s3cr3tValue\n  host: localhost",
+				"db:\n  user: admin\n  password: [REDACTED]\n  host: localhost",
+			],
+			["**Password:** hunter2secret", "**Password:** [REDACTED]"],
+			["**API key:** sk-notreal-12345", "**API key:** [REDACTED]"],
+			["*token:* abc123xyz", "*token:* [REDACTED]"],
+			["`password:` hunter2secret", "`password:` [REDACTED]"],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+	});
+	test("preserves delimiters following unquoted credential assignments", () => {
+		const cases = [
+			[
+				"https://x.invalid/p?token=abc123&user=bob&mode=dark",
+				"https://x.invalid/p?token=[REDACTED]&user=bob&mode=dark",
+				1,
+			],
+			[
+				"curl 'https://a.invalid/?access_token=tok12345&next=/home'",
+				"curl 'https://a.invalid/?access_token=[REDACTED]&next=/home'",
+				1,
+			],
+			["?token=a1b2c3&password=d4e5f6&keep=1", "?token=[REDACTED]&password=[REDACTED]&keep=1", 2],
+			["token=abc123|piped", "token=[REDACTED]|piped", 1],
+			["token=abc<br>more", "token=[REDACTED]<br>more", 1],
+		] as const;
+		for (const [input, expected, count] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+		}
+	});
 
 	test("scrubs PGP and truncation-orphaned private-key blocks and bare provider tokens", () => {
 		const tokens = [

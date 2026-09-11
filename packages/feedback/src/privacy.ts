@@ -21,9 +21,10 @@ type CredentialScrubResult = {
 type RedactionRule =
 	| { readonly category: string; readonly pattern: RegExp; readonly replacement: string }
 	| { readonly category: "credential-assignment"; readonly scrub: (text: string) => CredentialScrubResult };
-const credentialAssignment = /(?<!\w)(\w*(?:key|token|password|secret)\d*)["']?([ \t]*)([:=])([ \t]*)/giu;
+const credentialAssignment =
+	/(?<!\w)((?:(?:api|access)[ \t]+)?\w*(?:key|token|password|secret)\d*)["']?([ \t]*)([:=])([ \t]*(?:[*_~`]+)?[ \t]*)/giu;
 function isStrongCredentialName(name: string): boolean {
-	const normalized = name.toLowerCase().replaceAll("-", "_");
+	const normalized = name.toLowerCase().replaceAll(/[ -]/gu, "_");
 	if (/^(?:key|token|password|secret)\d*$/u.test(normalized)) return false;
 	return (
 		normalized.includes("password") ||
@@ -32,10 +33,25 @@ function isStrongCredentialName(name: string): boolean {
 		/(?:api|access)_?key/u.test(normalized)
 	);
 }
-function shouldRedactUnquotedValue(name: string, prefix: string, value: string): boolean {
+function isLineLeadingCredentialName(name: string, input: string, assignmentStart: number): boolean {
+	const normalized = name.toLowerCase();
+	if (!/^(?:key|token|password|secret)\d*$/u.test(normalized)) return false;
+	const lineStart = input.lastIndexOf("\n", assignmentStart - 1) + 1;
+	const linePrefix = input.slice(lineStart, assignmentStart);
+	return /^[ \t]*(?:(?:[-*+])[ \t]+|(?:\d+[.)])[ \t]+)?[*_~`]*$/u.test(linePrefix);
+}
+function shouldRedactUnquotedValue(
+	name: string,
+	prefix: string,
+	value: string,
+	input: string,
+	assignmentStart: number,
+): boolean {
 	if (value === REDACTION_PLACEHOLDER) return false;
 	const compactAssignment = prefix.trim() === prefix;
-	return compactAssignment || isStrongCredentialName(name);
+	return (
+		compactAssignment || isStrongCredentialName(name) || isLineLeadingCredentialName(name, input, assignmentStart)
+	);
 }
 function scrubCredentialAssignments(input: string): CredentialScrubResult {
 	const matches: Array<{ start: number; end: number; replacement: string }> = [];
@@ -84,9 +100,9 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		if (first === undefined || first === "\r" || first === "\n" || /\s/u.test(first)) continue;
 		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) continue;
 		let end = valueStart;
-		while (end < input.length && !/[\s,;})\]]/u.test(input[end] ?? "")) end += 1;
+		while (end < input.length && !/[\s,;})\]&|/<>"'`]/u.test(input[end] ?? "")) end += 1;
 		const value = input.slice(valueStart, end);
-		if (shouldRedactUnquotedValue(keyName, prefix, value)) {
+		if (shouldRedactUnquotedValue(keyName, prefix, value, input, assignmentStart)) {
 			matches.push({ start: valueStart, end, replacement: REDACTION_PLACEHOLDER });
 			coveredUntil = end;
 		}
