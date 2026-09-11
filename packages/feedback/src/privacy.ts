@@ -22,7 +22,7 @@ type RedactionRule =
 	| { readonly category: string; readonly pattern: RegExp; readonly replacement: string }
 	| { readonly category: "credential-assignment"; readonly scrub: (text: string) => CredentialScrubResult };
 const credentialAssignment =
-	/(?<!\w)((?:(?:api|access)[ \t]+)?\w*(?:key|token|password|secret)\d*)["']?([ \t]*)([:=])([ \t]*(?:[*_~`]+)?[ \t]*)/giu;
+	/(?<!\w)((?:(?:api|access)[ \t]+)?[\w-]*(?:key|token|password|secret)\d*)["']?([ \t]*)([:=])([ \t]*(?:[*_~`]+)?[ \t]*)/giu;
 function isStrongCredentialName(name: string): boolean {
 	const normalized = name.toLowerCase().replaceAll(/[ -]/gu, "_");
 	if (/^(?:key|token|password|secret)\d*$/u.test(normalized)) return false;
@@ -47,7 +47,7 @@ function shouldRedactUnquotedValue(
 	input: string,
 	assignmentStart: number,
 ): boolean {
-	if (value === REDACTION_PLACEHOLDER) return false;
+	if (value === REDACTION_PLACEHOLDER || value.length === 0) return false;
 	const compactAssignment = prefix.trim() === prefix;
 	return (
 		compactAssignment || isStrongCredentialName(name) || isLineLeadingCredentialName(name, input, assignmentStart)
@@ -100,7 +100,7 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		if (first === undefined || first === "\r" || first === "\n" || /\s/u.test(first)) continue;
 		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) continue;
 		let end = valueStart;
-		while (end < input.length && !/[\s,;})\]&|/<>"'`]/u.test(input[end] ?? "")) end += 1;
+		while (end < input.length && !/[\s,;})\]&|/<>("'`*_~]/u.test(input[end] ?? "")) end += 1;
 		const value = input.slice(valueStart, end);
 		if (shouldRedactUnquotedValue(keyName, prefix, value, input, assignmentStart)) {
 			matches.push({ start: valueStart, end, replacement: REDACTION_PLACEHOLDER });

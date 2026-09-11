@@ -158,6 +158,39 @@ describe("feedback privacy core", () => {
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
 		}
 	});
+	test("scrubs hyphenated credential names without broadening ordinary labels", () => {
+		const cases = [
+			["api-key: secret123abc", "api-key: [REDACTED]"],
+			["x-api-key: 9f8a7b6c5d4e3f", "x-api-key: [REDACTED]"],
+			["client-secret: oauthsecret123", "client-secret: [REDACTED]"],
+			["auth:\n  api-key: secret123abc", "auth:\n  api-key: [REDACTED]"],
+			["curl -H 'x-api-key: 9f8a7b6c5d4e' https://a.invalid", "curl -H 'x-api-key: [REDACTED]' https://a.invalid"],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+		for (const input of ["The token: expired yesterday", "sortkey = name", "foreign key: orders_id"]) {
+			assert.equal(scrubFeedback("safe", input).body, input);
+		}
+	});
+	test("does not count empty unquoted assignment values as redactions", () => {
+		for (const input of [
+			"token=/tmp/example/path",
+			"password=&next=1",
+			"api_key=<your-key-here>",
+			"token=}",
+			"secret=;",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+		assert.deepEqual(scrubFeedback("safe", "API_KEY=realsecret1 and log_path_token=/var/log/atomic.log"), {
+			title: "safe",
+			body: "API_KEY=[REDACTED] and log_path_token=/var/log/atomic.log",
+			replacements: [{ category: "credential-assignment", count: 1 }],
+		});
+	});
 	test("preserves delimiters following unquoted credential assignments", () => {
 		const cases = [
 			[
