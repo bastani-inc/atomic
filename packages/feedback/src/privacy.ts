@@ -55,17 +55,20 @@ function hasUnclosedQuoteBefore(input: string, start: number, quote: string): bo
 	}
 	return open;
 }
-function templatePlaceholderEnd(input: string, start: number): number | undefined {
-	let end: number;
+function completeTemplatePlaceholderEnd(input: string, start: number): number | undefined {
 	if (input.startsWith("${", start)) {
 		const close = input.indexOf("}", start + 2);
-		if (close < 0) return undefined;
-		end = close + 1;
-	} else if (input.startsWith("{{", start)) {
+		return close < 0 ? undefined : close + 1;
+	}
+	if (input.startsWith("{{", start)) {
 		const close = input.indexOf("}}", start + 2);
-		if (close < 0) return undefined;
-		end = close + 2;
-	} else return undefined;
+		return close < 0 ? undefined : close + 2;
+	}
+	return undefined;
+}
+function templatePlaceholderEnd(input: string, start: number): number | undefined {
+	const end = completeTemplatePlaceholderEnd(input, start);
+	if (end === undefined) return undefined;
 	const next = input[end] ?? "";
 	return next === "" || /[\s,;})\]&|<>('"`*_~]/u.test(next) ? end : undefined;
 }
@@ -157,6 +160,10 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 				if (character !== "\r" && character !== "\n") hasContent = true;
 				cursor += 1;
 			}
+			if (!closed) {
+				const lineEnd = input.indexOf("\n", valueStart + 1);
+				if (lineEnd >= 0) cursor = lineEnd;
+			}
 			const value = input.slice(valueStart + 1, closed ? cursor - 1 : cursor);
 			if (hasContent && value !== REDACTION_PLACEHOLDER) {
 				matches.push({
@@ -169,7 +176,16 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			continue;
 		}
 		if (first === undefined || first === "\r" || first === "\n" || /\s/u.test(first)) continue;
+		const completePlaceholderEnd = completeTemplatePlaceholderEnd(input, valueStart);
 		if (templatePlaceholderEnd(input, valueStart) !== undefined) continue;
+		if (completePlaceholderEnd !== undefined) {
+			const suffixEnd = unquotedValueEnd(input, completePlaceholderEnd, assignmentStart);
+			const suffix = input.slice(completePlaceholderEnd, suffixEnd);
+			if (!shouldRedactUnquotedValue(keyName, prefix, suffix, input, assignmentStart)) continue;
+			matches.push({ start: completePlaceholderEnd, end: suffixEnd, replacement: REDACTION_PLACEHOLDER });
+			coveredUntil = suffixEnd;
+			continue;
+		}
 		const openingWrapper = consumedValueWrapper(prefix);
 		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) {
 			const suffixStart = valueStart + REDACTION_PLACEHOLDER.length;

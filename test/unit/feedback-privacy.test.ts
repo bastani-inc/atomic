@@ -98,6 +98,32 @@ describe("feedback privacy core", () => {
 		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
 		assert.doesNotMatch(JSON.stringify(result), /sensitive-value/u);
 	});
+	test("bounds unterminated quotes and scrubs placeholder suffixes", () => {
+		const report = [
+			"### What happened?",
+			"",
+			'The CLI printed apiKey="secret and then stopped.',
+			"",
+			"### Steps to reproduce",
+			"",
+			"1. Run atomic",
+			"",
+			"### Expected behavior",
+			"",
+			"The session continues.",
+		].join("\n");
+		const reportResult = scrubFeedback("safe", report);
+		assert.match(reportResult.body, /### Steps to reproduce[\s\S]*### Expected behavior/u);
+		assert.doesNotMatch(reportResult.body, /apiKey="secret/u);
+		for (const input of [`API_KEY=\${VAR}realsecret1`, `API_KEY=\${VAR}-realsecret1`]) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, `API_KEY=\${VAR}[REDACTED]`);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.doesNotMatch(JSON.stringify(result), /realsecret1|\[REDACTED\]\}/u);
+		}
+		assert.equal(scrubFeedback("safe", `token=\${TOKEN}`).body, `token=\${TOKEN}`);
+		assert.equal(scrubFeedback("safe", "token={{ secrets.TOKEN }}").body, "token={{ secrets.TOKEN }}");
+	});
 	test("redacts complete unquoted and escaped credential values", () => {
 		const cases = [
 			["PASSWORD=p@ssw0rd!", "PASSWORD=[REDACTED]"],

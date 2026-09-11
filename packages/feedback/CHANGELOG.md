@@ -12,3 +12,4 @@ All notable changes to this project will be documented in this file.
 - Fixed complete redaction of credential values containing slashes while preserving path-like empty assignments, and prevented emphasized prose from being falsely redacted ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Bounded credential and URL candidate scans to keep long diagnostic text responsive ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Fixed privacy scrubbing for comment-prefixed labels, template placeholders, multiline quoted values, and credential values beginning with a slash; bounded marker-only candidate scans to keep long feedback responsive ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Fixed unterminated quoted assignments removing subsequent feedback sections, and scrubbed credential suffixes attached to preserved template placeholders ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
