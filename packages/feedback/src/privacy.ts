@@ -55,14 +55,31 @@ function hasUnclosedQuoteBefore(input: string, start: number, quote: string): bo
 	}
 	return open;
 }
-function structuralQuoteBoundary(input: string, cursor: number): number | undefined {
+function structuralQuoteBoundary(input: string, cursor: number, quote: string): number | undefined {
 	const lineBreakEnd =
 		input[cursor] === "\r" && input[cursor + 1] === "\n" ? cursor + 2 : input[cursor] === "\n" ? cursor + 1 : -1;
 	if (lineBreakEnd < 0) return undefined;
-	const nextLineEnd = input.indexOf("\n", lineBreakEnd);
-	const nextLine = input.slice(lineBreakEnd, nextLineEnd < 0 ? input.length : nextLineEnd).replace(/\r$/u, "");
-	if (/^[ \t]*$/u.test(nextLine) || nextLine.startsWith("### ")) return cursor;
-	return undefined;
+	let nextLineStart = lineBreakEnd;
+	while (nextLineStart <= input.length) {
+		const nextLineEnd = input.indexOf("\n", nextLineStart);
+		const nextLine = input.slice(nextLineStart, nextLineEnd < 0 ? input.length : nextLineEnd).replace(/\r$/u, "");
+		if (/^[ \t]*$/u.test(nextLine)) {
+			if (nextLineEnd < 0) return cursor;
+			nextLineStart = nextLineEnd + 1;
+			continue;
+		}
+		if (nextLine.startsWith("### ")) return cursor;
+		for (let index = 0; index < nextLine.length; index += 1) {
+			if (nextLine[index] !== quote || nextLine[index - 1] === "\\") continue;
+			const previous = nextLine[index - 1] ?? "";
+			const next = nextLine[index + 1] ?? "";
+			if (previous && next && /\w/u.test(previous) && /\w/u.test(next)) continue;
+			if (/^[ \t,.;:!?)}\]>*_~`-]*$/u.test(nextLine.slice(index + 1))) return undefined;
+		}
+		if (!/\s/u.test(nextLine)) return undefined;
+		return cursor;
+	}
+	return cursor;
 }
 function completeTemplatePlaceholderEnd(input: string, start: number): number | undefined {
 	if (input.startsWith("${", start)) {
@@ -131,12 +148,16 @@ function matchingTrailingWrapperLength(
 	const value = input.slice(valueStart, end);
 	return value.endsWith(opening) ? opening.length : 0;
 }
+function lineBreakStart(input: string, lineStart: number): number {
+	if (lineStart === 0) return 0;
+	return input[lineStart - 2] === "\r" ? lineStart - 2 : lineStart - 1;
+}
 
 function scrubCredentialAssignments(input: string): CredentialScrubResult {
 	const matches: Array<{ start: number; end: number; replacement: string }> = [];
+	const assignmentMatches = Array.from(input.matchAll(credentialAssignment));
 	let coveredUntil = 0;
-	credentialAssignment.lastIndex = 0;
-	for (const match of input.matchAll(credentialAssignment)) {
+	for (const [assignmentIndex, match] of assignmentMatches.entries()) {
 		const assignmentStart = match.index ?? 0;
 		if (assignmentStart < coveredUntil) continue;
 		const prefix = match[0];
@@ -149,8 +170,25 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			let hasContent = false;
 			let closed = false;
 			let stoppedAtBoundary = false;
+			const assignmentLineStart = input.lastIndexOf("\n", assignmentStart - 1) + 1;
+			const nextAssignmentStart = assignmentMatches
+				.slice(assignmentIndex + 1)
+				.map((item) => item.index ?? 0)
+				.find((start) => {
+					const lineStart = input.lastIndexOf("\n", start - 1) + 1;
+					return lineStart > assignmentLineStart;
+				});
+			const nextAssignmentBoundary =
+				nextAssignmentStart === undefined
+					? undefined
+					: lineBreakStart(input, input.lastIndexOf("\n", nextAssignmentStart - 1) + 1);
 			while (cursor < input.length) {
-				const boundary = structuralQuoteBoundary(input, cursor);
+				if (nextAssignmentBoundary !== undefined && cursor >= nextAssignmentBoundary) {
+					cursor = nextAssignmentBoundary;
+					stoppedAtBoundary = true;
+					break;
+				}
+				const boundary = structuralQuoteBoundary(input, cursor, quote);
 				if (boundary !== undefined) {
 					cursor = boundary;
 					stoppedAtBoundary = true;
@@ -158,17 +196,24 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 				}
 				const character = input[cursor];
 				if (character === "\\") {
-					const escaped = input[cursor + 1];
-					if (escaped === undefined) {
+					const escapedCharacter = input[cursor + 1];
+					if (escapedCharacter === undefined) {
 						cursor += 1;
 						break;
 					}
-					if (escaped !== "\\" && escaped !== "\r" && escaped !== "\n") hasContent = true;
-					if (escaped === "\r" && input[cursor + 2] === "\n") cursor += 3;
+					if (escapedCharacter !== "\\" && escapedCharacter !== "\r" && escapedCharacter !== "\n")
+						hasContent = true;
+					if (escapedCharacter === "\r" && input[cursor + 2] === "\n") cursor += 3;
 					else cursor += 2;
 					continue;
 				}
 				if (character === quote) {
+					const previous = input[cursor - 1] ?? "";
+					const next = input[cursor + 1] ?? "";
+					if (previous && next && /\w/u.test(previous) && /\w/u.test(next)) {
+						cursor += 1;
+						continue;
+					}
 					closed = true;
 					cursor += 1;
 					break;
@@ -178,7 +223,7 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			}
 			if (!closed && !stoppedAtBoundary) {
 				const lineEnd = input.indexOf("\n", valueStart + 1);
-				if (lineEnd >= 0) cursor = lineEnd;
+				if (cursor <= lineEnd) cursor = lineEnd;
 			}
 			const value = input.slice(valueStart + 1, closed ? cursor - 1 : cursor);
 			if (hasContent && value !== REDACTION_PLACEHOLDER) {

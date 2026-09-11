@@ -160,6 +160,30 @@ describe("feedback privacy core", () => {
 			assert.doesNotMatch(JSON.stringify(result), /firstSecretAAA|secondSecretBBB|hunter2|thirdSecret/u);
 		}
 	});
+	test("bounds ambiguous multiline quotes without losing later feedback", () => {
+		const cases = [
+			[
+				'apiKey="firstSecretAAA\nNote: password="secondSecretBBB"',
+				'apiKey="[REDACTED]"\nNote: password="[REDACTED]"',
+				2,
+			],
+			[
+				'apiKey="firstSecretAAA\n\n### Logs\n\nAPI_KEY="secondSecretBBB"',
+				'apiKey="[REDACTED]"\n\n### Logs\n\nAPI_KEY="[REDACTED]"',
+				2,
+			],
+			['PRIVATE_TOKEN="lineOneAAAA\n\nlineTwoBBBB"', 'PRIVATE_TOKEN="[REDACTED]"', 1],
+			['apiKey="lineOneAAAA\nlineTwoBBBB"\n\n### Logs', 'apiKey="[REDACTED]"\n\n### Logs', 1],
+			["password='hunter2SECRET\nIt doesn't repeat.", "password='[REDACTED]'\nIt doesn't repeat.", 1],
+		] as const;
+		for (const [input, expected, count] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+			assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
 	test("redacts complete unquoted and escaped credential values", () => {
 		const cases = [
 			["PASSWORD=p@ssw0rd!", "PASSWORD=[REDACTED]"],
