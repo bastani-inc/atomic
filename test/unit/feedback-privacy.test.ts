@@ -124,6 +124,37 @@ describe("feedback privacy core", () => {
 		assert.equal(scrubFeedback("safe", `token=\${TOKEN}`).body, `token=\${TOKEN}`);
 		assert.equal(scrubFeedback("safe", "token={{ secrets.TOKEN }}").body, "token={{ secrets.TOKEN }}");
 	});
+	test("bounds quoted assignments at structural report boundaries", () => {
+		const cases = [
+			[
+				['apiKey="firstSecretAAA', "", "### Logs", "", 'API_KEY="secondSecretBBB"'].join("\n"),
+				['apiKey="[REDACTED]"', "", "### Logs", "", 'API_KEY="[REDACTED]"'].join("\n"),
+				2,
+			],
+			[
+				["password='hunter2", "", "### Steps to reproduce", "", "It doesn't repeat."].join("\n"),
+				["password='[REDACTED]'", "", "### Steps to reproduce", "", "It doesn't repeat."].join("\n"),
+				1,
+			],
+			[
+				['apiKey="firstpart\nsecondpartSECRET"', "", "### Logs", "", 'TOKEN="thirdSecret"'].join("\n"),
+				['apiKey="[REDACTED]"', "", "### Logs", "", 'TOKEN="[REDACTED]"'].join("\n"),
+				2,
+			],
+			[
+				['apiKey="firstpart\nsecondpartSECRET"', "### Logs", 'TOKEN="thirdSecret"'].join("\n"),
+				['apiKey="[REDACTED]"', "### Logs", 'TOKEN="[REDACTED]"'].join("\n"),
+				2,
+			],
+		] as const;
+		for (const [input, expected, count] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			assert.doesNotMatch(JSON.stringify(result), /firstSecretAAA|secondSecretBBB|hunter2|thirdSecret/u);
+		}
+	});
 	test("redacts complete unquoted and escaped credential values", () => {
 		const cases = [
 			["PASSWORD=p@ssw0rd!", "PASSWORD=[REDACTED]"],

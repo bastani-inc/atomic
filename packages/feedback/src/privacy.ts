@@ -55,6 +55,15 @@ function hasUnclosedQuoteBefore(input: string, start: number, quote: string): bo
 	}
 	return open;
 }
+function structuralQuoteBoundary(input: string, cursor: number): number | undefined {
+	const lineBreakEnd =
+		input[cursor] === "\r" && input[cursor + 1] === "\n" ? cursor + 2 : input[cursor] === "\n" ? cursor + 1 : -1;
+	if (lineBreakEnd < 0) return undefined;
+	const nextLineEnd = input.indexOf("\n", lineBreakEnd);
+	const nextLine = input.slice(lineBreakEnd, nextLineEnd < 0 ? input.length : nextLineEnd).replace(/\r$/u, "");
+	if (/^[ \t]*$/u.test(nextLine) || nextLine.startsWith("### ")) return cursor;
+	return undefined;
+}
 function completeTemplatePlaceholderEnd(input: string, start: number): number | undefined {
 	if (input.startsWith("${", start)) {
 		const close = input.indexOf("}", start + 2);
@@ -140,6 +149,11 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			let hasContent = false;
 			let closed = false;
 			while (cursor < input.length) {
+				const boundary = structuralQuoteBoundary(input, cursor);
+				if (boundary !== undefined) {
+					cursor = boundary;
+					break;
+				}
 				const character = input[cursor];
 				if (character === "\\") {
 					const escaped = input[cursor + 1];
