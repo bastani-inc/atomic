@@ -22,7 +22,7 @@ type RedactionRule =
 	| { readonly category: string; readonly pattern: RegExp; readonly replacement: string }
 	| { readonly category: "credential-assignment"; readonly scrub: (text: string) => CredentialScrubResult };
 const credentialAssignment =
-	/(?<!\w)((?:(?:api|access)[ \t]+)?[\w-]{0,127}(?:key|token|password|secret)\d*)["']?([ \t]*)([:=])([ \t]*(?:[*_~`]+)?[ \t]*)/giu;
+	/(?<!\w)((?:[*_~`]+)?((?:(?:api|access)[ \t]+)?[\w-]{0,127}(?:key|token|password|secret)\d*)[*_~`]*)["']?([ \t]*)([:=])([ \t]*(?:[*_~`]+)?[ \t]*)/giu;
 function isStrongCredentialName(name: string): boolean {
 	const normalized = name.toLowerCase().replaceAll(/[ -]/gu, "_");
 	if (/^(?:key|token|password|secret)\d*$/u.test(normalized)) return false;
@@ -109,7 +109,7 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		const assignmentStart = match.index ?? 0;
 		if (assignmentStart < coveredUntil) continue;
 		const prefix = match[0];
-		const keyName = match[1] ?? "";
+		const keyName = match[2] ?? "";
 		const valueStart = assignmentStart + prefix.length;
 		const first = input[valueStart];
 		if (first === '"' || first === "'") {

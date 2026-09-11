@@ -187,6 +187,11 @@ describe("feedback privacy core", () => {
 			["**API key:** sk-notreal-12345", "**API key:** [REDACTED]"],
 			["*token:* abc123xyz", "*token:* [REDACTED]"],
 			["`password:` hunter2secret", "`password:` [REDACTED]"],
+			["**API_KEY**: bold1234secret", "**API_KEY**: [REDACTED]"],
+			["**API_KEY**=bold1234secret", "**API_KEY**=[REDACTED]"],
+			["*password*: italicsecret12", "*password*: [REDACTED]"],
+			["`API_KEY`: codesecret1234", "`API_KEY`: [REDACTED]"],
+			["__token__: undersecret123", "__token__: [REDACTED]"],
 		] as const;
 		for (const [input, expected] of cases) {
 			const result = scrubFeedback("safe", input);
