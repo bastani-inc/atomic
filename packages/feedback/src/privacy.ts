@@ -76,7 +76,6 @@ function structuralQuoteBoundary(input: string, cursor: number, quote: string): 
 			if (previous && next && /\w/u.test(previous) && /\w/u.test(next)) continue;
 			if (/^[ \t,.;:!?)}\]>*_~`-]*$/u.test(nextLine.slice(index + 1))) return undefined;
 		}
-		if (!/\s/u.test(nextLine)) return undefined;
 		return cursor;
 	}
 	return cursor;
@@ -203,6 +202,14 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 					}
 					if (escapedCharacter !== "\\" && escapedCharacter !== "\r" && escapedCharacter !== "\n")
 						hasContent = true;
+					if (escapedCharacter === "\r" || escapedCharacter === "\n") {
+						const escapedBoundary = structuralQuoteBoundary(input, cursor + 1, quote);
+						if (escapedBoundary !== undefined) {
+							cursor = escapedBoundary;
+							stoppedAtBoundary = true;
+							break;
+						}
+					}
 					if (escapedCharacter === "\r" && input[cursor + 2] === "\n") cursor += 3;
 					else cursor += 2;
 					continue;
@@ -240,6 +247,17 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		const completePlaceholderEnd = completeTemplatePlaceholderEnd(input, valueStart);
 		if (templatePlaceholderEnd(input, valueStart) !== undefined) continue;
 		if (completePlaceholderEnd !== undefined) {
+			const redactedSuffixStart = completePlaceholderEnd + REDACTION_PLACEHOLDER.length;
+			if (input.startsWith(REDACTION_PLACEHOLDER, completePlaceholderEnd)) {
+				if (redactedSuffixStart >= input.length || /[\s,;})\]&|<>('"`]/u.test(input[redactedSuffixStart] ?? ""))
+					continue;
+				const suffixEnd = unquotedValueEnd(input, redactedSuffixStart, assignmentStart);
+				const suffix = input.slice(redactedSuffixStart, suffixEnd);
+				if (!shouldRedactUnquotedValue(keyName, prefix, suffix, input, assignmentStart)) continue;
+				matches.push({ start: redactedSuffixStart, end: suffixEnd, replacement: REDACTION_PLACEHOLDER });
+				coveredUntil = suffixEnd;
+				continue;
+			}
 			const suffixEnd = unquotedValueEnd(input, completePlaceholderEnd, assignmentStart);
 			const suffix = input.slice(completePlaceholderEnd, suffixEnd);
 			if (!shouldRedactUnquotedValue(keyName, prefix, suffix, input, assignmentStart)) continue;

@@ -120,6 +120,11 @@ describe("feedback privacy core", () => {
 			assert.equal(result.body, `API_KEY=\${VAR}[REDACTED]`);
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
 			assert.doesNotMatch(JSON.stringify(result), /realsecret1|\[REDACTED\]\}/u);
+			assert.deepEqual(scrubFeedback(result.title, result.body), {
+				title: result.title,
+				body: result.body,
+				replacements: [],
+			});
 		}
 		assert.equal(scrubFeedback("safe", `token=\${TOKEN}`).body, `token=\${TOKEN}`);
 		assert.equal(scrubFeedback("safe", "token={{ secrets.TOKEN }}").body, "token={{ secrets.TOKEN }}");
@@ -148,7 +153,7 @@ describe("feedback privacy core", () => {
 			],
 			[
 				['apiKey="firstpart\nsecondpartSECRET', "", "### Logs", "", 'TOKEN="thirdSecret"'].join("\n"),
-				['apiKey="[REDACTED]"', "", "### Logs", "", 'TOKEN="[REDACTED]"'].join("\n"),
+				['apiKey="[REDACTED]"', "secondpartSECRET", "", "### Logs", "", 'TOKEN="[REDACTED]"'].join("\n"),
 				2,
 			],
 		] as const;
@@ -182,6 +187,47 @@ describe("feedback privacy core", () => {
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
 			assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
 			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("preserves quote boundaries across line endings and ordinary report content", () => {
+		const cases = [
+			[
+				'apiKey="secret\\\n### Steps to reproduce\n1. run atomic --name "release"',
+				'apiKey="[REDACTED]"\n### Steps to reproduce\n1. run atomic --name "release"',
+				1,
+			],
+			[
+				'apiKey="secret\\\r\n### Steps to reproduce\r\n1. run atomic --name "release"',
+				'apiKey="[REDACTED]"\r\n### Steps to reproduce\r\n1. run atomic --name "release"',
+				1,
+			],
+			[
+				['apiKey="secretAAA', "", "https://github.com/bastani-inc/atomic/issues/2799", "", "### Logs"].join("\n"),
+				['apiKey="[REDACTED]"', "", "https://github.com/bastani-inc/atomic/issues/2799", "", "### Logs"].join("\n"),
+				1,
+			],
+			[
+				['apiKey="secretBBB', "", "/opt/dev/app/src/index.ts:42:7", "", "### Expected behavior"].join("\n"),
+				['apiKey="[REDACTED]"', "", "/opt/dev/app/src/index.ts:42:7", "", "### Expected behavior"].join("\n"),
+				1,
+			],
+			[
+				['apiKey="secretCCC', "", "ordinary prose continues here", "two prose lines remain"].join("\n"),
+				['apiKey="[REDACTED]"', "", "ordinary prose continues here", "two prose lines remain"].join("\n"),
+				1,
+			],
+			[
+				['apiKey="firstpart', 'secondpartSECRET"', "", 'PASSWORD="secondSecret"'].join("\n"),
+				['apiKey="[REDACTED]"', "", 'PASSWORD="[REDACTED]"'].join("\n"),
+				2,
+			],
+		] as const;
+		for (const [input, expected, count] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
 		}
 	});
 	test("redacts complete unquoted and escaped credential values", () => {
