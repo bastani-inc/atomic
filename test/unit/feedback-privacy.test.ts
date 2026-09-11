@@ -118,6 +118,24 @@ describe("feedback privacy core", () => {
 		assert.equal(query.body, "https://example.invalid/path?ref=user:pass@evil");
 		assert.deepEqual(query.replacements, []);
 	});
+	test("keeps prose and delimiters intact while scrubbing short assignments", () => {
+		const prose = [
+			"The token: expired yesterday",
+			"Here is the secret:\nSomething important happened",
+			"primary_key = customer_id",
+			"foreign key: orders_id",
+		];
+		for (const input of prose) assert.equal(scrubFeedback("safe", input).body, input);
+		const result = scrubFeedback(
+			"safe",
+			"key=aaaaaaaaaa,key2=bbbbbbbbbb; password=hunt3 PIN_SECRET=1234 GITHUB_TOKEN=abc SECRET=a1b2c",
+		);
+		assert.equal(
+			result.body,
+			"key=[REDACTED],key2=[REDACTED]; password=[REDACTED] PIN_SECRET=[REDACTED] GITHUB_TOKEN=[REDACTED] SECRET=[REDACTED]",
+		);
+		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 6 }]);
+	});
 
 	test("scrubs PGP and truncation-orphaned private-key blocks and bare provider tokens", () => {
 		const tokens = [

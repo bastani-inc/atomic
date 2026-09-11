@@ -10,7 +10,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "bun": ">=1.4.0"
+    "bun": ">=1.4.2"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

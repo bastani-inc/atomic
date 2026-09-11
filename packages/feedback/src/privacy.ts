@@ -21,7 +21,22 @@ type CredentialScrubResult = {
 type RedactionRule =
 	| { readonly category: string; readonly pattern: RegExp; readonly replacement: string }
 	| { readonly category: "credential-assignment"; readonly scrub: (text: string) => CredentialScrubResult };
-const credentialAssignment = /(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)/giu;
+const credentialAssignment = /(?<!\w)(\w*(?:key|token|password|secret)\d*)["']?([ \t]*)([:=])([ \t]*)/giu;
+function isStrongCredentialName(name: string): boolean {
+	const normalized = name.toLowerCase().replaceAll("-", "_");
+	if (/^(?:key|token|password|secret)\d*$/u.test(normalized)) return false;
+	return (
+		normalized.includes("password") ||
+		normalized.includes("token") ||
+		normalized.includes("secret") ||
+		/(?:api|access)_?key/u.test(normalized)
+	);
+}
+function shouldRedactUnquotedValue(name: string, prefix: string, value: string): boolean {
+	if (value === REDACTION_PLACEHOLDER) return false;
+	const compactAssignment = prefix.trim() === prefix;
+	return compactAssignment || isStrongCredentialName(name);
+}
 function scrubCredentialAssignments(input: string): CredentialScrubResult {
 	const matches: Array<{ start: number; end: number; replacement: string }> = [];
 	let coveredUntil = 0;
@@ -30,6 +45,7 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		const assignmentStart = match.index ?? 0;
 		if (assignmentStart < coveredUntil) continue;
 		const prefix = match[0];
+		const keyName = match[1] ?? "";
 		const valueStart = assignmentStart + prefix.length;
 		const first = input[valueStart];
 		if (first === '"' || first === "'") {
@@ -66,10 +82,11 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			continue;
 		}
 		if (first === undefined || first === "\r" || first === "\n" || /\s/u.test(first)) continue;
+		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) continue;
 		let end = valueStart;
-		while (end < input.length && !/[\s]/u.test(input[end] ?? "")) end += 1;
+		while (end < input.length && !/[\s,;})\]]/u.test(input[end] ?? "")) end += 1;
 		const value = input.slice(valueStart, end);
-		if (value.length >= 6 && value !== REDACTION_PLACEHOLDER) {
+		if (shouldRedactUnquotedValue(keyName, prefix, value)) {
 			matches.push({ start: valueStart, end, replacement: REDACTION_PLACEHOLDER });
 			coveredUntil = end;
 		}
