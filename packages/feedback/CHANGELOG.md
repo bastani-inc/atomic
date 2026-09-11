@@ -9,3 +9,4 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Fixed privacy scrubbing for spaced credential labels, Markdown-decorated labels, and unquoted values adjacent to structural delimiters.
+- Fixed complete redaction of credential values containing slashes while preserving path-like empty assignments.
