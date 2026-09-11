@@ -4,10 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Added typed feedback draft validation, deterministic issue formatting, privacy scrubbing, and bounded diagnostic utilities.
+- Added typed feedback draft validation, deterministic issue formatting, privacy scrubbing, and bounded diagnostic utilities ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 
 ### Fixed
 
-- Fixed privacy scrubbing for spaced credential labels, Markdown-decorated labels, and unquoted values while preserving structural delimiters, matching Markdown wrappers, and punctuation within values.
-- Fixed complete redaction of credential values containing slashes while preserving path-like empty assignments, and prevented emphasized prose from being falsely redacted.
-- Bounded credential and URL candidate scans to keep long diagnostic text responsive.
+- Fixed privacy scrubbing for spaced credential labels, Markdown-decorated labels, and unquoted values while preserving structural delimiters, matching Markdown wrappers, and punctuation within values ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Fixed complete redaction of credential values containing slashes while preserving path-like empty assignments, and prevented emphasized prose from being falsely redacted ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Bounded credential and URL candidate scans to keep long diagnostic text responsive ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
