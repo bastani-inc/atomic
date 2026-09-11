@@ -53,6 +53,20 @@ function shouldRedactUnquotedValue(
 		compactAssignment || isStrongCredentialName(name) || isLineLeadingCredentialName(name, input, assignmentStart)
 	);
 }
+function matchingTrailingWrapperLength(
+	input: string,
+	assignmentStart: number,
+	valueStart: number,
+	end: number,
+	keyName: string,
+): number {
+	const lineStart = input.lastIndexOf("\n", assignmentStart - 1) + 1;
+	const linePrefix = input.slice(lineStart, assignmentStart);
+	const opening = linePrefix.match(/(?:^|[ \t])([*_~`]+)$/u)?.[1] ?? keyName.match(/^([*_~`]+)/u)?.[1];
+	if (!opening) return 0;
+	const value = input.slice(valueStart, end);
+	return value.endsWith(opening) ? opening.length : 0;
+}
 function scrubCredentialAssignments(input: string): CredentialScrubResult {
 	const matches: Array<{ start: number; end: number; replacement: string }> = [];
 	let coveredUntil = 0;
@@ -102,14 +116,15 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		let end = valueStart;
 		while (
 			end < input.length &&
-			!/[\s,;})\]&|<>("'`*_~]/u.test(input[end] ?? "") &&
+			!/[\s,;})\]&|<>("'`]/u.test(input[end] ?? "") &&
 			!(input[end] === "/" && end === valueStart)
 		)
 			end += 1;
-		const value = input.slice(valueStart, end);
+		const redactedEnd = end - matchingTrailingWrapperLength(input, assignmentStart, valueStart, end, keyName);
+		const value = input.slice(valueStart, redactedEnd);
 		if (shouldRedactUnquotedValue(keyName, prefix, value, input, assignmentStart)) {
-			matches.push({ start: valueStart, end, replacement: REDACTION_PLACEHOLDER });
-			coveredUntil = end;
+			matches.push({ start: valueStart, end: redactedEnd, replacement: REDACTION_PLACEHOLDER });
+			coveredUntil = redactedEnd;
 		}
 	}
 	if (matches.length === 0) return { text: input, replacements: [] };

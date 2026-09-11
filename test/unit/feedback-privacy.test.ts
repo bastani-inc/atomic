@@ -181,6 +181,30 @@ describe("feedback privacy core", () => {
 		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
 		assert.doesNotMatch(JSON.stringify(result), /wJalrXUtnFEMI|K7MDENG|bPxRfiCYEX/u);
 	});
+	test("scrubs punctuation-bearing unquoted credentials without leaking tails", () => {
+		const cases = [
+			["MY_SECRET=abc_def_ghi", "MY_SECRET=[REDACTED]"],
+			["DB_PASSWORD=s3cr3t_p@ssw0rd", "DB_PASSWORD=[REDACTED]"],
+			["GOOGLE_API_KEY=ya29.a0Af_LiveSecretTail", "GOOGLE_API_KEY=[REDACTED]"],
+			["SLACK_TOKEN=abcdef*tail-secret", "SLACK_TOKEN=[REDACTED]"],
+			["PASSWORD=pass~word~tail", "PASSWORD=[REDACTED]"],
+			["api-key: 9f8a7b_6c5d4e3f", "api-key: [REDACTED]"],
+			["TOKEN=abc+def/ghi=tail!", "TOKEN=[REDACTED]"],
+			["?token=a1b2c3_d4&keep=1", "?token=[REDACTED]&keep=1"],
+			["**token=abc_def**", "**token=[REDACTED]**"],
+			["_token=abc_def_", "_token=[REDACTED]_"],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			assert.doesNotMatch(
+				JSON.stringify(result),
+				/abc_def_ghi|s3cr3t|LiveSecretTail|tail-secret|pass~word|9f8a7b|abc\+def\/ghi/u,
+			);
+		}
+	});
 	test("does not count empty unquoted assignment values as redactions", () => {
 		for (const input of [
 			"token=/tmp/example/path",
