@@ -148,10 +148,12 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			let cursor = valueStart + 1;
 			let hasContent = false;
 			let closed = false;
+			let stoppedAtBoundary = false;
 			while (cursor < input.length) {
 				const boundary = structuralQuoteBoundary(input, cursor);
 				if (boundary !== undefined) {
 					cursor = boundary;
+					stoppedAtBoundary = true;
 					break;
 				}
 				const character = input[cursor];
@@ -174,7 +176,7 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 				if (character !== "\r" && character !== "\n") hasContent = true;
 				cursor += 1;
 			}
-			if (!closed) {
+			if (!closed && !stoppedAtBoundary) {
 				const lineEnd = input.indexOf("\n", valueStart + 1);
 				if (lineEnd >= 0) cursor = lineEnd;
 			}

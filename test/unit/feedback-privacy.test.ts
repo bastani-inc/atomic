@@ -146,6 +146,11 @@ describe("feedback privacy core", () => {
 				['apiKey="[REDACTED]"', "### Logs", 'TOKEN="[REDACTED]"'].join("\n"),
 				2,
 			],
+			[
+				['apiKey="firstpart\nsecondpartSECRET', "", "### Logs", "", 'TOKEN="thirdSecret"'].join("\n"),
+				['apiKey="[REDACTED]"', "", "### Logs", "", 'TOKEN="[REDACTED]"'].join("\n"),
+				2,
+			],
 		] as const;
 		for (const [input, expected, count] of cases) {
 			const result = scrubFeedback("safe", input);
