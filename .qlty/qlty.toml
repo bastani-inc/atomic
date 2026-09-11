@@ -1,48 +1,5 @@
 config_version = "0"
 
 # Supplemental built-in analysis; npm run check remains the lint/typecheck gate.
-exclude_patterns = [
-  "*_min.*",
-  "*-min.*",
-  "*.min.*",
-  "**/*.d.ts",
-  "**/assets/**",
-  "**/build/**",
-  "**/deps/**",
-  "**/dist/**",
-  "**/node_modules/**",
-  "**/target/**",
-  "**/vendor/**",
-  "**/binaries/**",
-]
-test_patterns = [
-  "**/test/**",
-  "**/*.test.*",
-  "**/test_*.*",
-]
-[smells]
-mode = "comment"
-[[source]]
-name = "default"
-default = true
-[[plugin]]
-name = "actionlint"
-[[plugin]]
-name = "bandit"
-[[plugin]]
-name = "biome"
-[[plugin]]
-name = "clippy"
-[[plugin]]
-name = "osv-scanner"
-[[plugin]]
-name = "ruff"
-drivers = ["lint"]
-[[plugin]]
-name = "rustfmt"
-[[plugin]]
-name = "shellcheck"
-[[plugin]]
-name = "trufflehog"
-[[plugin]]
-name = "zizmor"
+exclude_patterns = ["**/node_modules/**", "**/dist/**", "**/target/**", "**/binaries/**"]
+test_patterns = ["**/test/**", "**/*.test.*"]
