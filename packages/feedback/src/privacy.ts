@@ -40,6 +40,23 @@ function isLineLeadingCredentialName(name: string, input: string, assignmentStar
 	const linePrefix = input.slice(lineStart, assignmentStart);
 	return /^[ \t]*(?:(?:[-*+])[ \t]+|(?:\d+[.)])[ \t]+)?[*_~`]*$/u.test(linePrefix);
 }
+function unquotedValueEnd(input: string, start: number, stopLeadingSlash = true): number {
+	let end = start;
+	while (
+		end < input.length &&
+		!/[\s,;})\]&|<>("'`]/u.test(input[end] ?? "") &&
+		!(stopLeadingSlash && input[end] === "/" && end === start)
+	)
+		end += 1;
+	return end;
+}
+
+function consumedValueWrapper(prefix: string): string {
+	const match = prefix.match(/([*_~`]+)$/u);
+	if (!match || /[ \t]$/u.test(prefix)) return "";
+	return match[1] ?? "";
+}
+
 function shouldRedactUnquotedValue(
 	name: string,
 	prefix: string,
@@ -112,17 +129,41 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			continue;
 		}
 		if (first === undefined || first === "\r" || first === "\n" || /\s/u.test(first)) continue;
-		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) continue;
-		let end = valueStart;
-		while (
-			end < input.length &&
-			!/[\s,;})\]&|<>("'`]/u.test(input[end] ?? "") &&
-			!(input[end] === "/" && end === valueStart)
-		)
-			end += 1;
+		const openingWrapper = consumedValueWrapper(prefix);
+		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) {
+			const suffixStart = valueStart + REDACTION_PLACEHOLDER.length;
+			if (suffixStart >= input.length || /[\s,;})\]&|<>('"`]/u.test(input[suffixStart] ?? "")) continue;
+			const suffixEnd = unquotedValueEnd(input, suffixStart, false);
+			const wrapperLength = matchingTrailingWrapperLength(input, assignmentStart, valueStart, suffixEnd, keyName);
+			const redactedEnd = suffixEnd - wrapperLength;
+			if (
+				(openingWrapper &&
+					suffixEnd === suffixStart + openingWrapper.length &&
+					input.slice(suffixStart, suffixEnd) === openingWrapper) ||
+				redactedEnd <= suffixStart
+			)
+				continue;
+			matches.push({ start: valueStart, end: redactedEnd, replacement: REDACTION_PLACEHOLDER });
+			coveredUntil = redactedEnd;
+			continue;
+		}
+		const end = unquotedValueEnd(input, valueStart);
+		const value = input.slice(valueStart, end);
+		if (openingWrapper) {
+			const hasMatchingWrapper = value.length > openingWrapper.length && value.endsWith(openingWrapper);
+			matches.push({
+				start: valueStart - openingWrapper.length,
+				end,
+				replacement: hasMatchingWrapper
+					? `${openingWrapper}${REDACTION_PLACEHOLDER}${openingWrapper}`
+					: REDACTION_PLACEHOLDER,
+			});
+			coveredUntil = end;
+			continue;
+		}
 		const redactedEnd = end - matchingTrailingWrapperLength(input, assignmentStart, valueStart, end, keyName);
-		const value = input.slice(valueStart, redactedEnd);
-		if (shouldRedactUnquotedValue(keyName, prefix, value, input, assignmentStart)) {
+		const redactedValue = input.slice(valueStart, redactedEnd);
+		if (shouldRedactUnquotedValue(keyName, prefix, redactedValue, input, assignmentStart)) {
 			matches.push({ start: valueStart, end: redactedEnd, replacement: REDACTION_PLACEHOLDER });
 			coveredUntil = redactedEnd;
 		}

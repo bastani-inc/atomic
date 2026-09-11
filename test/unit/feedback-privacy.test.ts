@@ -205,6 +205,34 @@ describe("feedback privacy core", () => {
 			);
 		}
 	});
+	test("scrubs provider-redacted assignment suffixes and value-leading punctuation", () => {
+		const providerCases = [
+			["PASSWORD=sk-ABCDEFGHIJKLMNOPQRST.uvWxSensitiveTail", "PASSWORD=[REDACTED]"],
+			["TOKEN=ghp_ABCDEFGHIJKLMNOPQRST_extraSensitiveTail", "TOKEN=[REDACTED]"],
+			["API_KEY=hf_abcdefghijklmnopqrstuvwx/SensitiveTail", "API_KEY=[REDACTED]"],
+		] as const;
+		for (const [input, expected] of providerCases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.doesNotMatch(JSON.stringify(result), /SensitiveTail|extraSensitiveTail|uvWx/u);
+		}
+		const wrapperCases = [
+			["TOKEN=_Canary42", "TOKEN=[REDACTED]"],
+			["TOKEN=*Canary42", "TOKEN=[REDACTED]"],
+			["TOKEN=~Canary42", "TOKEN=[REDACTED]"],
+			["password: **hunter2**", "password: **[REDACTED]**"],
+			["**TOKEN=abc_def**", "**TOKEN=[REDACTED]**"],
+			["**Password:** hunter2", "**Password:** [REDACTED]"],
+			["TOKEN=abc_def_", "TOKEN=[REDACTED]"],
+		] as const;
+		for (const [input, expected] of wrapperCases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+
 	test("does not count empty unquoted assignment values as redactions", () => {
 		for (const input of [
 			"token=/tmp/example/path",
