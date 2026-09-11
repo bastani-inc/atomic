@@ -136,6 +136,42 @@ describe("feedback privacy core", () => {
 		);
 		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 6 }]);
 	});
+	test("preserves emphasized prose and complete wrapper boundaries", () => {
+		for (const input of [
+			"The token: *expired* yesterday",
+			"The secret: **not set** in CI",
+			"foreign key: *orders_id* column",
+			"primary_key = *customer_id* here",
+			"Here is the secret: `none` today",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+		assert.equal(
+			scrubFeedback("safe", "API_KEY: **realsecret1 and notes**").body,
+			"API_KEY: **[REDACTED] and notes**",
+		);
+	});
+	test("does not leak punctuation-adjacent credential tails or strong leading-slash values", () => {
+		for (const [input, expected] of [
+			["PASSWORD=p@ss'word-tail", "PASSWORD=[REDACTED]"],
+			['DB_PASSWORD=abc"def-tail', "DB_PASSWORD=[REDACTED]"],
+			["API_KEY=abc`def-tail", "API_KEY=[REDACTED]"],
+			["AWS_SECRET_ACCESS_KEY=/K7MDENG/bPxRfiCYEX", "AWS_SECRET_ACCESS_KEY=[REDACTED]"],
+			["token=/tmp/example/path", "token=/tmp/example/path"],
+			["log_path_token=/var/log/atomic.log", "log_path_token=/var/log/atomic.log"],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			if (expected.includes("[REDACTED]")) {
+				assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+				assert.doesNotMatch(JSON.stringify(result), /word-tail|def-tail|K7MDENG|bPxRfiCYEX/u);
+			} else assert.deepEqual(result.replacements, []);
+		}
+	});
+	test("keeps long non-credential runs responsive", () => {
+		const input = "a-".repeat(32_000);
+		assert.equal(scrubFeedback("safe", input).body, input);
+	});
 	test("scrubs line-leading bare credential labels without treating prose as assignments", () => {
 		const cases = [
 			["password: s3cr3tValue", "password: [REDACTED]"],

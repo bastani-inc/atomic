@@ -22,7 +22,7 @@ type RedactionRule =
 	| { readonly category: string; readonly pattern: RegExp; readonly replacement: string }
 	| { readonly category: "credential-assignment"; readonly scrub: (text: string) => CredentialScrubResult };
 const credentialAssignment =
-	/(?<!\w)((?:(?:api|access)[ \t]+)?[\w-]*(?:key|token|password|secret)\d*)["']?([ \t]*)([:=])([ \t]*(?:[*_~`]+)?[ \t]*)/giu;
+	/(?<!\w)((?:(?:api|access)[ \t]+)?[\w-]{0,127}(?:key|token|password|secret)\d*)["']?([ \t]*)([:=])([ \t]*(?:[*_~`]+)?[ \t]*)/giu;
 function isStrongCredentialName(name: string): boolean {
 	const normalized = name.toLowerCase().replaceAll(/[ -]/gu, "_");
 	if (/^(?:key|token|password|secret)\d*$/u.test(normalized)) return false;
@@ -40,23 +40,34 @@ function isLineLeadingCredentialName(name: string, input: string, assignmentStar
 	const linePrefix = input.slice(lineStart, assignmentStart);
 	return /^[ \t]*(?:(?:[-*+])[ \t]+|(?:\d+[.)])[ \t]+)?[*_~`]*$/u.test(linePrefix);
 }
-function unquotedValueEnd(input: string, start: number, stopLeadingSlash = true): number {
+function hasUnclosedQuoteBefore(input: string, start: number, quote: string): boolean {
+	const lineStart = input.lastIndexOf("\n", start - 1) + 1;
+	let open = false;
+	for (let index = lineStart; index < start; index += 1) {
+		if (input[index] !== quote || input[index - 1] === "\\") continue;
+		open = !open;
+	}
+	return open;
+}
+function unquotedValueEnd(input: string, start: number, assignmentStart: number): number {
 	let end = start;
-	while (
-		end < input.length &&
-		!/[\s,;})\]&|<>("'`]/u.test(input[end] ?? "") &&
-		!(stopLeadingSlash && input[end] === "/" && end === start)
-	)
+	while (end < input.length) {
+		const character = input[end] ?? "";
+		if (/\s/u.test(character) || /[,;})\]&|<>]/u.test(character)) break;
+		if (
+			(character === '"' || character === "'" || character === "`") &&
+			hasUnclosedQuoteBefore(input, assignmentStart, character)
+		)
+			break;
 		end += 1;
+	}
 	return end;
 }
-
 function consumedValueWrapper(prefix: string): string {
 	const match = prefix.match(/([*_~`]+)$/u);
 	if (!match || /[ \t]$/u.test(prefix)) return "";
 	return match[1] ?? "";
 }
-
 function shouldRedactUnquotedValue(
 	name: string,
 	prefix: string,
@@ -65,9 +76,14 @@ function shouldRedactUnquotedValue(
 	assignmentStart: number,
 ): boolean {
 	if (value === REDACTION_PLACEHOLDER || value.length === 0) return false;
-	const compactAssignment = prefix.trim() === prefix;
+	const assignmentPrefix = prefix.replace(/[ \t]*[*_~`]+[ \t]*$/u, "");
+	const compactAssignment = !/[=:][ \t]+[*_~`]+[ \t]*$/u.test(prefix) && assignmentPrefix.trim() === assignmentPrefix;
+	const normalized = name.toLowerCase().replaceAll(/[ -]/gu, "_");
+	const pathLike = normalized.includes("path");
+	const strong = isStrongCredentialName(name);
 	return (
-		compactAssignment || isStrongCredentialName(name) || isLineLeadingCredentialName(name, input, assignmentStart)
+		!(value.startsWith("/") && (!strong || pathLike)) &&
+		(compactAssignment || strong || isLineLeadingCredentialName(name, input, assignmentStart))
 	);
 }
 function matchingTrailingWrapperLength(
@@ -84,6 +100,7 @@ function matchingTrailingWrapperLength(
 	const value = input.slice(valueStart, end);
 	return value.endsWith(opening) ? opening.length : 0;
 }
+
 function scrubCredentialAssignments(input: string): CredentialScrubResult {
 	const matches: Array<{ start: number; end: number; replacement: string }> = [];
 	let coveredUntil = 0;
@@ -133,7 +150,7 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) {
 			const suffixStart = valueStart + REDACTION_PLACEHOLDER.length;
 			if (suffixStart >= input.length || /[\s,;})\]&|<>('"`]/u.test(input[suffixStart] ?? "")) continue;
-			const suffixEnd = unquotedValueEnd(input, suffixStart, false);
+			const suffixEnd = unquotedValueEnd(input, suffixStart, assignmentStart);
 			const wrapperLength = matchingTrailingWrapperLength(input, assignmentStart, valueStart, suffixEnd, keyName);
 			const redactedEnd = suffixEnd - wrapperLength;
 			if (
@@ -147,26 +164,37 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			coveredUntil = redactedEnd;
 			continue;
 		}
-		const end = unquotedValueEnd(input, valueStart);
-		const value = input.slice(valueStart, end);
+		const end = unquotedValueEnd(input, valueStart, assignmentStart);
+		let hasMatchingWrapper = false;
+		let preserveOpeningWrapper = false;
 		if (openingWrapper) {
-			const hasMatchingWrapper = value.length > openingWrapper.length && value.endsWith(openingWrapper);
-			matches.push({
-				start: valueStart - openingWrapper.length,
-				end,
-				replacement: hasMatchingWrapper
-					? `${openingWrapper}${REDACTION_PLACEHOLDER}${openingWrapper}`
+			const candidate = input.slice(valueStart, end);
+			if (candidate.length > openingWrapper.length && candidate.endsWith(openingWrapper)) {
+				hasMatchingWrapper = true;
+			} else {
+				const lineEnd = input.indexOf("\n", valueStart);
+				const limit = lineEnd < 0 ? input.length : lineEnd;
+				preserveOpeningWrapper = input.lastIndexOf(openingWrapper, limit) > end;
+			}
+		}
+		const trailingWrapperLength =
+			hasMatchingWrapper || preserveOpeningWrapper
+				? 0
+				: matchingTrailingWrapperLength(input, assignmentStart, valueStart, end, keyName);
+		const redactedEnd = end - trailingWrapperLength;
+		const value = input.slice(valueStart, redactedEnd);
+		const redactedValue = hasMatchingWrapper ? value.slice(0, -openingWrapper.length) : value;
+		if (!shouldRedactUnquotedValue(keyName, prefix, redactedValue, input, assignmentStart)) continue;
+		matches.push({
+			start: openingWrapper ? valueStart - openingWrapper.length : valueStart,
+			end: hasMatchingWrapper ? end : redactedEnd,
+			replacement: hasMatchingWrapper
+				? `${openingWrapper}${REDACTION_PLACEHOLDER}${openingWrapper}`
+				: preserveOpeningWrapper
+					? `${openingWrapper}${REDACTION_PLACEHOLDER}`
 					: REDACTION_PLACEHOLDER,
-			});
-			coveredUntil = end;
-			continue;
-		}
-		const redactedEnd = end - matchingTrailingWrapperLength(input, assignmentStart, valueStart, end, keyName);
-		const redactedValue = input.slice(valueStart, redactedEnd);
-		if (shouldRedactUnquotedValue(keyName, prefix, redactedValue, input, assignmentStart)) {
-			matches.push({ start: valueStart, end: redactedEnd, replacement: REDACTION_PLACEHOLDER });
-			coveredUntil = redactedEnd;
-		}
+		});
+		coveredUntil = hasMatchingWrapper ? end : redactedEnd;
 	}
 	if (matches.length === 0) return { text: input, replacements: [] };
 	let text = "";
@@ -188,7 +216,7 @@ const rules = [
 	},
 	{
 		category: "url-credentials",
-		pattern: /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+.-]*:\/\/)(?!\[REDACTED\]@)[^\s/?#@]+@/giu,
+		pattern: /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+.-]{0,63}:\/\/)(?!\[REDACTED\]@)[^\s/?#@]+@/giu,
 		replacement: `$1${REDACTION_PLACEHOLDER}@`,
 	},
 	{ category: "anthropic-token", pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/gu, replacement: REDACTION_PLACEHOLDER },
