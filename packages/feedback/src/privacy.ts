@@ -42,7 +42,7 @@ const rules = [
 	{
 		category: "credential-assignment", // Reaches apiKey/GEMINI_API_KEY; knowingly overmatches ordinary *key identifiers.
 		pattern:
-			/(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)(?:(['"])(?!\[REDACTED\]\2)(?:(?:\\[^\r\n])|(?!\2)[^\r\n\\])+\2|([A-Za-z0-9+/=_-]{6,}(?:\.[A-Za-z0-9+/=_-]+)*))/giu,
+			/(?<!\w)(\w*(?:key|token|password|secret)["']?\s*[:=]\s*)(?:(['"])(?!\[REDACTED\]\2)(?:(?:(?:\\[^\r\n])|(?!\2)[^\r\n\\])+\2|(?=[^\r\n\\"]*[^\r\n\\"])(?:(?:\\[^\r\n])|(?!\2)[^\r\n\\])+)|([A-Za-z0-9+/=_-]{6,}(?:\.[A-Za-z0-9+/=_-]+)*))/giu,
 		replacement: `$1$2${REDACTION_PLACEHOLDER}$2`,
 	},
 	{

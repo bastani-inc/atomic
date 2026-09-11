@@ -90,6 +90,12 @@ describe("feedback privacy core", () => {
 		assert.doesNotMatch(JSON.stringify(result), /AAAAAAAA|p@ss|still-secret/u);
 		assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
 	});
+	test("redacts unterminated quoted credential assignments", () => {
+		const result = scrubFeedback("safe", 'apiKey="sensitive-value');
+		assert.equal(result.body, 'apiKey="[REDACTED]"');
+		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		assert.doesNotMatch(JSON.stringify(result), /sensitive-value/u);
+	});
 
 	test("scrubs PGP and truncation-orphaned private-key blocks and bare provider tokens", () => {
 		const tokens = [
