@@ -100,7 +100,12 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		if (first === undefined || first === "\r" || first === "\n" || /\s/u.test(first)) continue;
 		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) continue;
 		let end = valueStart;
-		while (end < input.length && !/[\s,;})\]&|/<>("'`*_~]/u.test(input[end] ?? "")) end += 1;
+		while (
+			end < input.length &&
+			!/[\s,;})\]&|<>("'`*_~]/u.test(input[end] ?? "") &&
+			!(input[end] === "/" && end === valueStart)
+		)
+			end += 1;
 		const value = input.slice(valueStart, end);
 		if (shouldRedactUnquotedValue(keyName, prefix, value, input, assignmentStart)) {
 			matches.push({ start: valueStart, end, replacement: REDACTION_PLACEHOLDER });

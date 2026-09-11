@@ -175,6 +175,12 @@ describe("feedback privacy core", () => {
 			assert.equal(scrubFeedback("safe", input).body, input);
 		}
 	});
+	test("scrubs slash-containing unquoted credential values completely", () => {
+		const result = scrubFeedback("safe", "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEX");
+		assert.equal(result.body, "AWS_SECRET_ACCESS_KEY=[REDACTED]");
+		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		assert.doesNotMatch(JSON.stringify(result), /wJalrXUtnFEMI|K7MDENG|bPxRfiCYEX/u);
+	});
 	test("does not count empty unquoted assignment values as redactions", () => {
 		for (const input of [
 			"token=/tmp/example/path",
