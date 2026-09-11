@@ -151,15 +151,16 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			const suffixStart = valueStart + REDACTION_PLACEHOLDER.length;
 			if (suffixStart >= input.length || /[\s,;})\]&|<>('"`]/u.test(input[suffixStart] ?? "")) continue;
 			const suffixEnd = unquotedValueEnd(input, suffixStart, assignmentStart);
-			const wrapperLength = matchingTrailingWrapperLength(input, assignmentStart, valueStart, suffixEnd, keyName);
-			const redactedEnd = suffixEnd - wrapperLength;
-			if (
-				(openingWrapper &&
-					suffixEnd === suffixStart + openingWrapper.length &&
-					input.slice(suffixStart, suffixEnd) === openingWrapper) ||
-				redactedEnd <= suffixStart
-			)
-				continue;
+			const closesWrapper =
+				openingWrapper &&
+				suffixEnd >= suffixStart + openingWrapper.length &&
+				input.slice(suffixEnd - openingWrapper.length, suffixEnd) === openingWrapper;
+			const wrapperLength = closesWrapper
+				? openingWrapper.length
+				: matchingTrailingWrapperLength(input, assignmentStart, valueStart, suffixEnd, keyName);
+			const trailingMarkerLength = input.slice(suffixStart, suffixEnd).match(/[*_~]+$/u)?.[0].length ?? 0;
+			const redactedEnd = suffixEnd - Math.max(wrapperLength, trailingMarkerLength);
+			if ((openingWrapper && redactedEnd === suffixStart) || redactedEnd <= suffixStart) continue;
 			matches.push({ start: valueStart, end: redactedEnd, replacement: REDACTION_PLACEHOLDER });
 			coveredUntil = redactedEnd;
 			continue;
@@ -177,10 +178,12 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 				preserveOpeningWrapper = input.lastIndexOf(openingWrapper, limit) > end;
 			}
 		}
-		const trailingWrapperLength =
+		const matchingWrapperLength = matchingTrailingWrapperLength(input, assignmentStart, valueStart, end, keyName);
+		const trailingMarkerLength =
 			hasMatchingWrapper || preserveOpeningWrapper
 				? 0
-				: matchingTrailingWrapperLength(input, assignmentStart, valueStart, end, keyName);
+				: (input.slice(valueStart, end).match(/[*_~]+$/u)?.[0].length ?? 0);
+		const trailingWrapperLength = Math.max(matchingWrapperLength, trailingMarkerLength);
 		const redactedEnd = end - trailingWrapperLength;
 		const value = input.slice(valueStart, redactedEnd);
 		const redactedValue = hasMatchingWrapper ? value.slice(0, -openingWrapper.length) : value;
