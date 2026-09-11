@@ -9,6 +9,8 @@ import {
 	scrubFeedback,
 } from "../../packages/feedback/src/index.js";
 
+const MARKER_SCAN_TIMEOUT_MS = 250;
+
 // Regression coverage for bastani-inc/atomic#2799.
 describe("feedback privacy core", () => {
 	test("passes safe text unchanged", () => {
@@ -150,6 +152,38 @@ describe("feedback privacy core", () => {
 			scrubFeedback("safe", "API_KEY: **realsecret1 and notes**").body,
 			"API_KEY: **[REDACTED] and notes**",
 		);
+	});
+	test("scrubs credential labels in comments without corrupting prose templates", () => {
+		for (const input of [
+			"password: field is not masked in the TUI",
+			"token: counts are wrong in the footer",
+			"key: value pairs are parsed by the YAML loader",
+			"1. password: prompts appear twice",
+			`token=\${TOKEN}`,
+			"token={{ secrets.TOKEN }}",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+		for (const [input, expected] of [
+			["> password: quotedSecret99", "> password: [REDACTED]"],
+			["# password: hashSecret99", "# password: [REDACTED]"],
+			["// password: slashSecret99", "// password: [REDACTED]"],
+			["password=/hunter2slash", "password=[REDACTED]"],
+			["SECRET=/hunter2slash", "SECRET=[REDACTED]"],
+			['apiKey="firstpart\nsecondpartSECRET"', 'apiKey="[REDACTED]"'],
+			["> DB_PASSWORD: quotedSecret99", "> DB_PASSWORD: [REDACTED]"],
+			["AWS_SECRET_ACCESS_KEY=/hunter2slash", "AWS_SECRET_ACCESS_KEY=[REDACTED]"],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+	});
+	test("bounds marker-only credential candidates", () => {
+		const input = "*".repeat(32_000);
+		const started = performance.now();
+		assert.equal(scrubFeedback("safe", input).body, input);
+		assert.ok(performance.now() - started < MARKER_SCAN_TIMEOUT_MS);
 	});
 	test("does not leak punctuation-adjacent credential tails or strong leading-slash values", () => {
 		for (const [input, expected] of [
