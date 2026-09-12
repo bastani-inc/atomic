@@ -42,3 +42,14 @@ export function transcriptText(harness: Harness): string {
 export function assistantMessages(harness: Harness): string[] {
 	return harness.session.messages.filter((message) => message.role === "assistant").map(getMessageText);
 }
+
+/**
+ * Any rendered GitHub issue link. The pattern is deliberately host-free: a leaked link is a failure on any
+ * host, and a host literal in a substring or unanchored regular-expression check is what CodeQL reports as
+ * incomplete URL sanitization (code scanning alerts 200 and 201 on #2849).
+ */
+export const ISSUE_LINK = /\/issues\/[1-9]\d*\b/u;
+
+export function assertNoIssueLink(harness: Harness): void {
+	assert.doesNotMatch(transcriptText(harness), ISSUE_LINK);
+}

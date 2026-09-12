@@ -4,6 +4,7 @@ import { afterEach, describe, it, vi } from "vitest";
 import { getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import type { BugFeedbackDraft, FeedbackDraft } from "../../packages/feedback/src/draft.js";
 import {
+	assertNoIssueLink,
 	assistantMessages,
 	createFeedbackConversationHarness,
 	settleTurn,
@@ -235,7 +236,7 @@ describe("feedback follow-up conversation", () => {
 		assert.equal(preparedResults(harness).length, 1);
 		assertNoSubmission(harness);
 		assert.equal(fetcher.mock.calls.length, 0);
-		assert.ok(!transcriptText(harness).includes("https://github.com/bastani-inc/atomic/issues/"));
+		assertNoIssueLink(harness);
 
 		harness.setResponses(
 			prepareThenDisplay({ ...initialDraft, change: "Add keyboard shortcuts", why: "Accessibility" }),

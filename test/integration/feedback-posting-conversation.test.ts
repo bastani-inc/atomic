@@ -4,8 +4,10 @@ import { afterEach, describe, it, vi } from "vitest";
 import { getMessageText } from "../../packages/coding-agent/test/suite/harness.js";
 import { formatPreparedDisplay, submitFeedbackIssue } from "../../packages/feedback/src/index.js";
 import {
+	assertNoIssueLink,
 	assistantMessages,
 	createFeedbackConversationHarness,
+	ISSUE_LINK,
 	settleTurn,
 	transcriptText,
 } from "./feedback-conversation-harness.js";
@@ -50,6 +52,27 @@ function configureToken(): void {
 		if (previousGh === undefined) delete process.env.GH_TOKEN;
 		else process.env.GH_TOKEN = previousGh;
 	});
+}
+
+type SubmitResult = Extract<
+	Awaited<ReturnType<typeof displayedDraft>>["session"]["messages"][number],
+	{ role: "toolResult" }
+>;
+function submitResults(harness: Awaited<ReturnType<typeof displayedDraft>>): SubmitResult[] {
+	return harness.session.messages.filter(
+		(message): message is SubmitResult =>
+			message.role === "toolResult" && message.toolName === "feedback_submit_issue",
+	);
+}
+
+function submitThenRelay(): FauxResponseStep[] {
+	return [
+		fauxAssistantMessage(fauxToolCall("feedback_submit_issue", { kind: "enhancement", title: draft.title, body }), {
+			stopReason: "toolUse",
+		}),
+		(context) =>
+			fauxAssistantMessage(getMessageText(context.messages.findLast((message) => message.role === "toolResult"))),
+	];
 }
 
 describe("feedback posting conversation", () => {
@@ -110,6 +133,8 @@ describe("feedback posting conversation", () => {
 		const [, init] = fetcher.mock.calls[0] ?? [];
 		assert.deepEqual(JSON.parse(String(init?.body)), { labels: ["enhancement"], title: draft.title, body });
 		assert.ok(assistantMessages(harness).at(-1)?.includes("Posted: https://github.com/bastani-inc/atomic/issues/42"));
+		// The link detector must recognize a real posted link, or assertNoIssueLink elsewhere proves nothing.
+		assert.match(transcriptText(harness), ISSUE_LINK);
 		assert.ok(!transcriptText(harness).includes(token));
 	});
 
@@ -148,8 +173,68 @@ describe("feedback posting conversation", () => {
 		assert.ok(renderedError?.includes("GitHub authentication failed. The reviewed draft was not posted."));
 		assert.ok(renderedError?.includes("draft remains editable; you can retry when ready"));
 		assert.ok(assistantMessages(harness).includes(reviewedDraft));
-		assert.ok(!transcriptText(harness).includes("https://github.com/bastani-inc/atomic/issues/"));
+		assertNoIssueLink(harness);
 		assert.ok(!transcriptText(harness).includes(token));
 		assert.equal(harness.session.messages.at(-1)?.role, "assistant");
+	});
+
+	// #2799: a marked failure keeps the draft postable; the recorded attempt must survive the error tool result
+	// so a fresh ordinary approval is accepted once, and the consumed approval is not reused.
+	it("posts once after a fresh approval follows a marked submission failure", async () => {
+		configureToken();
+		const statuses = [401, 201];
+		const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+			const status = statuses.shift();
+			if (status === 201) {
+				return new Response(JSON.stringify({ html_url: "https://github.com/bastani-inc/atomic/issues/42" }), {
+					status,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return new Response("unauthorized", { status: 401 });
+		});
+		vi.stubGlobal("fetch", fetcher);
+		const harness = await displayedDraft();
+		harness.setResponses(submitThenRelay());
+		await harness.session.prompt("please post it");
+
+		const [failed] = submitResults(harness);
+		assert.ok(failed);
+		assert.equal(failed.isError, true);
+		assert.equal(fetcher.mock.calls.length, 1);
+		const failedDetails = failed.details;
+		assert.ok(
+			failedDetails &&
+				typeof failedDetails === "object" &&
+				"ok" in failedDetails &&
+				"code" in failedDetails &&
+				"fingerprint" in failedDetails &&
+				"approvalFingerprint" in failedDetails,
+		);
+		assert.equal(failedDetails.ok, false);
+		assert.equal(failedDetails.code, "authentication");
+		assert.match(String(failedDetails.fingerprint), /^[0-9a-f]{64}$/u);
+		assert.match(String(failedDetails.approvalFingerprint), /^[0-9a-f]{64}$/u);
+		assertNoIssueLink(harness);
+
+		harness.setResponses(submitThenRelay());
+		await harness.session.prompt("yes, post it");
+
+		const results = submitResults(harness);
+		assert.equal(results.length, 2);
+		assert.equal(fetcher.mock.calls.length, 2);
+		const posted = results[1];
+		assert.ok(posted);
+		assert.equal(posted.isError, false);
+		assert.equal(getMessageText(posted), "https://github.com/bastani-inc/atomic/issues/42");
+		const postedDetails = posted.details;
+		assert.ok(
+			postedDetails && typeof postedDetails === "object" && "ok" in postedDetails && "fingerprint" in postedDetails,
+		);
+		assert.equal(postedDetails.ok, true);
+		assert.equal(postedDetails.fingerprint, failedDetails.fingerprint);
+		assert.equal(assistantMessages(harness).at(-1), "https://github.com/bastani-inc/atomic/issues/42");
+		assert.match(transcriptText(harness), ISSUE_LINK);
+		assert.ok(!transcriptText(harness).includes(token));
 	});
 });
