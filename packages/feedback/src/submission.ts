@@ -95,12 +95,35 @@ function roleText(entry: BranchEntry, role: "assistant" | "user"): string | unde
 	return text || undefined;
 }
 const approved = (text: string): boolean =>
-	/^(?:(?:(?:yes|approved)[,.!]?\s+)?(?:please\s+)?(?:go ahead(?: and)?\s+)?(?:post|submit|file|open|send)\s+(?:it|this(?: issue)?|that(?: issue)?|the issue)|ship it|i approve (?:(?:posting|submitting|filing|opening|sending) (?:this|that|the) issue|(?:this|that|the) issue for (?:posting|submitting|filing|opening|sending)))[.!]?$/iu.test(
+	/^(?:yes|approved|i approve(?: (?:this|that|the) issue)?|(?:(?:(?:yes|approved)[,.!]?\s+)?(?:please\s+)?(?:go ahead(?: and)?\s+)?(?:post|submit|file|open|send)\s+(?:it|this(?: issue)?|that(?: issue)?|the issue)|ship it|i approve (?:(?:posting|submitting|filing|opening|sending) (?:this|that|the) issue|(?:this|that|the) issue for (?:posting|submitting|filing|opening|sending))))[.!]?$/iu.test(
 		text.trim(),
 	);
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 export const feedbackFingerprint = (input: FeedbackSubmissionInput): string =>
 	hash(JSON.stringify([input.kind, input.title, input.body]));
+function onlySubmissionActivity(branch: readonly BranchEntry[], fingerprint: string): boolean {
+	let failureMessage: string | undefined;
+	return branch.every((entry) => {
+		if (entry.type !== "message") return true;
+		const user = roleText(entry, "user");
+		if (user !== undefined) return approved(user);
+		const result = toolResult(entry, "feedback_submit_issue");
+		if (result && typeof result.details === "object" && result.details) {
+			const details = record(result.details);
+			if (details.ok !== false || details.fingerprint !== fingerprint || typeof details.message !== "string")
+				return false;
+			failureMessage = details.message;
+			return true;
+		}
+		const assistant = roleText(entry, "assistant");
+		if (failureMessage && assistant === failureMessage) return true;
+		if (!entry.message) return false;
+		const message = record(entry.message);
+		if (message.role !== "assistant" || !Array.isArray(message.content)) return false;
+		const calls = message.content.filter((item) => item?.type === "toolCall");
+		return calls.length > 0 && calls.every((call) => call.name === "feedback_submit_issue");
+	});
+}
 function syncSubmissionHistory(branch: readonly BranchEntry[], state: SessionState, fingerprint: string): void {
 	for (const entry of branch) {
 		const result = toolResult(entry, "feedback_submit_issue");
@@ -132,7 +155,7 @@ export async function submitFeedbackIssue(
 	const existing = state.successes.get(fingerprint);
 	if (existing) return failure("duplicate", { existingUrl: existing });
 	if (state.inflight.has(fingerprint)) return failure("duplicate");
-	const draftIndex = branch.findLastIndex((entry) => prepared(entry) !== undefined);
+	const draftIndex = branch.findLastIndex((entry) => toolResult(entry, "feedback_prepare_issue") !== undefined);
 	const preparedDraft = draftIndex < 0 ? undefined : prepared(branch[draftIndex]);
 	if (
 		!preparedDraft ||
@@ -142,14 +165,18 @@ export async function submitFeedbackIssue(
 	)
 		return failure("stale-draft");
 	const approvalIndex = branch.findLastIndex(
-		(entry, index) => index > draftIndex && roleText(entry, "user") !== undefined,
+		(entry, index) => index > draftIndex && entry.message && record(entry.message).role === "user",
 	);
 	const approvalText = approvalIndex < 0 ? undefined : roleText(branch[approvalIndex], "user");
 	if (!approvalText || !approved(approvalText)) return failure("missing-approval");
-	const displayed = branch
-		.slice(draftIndex + 1, approvalIndex)
-		.some((entry) => roleText(entry, "assistant")?.includes(preparedDraft.display) === true);
-	if (!displayed) return failure("stale-draft");
+	const displayIndex = branch.findLastIndex(
+		(entry, index) =>
+			index > draftIndex &&
+			index < approvalIndex &&
+			roleText(entry, "assistant")?.includes(preparedDraft.display) === true,
+	);
+	if (displayIndex < 0) return failure("stale-draft");
+	if (!onlySubmissionActivity(branch.slice(displayIndex + 1), fingerprint)) return failure("missing-approval");
 	const attempt = { fingerprint, approvalFingerprint: hash(JSON.stringify(["approval", branch[approvalIndex].id])) };
 	if (state.attempts.get(fingerprint) === attempt.approvalFingerprint) return failure("missing-approval");
 	state.attempts.set(fingerprint, attempt.approvalFingerprint);

@@ -5,6 +5,7 @@
 ### Added
 
 - Added optional `pi.getLoadedExtensions()` and the exported `LoadedExtensionInfo` type so extensions can report loaded extension names and bundled provenance, including extensions without tools ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Added approval-gated feedback submission to `bastani-inc/atomic`, with exact draft review, direct conversational approval, pre-submission privacy checks, session duplicate protection, and safe GitHub failure messages. Submission uses `GITHUB_TOKEN` or `GH_TOKEN` with issue-creation permission ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 
 ### Fixed
 

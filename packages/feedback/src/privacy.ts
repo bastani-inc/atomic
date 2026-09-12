@@ -469,7 +469,6 @@ function scrubPrivateKeys(input: string): {
 		replacements: count ? [{ category: "private-key", count }] : [],
 	};
 }
-const homeDirectoryPrefix = "(?<![\\w~])";
 const seg = "[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+";
 const rules = [
 	{
