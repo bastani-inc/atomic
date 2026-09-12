@@ -50,6 +50,46 @@ function getApiKey(): string {
 	return key;
 }
 
+function splitDomainFilter(domainFilter: string[] | undefined): { includes: string[]; excludes: string[] } {
+	const includes: string[] = [];
+	const excludes: string[] = [];
+	for (const entry of domainFilter ?? []) {
+		if (typeof entry !== "string") continue;
+		const trimmed = entry.trim();
+		if (!trimmed) continue;
+		if (trimmed.startsWith("-")) {
+			const domain = trimmed.slice(1).trim();
+			if (domain) excludes.push(domain.toLowerCase());
+		} else {
+			includes.push(trimmed.toLowerCase());
+		}
+	}
+	return { includes, excludes };
+}
+
+function domainMatches(host: string, filter: string): boolean {
+	const normalizedHost = host.toLowerCase();
+	const normalizedFilter = filter.toLowerCase();
+	return normalizedHost === normalizedFilter || normalizedHost.endsWith(`.${normalizedFilter}`);
+}
+
+/** Client-side enforcement of domainFilter on results (the API has no domain filter parameter). */
+function applyDomainFilter(result: SearchResult, domainFilter: string[] | undefined): boolean {
+	if (!domainFilter?.length) return true;
+	const { includes, excludes } = splitDomainFilter(domainFilter);
+	if (!includes.length && !excludes.length) return true;
+	let host: string;
+	try {
+		host = new URL(result.url).hostname;
+	} catch {
+		// Unparseable URL cannot be proven to satisfy the restriction — drop it.
+		return false;
+	}
+	if (excludes.some((domain) => domainMatches(host, domain))) return false;
+	if (includes.length > 0 && !includes.some((domain) => domainMatches(host, domain))) return false;
+	return true;
+}
+
 interface YoucomSearchResult {
 	url?: string;
 	title?: string;
@@ -63,6 +103,42 @@ interface YoucomSearchResponse {
 		web?: YoucomSearchResult[];
 		news?: YoucomSearchResult[];
 	};
+}
+
+function isYoucomSearchResult(value: unknown): value is YoucomSearchResult {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value as Record<string, unknown>;
+	return (
+		typeof record.url === "string" &&
+		(record.title === undefined || typeof record.title === "string") &&
+		(record.description === undefined || typeof record.description === "string") &&
+		(record.snippets === undefined || (Array.isArray(record.snippets) && record.snippets.every((s) => typeof s === "string")))
+	);
+}
+
+function parseYoucomResponse(data: unknown): { web: YoucomSearchResult[]; news: YoucomSearchResult[] } {
+	if (typeof data !== "object" || data === null) {
+		throw new Error("You.com API returned unexpected response: expected a JSON object");
+	}
+	const results = (data as Record<string, unknown>).results;
+	if (results === undefined) {
+		return { web: [], news: [] };
+	}
+	if (typeof results !== "object" || results === null) {
+		throw new Error("You.com API returned unexpected response: 'results' is not an object");
+	}
+	const sections = results as Record<string, unknown>;
+	const web = parseResultSection(sections.web, "web");
+	const news = parseResultSection(sections.news, "news");
+	return { web, news };
+}
+
+function parseResultSection(section: unknown, name: string): YoucomSearchResult[] {
+	if (section === undefined) return [];
+	if (!Array.isArray(section)) {
+		throw new Error(`You.com API returned unexpected response: 'results.${name}' is not an array`);
+	}
+	return section.filter(isYoucomSearchResult);
 }
 
 function toSearchResult(result: YoucomSearchResult, fallbackIndex: number): SearchResult | null {
@@ -92,10 +168,12 @@ export function isYoucomAvailable(): boolean {
 }
 
 export async function searchWithYoucom(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-	const activityId = activityMonitor.logStart({ type: "api", query });
-
+	// Validate credentials before starting activity tracking so a missing key
+	// never leaves a dangling activity entry.
 	const apiKey = getApiKey();
 	const numResults = Math.min(options.numResults ?? 5, MAX_RESULTS);
+
+	const activityId = activityMonitor.logStart({ type: "api", query });
 
 	const requestBody: Record<string, unknown> = {
 		query,
@@ -133,24 +211,32 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 		throw new Error(`You.com API error ${response.status}: ${errorText.slice(0, 300)}`);
 	}
 
-	let data: YoucomSearchResponse;
+	let data: unknown;
 	try {
-		data = await response.json() as YoucomSearchResponse;
+		data = await response.json();
 	} catch (err) {
 		activityMonitor.logComplete(activityId, response.status);
 		const message = err instanceof Error ? err.message : String(err);
 		throw new Error(`You.com API returned invalid JSON: ${message}`);
 	}
 
+	// Response-shape validation at the API boundary; also settles tracking on failure.
+	let sections: { web: YoucomSearchResult[]; news: YoucomSearchResult[] };
+	try {
+		sections = parseYoucomResponse(data);
+	} catch (err) {
+		activityMonitor.logError(activityId, err instanceof Error ? err.message : String(err));
+		throw err;
+	}
+
 	const results: SearchResult[] = [];
 	let sourceIndex = 0;
-	for (const result of data.results?.web ?? []) {
+	for (const result of [...sections.web, ...sections.news]) {
+		if (results.length >= numResults) break;
 		const mapped = toSearchResult(result, ++sourceIndex);
-		if (mapped) results.push(mapped);
-	}
-	for (const result of data.results?.news ?? []) {
-		const mapped = toSearchResult(result, ++sourceIndex);
-		if (mapped && results.length < numResults) results.push(mapped);
+		if (mapped && applyDomainFilter(mapped, options.domainFilter)) {
+			results.push(mapped);
+		}
 	}
 
 	activityMonitor.logComplete(activityId, response.status);
