@@ -72,7 +72,7 @@ Always review feedback before publishing, even when a draft has redaction marker
 
 Outside balanced wrappers, `<` after an unquoted credential value has started ends automatic scrubbing of that token to preserve following markup. Remove any secret material after that boundary manually.
 
-Quoted credentials can span contiguous nonblank lines. Unquoted bracket, brace, parenthesis, and angle wrappers are limited to one line. Blank lines and `### ` report headings are hard boundaries, including for private-key blocks. Secrets continuing beyond those boundaries require manual removal. A private-key block with an END marker before any hard boundary is scrubbed through that marker, even if the BEGIN line has trailing text. Without such an END marker, a BEGIN marker with trailing text is scrubbed only to that line's end; a marker-only line consumes contiguous text through its END marker or the next hard boundary. Check both for remaining secrets and for useful report text that was redacted.
+Quoted credentials can span contiguous nonblank lines. Unquoted bracket, brace, parenthesis, and angle wrappers are limited to one line. Blank lines and Markdown report headings are hard boundaries, including for private-key blocks. Secrets continuing beyond those boundaries require manual removal. A private-key block with an END marker before any hard boundary is scrubbed through that marker, even if the BEGIN line has trailing text. Without such an END marker, a BEGIN marker with trailing text is scrubbed only to that line's end; a marker-only line consumes contiguous text through its END marker or the next hard boundary. Check both for remaining secrets and for useful report text that was redacted.
 
 ## Reporting Security Issues
 

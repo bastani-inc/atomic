@@ -15,6 +15,78 @@ const PRIVATE_KEY_SCAN_TIMEOUT_MS = 250;
 
 // Regression coverage for bastani-inc/atomic#2799.
 describe("feedback privacy core", () => {
+	for (const newline of ["\n", "\r\n"]) {
+		for (const heading of [
+			"# Summary",
+			"## Expected behavior",
+			"### Details",
+			"#### Actual behavior",
+			"##### Context",
+			"###### Notes",
+			"   ## Indented ##",
+			"##\tTabbed",
+			"##",
+			`Expected behavior${newline}===`,
+			`Actual behavior${newline}---`,
+			`   Expected behavior${newline}   =\t`,
+			`Actual behavior${newline}-`,
+		]) {
+			for (const terminated of [false, true]) {
+				for (const kind of ["quoted", "escaped", "private-key"] as const) {
+					test(`preserves Markdown report boundary ${JSON.stringify({ newline, heading, terminated, kind })}`, () => {
+						const privateKey = kind === "private-key";
+						const prefix = privateKey
+							? ["-----BEGIN", "PRIVATE KEY-----"].join(" ")
+							: 'API_KEY="syntheticCanary123';
+						const material = privateKey ? `${newline}syntheticKeyMaterial` : kind === "escaped" ? "\\" : "";
+						const terminator = privateKey ? "-----END PRIVATE KEY-----" : 'later terminator"';
+						const report = `${newline}${heading}${newline}The session should continue.${terminated ? newline + terminator : ""}`;
+						const result = scrubFeedback("Safe title", prefix + material + report);
+						assert.deepEqual(result, {
+							title: "Safe title",
+							body: (privateKey ? "[REDACTED]" : 'API_KEY="[REDACTED]"') + report,
+							replacements: [{ category: privateKey ? "private-key" : "credential-assignment", count: 1 }],
+						});
+						assert.deepEqual(scrubFeedback(result.title, result.body), { ...result, replacements: [] });
+					});
+				}
+			}
+		}
+	}
+	test("keeps non-heading hash-like and code-indented lines inside contiguous secrets", () => {
+		for (const newline of ["\n", "\r\n"]) {
+			for (const content of [
+				"####### Not a heading",
+				"##Not a heading",
+				"    ## Code",
+				"\t## Code",
+				`Title${newline}    ===`,
+				`Title${newline}= =`,
+				`    Code${newline}===`,
+			]) {
+				const quoted = scrubFeedback(
+					"Safe title",
+					`API_KEY="syntheticCanary123${newline}${content}${newline}syntheticTail456"`,
+				);
+				assert.deepEqual(quoted, {
+					title: "Safe title",
+					body: 'API_KEY="[REDACTED]"',
+					replacements: [{ category: "credential-assignment", count: 1 }],
+				});
+				const key = scrubFeedback(
+					"Safe title",
+					`${["-----BEGIN", "PRIVATE KEY-----"].join(" ")}${newline}syntheticKeyMaterial${newline}${content}${newline}-----END PRIVATE KEY-----`,
+				);
+				assert.deepEqual(key, {
+					title: "Safe title",
+					body: "[REDACTED]",
+					replacements: [{ category: "private-key", count: 1 }],
+				});
+				for (const result of [quoted, key])
+					assert.deepEqual(scrubFeedback(result.title, result.body), { ...result, replacements: [] });
+			}
+		}
+	});
 	test("passes safe text unchanged", () => {
 		assert.deepEqual(scrubFeedback("A safe title", "Ordinary diagnostic text."), {
 			title: "A safe title",

@@ -90,13 +90,19 @@ function balancedValueEnd(input: string, start: number): number | undefined {
 	}
 	return undefined;
 }
+// Share hard report boundaries between quoted values and private-key blocks.
+// Setext lookahead preserves the title line as well as its underline. Keep this
+// line-local: do not reinterpret preceding credential material as heading text.
+const reportBoundary =
+	/\r?\n(?=[ \t]*(?:\r?\n|$)| {0,3}#{1,6}(?:[ \t]|\r?\n|$)| {0,3}[^ \t\r\n][^\r\n]*\r?\n {0,3}(?:=+|-+)[ \t]*(?:\r?\n|$))/uy;
 function structuralQuoteBoundary(input: string, cursor: number, quote: string): number | undefined {
 	const lineBreakEnd =
 		input[cursor] === "\r" && input[cursor + 1] === "\n" ? cursor + 2 : input[cursor] === "\n" ? cursor + 1 : -1;
 	if (lineBreakEnd < 0) return undefined;
 	const nextLineEnd = input.indexOf("\n", lineBreakEnd);
 	const nextLine = input.slice(lineBreakEnd, nextLineEnd < 0 ? input.length : nextLineEnd).replace(/\r$/u, "");
-	if (/^[ \t]*$/u.test(nextLine) || nextLine.startsWith("### ")) return cursor;
+	reportBoundary.lastIndex = cursor;
+	if (reportBoundary.test(input)) return cursor;
 	let sawQuote = false;
 	for (let index = 0; index < nextLine.length; index += 1) {
 		if (nextLine[index] !== quote || nextLine[index - 1] === "\\") continue;
@@ -432,8 +438,8 @@ function scrubPrivateKeys(input: string): {
 	// Index terminators and hard boundaries once, rather than retrying a failed END
 	// search over the same contiguous report block for every BEGIN mention.
 	const ends = Array.from(input.matchAll(/-----END [^-\r\n]*PRIVATE KEY[^-\r\n]*-----/gu));
-	const boundaries = Array.from(input.matchAll(/\r?\n(?=[ \t]*(?:\r?\n|$)|### )/gu));
-	const fallback = /[ \t]*[^ \t\r\n][^\r\n]*|[ \t]*(?:\r?\n(?![ \t]*(?:\r?\n|$)|### )[^\r\n]*)*/uy;
+	const boundaries = Array.from(input.matchAll(new RegExp(reportBoundary.source, "gu")));
+	const sameLineFallback = /[ \t]*[^ \t\r\n][^\r\n]*/uy;
 	let endIndex = 0;
 	let boundaryIndex = 0;
 	let cursor = 0;
@@ -449,8 +455,9 @@ function scrubPrivateKeys(input: string): {
 		if (end && end.index < boundary) {
 			replacementEnd = end.index + end[0].length;
 		} else {
-			fallback.lastIndex = markerEnd;
-			replacementEnd = markerEnd + (fallback.exec(input)?.[0].length ?? 0);
+			sameLineFallback.lastIndex = markerEnd;
+			const sameLine = sameLineFallback.exec(input);
+			replacementEnd = sameLine ? markerEnd + sameLine[0].length : boundary;
 		}
 		text += input.slice(cursor, begin.index) + REDACTION_PLACEHOLDER;
 		cursor = replacementEnd;
