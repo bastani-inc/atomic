@@ -137,7 +137,7 @@ function unquotedValueEnd(input: string, start: number, assignmentStart: number)
 		if (/\s/u.test(character) || /[,;})\]&|<>]/u.test(character)) break;
 		if (
 			(character === '"' || character === "'" || character === "`") &&
-			hasUnclosedQuoteBefore(input, assignmentStart, character)
+			hasUnclosedQuoteBefore(input, assignmentStart + (input[assignmentStart] === character ? 1 : 0), character)
 		)
 			break;
 		end += 1;
@@ -164,7 +164,11 @@ function shouldRedactUnquotedValue(
 	const strong = isStrongCredentialName(name);
 	if (value.startsWith("/") && isPathLikeValue(value) && (!strong || pathLikeName)) return false;
 	const lineLeading = isLineLeadingCredentialName(name, input, assignmentStart);
-	return compactAssignment || strong || (lineLeading && (strong || isLikelyCredentialValue(value)));
+	return (
+		(compactAssignment && (!/[*_~`]/u.test(prefix) || lineLeading || strong)) ||
+		strong ||
+		(lineLeading && (strong || isLikelyCredentialValue(value)))
+	);
 }
 function matchingTrailingWrapperLength(
 	input: string,
@@ -312,7 +316,7 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			coveredUntil = suffixEnd;
 			continue;
 		}
-		const labelClosingWrapper = /^[*_~`]/u.test(prefix) && /:[ \t]*[*_~`]+[ \t]*$/u.test(prefix);
+		const labelClosingWrapper = /^[*_~`]/u.test(prefix) && /[:=][ \t]*[*_~`]+[ \t]*$/u.test(prefix);
 		const openingWrapper = labelClosingWrapper ? "" : consumedValueWrapper(prefix);
 		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) {
 			const suffixStart = valueStart + REDACTION_PLACEHOLDER.length;

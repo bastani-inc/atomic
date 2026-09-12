@@ -343,6 +343,13 @@ describe("feedback privacy core", () => {
 			["**API_KEY**:realsecret1", "**API_KEY**:[REDACTED]"],
 			["API_KEY:opensesame", "API_KEY:[REDACTED]"],
 			["API_KEY: opensesame", "API_KEY: [REDACTED]"],
+			["**token=**opensesame", "**token=**[REDACTED]"],
+			["**token=** secret123", "**token=** [REDACTED]"],
+			["Set `API_KEY=abc123def` in your env", "Set `API_KEY=[REDACTED]` in your env"],
+			["Run with `DB_PASSWORD=hunter2` to reproduce", "Run with `DB_PASSWORD=[REDACTED]` to reproduce"],
+			["The **token:**expired yesterday", "The **token:**expired yesterday"],
+			["The `password:`field is not masked in the TUI", "The `password:`field is not masked in the TUI"],
+			["Clicking **secret:**hidden does nothing", "Clicking **secret:**hidden does nothing"],
 		] as const;
 		for (const [input, expected] of cases) {
 			const result = scrubFeedback("safe", input);
@@ -351,6 +358,35 @@ describe("feedback privacy core", () => {
 				assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
 			else assert.deepEqual(result.replacements, []);
 			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("preserves wrappers around compact assignments across delimiters", () => {
+		for (const [input, expected] of [
+			["**API_KEY=**realsecret1", "**API_KEY=**[REDACTED]"],
+			["**API_KEY=**realsecret1**", "**API_KEY=**[REDACTED]**"],
+			["Set `API_KEY=abc123def` in your env", "Set `API_KEY=[REDACTED]` in your env"],
+			["Run with `DB_PASSWORD=hunter2` to reproduce", "Run with `DB_PASSWORD=[REDACTED]` to reproduce"],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("preserves inline decorated prose while scrubbing line-leading credentials", () => {
+		for (const input of [
+			"The **token:**expired yesterday",
+			"The `password:`field is not masked in the TUI",
+			"Clicking **secret:**hidden does nothing",
+		])
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		for (const [input, expected] of [
+			["**token:**opensesame", "**token:**[REDACTED]"],
+			["**token=**opensesame", "**token=**[REDACTED]"],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
 		}
 	});
 	test("bounds marker-only credential candidates", () => {
