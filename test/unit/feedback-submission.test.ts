@@ -4,6 +4,7 @@ import {
 	createGitHubIssueTransport,
 	type FeedbackSubmissionInput,
 	type FeedbackSubmitDetails,
+	feedbackFingerprint,
 	formatPreparedDisplay,
 	type IssueSubmissionRequest,
 	type IssueSubmissionTransport,
@@ -71,6 +72,70 @@ test("accepts clear whole-message approval and rejects every unsafe literal", as
 			assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), expected, text);
 		}
 });
+// #2799, review 3939726087: normal direct approval follows the exact displayed draft.
+test.each(["Approved.", "Yes.", "I approve", "I approve this issue."])("accepts direct approval %j", async (text) => {
+	const scenario = setup(bug, text);
+	assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "ok");
+	assert.equal(scenario.transport.requests.length, 1);
+});
+// #2799, review 3939726085: later approval cannot revive unrelated feedback.
+test("rejects approval separated from the display by unrelated conversation or tools", async () => {
+	for (const intervening of [
+		[message("topic", "user", "Explain git status"), message("answer", "assistant", "It lists changes.")],
+		[message("revision", "user", "Change the title first")],
+		[message("cancel", "user", "Do not post this")],
+		[message("other-question", "assistant", "Should I delete the temporary file?")],
+		[transcript("other-tool", { role: "toolResult", toolName: "bash", content: [] })],
+	]) {
+		const scenario = setup();
+		scenario.branch.splice(2, 0, ...intervening);
+		assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "missing-approval");
+		assert.equal(scenario.transport.requests.length, 0);
+	}
+});
+test("a fresh exact display restores review after a topic change", async () => {
+	const scenario = setup();
+	scenario.branch.splice(
+		2,
+		0,
+		message("topic", "user", "Explain git status"),
+		message("answer", "assistant", "It lists changes."),
+		message("return", "user", "Show the draft again"),
+		message("redisplay", "assistant", preparedText(bug)),
+	);
+	assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "ok");
+});
+test("rejects unrelated activity after approval and a later non-text user turn", async () => {
+	for (const later of [
+		message("unrelated", "assistant", "Here is your unrelated answer."),
+		transcript("image", { role: "user", content: [{ type: "image", data: "synthetic", mimeType: "image/png" }] }),
+		transcript("tool", { role: "toolResult", toolName: "read", content: [] }),
+	]) {
+		const scenario = setup();
+		scenario.branch.push(later);
+		assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "missing-approval");
+		assert.equal(scenario.transport.requests.length, 0);
+	}
+});
+test("allows only submission tool calls between approval and a failed-attempt retry", async () => {
+	const scenario = setup(bug, "post it", new FakeTransport(new Error("offline")));
+	scenario.branch.push(
+		transcript("call", {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "submit", name: "feedback_submit_issue", arguments: bug }],
+		}),
+	);
+	const failed = await submitFeedbackIssue(bug, scenario.runtime);
+	assert.equal(resultCode(failed), "network");
+	scenario.branch.push(
+		submissionResult("failure", failed),
+		message("relay", "assistant", failed.ok ? "" : failed.message),
+		message("retry", "user", "Yes."),
+	);
+	const transport = new FakeTransport();
+	assert.equal(resultCode(await submitFeedbackIssue(bug, { ...scenario.runtime, transport })), "ok");
+	assert.equal(transport.requests.length, 1);
+});
 test("requires the latest exact ordinary-assistant display before approval", async () => {
 	const approval = message("approval", "user", "post it");
 	for (const branch of [
@@ -84,6 +149,20 @@ test("requires the latest exact ordinary-assistant display before approval", asy
 	const changed = setup();
 	const result = await submitFeedbackIssue({ ...bug, body: `${bug.body} edited` }, changed.runtime);
 	assert.equal(resultCode(result), "stale-draft");
+});
+// #2799, review 3939726090: persistence must never revive an older draft.
+test("refuses an older draft when the newest preparation cannot be reviewed", async () => {
+	const latest = { ...bug, title: "Latest draft", body: "x".repeat(63_109) };
+	for (const newest of [
+		prepare("latest", latest),
+		prepare("latest", latest, "[persisted-output: newest draft]"),
+		transcript("latest", { role: "toolResult", toolName: "feedback_prepare_issue", isError: true }),
+	]) {
+		const scenario = setup();
+		scenario.branch.splice(2, 0, newest);
+		assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "stale-draft");
+		assert.equal(scenario.transport.requests.length, 0);
+	}
 });
 test("re-scrubs immediately before posting", async () => {
 	const secret = { ...bug, body: `token=ghp_${"a".repeat(30)}` };
@@ -142,7 +221,27 @@ test("keeps credentials in headers and classifies primary and secondary limits",
 		assert.equal(authorization, "Bearer secret-token");
 	}
 });
+test("transport refuses missing authentication before fetch and returns malformed JSON safely", async () => {
+	let calls = 0;
+	const fetcher = (async (_url: string | URL | Request, _init?: RequestInit) => {
+		calls++;
+		return new Response("invalid synthetic JSON");
+	}) as typeof fetch;
+	const request = { owner: "bastani-inc", repo: "atomic", title: "t", body: "b", labels: ["bug"] };
+	await assert.rejects(
+		() => createGitHubIssueTransport(fetcher, {}).createIssue(request),
+		(error: IssueTransportError) => error.code === "authentication",
+	);
+	assert.equal(calls, 0);
+	assert.equal(await createGitHubIssueTransport(fetcher, { GH_TOKEN: "synthetic" }).createIssue(request), undefined);
+	assert.equal(calls, 1);
+});
 test("prevents concurrent, repeated, restored, and boundary-collision duplicates", async () => {
+	assert.notEqual(
+		feedbackFingerprint({ kind: "bug", title: "a\nb", body: "c" }),
+		feedbackFingerprint({ kind: "bug", title: "a", body: "b\nc" }),
+	);
+	assert.notEqual(feedbackFingerprint(bug), feedbackFingerprint({ ...bug, kind: "enhancement" }));
 	const first = setup();
 	const completed = await submitFeedbackIssue(bug, first.runtime);
 	assert.equal(resultCode(await submitFeedbackIssue(bug, first.runtime)), "duplicate");
@@ -170,4 +269,23 @@ test("restores consumed failed approvals and permits only a fresh approval", asy
 		message("fresh", "user", "please file that issue"),
 	);
 	assert.equal(resultCode(await submitFeedbackIssue(bug, restored)), "ok");
+});
+test("a failure relay cannot authorize unrelated tool calls", async () => {
+	const scenario = setup(bug, "post it", new FakeTransport(new Error("offline")));
+	const failed = await submitFeedbackIssue(bug, scenario.runtime);
+	assert.equal(resultCode(failed), "network");
+	scenario.branch.push(
+		submissionResult("failure", failed),
+		transcript("relay", {
+			role: "assistant",
+			content: [
+				{ type: "text", text: failed.ok ? "" : failed.message },
+				{ type: "toolCall", id: "other", name: "bash", arguments: { command: "git status" } },
+			],
+		}),
+		message("retry", "user", "Yes."),
+	);
+	const transport = new FakeTransport();
+	assert.equal(resultCode(await submitFeedbackIssue(bug, { ...scenario.runtime, transport })), "missing-approval");
+	assert.equal(transport.requests.length, 0);
 });

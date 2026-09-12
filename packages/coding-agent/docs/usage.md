@@ -95,6 +95,12 @@ Bug drafts include non-builtin extension activity, supported evidence, unknowns,
 
 Diagnostic path lists show at most 100 entries. When a list is incomplete, the draft notes that limit in its unknowns. Review the remaining paths in your working tree rather than treating the displayed list as a complete investigation footprint.
 
+The prepared Markdown shows the target repository, `bastani-inc/atomic`, the issue kind, title, body, and privacy-replacement counts. To post that exact draft, reply with clear approval such as `Yes.`, `Approved.`, or `Please post this issue.` in the normal conversation. Changing the topic, requesting an edit, or running unrelated tools invalidates that approval context. Ask Atomic to display the latest draft again before approving it. If a newer preparation failed or its output was persisted instead of displayed, prepare and review it again; Atomic will not fall back to an older draft.
+
+Submission requires `GITHUB_TOKEN` or `GH_TOKEN` in Atomic's environment with permission to create issues in the target repository. `GITHUB_TOKEN` takes precedence. The submission tool uses the token only in its HTTP authorization header; do not paste credentials into chat. It re-scrubs the title and body before posting and refuses content that changes during that check.
+
+Successful submission returns the issue URL and prevents the same draft from being posted again in that session. Authentication, permission, rate-limit, and validation failures leave the draft in the transcript. Network failures, cancellation, and malformed responses may leave the outcome unknown: check the target repository before approving another attempt. A consumed approval cannot retry automatically; a retry needs fresh ordinary approval. These safeguards are not a guarantee against duplicates across separate sessions or uncertain network outcomes.
+
 ## Message Queue
 
 You can submit messages while the agent is still working:
