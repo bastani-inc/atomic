@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 import {
-	type DraftValidationError,
 	FEEDBACK_REPOSITORY,
 	formatIssueBody,
 	scrubFeedback,
@@ -13,15 +12,13 @@ import {
 export const FEEDBACK_COMMAND_DESCRIPTION = "Draft a private, reviewable bug report or enhancement request";
 export const FEEDBACK_USAGE = "Usage: /feedback <what happened or what you want to change>";
 
-export type FeedbackPrepareDetails =
-	| { readonly errors: readonly DraftValidationError[] }
-	| {
-			readonly repository: typeof FEEDBACK_REPOSITORY;
-			readonly kind: FeedbackDraft["kind"];
-			readonly title: string;
-			readonly body: string;
-			readonly privacySummary: readonly RedactionSummary[];
-	  };
+export type FeedbackPrepareDetails = {
+	readonly repository: typeof FEEDBACK_REPOSITORY;
+	readonly kind: FeedbackDraft["kind"];
+	readonly title: string;
+	readonly body: string;
+	readonly privacySummary: readonly RedactionSummary[];
+};
 
 const feedbackPrepareParameters = Type.Object({
 	kind: Type.Union([Type.Literal("bug"), Type.Literal("enhancement")]),

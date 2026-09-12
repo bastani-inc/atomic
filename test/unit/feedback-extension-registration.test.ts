@@ -3,6 +3,7 @@ import feedback, { FEEDBACK_COMMAND_DESCRIPTION } from "@bastani/feedback";
 import { test } from "vitest";
 import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
 import type { ExtensionAPI, RegisteredCommand, ToolDefinition } from "../../packages/coding-agent/src/index.js";
+import { readText } from "../helpers/runtime.js";
 
 test("feedback extension registration matches its bundled command advertisement", () => {
 	let registeredDescription: string | undefined;
@@ -22,4 +23,12 @@ test("feedback extension registration matches its bundled command advertisement"
 	assert.equal(registeredDescription, FEEDBACK_COMMAND_DESCRIPTION);
 	assert.equal(registeredDescription, advertised?.description);
 	assert.deepEqual(toolNames, ["feedback_prepare_issue"]);
+});
+
+// Regression for #2799, review comment 3939724837: both advertised kinds need a draft path.
+test("bundled feedback skill collects and prepares bug reports", async () => {
+	const instructions = await readText("packages/feedback/skills/feedback/SKILL.md");
+	assert.match(instructions, /For a bug, collect a title, what happened, and reproduction steps/);
+	assert.match(instructions, /(?:Prepare the bug|When a bug is complete)[\s\S]*?`feedback_prepare_issue`/);
+	assert.match(instructions, /(?:Display|display) the (?:tool's )?exact prepared title and body/);
 });

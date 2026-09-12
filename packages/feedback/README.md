@@ -6,6 +6,8 @@ This bundled extension provides a safe, ordinary-conversation workflow for draft
 - The `feedback` skill classifies bug reports and enhancement requests, asks concise clarifying questions, and keeps revisions in the normal transcript.
 - The `feedback_prepare_issue` tool validates the current issue form, formats the draft, and scrubs private data without posting anything.
 
+Bug drafts require a title, what happened, and reproduction steps. Enhancement drafts require a title, the requested change, and why it helps. Missing required fields produce a tool error so you can correct the draft; prepared details are returned only for valid drafts.
+
 Posting is handled separately by the approval-gated feedback submission boundary.
 
 ## Privacy scrubbing

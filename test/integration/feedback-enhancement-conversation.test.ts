@@ -1,14 +1,15 @@
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
-import { buildSkillCatalog } from "../../packages/coding-agent/src/core/skill-catalog.ts";
-import type { Skill } from "../../packages/coding-agent/src/core/skills.ts";
-import { createSyntheticSourceInfo } from "../../packages/coding-agent/src/core/source-info.ts";
-import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
-import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.ts";
-import feedback, { FEEDBACK_USAGE } from "../../packages/feedback/index.ts";
+import { afterEach, describe, it } from "vitest";
+import { buildSkillCatalog } from "../../packages/coding-agent/src/core/skill-catalog.js";
+import type { Skill } from "../../packages/coding-agent/src/core/skills.js";
+import { createSyntheticSourceInfo } from "../../packages/coding-agent/src/core/source-info.js";
+import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
+import feedback, { FEEDBACK_USAGE } from "../../packages/feedback/index.js";
 
 const cleanups: Array<() => void> = [];
 
@@ -68,9 +69,12 @@ describe("feedback command conversation entry", () => {
 
 		await harness.session.prompt(command);
 
-		expect(messageText(harness)).toContain(FEEDBACK_USAGE);
-		expect(harness.getPendingResponseCount()).toBe(1);
-		expect(harness.session.messages.some((message) => message.role === "assistant")).toBe(false);
+		assert.ok(messageText(harness).includes(FEEDBACK_USAGE));
+		assert.equal(harness.getPendingResponseCount(), 1);
+		assert.equal(
+			harness.session.messages.some((message) => message.role === "assistant"),
+			false,
+		);
 	});
 
 	it("starts one ordinary turn with the exact bundled skill and original prompt", async () => {
@@ -86,12 +90,15 @@ describe("feedback command conversation entry", () => {
 		await harness.session.prompt("/feedback Add  keyboard navigation");
 		await settleTurn(harness);
 
-		expect(expanded).toContain('<skill name="feedback@builtin"');
-		expect(expanded).toContain("BUNDLED FEEDBACK INSTRUCTIONS");
-		expect(expanded).not.toContain("LOCAL COLLISION BODY");
-		expect(expanded).toContain("Add  keyboard navigation");
-		expect(harness.getPendingResponseCount()).toBe(0);
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+		assert.ok(expanded.includes('<skill name="feedback@builtin"'));
+		assert.ok(expanded.includes("BUNDLED FEEDBACK INSTRUCTIONS"));
+		assert.ok(!expanded.includes("LOCAL COLLISION BODY"));
+		assert.ok(expanded.includes("Add  keyboard navigation"));
+		assert.equal(harness.getPendingResponseCount(), 0);
+		assert.deepEqual(
+			harness.session.messages.map((message) => message.role),
+			["user", "assistant"],
+		);
 	});
 
 	it("preserves feedback as a follow-up turn while another turn is streaming", async () => {
@@ -119,15 +126,15 @@ describe("feedback command conversation entry", () => {
 
 		const firstPrompt = harness.session.prompt("start a long turn");
 		await firstStarted;
-		expect(harness.session.isStreaming).toBe(true);
+		assert.equal(harness.session.isStreaming, true);
 		await harness.session.prompt("/feedback Preserve  this request", { streamingBehavior: "steer" });
 		releaseFirst();
 		await firstPrompt;
 		await settleTurn(harness);
 
-		expect(expandedFollowUp).toContain('<skill name="feedback"');
-		expect(expandedFollowUp).toContain("Preserve  this request");
-		expect(harness.getPendingResponseCount()).toBe(0);
+		assert.ok(expandedFollowUp.includes('<skill name="feedback"'));
+		assert.ok(expandedFollowUp.includes("Preserve  this request"));
+		assert.equal(harness.getPendingResponseCount(), 0);
 	});
 
 	it("continues clarification through a normal user message and prepares an enhancement", async () => {
@@ -136,8 +143,11 @@ describe("feedback command conversation entry", () => {
 
 		await harness.session.prompt("/feedback Add keyboard navigation");
 		await settleTurn(harness);
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-		expect(messageText(harness)).not.toContain("toolResult");
+		assert.deepEqual(
+			harness.session.messages.map((message) => message.role),
+			["user", "assistant"],
+		);
+		assert.ok(!messageText(harness).includes("toolResult"));
 
 		harness.setResponses([
 			fauxAssistantMessage(
@@ -158,9 +168,39 @@ describe("feedback command conversation entry", () => {
 		]);
 		await harness.session.prompt("It improves accessibility");
 
-		expect(harness.session.messages.filter((message) => message.role === "toolResult")).toHaveLength(1);
-		expect(messageText(harness)).toContain("### What do you want to change?\n\nAdd keyboard navigation");
-		expect(messageText(harness)).toContain("Would you like edits or approval?");
+		assert.equal(harness.session.messages.filter((message) => message.role === "toolResult").length, 1);
+		assert.ok(messageText(harness).includes("### What do you want to change?\n\nAdd keyboard navigation"));
+		assert.ok(messageText(harness).includes("Would you like edits or approval?"));
+	});
+
+	// Regression for #2799, review 3939724837: the command also supports bug drafts.
+	it("prepares a bug from an ordinary feedback turn without posting", async () => {
+		const harness = await feedbackHarness();
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("feedback_prepare_issue", {
+					kind: "bug",
+					title: "Editor loses input",
+					description: "The editor clears a typed draft",
+					repro: "Type a draft, then resize the terminal",
+					expected: "Keep the draft",
+					version: "0.0.0",
+				}),
+				{ stopReason: "toolUse" },
+			),
+			(context) =>
+				fauxAssistantMessage(getMessageText(context.messages.findLast((message) => message.role === "toolResult"))),
+		]);
+		await harness.session.prompt("/feedback The editor loses input on resize");
+		await settleTurn(harness);
+		const results = harness.session.messages.filter((message) => message.role === "toolResult");
+		assert.equal(results.length, 1);
+		assert.equal(results[0]?.toolName, "feedback_prepare_issue");
+		assert.equal(results[0]?.isError, false);
+		assert.ok(getMessageText(results[0]).includes("Type a draft, then resize the terminal"));
+		assert.ok(getMessageText(results[0]).includes("Keep the draft"));
+		assert.ok(getMessageText(results[0]).includes("0.0.0"));
+		assert.equal(getMessageText(harness.session.messages.at(-1)), getMessageText(results[0]));
 	});
 
 	it("returns validation errors and privacy-safe prepared details through model tool calls", async () => {
@@ -175,8 +215,8 @@ describe("feedback command conversation entry", () => {
 		]);
 		await harness.session.prompt("prepare incomplete feedback");
 		const invalid = harness.session.messages.find((message) => message.role === "toolResult");
-		expect(invalid?.isError).toBe(true);
-		expect(getMessageText(invalid)).toBe("Why? is required");
+		assert.equal(invalid?.isError, true);
+		assert.equal(getMessageText(invalid), "Why? is required");
 
 		harness.setResponses([
 			fauxAssistantMessage(
@@ -193,14 +233,14 @@ describe("feedback command conversation entry", () => {
 		await harness.session.prompt("prepare complete feedback");
 		const results = harness.session.messages.filter((message) => message.role === "toolResult");
 		const safe = results.at(-1);
-		expect(safe?.details).toEqual({
+		assert.deepEqual(safe?.details, {
 			repository: { owner: "bastani-inc", repo: "atomic" },
 			kind: "enhancement",
 			title: "Safe title",
 			body: "### What do you want to change?\n\nReplace [REDACTED]\n\n### Why?\n\nProtect users",
 			privacySummary: [{ category: "github-token", count: 1 }],
 		});
-		expect(getMessageText(safe)).toContain("[REDACTED]");
-		expect(JSON.stringify(safe)).not.toContain(secret);
+		assert.ok(getMessageText(safe).includes("[REDACTED]"));
+		assert.ok(!JSON.stringify(safe).includes(secret));
 	});
 });

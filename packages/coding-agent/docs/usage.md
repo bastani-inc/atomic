@@ -83,6 +83,10 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/exit` | Exit Atomic |
 | `/quit` | Quit Atomic |
 
+### Drafting feedback
+
+Use `/feedback <what happened or what you want to change>` to draft a bug report or enhancement request in the normal conversation. A bug needs a title, what happened, and reproduction steps; an enhancement needs a title, the requested change, and why it helps. Answer any clarification, then review the prepared title and body and request edits. Preparing a draft does not post it. Review the text for private information before sharing it.
+
 ## Message Queue
 
 You can submit messages while the agent is still working:
