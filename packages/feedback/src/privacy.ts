@@ -20,7 +20,14 @@ type CredentialScrubResult = {
 };
 type RedactionRule =
 	| { readonly category: string; readonly pattern: RegExp; readonly replacement: string }
-	| { readonly category: "credential-assignment"; readonly scrub: (text: string) => CredentialScrubResult };
+	| { readonly category: "credential-assignment"; readonly scrub: (text: string) => CredentialScrubResult }
+	| {
+			readonly category: "private-key";
+			readonly scrub: (text: string) => {
+				text: string;
+				replacements: Array<{ category: "private-key"; count: number }>;
+			};
+	  };
 const credentialAssignment =
 	/(?<!\w)((?:[*_~`]{1,8})?((?:(?:api|access)[ \t]+)?[\w-]{0,127}(?:key|token|password|secret)\d*)[*_~`]{0,8})["']?([ \t]*)([:=])([ \t]*(?:[*_~`]{1,8})?[ \t]*)/giu;
 function isStrongCredentialName(name: string): boolean {
@@ -417,12 +424,48 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		replacements: [{ category: "credential-assignment", count: matches.length }],
 	};
 }
+function scrubPrivateKeys(input: string): {
+	text: string;
+	replacements: Array<{ category: "private-key"; count: number }>;
+} {
+	const beginPattern = /-----BEGIN [^-\r\n]*PRIVATE KEY[^-\r\n]*-----/gu;
+	// Index terminators and hard boundaries once, rather than retrying a failed END
+	// search over the same contiguous report block for every BEGIN mention.
+	const ends = Array.from(input.matchAll(/-----END [^-\r\n]*PRIVATE KEY[^-\r\n]*-----/gu));
+	const boundaries = Array.from(input.matchAll(/\r?\n(?=[ \t]*(?:\r?\n|$)|### )/gu));
+	const fallback = /[ \t]*[^ \t\r\n][^\r\n]*|[ \t]*(?:\r?\n(?![ \t]*(?:\r?\n|$)|### )[^\r\n]*)*/uy;
+	let endIndex = 0;
+	let boundaryIndex = 0;
+	let cursor = 0;
+	let count = 0;
+	let text = "";
+	for (let begin = beginPattern.exec(input); begin; begin = beginPattern.exec(input)) {
+		const markerEnd = begin.index + begin[0].length;
+		while (endIndex < ends.length && ends[endIndex].index < markerEnd) endIndex += 1;
+		while (boundaryIndex < boundaries.length && boundaries[boundaryIndex].index < markerEnd) boundaryIndex += 1;
+		const end = ends[endIndex];
+		const boundary = boundaries[boundaryIndex]?.index ?? input.length;
+		let replacementEnd: number;
+		if (end && end.index < boundary) {
+			replacementEnd = end.index + end[0].length;
+		} else {
+			fallback.lastIndex = markerEnd;
+			replacementEnd = markerEnd + (fallback.exec(input)?.[0].length ?? 0);
+		}
+		text += input.slice(cursor, begin.index) + REDACTION_PLACEHOLDER;
+		cursor = replacementEnd;
+		beginPattern.lastIndex = replacementEnd;
+		count += 1;
+	}
+	return {
+		text: text + input.slice(cursor),
+		replacements: count ? [{ category: "private-key", count }] : [],
+	};
+}
 const rules = [
 	{
 		category: "private-key",
-		pattern:
-			/-----BEGIN [^-\r\n]*PRIVATE KEY[^-\r\n]*-----(?:[ \t]*(?:(?!\r?\n(?:[ \t]*(?:\r?\n|$)|### ))[\s\S])*?-----END [^-\r\n]*PRIVATE KEY[^-\r\n]*-----|[ \t]*[^ \t\r\n][^\r\n]*|[ \t]*(?:\r?\n(?![ \t]*(?:\r?\n|$)|### )[^\r\n]*)*)/gu,
-		replacement: REDACTION_PLACEHOLDER,
+		scrub: scrubPrivateKeys,
 	},
 	{
 		category: "url-credentials",

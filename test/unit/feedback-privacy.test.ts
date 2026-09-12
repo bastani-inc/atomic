@@ -11,6 +11,7 @@ import {
 
 const MARKER_SCAN_TIMEOUT_MS = 250;
 const STRUCTURAL_SCAN_TIMEOUT_MS = 250;
+const PRIVATE_KEY_SCAN_TIMEOUT_MS = 250;
 
 // Regression coverage for bastani-inc/atomic#2799.
 describe("feedback privacy core", () => {
@@ -765,6 +766,37 @@ describe("feedback privacy core", () => {
 				const result = scrubFeedback("safe", `A log line contained ${marker}${trailing}${report}`);
 				assert.equal(result.body, `A log line contained [REDACTED]${report}`);
 				assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			}
+		}
+	});
+	// Issue #2799, r22-a2: missing END markers must not trigger one block rescan per BEGIN.
+	test("bounds repeated private-key mention scans", () => {
+		const begin = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const row = `${begin} appeared in the log`;
+		for (const size of [32_000, 166_000]) {
+			const count = Math.floor(size / (row.length + 1));
+			const input = Array.from({ length: count }, () => row).join("\n");
+			const start = performance.now();
+			const result = scrubFeedback("safe", input);
+			const elapsed = performance.now() - start;
+			assert.equal(result.body, Array.from({ length: count }, () => "[REDACTED]").join("\n"));
+			assert.deepEqual(result.replacements, [{ category: "private-key", count }]);
+			assert.ok(elapsed < PRIVATE_KEY_SCAN_TIMEOUT_MS, `private-key mention scan took ${elapsed}ms`);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	// Issue #2799: cached END markers must not be reused across consumed blocks or report boundaries.
+	test("keeps private-key terminators scoped to their contiguous block", () => {
+		const begin = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const end = ["-----END RSA", "PRIVATE KEY-----"].join(" ");
+		for (const newline of ["\n", "\r\n"]) {
+			for (const boundary of [`${newline}${newline}`, `${newline} \t${newline}`, `${newline}### Logs${newline}`]) {
+				const input = `${end}${newline}${begin} mention${newline}report${boundary}${begin} text${newline}${begin} nested${newline}keymaterial${newline}${end} tail${newline}${begin} mention${newline}report`;
+				const expected = `${end}${newline}[REDACTED]${newline}report${boundary}[REDACTED] tail${newline}[REDACTED]${newline}report`;
+				const result = scrubFeedback("safe", input);
+				assert.equal(result.body, expected);
+				assert.deepEqual(result.replacements, [{ category: "private-key", count: 3 }]);
 				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
 			}
 		}
