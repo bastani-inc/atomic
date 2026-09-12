@@ -326,6 +326,33 @@ describe("feedback privacy core", () => {
 			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
 		}
 	});
+	test("scrubs compact decorated labels while preserving label wrappers", () => {
+		const cases = [
+			["token:opensesame", "token:[REDACTED]"],
+			["token: opensesame", "token: opensesame"],
+			["token:secret123", "token:[REDACTED]"],
+			["token: secret123", "token: [REDACTED]"],
+			["**token:**opensesame", "**token:**[REDACTED]"],
+			["**token:** secret123", "**token:** [REDACTED]"],
+			["**token**:opensesame", "**token**:[REDACTED]"],
+			["**token**: secret123", "**token**: [REDACTED]"],
+			["*password:*opensesame", "*password:*[REDACTED]"],
+			["`secret:`opensesame", "`secret:`[REDACTED]"],
+			["__token__:opensesame", "__token__:[REDACTED]"],
+			["**API_KEY:**realsecret1", "**API_KEY:**[REDACTED]"],
+			["**API_KEY**:realsecret1", "**API_KEY**:[REDACTED]"],
+			["API_KEY:opensesame", "API_KEY:[REDACTED]"],
+			["API_KEY: opensesame", "API_KEY: [REDACTED]"],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			if (expected !== input)
+				assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			else assert.deepEqual(result.replacements, []);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
 	test("bounds marker-only credential candidates", () => {
 		const input = "*".repeat(32_000);
 		const started = performance.now();

@@ -158,9 +158,7 @@ function shouldRedactUnquotedValue(
 ): boolean {
 	if (value === REDACTION_PLACEHOLDER || value.length === 0) return false;
 	const assignmentPrefix = prefix.replace(/[ \t]*[*_~`]+[ \t]*$/u, "");
-	const decoratedLabel = /^[*_~`]/u.test(prefix);
-	const compactAssignment =
-		!decoratedLabel && !/[=:][ \t]/u.test(prefix) && assignmentPrefix.trim() === assignmentPrefix;
+	const compactAssignment = !/[=:](?:[*_~`]+)?[ \t]/u.test(prefix) && assignmentPrefix.trim() === assignmentPrefix;
 	const normalized = name.toLowerCase().replaceAll(/[ -]/gu, "_");
 	const pathLikeName = normalized.includes("path");
 	const strong = isStrongCredentialName(name);
@@ -314,7 +312,8 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			coveredUntil = suffixEnd;
 			continue;
 		}
-		const openingWrapper = consumedValueWrapper(prefix);
+		const labelClosingWrapper = /^[*_~`]/u.test(prefix) && /:[ \t]*[*_~`]+[ \t]*$/u.test(prefix);
+		const openingWrapper = labelClosingWrapper ? "" : consumedValueWrapper(prefix);
 		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) {
 			const suffixStart = valueStart + REDACTION_PLACEHOLDER.length;
 			if (
