@@ -91,7 +91,7 @@ If preparation reports a field error, tell Atomic the intended text and ask it t
 
 For bugs, Atomic collects a bounded, scrubbed diagnostic summary and asks the existing debugger to investigate without implementing a fix. It waits for that investigation before preparing the draft. Enhancements skip the debugger. If investigation fails or is unavailable, the draft records the failure and leaves the cause unknown.
 
-Bug drafts include non-builtin extension activity, supported evidence, unknowns, and newly observed worktree paths without file contents or automatic attachments. Tell Atomic whether you reproduced the bug with `atomic -ne`; otherwise the draft says `Not tested without extensions`. Worktree comparisons are best-effort: unavailable or oversized snapshots cannot establish which paths were created. Review the draft and your working tree before sharing anything.
+Bug drafts include non-builtin extension activity, supported evidence, unknowns, and newly observed worktree paths without file contents or automatic attachments. If extension activity is `Not reported`, tell Atomic which non-builtin extensions were active, or that none were active. Tell Atomic whether you reproduced the bug with `atomic -ne`; otherwise the draft says `Not tested without extensions`. Worktree comparisons are best-effort: unavailable or oversized snapshots cannot establish which paths were created. Review the draft and your working tree before sharing anything.
 
 ## Message Queue
 
