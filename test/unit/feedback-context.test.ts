@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { ExtensionContext as Ctx, LoadedExtensionInfo } from "@bastani/atomic";
 import { afterAll, test } from "vitest";
-import * as ext from "../../packages/coding-agent/src/core/extensions/loader.ts";
-import { SessionManager as SM } from "../../packages/coding-agent/src/core/session-manager.ts";
-import { collectFeedbackDiagnostics as collect } from "../../packages/feedback/src/diagnostics.ts";
+import * as ext from "../../packages/coding-agent/src/core/extensions/loader.js";
+import { SessionManager as SM } from "../../packages/coding-agent/src/core/session-manager.js";
+import { collectFeedbackDiagnostics as collect } from "../../packages/feedback/src/diagnostics.js";
+import {
+	makeTempDirectory,
+	makeDirectorySync as mkdirSync,
+	removeTempDirectory,
+	writeTextSync as writeFileSync,
+} from "../helpers/runtime.js";
 
-const root = mkdtempSync(join(tmpdir(), "feedback-extension-status-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+const root = makeTempDirectory("feedback-extension-status-");
+afterAll(() => removeTempDirectory(root));
 test("reports authoritative extension status", async () => {
 	for (const name of ["user", "bundled"]) mkdirSync(join(root, name));
 	const paths = ["user", "bundled"].map((name) => join(root, name, "index.ts"));

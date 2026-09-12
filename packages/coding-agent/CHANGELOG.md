@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added optional `pi.getLoadedExtensions()` and the exported `LoadedExtensionInfo` type so extensions can report loaded extension names and bundled provenance, including extensions without tools ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+
 ## [0.9.19-alpha.11] - 2026-09-13
 
 ### Fixed
