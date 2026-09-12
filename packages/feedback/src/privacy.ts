@@ -94,10 +94,47 @@ function templatePlaceholderEnd(input: string, start: number): number | undefine
 	return next === "" || /[\s,;[})\]&|<>('"`*_~]/u.test(next) ? end : undefined;
 }
 function unquotedValueEnd(input: string, start: number, assignmentStart: number): number {
+	if (input[start] === "[") {
+		let depth = 0;
+		let quote = "";
+		let end = start;
+		for (; end < input.length; end += 1) {
+			const character = input[end] ?? "";
+			if (quote) {
+				if (character === "\\") end += 1;
+				else if (character === quote) quote = "";
+				continue;
+			}
+			if (character === '"' || character === "'") {
+				quote = character;
+				continue;
+			}
+			if (character === "[") depth += 1;
+			else if (character === "]") {
+				depth -= 1;
+				if (depth === 0) {
+					end += 1;
+					break;
+				}
+			}
+		}
+		if (depth === 0) {
+			while (end < input.length) {
+				const character = input[end] ?? "";
+				if (/\s/u.test(character) || /[,;})\]&|<>]/u.test(character)) break;
+				end += 1;
+			}
+			return end;
+		}
+	}
 	let end = start;
 	while (end < input.length) {
 		const character = input[end] ?? "";
-		if (/\s/u.test(character) || /[,;[})\]&|<>]/u.test(character)) break;
+		if (end === start && character === "[") {
+			end += 1;
+			continue;
+		}
+		if (/\s/u.test(character) || /[,;})\]&|<>]/u.test(character)) break;
 		if (
 			(character === '"' || character === "'" || character === "`") &&
 			hasUnclosedQuoteBefore(input, assignmentStart, character)
@@ -166,14 +203,22 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			let closed = false;
 			let stoppedAtBoundary = false;
 			const assignmentLineStart = input.lastIndexOf("\n", assignmentStart - 1) + 1;
-			const nextAssignmentStart = assignmentMatches[assignmentIndex + 1]?.index;
+			const nextAssignment = assignmentMatches[assignmentIndex + 1];
+			const nextAssignmentStart = nextAssignment?.index;
 			const nextAssignmentLineStart =
 				nextAssignmentStart === undefined ? undefined : input.lastIndexOf("\n", nextAssignmentStart - 1) + 1;
+			const nextAssignmentValueStart =
+				nextAssignmentStart === undefined ? undefined : nextAssignmentStart + nextAssignment[0].length;
+			const nextAssignmentIsQuoted =
+				nextAssignmentValueStart !== undefined &&
+				(input[nextAssignmentValueStart] === '"' || input[nextAssignmentValueStart] === "'");
 			const nextAssignmentBoundary =
 				nextAssignmentStart === undefined || nextAssignmentLineStart === undefined
 					? undefined
 					: nextAssignmentLineStart === assignmentLineStart
-						? nextAssignmentStart
+						? nextAssignmentIsQuoted
+							? nextAssignmentStart
+							: undefined
 						: lineBreakStart(input, nextAssignmentLineStart);
 			while (cursor < input.length) {
 				if (nextAssignmentBoundary !== undefined && cursor >= nextAssignmentBoundary) {
@@ -227,10 +272,6 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 				if (cursor <= lineEnd) cursor = lineEnd;
 			}
 			let replacementEnd = cursor;
-			if (!closed && stoppedAtBoundary) {
-				const firstLineEnd = input.indexOf("\n", valueStart + 1);
-				if (firstLineEnd >= 0 && firstLineEnd < replacementEnd) replacementEnd = firstLineEnd;
-			}
 			if (stoppedAtBoundary && nextAssignmentLineStart === assignmentLineStart) {
 				while (replacementEnd > valueStart && /[ \t]/u.test(input[replacementEnd - 1] ?? "")) replacementEnd -= 1;
 			}

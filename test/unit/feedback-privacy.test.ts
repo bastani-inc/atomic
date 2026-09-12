@@ -154,7 +154,7 @@ describe("feedback privacy core", () => {
 			],
 			[
 				['apiKey="firstpart\nsecondpartSECRET', "", "### Logs", "", 'TOKEN="thirdSecret"'].join("\n"),
-				['apiKey="[REDACTED]"', "secondpartSECRET", "", "### Logs", "", 'TOKEN="[REDACTED]"'].join("\n"),
+				['apiKey="[REDACTED]"', "", "### Logs", "", 'TOKEN="[REDACTED]"'].join("\n"),
 				2,
 			],
 		] as const;
@@ -187,6 +187,8 @@ describe("feedback privacy core", () => {
 			assert.equal(result.body, expected);
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
 			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			// A separated continuation after a report boundary is intentionally left for user review.
+			if (!input.startsWith("PRIVATE_TOKEN=")) assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
 		}
 	});
 	test("preserves quote boundaries across line endings and ordinary report content", () => {
@@ -397,6 +399,10 @@ describe("feedback privacy core", () => {
 			["PASSWORD=pass~word~tail", "PASSWORD=[REDACTED]"],
 			["api-key: 9f8a7b_6c5d4e3f", "api-key: [REDACTED]"],
 			["TOKEN=abc+def/ghi=tail!", "TOKEN=[REDACTED]"],
+			["AWS_SECRET_ACCESS_KEY=[wJalrXUtnFEMI", "AWS_SECRET_ACCESS_KEY=[REDACTED]"],
+			["password=[hunter2]", "password=[REDACTED]"],
+			["api_key: [abc123]", "api_key: [REDACTED]"],
+			["API_KEY=abc[def", "API_KEY=[REDACTED]"],
 			["?token=a1b2c3_d4&keep=1", "?token=[REDACTED]&keep=1"],
 			["**token=abc_def**", "**token=[REDACTED]**"],
 			["_token=abc_def_", "_token=[REDACTED]_"],
@@ -521,6 +527,8 @@ describe("feedback privacy core", () => {
 			['API_KEY="lineOneAAAA\nlineTwoBBBB\nlineThreeCCC"', 'API_KEY="[REDACTED]"'],
 			["PASSWORD='lineOneAAAA\nlineTwoBBBB\nlineThreeCCC'", "PASSWORD='[REDACTED]'"],
 			['API_KEY="lineOneAAAA\nlineTwoBBBB" was the value', 'API_KEY="[REDACTED]" was the value'],
+			['API_KEY="s1AAAA\r\ns2BBBB\r\n\r\n### Steps', 'API_KEY="[REDACTED]"\r\n\r\n### Steps'],
+			['API_KEY="s1AAAA\ns2BBBB\n\n### Steps', 'API_KEY="[REDACTED]"\n\n### Steps'],
 		] as const) {
 			const result = scrubFeedback("safe", input);
 			assert.equal(result.body, expected);
@@ -541,6 +549,18 @@ describe("feedback privacy core", () => {
 			assert.equal(result.body, expected);
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
 			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("does not treat credential-shaped prose inside quoted values as assignments", () => {
+		for (const [input, expected] of [
+			['password="my secret: do not share"', 'password="[REDACTED]"'],
+			['password="abc token=def ghi"', 'password="[REDACTED]"'],
+			['apiKey="the secret: yes please"', 'apiKey="[REDACTED]"'],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
 		}
 	});
 	test("keeps placeholder suffix scrubbing idempotent", () => {
