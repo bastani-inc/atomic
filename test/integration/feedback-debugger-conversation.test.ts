@@ -1,26 +1,39 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
-import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
-import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.ts";
-import feedback from "../../packages/feedback/index.ts";
-import { spawnSyncCollect } from "../helpers/runtime.ts";
+import { afterEach, describe, it } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { buildSkillCatalog } from "../../packages/coding-agent/src/core/skill-catalog.js";
+import { loadSkillsFromDir } from "../../packages/coding-agent/src/core/skills.js";
+import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
+import feedback from "../../packages/feedback/index.js";
+import type { FeedbackDiagnostics } from "../../packages/feedback/src/diagnostics.js";
+import { moduleDir, readText, spawnSyncCollect } from "../helpers/runtime.js";
 
 const cleanups: Array<() => void> = [];
 const subagentParameters = Type.Object({
 	agent: Type.String(),
 	task: Type.String(),
 	model: Type.Optional(Type.String()),
+	context: Type.Optional(Type.String()),
+	wait: Type.Optional(Type.Object({ kind: Type.String() })),
 	tasks: Type.Optional(Type.Array(Type.Object({ agent: Type.String(), task: Type.String() }))),
 });
-type SubagentCall = { agent: string; task: string; model?: string; tasks?: Array<{ agent: string; task: string }> };
+type SubagentCall = {
+	agent: string;
+	task: string;
+	model?: string;
+	context?: string;
+	wait?: { kind: string };
+	tasks?: Array<{ agent: string; task: string }>;
+};
 function git(cwd: string, ...args: string[]): string {
 	const result = spawnSyncCollect(["git", ...args], { cwd });
-	expect(result.exitCode).toBe(0);
+	assert.equal(result.exitCode, 0);
 	return result.stdout.toString();
 }
 type ToolResult = Extract<Harness["session"]["messages"][number], { role: "toolResult" }>;
@@ -50,8 +63,22 @@ async function bugHarness(cwd: string, behavior: "success" | "throw" | "interrup
 		behavior === "absent" ? [feedback] : [feedback, fakeSubagent],
 		cwd,
 	);
+	const loaded = loadSkillsFromDir({
+		dir: join(moduleDir(import.meta.url), "../../packages/feedback/skills"),
+		source: "bundled",
+	});
+	assert.deepEqual(loaded.diagnostics, []);
+	assert.equal(loaded.skills.length, 1);
+	const skills = loaded.skills.map((skill) => ({
+		...skill,
+		sourceInfo: { ...skill.sourceInfo, configurationOrigin: "bundled" as const },
+	}));
 	const harness = await createHarness({
-		resourceLoader: createTestResourceLoader({ extensionsResult }),
+		resourceLoader: {
+			...createTestResourceLoader({ extensionsResult }),
+			getSkills: () => ({ skills, diagnostics: [] }),
+			getSkillCatalog: () => buildSkillCatalog(skills),
+		},
 		sessionManager: SessionManager.inMemory(cwd),
 	});
 	cleanups.push(harness.cleanup);
@@ -59,15 +86,22 @@ async function bugHarness(cwd: string, behavior: "success" | "throw" | "interrup
 }
 function responses(secret: string, expectSubagent: boolean): FauxResponseStep[] {
 	return [
-		fauxAssistantMessage(
-			fauxToolCall("feedback_collect_diagnostics", { report: `Atomic crashes ${secret}`, phase: "before" }),
-			{ stopReason: "toolUse" },
-		),
+		(context) => {
+			const prompt = getMessageText(context.messages.findLast((message) => message.role === "user"));
+			assert.ok(prompt.includes('<skill name="feedback"'));
+			assert.ok(prompt.includes('wait: { kind: "foreground" }'));
+			return fauxAssistantMessage(
+				fauxToolCall("feedback_collect_diagnostics", { report: `Atomic crashes ${secret}`, phase: "before" }),
+				{ stopReason: "toolUse" },
+			);
+		},
 		(context) => {
 			const diagnostics = getMessageText(context.messages.findLast((message) => message.role === "toolResult"));
 			return fauxAssistantMessage(
 				fauxToolCall("subagent", {
 					agent: "debugger",
+					context: "fresh",
+					wait: { kind: "foreground" },
 					task: `Investigate and report supported evidence and unknowns only; do not implement a fix. ${diagnostics}`,
 				}),
 				{ stopReason: "toolUse" },
@@ -99,8 +133,15 @@ function responses(secret: string, expectSubagent: boolean): FauxResponseStep[] 
 			}),
 			{ stopReason: "toolUse" },
 		),
-		fauxAssistantMessage("Editable draft; please request edits or approve."),
+		(context) =>
+			fauxAssistantMessage(
+				`${getMessageText(context.messages.findLast((message) => message.role === "toolResult"))}\n\nEditable draft; please request edits or approve.`,
+			),
 	];
+}
+async function settleTurn(harness: Harness): Promise<void> {
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	while (harness.session.isStreaming) await new Promise<void>((resolve) => setTimeout(resolve, 1));
 }
 describe("feedback bug investigation", () => {
 	afterEach(() => {
@@ -128,37 +169,42 @@ describe("feedback bug investigation", () => {
 		writeFileSync(join(root, "tracked.txt"), "dirty user work\n");
 		writeFileSync(join(root, "untracked.txt"), "untracked user work\n");
 		harness.setResponses(responses(secret, true));
-		await harness.session.prompt("draft bug feedback; PARENT TRANSCRIPT MUST NOT LEAK");
-		expect(calls).toHaveLength(1);
-		expect(calls[0].agent).toBe("debugger");
-		expect(Object.hasOwn(calls[0], "model")).toBe(false);
-		expect(Object.hasOwn(calls[0], "tasks")).toBe(false);
-		expect(calls[0].task).toMatch(/investigate.+report.+do not implement a fix/is);
-		for (const forbidden of [secret, envMarker]) expect(JSON.stringify(calls)).not.toContain(forbidden);
+		await harness.session.prompt("/feedback Atomic crashes on startup; run atomic; PARENT TRANSCRIPT MUST NOT LEAK");
+		await settleTurn(harness);
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].agent, "debugger");
+		assert.equal(Object.hasOwn(calls[0], "model"), false);
+		assert.equal(Object.hasOwn(calls[0], "tasks"), false);
+		assert.equal(calls[0].context, "fresh");
+		assert.deepEqual(calls[0].wait, { kind: "foreground" });
+		assert.match(calls[0].task, /investigate.+report.+do not implement a fix/is);
+		for (const forbidden of [secret, envMarker]) assert.ok(!JSON.stringify(calls).includes(forbidden));
 		const diagnostics = diagnosticResults(harness);
-		expect(diagnostics[0]?.details).toMatchObject({
-			report: "Atomic crashes [REDACTED]",
-			version: expect.any(String),
-			platform: { os: expect.any(String), arch: expect.any(String) },
-			mode: "print",
-			model: { id: "faux-1", provider: "faux" },
-			worktree: { paths: expect.arrayContaining(["tracked.txt", "untracked.txt"]) },
-		});
-		expect(diagnostics.at(-1)?.details).toMatchObject({ createdPaths: ["debugger-note.txt"] });
+		const before = diagnostics[0]?.details as FeedbackDiagnostics;
+		assert.equal(before.report, "Atomic crashes [REDACTED]");
+		assert.equal(typeof before.version, "string");
+		assert.equal(typeof before.platform.os, "string");
+		assert.equal(typeof before.platform.arch, "string");
+		assert.equal(before.mode, "print");
+		assert.deepEqual(before.model, { id: "faux-1", provider: "faux" });
+		assert.ok(before.worktree.paths.includes("tracked.txt"));
+		assert.ok(before.worktree.paths.includes("untracked.txt"));
+		const after = diagnostics.at(-1)?.details as FeedbackDiagnostics;
+		assert.deepEqual(after.createdPaths, ["debugger-note.txt"]);
 		const detailText = JSON.stringify(diagnostics.map(({ details }) => details));
-		for (const forbidden of [secret, envMarker]) expect(detailText).not.toContain(forbidden);
-		expect(detailText).not.toContain("PARENT TRANSCRIPT MUST NOT LEAK");
-		expect(detailText).not.toContain("RAW ARTIFACT BODY MUST NOT LEAK");
-		expect(readFileSync(join(root, "tracked.txt"), "utf8")).toBe("dirty user work\n");
-		expect(readFileSync(join(root, "untracked.txt"), "utf8")).toBe("untracked user work\n");
-		expect(git(root, "status", "--porcelain")).toContain("tracked.txt");
-		expect(git(root, "status", "--porcelain")).toContain("untracked.txt");
-		const draft = harness.session.messages.map(getMessageText).join("\n");
-		expect(draft).toContain("**Reproduction without extensions:** Not tested without extensions");
-		expect(draft).toContain("**Extension activity:** user-extension");
-		expect(draft).toContain("**Supported evidence:** Investigation completed without a root cause");
-		expect(draft).toContain("**Unknowns:** Root cause remains unknown");
-		expect(draft).toContain("**Debugger-created paths:** debugger-note.txt");
+		for (const forbidden of [secret, envMarker]) assert.ok(!detailText.includes(forbidden));
+		assert.ok(!detailText.includes("PARENT TRANSCRIPT MUST NOT LEAK"));
+		assert.ok(!detailText.includes("RAW ARTIFACT BODY MUST NOT LEAK"));
+		assert.equal(readFileSync(join(root, "tracked.txt"), "utf8"), "dirty user work\n");
+		assert.equal(readFileSync(join(root, "untracked.txt"), "utf8"), "untracked user work\n");
+		assert.ok(git(root, "status", "--porcelain").includes("tracked.txt"));
+		assert.ok(git(root, "status", "--porcelain").includes("untracked.txt"));
+		const draft = getMessageText(harness.session.messages.at(-1));
+		assert.ok(draft.includes("**Reproduction without extensions:** Not tested without extensions"));
+		assert.ok(draft.includes("**Extension activity:** user-extension"));
+		assert.ok(draft.includes("**Supported evidence:** Investigation completed without a root cause"));
+		assert.ok(draft.includes("**Unknowns:** Root cause remains unknown"));
+		assert.ok(draft.includes("**Debugger-created paths:** debugger-note.txt"));
 	});
 	it("records forbidden subagent overrides so the absence check is live", async () => {
 		const root = mkdtempSync(join(tmpdir(), "feedback-override-"));
@@ -171,7 +217,7 @@ describe("feedback bug investigation", () => {
 			fauxAssistantMessage("done"),
 		]);
 		await harness.session.prompt("probe detector");
-		expect(Object.hasOwn(calls[0], "model")).toBe(true);
+		assert.equal(Object.hasOwn(calls[0], "model"), true);
 	});
 	it("does not invoke the debugger for an enhancement", async () => {
 		const root = mkdtempSync(join(tmpdir(), "feedback-enhancement-"));
@@ -190,7 +236,7 @@ describe("feedback bug investigation", () => {
 			fauxAssistantMessage("Editable enhancement draft"),
 		]);
 		await harness.session.prompt("draft enhancement feedback");
-		expect(calls).toHaveLength(0);
+		assert.equal(calls.length, 0);
 	});
 	it.each(["throw", "interrupt", "absent"] as const)(
 		"keeps an honest editable draft when debugger is %s",
@@ -199,21 +245,33 @@ describe("feedback bug investigation", () => {
 			cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 			const { harness, calls } = await bugHarness(root, behavior);
 			harness.setResponses(responses("no-secret", false));
-			await harness.session.prompt("draft bug feedback");
-			expect(calls).toHaveLength(behavior === "absent" ? 0 : 1);
-			expect(harness.session.messages.map(getMessageText).join("\n")).toContain("Root cause remains unknown");
-			expect(harness.session.messages.map(getMessageText).join("\n")).toContain("Editable draft");
+			await harness.session.prompt("/feedback Atomic crashes; run atomic");
+			await settleTurn(harness);
+			assert.equal(calls.length, behavior === "absent" ? 0 : 1);
+			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("Root cause remains unknown"));
+			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("Editable draft"));
 			const diagnostics = diagnosticResults(harness).at(-1)?.details as {
 				recentFailures: string[];
 				worktree: { paths: string[] };
 			};
-			expect(diagnostics.worktree).toEqual({ paths: [] });
-			expect(diagnostics.recentFailures.length).toBeLessThanOrEqual(5);
-			expect(diagnostics.recentFailures.every((failure) => failure.length <= 200)).toBe(true);
+			assert.deepEqual(diagnostics.worktree.paths, []);
+			assert.ok(diagnostics.recentFailures.length <= 5);
+			assert.ok(diagnostics.recentFailures.every((failure) => failure.length <= 200));
 			if (behavior === "throw") {
-				expect(diagnostics.recentFailures.length).toBeGreaterThan(0);
-				expect(diagnostics.recentFailures.some((failure) => failure.includes("debugger unavailable"))).toBe(true);
+				assert.ok(diagnostics.recentFailures.length > 0);
+				assert.ok(diagnostics.recentFailures.some((failure) => failure.includes("debugger unavailable")));
 			}
 		},
 	);
+	// #2799: omitted wait launches in the background; prose alone did not enforce the handoff.
+	it("ships explicit fresh foreground invocation and waits for a yielded debugger", async () => {
+		const skill = await readText(
+			join(moduleDir(import.meta.url), "../../packages/feedback/skills/feedback/SKILL.md"),
+		);
+		assert.match(skill, /`context: "fresh"` and `wait: \{ kind: "foreground" \}`/);
+		assert.match(skill, /wait for that same run's terminal result before collecting the after snapshot/);
+		assert.match(skill, /omit `model` and do not use the parallel `tasks` form/);
+		assert.match(skill, /Give it only the scrubbed bounded diagnostic result/);
+		assert.match(skill, /Never launch a debugger for an enhancement/);
+	});
 });

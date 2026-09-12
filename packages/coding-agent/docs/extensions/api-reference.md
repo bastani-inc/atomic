@@ -843,6 +843,17 @@ Typical `sourceInfo.source` values:
 - `sdk` for tools passed via `createAgentSession({ customTools })`
 - extension source metadata for tools registered by extensions
 
+### pi.getLoadedExtensions()
+
+Returns loaded extension names and their `configurationOrigin`, including extensions that register no tools. Read it from an event handler or tool after resources have loaded, rather than during extension initialization. Each call returns a new array of `LoadedExtensionInfo` records; changing the records does not change the loaded extensions.
+
+```typescript
+const externalExtensions = pi.getLoadedExtensions?.()
+  .filter(({ configurationOrigin }) => configurationOrigin !== "bundled") ?? [];
+```
+
+Use `configurationOrigin === "bundled"` to identify bundled extensions, not a name or path heuristic. Hosts that do not provide this optional API cannot report extension activity through it. Extension names may contain local paths, so scrub them before including them in a public report.
+
 ### pi.setModel(model)
 
 Set the model for the current session. The change is recorded in session history and restored when that session is resumed, but it does not change the configured `defaultProvider` or `defaultModel` used by new sessions. Returns `false` if authentication is not configured for the model's provider. See [Custom models](/models) for configuring custom models.

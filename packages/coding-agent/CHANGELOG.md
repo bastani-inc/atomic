@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added optional `pi.getLoadedExtensions()` and the exported `LoadedExtensionInfo` type so extensions can report loaded extension names and bundled provenance, including extensions without tools ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+
 ### Fixed
 
 - Reduced CPU work in long `/tasks` live transcripts on Windows by reusing unchanged message rendering during streaming, without dropping history or delaying live updates.

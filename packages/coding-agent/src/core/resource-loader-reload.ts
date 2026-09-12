@@ -212,6 +212,7 @@ export async function prepareDefaultResourceLoaderReload(
 			state.extensionsResult = state.extensionsOverride
 				? state.extensionsOverride(deferredExtensions)
 				: deferredExtensions;
+			publishLoadedExtensions(state.extensionsResult.runtime, state.extensionsResult.extensions);
 			state.extensionSkillSourceInfos = new Map();
 			state.extensionPromptSourceInfos = new Map();
 			state.extensionThemeSourceInfos = new Map();

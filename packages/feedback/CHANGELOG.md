@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 - Added typed feedback draft validation, deterministic issue formatting, privacy scrubbing, and bounded diagnostic utilities ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Added `/feedback` and a bundled conversational skill to collect bug reports or enhancement requests and prepare editable, privacy-scrubbed drafts without posting them ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Added bug investigation through the existing debugger with a fresh, foreground handoff, bounded privacy-scrubbed diagnostics, extension activity, and path-only worktree disclosure. Unavailable investigations leave an editable draft with honest unknowns ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 
 ### Fixed
 
@@ -21,3 +22,4 @@ All notable changes to this project will be documented in this file.
 - Fixed adjacent credential assignments being skipped when their names overlap a preceding value, recognized spaces and tabs in credential-name prefixes consistently, and scrubbed contiguous END-terminated private-key blocks with trailing BEGIN-line text without crossing report boundaries ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Fixed long feedback with repeated private-key BEGIN mentions stalling privacy scrubbing when no END marker is reachable, while retaining contiguous-block redaction and hard report boundaries ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Fixed quoted-credential and private-key scrubbing consuming Markdown report headings. Hash-prefixed headings at every level and underlined headings retain their text and following report content even when a closing quote or END marker appears later ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Bounded pending worktree snapshots and report unavailable comparisons instead of misidentifying pre-existing paths when a baseline is missing or too large ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
