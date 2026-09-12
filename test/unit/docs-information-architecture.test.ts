@@ -22,7 +22,7 @@ const docsDir = join(repoRoot, "packages/coding-agent/docs");
 const docsJson = JSON.parse(readFileSync(join(docsDir, "docs.json"), "utf8")) as DocsConfig;
 
 // Regression for #2799: exhaustive reader-facing lists must include every shipped builtin.
-test("usage and authoring enumerate the shipped builtin bundles", () => {
+test("reader-facing inventories enumerate the shipped builtin bundles", () => {
 	const expected = [...BUILTIN_PACKAGE_DIR_NAMES].sort();
 	const bundleNames = (enumeration: string): string[] =>
 		enumeration
@@ -44,6 +44,32 @@ test("usage and authoring enumerate the shipped builtin bundles", () => {
 	const usageList = /distribution bundles first-party package extensions for ([^.\n]+)\./u.exec(usage)?.[1];
 	assert.ok(usageList, "usage retains its bounded builtin enumeration");
 	assert.deepEqual(bundleNames(usageList), expected, "usage enumerates every shipped builtin exactly once");
+
+	const readme = readFileSync(join(repoRoot, "packages/coding-agent/README.md"), "utf8");
+	for (const [label, pattern] of [
+		["README introduction", /first-party bundled extensions for ([^.\n]+)\./u],
+		["README philosophy", /distribution bundles first-party extensions for (.+?), while/u],
+	] as const) {
+		const list = pattern.exec(readme)?.[1];
+		assert.ok(list, `${label} retains its builtin enumeration`);
+		assert.deepEqual(bundleNames(list), expected, `${label} enumerates every shipped builtin exactly once`);
+	}
+	const capabilityLists = [...readme.matchAll(/^\*\*Bundled ([^.\n]+)\.\*\*/gmu)];
+	assert.equal(capabilityLists.length, 2, "README retains both bundled capability descriptions");
+	assert.deepEqual(
+		capabilityLists.flatMap((list) => bundleNames(list[1])).sort(),
+		expected,
+		"README bundled capability descriptions cover every shipped builtin exactly once",
+	);
+
+	const development = readFileSync(join(docsDir, "development.md"), "utf8");
+	const roles = /The bundled companion-package roles are:\s*```[^\n]*\n([\s\S]*?)```/u.exec(development)?.[1];
+	assert.ok(roles, "development retains its bundled companion-package roles block");
+	assert.deepEqual(
+		[...roles.matchAll(/^ {2}([a-z-]+)\//gmu)].map((entry) => entry[1]).sort(),
+		["coding-agent", ...expected].sort(),
+		"development enumerates the host and every shipped builtin exactly once",
+	);
 });
 
 interface NavContainer {
