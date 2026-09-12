@@ -30,5 +30,5 @@ test("bundled feedback skill collects and prepares bug reports", async () => {
 	const instructions = await readText("packages/feedback/skills/feedback/SKILL.md");
 	assert.match(instructions, /For a bug, collect a title, what happened, and reproduction steps/);
 	assert.match(instructions, /(?:Prepare the bug|When a bug is complete)[\s\S]*?`feedback_prepare_issue`/);
-	assert.match(instructions, /(?:Display|display) the (?:tool's )?exact prepared title and body/);
+	assert.match(instructions, /(?:Display|display) the (?:tool's )?exact prepared (?:title and body|Markdown)/);
 });
