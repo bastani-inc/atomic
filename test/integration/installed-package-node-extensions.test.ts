@@ -134,6 +134,7 @@ function buildInstalledLayout(): string {
 	return atomicDest;
 }
 
+// #2799 / #2851: validate the copied skill through the same async loader used at runtime.
 runTest(
 	"installed @bastani/atomic includes loadable feedback resources",
 	() => {
@@ -144,22 +145,57 @@ runTest(
 
 		const extensionEntry = join(feedbackDir, INSTALLED_EXTENSION_ENTRIES.feedback);
 		assert.ok(fs.existsSync(extensionEntry), `${extensionEntry} missing from built package`);
+		const skillPath = join(feedbackDir, "skills", "feedback", "SKILL.md");
+		assert.ok(fs.existsSync(skillPath), `${skillPath} missing from built package`);
 		assert.ok(nodeExe, "real node executable must be resolved before the smoke runs");
 		const loadResult = spawnSync(
 			nodeExe,
 			[
 				"--input-type=module",
 				"--eval",
-				`const extension = await import(${JSON.stringify(pathToFileURL(extensionEntry).href)}); if (typeof extension.default !== "function") process.exit(1);`,
+				`import assert from "node:assert/strict";
+				import { readFileSync, writeFileSync } from "node:fs";
+				const { loadSkillsAsync } = await import(${JSON.stringify(pathToFileURL(join(atomicDest, "dist", "core", "skills-async.js")).href)});
+				const extension = await import(${JSON.stringify(pathToFileURL(extensionEntry).href)});
+				assert.equal(typeof extension.default, "function");
+				const skillPath = ${JSON.stringify(skillPath)};
+				const validateSkill = async () => {
+					const { skills, diagnostics } = await loadSkillsAsync({
+						cwd: ${JSON.stringify(atomicDest)},
+						agentDir: ${JSON.stringify(join(atomicDest, "isolated-agent"))},
+						skillPaths: [skillPath],
+						includeDefaults: false,
+					});
+					assert.deepEqual(diagnostics, []);
+					assert.equal(skills.length, 1);
+					assert.equal(skills[0].name, "feedback");
+					assert.equal(skills[0].filePath, skillPath);
+					assert.equal(typeof skills[0].description, "string");
+					assert.ok(skills[0].description.trim());
+				};
+				await validateSkill();
+				const original = readFileSync(skillPath, "utf8");
+				try {
+					for (const malformed of [
+						"---\\nname: feedback\\n",
+						"---\\nname: feedback\\n---\\n# Feedback\\n",
+						"---\\nname: feedback\\ndescription: [\\n---\\n# Feedback\\n",
+					]) {
+						writeFileSync(skillPath, malformed);
+						await assert.rejects(validateSkill, { name: "AssertionError" });
+					}
+				} finally {
+					writeFileSync(skillPath, original);
+				}`,
 			],
 			{ cwd: atomicDest, encoding: "utf8", timeout: 30_000 },
 		);
-		assert.equal(loadResult.signal, null, `feedback extension load killed by ${loadResult.signal}`);
-		assert.equal(loadResult.status, 0, `feedback extension failed to load:\n${loadResult.stderr}`);
-
-		const skillPath = join(feedbackDir, "skills", "feedback", "SKILL.md");
-		assert.ok(fs.existsSync(skillPath), `${skillPath} missing from built package`);
-		assert.match(fs.readFileSync(skillPath, "utf8"), /^---\r?\nname: feedback\r?\n/u);
+		assert.equal(loadResult.signal, null, `feedback resources load killed by ${loadResult.signal}`);
+		assert.equal(
+			loadResult.status,
+			0,
+			`feedback resources failed to load:\n${loadResult.stdout}\n${loadResult.stderr}`,
+		);
 	},
 	INSTALLED_PACKAGE_SMOKE_TIMEOUT_MS,
 );

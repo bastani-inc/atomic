@@ -441,7 +441,8 @@ const issueNavigationOrder: Record<string, readonly string[]> = {
  * Herdr follows tmux because it is platform setup rather than a reader guide.
  */
 const generatedNavigationInsertions: Record<string, readonly string[]> = {
-	"/usage": ["/guides/non-interactive"],
+	// #2799: feedback is an everyday-use guide, not a Build customization page.
+	"/usage": ["/feedback", "/guides/non-interactive"],
 	"/compaction": [
 		"/guides/configuration",
 		"/guides/workflows",
@@ -693,8 +694,8 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			34,
-			"24 migration routes, all six upstream additions, and the four reader-path orientation pages have insertion points",
+			35,
+			"24 migration routes, six upstream additions, four reader-path orientation pages, and feedback have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
 
