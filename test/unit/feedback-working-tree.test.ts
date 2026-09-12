@@ -86,6 +86,7 @@ test("reports unavailable git status honestly before and after instead of claimi
 	}
 });
 
+// #2799: staged moves during investigation must disclose destinations, but not earlier moves or source records.
 test("uses literal git paths for quoted filenames and rename destinations", async () => {
 	const cwd = makeTempDirectory("feedback-git-paths-");
 	try {
@@ -96,7 +97,8 @@ test("uses literal git paths for quoted filenames and rename destinations", asyn
 		};
 		git("init");
 		writeTextSync(join(cwd, "old.txt"), "tracked content");
-		git("add", "old.txt");
+		writeTextSync(join(cwd, "notes.txt"), "notes to move during investigation");
+		git("add", "old.txt", "notes.txt");
 		git(
 			"-c",
 			"user.name=Test",
@@ -126,9 +128,10 @@ test("uses literal git paths for quoted filenames and rename destinations", asyn
 		};
 		const before = await collect({ report: "bug", phase: "before" }, runtime);
 		assert.deepEqual([...before.worktree.paths].sort(), ["renamed name.txt", ...oldPaths].sort());
+		git("mv", "notes.txt", "moved notes.txt");
 		writeTextSync(join(cwd, "new name.txt"), "new");
 		const after = await collect({ report: "bug", phase: "after", since: before.snapshotId }, runtime);
-		assert.deepEqual(after.createdPaths, ["new name.txt"]);
+		assert.deepEqual([...after.createdPaths!].sort(), ["moved notes.txt", "new name.txt"].sort());
 	} finally {
 		removeTempDirectory(cwd);
 	}
@@ -247,5 +250,30 @@ test("compares complete baselines at the path and character limits", async () =>
 		status += "?? genuinely-new\0";
 		const after = await collect({ report: "bug", phase: "after", since: before.snapshotId }, runtime);
 		assert.deepEqual(after.createdPaths, ["genuinely-new"]);
+	}
+});
+
+// #2799: list limits must be disclosed only when at least one qualifying path was omitted.
+test("reports path truncation without counting old paths or rename sources as omissions", async () => {
+	const ctx = { cwd: root, mode: "print", sessionManager: SM.inMemory(root) } as Partial<Ctx> as Ctx;
+	for (const count of [0, 99, 100, 101]) {
+		let status = Array.from({ length: count }, (_, i) => `?? old-${i}\0`).join("");
+		const oldStatus = status;
+		const runtime = { ctx, loadedExtensions: [], exec: async () => ({ code: 0, stdout: status }) };
+		const before = await collect({ report: "bug", phase: "before" }, runtime);
+		assert.equal(before.worktree.truncated, count > 100);
+		assert.equal(before.createdPathsTruncated, undefined);
+		status = Array.from({ length: count }, (_, i) => `${i % 2 ? "R " : " R"} new-${i}\0source-${i}\0`).join("");
+		status += `${oldStatus} M modified.txt\0 D deleted.txt\0`;
+		const after = await collect({ report: "bug", phase: "after", since: before.snapshotId }, runtime);
+		assert.equal(after.worktree.truncated, count * 2 + 2 > 100);
+		assert.equal(after.createdPathsTruncated, count > 100);
+		assert.deepEqual(
+			after.createdPaths,
+			Array.from({ length: Math.min(count, 100) }, (_, i) => `new-${i}`),
+		);
+		const repeated = await collect({ report: "bug", phase: "after", since: before.snapshotId }, runtime);
+		assert.equal(repeated.createdPathsTruncated, undefined);
+		assert.equal(repeated.baselineUnavailable, "missing");
 	}
 });

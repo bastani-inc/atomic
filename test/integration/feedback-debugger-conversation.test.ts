@@ -43,7 +43,7 @@ function diagnosticResults(harness: Harness): ToolResult[] {
 			message.role === "toolResult" && message.toolName === "feedback_collect_diagnostics",
 	);
 }
-async function bugHarness(cwd: string, behavior: "success" | "throw" | "interrupt" | "absent") {
+async function bugHarness(cwd: string, behavior: "success" | "throw" | "interrupt" | "absent", artifactCount = 1) {
 	const calls: SubagentCall[] = [];
 	const fakeSubagent = (pi: Parameters<typeof feedback>[0]) =>
 		pi.registerTool({
@@ -56,6 +56,9 @@ async function bugHarness(cwd: string, behavior: "success" | "throw" | "interrup
 				if (behavior === "interrupt") throw new DOMException("interrupted", "AbortError");
 				if (behavior === "throw") throw new Error("debugger unavailable");
 				writeFileSync(join(ctx.cwd, "debugger-note.txt"), "RAW ARTIFACT BODY MUST NOT LEAK\n");
+				for (let i = 1; i < artifactCount; i++) {
+					writeFileSync(join(ctx.cwd, `debugger-note-${i}.txt`), "RAW ARTIFACT BODY MUST NOT LEAK\n");
+				}
 				return { content: [{ type: "text" as const, text: "No root cause established." }], details: {} };
 			},
 		});
@@ -119,20 +122,31 @@ function responses(secret: string, expectSubagent: boolean): FauxResponseStep[] 
 				{ stopReason: "toolUse" },
 			);
 		},
-		fauxAssistantMessage(
-			fauxToolCall("feedback_prepare_issue", {
-				debuggerPaths: expectSubagent ? "debugger-note.txt" : undefined,
-				kind: "bug",
-				title: "Atomic crashes",
-				description: expectSubagent ? "Crash observed" : "Debugger unavailable; draft remains editable",
-				repro: "Run atomic",
-				isolation: "",
-				extensions: "user-extension",
-				evidence: expectSubagent ? "Investigation completed without a root cause" : "Debugger failed",
-				unknowns: "Root cause remains unknown",
-			}),
-			{ stopReason: "toolUse" },
-		),
+		(context) => {
+			const after = JSON.parse(
+				getMessageText(context.messages.findLast((message) => message.role === "toolResult")),
+			) as FeedbackDiagnostics;
+			const truncation =
+				after.createdPathsTruncated || after.worktree.truncated
+					? " Path lists are incomplete; only the first 100 paths are shown."
+					: "";
+			return fauxAssistantMessage(
+				fauxToolCall("feedback_prepare_issue", {
+					debuggerPaths: after.createdPaths?.join("\n"),
+					kind: "bug",
+					title: "Atomic crashes",
+					description: expectSubagent ? "Crash observed" : "Debugger unavailable; draft remains editable",
+					repro: "Run atomic",
+					isolation: "",
+					extensions: "user-extension",
+					evidence: expectSubagent
+						? "Investigation completed without a root cause"
+						: "Investigation unavailable: Debugger failed",
+					unknowns: `Root cause remains unknown${truncation}`,
+				}),
+				{ stopReason: "toolUse" },
+			);
+		},
 		(context) =>
 			fauxAssistantMessage(
 				`${getMessageText(context.messages.findLast((message) => message.role === "toolResult"))}\n\nEditable draft; please request edits or approve.`,
@@ -206,6 +220,29 @@ describe("feedback bug investigation", () => {
 		assert.ok(draft.includes("**Unknowns:** Root cause remains unknown"));
 		assert.ok(draft.includes("**Debugger-created paths:** debugger-note.txt"));
 	});
+	// #2799: exercise capped diagnostics through the registered tool and prepared draft, using the shipped skill.
+	it("carries incomplete path disclosure into the prepared bug draft", async () => {
+		const loaderRoot = mkdtempSync(join(tmpdir(), "feedback-path-limit-"));
+		cleanups.push(() => rmSync(loaderRoot, { recursive: true, force: true }));
+		const { harness, calls } = await bugHarness(loaderRoot, "success", 101);
+		git(harness.tempDir, "init");
+		harness.setResponses(responses("no-secret", true));
+		await harness.session.prompt("/feedback Atomic crashes; run atomic");
+		await settleTurn(harness);
+		assert.equal(calls.length, 1);
+		const after = diagnosticResults(harness).at(-1)?.details as FeedbackDiagnostics;
+		assert.equal(after.createdPaths?.length, 100);
+		assert.equal(after.createdPathsTruncated, true);
+		assert.equal(after.worktree.truncated, true);
+		const draft = getMessageText(harness.session.messages.at(-1));
+		assert.ok(
+			draft.includes(
+				"**Unknowns:** Root cause remains unknown Path lists are incomplete; only the first 100 paths are shown.",
+			),
+		);
+		assert.ok(draft.includes(`**Debugger-created paths:** ${after.createdPaths?.join("\n")}`));
+		assert.ok(!draft.includes("RAW ARTIFACT BODY MUST NOT LEAK"));
+	});
 	it("records forbidden subagent overrides so the absence check is live", async () => {
 		const root = mkdtempSync(join(tmpdir(), "feedback-override-"));
 		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -250,11 +287,11 @@ describe("feedback bug investigation", () => {
 			assert.equal(calls.length, behavior === "absent" ? 0 : 1);
 			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("Root cause remains unknown"));
 			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("Editable draft"));
-			const diagnostics = diagnosticResults(harness).at(-1)?.details as {
-				recentFailures: string[];
-				worktree: { paths: string[] };
-			};
+			const diagnostics = diagnosticResults(harness).at(-1)?.details as FeedbackDiagnostics;
 			assert.deepEqual(diagnostics.worktree.paths, []);
+			assert.equal(diagnostics.worktree.available, false);
+			assert.equal(diagnostics.baselineUnavailable, "worktree-unavailable");
+			assert.ok(getMessageText(harness.session.messages.at(-1)).includes("Investigation unavailable"));
 			assert.ok(diagnostics.recentFailures.length <= 5);
 			assert.ok(diagnostics.recentFailures.every((failure) => failure.length <= 200));
 			if (behavior === "throw") {
@@ -273,5 +310,10 @@ describe("feedback bug investigation", () => {
 		assert.match(skill, /omit `model` and do not use the parallel `tasks` form/);
 		assert.match(skill, /Give it only the scrubbed bounded diagnostic result/);
 		assert.match(skill, /Never launch a debugger for an enhancement/);
+		assert.match(
+			skill,
+			/If `worktree.truncated` or `createdPathsTruncated` is true, state in the draft's `unknowns`/,
+		);
+		assert.match(skill, /only its first 100 paths are shown/);
 	});
 });

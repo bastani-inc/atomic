@@ -93,6 +93,8 @@ For bugs, Atomic collects a bounded, scrubbed diagnostic summary and asks the ex
 
 Bug drafts include non-builtin extension activity, supported evidence, unknowns, and newly observed worktree paths without file contents or automatic attachments. If extension activity is `Not reported`, tell Atomic which non-builtin extensions were active, or that none were active. Tell Atomic whether you reproduced the bug with `atomic -ne`; otherwise the draft says `Not tested without extensions`. Worktree comparisons are best-effort: unavailable or oversized snapshots cannot establish which paths were created. Review the draft and your working tree before sharing anything.
 
+Diagnostic path lists show at most 100 entries. When a list is incomplete, the draft notes that limit in its unknowns. Review the remaining paths in your working tree rather than treating the displayed list as a complete investigation footprint.
+
 ## Message Queue
 
 You can submit messages while the agent is still working:

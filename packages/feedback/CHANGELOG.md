@@ -25,3 +25,4 @@ All notable changes to this project will be documented in this file.
 - Bounded pending worktree snapshots and report unavailable comparisons instead of misidentifying pre-existing paths when a baseline is missing or too large ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Fixed bug drafts omitting extension activity when that information is missing; they now say `Not reported` instead of implying no extensions were active ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Limited diagnostic path parsing and Git execution time for large worktrees, and included copy destinations in newly observed paths ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Fixed staged rename destinations being omitted from newly observed paths, and disclose when diagnostic path lists exceed their 100-entry limit ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).

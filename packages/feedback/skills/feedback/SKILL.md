@@ -19,6 +19,8 @@ When a bug is complete, call `feedback_prepare_issue` exactly once with `kind: "
 
 Treat `createdPaths` as newly observed paths, not proof of who created them. If `baselineUnavailable` is present or `worktree.available` is false, disclose that the worktree comparison is unavailable and leave created paths unknown. Do not infer a clean worktree from an empty path list or read file contents to fill the gap.
 
+If `worktree.truncated` or `createdPathsTruncated` is true, state in the draft's `unknowns` that the corresponding path list is incomplete and only its first 100 paths are shown. Keep `debuggerPaths` limited to the returned paths; do not imply that the list describes the whole worktree or investigation footprint.
+
 If `subagent` or `debugger` is unavailable, interrupted, fails, or is inconclusive, continue to an honest editable draft. For unavailable or failed investigation, say `Investigation unavailable`, record the failure as supported evidence, leave the cause in unknowns, and do not invent findings.
 
 Never launch a debugger for an enhancement. Never post an issue. Posting is not available in this turn.
