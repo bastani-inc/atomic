@@ -55,13 +55,33 @@ function hasUnclosedQuoteBefore(input: string, start: number, quote: string): bo
 	}
 	return open;
 }
-function structuralLineBoundary(input: string, cursor: number): number | undefined {
-	const lineBreakEnd =
-		input[cursor] === "\r" && input[cursor + 1] === "\n" ? cursor + 2 : input[cursor] === "\n" ? cursor + 1 : -1;
-	if (lineBreakEnd < 0) return undefined;
-	const nextLineEnd = input.indexOf("\n", lineBreakEnd);
-	const nextLine = input.slice(lineBreakEnd, nextLineEnd < 0 ? input.length : nextLineEnd).replace(/\r$/u, "");
-	return /^[ \t]*$/u.test(nextLine) || nextLine.startsWith("### ") ? cursor : undefined;
+function balancedValueEnd(input: string, start: number): number | undefined {
+	const opening = "([{<";
+	const closing = ")]}>";
+	const first = opening.indexOf(input[start] ?? "");
+	if (first < 0 || start >= input.length) return undefined;
+	const stack = [closing[first]];
+	let quote = "";
+	for (let cursor = start + 1; cursor < input.length; cursor += 1) {
+		const character = input[cursor] ?? "";
+		if (character === "\r" || character === "\n") return undefined;
+		if (quote) {
+			if (character === "\\" && input[cursor + 1] !== "\r" && input[cursor + 1] !== "\n") cursor += 1;
+			else if (character === quote) quote = "";
+			continue;
+		}
+		if ((character === '"' || character === "'") && /[\s([{<,:]/u.test(input[cursor - 1] ?? "")) {
+			quote = character;
+			continue;
+		}
+		const nested = opening.indexOf(character);
+		if (nested >= 0) stack.push(closing[nested]);
+		else if (closing.includes(character)) {
+			if (stack.pop() !== character) return undefined;
+			if (stack.length === 0) return cursor + 1;
+		}
+	}
+	return undefined;
 }
 function structuralQuoteBoundary(input: string, cursor: number, quote: string): number | undefined {
 	const lineBreakEnd =
@@ -102,53 +122,38 @@ function templatePlaceholderEnd(input: string, start: number): number | undefine
 	return next === "" || /[\s,;[})\]&|<>('"`*_~]/u.test(next) ? end : undefined;
 }
 function unquotedValueEnd(input: string, start: number, assignmentStart: number): number {
-	if (input[start] === "[") {
-		let depth = 0;
-		let quote = "";
-		let end = start;
-		for (; end < input.length; end += 1) {
-			const character = input[end] ?? "";
-			if ((character === "\r" || character === "\n") && structuralLineBoundary(input, end) !== undefined) break;
-			if (quote) {
-				if (character === "\\") end += 1;
-				else if (character === quote) quote = "";
-				continue;
-			}
-			if (character === '"' || character === "'") {
-				quote = character;
-				continue;
-			}
-			if (character === "[") depth += 1;
-			else if (character === "]") {
-				depth -= 1;
-				if (depth === 0) {
-					end += 1;
-					break;
-				}
-			}
-		}
-		if (depth === 0) {
-			while (end < input.length) {
-				const character = input[end] ?? "";
-				if (/\s/u.test(character) || /[,;})\]&|<>]/u.test(character)) break;
-				end += 1;
-			}
-			return end;
-		}
-	}
 	let end = start;
+	const quoteBoundaries = new Map<string, boolean>();
+	const unclosedWrappers = new Set<string>();
 	while (end < input.length) {
 		const character = input[end] ?? "";
-		if (end === start && character === "[") {
-			end += 1;
-			continue;
+		if ("([{<".includes(character)) {
+			if (character === "<" && end !== start) break;
+			const balancedEnd = unclosedWrappers.has(character) ? undefined : balancedValueEnd(input, end);
+			if (balancedEnd !== undefined) {
+				end = balancedEnd;
+				continue;
+			}
+			unclosedWrappers.add(character);
+			// A malformed opening wrapper belongs to this line's value only.
+			if (character !== "<" || end === start) {
+				end += 1;
+				continue;
+			}
 		}
 		if (/\s/u.test(character) || /[,;})\]&|<>]/u.test(character)) break;
-		if (
-			(character === '"' || character === "'" || character === "`") &&
-			hasUnclosedQuoteBefore(input, assignmentStart + (input[assignmentStart] === character ? 1 : 0), character)
-		)
-			break;
+		if (character === '"' || character === "'" || character === "`") {
+			let boundary = quoteBoundaries.get(character);
+			if (boundary === undefined) {
+				boundary = hasUnclosedQuoteBefore(
+					input,
+					assignmentStart + (input[assignmentStart] === character ? 1 : 0),
+					character,
+				);
+				quoteBoundaries.set(character, boundary);
+			}
+			if (boundary) break;
+		}
 		end += 1;
 	}
 	return end;
@@ -351,6 +356,20 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			continue;
 		}
 		const end = unquotedValueEnd(input, valueStart, assignmentStart);
+		const balancedEnd = balancedValueEnd(input, valueStart);
+		if (balancedEnd !== undefined) {
+			const value = input.slice(valueStart, balancedEnd);
+			// Keep the existing literal example placeholder, not arbitrary angle-wrapped secrets.
+			const inner = value.slice(1, -1).trim();
+			if (end === balancedEnd && (value === "<your-key-here>" || inner === "" || inner === REDACTION_PLACEHOLDER))
+				continue;
+			if (
+				first === "[" &&
+				(input[balancedEnd] === "(" || input[balancedEnd] === "[") &&
+				balancedValueEnd(input, balancedEnd) !== undefined
+			)
+				continue;
+		}
 		let hasMatchingWrapper = false;
 		let preserveOpeningWrapper = false;
 		if (openingWrapper) {
@@ -400,7 +419,7 @@ const rules = [
 	{
 		category: "private-key",
 		pattern:
-			/-----BEGIN [^-\r\n]*PRIVATE KEY[^-\r\n]*-----(?:[\s\S]*?-----END [^-\r\n]*PRIVATE KEY[^-\r\n]*-----|[^\r\n]*(?:\r?\n(?!\r?\n|[ \t]*### )[^\r\n]*)*)/gu,
+			/-----BEGIN [^-\r\n]*PRIVATE KEY[^-\r\n]*-----(?:[ \t]*[^ \t\r\n][^\r\n]*|[ \t]*(?:(?!\r?\n(?:[ \t]*(?:\r?\n|$)|### ))[\s\S])*?-----END [^-\r\n]*PRIVATE KEY[^-\r\n]*-----|[ \t]*(?:\r?\n(?![ \t]*(?:\r?\n|$)|### )[^\r\n]*)*)/gu,
 		replacement: REDACTION_PLACEHOLDER,
 	},
 	{

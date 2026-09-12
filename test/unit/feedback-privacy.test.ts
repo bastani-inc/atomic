@@ -577,6 +577,98 @@ describe("feedback privacy core", () => {
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
 		}
 	});
+	test("redacts balanced unquoted wrappers symmetrically without consuming following text", () => {
+		for (const [open, close] of [
+			["(", ")"],
+			["{", "}"],
+			["[", "]"],
+			["<", ">"],
+		] as const) {
+			for (const label of ["API_KEY", "**API_KEY:**", "token"]) {
+				const prefix = label.endsWith("**") ? label : `${label}=`;
+				for (const value of [
+					"opensesameSECRET",
+					"abc123",
+					"abc_def",
+					"nested(secret123)",
+					"p@ss'word",
+					'abc"def',
+				]) {
+					const input = `${prefix}${open}${value}${close} tail`;
+					const result = scrubFeedback("safe", input);
+					assert.equal(result.body, `${prefix}[REDACTED] tail`, input);
+					assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+					assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+				}
+			}
+		}
+	});
+	test("preserves Markdown links after credential labels", () => {
+		for (const input of [
+			"api_key: [docs](https://ex.invalid/k) tail",
+			"API_KEY=[documentation](https://ex.invalid/a_(b)) and notes",
+			"token: [docs][reference] tail",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+	});
+	// Greptile 3995353559, issue #2799: unquoted wrappers never span report lines.
+	test("bounds all unquoted wrappers to one line", () => {
+		for (const [open, close] of [
+			["(", ")"],
+			["{", "}"],
+			["[", "]"],
+			["<", ">"],
+		] as const) {
+			for (const newline of ["\n", "\r\n"]) {
+				const report = `${newline}The CLI crashed.${newline}I expected success${close}`;
+				const result = scrubFeedback("safe", `api_key=${open}abc${report}`);
+				assert.equal(result.body, `api_key=[REDACTED]${report}`);
+				assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			}
+		}
+	});
+	test("scrubs suffixes after balanced values without leaking or duplicating placeholders", () => {
+		for (const value of [
+			"(abc123)tail",
+			"{abc123}tail",
+			"[abc123]tail",
+			"<abc123>tail",
+			"<your-key-here>tail",
+			"()tail",
+			'["a","b"]',
+		]) {
+			const result = scrubFeedback("safe", `API_KEY=${value}`);
+			assert.equal(result.body, "API_KEY=[REDACTED]");
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("preserves already-redacted wrapped values and still scrubs link query credentials", () => {
+		for (const [open, close] of [
+			["(", ")"],
+			["{", "}"],
+			["[", "]"],
+			["<", ">"],
+		] as const) {
+			const body = `API_KEY=${open}[REDACTED]${close}`;
+			assert.deepEqual(scrubFeedback("safe", body), { title: "safe", body, replacements: [] });
+			const provider = scrubFeedback("safe", `API_KEY=${open}sk-${"A".repeat(24)}${close}`);
+			assert.equal(provider.body, body);
+			assert.deepEqual(provider.replacements, [{ category: "openai-token", count: 1 }]);
+		}
+		const link = scrubFeedback("safe", "api_key: [docs](https://ex.invalid/?token=abc123) tail");
+		assert.equal(link.body, "api_key: [docs](https://ex.invalid/?token=[REDACTED]) tail");
+		assert.deepEqual(link.replacements, [{ category: "credential-assignment", count: 1 }]);
+	});
+	test("treats balanced strong-name values as credentials rather than guessing prose", () => {
+		for (const input of ["api_key: (see the docs)", "API_KEY={a value}", "API_KEY=[a value]"]) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, input.replace(/[({[].*$/u, "[REDACTED]"));
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+	});
 
 	test("scrubs PGP and truncation-orphaned private-key blocks and bare provider tokens", () => {
 		const tokens = [
@@ -616,6 +708,35 @@ describe("feedback privacy core", () => {
 			),
 		);
 		assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+	});
+	test("keeps contiguous report lines after private-key marker mentions", () => {
+		const marker = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		for (const newline of ["\n", "\r\n"]) {
+			const report = `${newline}and then the app exited.${newline}Steps: run atomic.`;
+			for (const trailing of [" text", " appeared in a log", "\ttext"]) {
+				const result = scrubFeedback("safe", `A log line contained ${marker}${trailing}${report}`);
+				assert.equal(result.body, `A log line contained [REDACTED]${report}`);
+				assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			}
+		}
+	});
+	test("scrubs private-key marker-only lines within hard report boundaries", () => {
+		const begin = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const end = ["-----END RSA", "PRIVATE KEY-----"].join(" ");
+		for (const newline of ["\n", "\r\n"]) {
+			for (const boundary of [`${newline}${newline}`, `${newline} \t${newline}`, `${newline}### Logs${newline}`]) {
+				for (const ending of ["", `${newline}${end}`]) {
+					const remainder = `${boundary}report remains${ending}`;
+					const result = scrubFeedback("safe", `${begin}${newline}keymaterial${remainder}`);
+					assert.equal(result.body, `[REDACTED]${remainder}`);
+					assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+				}
+			}
+			for (const ending of ["", `${newline}${end}`]) {
+				assert.equal(scrubFeedback("safe", `${begin} \t${newline}keymaterial${ending}`).body, "[REDACTED]");
+			}
+		}
 	});
 	test("bounds diagnostics with count-only truncation notices", () => {
 		const stack = boundStackTrace(
@@ -680,6 +801,13 @@ describe("feedback privacy core", () => {
 			assert.equal(second.body, first.body);
 			assert.deepEqual(second.replacements, []);
 		}
+	});
+	test("does not rescan the line prefix for every embedded quote", () => {
+		const input = `${"x".repeat(32_000)} token=${"`".repeat(32_000)}`;
+		const started = performance.now();
+		const result = scrubFeedback("safe", input);
+		assert.ok(performance.now() - started < STRUCTURAL_SCAN_TIMEOUT_MS);
+		assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
 	});
 	test("keeps blank-line boundary scanning responsive", () => {
 		const input = `API_KEY="v${"\n".repeat(32_000)}tail"`;

@@ -66,6 +66,12 @@ What credential-export forms guarantee:
 
 What they do **not** do: once the credential is on stdout it is ordinary text in your shell, your pipeline, and possibly your shell history and process listing. Prefer `print-bearer-token`, whose output expires, over a long-lived API key. Do not embed any credential-export form in a script that logs its own output.
 
+## Reviewing scrubbed feedback
+
+Always review feedback before publishing, even when a draft has redaction markers. Feedback privacy scrubbing recognizes credential syntax, not intent. A strong-name assignment such as `api_key: (see the docs)` is redacted as a whole wrapped value. Markdown links, complete template placeholders, and the literal `<your-key-here>` example are preserved; remove real secrets manually if they use those forms.
+
+Quoted credentials can span contiguous nonblank lines. Unquoted bracket, brace, parenthesis, and angle wrappers are limited to one line. Blank lines and `### ` report headings are hard boundaries, including for private-key blocks. Secrets continuing beyond those boundaries require manual removal. A private-key BEGIN marker with trailing text is scrubbed only to that line's end; a marker-only line consumes contiguous text through its END marker or the next hard boundary. Check both for remaining secrets and for useful report text that was redacted.
+
 ## Reporting Security Issues
 
 To report a security issue, follow the repository [Security Policy](https://github.com/bastani-inc/atomic/blob/main/SECURITY.md). Do not open a public issue for security-sensitive reports.
