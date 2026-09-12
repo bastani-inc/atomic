@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
+import { type Static, Type } from "typebox";
+import { Check } from "typebox/value";
 import { FEEDBACK_REPOSITORY, ISSUE_LABELS } from "./draft.js";
 import { scrubFeedback } from "./privacy.js";
 export type IssueSubmissionRequest = Readonly<
 	Record<"owner" | "repo" | "title" | "body", string> & { labels: readonly string[] }
 >;
+type IssueSubmissionResponse = Readonly<{ html_url: string }>;
 export type IssueSubmissionTransport = {
-	createIssue(request: IssueSubmissionRequest, signal?: AbortSignal): Promise<unknown>;
+	createIssue(request: IssueSubmissionRequest, signal?: AbortSignal): Promise<IssueSubmissionResponse | undefined>;
 };
 const messages = {
 	authentication: "GitHub authentication failed. The reviewed draft was not posted.",
@@ -51,18 +54,69 @@ function failure(code: FeedbackSubmissionFailure, extra: FailureExtra = {}): Fee
 	const message = extra.existingUrl ? `${messages[code]} Existing issue: ${extra.existingUrl}` : messages[code];
 	return { ok: false, code, message, ...extra };
 }
-const record = (value: object): Record<string, unknown> => value as Record<string, unknown>;
-const toolResult = (entry: BranchEntry, name: string): Record<string, unknown> | undefined => {
+type MessageContent =
+	| Readonly<{ type: "text"; text: string }>
+	| Readonly<{ type: "toolCall"; name: string | undefined }>;
+type SubmissionMessage = Readonly<{
+	role: string;
+	toolName: string | undefined;
+	isError: boolean;
+	content: string | readonly MessageContent[];
+	details: object | undefined;
+}>;
+// Only untrusted ingress uses unknown; callers receive validated domain projections.
+const isObject = (value: unknown): value is object => typeof value === "object" && value !== null;
+function messageContent(value: unknown): string | readonly MessageContent[] {
+	if (typeof value === "string") return value;
+	if (!Array.isArray(value)) return [];
+	const content: MessageContent[] = [];
+	for (const item of value) {
+		if (!isObject(item) || !("type" in item)) continue;
+		if (item.type === "text" && "text" in item && typeof item.text === "string")
+			content.push({ type: "text", text: item.text });
+		else if (item.type === "toolCall")
+			content.push({
+				type: "toolCall",
+				name: "name" in item && typeof item.name === "string" ? item.name : undefined,
+			});
+	}
+	return content;
+}
+function submissionMessage(value: object): SubmissionMessage | undefined {
+	if (!isObject(value) || !("role" in value) || typeof value.role !== "string") return;
+	return {
+		role: value.role,
+		toolName: "toolName" in value && typeof value.toolName === "string" ? value.toolName : undefined,
+		isError: "isError" in value && value.isError === true,
+		content: messageContent("content" in value ? value.content : undefined),
+		details: "details" in value && isObject(value.details) ? value.details : undefined,
+	};
+}
+const toolResult = (entry: BranchEntry, name: string): SubmissionMessage | undefined => {
 	if (entry.type !== "message" || !entry.message) return;
-	const message = record(entry.message);
-	return message.role === "toolResult" && message.toolName === name ? message : undefined;
+	const message = submissionMessage(entry.message);
+	return message?.role === "toolResult" && message.toolName === name ? message : undefined;
 };
-function contentText(content: unknown, separator = ""): string {
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((item) => (typeof item === "object" && item && record(item).type === "text" ? record(item).text : ""))
-		.filter((text): text is string => typeof text === "string")
-		.join(separator);
+function contentText(content: SubmissionMessage["content"], separator = ""): string {
+	return typeof content === "string"
+		? ""
+		: content
+				.filter((item) => item.type === "text")
+				.map((item) => item.text)
+				.join(separator);
+}
+const preparedResultSchema = Type.Object({
+	kind: Type.Union([Type.Literal("bug"), Type.Literal("enhancement")]),
+	title: Type.String(),
+	body: Type.String(),
+	repository: Type.Object({
+		owner: Type.Literal(FEEDBACK_REPOSITORY.owner),
+		repo: Type.Literal(FEEDBACK_REPOSITORY.repo),
+	}),
+});
+type PreparedResult = Static<typeof preparedResultSchema>;
+function preparedResult(details: object | undefined): PreparedResult | undefined {
+	return Check(preparedResultSchema, details) ? details : undefined;
 }
 export function formatPreparedDisplay(input: FeedbackSubmissionInput, privacyNote: string): string {
 	return `Repository: ${FEEDBACK_REPOSITORY.owner}/${FEEDBACK_REPOSITORY.repo}\nKind: ${input.kind}\n\n${input.title}\n\n${input.body}\n\nPrivacy scrubbed: ${privacyNote}`;
@@ -70,18 +124,9 @@ export function formatPreparedDisplay(input: FeedbackSubmissionInput, privacyNot
 type PreparedDraft = { readonly draft: FeedbackSubmissionInput; readonly display: string };
 function prepared(entry: BranchEntry): PreparedDraft | undefined {
 	const message = toolResult(entry, "feedback_prepare_issue");
-	if (!message || message.isError === true || typeof message.details !== "object" || !message.details) return;
-	const details = record(message.details);
-	const repository =
-		typeof details.repository === "object" && details.repository ? record(details.repository) : undefined;
-	if (
-		(details.kind !== "bug" && details.kind !== "enhancement") ||
-		typeof details.title !== "string" ||
-		typeof details.body !== "string" ||
-		repository?.owner !== FEEDBACK_REPOSITORY.owner ||
-		repository.repo !== FEEDBACK_REPOSITORY.repo
-	)
-		return;
+	if (!message || message.isError) return;
+	const details = preparedResult(message.details);
+	if (!details) return;
 	const draft: FeedbackSubmissionInput = { kind: details.kind, title: details.title, body: details.body };
 	const display = contentText(message.content);
 	const prefix = formatPreparedDisplay(draft, "");
@@ -89,8 +134,8 @@ function prepared(entry: BranchEntry): PreparedDraft | undefined {
 }
 function roleText(entry: BranchEntry, role: "assistant" | "user"): string | undefined {
 	if (entry.type !== "message" || !entry.message) return;
-	const message = record(entry.message);
-	if (message.role !== role) return;
+	const message = submissionMessage(entry.message);
+	if (message?.role !== role) return;
 	const text = typeof message.content === "string" ? message.content : contentText(message.content, "\n");
 	return text || undefined;
 }
@@ -108,32 +153,42 @@ function onlySubmissionActivity(branch: readonly BranchEntry[], fingerprint: str
 		const user = roleText(entry, "user");
 		if (user !== undefined) return approved(user);
 		const result = toolResult(entry, "feedback_submit_issue");
-		if (result && typeof result.details === "object" && result.details) {
-			const details = record(result.details);
-			if (details.ok !== false || details.fingerprint !== fingerprint || typeof details.message !== "string")
+		if (result?.details) {
+			const details = result.details;
+			if (
+				!("ok" in details) ||
+				details.ok !== false ||
+				!("fingerprint" in details) ||
+				details.fingerprint !== fingerprint ||
+				!("message" in details) ||
+				typeof details.message !== "string"
+			)
 				return false;
 			failureMessage = details.message;
 			return true;
 		}
 		const assistant = roleText(entry, "assistant");
-		if (failureMessage && assistant === failureMessage) return true;
 		if (!entry.message) return false;
-		const message = record(entry.message);
-		if (message.role !== "assistant" || !Array.isArray(message.content)) return false;
-		const calls = message.content.filter((item) => item?.type === "toolCall");
+		const message = submissionMessage(entry.message);
+		if (message?.role !== "assistant") return false;
+		if (failureMessage && assistant === failureMessage && typeof message.content === "string") return true;
+		if (typeof message.content === "string") return false;
+		const calls = message.content.filter((item) => item.type === "toolCall");
+		if (failureMessage && assistant === failureMessage && calls.length === 0) return true;
 		return calls.length > 0 && calls.every((call) => call.name === "feedback_submit_issue");
 	});
 }
 function syncSubmissionHistory(branch: readonly BranchEntry[], state: SessionState, fingerprint: string): void {
 	for (const entry of branch) {
 		const result = toolResult(entry, "feedback_submit_issue");
-		const details =
-			result && typeof result.details === "object" && result.details ? record(result.details) : undefined;
-		if (details?.ok === true && details.fingerprint === fingerprint && typeof details.url === "string")
+		const details = result?.details;
+		if (!details || !("ok" in details) || !("fingerprint" in details) || details.fingerprint !== fingerprint)
+			continue;
+		if (details.ok === true && "url" in details && typeof details.url === "string")
 			state.successes.set(fingerprint, details.url);
 		else if (
-			details?.ok === false &&
-			details.fingerprint === fingerprint &&
+			details.ok === false &&
+			"approvalFingerprint" in details &&
 			typeof details.approvalFingerprint === "string"
 		)
 			state.attempts.set(fingerprint, details.approvalFingerprint);
@@ -165,7 +220,7 @@ export async function submitFeedbackIssue(
 	)
 		return failure("stale-draft");
 	const approvalIndex = branch.findLastIndex(
-		(entry, index) => index > draftIndex && entry.message && record(entry.message).role === "user",
+		(entry, index) => index > draftIndex && entry.message && submissionMessage(entry.message)?.role === "user",
 	);
 	const approvalText = approvalIndex < 0 ? undefined : roleText(branch[approvalIndex], "user");
 	if (!approvalText || !approved(approvalText)) return failure("missing-approval");
@@ -190,7 +245,7 @@ export async function submitFeedbackIssue(
 			runtime.signal,
 		);
 		if (typeof response !== "object" || !response) return failure("malformed-response", attempt);
-		const url = record(response).html_url;
+		const url = response.html_url;
 		if (typeof url !== "string" || !/^https:\/\/github\.com\/bastani-inc\/atomic\/issues\/[1-9]\d*$/u.test(url))
 			return failure("malformed-response", attempt);
 		state.successes.set(fingerprint, url);
@@ -237,7 +292,10 @@ export function createGitHubIssueTransport(
 				throw new Error(messages.network);
 			}
 			if (!response.ok) throw responseFailure(response);
-			return response.json().catch(() => undefined);
+			const value: unknown = await response.json().catch(() => undefined);
+			return isObject(value) && "html_url" in value && typeof value.html_url === "string"
+				? { html_url: value.html_url }
+				: undefined;
 		},
 	};
 }

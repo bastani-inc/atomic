@@ -9,6 +9,10 @@ All notable changes to this project will be documented in this file.
 - Added bug investigation through the existing debugger with a fresh, foreground handoff, bounded privacy-scrubbed diagnostics, extension activity, and path-only worktree disclosure. Unavailable investigations leave an editable draft with honest unknowns ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Added approval-gated, privacy-scrubbed GitHub feedback submission with duplicate protection and safe, distinct authentication, permission, rate-limit, validation, network, abort, and malformed-response failures ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 
+### Changed
+
+- Custom issue transports now return `{ html_url: string }` or `undefined` for malformed replies. The GitHub transport validates that shape and discards unused response fields ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+
 ### Fixed
 
 - Fixed privacy scrubbing for spaced credential labels, Markdown-decorated labels, and unquoted values while preserving structural delimiters, matching Markdown wrappers, and punctuation within values ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
