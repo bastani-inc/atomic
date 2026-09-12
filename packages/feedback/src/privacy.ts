@@ -24,7 +24,7 @@ type RedactionRule =
 const credentialAssignment =
 	/(?<!\w)((?:[*_~`]{1,8})?((?:(?:api|access)[ \t]+)?[\w-]{0,127}(?:key|token|password|secret)\d*)[*_~`]{0,8})["']?([ \t]*)([:=])([ \t]*(?:[*_~`]{1,8})?[ \t]*)/giu;
 function isStrongCredentialName(name: string): boolean {
-	const normalized = name.toLowerCase().replaceAll(/[ -]/gu, "_");
+	const normalized = name.toLowerCase().replaceAll(/[ \t-]+/gu, "_");
 	if (/^(?:key|token|password|secret)\d*$/u.test(normalized)) return false;
 	return (
 		normalized.includes("password") ||
@@ -209,10 +209,12 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 	let coveredUntil = 0;
 	for (const [assignmentIndex, match] of assignmentMatches.entries()) {
 		const assignmentStart = match.index ?? 0;
-		if (assignmentStart < coveredUntil) continue;
 		const prefix = match[0];
 		const keyName = match[2] ?? "";
 		const valueStart = assignmentStart + prefix.length;
+		// The optional spaced name prefix may start inside the preceding value.
+		// Only skip values already covered, not untouched values with overlapping names.
+		if (valueStart < coveredUntil) continue;
 		const first = input[valueStart];
 		if (first === '"' || first === "'") {
 			const quote = first;
@@ -419,7 +421,7 @@ const rules = [
 	{
 		category: "private-key",
 		pattern:
-			/-----BEGIN [^-\r\n]*PRIVATE KEY[^-\r\n]*-----(?:[ \t]*[^ \t\r\n][^\r\n]*|[ \t]*(?:(?!\r?\n(?:[ \t]*(?:\r?\n|$)|### ))[\s\S])*?-----END [^-\r\n]*PRIVATE KEY[^-\r\n]*-----|[ \t]*(?:\r?\n(?![ \t]*(?:\r?\n|$)|### )[^\r\n]*)*)/gu,
+			/-----BEGIN [^-\r\n]*PRIVATE KEY[^-\r\n]*-----(?:[ \t]*(?:(?!\r?\n(?:[ \t]*(?:\r?\n|$)|### ))[\s\S])*?-----END [^-\r\n]*PRIVATE KEY[^-\r\n]*-----|[ \t]*[^ \t\r\n][^\r\n]*|[ \t]*(?:\r?\n(?![ \t]*(?:\r?\n|$)|### )[^\r\n]*)*)/gu,
 		replacement: REDACTION_PLACEHOLDER,
 	},
 	{

@@ -577,6 +577,52 @@ describe("feedback privacy core", () => {
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
 		}
 	});
+	// Issue #2799, r22 F-A: a prior value can overlap the next candidate's name, not its value.
+	test("scrubs adjacent assignments whose names overlap a preceding unquoted value", () => {
+		for (const [input, expected] of [
+			["export API_KEY=api ACCESS_TOKEN=abcd1234", "export API_KEY=[REDACTED] ACCESS_TOKEN=[REDACTED]"],
+			[
+				"atomic run --api_key=api --access_token=s3cr3tvalue",
+				"atomic run --api_key=[REDACTED] --access_token=[REDACTED]",
+			],
+			["api_key=api access_token=abcd1234", "api_key=[REDACTED] access_token=[REDACTED]"],
+			["API_KEY=access token: abcd1234", "API_KEY=[REDACTED] token: [REDACTED]"],
+			["api_key=v1-api access_token=abcd1234", "api_key=[REDACTED] access_token=[REDACTED]"],
+			["auth: api_key=access refresh_token=abcd1234", "auth: api_key=[REDACTED] refresh_token=[REDACTED]"],
+		]) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected, input);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 2 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body), {
+				title: "safe",
+				body: expected,
+				replacements: [],
+			});
+		}
+	});
+	test("recognizes repeated spaces and tabs in strong credential name prefixes", () => {
+		for (const name of ["api key", "api  key", "api\tkey", "access\tsecret"]) {
+			for (const prefix of ["", "api_key=api "]) {
+				for (const value of ["bSECRET222", "(bSECRET222)", '"bSECRET222"', "'bSECRET222'"]) {
+					const input = `${prefix}${name}: ${value}`;
+					const result = scrubFeedback("safe", input);
+					const replacement = value.startsWith('"')
+						? '"[REDACTED]"'
+						: value.startsWith("'")
+							? "'[REDACTED]'"
+							: "[REDACTED]";
+					const expected = `${prefix ? "api_key=[REDACTED] " : ""}${name}: ${replacement}`;
+					assert.equal(result.body, expected, input);
+					assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: prefix ? 2 : 1 }]);
+					assert.deepEqual(scrubFeedback(result.title, result.body), {
+						title: "safe",
+						body: expected,
+						replacements: [],
+					});
+				}
+			}
+		}
+	});
 	test("redacts balanced unquoted wrappers symmetrically without consuming following text", () => {
 		for (const [open, close] of [
 			["(", ")"],
@@ -608,6 +654,8 @@ describe("feedback privacy core", () => {
 			"api_key: [docs](https://ex.invalid/k) tail",
 			"API_KEY=[documentation](https://ex.invalid/a_(b)) and notes",
 			"token: [docs][reference] tail",
+			// Greptile 3995438933, issue #2799: link text remains manual-review-only, not classified as prose or a secret.
+			"API_KEY=[hunter2](https://example.invalid)",
 		]) {
 			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
 		}
@@ -718,6 +766,30 @@ describe("feedback privacy core", () => {
 				assert.equal(result.body, `A log line contained [REDACTED]${report}`);
 				assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
 				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			}
+		}
+	});
+	// Issue #2799, r22 F-B: a contiguous END marker identifies a complete block.
+	test("scrubs terminated private-key blocks with text on the BEGIN line", () => {
+		const begin = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const end = ["-----END RSA", "PRIVATE KEY-----"].join(" ");
+		for (const newline of ["\n", "\r\n"]) {
+			for (const trailing of [" text", "\ttext", "inlineKeyMaterial"]) {
+				const result = scrubFeedback(
+					"safe",
+					`${begin}${trailing}${newline}keymaterial${newline}${end}${newline}report`,
+				);
+				assert.equal(result.body, `[REDACTED]${newline}report`);
+				assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+				for (const boundary of [
+					`${newline}${newline}`,
+					`${newline} \t${newline}`,
+					`${newline}### Logs${newline}`,
+				]) {
+					const rest = `${boundary}keymaterial${newline}${end}`;
+					assert.equal(scrubFeedback("safe", `${begin}${trailing}${rest}`).body, `[REDACTED]${rest}`);
+				}
 			}
 		}
 	});
