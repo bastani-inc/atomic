@@ -313,6 +313,19 @@ describe("feedback privacy core", () => {
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
 		}
 	});
+	test("preserves decorated credential labels in ordinary prose", () => {
+		for (const input of [
+			"The `password:` field is not masked in the TUI",
+			"The `token:` counts are wrong in the footer",
+			"**Password:** field is not masked",
+			"**Password:** not set in CI",
+			"*token:* counts are wrong",
+			"`secret:` none of the panes refresh",
+			"- `password:` prompts appear twice",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+	});
 	test("bounds marker-only credential candidates", () => {
 		const input = "*".repeat(32_000);
 		const started = performance.now();
@@ -569,6 +582,7 @@ describe("feedback privacy core", () => {
 			"API_KEY={{ VAR }}[REDACTED]secret",
 		]) {
 			const first = scrubFeedback("safe", input);
+			assert.equal(first.body, input.replace(/\[REDACTED\]secret/gu, "[REDACTED]"));
 			const second = scrubFeedback(first.title, first.body);
 			assert.equal(second.body, first.body);
 			assert.deepEqual(second.replacements, []);
