@@ -11,6 +11,7 @@ const MAX_PATHS = 100;
 const MAX_PENDING_SNAPSHOTS = 8;
 const MAX_BASELINE_PATHS = 10_000;
 const MAX_BASELINE_CHARS = 256 * 1024;
+const STATUS_TIMEOUT_MS = 10_000;
 type Baseline = Set<string> | "too-large" | "worktree-unavailable";
 const snapshots = new WeakMap<object, Map<string, Baseline>>();
 export interface FeedbackDiagnostics {
@@ -39,7 +40,11 @@ export interface DiagnosticsInput {
 export interface DiagnosticsRuntime {
 	readonly ctx: ExtensionContext;
 	readonly loadedExtensions: readonly LoadedExtensionInfo[];
-	exec(command: string, args: string[], options: { cwd: string; signal?: AbortSignal }): Promise<ExecResult>;
+	exec(
+		command: string,
+		args: string[],
+		options: { cwd: string; signal?: AbortSignal; timeout?: number },
+	): Promise<ExecResult>;
 }
 function safe(text: string): string {
 	return scrubFeedback("", text).body;
@@ -65,27 +70,55 @@ function recentFailures(ctx: ExtensionContext): string[] {
 		.slice(-MAX_FAILURES)
 		.map((text) => safe(text).slice(0, MAX_FAILURE_CHARS));
 }
-async function worktree(runtime: DiagnosticsRuntime): Promise<{ paths: string[]; createdPaths: string[] } | undefined> {
+async function worktree(
+	runtime: DiagnosticsRuntime,
+	captureBaseline: boolean,
+	before: Baseline | undefined,
+): Promise<{ paths: string[]; createdPaths: string[]; baseline: Baseline | undefined } | undefined> {
 	try {
+		// The host exec API buffers stdout and has no output cap; bound our parsing and retention here.
 		const status = await runtime.exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
 			cwd: runtime.ctx.cwd,
+			timeout: STATUS_TIMEOUT_MS,
 		});
 		if (status.code !== 0 || status.killed) return undefined;
-		if (status.stdout && !status.stdout.endsWith("\0")) return undefined;
-		const records = status.stdout.split("\0");
-		records.pop(); // Remove the final terminator, not an interior empty/malformed record.
+		const output = status.stdout;
+		if (output && !output.endsWith("\0")) return undefined;
 		const paths: string[] = [];
 		const createdPaths: string[] = [];
-		for (let i = 0; i < records.length; i++) {
-			const record = records[i];
-			if (record.length <= 3 || !/^[ MTADRCU?!]{2} /u.test(record)) return undefined;
-			const path = record.slice(3);
-			paths.push(path);
-			if (record.startsWith("??") || record.startsWith("A")) createdPaths.push(path);
-			// Porcelain -z emits the destination first, followed by a separate source path.
-			if (/^(?:[RC].|.[RC])/u.test(record) && !records[++i]) return undefined;
+		let baseline: Baseline | undefined = captureBaseline ? new Set<string>() : undefined;
+		let pathCount = 0;
+		let pathChars = 0;
+		for (let start = 0; start < output.length; ) {
+			const end = output.indexOf("\0", start);
+			const x = output[start];
+			const y = output[start + 1];
+			if (end - start <= 3 || !" MTADRCU?!".includes(x) || !" MTADRCU?!".includes(y) || output[start + 2] !== " ")
+				return undefined;
+			pathCount++;
+			pathChars += end - start - 3;
+			// Never truncate the comparison set: omitted old paths would appear newly created.
+			if (baseline instanceof Set && (pathCount > MAX_BASELINE_PATHS || pathChars > MAX_BASELINE_CHARS))
+				baseline = "too-large";
+			const compare =
+				before instanceof Set &&
+				createdPaths.length < MAX_PATHS &&
+				((x === "?" && y === "?") || x === "A" || x === "C" || y === "C");
+			if (paths.length < MAX_PATHS || baseline instanceof Set || compare) {
+				const path = output.slice(start + 3, end);
+				if (paths.length < MAX_PATHS) paths.push(path);
+				if (baseline instanceof Set) baseline.add(path);
+				if (compare && before instanceof Set && !before.has(path)) createdPaths.push(path);
+			}
+			start = end + 1;
+			// Porcelain -z emits the destination first, followed by a separate nonempty source path.
+			if (x === "R" || x === "C" || y === "R" || y === "C") {
+				const sourceEnd = output.indexOf("\0", start);
+				if (sourceEnd <= start) return undefined;
+				start = sourceEnd + 1;
+			}
 		}
-		return { paths, createdPaths };
+		return { paths, createdPaths, baseline };
 	} catch {
 		return undefined;
 	}
@@ -98,21 +131,15 @@ function sessionSnapshots(ctx: ExtensionContext): Map<string, Baseline> {
 	}
 	return session;
 }
-function baseline(paths: string[]): Baseline {
-	// Never truncate the comparison set: omitted old paths would appear newly created.
-	if (paths.length > MAX_BASELINE_PATHS || paths.reduce((chars, path) => chars + path.length, 0) > MAX_BASELINE_CHARS)
-		return "too-large";
-	return new Set(paths);
-}
 export async function collectFeedbackDiagnostics(
 	input: DiagnosticsInput,
 	runtime: DiagnosticsRuntime,
 ): Promise<FeedbackDiagnostics> {
-	const current = await worktree(runtime);
 	const session = sessionSnapshots(runtime.ctx);
 	const before = input.phase === "after" && input.since ? session.get(input.since) : undefined;
 	const snapshotId = input.phase === "before" ? `feedback-${randomUUID()}` : undefined;
-	const retained = !current ? "worktree-unavailable" : snapshotId ? baseline(current.paths) : before;
+	const current = await worktree(runtime, snapshotId !== undefined, before);
+	const retained = !current ? "worktree-unavailable" : snapshotId ? current.baseline : before;
 	if (snapshotId && retained) {
 		session.set(snapshotId, retained);
 		while (session.size > MAX_PENDING_SNAPSHOTS) session.delete(session.keys().next().value!);
@@ -132,16 +159,9 @@ export async function collectFeedbackDiagnostics(
 			.map(({ name }) => safe(name).replaceAll("\\", "/").split("/").slice(-2).join("/"))
 			.slice(0, MAX_EXTENSIONS),
 		recentFailures: recentFailures(runtime.ctx),
-		worktree: { paths: current?.paths.slice(0, MAX_PATHS).map(safe) ?? [], available: current !== undefined },
+		worktree: { paths: current?.paths.map(safe) ?? [], available: current !== undefined },
 		...(snapshotId ? { snapshotId } : {}),
-		...(current && before instanceof Set
-			? {
-					createdPaths: current.createdPaths
-						.filter((path) => !before.has(path))
-						.slice(0, MAX_PATHS)
-						.map(safe),
-				}
-			: {}),
+		...(current && before instanceof Set ? { createdPaths: current.createdPaths.map(safe) } : {}),
 		...(baselineUnavailable ? { baselineUnavailable } : {}),
 	};
 }

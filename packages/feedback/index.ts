@@ -105,7 +105,7 @@ export default function feedback(pi: ExtensionAPI): void {
 							repro: params.repro ?? "",
 							expected: params.expected,
 							version: params.version,
-							extensions: params.extensions,
+							extensions: params.extensions?.trim() ? params.extensions : "Not reported",
 							isolation: params.isolation?.trim() ? params.isolation : "Not tested without extensions",
 							evidence: params.evidence,
 							unknowns: params.unknowns,

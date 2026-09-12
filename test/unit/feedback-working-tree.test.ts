@@ -171,3 +171,81 @@ test("consumes snapshots once, isolates sessions, and ignores since during befor
 	assert.deepEqual(unchanged.createdPaths, []);
 	assert.equal(unchanged.worktree.available, true);
 });
+
+// #2799: copy destinations are creations; their source records are not status records.
+test("finds copy destinations after the displayed old paths and caps only new paths", async () => {
+	const ctx = { cwd: root, mode: "print", sessionManager: SM.inMemory(root) } as Partial<Ctx> as Ctx;
+	let status = Array.from({ length: 150 }, (_, i) => `?? old-${i}\0`).join("");
+	const runtime = { ctx, loadedExtensions: [], exec: async () => ({ code: 0, stdout: status }) };
+	const before = await collect({ report: "bug", phase: "before" }, runtime);
+	status += "C  copied.txt\0source with\nnewline\0 C unstaged-copy.txt\0?? source-not-created\0";
+	status += Array.from({ length: 150 }, (_, i) => `A  new-${i}\0`).join("");
+	const after = await collect({ report: "bug", phase: "after", since: before.snapshotId }, runtime);
+	assert.deepEqual(after.worktree.paths, before.worktree.paths);
+	assert.deepEqual(after.createdPaths, [
+		"copied.txt",
+		"unstaged-copy.txt",
+		...Array.from({ length: 98 }, (_, i) => `new-${i}`),
+	]);
+});
+
+// #2799: a stalled git status must receive a bounded host execution deadline.
+test("sets a finite git status timeout and rejects killed partial output", async () => {
+	const ctx = { cwd: root, mode: "print", sessionManager: SM.inMemory(root) } as Partial<Ctx> as Ctx;
+	let timeout: number | undefined;
+	const result = await collect(
+		{ report: "bug", phase: "before" },
+		{
+			ctx,
+			loadedExtensions: [],
+			exec: async (_command, _args, options) => {
+				timeout = options.timeout;
+				assert.equal(options.cwd, root);
+				return { code: 0, killed: true, stdout: "?? partial.txt\0" };
+			},
+		},
+	);
+	assert.ok(timeout !== undefined && timeout > 0 && timeout <= 10_000);
+	assert.equal(result.worktree.available, false);
+	assert.equal(result.baselineUnavailable, "worktree-unavailable");
+});
+
+// #2799: bounded retention must not stop validation of the rest of the NUL stream.
+test("rejects malformed records and rename sources even beyond retention limits", async () => {
+	const ctx = { cwd: root, mode: "print", sessionManager: SM.inMemory(root) } as Partial<Ctx> as Ctx;
+	const oversized = Array.from({ length: 10_001 }, (_, i) => `?? old-${i}\0`).join("");
+	for (const tail of [
+		"\0",
+		"?? \0",
+		"XX invalid\0",
+		"??missing-space\0",
+		"?? partial",
+		"R  renamed\0",
+		" C copied\0\0",
+	]) {
+		const result = await collect(
+			{ report: "bug", phase: "before" },
+			{ ctx, loadedExtensions: [], exec: async () => ({ code: 0, stdout: oversized + tail }) },
+		);
+		assert.equal(result.worktree.available, false, JSON.stringify(tail));
+		assert.deepEqual(result.worktree.paths, []);
+		assert.equal(result.baselineUnavailable, "worktree-unavailable");
+	}
+});
+
+// #2799: the inclusive baseline limits must preserve the complete comparison set.
+test("compares complete baselines at the path and character limits", async () => {
+	const ctx = { cwd: root, mode: "print", sessionManager: SM.inMemory(root) } as Partial<Ctx> as Ctx;
+	for (const paths of [
+		Array.from({ length: 10_000 }, (_, i) => `old-${i}`),
+		Array.from({ length: 1_024 }, (_, i) => `${String(i).padStart(4, "0")}${"x".repeat(252)}`),
+	]) {
+		let status = paths.map((path) => `?? ${path}\0`).join("");
+		const runtime = { ctx, loadedExtensions: [], exec: async () => ({ code: 0, stdout: status }) };
+		const before = await collect({ report: "bug", phase: "before" }, runtime);
+		assert.equal(before.baselineUnavailable, undefined);
+		status += "?? genuinely-new\0";
+		const after = await collect({ report: "bug", phase: "after", since: before.snapshotId }, runtime);
+		assert.deepEqual(after.createdPaths, ["genuinely-new"]);
+	}
+});
