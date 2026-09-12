@@ -28,6 +28,7 @@ For work that continues while you chat, follow [Background tasks](/background-ta
 
 - [Quickstart](/quickstart) - install, authenticate, and run a first session.
 - [Using Atomic](/usage) - interactive mode, slash commands, context files, and CLI reference.
+- [Feedback](/feedback) - draft, revise, and approve an Atomic bug report or enhancement in ordinary chat.
 - [Computer use](/computer-use) - work in desktop apps, browsers, and terminals across macOS, Linux, and Windows.
 - [Providers](/providers) - subscription and API-key setup for built-in providers.
 - [Environment variables](/environment-variables) - Atomic/Pi aliases, provider credentials, and bash session metadata.
