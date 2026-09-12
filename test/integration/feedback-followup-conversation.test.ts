@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, it, vi } from "vitest";
 import { getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
-import type { EnhancementFeedbackDraft } from "../../packages/feedback/src/draft.js";
+import type { BugFeedbackDraft, FeedbackDraft } from "../../packages/feedback/src/draft.js";
 import {
 	assistantMessages,
 	createFeedbackConversationHarness,
@@ -19,7 +19,7 @@ const initialDraft = {
 	why: "Improve accessibility",
 } as const;
 
-function prepareThenDisplay(draft: EnhancementFeedbackDraft = initialDraft): FauxResponseStep[] {
+function prepareThenDisplay(draft: FeedbackDraft = initialDraft): FauxResponseStep[] {
 	return [
 		fauxAssistantMessage(fauxToolCall("feedback_prepare_issue", draft), { stopReason: "toolUse" }),
 		(context) => {
@@ -80,6 +80,61 @@ describe("feedback follow-up conversation", () => {
 		assert.ok(revisedDraft.includes("Improve keyboard-only workflows"));
 		assert.ok(revisedDraft.includes("Repository: bastani-inc/atomic\nKind: enhancement"));
 		assert.ok(revisedDraft.includes("Privacy scrubbed: github-token (1)."));
+		assert.ok(!transcriptText(harness).includes(secret));
+		assertNoSubmission(harness);
+		assert.equal(fetcher.mock.calls.length, 0);
+	});
+
+	// #2799: revisions of bug reports must re-prepare too, not hand-edit the reviewed Markdown.
+	it("re-prepares a bug revision and displays the new exact scrubbed draft", async () => {
+		const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+		const fetcher = vi.fn();
+		vi.stubGlobal("fetch", fetcher);
+		const harness = await createFeedbackConversationHarness();
+		cleanups.push(harness.cleanup);
+		const bug: BugFeedbackDraft = {
+			kind: "bug",
+			title: "Keyboard navigation loses focus",
+			description: "Focus disappears after opening settings",
+			repro: "Open settings and press Tab",
+			expected: "Focus stays visible",
+			isolation: "Not tested without extensions",
+			evidence: "Investigation unavailable",
+			unknowns: "Cause is unknown",
+		};
+		harness.setResponses(prepareThenDisplay(bug));
+		await harness.session.prompt("/feedback Bug: settings loses keyboard focus. Open settings and press Tab.");
+		await settleTurn(harness);
+		const originalDisplay = assistantMessages(harness).at(-1);
+		assert.ok(originalDisplay);
+		harness.setResponses(
+			prepareThenDisplay({
+				...bug,
+				repro: "Open settings, press Tab twice, then close settings",
+				description: `Focus disappears after closing settings; diagnostic token ${secret}`,
+			}),
+		);
+
+		await harness.session.prompt(
+			"Please correct the steps: press Tab twice, then close settings. Remove private tokens.",
+		);
+
+		const prepared = preparedResults(harness);
+		assert.equal(prepared.length, 2);
+		assert.deepEqual(
+			prepared.map((result) => result.isError),
+			[false, false],
+		);
+		const revisedDisplay = assistantMessages(harness).at(-1);
+		assert.equal(revisedDisplay, `${getMessageText(prepared[1])}\n\nWould you like edits or approval?`);
+		assert.notEqual(revisedDisplay, originalDisplay);
+		assert.ok(revisedDisplay.includes("Repository: bastani-inc/atomic\nKind: bug"));
+		assert.ok(revisedDisplay.includes("Open settings, press Tab twice, then close settings"));
+		assert.ok(revisedDisplay.includes("Focus disappears after closing settings; diagnostic token [REDACTED]"));
+		assert.ok(revisedDisplay.includes("Privacy scrubbed: github-token (1)."));
+		assert.ok(revisedDisplay.includes("Not tested without extensions"));
+		assert.ok(revisedDisplay.includes("Cause is unknown"));
+		assert.ok(assistantMessages(harness).includes(originalDisplay));
 		assert.ok(!transcriptText(harness).includes(secret));
 		assertNoSubmission(harness);
 		assert.equal(fetcher.mock.calls.length, 0);

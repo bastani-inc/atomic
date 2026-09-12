@@ -21,6 +21,9 @@ test("feedback conversations receive the shipped revision and approval guidance"
 		assert.match(expanded, /display its exact prepared Markdown before asking again/);
 		assert.match(expanded, /never retry without fresh approval/);
 		assert.match(expanded, /Never launch a debugger for an enhancement/);
+		// #2799: bug revisions must not conflict with a one-shot preparation instruction.
+		assert.match(expanded, /When a bug is complete, call `feedback_prepare_issue` with `kind: "bug"`/);
+		assert.doesNotMatch(expanded, /call `feedback_prepare_issue` exactly once/);
 		assert.equal(harness.getPendingResponseCount(), 0);
 	} finally {
 		harness.cleanup();
