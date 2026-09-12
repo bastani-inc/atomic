@@ -145,3 +145,40 @@ test("bug preparation defaults missing extension activity honestly at the tool b
 		assert.ok(text.text.includes("**Reproduction without extensions:** Not tested without extensions"));
 	}
 });
+
+// #2799: diagnostic facts cannot substitute for required user report fields.
+test("bug preparation rejects missing raw fields even with every diagnostic fact", async () => {
+	let prepare: ToolDefinition | undefined;
+	feedback({
+		registerCommand: () => {},
+		registerTool: (tool: ToolDefinition) => {
+			if (tool.name === "feedback_prepare_issue") prepare = tool;
+		},
+	} as Pick<ExtensionAPI, "registerCommand" | "registerTool"> as ExtensionAPI);
+	assert.ok(prepare);
+	for (const field of ["description", "repro"] as const) {
+		for (const value of ["", " \t\n"]) {
+			await assert.rejects(
+				prepare.execute(
+					"prepare-incomplete-bug",
+					{
+						kind: "bug",
+						title: "Atomic crashes",
+						description: "It crashed",
+						repro: "Run atomic",
+						extensions: "example",
+						isolation: "Not tested without extensions",
+						evidence: "Crash observed",
+						unknowns: "Cause unknown",
+						debuggerPaths: "note.txt",
+						[field]: value,
+					},
+					undefined,
+					undefined,
+					{} as Parameters<ToolDefinition["execute"]>[4],
+				),
+				{ message: field === "description" ? "What happened? is required" : "Steps to reproduce is required" },
+			);
+		}
+	}
+});

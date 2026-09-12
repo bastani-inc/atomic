@@ -22,9 +22,14 @@ export interface FeedbackDiagnostics {
 	readonly model: { readonly id: string; readonly provider: string } | undefined;
 	readonly extensions: readonly string[];
 	readonly recentFailures: readonly string[];
-	readonly worktree: { readonly paths: readonly string[]; readonly available: boolean };
+	readonly worktree: {
+		readonly paths: readonly string[];
+		readonly available: boolean;
+		readonly truncated: boolean;
+	};
 	readonly snapshotId?: string;
 	readonly createdPaths?: readonly string[];
+	readonly createdPathsTruncated?: boolean;
 	readonly baselineUnavailable?: "missing" | "too-large" | "worktree-unavailable";
 }
 interface ExecResult {
@@ -74,7 +79,16 @@ async function worktree(
 	runtime: DiagnosticsRuntime,
 	captureBaseline: boolean,
 	before: Baseline | undefined,
-): Promise<{ paths: string[]; createdPaths: string[]; baseline: Baseline | undefined } | undefined> {
+): Promise<
+	| {
+			paths: string[];
+			truncated: boolean;
+			createdPaths: string[];
+			createdPathsTruncated: boolean;
+			baseline: Baseline | undefined;
+	  }
+	| undefined
+> {
 	try {
 		// The host exec API buffers stdout and has no output cap; bound our parsing and retention here.
 		const status = await runtime.exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
@@ -86,6 +100,7 @@ async function worktree(
 		if (output && !output.endsWith("\0")) return undefined;
 		const paths: string[] = [];
 		const createdPaths: string[] = [];
+		let createdPathsTruncated = false;
 		let baseline: Baseline | undefined = captureBaseline ? new Set<string>() : undefined;
 		let pathCount = 0;
 		let pathChars = 0;
@@ -102,13 +117,16 @@ async function worktree(
 				baseline = "too-large";
 			const compare =
 				before instanceof Set &&
-				createdPaths.length < MAX_PATHS &&
-				((x === "?" && y === "?") || x === "A" || x === "C" || y === "C");
+				!createdPathsTruncated &&
+				((x === "?" && y === "?") || x === "A" || x === "C" || y === "C" || x === "R" || y === "R");
 			if (paths.length < MAX_PATHS || baseline instanceof Set || compare) {
 				const path = output.slice(start + 3, end);
 				if (paths.length < MAX_PATHS) paths.push(path);
 				if (baseline instanceof Set) baseline.add(path);
-				if (compare && before instanceof Set && !before.has(path)) createdPaths.push(path);
+				if (compare && before instanceof Set && !before.has(path)) {
+					if (createdPaths.length < MAX_PATHS) createdPaths.push(path);
+					else createdPathsTruncated = true;
+				}
 			}
 			start = end + 1;
 			// Porcelain -z emits the destination first, followed by a separate nonempty source path.
@@ -118,7 +136,7 @@ async function worktree(
 				start = sourceEnd + 1;
 			}
 		}
-		return { paths, createdPaths, baseline };
+		return { paths, truncated: pathCount > MAX_PATHS, createdPaths, createdPathsTruncated, baseline };
 	} catch {
 		return undefined;
 	}
@@ -159,9 +177,15 @@ export async function collectFeedbackDiagnostics(
 			.map(({ name }) => safe(name).replaceAll("\\", "/").split("/").slice(-2).join("/"))
 			.slice(0, MAX_EXTENSIONS),
 		recentFailures: recentFailures(runtime.ctx),
-		worktree: { paths: current?.paths.map(safe) ?? [], available: current !== undefined },
+		worktree: {
+			paths: current?.paths.map(safe) ?? [],
+			available: current !== undefined,
+			truncated: current?.truncated ?? false,
+		},
 		...(snapshotId ? { snapshotId } : {}),
-		...(current && before instanceof Set ? { createdPaths: current.createdPaths.map(safe) } : {}),
+		...(current && before instanceof Set
+			? { createdPaths: current.createdPaths.map(safe), createdPathsTruncated: current.createdPathsTruncated }
+			: {}),
 		...(baselineUnavailable ? { baselineUnavailable } : {}),
 	};
 }
