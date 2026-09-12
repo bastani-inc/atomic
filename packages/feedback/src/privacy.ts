@@ -55,6 +55,14 @@ function hasUnclosedQuoteBefore(input: string, start: number, quote: string): bo
 	}
 	return open;
 }
+function structuralLineBoundary(input: string, cursor: number): number | undefined {
+	const lineBreakEnd =
+		input[cursor] === "\r" && input[cursor + 1] === "\n" ? cursor + 2 : input[cursor] === "\n" ? cursor + 1 : -1;
+	if (lineBreakEnd < 0) return undefined;
+	const nextLineEnd = input.indexOf("\n", lineBreakEnd);
+	const nextLine = input.slice(lineBreakEnd, nextLineEnd < 0 ? input.length : nextLineEnd).replace(/\r$/u, "");
+	return /^[ \t]*$/u.test(nextLine) || nextLine.startsWith("### ") ? cursor : undefined;
+}
 function structuralQuoteBoundary(input: string, cursor: number, quote: string): number | undefined {
 	const lineBreakEnd =
 		input[cursor] === "\r" && input[cursor + 1] === "\n" ? cursor + 2 : input[cursor] === "\n" ? cursor + 1 : -1;
@@ -100,6 +108,7 @@ function unquotedValueEnd(input: string, start: number, assignmentStart: number)
 		let end = start;
 		for (; end < input.length; end += 1) {
 			const character = input[end] ?? "";
+			if ((character === "\r" || character === "\n") && structuralLineBoundary(input, end) !== undefined) break;
 			if (quote) {
 				if (character === "\\") end += 1;
 				else if (character === quote) quote = "";
@@ -390,7 +399,8 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 const rules = [
 	{
 		category: "private-key",
-		pattern: /-----BEGIN [^-\n]*PRIVATE KEY[^-\n]*-----(?:[\s\S]*?-----END [^-\n]*PRIVATE KEY[^-\n]*-----|[\s\S]*)/gu,
+		pattern:
+			/-----BEGIN [^-\r\n]*PRIVATE KEY[^-\r\n]*-----(?:[\s\S]*?-----END [^-\r\n]*PRIVATE KEY[^-\r\n]*-----|[^\r\n]*(?:\r?\n(?!\r?\n|[ \t]*### )[^\r\n]*)*)/gu,
 		replacement: REDACTION_PLACEHOLDER,
 	},
 	{

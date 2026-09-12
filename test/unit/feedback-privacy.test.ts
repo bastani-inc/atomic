@@ -494,6 +494,17 @@ describe("feedback privacy core", () => {
 			);
 		}
 	});
+	test("bounds bracket assignments at structural report boundaries", () => {
+		for (const input of [
+			["api_key=[abc", "", "### Steps to reproduce", "", "1. Run atomic]"].join("\n"),
+			['api_key=["abc', "", "### Logs", "", "tail]"].join("\n"),
+		]) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, input.replace(/\[[^\n]*/u, "[REDACTED]"));
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.match(result.body, /### (?:Steps to reproduce|Logs)/u);
+		}
+	});
 	test("scrubs provider-redacted assignment suffixes and value-leading punctuation", () => {
 		const providerCases = [
 			["PASSWORD=sk-ABCDEFGHIJKLMNOPQRST.uvWxSensitiveTail", "PASSWORD=[REDACTED]"],
@@ -587,6 +598,25 @@ describe("feedback privacy core", () => {
 		);
 	});
 
+	test("bounds unterminated private-key mentions at report boundaries", () => {
+		const input = [
+			"### What happened?",
+			"",
+			"log line: -----BEGIN OPENSSH " + ["PRIVATE", "KEY"].join(" ") + "----- appeared",
+			"",
+			"### Steps to reproduce",
+			"",
+			"1. Run atomic",
+		].join("\n");
+		const result = scrubFeedback("safe", input);
+		assert.equal(
+			result.body,
+			["### What happened?", "", "log line: [REDACTED]", "", "### Steps to reproduce", "", "1. Run atomic"].join(
+				"\n",
+			),
+		);
+		assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+	});
 	test("bounds diagnostics with count-only truncation notices", () => {
 		const stack = boundStackTrace(
 			Array.from({ length: MAX_STACK_TRACE_LINES + 5 }, (_, index) => `line ${index}`).join("\n"),
