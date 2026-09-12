@@ -179,6 +179,7 @@ runTest(
 					assert.equal(skills[0].name, "feedback");
 					assert.equal(skills[0].filePath, skillPath);
 					assert.equal(typeof skills[0].description, "string");
+					// Redundant with loader validation; retain the public description contract.
 					assert.ok(skills[0].description.trim());
 				};
 				await validateSkill();
@@ -188,6 +189,7 @@ runTest(
 						"---\\nname: feedback\\n",
 						"---\\nname: feedback\\n---\\n# Feedback\\n",
 						"---\\nname: feedback\\ndescription: [\\n---\\n# Feedback\\n",
+						"---\\nname: not-feedback\\ndescription: A valid skill with the wrong name.\\n---\\n# Feedback\\n",
 					]) {
 						writeFileSync(skillPath, malformed);
 						await assert.rejects(validateSkill, { name: "AssertionError" });
