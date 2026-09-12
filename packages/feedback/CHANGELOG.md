@@ -33,3 +33,4 @@ All notable changes to this project will be documented in this file.
 - Limited diagnostic path parsing and Git execution time for large worktrees, and included copy destinations in newly observed paths ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Fixed staged rename destinations being omitted from newly observed paths, and disclose when diagnostic path lists exceed their 100-entry limit ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Bound approval to the latest exact draft display, accepted direct conversational approvals, and refused fallback to older drafts when the latest preparation failed or its output was persisted ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Re-prepare requested revisions for review and report refused or failed submissions as error tool results while keeping the draft and failure message in the ordinary conversation ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).

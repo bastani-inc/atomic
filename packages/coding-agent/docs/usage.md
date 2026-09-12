@@ -101,6 +101,8 @@ Submission requires `GITHUB_TOKEN` or `GH_TOKEN` in Atomic's environment with pe
 
 Successful submission returns the issue URL and prevents the same draft from being posted again in that session. Authentication, permission, rate-limit, and validation failures leave the draft in the transcript. Network failures, cancellation, and malformed responses may leave the outcome unknown: check the target repository before approving another attempt. A consumed approval cannot retry automatically; a retry needs fresh ordinary approval. These safeguards are not a guarantee against duplicates across separate sessions or uncertain network outcomes.
 
+Request revisions in a normal message. Atomic prepares and scrubs a new draft, displays the full result, and asks for approval again. If a model turn fails, the earlier draft remains in the transcript; retry the revision in another message and review the new result before approving it. To stop drafting or change the topic, just say so. There is no separate feedback mode to exit.
+
 ## Message Queue
 
 You can submit messages while the agent is still working:

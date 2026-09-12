@@ -4,13 +4,13 @@ import { validateToolArguments } from "@bastani/pi-ai";
 import { Check } from "typebox/value";
 import { test } from "vitest";
 import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
-import { readText } from "../helpers/runtime.js";
 import type {
 	ExtensionAPI,
 	RegisteredCommand,
 	ToolDefinition,
 	ToolResultEvent,
 } from "../../packages/coding-agent/src/index.js";
+import { readText } from "../helpers/runtime.js";
 
 function toolResult(details: {
 	readonly ok: boolean;
@@ -179,11 +179,12 @@ test("feedback schema preserves valid string fields and host optional-null norma
 test("bug preparation defaults missing extension activity honestly at the tool boundary", async () => {
 	let prepare: ToolDefinition | undefined;
 	feedback({
+		on: () => {},
 		registerCommand: () => {},
 		registerTool: (tool: ToolDefinition) => {
 			if (tool.name === "feedback_prepare_issue") prepare = tool;
 		},
-	} as Pick<ExtensionAPI, "registerCommand" | "registerTool"> as ExtensionAPI);
+	} as Pick<ExtensionAPI, "on" | "registerCommand" | "registerTool"> as ExtensionAPI);
 	assert.ok(prepare);
 	for (const extensions of [undefined, "", " \t\n", "user-extension", "None reported by user"]) {
 		const result = await prepare.execute(
@@ -204,11 +205,12 @@ test("bug preparation defaults missing extension activity honestly at the tool b
 test("bug preparation rejects missing raw fields even with every diagnostic fact", async () => {
 	let prepare: ToolDefinition | undefined;
 	feedback({
+		on: () => {},
 		registerCommand: () => {},
 		registerTool: (tool: ToolDefinition) => {
 			if (tool.name === "feedback_prepare_issue") prepare = tool;
 		},
-	} as Pick<ExtensionAPI, "registerCommand" | "registerTool"> as ExtensionAPI);
+	} as Pick<ExtensionAPI, "on" | "registerCommand" | "registerTool"> as ExtensionAPI);
 	assert.ok(prepare);
 	for (const field of ["description", "repro"] as const) {
 		for (const value of ["", " \t\n"]) {
