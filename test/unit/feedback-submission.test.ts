@@ -31,9 +31,11 @@ const submissionResult = (id: string, details: object) =>
 class FakeTransport implements IssueSubmissionTransport {
 	readonly requests: IssueSubmissionRequest[] = [];
 	constructor(
-		private readonly outcome: unknown | Error = { html_url: "https://github.com/bastani-inc/atomic/issues/42" },
+		private readonly outcome: Awaited<ReturnType<IssueSubmissionTransport["createIssue"]>> | Error = {
+			html_url: "https://github.com/bastani-inc/atomic/issues/42",
+		},
 	) {}
-	async createIssue(request: IssueSubmissionRequest): Promise<unknown> {
+	async createIssue(request: IssueSubmissionRequest): ReturnType<IssueSubmissionTransport["createIssue"]> {
 		this.requests.push(request);
 		return this.outcome instanceof Error ? Promise.reject(this.outcome) : this.outcome;
 	}
@@ -236,6 +238,24 @@ test("transport refuses missing authentication before fetch and returns malforme
 	assert.equal(await createGitHubIssueTransport(fetcher, { GH_TOKEN: "synthetic" }).createIssue(request), undefined);
 	assert.equal(calls, 1);
 });
+// #2799, review 3996725863: validate external data before exposing the narrow transport response.
+test("transport returns only a validated issue-response shape", async () => {
+	const request = { owner: "bastani-inc", repo: "atomic", title: "t", body: "b", labels: ["bug"] };
+	const url = "https://github.com/bastani-inc/atomic/issues/42";
+	for (const body of ["null", "42", '"text"', "[]", "{}", '{"html_url":42}']) {
+		const fetcher = (async (_url: string | URL | Request, _init?: RequestInit) => new Response(body)) as typeof fetch;
+		assert.equal(
+			await createGitHubIssueTransport(fetcher, { GH_TOKEN: "synthetic" }).createIssue(request),
+			undefined,
+			body,
+		);
+	}
+	const fetcher = (async (_url: string | URL | Request, _init?: RequestInit) =>
+		new Response(JSON.stringify({ html_url: url, extra: "not needed" }))) as typeof fetch;
+	assert.deepEqual(await createGitHubIssueTransport(fetcher, { GH_TOKEN: "synthetic" }).createIssue(request), {
+		html_url: url,
+	});
+});
 test("prevents concurrent, repeated, restored, and boundary-collision duplicates", async () => {
 	assert.notEqual(
 		feedbackFingerprint({ kind: "bug", title: "a\nb", body: "c" }),
@@ -249,7 +269,7 @@ test("prevents concurrent, repeated, restored, and boundary-collision duplicates
 	recovered.branch.push(submissionResult("success", completed));
 	const duplicate = await submitFeedbackIssue(bug, recovered.runtime);
 	assert.equal(duplicate.ok ? "" : duplicate.existingUrl, completed.ok ? completed.url : "");
-	let release!: (value: unknown) => void;
+	let release!: (value: Awaited<ReturnType<IssueSubmissionTransport["createIssue"]>>) => void;
 	const pending: IssueSubmissionTransport = { createIssue: () => new Promise((resolve) => (release = resolve)) };
 	const concurrent = setup(bug, "post it", pending as FakeTransport);
 	const running = submitFeedbackIssue(bug, concurrent.runtime);
@@ -288,4 +308,76 @@ test("a failure relay cannot authorize unrelated tool calls", async () => {
 	const transport = new FakeTransport();
 	assert.equal(resultCode(await submitFeedbackIssue(bug, { ...scenario.runtime, transport })), "missing-approval");
 	assert.equal(transport.requests.length, 0);
+});
+// #2799, review 3996725863: malformed persisted messages must fail closed without throwing.
+test("ignores malformed message envelopes without reviving an older approval", async () => {
+	for (const raw of ['"invalid"', "42", "true", "[]", "{}"]) {
+		const malformed: object = JSON.parse(raw);
+		const scenario = setup();
+		scenario.branch.push(transcript("malformed", malformed));
+		assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "missing-approval");
+		assert.equal(scenario.transport.requests.length, 0);
+	}
+});
+// #2799, review 3996725863: projection cannot discard an invalid competing tool call.
+test("malformed transcript boundaries cannot revive a draft or hide non-submission calls", async () => {
+	for (const details of [
+		undefined,
+		null,
+		[],
+		{},
+		{ ...bug, repository: { owner: "other", repo: "atomic" } },
+		{ ...bug, title: 42, repository: { owner: "bastani-inc", repo: "atomic" } },
+	]) {
+		const scenario = setup();
+		scenario.branch.splice(
+			2,
+			0,
+			transcript("latest", {
+				role: "toolResult",
+				toolName: "feedback_prepare_issue",
+				details,
+				content: [{ type: "text", text: preparedText(bug) }],
+			}),
+		);
+		assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "stale-draft");
+		assert.equal(scenario.transport.requests.length, 0);
+	}
+	for (const name of [undefined, null, 42, "bash"]) {
+		const scenario = setup();
+		scenario.branch.push(
+			transcript("calls", {
+				role: "assistant",
+				content: [
+					{ type: "toolCall", name: "feedback_submit_issue" },
+					{ type: "toolCall", ...(name === undefined ? {} : { name }) },
+				],
+			}),
+		);
+		assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "missing-approval");
+		assert.equal(scenario.transport.requests.length, 0);
+	}
+});
+// #2799, review 3996725863: preserve ordinary non-text content around the reviewed draft.
+test("ignores thinking and image blocks while retaining reviewed text and submission calls", async () => {
+	const scenario = setup();
+	const ignored = [
+		{ type: "thinking", thinking: "synthetic" },
+		{ type: "image", data: "synthetic", mimeType: "image/png" },
+		null,
+		{ type: "text", text: 42 },
+	];
+	scenario.branch[1] = transcript("display", {
+		role: "assistant",
+		content: [...ignored, { type: "text", text: preparedText(bug) }],
+	});
+	scenario.branch[2] = transcript("approval", { role: "user", content: [...ignored, { type: "text", text: "Yes." }] });
+	scenario.branch.push(
+		transcript("call", {
+			role: "assistant",
+			content: [...ignored, { type: "toolCall", name: "feedback_submit_issue" }],
+		}),
+	);
+	assert.equal(resultCode(await submitFeedbackIssue(bug, scenario.runtime)), "ok");
+	assert.equal(scenario.transport.requests.length, 1);
 });
