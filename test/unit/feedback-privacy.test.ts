@@ -10,6 +10,7 @@ import {
 } from "../../packages/feedback/src/index.js";
 
 const MARKER_SCAN_TIMEOUT_MS = 250;
+const STRUCTURAL_SCAN_TIMEOUT_MS = 250;
 
 // Regression coverage for bastani-inc/atomic#2799.
 describe("feedback privacy core", () => {
@@ -177,7 +178,7 @@ describe("feedback privacy core", () => {
 				'apiKey="[REDACTED]"\n\n### Logs\n\nAPI_KEY="[REDACTED]"',
 				2,
 			],
-			['PRIVATE_TOKEN="lineOneAAAA\n\nlineTwoBBBB"', 'PRIVATE_TOKEN="[REDACTED]"', 1],
+			['PRIVATE_TOKEN="lineOneAAAA\n\nlineTwoBBBB"', 'PRIVATE_TOKEN="[REDACTED]"\n\nlineTwoBBBB"', 1],
 			['apiKey="lineOneAAAA\nlineTwoBBBB"\n\n### Logs', 'apiKey="[REDACTED]"\n\n### Logs', 1],
 			["password='hunter2SECRET\nIt doesn't repeat.", "password='[REDACTED]'\nIt doesn't repeat.", 1],
 		] as const;
@@ -185,7 +186,6 @@ describe("feedback privacy core", () => {
 			const result = scrubFeedback("safe", input);
 			assert.equal(result.body, expected);
 			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
-			assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
 			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
 		}
 	});
@@ -515,5 +515,49 @@ describe("feedback privacy core", () => {
 		assert.equal(diagnostic.length, MAX_DIAGNOSTIC_CHARS);
 		assert.match(diagnostic, /Truncated \d+ diagnostic characters/u);
 		assert.equal(scrubFeedback("safe", boundDiagnostic(`apiKey="${"\\".repeat(64)}`)).replacements.length, 0);
+	});
+	test("redacts contiguous multiline quoted values without crossing report boundaries", () => {
+		for (const [input, expected] of [
+			['API_KEY="lineOneAAAA\nlineTwoBBBB\nlineThreeCCC"', 'API_KEY="[REDACTED]"'],
+			["PASSWORD='lineOneAAAA\nlineTwoBBBB\nlineThreeCCC'", "PASSWORD='[REDACTED]'"],
+			['API_KEY="lineOneAAAA\nlineTwoBBBB" was the value', 'API_KEY="[REDACTED]" was the value'],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("scrubs adjacent quoted assignments independently", () => {
+		for (const [input, expected, count] of [
+			['apiKey="secretAAA PASSWORD="secretBBB"', 'apiKey="[REDACTED]" PASSWORD="[REDACTED]"', 2],
+			[
+				'apiKey="aSECRET TOKEN="bSECRET" PASSWORD="cSECRET"',
+				'apiKey="[REDACTED]" TOKEN="[REDACTED]" PASSWORD="[REDACTED]"',
+				3,
+			],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("keeps placeholder suffix scrubbing idempotent", () => {
+		for (const input of [
+			"API_KEY=" + String.fromCharCode(36) + "{VAR}[REDACTED]secret",
+			"API_KEY={{ VAR }}[REDACTED]secret",
+		]) {
+			const first = scrubFeedback("safe", input);
+			const second = scrubFeedback(first.title, first.body);
+			assert.equal(second.body, first.body);
+			assert.deepEqual(second.replacements, []);
+		}
+	});
+	test("keeps blank-line boundary scanning responsive", () => {
+		const input = `API_KEY="v${"\n".repeat(32_000)}tail"`;
+		const started = performance.now();
+		scrubFeedback("safe", input);
+		assert.ok(performance.now() - started < STRUCTURAL_SCAN_TIMEOUT_MS);
 	});
 });

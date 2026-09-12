@@ -59,26 +59,22 @@ function structuralQuoteBoundary(input: string, cursor: number, quote: string): 
 	const lineBreakEnd =
 		input[cursor] === "\r" && input[cursor + 1] === "\n" ? cursor + 2 : input[cursor] === "\n" ? cursor + 1 : -1;
 	if (lineBreakEnd < 0) return undefined;
-	let nextLineStart = lineBreakEnd;
-	while (nextLineStart <= input.length) {
-		const nextLineEnd = input.indexOf("\n", nextLineStart);
-		const nextLine = input.slice(nextLineStart, nextLineEnd < 0 ? input.length : nextLineEnd).replace(/\r$/u, "");
-		if (/^[ \t]*$/u.test(nextLine)) {
-			if (nextLineEnd < 0) return cursor;
-			nextLineStart = nextLineEnd + 1;
-			continue;
-		}
-		if (nextLine.startsWith("### ")) return cursor;
-		for (let index = 0; index < nextLine.length; index += 1) {
-			if (nextLine[index] !== quote || nextLine[index - 1] === "\\") continue;
-			const previous = nextLine[index - 1] ?? "";
-			const next = nextLine[index + 1] ?? "";
-			if (previous && next && /\w/u.test(previous) && /\w/u.test(next)) continue;
-			if (/^[ \t,.;:!?)}\]>*_~`-]*$/u.test(nextLine.slice(index + 1))) return undefined;
-		}
-		return cursor;
+	const nextLineEnd = input.indexOf("\n", lineBreakEnd);
+	const nextLine = input.slice(lineBreakEnd, nextLineEnd < 0 ? input.length : nextLineEnd).replace(/\r$/u, "");
+	if (/^[ \t]*$/u.test(nextLine) || nextLine.startsWith("### ")) return cursor;
+	let sawQuote = false;
+	for (let index = 0; index < nextLine.length; index += 1) {
+		if (nextLine[index] !== quote || nextLine[index - 1] === "\\") continue;
+		sawQuote = true;
+		const previous = nextLine[index - 1] ?? "";
+		const next = nextLine[index + 1] ?? "";
+		if (previous && next && /\w/u.test(previous) && /\w/u.test(next)) continue;
+		const suffix = nextLine.slice(index + 1).trim();
+		if (suffix.length === 0) return undefined;
+		if (index === 0 || /\s/u.test(nextLine.slice(0, index).trimStart())) return cursor;
+		return undefined;
 	}
-	return cursor;
+	return sawQuote ? cursor : undefined;
 }
 function completeTemplatePlaceholderEnd(input: string, start: number): number | undefined {
 	if (input.startsWith("${", start)) {
@@ -95,13 +91,13 @@ function templatePlaceholderEnd(input: string, start: number): number | undefine
 	const end = completeTemplatePlaceholderEnd(input, start);
 	if (end === undefined) return undefined;
 	const next = input[end] ?? "";
-	return next === "" || /[\s,;})\]&|<>('"`*_~]/u.test(next) ? end : undefined;
+	return next === "" || /[\s,;[})\]&|<>('"`*_~]/u.test(next) ? end : undefined;
 }
 function unquotedValueEnd(input: string, start: number, assignmentStart: number): number {
 	let end = start;
 	while (end < input.length) {
 		const character = input[end] ?? "";
-		if (/\s/u.test(character) || /[,;})\]&|<>]/u.test(character)) break;
+		if (/\s/u.test(character) || /[,;[})\]&|<>]/u.test(character)) break;
 		if (
 			(character === '"' || character === "'" || character === "`") &&
 			hasUnclosedQuoteBefore(input, assignmentStart, character)
@@ -170,17 +166,15 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 			let closed = false;
 			let stoppedAtBoundary = false;
 			const assignmentLineStart = input.lastIndexOf("\n", assignmentStart - 1) + 1;
-			const nextAssignmentStart = assignmentMatches
-				.slice(assignmentIndex + 1)
-				.map((item) => item.index ?? 0)
-				.find((start) => {
-					const lineStart = input.lastIndexOf("\n", start - 1) + 1;
-					return lineStart > assignmentLineStart;
-				});
+			const nextAssignmentStart = assignmentMatches[assignmentIndex + 1]?.index;
+			const nextAssignmentLineStart =
+				nextAssignmentStart === undefined ? undefined : input.lastIndexOf("\n", nextAssignmentStart - 1) + 1;
 			const nextAssignmentBoundary =
-				nextAssignmentStart === undefined
+				nextAssignmentStart === undefined || nextAssignmentLineStart === undefined
 					? undefined
-					: lineBreakStart(input, input.lastIndexOf("\n", nextAssignmentStart - 1) + 1);
+					: nextAssignmentLineStart === assignmentLineStart
+						? nextAssignmentStart
+						: lineBreakStart(input, nextAssignmentLineStart);
 			while (cursor < input.length) {
 				if (nextAssignmentBoundary !== undefined && cursor >= nextAssignmentBoundary) {
 					cursor = nextAssignmentBoundary;
@@ -232,24 +226,35 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 				const lineEnd = input.indexOf("\n", valueStart + 1);
 				if (cursor <= lineEnd) cursor = lineEnd;
 			}
-			const value = input.slice(valueStart + 1, closed ? cursor - 1 : cursor);
+			let replacementEnd = cursor;
+			if (!closed && stoppedAtBoundary) {
+				const firstLineEnd = input.indexOf("\n", valueStart + 1);
+				if (firstLineEnd >= 0 && firstLineEnd < replacementEnd) replacementEnd = firstLineEnd;
+			}
+			if (stoppedAtBoundary && nextAssignmentLineStart === assignmentLineStart) {
+				while (replacementEnd > valueStart && /[ \t]/u.test(input[replacementEnd - 1] ?? "")) replacementEnd -= 1;
+			}
+			const value = input.slice(valueStart + 1, closed ? replacementEnd - 1 : replacementEnd);
 			if (hasContent && value !== REDACTION_PLACEHOLDER) {
 				matches.push({
 					start: valueStart,
-					end: cursor,
+					end: replacementEnd,
 					replacement: `${quote}${REDACTION_PLACEHOLDER}${quote}`,
 				});
-				coveredUntil = cursor;
+				coveredUntil = replacementEnd;
 			}
 			continue;
 		}
 		if (first === undefined || first === "\r" || first === "\n" || /\s/u.test(first)) continue;
 		const completePlaceholderEnd = completeTemplatePlaceholderEnd(input, valueStart);
-		if (templatePlaceholderEnd(input, valueStart) !== undefined) continue;
 		if (completePlaceholderEnd !== undefined) {
-			const redactedSuffixStart = completePlaceholderEnd + REDACTION_PLACEHOLDER.length;
 			if (input.startsWith(REDACTION_PLACEHOLDER, completePlaceholderEnd)) {
-				if (redactedSuffixStart >= input.length || /[\s,;})\]&|<>('"`]/u.test(input[redactedSuffixStart] ?? ""))
+				const redactedSuffixStart = completePlaceholderEnd + REDACTION_PLACEHOLDER.length;
+				if (
+					redactedSuffixStart >= input.length ||
+					input.startsWith(REDACTION_PLACEHOLDER, redactedSuffixStart) ||
+					/[\s,;[})\]&|<>('"`]/u.test(input[redactedSuffixStart] ?? "")
+				)
 					continue;
 				const suffixEnd = unquotedValueEnd(input, redactedSuffixStart, assignmentStart);
 				const suffix = input.slice(redactedSuffixStart, suffixEnd);
@@ -258,6 +263,7 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 				coveredUntil = suffixEnd;
 				continue;
 			}
+			if (templatePlaceholderEnd(input, valueStart) !== undefined) continue;
 			const suffixEnd = unquotedValueEnd(input, completePlaceholderEnd, assignmentStart);
 			const suffix = input.slice(completePlaceholderEnd, suffixEnd);
 			if (!shouldRedactUnquotedValue(keyName, prefix, suffix, input, assignmentStart)) continue;
@@ -268,7 +274,12 @@ function scrubCredentialAssignments(input: string): CredentialScrubResult {
 		const openingWrapper = consumedValueWrapper(prefix);
 		if (input.startsWith(REDACTION_PLACEHOLDER, valueStart)) {
 			const suffixStart = valueStart + REDACTION_PLACEHOLDER.length;
-			if (suffixStart >= input.length || /[\s,;})\]&|<>('"`]/u.test(input[suffixStart] ?? "")) continue;
+			if (
+				suffixStart >= input.length ||
+				input.startsWith(REDACTION_PLACEHOLDER, suffixStart) ||
+				/[\s,;[})\]&|<>('"`]/u.test(input[suffixStart] ?? "")
+			)
+				continue;
 			const suffixEnd = unquotedValueEnd(input, suffixStart, assignmentStart);
 			const closesWrapper =
 				openingWrapper &&
