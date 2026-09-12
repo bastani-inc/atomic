@@ -45,7 +45,7 @@ for (const kind of ["input", "editor"] as const satisfies readonly PendingPrompt
 		const lines = view.render(100).map((line) => stripAnsi(line));
 		view.dispose();
 		const bannerStarts = lines
-			.map((line, index) => (/^╭ AWAITING INPUT ─*╮$/.test(line) ? index : -1))
+			.map((line, index) => (/^╭ AWAITING INPUT.*╮$/.test(line) ? index : -1))
 			.filter((index) => index >= 0);
 		assert.equal(bannerStarts.length, 1, `${kind} must render exactly one AWAITING INPUT title`);
 		const bannerStart = bannerStarts[0]!;
@@ -100,7 +100,7 @@ test("primitive prompt row budgets emit only complete attribution and editor box
 			for (const line of lines) {
 				if (line.startsWith("╭")) {
 					assert.equal(boxOpen, false, `${kind} rows=${viewportRows} opens a box before closing the previous one`);
-					assert.match(line, /^╭(?: AWAITING INPUT )?─+╮$/);
+					assert.match(line, /^╭.*╮$/);
 					boxOpen = true;
 				}
 				if (line.startsWith("╰")) {

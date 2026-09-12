@@ -13,6 +13,8 @@ export interface PromptCardIdentity {
 	readonly runId: string;
 	readonly name: string;
 	readonly meta?: string;
+	/** Stage name to show in the AWAITING INPUT banner top border (#2886 Case 3). */
+	readonly stageName?: string;
 }
 
 export interface PromptCardRenderOpts {
@@ -50,8 +52,19 @@ export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: 
 		idGap: 1,
 		nameIndent: 4,
 	});
+	// Case 3 of #2886: when a stage name is present, append [stage: name] to
+	// the AWAITING INPUT top border. Styling: [stage: in textMuted, name bold.
+	// makeBorderTop receives a pre-styled label string via the labelStyled path.
+	const awaitingLabel = paint(" AWAITING INPUT ", theme.textMuted, { bold: true });
+	const stageLabel =
+		identity.stageName !== undefined && identity.stageName.length > 0
+			? paint(" [stage: ", theme.textMuted) +
+			  paint(truncateToWidth(identity.stageName, Math.max(1, innerWidth - visibleWidth(" AWAITING INPUT  [stage: ]") + 1), "…"), theme.text, { bold: true }) +
+			  paint("] ", theme.textMuted)
+			: "";
+	const topBorderLabel = awaitingLabel + stageLabel;
 	return [
-		makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg),
+		makeBorderTopStyled(borderColor, topBorderLabel, innerWidth, bg),
 		...identityRows.map((row) => makePaddedRow(bg, borderColor, innerWidth, row)),
 		makeBorderBottom(borderColor, innerWidth, bg),
 	];
@@ -280,6 +293,17 @@ function makeBorderTop(color: string, label: string, theme: GraphTheme, innerWid
 	const labelW = visibleWidth(labelText);
 	const fillLen = Math.max(0, innerWidth - labelW);
 	return bg + paint("╭", color) + labelText + paint(`${"─".repeat(fillLen)}╮`, color) + RESET;
+}
+
+/**
+ * Like makeBorderTop but accepts a pre-styled ANSI label string.
+ * Used when the label combines multiple paint() calls (e.g. stage label
+ * in AWAITING INPUT banner for #2886 Case 3).
+ */
+function makeBorderTopStyled(color: string, styledLabel: string, innerWidth: number, bg: string): string {
+	const labelW = visibleWidth(styledLabel);
+	const fillLen = Math.max(0, innerWidth - labelW);
+	return bg + paint("╭", color) + styledLabel + paint(`${"─".repeat(fillLen)}╮`, color) + RESET;
 }
 
 function makeBorderBottom(color: string, innerWidth: number, bg: string): string {
