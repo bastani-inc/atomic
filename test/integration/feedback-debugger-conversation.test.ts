@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
@@ -12,7 +10,15 @@ import { createHarness, getMessageText, type Harness } from "../../packages/codi
 import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import feedback from "../../packages/feedback/index.js";
 import type { FeedbackDiagnostics } from "../../packages/feedback/src/diagnostics.js";
-import { moduleDir, readText, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	makeTempDirectory,
+	moduleDir,
+	readText,
+	readTextSync,
+	removeTempDirectory,
+	spawnSyncCollect,
+	writeTextSync,
+} from "../helpers/runtime.js";
 
 const cleanups: Array<() => void> = [];
 const subagentParameters = Type.Object({
@@ -55,9 +61,9 @@ async function bugHarness(cwd: string, behavior: "success" | "throw" | "interrup
 				calls.push(params);
 				if (behavior === "interrupt") throw new DOMException("interrupted", "AbortError");
 				if (behavior === "throw") throw new Error("debugger unavailable");
-				writeFileSync(join(ctx.cwd, "debugger-note.txt"), "RAW ARTIFACT BODY MUST NOT LEAK\n");
+				writeTextSync(join(ctx.cwd, "debugger-note.txt"), "RAW ARTIFACT BODY MUST NOT LEAK\n");
 				for (let i = 1; i < artifactCount; i++) {
-					writeFileSync(join(ctx.cwd, `debugger-note-${i}.txt`), "RAW ARTIFACT BODY MUST NOT LEAK\n");
+					writeTextSync(join(ctx.cwd, `debugger-note-${i}.txt`), "RAW ARTIFACT BODY MUST NOT LEAK\n");
 				}
 				return { content: [{ type: "text" as const, text: "No root cause established." }], details: {} };
 			},
@@ -162,8 +168,8 @@ describe("feedback bug investigation", () => {
 		while (cleanups.length) cleanups.pop()?.();
 	});
 	it("runs one foreground debugger with safe diagnostics and preserves dirty work", async () => {
-		const loaderRoot = mkdtempSync(join(tmpdir(), "feedback-bug-"));
-		cleanups.push(() => rmSync(loaderRoot, { recursive: true, force: true }));
+		const loaderRoot = makeTempDirectory("feedback-bug-");
+		cleanups.push(() => removeTempDirectory(loaderRoot));
 		const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
 		const envMarker = "feedback-env-marker-must-not-leak";
 		process.env.FEEDBACK_TEST_SECRET = secret;
@@ -177,11 +183,11 @@ describe("feedback bug investigation", () => {
 		git(root, "init");
 		git(root, "config", "user.email", "test@example.com");
 		git(root, "config", "user.name", "Test");
-		writeFileSync(join(root, "tracked.txt"), "before\n");
+		writeTextSync(join(root, "tracked.txt"), "before\n");
 		git(root, "add", "tracked.txt");
 		git(root, "commit", "--no-gpg-sign", "-m", "fixture");
-		writeFileSync(join(root, "tracked.txt"), "dirty user work\n");
-		writeFileSync(join(root, "untracked.txt"), "untracked user work\n");
+		writeTextSync(join(root, "tracked.txt"), "dirty user work\n");
+		writeTextSync(join(root, "untracked.txt"), "untracked user work\n");
 		harness.setResponses(responses(secret, true));
 		await harness.session.prompt("/feedback Atomic crashes on startup; run atomic; PARENT TRANSCRIPT MUST NOT LEAK");
 		await settleTurn(harness);
@@ -209,8 +215,8 @@ describe("feedback bug investigation", () => {
 		for (const forbidden of [secret, envMarker]) assert.ok(!detailText.includes(forbidden));
 		assert.ok(!detailText.includes("PARENT TRANSCRIPT MUST NOT LEAK"));
 		assert.ok(!detailText.includes("RAW ARTIFACT BODY MUST NOT LEAK"));
-		assert.equal(readFileSync(join(root, "tracked.txt"), "utf8"), "dirty user work\n");
-		assert.equal(readFileSync(join(root, "untracked.txt"), "utf8"), "untracked user work\n");
+		assert.equal(readTextSync(join(root, "tracked.txt"), "utf8"), "dirty user work\n");
+		assert.equal(readTextSync(join(root, "untracked.txt"), "utf8"), "untracked user work\n");
 		assert.ok(git(root, "status", "--porcelain").includes("tracked.txt"));
 		assert.ok(git(root, "status", "--porcelain").includes("untracked.txt"));
 		const draft = getMessageText(harness.session.messages.at(-1));
@@ -222,8 +228,8 @@ describe("feedback bug investigation", () => {
 	});
 	// #2799: exercise capped diagnostics through the registered tool and prepared draft, using the shipped skill.
 	it("carries incomplete path disclosure into the prepared bug draft", async () => {
-		const loaderRoot = mkdtempSync(join(tmpdir(), "feedback-path-limit-"));
-		cleanups.push(() => rmSync(loaderRoot, { recursive: true, force: true }));
+		const loaderRoot = makeTempDirectory("feedback-path-limit-");
+		cleanups.push(() => removeTempDirectory(loaderRoot));
 		const { harness, calls } = await bugHarness(loaderRoot, "success", 101);
 		git(harness.tempDir, "init");
 		harness.setResponses(responses("no-secret", true));
@@ -244,8 +250,8 @@ describe("feedback bug investigation", () => {
 		assert.ok(!draft.includes("RAW ARTIFACT BODY MUST NOT LEAK"));
 	});
 	it("records forbidden subagent overrides so the absence check is live", async () => {
-		const root = mkdtempSync(join(tmpdir(), "feedback-override-"));
-		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const root = makeTempDirectory("feedback-override-");
+		cleanups.push(() => removeTempDirectory(root));
 		const { harness, calls } = await bugHarness(root, "success");
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("subagent", { agent: "debugger", task: "probe", model: "override" }), {
@@ -257,8 +263,8 @@ describe("feedback bug investigation", () => {
 		assert.equal(Object.hasOwn(calls[0], "model"), true);
 	});
 	it("does not invoke the debugger for an enhancement", async () => {
-		const root = mkdtempSync(join(tmpdir(), "feedback-enhancement-"));
-		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const root = makeTempDirectory("feedback-enhancement-");
+		cleanups.push(() => removeTempDirectory(root));
 		const { harness, calls } = await bugHarness(root, "success");
 		harness.setResponses([
 			fauxAssistantMessage(
@@ -278,8 +284,8 @@ describe("feedback bug investigation", () => {
 	it.each(["throw", "interrupt", "absent"] as const)(
 		"keeps an honest editable draft when debugger is %s",
 		async (behavior) => {
-			const root = mkdtempSync(join(tmpdir(), `feedback-degrade-${behavior}-`));
-			cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+			const root = makeTempDirectory(`feedback-degrade-${behavior}-`);
+			cleanups.push(() => removeTempDirectory(root));
 			const { harness, calls } = await bugHarness(root, behavior);
 			harness.setResponses(responses("no-secret", false));
 			await harness.session.prompt("/feedback Atomic crashes; run atomic");
