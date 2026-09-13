@@ -17,13 +17,14 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { WorkflowWidgetViewport } from "../../packages/workflows/src/tui/widget-viewport.ts";
 import { sleep } from "../helpers/runtime.js";
+import { nativeWorkflowViewport } from "../helpers/workflow-native-viewport.js";
 
 // #2700: a mounted workflow widget must receive resize rows, not the mount-time snapshot.
 test("remote workflow widget follows live terminal row budgets without remount", async () => {
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const commands: InteractiveEngineCommand[] = [];
 	const terminal = { rows: 40 };
-	let mounted: Component | undefined;
+	let mounted: Pick<Component, "render"> | undefined;
 	let mounts = 0;
 	const service = new EngineCustomUiService((line) => {
 		const message = parseInteractiveEngineMessage(line);
@@ -46,11 +47,14 @@ test("remote workflow widget follows live terminal row budgets without remount",
 	const ui: RemoteComponentUI = {
 		custom: <T>() => new Promise<T>(() => {}),
 		requestRender() {},
-		setWidget: (_key, content) => {
+		setWidget: (_key, content, options) => {
 			if (!content) return;
 			assert.equal(typeof content, "function");
 			if (typeof content !== "function") throw new Error("expected widget factory");
-			mounted = content({ terminal } as TUI, {} as Theme);
+			assert.deepEqual(options?.scroll, { maxHeight: 10, maxHeightFraction: 1 / 3 });
+			mounted = nativeWorkflowViewport(content({ terminal } as TUI, {} as Theme), () =>
+				Math.min(10, Math.floor(terminal.rows / 3)),
+			);
 			mounts++;
 		},
 	};
@@ -67,6 +71,7 @@ test("remote workflow widget follows live terminal row budgets without remount",
 				() => {},
 			),
 		"belowEditor",
+		{ maxHeight: 10, maxHeightFraction: 1 / 3 },
 	);
 	try {
 		await sleep(0);
@@ -82,7 +87,10 @@ test("remote workflow widget follows live terminal row budgets without remount",
 			const lines = mounted.render(120);
 			assert.equal(commands.filter((command) => command.type === "engine_custom_render").at(-1)?.rows, rows);
 			assert.equal(lines.length, cap);
-			assert.match(lines.at(-1)!, new RegExp(`1–${cap - 1}/20`));
+			assert.deepEqual(
+				lines,
+				Array.from({ length: cap }, (_, i) => `row ${i}`),
+			);
 		}
 		assert.equal(mounts, 1);
 	} finally {

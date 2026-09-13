@@ -40,7 +40,10 @@ async function handleRequest(
 			ui.setStatus(request.statusKey, request.statusText);
 			return undefined;
 		case "setWidget":
-			ui.setWidget(request.widgetKey, request.widgetLines, { placement: request.widgetPlacement });
+			ui.setWidget(request.widgetKey, request.widgetLines, {
+				placement: request.widgetPlacement,
+				...(request.widgetScroll ? { scroll: request.widgetScroll } : {}),
+			});
 			return undefined;
 		case "setTitle":
 			ui.setTitle(request.title);

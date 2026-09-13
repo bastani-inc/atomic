@@ -1,5 +1,6 @@
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
+import { keybindingIdentity } from "../keybinding-identity.js";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { Extension, ExtensionShortcut } from "./types.ts";
 
@@ -25,12 +26,15 @@ const RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS = [
 	"tui.editor.deleteToLineEnd",
 ] as const;
 
+// These actions are dispatched by the workflow extension, not by the editor.
+const WORKFLOW_SCROLL_ACTIONS = ["app.workflows.scrollUp", "app.workflows.scrollDown"];
+
 type BuiltInKeyBindings = Partial<Record<KeyId, { keybinding: string; restrictOverride: boolean }>>;
 
 const buildBuiltinKeybindings = (resolvedKeybindings: KeybindingsConfig): BuiltInKeyBindings => {
 	const builtinKeybindings = {} as BuiltInKeyBindings;
 	for (const [keybinding, keys] of Object.entries(resolvedKeybindings)) {
-		if (keys === undefined) continue;
+		if (keys === undefined || WORKFLOW_SCROLL_ACTIONS.includes(keybinding)) continue;
 		const keyList = Array.isArray(keys) ? keys : [keys];
 		const restrictOverride = (RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]).includes(keybinding);
 		for (const key of keyList) {
@@ -48,6 +52,33 @@ const buildBuiltinKeybindings = (resolvedKeybindings: KeybindingsConfig): BuiltI
 export interface ExtensionShortcutResolution {
 	shortcuts: Map<KeyId, ExtensionShortcut>;
 	diagnostics: ResourceDiagnostic[];
+}
+
+function editorKeysForShortcut(shortcut: ExtensionShortcut, bindings: KeybindingsConfig): KeyId[] {
+	return Object.entries(bindings).flatMap(([action, keys]) => {
+		if (
+			keys === undefined ||
+			action === shortcut.keybinding ||
+			WORKFLOW_SCROLL_ACTIONS.includes(action) ||
+			!(
+				shortcut.preferEditor ||
+				(RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]).includes(action)
+			)
+		)
+			return [];
+		return Array.isArray(keys) ? keys : [keys];
+	});
+}
+
+function configuredShortcutKeys(
+	shortcut: ExtensionShortcut,
+	bindings: KeybindingsConfig,
+	editorKeys: KeyId[],
+): KeyId[] {
+	const configured = bindings[shortcut.keybinding!] ?? [];
+	return (Array.isArray(configured) ? configured : [configured]).filter(
+		(key) => !editorKeys.some((value) => keybindingIdentity(value) === keybindingIdentity(key)),
+	);
 }
 
 export function resolveExtensionShortcuts(
@@ -68,9 +99,21 @@ export function resolveExtensionShortcuts(
 
 	for (const ext of extensions) {
 		for (const [key, shortcut] of ext.shortcuts) {
+			if (shortcut.keybinding) {
+				const editorKeys = editorKeysForShortcut(shortcut, resolvedKeybindings);
+				for (const binding of configuredShortcutKeys(shortcut, resolvedKeybindings, editorKeys)) {
+					extensionShortcuts.set(binding.toLowerCase() as KeyId, { ...shortcut, shortcut: binding, editorKeys });
+				}
+				continue;
+			}
 			const normalizedKey = key.toLowerCase() as KeyId;
 			const builtInKeybinding = builtinKeybindings[normalizedKey];
-			if (builtInKeybinding?.restrictOverride === true) {
+			const editorConflict =
+				shortcut.preferEditor &&
+				Object.keys(builtinKeybindings).some(
+					(binding) => keybindingIdentity(binding as KeyId) === keybindingIdentity(key),
+				);
+			if (builtInKeybinding?.restrictOverride === true || editorConflict) {
 				addDiagnostic(
 					`Extension shortcut '${key}' from ${shortcut.extensionPath} conflicts with built-in shortcut. Skipping.`,
 					shortcut.extensionPath,
@@ -92,7 +135,12 @@ export function resolveExtensionShortcuts(
 					shortcut.extensionPath,
 				);
 			}
-			extensionShortcuts.set(normalizedKey, shortcut);
+			extensionShortcuts.set(
+				normalizedKey,
+				shortcut.preferEditor
+					? { ...shortcut, editorKeys: editorKeysForShortcut(shortcut, resolvedKeybindings) }
+					: shortcut,
+			);
 		}
 	}
 	return { shortcuts: extensionShortcuts, diagnostics };

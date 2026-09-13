@@ -790,6 +790,8 @@ pi.registerShortcut("ctrl+shift+p", {
 });
 ```
 
+Set `preferEditor: true` to skip a shortcut when another resolved editor binding uses that key. Omitting it preserves the usual extension conflict policy. Optional `keybinding` selects the keys for an existing named action from `keybindings.json` instead of the literal registration key; an empty action binding disables it. The builtin workflow extension uses `app.workflows.scrollUp` and `app.workflows.scrollDown` with `preferEditor: true`, so custom Vim editor bindings take precedence.
+
 ### pi.registerFlag(name, options)
 
 Register a CLI flag.

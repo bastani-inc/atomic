@@ -395,6 +395,7 @@ function getAliases(): Record<string, string> {
 	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
 	const piTuiLayoutEntry = resolveWorkspaceOrImport("tui/dist/layout.js", "@earendil-works/pi-tui");
+	const piTuiLayoutNodeEntry = resolveWorkspaceOrImport("tui/dist/layout-node.js", "@earendil-works/pi-tui");
 	// The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
 	// upstream layout change moves these files, this join needs updating to
 	// match the package's real dist paths.
@@ -413,6 +414,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui/dist/layout.js": piTuiLayoutEntry,
+		"@earendil-works/pi-tui/dist/layout-node.js": piTuiLayoutNodeEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@bastani/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
 		"@bastani/pi-ai/oauth": piAiOauthEntry,

@@ -212,7 +212,10 @@ describe("installStoreWidget", () => {
 		const factoryCalls = widgetCalls.filter((c) => typeof c.factory === "function");
 		assert.equal(factoryCalls.length, 1, "expected exactly one setWidget(factory) mount");
 		assert.equal(factoryCalls[0]!.key, "workflow.run");
-		assert.deepEqual(factoryCalls[0]!.opts, { placement: "belowEditor" });
+		assert.deepEqual(factoryCalls[0]!.opts, {
+			placement: "belowEditor",
+			scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 },
+		});
 	});
 
 	test("factory builds a Container with Text lines that include the workflow name", () => {

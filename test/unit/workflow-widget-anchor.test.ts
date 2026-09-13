@@ -5,6 +5,7 @@ import type { RunStatus, StoreSnapshot } from "../../packages/workflows/src/shar
 import { installStoreWidget, scrollStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.js";
 import { buildThemedWidgetLines, type WorkflowWidgetRowLayout } from "../../packages/workflows/src/tui/widget.js";
 import { WorkflowWidgetViewport } from "../../packages/workflows/src/tui/widget-viewport.js";
+import { nativeWorkflowViewport } from "../helpers/workflow-native-viewport.js";
 
 const now = Date.now();
 const uuid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
@@ -26,7 +27,10 @@ function fixture() {
 		{
 			ui: {
 				setWidget(_key, factory) {
-					if (factory) component = factory(host, undefined);
+					if (factory)
+						component = nativeWorkflowViewport(factory(host, undefined), () =>
+							Math.max(1, Math.min(10, Math.floor(host.terminal.rows / 3))),
+						);
 				},
 				requestRender() {},
 			},
@@ -87,7 +91,8 @@ function rendererFixture() {
 		() => {},
 		() => layout.runs,
 	);
-	const render = (width = 120) => viewport.render(width);
+	const native = nativeWorkflowViewport(viewport, () => Math.max(1, Math.min(10, Math.floor(rows / 3))));
+	const render = (width = 120) => native.render(width);
 	const scroll = (count: number) => {
 		for (let i = 0; i < count; i++) {
 			viewport.scroll(1);
@@ -128,6 +133,7 @@ test("live names, status and elapsed time preserve the selected workflow and its
 // #3017: deletion follows old reading order, never a duplicate display name.
 test("deleted workflow falls forward, then backward, then resets when none survive", () => {
 	const f = rendererFixture();
+	f.resize(3);
 	f.scroll(7);
 	f.snapshot.runs = f.snapshot.runs.filter((run) => run.id !== uuid(12));
 	assert.ok(f.render()[0]?.includes(uuid(11)));
@@ -135,6 +141,7 @@ test("deleted workflow falls forward, then backward, then resets when none survi
 	assert.ok(f.render()[0]?.includes(uuid(13)));
 	f.snapshot.runs = [{ ...f.snapshot.runs[0]!, id: uuid(99) }];
 	assert.ok(f.render()[0]?.startsWith("╭"));
+	f.resize(30);
 	assert.ok(f.render().join("\n").includes(uuid(99)));
 	f.snapshot.runs = [];
 	assert.deepEqual(f.render(), []);
@@ -191,11 +198,12 @@ test("row boundaries preserve raw duplicate names and make every actual source r
 			() => {},
 			() => layout.runs,
 		);
+		const native = nativeWorkflowViewport(viewport, () => 1);
 		for (const row of raw) {
-			assert.equal(viewport.render(120)[0], row);
+			assert.equal(native.render(120)[0], row);
 			viewport.scroll(1);
 		}
-		assert.equal(viewport.render(120)[0], raw.at(-1));
+		assert.equal(native.render(120)[0], raw.at(-1));
 	}
 });
 
@@ -216,6 +224,7 @@ test("insertion directly after the offscreen workflow preserves the first visibl
 // #3017: the bottom border is part of the final run until another older run appears.
 test("a shortened run boundary clamps the row offset without selecting the newly appended run", () => {
 	const f = rendererFixture();
+	f.resize(3);
 	f.scroll(100);
 	assert.ok(f.render()[0]?.startsWith("╰"));
 	f.snapshot.runs.push({ ...f.snapshot.runs[0]!, id: uuid(99), startedAt: now - 1 });

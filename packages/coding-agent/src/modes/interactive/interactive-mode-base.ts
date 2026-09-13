@@ -9,7 +9,6 @@ import {
 	setCapabilityOverrides,
 	type TuiInputListener,
 } from "@earendil-works/pi-tui";
-
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/settings-manager.ts";
@@ -22,6 +21,7 @@ import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
+import { WidgetContainer } from "./components/scroll-widget.js";
 import {
 	type AgentSession,
 	type AgentSessionRuntime,
@@ -641,8 +641,8 @@ export class InteractiveModeBase {
 		this.chatContainer.addChild(this.startupNoticesContainer);
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
-		this.widgetContainerAbove = new Container();
-		this.widgetContainerBelow = new Container();
+		this.widgetContainerAbove = new WidgetContainer();
+		this.widgetContainerBelow = new WidgetContainer();
 		this.keybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
 		this.reloadCoordinator = new KeybindingsReloadCoordinator(this.keybindings);
 		setKeybindings(this.keybindings);

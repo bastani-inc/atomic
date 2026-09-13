@@ -1,7 +1,10 @@
 import type { ExtensionWidgetOptions } from "./types.ts";
+import type { WidgetScrollRequest, WidgetScrollState } from "./ui-types.ts";
 
 export interface ReactiveWidgetComponent {
 	render(width: number): string[];
+	getScrollRequest?(): WidgetScrollRequest | undefined;
+	onScroll?(state: WidgetScrollState): void;
 	invalidate?(): void;
 	dispose?(): void;
 }
@@ -56,6 +59,9 @@ export interface InstallReactiveWidgetOptions<TSnapshot, TTheme> {
 	ui: ReactiveWidgetUi<TTheme>;
 	key: string;
 	placement?: ExtensionWidgetOptions["placement"];
+	scroll?: ExtensionWidgetOptions["scroll"];
+	getScrollRequest?(): WidgetScrollRequest | undefined;
+	onScroll?(state: WidgetScrollState): void;
 	getSnapshot(): TSnapshot;
 	subscribe?(listener: () => void): () => void;
 	getPreviewLines(snapshot: TSnapshot, now: number): readonly string[];
@@ -210,6 +216,8 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 		const fallbackRequestRender = getRequestRenderFromHost(tui);
 		if (fallbackRequestRender) mountedRequestRender = fallbackRequestRender;
 		return {
+			...(options.getScrollRequest ? { getScrollRequest: () => options.getScrollRequest?.() } : {}),
+			...(options.onScroll ? { onScroll: (state: WidgetScrollState) => options.onScroll?.(state) } : {}),
 			render(width: number): string[] {
 				return [...options.render(currentSnap, { theme, width, now: currentNow })];
 			},
@@ -237,7 +245,11 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 							options.ui.setWidget(
 								options.key,
 								widgetFactory,
-								options.placement ? { placement: options.placement } : undefined,
+								options.scroll
+									? { ...(options.placement ? { placement: options.placement } : {}), scroll: options.scroll }
+									: options.placement
+										? { placement: options.placement }
+										: undefined,
 							);
 							mounted = true;
 							mountFailureReported = false;
