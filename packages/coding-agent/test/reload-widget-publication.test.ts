@@ -23,10 +23,15 @@ test.each([
 	"rejected",
 	"host release",
 	"engine shutdown",
+	"reentrant same key",
+	"reentrant same key throwing",
+	"reentrant new key",
+	"reentrant new key throwing",
 ])("SDK widget cleanup exception matrix: %s", async (scenario) => {
 	const omitted = scenario.includes("omitted");
 	const startup = scenario.startsWith("startup");
 	const rejected = scenario === "rejected";
+	const reentrant = scenario.startsWith("reentrant");
 	const dir = await mkdtemp(join(tmpdir(), "reload-widget-publication-"));
 	const source = new EventEmitter();
 	const timers = new Set<ReturnType<typeof setInterval>>();
@@ -52,6 +57,7 @@ test.each([
 						timers.add(timer);
 						source.on("update", listener);
 						for (const key of ["workflow.run", "second", "healthy"]) {
+							const ui = ctx.ui;
 							if (omitted && generation > 1) continue;
 							ctx.ui.setWidget(key, () => ({
 								render: () => [`${key}:${generation}`],
@@ -63,7 +69,18 @@ test.each([
 										timers.delete(timer);
 										source.off("update", listener);
 									}
-									if (!cleaningUp && generation === 1 && key !== "healthy")
+									if (!cleaningUp && reentrant && key === "workflow.run") {
+										ui.setWidget(scenario.includes("new key") ? "new" : key, () => ({
+											render: () => ["resurrected"],
+											invalidate() {},
+										}));
+									}
+									if (
+										!cleaningUp &&
+										generation === 1 &&
+										key !== "healthy" &&
+										(!reentrant || scenario.endsWith("throwing"))
+									)
 										throw new Error(`dispose failed: ${key}`);
 								},
 							}));
@@ -141,6 +158,33 @@ test.each([
 		);
 		const retiring = session.extensionRunner;
 		const oldOpens = frames.filter((line) => line.includes('"engine_custom_open"'));
+		if (reentrant) {
+			retiring.invalidate();
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+			assert.equal(source.listenerCount("update"), 0);
+			assert.equal(timers.size, 0);
+			assert.equal(errors.length, scenario.endsWith("throwing") ? 2 : 0);
+			assert.throws(() => contexts[0].ui, /no longer active|stale|reload/i);
+			assert.deepEqual(
+				frames.filter((line) => line.includes('"engine_custom_open"')),
+				oldOpens,
+			);
+			for (const open of oldOpens) {
+				const { componentId } = JSON.parse(open) as { componentId: string };
+				assert.equal(
+					frames.filter((line) => line.includes('"engine_custom_close"') && line.includes(componentId)).length,
+					1,
+				);
+			}
+			const afterInvalidation = [...frames];
+			retiring.invalidate();
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(frames, afterInvalidation);
+			assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+			assert.equal(errors.length, scenario.endsWith("throwing") ? 2 : 0);
+			return;
+		}
 		if (scenario === "host release" || scenario === "engine shutdown") {
 			const releases: string[] = [];
 			const unsubscribes = ["workflow.run", "second", "healthy"].map((key) =>

@@ -555,11 +555,17 @@ export class ExtensionRunner {
 
 	invalidate(message = STALE_EXTENSION_CONTEXT_MESSAGE): void {
 		if (!this.staleMessage) {
+			// Retire before user disposal can reenter registration or invalidation.
+			this.staleMessage = message;
 			this.pendingWidgets = undefined;
 			for (const [ui, registrations] of this.widgetRegistrations) {
-				for (const key of registrations.keys()) {
+				for (const [key, registration] of registrations) {
+					const owners = ExtensionRunner.widgetOwners.get(ui);
 					try {
-						this.setOwnedWidget(ui, key, undefined);
+						if (registration.active && owners?.get(key) === registration) {
+							registration.active = false;
+							ui.setWidget(key, undefined);
+						}
 					} catch (error) {
 						// A retiring-only widget must not prevent remaining cleanup or runtime invalidation.
 						this.emitError({
@@ -568,12 +574,10 @@ export class ExtensionRunner {
 							error: error instanceof Error ? error.message : String(error),
 						});
 					}
-					const owners = ExtensionRunner.widgetOwners.get(ui);
-					if (owners && owners.get(key) === registrations.get(key)) owners.delete(key);
+					if (owners && owners.get(key) === registration) owners.delete(key);
 				}
 			}
 			this.widgetRegistrations.clear();
-			this.staleMessage = message;
 			this.runtime.invalidate(message);
 		}
 	}
