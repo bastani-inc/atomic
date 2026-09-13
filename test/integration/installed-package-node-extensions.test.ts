@@ -83,7 +83,6 @@ if (!distBuilt || !nodeExe) {
 	);
 }
 
-let tmpRoot: string | undefined;
 const tmpRoots: string[] = [];
 
 afterAll(() => {
@@ -102,8 +101,8 @@ function linkDir(target: string, linkPath: string): void {
  * loader's realpath does not lead back into the monorepo and re-enable the
  * workspace-path short circuit.
  */
-function buildInstalledLayout(): string {
-	tmpRoot = fs.mkdtempSync(join(os.tmpdir(), "atomic-node-smoke-"));
+function buildInstalledLayout(): { atomicDest: string; tmpRoot: string } {
+	const tmpRoot = fs.mkdtempSync(join(os.tmpdir(), "atomic-node-smoke-"));
 	tmpRoots.push(tmpRoot);
 	const layoutNodeModules = join(tmpRoot, "install", "node_modules");
 	fs.mkdirSync(layoutNodeModules, { recursive: true });
@@ -131,17 +130,24 @@ function buildInstalledLayout(): string {
 	fs.mkdirSync(atomicDest, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(atomicDest, "package.json"));
 	fs.cpSync(join(packageDir, "dist"), join(atomicDest, "dist"), { recursive: true, dereference: true });
-	return atomicDest;
+	return { atomicDest, tmpRoot };
 }
 
 // #2799 / #2851: validate the copied skill through the same async loader used at runtime.
 runTest(
 	"installed @bastani/atomic includes loadable feedback resources",
 	() => {
-		const atomicDest = buildInstalledLayout();
+		const { atomicDest } = buildInstalledLayout();
 		const feedbackDir = join(atomicDest, "dist", "builtin", "feedback");
-		const manifest = JSON.parse(fs.readFileSync(join(feedbackDir, "package.json"), "utf8")) as { name?: string };
+		const manifest = JSON.parse(fs.readFileSync(join(feedbackDir, "package.json"), "utf8")) as {
+			name?: string;
+			atomic?: { skills?: string[] };
+			pi?: { skills?: string[] };
+		};
 		assert.equal(manifest.name, "@bastani/feedback");
+		// Explicit skillPaths below bypass discovery; both hosts need the shipped declarations.
+		assert.deepEqual(manifest.atomic?.skills, ["./skills"]);
+		assert.deepEqual(manifest.pi?.skills, ["./skills"]);
 
 		const extensionEntry = join(feedbackDir, INSTALLED_EXTENSION_ENTRIES.feedback);
 		assert.ok(fs.existsSync(extensionEntry), `${extensionEntry} missing from built package`);
@@ -205,8 +211,7 @@ runTest(
 runTest(
 	"installed @bastani/atomic loads builtin extensions under Node",
 	() => {
-		const atomicDest = buildInstalledLayout();
-		assert.ok(tmpRoot, "layout setup must assign tmpRoot");
+		const { atomicDest, tmpRoot } = buildInstalledLayout();
 		// Isolated HOME + empty cwd: no repo-local or user config can leak in,
 		// and the run deterministically ends at the no-configured-models exit.
 		const homeDir = join(tmpRoot, "home");
