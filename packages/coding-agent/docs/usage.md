@@ -87,7 +87,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 
 Use `/feedback <what happened or what you want to change>` to draft a bug report or enhancement request in the normal conversation. A bug needs a title, what happened, and reproduction steps; an enhancement needs a title, the requested change, and why it helps. Answer any clarification, then review the prepared title and body and request edits. Preparing a draft does not post it. Review the text for private information before sharing it.
 
-Draft fields must be text. With npm-installed Atomic running under Node, a numeric title produces `title: must be string`. Ask Atomic to use the intended text and prepare again. Downloaded binaries and source-checkout runs can instead convert a numeric title from `42` to `"42"`. In either case, review the prepared wording and request corrections before sharing it.
+If preparation reports a field error, tell Atomic the intended text and ask it to prepare again. Review the corrected draft before sharing it.
 
 ## Message Queue
 
