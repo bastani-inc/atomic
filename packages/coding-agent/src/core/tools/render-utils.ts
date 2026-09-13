@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
 import { getCapabilities, getImageDimensions, hyperlink, imageFallback } from "@earendil-works/pi-tui";
 import type { ThemeColor } from "../../modes/interactive/theme/theme.js";
-import { stripAnsi } from "../../utils/ansi.js";
+import { controlStringTerminatorEnd, stripAnsi } from "../../utils/ansi.js";
 import { resolvePath } from "../../utils/paths.ts";
 import { sanitizeBinaryOutput } from "../../utils/shell.ts";
 
@@ -51,7 +51,13 @@ export function normalizeDisplayText(text: string): string {
 // Untrusted generic tool text is a display projection, never a storage/model rewrite.
 // Remove whole OSC/DCS/SOS/PM/APC strings before stripping their introducers.
 function sanitizeToolResultDisplay(text: string): string {
-	const withoutStrings = text.replace(/(?:\x1b[\]PX^_]|[\x90\x98\x9d-\x9f])[\s\S]*?(?:\x07|\x1b\\|\x9c)/g, "");
+	// Only search the prefix where every introducer has a terminator ahead.
+	// The unterminated suffix must retain its existing display fallback, without
+	// repeatedly searching that same suffix from each embedded introducer.
+	const end = controlStringTerminatorEnd(text);
+	const withoutStrings =
+		text.slice(0, end).replace(/(?:\x1b[\]PX^_]|[\x90\x98\x9d-\x9f])[\s\S]*?(?:\x07|\x1b\\|\x9c)/g, "") +
+		text.slice(end);
 	return sanitizeBinaryOutput(stripAnsi(withoutStrings)).replace(/[\r\x7f-\x9f]/g, "");
 }
 

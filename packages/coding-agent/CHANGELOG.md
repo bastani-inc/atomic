@@ -9,6 +9,7 @@
 - Option previews escape terminal controls before Markdown rendering, including inside code fences, without changing the original preview returned with a selected answer ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Background widgets now follow the live terminal height after resizing without needing a reload ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Completed tool results and reopened transcripts strip terminal control strings and nonprinting control characters before display, without changing stored results or model context ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Tool results containing repeated unterminated terminal control strings no longer stall display or transcript replay ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 
 ## [0.9.19-alpha.9] - 2026-09-12
 

@@ -26,22 +26,27 @@
  * SOFTWARE.
  */
 
-function ansiRegex({ onlyFirst = false }: { onlyFirst?: boolean } = {}): RegExp {
+function ansiRegex({ osc = true }: { osc?: boolean } = {}): RegExp {
 	// Valid string terminator sequences are BEL, ESC\, and 0x9c
 	const ST = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
 
 	// OSC sequences only: ESC ] ... ST (non-greedy until the first ST)
-	const osc = `(?:\\u001B\\][\\s\\S]*?${ST})`;
+	const oscPattern = String.raw`(?:\u001B\][\s\S]*?${ST})`;
 
 	// CSI and related: ESC/C1, optional intermediates, optional params (supports ; and :) then final byte
 	const csi = "[\\u001B\\u009B][[\\]()#;?]*(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]";
 
-	const pattern = `${osc}|${csi}`;
-
-	return new RegExp(pattern, onlyFirst ? undefined : "g");
+	return new RegExp(osc ? `${oscPattern}|${csi}` : csi, "g");
 }
 
 const regex = ansiRegex();
+const csiRegex = ansiRegex({ osc: false });
+
+/** End of the final BEL/ST, or zero when no control string can be complete. */
+export function controlStringTerminatorEnd(value: string): number {
+	const st = value.lastIndexOf("\x1b\\");
+	return Math.max(value.lastIndexOf("\x07"), value.lastIndexOf("\x9c"), st < 0 ? -1 : st + 1) + 1;
+}
 
 export function stripAnsi(value: string): string {
 	if (typeof value !== "string") {
@@ -53,8 +58,10 @@ export function stripAnsi(value: string): string {
 		return value;
 	}
 
-	// Even though the regex is global, we don't need to reset the `.lastIndex`
-	// because unlike `.exec()` and `.test()`, `.replace()` does it automatically
-	// and doing it manually has a performance penalty.
-	return value.replace(regex, "");
+	// Every OSC start in this prefix has a terminator ahead, so successful
+	// matches consume disjoint spans. Never retry OSC on the unterminated tail.
+	// Keep the original OSC/CSI alternation and CSI fallback semantics; stripping
+	// OSC first could create new ANSI matches across the removed string.
+	const end = controlStringTerminatorEnd(value);
+	return value.slice(0, end).replace(regex, "") + value.slice(end).replace(csiRegex, "");
 }

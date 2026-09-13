@@ -80,6 +80,32 @@ describe("stripAnsi", () => {
 		}
 	});
 
+	it("bounds CPU work for repeated unterminated OSC while preserving ANSI fallback", () => {
+		// PR #2700: use CPU, not wall time, with ample headroom for loaded runners.
+		const OSC_CPU_BUDGET_US = 1_000_000;
+		const value = `${"\x1b]".repeat(160_000)}! tail\x1b[31mred`;
+		const start = process.cpuUsage();
+		const output = stripAnsi(value);
+		const cpu = process.cpuUsage(start);
+		expect(cpu.user + cpu.system).toBeLessThan(OSC_CPU_BUDGET_US);
+		expect(output).toBe(`${"\x1b]".repeat(160_000)}! tailred`);
+	});
+
+	it("preserves OSC/CSI ordering and fallback on both sides of the final terminator", () => {
+		// PR #2700: removing OSC in a separate pass could create new CSI matches.
+		for (const end of ["\x07", "\x1b\\", "\x9c"]) {
+			for (const input of getCompatibilityInputs()) {
+				for (const value of [
+					`${input}${end}\x1b]! unfinished`,
+					`\x1b[\x1b]hidden${end}31m${input}`,
+					`${input}\x1b]hidden${end}\x1b[38:2:1:2:3mtext\x9b0m`,
+				]) {
+					expect(stripAnsi(value)).toBe(referenceStripAnsi(value));
+				}
+			}
+		}
+	});
+
 	it("throws the same TypeError as chalk strip-ansi for non-string values", () => {
 		const stripAnsiUnknown = stripAnsi as (value: unknown) => string;
 
