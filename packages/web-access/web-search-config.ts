@@ -7,6 +7,7 @@ import { isExaAvailable } from "./exa.js";
 import { isGeminiApiAvailable } from "./gemini-api.js";
 import { isGeminiWebAvailable } from "./gemini-web.js";
 import { isPerplexityAvailable } from "./perplexity.js";
+import { isYoucomAvailable } from "./youcom.js";
 import type { SearchProvider, ResolvedSearchProvider } from "./gemini-search.js";
 
 const WEB_SEARCH_CONFIG_PATH = getUserConfigPaths("web-search.json")[0] ?? join(homedir(), CONFIG_DIR_NAME, "web-search.json");
@@ -31,6 +32,7 @@ export interface ProviderAvailability {
 	perplexity: boolean;
 	exa: boolean;
 	gemini: boolean;
+	youcom: boolean;
 }
 
 export type { CuratorWorkflow, WebSearchWorkflow } from "./web-search-workflow.js";
@@ -86,7 +88,13 @@ export function normalizeProviderInput(value: unknown): SearchProvider | undefin
 	if (value === undefined) return undefined;
 	if (typeof value !== "string") return "auto";
 	const normalized = value.trim().toLowerCase();
-	if (normalized === "auto" || normalized === "exa" || normalized === "perplexity" || normalized === "gemini") {
+	if (
+		normalized === "auto" ||
+		normalized === "exa" ||
+		normalized === "perplexity" ||
+		normalized === "gemini" ||
+		normalized === "youcom"
+	) {
 		return normalized;
 	}
 	return "auto";
@@ -120,6 +128,7 @@ async function getProviderAvailability(): Promise<ProviderAvailability> {
 		perplexity: isPerplexityAvailable(),
 		exa: isExaAvailable(),
 		gemini: isGeminiApiAvailable() || !!geminiWebAvail,
+		youcom: isYoucomAvailable(),
 	};
 }
 
@@ -152,6 +161,11 @@ function resolveProvider(requested: unknown, available: ProviderAvailability): R
 	if (provider === "gemini" && !available.gemini) {
 		if (available.exa) return "exa";
 		return available.perplexity ? "perplexity" : "gemini";
+	}
+	if (provider === "youcom" && !available.youcom) {
+		if (available.exa) return "exa";
+		if (available.perplexity) return "perplexity";
+		return available.gemini ? "gemini" : "youcom";
 	}
 	return provider;
 }

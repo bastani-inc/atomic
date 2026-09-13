@@ -320,7 +320,7 @@ export default function webAccess(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "web_search",
 		label: "Web Search",
-		description: "Search the web using Perplexity AI, Exa, or Gemini. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches return raw results by default. Enable the interactive browser curator with /curator on or by setting workflow to \"summary-review\" in web-search config. Provider auto-selects: Exa (direct API with key, MCP fallback without), else Perplexity (needs key), else Gemini API (needs key), else Gemini Web (needs a supported Chromium-based browser login).",
+		description: "Search the web using Perplexity AI, Exa, Gemini, or You.com. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches return raw results by default. Enable the interactive browser curator with /curator on or by setting workflow to \"summary-review\" in web-search config. Provider auto-selects: Exa (direct API with key, MCP fallback without), else Perplexity (needs key), else You.com (needs key), else Gemini API (needs key), else Gemini Web (needs a supported Chromium-based browser login).",
 		promptSnippet: "Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage.",
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
@@ -329,7 +329,7 @@ export default function webAccess(pi: ExtensionAPI) {
 			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content (async)" })),
 			recencyFilter: Type.Optional(Type.String({ enum: ["day", "week", "month", "year"], description: "Filter by recency" })),
 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude)" })),
-			provider: Type.Optional(Type.String({ enum: ["auto", "perplexity", "gemini", "exa"], description: "Search provider (default: auto)" })),
+			provider: Type.Optional(Type.String({ enum: ["auto", "perplexity", "gemini", "exa", "youcom"], description: "Search provider (default: auto)" })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "web_search", args),
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "web_search", args),

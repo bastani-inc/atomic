@@ -7,9 +7,10 @@ import { getApiKey, API_BASE, DEFAULT_MODEL } from "./gemini-api.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
 import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type SearchResponse, type SearchOptions } from "./perplexity.js";
 import { hasExaApiKey, isExaAvailable, searchWithExa } from "./exa.js";
+import { isYoucomAvailable, searchWithYoucom } from "./youcom.js";
 import { findReadableConfigPath } from "./config-paths.ts";
 
-export type SearchProvider = "auto" | "perplexity" | "gemini" | "exa";
+export type SearchProvider = "auto" | "perplexity" | "gemini" | "exa" | "youcom";
 export type ResolvedSearchProvider = Exclude<SearchProvider, "auto">;
 
 export interface AttributedSearchResponse extends SearchResponse {
@@ -59,9 +60,16 @@ function normalizeSearchModel(value: unknown): string | undefined {
 
 function normalizeSearchProvider(value: unknown): SearchProvider {
 	const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-	return normalized === "auto" || normalized === "perplexity" || normalized === "gemini" || normalized === "exa"
-		? normalized
-		: "auto";
+	if (
+		normalized === "auto" ||
+		normalized === "perplexity" ||
+		normalized === "gemini" ||
+		normalized === "exa" ||
+		normalized === "youcom"
+	) {
+		return normalized;
+	}
+	return "auto";
 }
 
 export interface FullSearchOptions extends SearchOptions {
@@ -114,6 +122,11 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 	if (provider === "perplexity") {
 		const result = await searchWithPerplexity(query, options);
 		return { ...result, provider: "perplexity" };
+	}
+
+	if (provider === "youcom") {
+		const result = await searchWithYoucom(query, options);
+		return { ...result, provider: "youcom" };
 	}
 
 	if (provider === "gemini") {
@@ -170,6 +183,16 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		}
 	}
 
+	if (isYoucomAvailable()) {
+		try {
+			const result = await searchWithYoucom(query, options);
+			return { ...result, provider: "youcom" };
+		} catch (err) {
+			if (isAbortError(err)) throw err;
+			fallbackErrors.push(`You.com: ${errorMessage(err)}`);
+		}
+	}
+
 	try {
 		const geminiResult = await searchWithGemini(query, options, false);
 		if (geminiResult) return { ...geminiResult, provider: "gemini" };
@@ -187,7 +210,8 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		`  1. Set perplexityApiKey in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
 		`  2. Set EXA_API_KEY (or exaApiKey) in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
 		`  3. Set GEMINI_API_KEY in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
-		"  4. Sign into gemini.google.com in a supported Chromium-based browser"
+		`  4. Set youcomApiKey (or YDC_API_KEY) in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
+		"  5. Sign into gemini.google.com in a supported Chromium-based browser"
 	);
 }
 
