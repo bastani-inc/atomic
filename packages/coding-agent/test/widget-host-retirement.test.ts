@@ -7,16 +7,14 @@ import { test } from "vitest";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import type { ExtensionError, ExtensionUIContext } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
-import { ModelRuntime } from "../src/core/model-runtime.js";
-import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
-import { SettingsManager } from "../src/core/settings-manager.js";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
 import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.js";
 import "../src/modes/interactive/interactive-extension-runtime.js";
 import "../src/modes/interactive/interactive-extension-context.js";
 import "../src/modes/interactive/interactive-extension-widgets.js";
-import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
+import { createWidgetReloadResourceLoader, createWidgetReloadSession } from "./helpers/widget-reload.js";
+import { createTestExtensionsResult } from "./utilities.js";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -128,38 +126,20 @@ for (const kind of ["local", "engine"] as const) {
 					],
 					dir,
 				);
-			let loaded = await load();
-			const loader = {
-				...createTestResourceLoader(),
-				getExtensions: () => loaded,
-				prepareReload: async () => {
-					const candidate = await load();
-					return {
-						loader: createTestResourceLoader({ extensionsResult: candidate }),
-						activate() {},
-						prepareCommit() {
-							if (reject) throw new Error("candidate rejected");
-							return {
-								commit() {
-									loaded = candidate;
-									lifecycle.push("commit");
-								},
-								rollback() {},
-							};
-						},
-						commit() {},
-					};
+			const loader = createWidgetReloadResourceLoader({
+				loaded: await load(),
+				load,
+				beforePrepareCommit: () => {
+					if (reject) throw new Error("candidate rejected");
 				},
-			};
-			const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json") });
-			const { session } = await createAgentSession({
-				cwd: dir,
-				agentDir: dir,
+				onCommit: () => {
+					lifecycle.push("commit");
+				},
+			});
+			const { session } = await createWidgetReloadSession({
+				dir,
 				resourceLoader: loader,
-				modelRuntime,
 				sessionManager: SessionManager.inMemory(),
-				settingsManager: SettingsManager.inMemory(),
-				noTools: "all",
 			});
 			try {
 				await session.bindExtensions({ mode: "tui", uiContext: host.ui });
@@ -271,38 +251,20 @@ for (const kind of ["local", "engine"] as const) {
 				],
 				dir,
 			);
-		let loaded = await load();
-		const loader = {
-			...createTestResourceLoader(),
-			getExtensions: () => loaded,
-			prepareReload: async () => {
-				const candidate = await load();
-				return {
-					loader: createTestResourceLoader({ extensionsResult: candidate }),
-					activate() {},
-					prepareCommit() {
-						if (scenario === "rejected") throw new Error("candidate rejected");
-						return {
-							commit() {
-								loaded = candidate;
-								lifecycle.push("commit");
-							},
-							rollback() {},
-						};
-					},
-					commit() {},
-				};
+		const loader = createWidgetReloadResourceLoader({
+			loaded: await load(),
+			load,
+			beforePrepareCommit: () => {
+				if (scenario === "rejected") throw new Error("candidate rejected");
 			},
-		};
-		const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json") });
-		const { session } = await createAgentSession({
-			cwd: dir,
-			agentDir: dir,
+			onCommit: () => {
+				lifecycle.push("commit");
+			},
+		});
+		const { session } = await createWidgetReloadSession({
+			dir,
 			resourceLoader: loader,
-			modelRuntime,
 			sessionManager: SessionManager.inMemory(),
-			settingsManager: SettingsManager.inMemory(),
-			noTools: "all",
 		});
 		try {
 			await session.bindExtensions({ mode: "tui", uiContext: host.ui, onError: (error) => errors.push(error) });

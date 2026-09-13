@@ -9,12 +9,10 @@ import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import type { ExtensionUIContext } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
-import { ModelRuntime } from "../src/core/model-runtime.js";
-import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
-import { SettingsManager } from "../src/core/settings-manager.js";
 import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.js";
-import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
+import { createWidgetReloadResourceLoader, createWidgetReloadSession } from "./helpers/widget-reload.js";
+import { createTestExtensionsResult } from "./utilities.js";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -218,37 +216,17 @@ test("SDK repeated, empty and rejected reloads retain one live widget controller
 			dir,
 		);
 	try {
-		let loaded = await load();
-		const resourceLoader = {
-			...createTestResourceLoader({ extensionsResult: loaded }),
-			getExtensions: () => loaded,
-			prepareReload: async () => {
-				const candidate = await load();
-				return {
-					loader: createTestResourceLoader({ extensionsResult: candidate }),
-					activate() {},
-					prepareCommit: () => {
-						if (reject) throw new Error("candidate rejected");
-						return {
-							commit: () => {
-								loaded = candidate;
-							},
-							rollback() {},
-						};
-					},
-					commit() {},
-				};
+		const resourceLoader = createWidgetReloadResourceLoader({
+			loaded: await load(),
+			load,
+			beforePrepareCommit: () => {
+				if (reject) throw new Error("candidate rejected");
 			},
-		};
-		const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json") });
-		const { session } = await createAgentSession({
-			cwd: dir,
-			agentDir: dir,
+		});
+		const { session } = await createWidgetReloadSession({
+			dir,
 			resourceLoader,
-			modelRuntime,
 			sessionManager: SessionManager.inMemory(dir),
-			settingsManager: SettingsManager.inMemory(),
-			noTools: "all",
 		});
 		let widget: { render(width: number): string[] } | undefined;
 		try {

@@ -8,11 +8,10 @@ import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import type { ExtensionContext, ExtensionError } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
-import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
-import { SettingsManager } from "../src/core/settings-manager.js";
 import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.js";
-import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
+import { createWidgetReloadResourceLoader, createWidgetReloadSession } from "./helpers/widget-reload.js";
+import { createTestExtensionsResult } from "./utilities.js";
 
 // PR #2700: one exception-path matrix for replacement, omission, rollback and startup release.
 test.each([
@@ -101,42 +100,24 @@ test.each([
 			],
 			dir,
 		);
-	let loaded = await load();
-	const resourceLoader = {
-		...createTestResourceLoader(),
-		getExtensions: () => loaded,
-		prepareReload: async () => {
-			const candidate = await load();
-			return {
-				loader: createTestResourceLoader({ extensionsResult: candidate }),
-				activate() {},
-				prepareCommit() {
-					if (rejected) throw new Error("candidate rejected");
-					return {
-						commit() {
-							loaded = candidate;
-							lifecycle.push("commit");
-						},
-						rollback() {},
-					};
-				},
-				commit() {
-					loaded = candidate;
-					lifecycle.push("commit");
-				},
-			};
+	const resourceLoader = createWidgetReloadResourceLoader({
+		loaded: await load(),
+		load,
+		beforePrepareCommit: () => {
+			if (rejected) throw new Error("candidate rejected");
 		},
-	};
+		onCommit: () => {
+			lifecycle.push("commit");
+		},
+		publishOnFallbackCommit: true,
+	});
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json") });
 	const engine = new EngineCustomUiService((line) => frames.push(line), new KeybindingsManager());
-	const { session } = await createAgentSession({
-		cwd: dir,
-		agentDir: dir,
+	const { session } = await createWidgetReloadSession({
+		dir,
 		resourceLoader,
-		modelRuntime,
 		sessionManager: SessionManager.inMemory(),
-		settingsManager: SettingsManager.inMemory(),
-		noTools: "all",
+		modelRuntime,
 	});
 	const unsubscribe = session.subscribe((event) => {
 		if (event.type === "message_end" && event.message.role === "custom") lifecycle.push("release");

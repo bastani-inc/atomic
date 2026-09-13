@@ -16,7 +16,6 @@ import {
 	PreviewPane,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-pane.js";
 import { getMarkdownTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const controls = [
 	["OSC-BEL", "\x1b]0;PREVIEW-BEL\x07"],
@@ -118,11 +117,6 @@ for (const [name, injected] of controls) {
 			);
 		}
 		assert.deepEqual(question, before);
-		if (process.env.PR2700_PROBE_DIR)
-			await writeFileEnsuringDir(
-				`${process.env.PR2700_PROBE_DIR}/preview-${name}.json`,
-				JSON.stringify({ question, results, frames }, null, 2),
-			);
 		for (const frame of frames) {
 			assert.ok(!frame.raw.includes(injected), `${name} raw control leakage: ${JSON.stringify(frame)}`);
 			assert.ok(

@@ -11,7 +11,6 @@ import type {
 import { validateQuestionnaire } from "../../packages/coding-agent/src/core/tools/ask-user-question/tool/validate-questionnaire.js";
 import { WrappingSelect } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/wrapping-select.js";
 import { getThemeByName, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const injectedSgr = "\x1b[38;2;1;2;3m";
 const payload = `Polaris 雪\x1b]0;PR2700\x07\x1b[2J\x9b2J\x00\x7f\x85${injectedSgr}Tail\nReadable`;
@@ -81,11 +80,6 @@ for (const multiSelect of [false, true]) {
 			assert.equal(results[0]!.answers[1]!.answer, "Gamma");
 			assert.deepEqual(params, before);
 			assert.ok(frames.find((frame) => frame.where === "active" && frame.width === 160)!.raw.includes("Polaris 雪"));
-			if (process.env.PR2700_PROBE_DIR)
-				await writeFileEnsuringDir(
-					`${process.env.PR2700_PROBE_DIR}/development-${field}-${multiSelect}.json`,
-					JSON.stringify({ params, results, frames }, null, 2),
-				);
 			for (const frame of frames) {
 				assert.ok(!frame.raw.includes(injectedSgr), `${frame.where}@${frame.width}: injected SGR`);
 				// Remove only trusted framework markers and styling, never general OSC/CSI.
