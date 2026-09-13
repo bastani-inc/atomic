@@ -59,7 +59,7 @@ export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: 
 	const stageLabel =
 		identity.stageName !== undefined && identity.stageName.length > 0
 			? paint(" [stage: ", theme.textMuted) +
-			  paint(truncateToWidth(identity.stageName, Math.max(1, innerWidth - visibleWidth(" AWAITING INPUT  [stage: ]") + 1), "…"), theme.text, { bold: true }) +
+			  paint(truncateToWidth(identity.stageName, Math.max(1, innerWidth - visibleWidth(" AWAITING INPUT  [stage: ]") - 1), "…"), theme.text, { bold: true }) +
 			  paint("] ", theme.textMuted)
 			: "";
 	const topBorderLabel = awaitingLabel + stageLabel;
