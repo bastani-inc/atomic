@@ -37,6 +37,7 @@ const WORKSPACE_BUILTINS: readonly (WorkspaceBuiltinSpec & { mandatory?: boolean
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp", distDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access", distDirName: "web-access" },
 	{ packageName: "@bastani/intercom", workspaceDirName: "intercom", distDirName: "intercom", mandatory: true },
+	{ packageName: "@bastani/feedback", workspaceDirName: "feedback", distDirName: "feedback" },
 ];
 
 const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS.map(

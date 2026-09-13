@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Added typed feedback draft validation, deterministic issue formatting, privacy scrubbing, and bounded diagnostic utilities ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Added `/feedback` and a bundled conversational skill to collect bug reports or enhancement requests and prepare editable, privacy-scrubbed drafts without posting them ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 
 ### Fixed
 

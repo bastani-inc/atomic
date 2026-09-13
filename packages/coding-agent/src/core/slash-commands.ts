@@ -342,6 +342,10 @@ export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand
 			"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|quit|pause|resume|inputs|reload] [args]",
 		getArgumentCompletions: getBundledWorkflowArgumentCompletions,
 	},
+	{
+		name: "feedback",
+		description: "Draft a private, reviewable bug report or enhancement request",
+	},
 	{ name: "mcp", description: "Show MCP server status" },
 	{ name: "mcp-auth", description: "Authenticate with an MCP server (OAuth)" },
 	{ name: "curator", description: "Toggle or configure the search curator workflow" },

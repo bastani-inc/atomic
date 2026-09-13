@@ -83,6 +83,12 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/exit` | Exit Atomic |
 | `/quit` | Quit Atomic |
 
+### Drafting feedback
+
+Use `/feedback <what happened or what you want to change>` to draft a bug report or enhancement request in the normal conversation. A bug needs a title, what happened, and reproduction steps; an enhancement needs a title, the requested change, and why it helps. Answer any clarification, then review the prepared title and body and request edits. Preparing a draft does not post it. Review the text for private information before sharing it.
+
+If preparation reports a field error, tell Atomic the intended text and ask it to prepare again. Review the corrected draft before sharing it.
+
 ## Message Queue
 
 You can submit messages while the agent is still working:
@@ -210,6 +216,6 @@ Moved to [CLI reference](/reference/cli#environment-variables).
 
 ## Design Principles
 
-Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, and [intercom](/intercom). Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
+Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, [intercom](/intercom), and feedback. Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
 
 For the full rationale, read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/).

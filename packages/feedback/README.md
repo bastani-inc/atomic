@@ -1,4 +1,16 @@
-# @bastani/feedback — Pure raw-TypeScript utilities for validating, formatting, and privacy-scrubbing Atomic feedback drafts.
+# @bastani/feedback — Conversational feedback drafting and pure raw-TypeScript utilities for Atomic
+
+This bundled extension provides a safe, ordinary-conversation workflow for drafting feedback:
+
+- `/feedback <what happened or what you want to change>` starts the bundled feedback skill.
+- The `feedback` skill classifies bug reports and enhancement requests, asks concise clarifying questions, and keeps revisions in the normal transcript.
+- The `feedback_prepare_issue` tool validates the current issue form, formats the draft, and scrubs private data without posting anything.
+
+Bug drafts require a title, what happened, and reproduction steps. Enhancement drafts require a title, the requested change, and why it helps. Missing required fields produce a tool error so you can correct the draft; prepared details are returned only for valid drafts.
+
+Pass text for draft fields. If preparation reports a field error, correct that field and prepare again. Review the prepared title and body before sharing them.
+
+Posting is handled separately by the approval-gated feedback submission boundary.
 
 ## Privacy scrubbing
 

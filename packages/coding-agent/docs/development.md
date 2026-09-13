@@ -161,6 +161,7 @@ packages/
   mcp/          # MCP adapter
   web-access/   # Web search and content extraction
   intercom/     # Cross-session coordination
+  feedback/     # Conversational feedback drafting
 ```
 
 The bundled companion-package roles are:
@@ -173,4 +174,5 @@ packages/
   mcp/          # Built-in MCP adapter extension
   web-access/   # Built-in web search and content extraction tools
   intercom/     # Built-in cross-session coordination channel
+  feedback/     # Built-in feedback command and conversational drafting skill
 ```
