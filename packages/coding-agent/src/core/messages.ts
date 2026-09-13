@@ -204,7 +204,15 @@ export function createVerbatimCompactionMessage(
 		if (block.type === "text" && last.type === "text") last.text += block.text;
 		else content.push({ ...block });
 	}
-	const message = createCustomMessage("compaction", content, true, details ?? { tokensBefore }, timestamp);
+	// Ensure the authoritative whole-context count survives on the message details so
+	// the boundary renderer can show it even when the caller supplied its own details
+	// object. An existing tokensBefore is never overridden (#2052).
+	const mergedDetails = (() => {
+		if (details === undefined) return { tokensBefore };
+		if (typeof details !== "object" || details === null) return details;
+		return "tokensBefore" in details ? details : { ...details, tokensBefore };
+	})();
+	const message = createCustomMessage("compaction", content, true, mergedDetails, timestamp);
 	verbatimCompactionMessages.add(message);
 	return message;
 }

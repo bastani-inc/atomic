@@ -13,6 +13,7 @@ import type {
 } from "./compaction-types.js";
 import { MIN_COMPACTABLE_REGION_LINES } from "./compaction-types.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
+import { widenToWholeContextStats } from "./whole-context-stats.js";
 import {
 	type BorrowFallbackPlanner,
 	createFallbackPlannerBorrower,
@@ -111,17 +112,24 @@ function hardInputLimitFor(model: Model<Api>): number {
 	return model.contextWindow > 0 ? model.contextWindow : Number.POSITIVE_INFINITY;
 }
 
+/**
+ * Widen region-level transcript stats to whole-context stats (#2052).
+ *
+ * `result.stats` must be the symmetric region-only stats produced by
+ * `reconstructCompactedTranscript`; this adds the independently estimated kept
+ * tail to the heuristic before count on both sides — and, only when the tail is
+ * kept, to the after count — via the shared `widenToWholeContextStats`. The
+ * authoritative `preparation.tokensBefore` is deliberately absent from this
+ * comparison and travels separately for budgeting/display.
+ */
 function withWholeContextStats(
 	result: CompactedTranscript,
 	preparation: VerbatimCompactionPreparation,
 	keptTail: boolean,
 ): CompactedTranscript {
-	const tokensAfter = result.stats.tokensAfter + (keptTail ? getKeptTailTokenEstimate(preparation) : 0);
-	const percentReduction =
-		preparation.tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10;
 	return {
 		...result,
-		stats: { ...result.stats, tokensBefore: preparation.tokensBefore, tokensAfter, percentReduction },
+		stats: widenToWholeContextStats(result.stats, getKeptTailTokenEstimate(preparation), keptTail),
 	};
 }
 

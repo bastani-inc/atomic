@@ -16,4 +16,5 @@ export * from "./range-planner-diagnostics.js";
 export * from "./region-trimming.js";
 export * from "./session-summarization.ts";
 export * from "./transcript-serialization.js";
+export * from "./whole-context-stats.js";
 export * from "./utils.ts";

@@ -133,6 +133,30 @@ describe("verbatim compaction extension hooks", () => {
 		expect(after[0].fromExtension).toBe(true);
 	});
 
+	it("widens extension stats with the kept tail symmetrically (#2052)", async () => {
+		const compactedText = "[User]: retained exactly\n(filtered 3 lines)";
+		await create(extension(() => ({ compactedText })));
+
+		const compacted = await session.compact({ preserve_recent: 2 });
+		expect(compacted.rung).toBe("extension");
+		const prep = before[0].preparation;
+		// The frozen clone sent to the extension hook is a different object from
+		// the original preparation whose WeakMap entry carries the tail estimate,
+		// so recover the tail algebraically from the widened stats instead.
+		const tail = compacted.stats.tokensBefore - prep.region.tokenEstimate;
+		expect(tail).toBeGreaterThan(0);
+		// Tail added symmetrically: same tail on both before and after sides.
+		expect(compacted.stats.tokensBefore).toBe(prep.region.tokenEstimate + tail);
+		expect(compacted.stats.tokensAfter).toBe(Math.ceil(compactedText.length / 4) + tail);
+		expect(compacted.stats.percentReduction).toBe(
+			Math.round((1 - compacted.stats.tokensAfter / compacted.stats.tokensBefore) * 1000) / 10,
+		);
+		expect(compacted.stats.tokensAfter).toBeLessThan(compacted.stats.tokensBefore);
+		// The authoritative whole-context count travels on the result and the entry.
+		expect(compacted.tokensBefore).toBe(prep.tokensBefore);
+		expect(after[0].compactionEntry.tokensBefore).toBe(prep.tokensBefore);
+	});
+
 	it("persists zero retention and includes that durable summary on repeated compaction", async () => {
 		const compactedText = "[User]: retained exactly\n(filtered 30 lines)";
 		await create(extension(() => ({ compactedText })));

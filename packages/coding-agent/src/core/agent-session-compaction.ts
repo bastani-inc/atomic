@@ -12,6 +12,7 @@ import {
 	getKeptTailTokenEstimate,
 	prepareCompactionBoundary,
 	runVerbatimCompaction,
+	widenToWholeContextStats,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
@@ -61,17 +62,27 @@ function deepFreeze<T>(value: T): T {
 function extensionStats(preparation: VerbatimCompactionPreparation, compactedText: string): VerbatimCompactionStats {
 	const linesBefore = preparation.region.lines.length;
 	const linesKept = compactedText.split("\n").length;
-	const tokensAfter = Math.ceil(compactedText.length / 4) + getKeptTailTokenEstimate(preparation);
-	return {
-		linesBefore,
-		linesDeleted: Math.max(0, linesBefore - linesKept),
-		linesKept,
-		rangeCount: 0,
-		tokensBefore: preparation.tokensBefore,
-		tokensAfter,
-		percentReduction:
-			preparation.tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10,
-	};
+	// Region-only view first — what the extension's replacement text now costs
+	// inside the region — then widen it to the whole context with the
+	// independently estimated kept tail (symmetric, present on both sides when
+	// kept). The authoritative `preparation.tokensBefore` is never mixed into
+	// this comparison (#2052).
+	const tokensBefore = preparation.region.tokenEstimate;
+	const tokensAfter = Math.ceil(compactedText.length / 4);
+	return widenToWholeContextStats(
+		{
+			linesBefore,
+			linesDeleted: Math.max(0, linesBefore - linesKept),
+			linesKept,
+			rangeCount: 0,
+			tokensBefore,
+			tokensAfter,
+			percentReduction:
+				tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / tokensBefore) * 1000) / 10,
+		},
+		getKeptTailTokenEstimate(preparation),
+		true,
+	);
 }
 
 export async function _applyVerbatimCompaction(

@@ -123,6 +123,13 @@ export interface VerbatimCompactionDetails {
 	parameters: VerbatimCompactionParameters;
 	stats: VerbatimCompactionStats;
 	rung: CompactionRung;
+	/**
+	 * Authoritative whole-context count, projected for display only. Populated by
+	 * `createVerbatimCompactionMessage` on the rendered message; it is not
+	 * persisted here — the durable entry already carries it as
+	 * `CompactionEntry.tokensBefore`.
+	 */
+	tokensBefore?: number;
 	/** Present only when a borrowed fallback model ranked the lines. */
 	plannerModel?: CompactionPlannerModel;
 	backupPath?: string;

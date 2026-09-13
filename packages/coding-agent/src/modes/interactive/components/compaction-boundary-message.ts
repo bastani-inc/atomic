@@ -12,6 +12,8 @@ interface BoundaryView {
 	text: string;
 	stats: VerbatimCompactionStats;
 	rung: VerbatimCompactionDetails["rung"];
+	/** Authoritative whole-context count, preferred for "Compacted from N tokens". */
+	tokensBefore?: number;
 }
 
 /** Renders the durable verbatim compaction boundary without markdown reflow. */
@@ -21,8 +23,16 @@ export class CompactionBoundaryMessageComponent extends Box {
 
 	constructor(result: VerbatimCompactionResult | BoundaryView) {
 		super(1, 1, (text) => theme.bg("customMessageBg", text));
-		this.view =
-			"compactedText" in result ? { text: result.compactedText, stats: result.stats, rung: result.rung } : result;
+		if ("compactedText" in result) {
+			this.view = {
+				text: result.compactedText,
+				stats: result.stats,
+				rung: result.rung,
+				tokensBefore: result.tokensBefore,
+			};
+		} else {
+			this.view = result;
+		}
 		this.updateDisplay();
 	}
 
@@ -37,7 +47,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 
 	private updateDisplay(): void {
 		this.clear();
-		const tokenStr = this.view.stats.tokensBefore.toLocaleString();
+		const tokenStr = (this.view.tokensBefore ?? this.view.stats.tokensBefore).toLocaleString();
 		// The fresh rung destroyed the compactable conversation; say so plainly.
 		const label = theme.fg(
 			"customMessageLabel",
@@ -79,6 +89,7 @@ export function compactionBoundaryFromMessage(
 		text: content.startsWith(VERBATIM_COMPACTION_PREFIX) ? content.slice(VERBATIM_COMPACTION_PREFIX.length) : content,
 		stats: details.stats,
 		rung: details.rung,
+		tokensBefore: details.tokensBefore ?? details.stats.tokensBefore,
 	});
 	component.setExpanded(expanded);
 	return component;

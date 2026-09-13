@@ -5,9 +5,16 @@ import { Container, getKeybindings, setKeybindings, Text } from "@earendil-works
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { createVerbatimCompactionMessage, VERBATIM_COMPACTION_PREFIX } from "../src/core/messages.ts";
+import {
+	createCustomMessage,
+	createVerbatimCompactionMessage,
+	VERBATIM_COMPACTION_PREFIX,
+} from "../src/core/messages.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
-import { CompactionBoundaryMessageComponent } from "../src/modes/interactive/components/compaction-boundary-message.ts";
+import {
+	compactionBoundaryFromMessage,
+	CompactionBoundaryMessageComponent,
+} from "../src/modes/interactive/components/compaction-boundary-message.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -671,5 +678,55 @@ describe("compaction boundary component", () => {
 		expect(expanded).toContain("Compacted from 100 tokens");
 		expect(expanded).toContain("[User]: retained\n (filtered 1 lines)");
 		expect(expandedRaw).toContain(theme.fg("dim", "(filtered 1 lines)"));
+	});
+
+	it("shows the authoritative whole-context count when it differs from the heuristic stats (#2052)", () => {
+		const divergent: VerbatimCompactionResult = {
+			...result,
+			tokensBefore: 1_200,
+			stats: { ...result.stats, tokensBefore: 480, tokensAfter: 240, percentReduction: 50 },
+		};
+		const component = new CompactionBoundaryMessageComponent(divergent);
+		component.setExpanded(true);
+		const text = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(text).toContain("Compacted from 1,200 tokens");
+		expect(text).not.toContain("Compacted from 480 tokens");
+	});
+
+	it("projects the authoritative count onto a persisted boundary whose details only carry stats (#2052)", () => {
+		const message = createVerbatimCompactionMessage(
+			result.compactedText,
+			1_200,
+			new Date(1).toISOString(),
+			{
+				strategy: "verbatim-lines",
+				parameters: result.parameters,
+				promptVersion: result.promptVersion,
+				rung: result.rung,
+				stats: result.stats,
+			},
+		);
+		const component = compactionBoundaryFromMessage(message, true);
+		const text = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(text).toContain("Compacted from 1,200 tokens");
+	});
+
+	it("falls back to the heuristic stats count for a legacy boundary without an authoritative projection (#2052)", () => {
+		const legacy = createCustomMessage(
+			"compaction",
+			`${VERBATIM_COMPACTION_PREFIX}[User]: retained\n(filtered 1 lines)`,
+			true,
+			{
+				strategy: "verbatim-lines",
+				parameters: result.parameters,
+				promptVersion: result.promptVersion,
+				rung: result.rung,
+				stats: result.stats,
+			},
+			new Date(1).toISOString(),
+		) as unknown as AgentMessage;
+		const component = compactionBoundaryFromMessage(legacy, true);
+		const text = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(text).toContain("Compacted from 100 tokens");
 	});
 });
