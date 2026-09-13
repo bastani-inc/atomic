@@ -11,6 +11,7 @@ import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import { isRecoverableIntercomDisconnect } from "../../packages/intercom/recoverable-disconnect.js";
 import type { BrokerMessage, ClientMessage, Message } from "../../packages/intercom/types.js";
+import { createStageControlHandle } from "../../packages/workflows/src/runs/foreground/executor-stage-control.js";
 import { createStageContext, type InternalStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -2001,6 +2002,107 @@ test("unknown-model fallback releases its live stage route before replacement re
 		assert.equal(live?.lifecycle, "running");
 		assert.ok(live?.sessionId);
 	} finally {
+		await ctx.__dispose();
+	}
+});
+
+// #3020: public steering and eager attachment must share the successor after held ownership shutdown.
+test("concurrent attachment and steer wait for failed primary ownership shutdown", async () => {
+	const runId = crypto.randomUUID();
+	const group = `workflow:${runId}`;
+	const capability = "concurrent-fallback-capability";
+	const owner = new IntercomClient();
+	realClients.add(owner);
+	owner.on("error", () => {});
+	await owner.connect(productionRegistration("concurrent-fallback-owner", group));
+	owner.registerPendingStageRoute(runId, group, capability, [
+		{
+			stageId: "probe",
+			stageName: "probe",
+			target: `workflow:${runId}/probe`,
+			lifecycle: "running",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await owner.listDirectory();
+	const entered = Promise.withResolvers<void>();
+	const released = Promise.withResolvers<void>();
+	const attempts: string[] = [];
+	const steered: string[] = [];
+	const ctx = createStageContext(
+		makeOpts({
+			runId,
+			stageId: "probe",
+			stageName: "probe",
+			stageOptions: { model: "absent/primary", fallbackModels: ["available/fallback"] },
+			adapters: {
+				agentSession: {
+					async create(options) {
+						const model = String(options.model);
+						attempts.push(model);
+						const client = new IntercomClient();
+						realClients.add(client);
+						client.on("error", () => {});
+						await client.connect(productionRegistration(model, group));
+						await client.registerLiveWorkflowStageRoute(runId, ["probe"], capability);
+						return Object.assign(
+							makeMockSession({
+								async prompt() {
+									if (model === "absent/primary") throw new Error("Unknown model: absent/primary");
+								},
+								async steer() {
+									steered.push(model);
+								},
+								getLastAssistantText: () => "fallback completed",
+							}).session,
+							{
+								extensionRunner: {
+									hasHandlers: () => true,
+									async emit() {
+										entered.resolve();
+										await released.promise;
+										await client.disconnect();
+									},
+								},
+							},
+						);
+					},
+				},
+			},
+		}),
+	) as InternalStageContext;
+	const handle = createStageControlHandle({
+		runId,
+		stageId: "probe",
+		name: "probe",
+		innerCtx: ctx,
+		stageSnapshot: { status: "running" },
+		throwIfStageMutationBlocked() {},
+		async captureStageSessionMeta() {},
+	} as never);
+	const prompt = ctx.prompt("go");
+	await entered.promise;
+	const attachments = Promise.all([ctx.__ensureSession(), ctx.__ensureSession()]);
+	const liveAttachment = handle.ensureAttached();
+	const steer = ctx.steer("keep going");
+	// Observe rejections immediately, while the broker round trip exposes any premature registration.
+	const results = Promise.allSettled([prompt, attachments, liveAttachment, steer]);
+	try {
+		const live = (await owner.listDirectory()).workflowStages.find((stage) => stage.runId === runId);
+		assert.ok(live?.sessionId, "primary still owns its route while shutdown is held");
+		assert.deepEqual(attempts, ["absent/primary"], "no competing creator may escape the shutdown barrier");
+		released.resolve();
+		assert.equal(await prompt, "fallback completed");
+		const attached = await attachments;
+		assert.equal(attached[0], attached[1], "attachment must remain single-flight");
+		await liveAttachment;
+		await steer;
+		assert.deepEqual(attempts, ["absent/primary", "available/fallback"]);
+		assert.deepEqual(steered, ["available/fallback"]);
+	} finally {
+		released.resolve();
+		await results;
 		await ctx.__dispose();
 	}
 });

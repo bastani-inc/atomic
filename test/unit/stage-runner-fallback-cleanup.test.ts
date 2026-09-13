@@ -50,6 +50,14 @@ test.each(["abort", "dispose", "signal"] as const)(
 			(error: Error) => error,
 		);
 		await entered.promise;
+		const attachment = ctx.__ensureSession().then(
+			() => undefined,
+			(error: Error) => error,
+		);
+		const steering = ctx.steer("do not create after cancellation").then(
+			() => undefined,
+			(error: Error) => error,
+		);
 		const cancelled =
 			action === "dispose"
 				? ctx.__dispose()
@@ -60,6 +68,8 @@ test.each(["abort", "dispose", "signal"] as const)(
 			released.resolve();
 			await cancelled;
 			assert.ok((await outcome) instanceof Error);
+			assert.ok((await attachment) instanceof Error);
+			assert.ok((await steering) instanceof Error);
 			assert.equal(creations, 1, "cancelled cleanup cannot create a successor session");
 			assert.equal(shutdowns, 1, "concurrent disposal must join the same shutdown");
 		} finally {
@@ -116,5 +126,123 @@ test("failed extension binding drains initialization cleanup before exposing the
 	} finally {
 		initialized.resolve();
 		await outcome;
+	}
+});
+
+// #3020: a rejected shutdown does not prove release; all entrants must see the original error.
+test("shutdown rejection fences concurrent and later attachment and steering", async () => {
+	const entered = Promise.withResolvers<void>();
+	const released = Promise.withResolvers<void>();
+	const failure = new Error("Unknown model: ownership shutdown failed");
+	let creations = 0;
+	const ctx = createStageContext(
+		makeOpts({
+			stageOptions: { model: "missing/primary", fallbackModels: ["missing/secondary", "available/fallback"] },
+			adapters: {
+				agentSession: {
+					async create() {
+						creations++;
+						return Object.assign(
+							makeMockSession({
+								async prompt() {
+									throw new Error("Unknown model: primary");
+								},
+							}).session,
+							{
+								extensionRunner: {
+									hasHandlers: () => true,
+									async emit() {
+										entered.resolve();
+										await released.promise;
+										throw failure;
+									},
+								},
+							},
+						);
+					},
+				},
+			},
+		}),
+	) as InternalStageContext;
+	const outcome = (promise: Promise<unknown>) =>
+		promise.then(
+			() => undefined,
+			(error: Error) => error,
+		);
+	const prompt = outcome(ctx.prompt("go"));
+	await entered.promise;
+	const attachment = outcome(ctx.__ensureSession());
+	const steer = outcome(ctx.steer("go"));
+	try {
+		released.resolve();
+		assert.equal(await prompt, failure);
+		assert.equal(await attachment, failure);
+		assert.equal(await steer, failure);
+		assert.equal(await outcome(ctx.__ensureSession()), failure);
+		assert.equal(await outcome(ctx.steer("later")), failure);
+		assert.equal(
+			await outcome(ctx.prompt("later prompt must not treat cleanup failure as a model failure")),
+			failure,
+		);
+		assert.equal(creations, 1);
+	} finally {
+		released.resolve();
+		await ctx.__dispose();
+	}
+});
+
+// #3020: concurrent attachment must not start a competing candidate walk after shutdown.
+test("concurrent attachment shares successor creation failure and fallback accounting", async () => {
+	const entered = Promise.withResolvers<void>();
+	const released = Promise.withResolvers<void>();
+	const attempts: string[] = [];
+	const ctx = createStageContext(
+		makeOpts({
+			stageOptions: { model: "absent/primary", fallbackModels: ["absent/secondary", "available/final"] },
+			adapters: {
+				agentSession: {
+					async create(options) {
+						const model = String(options.model);
+						attempts.push(model);
+						if (model === "absent/secondary") throw new Error("Unknown model: secondary");
+						return Object.assign(
+							makeMockSession({
+								async prompt() {
+									if (model === "absent/primary") throw new Error("Unknown model: primary");
+								},
+								getLastAssistantText: () => "completed",
+							}).session,
+							{
+								extensionRunner: {
+									hasHandlers: () => true,
+									async emit() {
+										entered.resolve();
+										await released.promise;
+									},
+								},
+							},
+						);
+					},
+				},
+			},
+		}),
+	) as InternalStageContext;
+	const prompt = ctx.prompt("go");
+	await entered.promise;
+	const attachment = ctx.__ensureSession();
+	const settled = Promise.allSettled([prompt, attachment]);
+	try {
+		released.resolve();
+		assert.equal(await prompt, "completed");
+		await attachment;
+		assert.deepEqual(attempts, ["absent/primary", "absent/secondary", "available/final"]);
+		assert.deepEqual(
+			ctx.__modelFallbackMeta().modelAttempts?.map(({ model }) => model),
+			attempts,
+		);
+	} finally {
+		released.resolve();
+		await settled;
+		await ctx.__dispose();
 	}
 });

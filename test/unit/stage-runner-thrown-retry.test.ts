@@ -986,12 +986,15 @@ describe("createStageContext — eager session creation walks the candidate chai
 		assert.equal(await ctx.prompt("go"), "fallback answer");
 	});
 
+	// #3020: joining a replacement candidate must not change fresh-walk behavior after terminal failure.
 	test("a terminal creation failure is not replayed to a later ensureSession", async () => {
 		let creates = 0;
+		const models: string[] = [];
 		const settings = retrySettings();
 		const agentSession: AgentSessionAdapter = {
 			async create(options) {
 				creates += 1;
+				models.push(modelFor(options));
 				// Three attempts on the primary plus three on the fallback exhaust
 				// the first walk; anything after that succeeds.
 				if (creates <= 6) throw new Error(`503 service unavailable during create ${modelFor(options)}`);
@@ -1017,6 +1020,7 @@ describe("createStageContext — eager session creation walks the candidate chai
 		// The cached rejection must not be handed to the next caller.
 		await ctx.__ensureSession();
 		assert.equal(creates, 7);
+		assert.equal(models.at(-1), "anthropic/primary", "a later fresh walk retries its primary first");
 	});
 
 	test("a paused eager creation resumes with the replacement objective", async () => {
