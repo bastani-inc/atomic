@@ -10,6 +10,7 @@
 - Background widgets now follow the live terminal height after resizing without needing a reload ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Completed tool results and reopened transcripts strip terminal control strings and nonprinting control characters before display, without changing stored results or model context ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Tool results containing repeated unterminated terminal control strings no longer stall display or transcript replay ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Workflow model fallback cleans up the failed attempt's Intercom ownership before registering its replacement, preventing duplicate live-stage ownership warnings without weakening route protections ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
 
 ## [0.9.19-alpha.9] - 2026-09-12
 

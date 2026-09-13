@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Quit preserves the final durable paused state when an earlier resume has already acknowledged locally but is still saving or flushing its running state. A superseded queued resume cannot overwrite that quit; independent workflows remain unblocked ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - HIL ANSWERED notices now escape terminal controls in questions, answers, selected choices, and workflow attribution, including reopened notices, without changing stored prompt or answer data ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Reloading extensions no longer duplicates previously delivered HIL answer notices when another workflow starts; new answers still produce their normal notice ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Model fallback releases the failed attempt's Intercom ownership before initializing its replacement, avoiding duplicate live-stage ownership warnings while retaining queued delivery handoff. Concurrent attachment and steering wait for cleanup and share successor creation. Cancellation during cleanup no longer starts a replacement session, and failed extension initialization cleans up its session. If that cleanup fails, the stage stops rather than retrying or creating another session, preserving both the initialization and cleanup errors for diagnosis ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
 
 ## [0.9.19-alpha.9] - 2026-09-12
 
