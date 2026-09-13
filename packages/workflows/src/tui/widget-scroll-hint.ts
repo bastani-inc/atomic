@@ -32,5 +32,5 @@ export function workflowScrollHint(
 		})
 		.filter((key) => key !== undefined);
 	const label = keys.map((key) => key.replace(/^alt\+/i, platform === "darwin" ? "Option+" : "Alt+")).join("/");
-	return ` ${label ? `${label} · ` : ""}Wheel scroll workflows`;
+	return ` ↑↓ scroll${label ? ` · ${label}` : ""}`;
 }

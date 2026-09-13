@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Model fallback releases the failed attempt's Intercom ownership before initializing its replacement, avoiding duplicate live-stage ownership warnings while retaining queued delivery handoff. Concurrent attachment and steering wait for cleanup and share successor creation. Cancellation during cleanup no longer starts a replacement session, and failed extension initialization cleans up its session. If that cleanup fails, the stage stops rather than retrying or creating another session, preserving both the initialization and cleanup errors for diagnosis ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
-- Removed the confusing visible-row counter from the main-chat workflow widget hint; the final hint now shows available scrolling shortcuts and wheel help.
+- Removed the confusing visible-row counter from the main-chat workflow widget hint; the final hint now reads `↑↓ scroll` followed by available scrolling shortcuts, matching the `/tasks` hint style.
 
 ## [0.9.19-alpha.9] - 2026-09-12
 

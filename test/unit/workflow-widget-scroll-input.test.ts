@@ -112,10 +112,10 @@ test("workflow actions resolve Alt letter and Page aliases, configurable empties
 	}
 	const duplicate = resolve({ ...defaults, "app.workflows.scrollUp": ["alt+j", "alt+j"] as KeyId[] });
 	assert.equal(duplicate.get("alt+j")?.keybinding, "app.workflows.scrollDown"); // Existing last-registration map policy.
-	assert.match(workflowScrollHint(defaults, "darwin"), /Option\+k\/Option\+j/);
-	assert.match(workflowScrollHint(defaults, "linux"), /Alt\+k\/Alt\+j/);
-	assert.match(workflowScrollHint(defaults, "win32"), /Alt\+k\/Alt\+j/);
-	assert.equal(workflowScrollHint(disabled, "darwin"), " Wheel scroll workflows");
+	assert.equal(workflowScrollHint(defaults, "darwin"), " ↑↓ scroll · Option+k/Option+j");
+	assert.equal(workflowScrollHint(defaults, "linux"), " ↑↓ scroll · Alt+k/Alt+j");
+	assert.equal(workflowScrollHint(defaults, "win32"), " ↑↓ scroll · Alt+k/Alt+j");
+	assert.equal(workflowScrollHint(disabled, "darwin"), " ↑↓ scroll");
 	assert.doesNotMatch(workflowScrollHint(vim, "darwin"), /Option\+[kj]/);
 });
 
@@ -136,7 +136,7 @@ test("workflow yields to editor modifier-order equivalents without rewriting con
 		false,
 	);
 	assert.deepEqual(bindings["app.workflows.scrollUp"], workflow);
-	assert.equal(workflowScrollHint(bindings, "darwin"), " Wheel scroll workflows");
+	assert.equal(workflowScrollHint(bindings, "darwin"), " ↑↓ scroll");
 });
 
 test("workflow yields to the editor's shift+enter when configured as shift+return", () => {
@@ -152,7 +152,7 @@ test("workflow yields to the editor's shift+enter when configured as shift+retur
 		[...shortcuts.keys()].some((key) => matchesKey(bytes, key)),
 		false,
 	);
-	assert.equal(workflowScrollHint(bindings, "linux"), " Wheel scroll workflows");
+	assert.equal(workflowScrollHint(bindings, "linux"), " ↑↓ scroll");
 });
 
 test("workflow esc yields to reserved escape, including without preferEditor", () => {
@@ -172,7 +172,7 @@ test("workflow esc yields to reserved escape, including without preferEditor", (
 			false,
 		);
 	}
-	assert.equal(workflowScrollHint(bindings, "win32"), " Wheel scroll workflows");
+	assert.equal(workflowScrollHint(bindings, "win32"), " ↑↓ scroll");
 });
 
 test("literal editor-first shortcuts yield to equivalent keys but legacy registrations still override", () => {
@@ -379,7 +379,7 @@ for (const route of ["native", "remote"])
 				assert.equal(escapes, scenario.editor === "escape" ? 1 : 0);
 				const sharedScroll = scenario.literal === false ? 1 : 0;
 				assert.equal(widget.scrollTop, sharedScroll);
-				assert.equal(workflowScrollHint(bindings.getEffectiveConfig(), "linux"), " Wheel scroll workflows");
+				assert.equal(workflowScrollHint(bindings.getEffectiveConfig(), "linux"), " ↑↓ scroll");
 				if (scenario.explicit) {
 					assert.ok(matchesKey(scenario.explicit, scenario.workflow));
 					assert.equal(matchesKey(scenario.explicit, scenario.editor), false);
@@ -483,7 +483,7 @@ test("workflow wheel uses actual clipped bounds, contains boundaries, preserves 
 		for (let i = 0; i < 80; i++) wheel(65);
 		assert.equal(transcript.scrollTop, 15);
 		const bottom = widget.scrollTop;
-		assert.match(getLayoutFrame(f.tui).lines.join("\n"), /Wheel scroll workflows/);
+		assert.match(getLayoutFrame(f.tui).lines.join("\n"), /↑↓ scroll/);
 		f.terminal.input("\x1b[<64;2;2M");
 		render();
 		assert.equal(widget.scrollTop, bottom);
@@ -592,7 +592,7 @@ test("remote workflow adapter synchronizes full content, wheel, shortcuts and fr
 		assert.equal(widget.maxHeight, 10);
 		const frame = messages.findLast((message) => message.type === "engine_custom_frame");
 		assert.ok(frame?.type === "engine_custom_frame" && frame.lines.length > 10);
-		assert.match(frame.lines.at(-1)!, /Wheel scroll workflows/);
+		assert.match(frame.lines.at(-1)!, /↑↓ scroll/);
 		assert.equal(frame.lines.at(-1)!.includes("1–4/4"), false);
 		const box = boxFor(getLayoutFrame(f.tui).root, widget)!;
 		f.terminal.input(`\x1b[<65;2;${box.rect.y + 1}M`);
