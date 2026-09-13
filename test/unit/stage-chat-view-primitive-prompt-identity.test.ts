@@ -100,7 +100,11 @@ test("primitive prompt row budgets emit only complete attribution and editor box
 			for (const line of lines) {
 				if (line.startsWith("╭")) {
 					assert.equal(boxOpen, false, `${kind} rows=${viewportRows} opens a box before closing the previous one`);
-					assert.match(line, /^╭.*╮$/);
+					// Border must start with ╭, end with ╮, and render at exactly the
+					// requested width (100 columns). The width assertion is the real
+					// overflow guard; the pattern confirms the border is well-formed.
+					assert.match(line, /^╭[^╮]*╮$/);
+					assert.equal([...line].length, 100, `${kind} rows=${viewportRows} top border width must be 100`);
 					boxOpen = true;
 				}
 				if (line.startsWith("╰")) {
