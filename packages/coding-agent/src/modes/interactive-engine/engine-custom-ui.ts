@@ -10,6 +10,7 @@ import {
 import { getAgentDir } from "../../config.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
+import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
@@ -116,6 +117,7 @@ export class EngineCustomUiService {
 		key: string,
 		factory: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined,
 		placement?: "aboveEditor" | "belowEditor",
+		scroll?: { maxHeight: number; maxHeightFraction?: number },
 	): void {
 		const previous = this.widgetIds.get(key);
 		if (previous) this.disposeComponent(previous, false, false);
@@ -145,6 +147,7 @@ export class EngineCustomUiService {
 					overlay: false,
 					widgetKey: key,
 					widgetPlacement: placement,
+					...(scroll ? { widgetScroll: scroll } : {}),
 				});
 			})
 			.catch((error: Error) => {
@@ -279,20 +282,25 @@ export class EngineCustomUiService {
 			return true;
 		}
 		switch (command.type) {
+			case "engine_custom_scroll":
+				(record.component as ScrollableWidgetComponent).onScroll?.(command.state);
+				break;
 			case "engine_custom_render":
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
 				void runCallback({ kind: "renderer", name: command.componentId }, () =>
 					record.component.render(record.terminal.columns),
 				)
-					.then((lines) =>
+					.then((lines) => {
+						const scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
 						this.send({
 							type: "engine_custom_frame",
 							componentId: command.componentId,
 							requestId: command.requestId,
 							lines,
-						}),
-					)
+							...(scrollRequest ? { scrollRequest } : {}),
+						});
+					})
 					.catch((error: Error) =>
 						this.send({
 							type: "engine_custom_frame",

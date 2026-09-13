@@ -37,6 +37,7 @@
 
 import {
 	decideReactiveWidgetAction,
+	type ExtensionWidgetOptions,
 	installReactiveWidget,
 	isStaleExtensionContextError,
 	type ReactiveWidgetAction,
@@ -49,6 +50,7 @@ import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
 import { buildThemedWidgetLines, nextWidgetRefreshDelayMs, type WorkflowWidgetRowLayout } from "./widget.js";
+import { workflowScrollHint } from "./widget-scroll-hint.js";
 import { WorkflowWidgetViewport } from "./widget-viewport.js";
 
 const widgetViewports = new WeakMap<Store, WorkflowWidgetViewport>();
@@ -68,7 +70,7 @@ export type WidgetAction = ReactiveWidgetAction;
 export type WidgetRenderState = ReactiveWidgetRenderState;
 
 interface UiSlice {
-	setWidget?: (key: string, factory: WidgetFactory | undefined, opts?: { placement?: string }) => void;
+	setWidget?: (key: string, factory: WidgetFactory | undefined, opts?: ExtensionWidgetOptions) => void;
 	requestRender?: () => void;
 	onWidgetRelease?: (key: string, listener: () => void) => () => void;
 	notify?: (message: string, type?: "info" | "warning" | "error") => void;
@@ -146,6 +148,7 @@ export function installStoreWidget(
 									() => host?.terminal?.rows ?? 30,
 									() => (requestRender ? requestRender.call(ui) : host?.requestRender?.()),
 									() => layout.runs,
+									workflowScrollHint,
 								);
 								widgetViewports.set(storeInstance, viewport);
 								return viewport;
@@ -159,6 +162,7 @@ export function installStoreWidget(
 		},
 		key: WIDGET_KEY,
 		placement: "belowEditor",
+		scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 },
 		timers,
 		getSnapshot: () => liveWidgetSnapshot(storeInstance),
 		subscribe: (listener) => subscribeStoreInvalidation(storeInstance, listener),

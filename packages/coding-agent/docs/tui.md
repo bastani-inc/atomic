@@ -626,6 +626,40 @@ ctx.ui.setWidget("my-widget", undefined);
 Hosts may clear extension widgets during a UI reset. A reactive extension that needs to keep a long-lived widget registration can observe `ctx.ui.onWidgetRelease(key, listener)` when available.
 The listener runs after the host removes that key, so the extension can reset local mount state and re-register on its next refresh. Ordinary content changes should continue to update the existing component with `requestRender()` rather than repeatedly calling `setWidget()`.
 
+#### Scrollable widgets
+
+Opt in with `scroll: { maxHeight: 6 }` to give a widget its own fullscreen viewport. The host may allocate fewer rows when the editor or other widgets need space. Render the full content, not a pre-clipped slice. Wheel input over the widget scrolls only that widget, including at either end. A one-column scrollbar appears only while content overflows. Scrolling does not take editor focus or register keyboard shortcuts.
+
+For a cap that follows terminal resizing, use `scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 }`. The fraction is applied to live terminal rows, rounded down with a one-row minimum, then limited by `maxHeight`. Actual allocation may still be zero when other dock content uses all available rows. Omitting the fraction retains the fixed cap. The same options work for isolated-engine widgets.
+
+```typescript
+import type { ScrollableWidgetComponent, WidgetScrollRequest } from "@bastani/atomic";
+import { truncateToWidth } from "@earendil-works/pi-tui";
+
+let position: WidgetScrollRequest = { version: 0, scrollTop: 0 };
+let currentTop = 0;
+ctx.ui.setWidget("scrolling-items", () => ({
+  render: (width) => items.map((item) => truncateToWidth(item.label, width)),
+  invalidate() {},
+  getScrollRequest: () => position,
+  onScroll: (state) => {
+    // state reports scrollTop, viewportHeight and contentHeight in rendered rows.
+    currentTop = state.scrollTop;
+  },
+} satisfies ScrollableWidgetComponent), {
+  placement: "belowEditor",
+  scroll: { maxHeight: 6 },
+});
+
+// To intentionally reposition, increase version, then request a render.
+position = { version: position.version + 1, scrollTop: 10 };
+ctx.ui.requestRender();
+```
+
+`getScrollRequest` and `onScroll` are optional. Keep the request version unchanged during ordinary updates so they do not reset wheel scrolling. New positions are clamped to the actual viewport. Requests with older versions are ignored. Unmounting starts a fresh viewport. Keep item identity and insertion/deletion anchors in your extension; positions here count rendered rows.
+
+`installReactiveWidget` accepts the same `scroll`, `getScrollRequest`, and `onScroll` options. Existing widgets remain unscrolled unless they opt in. Factory widgets work in both in-process and isolated-engine sessions. Native wheel input requires the fullscreen renderer and a terminal that forwards mouse events; the guarded main-screen fallback does not provide a native viewport. No Option/Alt key setup is required for wheel input.
+
 **Examples:** [plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts)
 
 ### Pattern 6: Custom Footer

@@ -83,6 +83,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 					[...session.extensionRunner.getShortcuts(effectiveBindings)].map(([key, shortcut]) => ({
 						key,
 						...(shortcut.description === undefined ? {} : { description: shortcut.description }),
+						...(shortcut.editorKeys === undefined ? {} : { editorKeys: shortcut.editorKeys }),
 					})),
 			)
 		: undefined;

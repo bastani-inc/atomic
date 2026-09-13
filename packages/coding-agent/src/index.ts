@@ -160,6 +160,7 @@ export {
 	readRuntimeIntercomGroup,
 	runtimeIntercomGroupEnvKey,
 } from "./core/intercom-runtime-group.ts";
+export { keybindingIdentity } from "./core/keybinding-identity.js";
 export { convertToLlm } from "./core/messages.ts";
 export type {
 	ModelFallbackFailureKind,

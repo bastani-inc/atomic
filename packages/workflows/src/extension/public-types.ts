@@ -158,6 +158,8 @@ export interface ExtensionAPI {
 		key: string,
 		opts: {
 			description: string;
+			keybinding?: "app.workflows.scrollUp" | "app.workflows.scrollDown";
+			preferEditor?: boolean;
 			handler: (ctx?: PiCommandContext) => void | Promise<void>;
 		},
 	) => void;

@@ -24,10 +24,30 @@ export interface ExtensionUIDialogOptions {
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
 
+export interface WidgetScrollState {
+	scrollTop: number;
+	viewportHeight: number;
+	contentHeight: number;
+}
+
+export interface WidgetScrollRequest {
+	/** Increase when intentionally requesting a new position. */
+	version: number;
+	scrollTop: number;
+}
+
+export interface ScrollableWidgetComponent extends Component {
+	getScrollRequest?(): WidgetScrollRequest | undefined;
+	onScroll?(state: WidgetScrollState): void;
+	dispose?(): void;
+}
+
 /** Options for extension widgets. */
 export interface ExtensionWidgetOptions {
 	/** Where the widget is rendered. Defaults to "aboveEditor". */
 	placement?: WidgetPlacement;
+	/** Opt in to a host-owned viewport. Height is a cap, not a guaranteed allocation. */
+	scroll?: { maxHeight: number; maxHeightFraction?: number };
 }
 
 /** Raw terminal input listener for extensions. */

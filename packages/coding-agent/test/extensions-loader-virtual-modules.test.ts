@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -69,6 +70,21 @@ describe("extension loader pi-ai compat aliases", () => {
 				expect(typeof layout.renderLayoutFrame).toBe("function");
 			}
 			expect(modules[specifiers[0]]).toBe(modules[specifiers[1]]);
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"loads the widget layout-node module through both extension resolution paths",
+		async () => {
+			// PR #3022: a root pi-tui alias must not turn this subpath into index.js/dist/...
+			const specifier = "@earendil-works/pi-tui/dist/layout-node.js";
+			const native = await import("@earendil-works/pi-tui/dist/layout-node.js");
+			const aliases = extensionLoaderTestHooks.getAliases();
+			assert.match(aliases[specifier]!, /[\\/]dist[\\/]layout-node\.js$/);
+			assert.equal(fs.existsSync(aliases[specifier]!), true);
+			const modules = await extensionLoaderTestHooks.loadVirtualModules();
+			assert.equal(modules[specifier], native);
 		},
 		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 	);

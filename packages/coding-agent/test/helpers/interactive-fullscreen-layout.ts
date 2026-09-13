@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { ENV_OFFLINE } from "../../src/config.ts";
 import { KeybindingsManager } from "../../src/core/keybindings.ts";
+import { WidgetContainer } from "../../src/modes/interactive/components/scroll-widget.js";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
 import { shouldHandleFullscreenViewportInput } from "../../src/modes/interactive/interactive-mode-base.ts";
 import { createFullscreenTui } from "../../src/modes/interactive/interactive-tui.ts";
@@ -165,8 +166,8 @@ export function createProductionFullscreenContext(
 	const chatContainer = new Container();
 	const pendingMessagesContainer = new Container();
 	const statusContainer = new Container();
-	const widgetContainerAbove = new Container();
-	const widgetContainerBelow = new Container();
+	const widgetContainerAbove = new WidgetContainer();
+	const widgetContainerBelow = new WidgetContainer();
 	const usageMeter = new Text("usage", 0, 0);
 	const editorContainer = new Container();
 	editorContainer.addChild(editor);

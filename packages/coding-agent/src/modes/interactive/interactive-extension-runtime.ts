@@ -2,6 +2,7 @@ import { copyScopedModels } from "../../core/extensions/runner-context.ts";
 import { ModelRegistry } from "../../core/model-registry.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { ScrollWidget } from "./components/scroll-widget.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	AssistantMessageComponent,
@@ -68,7 +69,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 	this.defaultEditor.onExtensionShortcut = (data: string) => {
 		for (const [shortcutStr, shortcut] of shortcuts) {
 			// Cast to KeyId - extension shortcuts use the same format
-			if (matchesKey(data, shortcutStr as KeyId)) {
+			if (matchesKey(data, shortcutStr as KeyId) && !shortcut.editorKeys?.some((key) => matchesKey(data, key))) {
 				// Run handler async, don't block input
 				Promise.resolve(shortcut.handler(createContext())).catch((err) => {
 					this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
@@ -202,16 +203,24 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 	if (Array.isArray(content)) {
 		// Wrap string array in a Container with Text components
 		const container = new Container();
-		for (const line of content.slice(0, InteractiveModeBase.MAX_WIDGET_LINES)) {
+		for (const line of options?.scroll ? content : content.slice(0, InteractiveModeBase.MAX_WIDGET_LINES)) {
 			container.addChild(new Text(line, 1, 0));
 		}
-		if (content.length > InteractiveModeBase.MAX_WIDGET_LINES) {
+		if (!options?.scroll && content.length > InteractiveModeBase.MAX_WIDGET_LINES) {
 			container.addChild(new Text(theme.fg("muted", "... (widget truncated)"), 1, 0));
 		}
 		component = container;
 	} else {
 		// Factory function - create component
 		component = content(this.ui, theme);
+	}
+	if (options?.scroll) {
+		const { maxHeight, maxHeightFraction } = options.scroll;
+		component = new ScrollWidget(component, maxHeight, () =>
+			maxHeightFraction === undefined
+				? maxHeight
+				: Math.min(maxHeight, Math.max(1, Math.floor(this.ui.terminal.rows * maxHeightFraction))),
+		);
 	}
 
 	const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;

@@ -12,6 +12,8 @@ import { getAgentDir } from "../config.js";
 import { stripBom } from "../utils/text.ts";
 
 export interface AppKeybindings {
+	"app.workflows.scrollUp": true;
+	"app.workflows.scrollDown": true;
 	"app.interrupt": true;
 	"app.clear": true;
 	"app.exit": true;
@@ -76,6 +78,8 @@ const windowsKeybindings = useWindowsKeybindings();
 
 export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
+	"app.workflows.scrollUp": { defaultKeys: ["alt+k", "alt+pageUp"], description: "Scroll workflows up" },
+	"app.workflows.scrollDown": { defaultKeys: ["alt+j", "alt+pageDown"], description: "Scroll workflows down" },
 	"tui.editor.undo": {
 		...TUI_KEYBINDINGS["tui.editor.undo"],
 		defaultKeys: process.platform === "win32" ? "ctrl+z" : windowsKeybindings ? "alt+z" : "ctrl+-",

@@ -1,4 +1,4 @@
-import { type ReactiveWidgetComponent, ScrollableComponentViewport } from "@bastani/atomic";
+import type { ReactiveWidgetComponent, WidgetScrollRequest, WidgetScrollState } from "@bastani/atomic";
 import { truncateToWidth } from "./text-helpers.js";
 
 /** Shared list cap, including its scroll hint. Short terminals use at most a third. */
@@ -12,9 +12,11 @@ export interface WorkflowWidgetRunRows {
 }
 
 export class WorkflowWidgetViewport implements ReactiveWidgetComponent {
-	private readonly viewport = new ScrollableComponentViewport();
+	private position = 0;
+	private version = 0;
+	private collapsed = false;
+	private state: WidgetScrollState | undefined;
 	private lines: string[] = [];
-	private scrollable = false;
 	private runRows: readonly WorkflowWidgetRunRows[] = [];
 
 	constructor(
@@ -22,49 +24,52 @@ export class WorkflowWidgetViewport implements ReactiveWidgetComponent {
 		private readonly terminalRows: () => number,
 		private readonly requestRender: () => void,
 		private readonly getRunRows?: () => readonly WorkflowWidgetRunRows[],
-	) {
-		this.viewport.setComponents([{ render: () => this.lines, invalidate() {} }]);
-		this.viewport.scrollTo(0);
+		private readonly getHint: () => string = () => "",
+	) {}
+
+	getScrollRequest(): WidgetScrollRequest {
+		return { version: this.version, scrollTop: this.collapsed ? 0 : this.position };
+	}
+
+	onScroll(state: WidgetScrollState): void {
+		this.state = state;
+		if (!this.collapsed) this.position = state.scrollTop;
 	}
 
 	scroll(direction: -1 | 1): void {
-		if (!this.scrollable) return;
-		this.viewport.scrollBy(direction);
+		if (this.collapsed) return;
+		const height =
+			this.state?.viewportHeight ??
+			Math.max(1, Math.min(WORKFLOW_WIDGET_MAX_ROWS, Math.floor(this.terminalRows() / 3)));
+		const next = Math.max(0, Math.min(Math.max(0, this.lines.length - height), this.position + direction));
+		if (next === this.position) return;
+		this.position = next;
+		this.version++;
 		this.requestRender();
 	}
 
 	render(width: number): string[] {
-		const cap = Math.max(1, Math.min(WORKFLOW_WIDGET_MAX_ROWS, Math.floor(this.terminalRows() / 3)));
-		const nextLines = this.content.render(width);
-		const nextRunRows = this.getRunRows?.() ?? [];
-		// A collapsed summary temporarily hides the expanded list, not its anchor.
-		if (this.getRunRows && nextLines.length === 1 && nextRunRows.length === 0) {
-			this.scrollable = false;
+		const content = this.content.render(width);
+		const hint = content.length > 1 ? this.getHint() : "";
+		const nextLines = hint ? [...content, truncateToWidth(hint, width, "…")] : content;
+		const nextRunRows = (this.getRunRows?.() ?? []).map((run, index, rows) =>
+			hint && index === rows.length - 1 ? { ...run, end: run.end + 1 } : run,
+		);
+		const collapsed = Boolean(this.getRunRows && nextLines.length === 1 && nextRunRows.length === 0);
+		if (collapsed) {
+			if (!this.collapsed) this.version++;
+			this.collapsed = true;
 			return nextLines;
 		}
-		const previousLineCount = this.lines.length;
-		const offset = this.viewport.getMaxScroll() - this.viewport.getScrollFromBottom();
-		const anchoredOffset = this.getRunRows ? this.resolveAnchor(offset, nextRunRows) : undefined;
+		const anchoredOffset = this.getRunRows ? this.resolveAnchor(this.position, nextRunRows) : this.position;
+		if (this.collapsed || anchoredOffset !== this.position) {
+			this.position = anchoredOffset;
+			this.version++;
+		}
+		this.collapsed = false;
 		this.lines = nextLines;
 		this.runRows = nextRunRows;
-		if (anchoredOffset !== undefined) {
-			this.viewport.scrollTo(anchoredOffset);
-		} else if (previousLineCount <= 1 || (this.lines.length < previousLineCount && this.lines.length <= cap)) {
-			this.viewport.scrollTo(0);
-		}
-		this.scrollable = this.lines.length > 1;
-		// #3015: the dock can paint only the first row of our nominal viewport.
-		// Advance one row and allow the final source row to become the first row,
-		// even when the whole list fits our cap. No clipped row can be skipped.
-		this.viewport.setVisibleRows(1);
-		this.viewport.render(width);
-		if (!this.scrollable) return this.lines;
-		const first = this.viewport.getMaxScroll() - this.viewport.getScrollFromBottom() + 1;
-		const visible = this.lines.slice(first - 1, first - 1 + Math.max(1, cap - 1));
-		// At a one-row budget retain content rather than only chrome.
-		if (cap === 1) return visible;
-		const hint = ` ${first}–${first + visible.length - 1}/${this.lines.length} · Alt+PgUp/PgDn scroll workflows`;
-		return [...visible, truncateToWidth(hint, width, "…")];
+		return nextLines;
 	}
 
 	private resolveAnchor(offset: number, next: readonly WorkflowWidgetRunRows[]): number {
