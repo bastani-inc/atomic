@@ -39,7 +39,7 @@ export interface ExtensionFlag {
 export interface ExtensionShortcut {
 	shortcut: KeyId;
 	description?: string;
-	keybinding?: import("../keybindings.js").Keybinding;
+	keybinding?: import("../keybindings.ts").Keybinding;
 	preferEditor?: boolean;
 	/** Resolved editor-owned keys; dispatch must yield only for input these keys accept. */
 	editorKeys?: KeyId[];

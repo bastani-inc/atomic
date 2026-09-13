@@ -1,6 +1,10 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
-import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
-import type { HostInputFormField, HostSessionPickerRow } from "../../core/extensions/ui-types.ts";
+import type {
+	HostInputFormField,
+	HostSessionPickerRow,
+	WidgetScrollRequest,
+	WidgetScrollState,
+} from "../../core/extensions/ui-types.ts";
 import type { KeyId } from "../../core/keybindings.ts";
 
 /**

@@ -1,6 +1,6 @@
 import { Container, ScrollView, VStack } from "@earendil-works/pi-tui";
 import { LAYOUT_NODE, type StackLayoutNode } from "@earendil-works/pi-tui/dist/layout-node.js";
-import type { ScrollableWidgetComponent, WidgetScrollState } from "../../../core/extensions/ui-types.js";
+import type { ScrollableWidgetComponent, WidgetScrollState } from "../../../core/extensions/ui-types.ts";
 
 /** A native layout node, so the dock's final allocation also owns mouse bounds. */
 export class ScrollWidget extends ScrollView {

@@ -192,3 +192,64 @@ All captures are local under `/tmp/widget-overlap-terminal/`. No model calls, pr
 ### Mandatory post-commit repeat
 
 After the normally configured signed conventional commit, run `bash /tmp/overlap-gates.sh overlap-post` and `bun /tmp/widget-risk-editor-production.ts` on its exact SHA. Record SHA, results and porcelain status in `/tmp/overlap-post-result.md`, without changing the committed handoff. This sentence reserves the gate, not a claim that it has already passed. Parent owns independent review, exact-head green CI/no-addressable-feedback merge and latest-origin/main alpha.10 publication.
+
+## PR #3022 feedback and CI repair
+
+This section records new evidence after `2c5bdc33a4caff86bee276eddc22e4db52edfb56`. Earlier platform limitations remain unchanged. The run is local-only: no push, merge, tag, publication, release resumption or other checkout modification. Parent owns independent review, any authorized PR response/thread disposition, push and exact-head CI/merge checks.
+
+### Acceptance and dispositions
+
+| Required clause | Current evidence |
+| --- | --- |
+| All paginated issue comments, inline comments, reviews and threads, any author/resolution | `gh api --paginate` snapshots `/tmp/pr3022-repair/{issues,inline,reviews,threads}.json`; refreshed `*-final.json`. REST snapshots compare identical; GraphQL thread/comment `hasNextPage=false` |
+| Exact-head CI logs, all failures repaired without check changes | Run `34742047557`, head `2c5bdc33a4caff86bee276eddc22e4db52edfb56`, `/tmp/pr3022-repair/{run.json,failed.log,checks.txt}`; local failing-suite red/green and full CI unit wrapper below |
+| Fractional RPC public cap, optionality, preserving inputs | Typed `test/types/rpc-widget-scroll.ts`; `npm run check` includes the type fixture. Optional `maxHeightFraction`, unchanged required numeric `maxHeight`, no new validation or rewriting |
+| Full widget UX, host/remote parity, editor precedence and existing verification | Same 17-file host/input gate, seven package suites and dedicated CLI/RPC terminal; no viewport, anchor or dispatch behavior changed |
+| Signed commits preserved, clean designated branch, no external writes or release changes | Normal signed commit plus exact-SHA gate/status recorded outside checkout |
+| Handoff only when evidence changes, exact IDs/dispositions/SHA, independent review | This section and final receipt; parent review still required |
+| Physical-input and live Linux/Windows limitations remain truthful | macOS injected-byte terminal evidence only, not physical or other-OS proof |
+
+Examined feedback IDs: issue comment **5651567891**, Mintlify preview status, no code request; inline **3998919116**, Greptile's valid optional fractional-height omission; review **5189815295**, empty body containing that inline finding; thread **PRRT_kwDOQHh8ns6h26xU**, unresolved/non-outdated at inspection. No Greptile summary issue comment or other feedback was present in either complete fetch. No comment was posted or thread resolved by this repair writer.
+
+CI failures occurred on both attempts in Linux unit job **103683278476** and Windows unit job **103683278401**. Result gates **103685087312** and **103685087328** correctly failed with `failure,success,success,success,success`. All other work jobs passed on the examined head. These are old-head observations, not green CI evidence for the new local commit.
+
+### Root causes and repairs
+
+- Newly added type references used `.js` for modules whose existing shipped references use `.ts`, violating the unchanged import-consistency gate. Eight references now match the established spelling; the adjacent protocol imports are combined. No runtime semantics change.
+- `ScrollWidget` introduced `@earendil-works/pi-tui/dist/layout-node.js`, but the existing jiti root alias rewrote that to `dist/index.js/dist/layout-node.js`. Both the exact subpath alias and the virtual host module registration now follow the existing layout-module pattern. The existing real installed reload test covers the failure; an additional loader test checks disk resolution and exact native module identity. No lifecycle redesign.
+- The input test assumed dequeue always uses Alt+Up. Existing Windows/WSL defaults use Alt+Q instead. The test now explicitly exercises both configured dequeue bindings and retains the default Alt+Up non-registration assertion. Production defaults and conflict policy remain unchanged.
+- RPC forwarding already preserves the fractional option, but its exported request type omitted it. Added `maxHeightFraction?: number` and a type fixture for fractional, fixed and legacy requests.
+
+Interface/state decisions remain unchanged: optional metadata, raw strings/arrays, ordering and duplicate map policy; host-owned geometry; versioned intentional requests; non-echoing wheel state; retained collapse anchor and clamped resize; existing disposal and unexpected-input handling. No new error or normalization.
+
+### Reproduction and validation
+
+All logs below live under `/tmp/pr3022-repair/`.
+
+- `npx vitest --run --project unit test/unit/module-import-specifier-consistency.test.ts test/unit/workflow-run-state-real-reload.test.ts` reproduced both failures, **2 failed / 6 passed**, `red-ci.log`. With repairs and the input gate, **68 passed**, `green-ci.log`.
+- `npx tsc -p packages/coding-agent/tsconfig.typetests.json --noEmit` rejected the new fraction fixture with TS2353 before the type fix, `red-rpc.log`; passed after it, `green-rpc.log`.
+- `npm run check` and `npm run build` passed, `check.log`, `build.log`. The build includes native bindings and installed bundled resources. Docs check passed **91 pages**, `docs.log`.
+- The exact earlier 17-file root gate passed **215 tests**, `focused.log`. Earlier six package suites plus `test/extensions-loader-virtual-modules.test.ts` passed **31 tests in seven files**, `package.log`.
+- `bun run scripts/run-flaky-test-suite.ts --label pr3022-unit --no-retry-file flaky-test-suite-runner.test.ts -- npm run test:unit` passed on the first attempt: **823 files, 8581 passed, 23 existing platform skips**, `full-unit.log`. No timeout, retry, skip, suppression or CI configuration was changed. CI Windows/Linux counts differ from this macOS run.
+- Qlty 0.642.0 used unchanged `.qlty/qlty.toml`. Scoped `check` reported `No issues`; the config has no lint plugins, so `npm run check` remains lint evidence. Loader `metrics --functions` and `smells` ran; smells reports total complexity **83** in `loader-virtual-modules.ts`. No measured pre-change baseline or clean-smells claim. Logs `qlty-{check,metrics,smells}.log`.
+
+Exact post-commit repeat is `bash /tmp/pr3022-repair/gates.sh post`. It runs check/build, the complete focused gate, full CI unit wrapper, integration suite, seven package suites, docs and diff checks, then records SHA/signature/porcelain status in `post-results.txt` and `post-status.txt`. This pre-commit note does not claim that later execution passed; final receipt records its actual outcome without changing the verified SHA.
+
+### Dedicated terminal
+
+macOS arm64, Node v26.8.2, Bun 1.4.2, tmux 3.7c. After building this candidate:
+
+```sh
+tmux new-session -d -s pr3022-repair -x 100 -y 30 -c "$PWD" 'ATOMIC_CODING_AGENT_DIR=/tmp/pr3022-repair/terminal-agent ATOMIC_OFFLINE=1 bun packages/coding-agent/src/cli.ts --approve --no-session --no-extensions -e ./test/fixtures/workflow-widget-scroll-extension.ts'
+tmux send-keys -t pr3022-repair:0.0 -l -- $'\033j'
+tmux send-keys -t pr3022-repair:0.0 -l -- $'\033k'
+tmux send-keys -t pr3022-repair:0.0 -l -- $'\033[<65;2;22M'
+tmux send-keys -t pr3022-repair:0.0 -l -- $'\033[5;3~'
+tmux send-keys -t pr3022-repair:0.0 -l -- ' VERIFIED'
+tmux resize-window -t pr3022-repair:0 -x 100 -y 18
+tmux send-keys -t pr3022-repair:0.0 C-c C-c
+```
+
+Captures between inputs are `terminal-{before,altj,altk,wheel,pageup,resize}.txt`. Alt+J visibly moved one row and exposed run 11. `cmp` returned 0 for original/Alt+K, Alt+J/wheel, and original/PageUp. Resize displayed six workflow rows and preserved `typing stays here VERIFIED`. The actual fixture RPC child PID 2226/parent 2224 is recorded in `rpc-process.txt`. Session exited, `tmux has-session` returned 1. Existing Intercom startup errors and `[Herdr] protocol_rejected` notice remain unchanged. No model call, production credential or Herdr operation was needed. These are injected terminal bytes, not physical input or live Linux/Windows verification.
+
+Deferred: no unrelated implementation work. Parent still must independently review, refresh feedback, handle authorized response/thread writes, push, and verify green CI on the exact pushed head. This writer does none of those external actions.

@@ -101,7 +101,15 @@ test("workflow actions resolve Alt letter and Page aliases, configurable empties
 	assert.ok(resolve(remapped).has("ctrl+alt+k"));
 	assert.equal(resolve(remapped).has("alt+pageup" as KeyId), false);
 	assert.equal(resolve({ ...remapped, "tui.editor.cursorUp": "ctrl+alt+k" as KeyId }).has("ctrl+alt+k"), false);
-	assert.equal(resolve({ ...disabled, "app.workflows.scrollUp": "alt+up" as KeyId }).has("alt+up"), false);
+	// PR #3022: Windows/WSL restores queued messages with Alt+Q, other hosts with Alt+Up.
+	for (const dequeueKey of ["alt+up", "alt+q"] as KeyId[]) {
+		assert.equal(
+			resolve({ ...disabled, "app.message.dequeue": dequeueKey, "app.workflows.scrollUp": dequeueKey }).has(
+				dequeueKey,
+			),
+			false,
+		);
+	}
 	const duplicate = resolve({ ...defaults, "app.workflows.scrollUp": ["alt+j", "alt+j"] as KeyId[] });
 	assert.equal(duplicate.get("alt+j")?.keybinding, "app.workflows.scrollDown"); // Existing last-registration map policy.
 	assert.match(workflowScrollHint(defaults, "darwin"), /Option\+k\/Option\+j/);

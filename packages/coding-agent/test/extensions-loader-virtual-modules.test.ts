@@ -74,6 +74,21 @@ describe("extension loader pi-ai compat aliases", () => {
 	);
 
 	it(
+		"loads the widget layout-node module through both extension resolution paths",
+		async () => {
+			// PR #3022: a root pi-tui alias must not turn this subpath into index.js/dist/...
+			const specifier = "@earendil-works/pi-tui/dist/layout-node.js";
+			const native = await import("@earendil-works/pi-tui/dist/layout-node.js");
+			const aliases = extensionLoaderTestHooks.getAliases();
+			expect(aliases[specifier]).toMatch(/[\\/]dist[\\/]layout-node\.js$/);
+			expect(fs.existsSync(aliases[specifier]!)).toBe(true);
+			const modules = await extensionLoaderTestHooks.loadVirtualModules();
+			expect(modules[specifier]).toBe(native);
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
+
+	it(
 		"maps the Cloudflare gateway binding transport through both loader resolution paths",
 		async () => {
 			// Re-exported from `@bastani/atomic`, so jiti-loaded extensions that import

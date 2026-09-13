@@ -1,6 +1,6 @@
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
-import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
+import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";

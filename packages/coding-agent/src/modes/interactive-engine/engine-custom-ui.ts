@@ -10,7 +10,7 @@ import {
 import { getAgentDir } from "../../config.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
-import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.js";
+import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
