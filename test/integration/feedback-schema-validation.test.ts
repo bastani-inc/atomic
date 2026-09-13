@@ -5,14 +5,14 @@ import { createHarness, getMessageText } from "../../packages/coding-agent/test/
 import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import feedback from "../../packages/feedback/index.js";
 
-// Regression for #2799, review 3998253205: a direct package schema rejects numeric titles.
+// Regression for #2799, review 3998253205: malformed fields fail before draft preparation.
 test("feedback string-field errors can be corrected in the next ordinary tool turn", async () => {
 	const extensionsResult = await createTestExtensionsResult([feedback], process.cwd());
 	const harness = await createHarness({ resourceLoader: createTestResourceLoader({ extensionsResult }) });
 	try {
 		const fields = { kind: "enhancement", change: "Add navigation", why: "Accessibility" };
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("feedback_prepare_issue", { ...fields, title: 42 }), {
+			fauxAssistantMessage(fauxToolCall("feedback_prepare_issue", { ...fields, title: { text: "42" } }), {
 				stopReason: "toolUse",
 			}),
 			fauxAssistantMessage("The title needs to be text."),

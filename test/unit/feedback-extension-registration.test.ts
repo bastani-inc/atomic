@@ -46,10 +46,10 @@ function prepareTool(): ToolDefinition {
 	return preparedTool;
 }
 
-// Regression for #2799, review 3998253205: direct package imports use the declared string contract.
-test("direct feedback schema rejects non-string titles with an actionable host validation error", () => {
+// Regression for #2799, review 3998253205: use the host's shared schema contract.
+test("direct feedback schema rejects structured titles with an actionable host validation error", () => {
 	const tool = prepareTool();
-	for (const title of [42, true, null, { nested: "title" }]) {
+	for (const title of [{ nested: "title" }, ["title"]]) {
 		assert.throws(
 			() =>
 				validateToolArguments(tool, {
@@ -60,6 +60,25 @@ test("direct feedback schema rejects non-string titles with an actionable host v
 				}),
 			/Validation failed for tool "feedback_prepare_issue":[\s\S]*title: must be string/,
 		);
+	}
+});
+
+test("direct feedback schema normalizes numeric and boolean string fields consistently", () => {
+	const tool = prepareTool();
+	const fields = ["title", "description", "repro", "expected", "version", "change", "why", "how"];
+	for (const field of fields) {
+		for (const value of [42, true]) {
+			const draft = { kind: "enhancement", title: "Navigation", change: "Add navigation", why: "Accessibility" };
+			assert.deepEqual(
+				validateToolArguments(tool, {
+					type: "toolCall",
+					id: `${field}-${value}`,
+					name: tool.name,
+					arguments: { ...draft, [field]: value },
+				}),
+				{ ...draft, [field]: String(value) },
+			);
+		}
 	}
 });
 

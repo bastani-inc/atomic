@@ -20,7 +20,6 @@
 				"@modelcontextprotocol/sdk": "1.30.0",
 				"@mozilla/readability": "^0.6.0",
 				"@silvia-odwyer/photon-node": "0.3.4",
-				"@sinclair/typebox": "0.34.52",
 				"chalk": "6.0.0",
 				"cross-spawn": "7.0.6",
 				"diff": "8.0.4",
@@ -1942,12 +1941,6 @@
 			"resolved": "https://registry.npmjs.org/@silvia-odwyer/photon-node/-/photon-node-0.3.4.tgz",
 			"integrity": "sha512-bnly4BKB3KDTFxrUIcgCLbaeVVS8lrAkri1pEzskpmxu9MdfGQTy8b8EgcD83ywD3RPMsIulY8xJH5Awa+t9fA==",
 			"license": "Apache-2.0"
-		},
-		"node_modules/@sinclair/typebox": {
-			"version": "0.34.52",
-			"resolved": "https://registry.npmjs.org/@sinclair/typebox/-/typebox-0.34.52.tgz",
-			"integrity": "sha512-XiMQh7qqVlxZzcVD+kkGMNGMzcTrDMLWI7S4x7z1MkCkbDPrekpZXEUK0eZqZFMuHQg2a2DZOcDIh9o5v3Gonw==",
-			"license": "MIT"
 		},
 		"node_modules/@smithy/core": {
 			"version": "3.33.3",

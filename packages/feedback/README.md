@@ -8,7 +8,7 @@ This bundled extension provides a safe, ordinary-conversation workflow for draft
 
 Bug drafts require a title, what happened, and reproduction steps. Enhancement drafts require a title, the requested change, and why it helps. Missing required fields produce a tool error so you can correct the draft; prepared details are returned only for valid drafts.
 
-All draft fields use strings. Pass a numeric-looking title as `"42"`, not `42`. With npm-installed Atomic running under Node, a numeric title produces `title: must be string`; correct the field and prepare again. Downloaded binaries and source-checkout runs can instead convert a numeric title from `42` to `"42"`. Review the prepared text in either case; automatic conversion is not part of the feedback string-field contract.
+Pass text for draft fields. If preparation reports a field error, correct that field and prepare again. Review the prepared title and body before sharing them.
 
 Posting is handled separately by the approval-gated feedback submission boundary.
 
