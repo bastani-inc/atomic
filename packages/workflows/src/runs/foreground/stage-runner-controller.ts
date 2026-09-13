@@ -45,6 +45,7 @@ import {
 	attachCreatedStageSession,
 	disposeStageSession,
 	normalizeSessionCreateResult,
+	StageSessionBindingCleanupFailure,
 	shutdownStageSession,
 } from "./stage-runner-session.js";
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
@@ -215,6 +216,8 @@ export class StageSessionController {
 	private abortReasonGeneration = 0;
 	private sessionPromise: Promise<StageSessionRuntime> | undefined;
 	private sessionShutdownPromise: Promise<void> | undefined;
+	/** #3020: an unowned failed binding cannot be replaced until cleanup proves release. Never reset this fence. */
+	private bindingCleanupFailure: StageSessionBindingCleanupFailure | undefined;
 	private reattachSessionFile: string | undefined;
 	private lastPromptStartIndex: number | undefined;
 	/** Message index latched once per high-level candidate prompt; never re-read later. */
@@ -405,6 +408,7 @@ export class StageSessionController {
 	}
 
 	async ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
+		if (this.bindingCleanupFailure !== undefined) throw this.bindingCleanupFailure;
 		if (this.sessionShutdownPromise !== undefined) {
 			const generation = this.abortGeneration;
 			await this.sessionShutdownPromise;
@@ -422,9 +426,9 @@ export class StageSessionController {
 			const release = (): void => {
 				if (this.ownedCreationPromise === pending) this.ownedCreationPromise = undefined;
 			};
-			// A terminal creation failure must not be replayed to every later
-			// caller. Clear by identity so a walk that replaced the promise, or a
-			// cancellation that already cleared it, is left alone.
+			// Ordinary creation failures may be retried by a later caller; failed
+			// binding cleanup is separately sticky. Clear by identity so a walk that
+			// replaced the promise, or cancellation that cleared it, is left alone.
 			pending.then(release, () => {
 				release();
 				if (this.sessionPromise === pending) {
@@ -1234,6 +1238,7 @@ export class StageSessionController {
 				}
 				return await this.createSessionObservingPause(candidate, consumer);
 			} catch (error) {
+				if (error instanceof StageSessionBindingCleanupFailure) throw error;
 				const errorSettingsManager = retrySettingsManagerFromError(error);
 				if (errorSettingsManager !== undefined) this.sessionSettingsManager = errorSettingsManager;
 				// A stage refused its queued Intercom instructions will be refused them
@@ -1279,6 +1284,7 @@ export class StageSessionController {
 		consumer: AgentSessionConsumer,
 		resumeOptions?: { restoreSavedModel?: boolean },
 	): Promise<StageSessionRuntime> {
+		if (this.bindingCleanupFailure !== undefined) return Promise.reject(this.bindingCleanupFailure);
 		if (this.sessionShutdownPromise !== undefined) {
 			const generation = this.abortGeneration;
 			return this.sessionShutdownPromise.then(() => {
@@ -1333,6 +1339,10 @@ export class StageSessionController {
 					)
 				: missingAdapter(consumer);
 		} catch (error) {
+			if (error instanceof StageSessionBindingCleanupFailure) {
+				this.bindingCleanupFailure = error;
+				throw error;
+			}
 			if (this.disposed || this.opts.signal?.aborted === true || this.abortGeneration !== startGeneration)
 				throw this.disposed
 					? new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`)
@@ -1579,6 +1589,7 @@ export class StageSessionController {
 		candidates: readonly WorkflowResolvedModelCandidate[],
 		index: number,
 	): Promise<"handled" | "retry" | "throw"> {
+		if (err instanceof StageSessionBindingCleanupFailure) throw err;
 		const message = errorMessage(err);
 		// A terminal pending-stage delivery failure is not a model failure: every
 		// candidate would be refused the same queued instructions. It records the one

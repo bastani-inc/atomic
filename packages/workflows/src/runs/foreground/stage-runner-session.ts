@@ -29,6 +29,38 @@ export function shutdownStageSession(current: StageSessionRuntime | undefined): 
 	return shutdown;
 }
 
+/** Failed binding cleanup cannot authorize another owner, regardless of model-error wording. */
+export class StageSessionBindingCleanupFailure extends AggregateError {
+	constructor(bindingError: unknown, cleanupErrors: readonly unknown[]) {
+		super(
+			[bindingError, ...cleanupErrors],
+			"atomic-workflows: failed binding cleanup did not release session ownership",
+			{
+				cause: bindingError,
+			},
+		);
+		this.name = "StageSessionBindingCleanupFailure";
+	}
+}
+
+export async function cleanupFailedStageSessionBinding(
+	current: StageSessionRuntime,
+	bindingError: unknown,
+): Promise<void> {
+	const cleanupErrors: unknown[] = [];
+	try {
+		await shutdownStageSession(current);
+	} catch (error) {
+		cleanupErrors.push(error);
+	}
+	try {
+		await current.dispose();
+	} catch (error) {
+		cleanupErrors.push(error);
+	}
+	if (cleanupErrors.length > 0) throw new StageSessionBindingCleanupFailure(bindingError, cleanupErrors);
+}
+
 export async function disposeStageSession(current: StageSessionRuntime | undefined): Promise<void> {
 	if (!current) return;
 	try {

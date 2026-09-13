@@ -27,7 +27,7 @@ import {
 	isStaleExtensionContextError,
 } from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
-import { disposeStageSession } from "../runs/foreground/stage-runner-session.js";
+import { cleanupFailedStageSessionBinding } from "../runs/foreground/stage-runner-session.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
@@ -497,7 +497,7 @@ export function buildRuntimeAdapters(
 					}
 				} catch (error) {
 					// #3020: the controller cannot clean a session that never leaves this adapter.
-					await disposeStageSession(result.session);
+					await cleanupFailedStageSessionBinding(result.session, error);
 					throw error;
 				}
 				return result;
