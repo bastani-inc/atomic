@@ -10,7 +10,7 @@
 - Background widgets now follow the live terminal height after resizing without needing a reload ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Completed tool results and reopened transcripts strip terminal control strings and nonprinting control characters before display, without changing stored results or model context ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Tool results containing repeated unterminated terminal control strings no longer stall display or transcript replay ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
-- Background workflow cards and pending-input actions remain visible and scrollable after `/reload`; failed reloads preserve the existing widget, and retiring extensions no longer remove their replacements ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Background workflow cards and pending-input actions remain visible and scrollable after `/reload`, including when the previous extension had no visible widget; failed reloads preserve the existing widget, and retiring extensions no longer remove their replacements ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Retired extension widgets are removed from the local terminal even when their disposal callbacks throw; other widgets still finish cleanup and release notifications ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 
 ## [0.9.19-alpha.10] - 2026-09-13

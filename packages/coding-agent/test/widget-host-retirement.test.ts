@@ -92,6 +92,103 @@ function createHost(kind: "local" | "engine") {
 // PR #2700: the original SDK exception matrix covered only the engine host.
 // Exercise real session transactions and both actual widget hosts, observing retained components, not only disposal calls.
 for (const kind of ["local", "engine"] as const) {
+	// PR #2700: registration history is absent for empty and never-mounted owners.
+	test.each(["empty", "never-mounted", "hidden"])(
+		`${kind} retiring initially %s owner cannot publish during shutdown`,
+		async (initial) => {
+			const host = createHost(kind);
+			const dir = await mkdtemp(join(tmpdir(), "widget-empty-owner-"));
+			const held: ExtensionUIContext[] = [];
+			const lifecycle: string[] = [];
+			let generation = 0;
+			let reject = true;
+			const factory = (label: string) => () => ({ render: () => [label], invalidate() {} });
+			const load = () =>
+				createTestExtensionsResult(
+					[
+						(pi) => {
+							let id = 0;
+							pi.on("session_start", (_event, ctx) => {
+								id = ++generation;
+								held.push(ctx.ui);
+								lifecycle.push(`start:${id}`);
+								if (id === 1) {
+									if (initial === "hidden") ctx.ui.setWidget("workflow.run", factory("old"));
+									if (initial !== "never-mounted") ctx.ui.setWidget("workflow.run", undefined);
+								} else ctx.ui.setWidget("workflow.run", factory(`candidate:${id}`));
+							});
+							pi.on("session_shutdown", async () => {
+								lifecycle.push(`stop:${id}`);
+								await flush();
+								held[id - 1].setWidget("workflow.run", factory("stale"));
+								held[id - 1].setWidget("new", factory("resurrected"));
+								await flush();
+							});
+						},
+					],
+					dir,
+				);
+			let loaded = await load();
+			const loader = {
+				...createTestResourceLoader(),
+				getExtensions: () => loaded,
+				prepareReload: async () => {
+					const candidate = await load();
+					return {
+						loader: createTestResourceLoader({ extensionsResult: candidate }),
+						activate() {},
+						prepareCommit() {
+							if (reject) throw new Error("candidate rejected");
+							return {
+								commit() {
+									loaded = candidate;
+									lifecycle.push("commit");
+								},
+								rollback() {},
+							};
+						},
+						commit() {},
+					};
+				},
+			};
+			const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json") });
+			const { session } = await createAgentSession({
+				cwd: dir,
+				agentDir: dir,
+				resourceLoader: loader,
+				modelRuntime,
+				sessionManager: SessionManager.inMemory(),
+				settingsManager: SettingsManager.inMemory(),
+				noTools: "all",
+			});
+			try {
+				await session.bindExtensions({ mode: "tui", uiContext: host.ui });
+				assert.equal((await host.snapshot()).size, 0);
+				const retiring = session.extensionRunner;
+				await assert.rejects(() => session.reload({ failOnExtensionErrors: true }), /candidate rejected/);
+				assert.equal(session.extensionRunner, retiring);
+				assert.equal((await host.snapshot()).size, 0);
+				// Rollback must leave this owner free to acquire a previously untouched key.
+				held[0].setWidget("unrelated", factory("old unrelated"));
+				assert.deepEqual(await host.snapshot(), new Map([["unrelated", ["old unrelated"]]]));
+				reject = false;
+				await session.reload({ failOnExtensionErrors: true });
+				assert.deepEqual(lifecycle, ["start:1", "start:2", "stop:2", "start:3", "commit", "stop:1"]);
+				assert.deepEqual(await host.snapshot(), new Map([["workflow.run", ["candidate:3"]]]));
+				retiring.invalidate();
+				held[0].setWidget("workflow.run", factory("stale after invalidation"));
+				assert.deepEqual(await host.snapshot(), new Map([["workflow.run", ["candidate:3"]]]));
+				await session.bindExtensions({ mode: "tui", uiContext: host.ui });
+				session.extensionRunner.getUIContext().setWidget("workflow.run", factory("rebound"));
+				assert.deepEqual(await host.snapshot(), new Map([["workflow.run", ["rebound"]]]));
+			} finally {
+				session.dispose();
+				host.release();
+				await rm(dir, { recursive: true, force: true });
+			}
+		},
+	);
+
 	test.each([
 		"replacement",
 		"omitted",

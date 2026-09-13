@@ -295,6 +295,12 @@ export class ExtensionRunner {
 	private static readonly widgetOwners = new WeakMap<ExtensionUIContext, Map<string, object>>();
 	private readonly widgetRegistrations = new Map<ExtensionUIContext, Map<string, { active: boolean }>>();
 	private pendingWidgets: Map<ExtensionUIContext, Map<string, WidgetArguments>> | undefined;
+	private widgetsRetired = false;
+
+	/** Stop retained callbacks from publishing while this runner's shutdown is awaited. */
+	retireWidgets(): void {
+		this.widgetsRetired = true;
+	}
 
 	/** Defer candidate widget effects until fallible reload preparation succeeds. */
 	stageWidgets(): void {
@@ -322,7 +328,7 @@ export class ExtensionRunner {
 	}
 
 	private setOwnedWidget(ui: ExtensionUIContext, ...[key, content, options]: WidgetArguments): void {
-		if (this.staleMessage) return;
+		if (this.staleMessage || this.widgetsRetired) return;
 		if (this.pendingWidgets) {
 			let widgets = this.pendingWidgets.get(ui);
 			if (!widgets) {
@@ -360,7 +366,7 @@ export class ExtensionRunner {
 				key,
 				(tui, theme) => {
 					// The host may invoke a queued factory after replacement or invalidation.
-					if (this.staleMessage || !registration.active || owners.get(key) !== registration)
+					if (this.staleMessage || this.widgetsRetired || !registration.active || owners.get(key) !== registration)
 						return { render: () => [], invalidate() {} };
 					return content(tui, theme);
 				},

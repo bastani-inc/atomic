@@ -516,6 +516,9 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 		includeAllExtensionTools: true,
 		preserveRunner: true,
 	});
+	// The committed successor owns publication, even for keys the old runner never mounted.
+	// Keep the old runtime alive for shutdown; invalidate still disposes its remaining widgets.
+	oldRunner.retireWidgets();
 	// Publish reporter claims only after fallible preparation, before old shutdown or queued user effects.
 	await publication.activateStarts();
 	candidateRunner.commitWidgets();
