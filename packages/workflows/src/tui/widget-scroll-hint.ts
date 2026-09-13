@@ -1,3 +1,4 @@
+import { keybindingIdentity } from "@bastani/atomic";
 import { getKeybindings, type KeybindingsConfig } from "@earendil-works/pi-tui";
 
 export function workflowScrollHint(
@@ -13,7 +14,7 @@ export function workflowScrollHint(
 						([other, values]) =>
 							other !== action &&
 							(Array.isArray(values) ? values : [values]).some(
-								(value) => value?.toLowerCase() === key.toLowerCase(),
+								(value) => value !== undefined && keybindingIdentity(value) === keybindingIdentity(key),
 							),
 					),
 			);

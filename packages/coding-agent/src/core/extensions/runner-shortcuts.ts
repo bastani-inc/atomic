@@ -1,5 +1,6 @@
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
+import { keybindingIdentity } from "../keybinding-identity.js";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { Extension, ExtensionShortcut } from "./types.ts";
 
@@ -63,7 +64,9 @@ function configuredShortcutKeys(shortcut: ExtensionShortcut, bindings: Keybindin
 					!WORKFLOW_SCROLL_ACTIONS.includes(action) &&
 					(shortcut.preferEditor ||
 						(RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]).includes(action)) &&
-					(Array.isArray(keys) ? keys : [keys]).some((value) => value?.toLowerCase() === key.toLowerCase()),
+					(Array.isArray(keys) ? keys : [keys]).some(
+						(value) => value !== undefined && keybindingIdentity(value) === keybindingIdentity(key),
+					),
 			),
 	);
 }
@@ -94,7 +97,12 @@ export function resolveExtensionShortcuts(
 			}
 			const normalizedKey = key.toLowerCase() as KeyId;
 			const builtInKeybinding = builtinKeybindings[normalizedKey];
-			if (builtInKeybinding?.restrictOverride === true || (shortcut.preferEditor && builtInKeybinding)) {
+			const editorConflict =
+				shortcut.preferEditor &&
+				Object.keys(builtinKeybindings).some(
+					(binding) => keybindingIdentity(binding as KeyId) === keybindingIdentity(key),
+				);
+			if (builtInKeybinding?.restrictOverride === true || editorConflict) {
 				addDiagnostic(
 					`Extension shortcut '${key}' from ${shortcut.extensionPath} conflicts with built-in shortcut. Skipping.`,
 					shortcut.extensionPath,

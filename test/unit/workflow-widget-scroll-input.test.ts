@@ -100,6 +100,78 @@ test("workflow actions resolve Alt letter and Page aliases, configurable empties
 	assert.doesNotMatch(workflowScrollHint(vim, "darwin"), /Option\+[kj]/);
 });
 
+test("workflow yields to editor modifier-order equivalents without rewriting configured keys", () => {
+	const workflow: KeyId = "ctrl+alt+k";
+	const editor: KeyId = "alt+ctrl+k";
+	const bytes = "\x1b[107;7u";
+	assert.ok(matchesKey(bytes, workflow));
+	assert.ok(matchesKey(bytes, editor));
+	const bindings = new KeybindingsManager({
+		"app.workflows.scrollUp": [workflow],
+		"app.workflows.scrollDown": [],
+		"tui.editor.cursorUp": ["up", editor],
+	}).getEffectiveConfig();
+	const shortcuts = resolveExtensionShortcuts([registrations()], bindings, true).shortcuts;
+	assert.equal(
+		[...shortcuts.keys()].some((key) => matchesKey(bytes, key)),
+		false,
+	);
+	assert.deepEqual(bindings["app.workflows.scrollUp"], workflow);
+	assert.equal(workflowScrollHint(bindings, "darwin"), " Wheel scroll workflows");
+});
+
+test("workflow yields to the editor's shift+enter when configured as shift+return", () => {
+	const bytes = "\x1b[13;2u";
+	assert.ok(matchesKey(bytes, "shift+return"));
+	assert.ok(matchesKey(bytes, "shift+enter"));
+	const bindings = new KeybindingsManager({
+		"app.workflows.scrollUp": "shift+return",
+		"app.workflows.scrollDown": [],
+	}).getEffectiveConfig();
+	const shortcuts = resolveExtensionShortcuts([registrations()], bindings, true).shortcuts;
+	assert.equal(
+		[...shortcuts.keys()].some((key) => matchesKey(bytes, key)),
+		false,
+	);
+	assert.equal(workflowScrollHint(bindings, "linux"), " Wheel scroll workflows");
+});
+
+test("workflow esc yields to reserved escape, including without preferEditor", () => {
+	const bytes = "\x1b";
+	assert.ok(matchesKey(bytes, "esc"));
+	assert.ok(matchesKey(bytes, "escape"));
+	const bindings = new KeybindingsManager({
+		"app.workflows.scrollUp": "esc",
+		"app.workflows.scrollDown": [],
+	}).getEffectiveConfig();
+	const extension = registrations();
+	for (const preferEditor of [true, false]) {
+		for (const shortcut of extension.shortcuts.values()) shortcut.preferEditor = preferEditor;
+		const shortcuts = resolveExtensionShortcuts([extension], bindings, true).shortcuts;
+		assert.equal(
+			[...shortcuts.keys()].some((key) => matchesKey(bytes, key)),
+			false,
+		);
+	}
+	assert.equal(workflowScrollHint(bindings, "win32"), " Wheel scroll workflows");
+});
+
+test("literal editor-first shortcuts yield to equivalent keys but legacy registrations still override", () => {
+	const extension = registrations();
+	extension.shortcuts.clear();
+	const shortcut = {
+		shortcut: "ctrl+alt+k" as KeyId,
+		extensionPath: extension.path,
+		handler() {},
+		preferEditor: false,
+	};
+	extension.shortcuts.set(shortcut.shortcut, shortcut);
+	const bindings = new KeybindingsManager({ "tui.editor.cursorUp": "alt+ctrl+k" }).getEffectiveConfig();
+	assert.ok(resolveExtensionShortcuts([extension], bindings, true).shortcuts.has(shortcut.shortcut));
+	shortcut.preferEditor = true;
+	assert.equal(resolveExtensionShortcuts([extension], bindings, true).shortcuts.has(shortcut.shortcut), false);
+});
+
 test("unrelated extension shortcuts retain their existing editor-conflict policy", () => {
 	const extension = registrations();
 	extension.shortcuts.clear();
