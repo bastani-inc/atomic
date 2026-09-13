@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.19-alpha.10] - 2026-09-13
+
 ### Added
 
 - Extension widgets can opt into a height-capped fullscreen viewport with widget-local wheel scrolling, an overflow-only scrollbar, and scroll-position feedback in both in-process and isolated-engine sessions. Existing widgets retain their default behavior.
