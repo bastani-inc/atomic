@@ -519,8 +519,15 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 	// Publish reporter claims only after fallible preparation, before old shutdown or queued user effects.
 	await publication.activateStarts();
 	candidateRunner.commitWidgets();
-	if (reason === "reload") await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
-	oldRunner.invalidate();
+	// The session error listener now belongs to the candidate; retain retirement diagnostics.
+	const unsubscribeRetiringErrors = oldRunner.onError((error) => candidateRunner.emitError(error));
+	try {
+		if (reason === "reload")
+			await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
+		oldRunner.invalidate();
+	} finally {
+		unsubscribeRetiringErrors();
+	}
 	await publication.release();
 }
 

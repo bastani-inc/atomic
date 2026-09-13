@@ -558,7 +558,16 @@ export class ExtensionRunner {
 			this.pendingWidgets = undefined;
 			for (const [ui, registrations] of this.widgetRegistrations) {
 				for (const key of registrations.keys()) {
-					this.setOwnedWidget(ui, key, undefined);
+					try {
+						this.setOwnedWidget(ui, key, undefined);
+					} catch (error) {
+						// A retiring-only widget must not prevent remaining cleanup or runtime invalidation.
+						this.emitError({
+							extensionPath: "<runtime>",
+							event: "session_shutdown",
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
 					const owners = ExtensionRunner.widgetOwners.get(ui);
 					if (owners && owners.get(key) === registrations.get(key)) owners.delete(key);
 				}

@@ -14,14 +14,15 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
-// PR #2700: staged publication runs after commit, outside the extension event-handler boundary.
-test("SDK reload contains each synchronous widget publication failure and completes retiring cleanup", async () => {
+// PR #2700: both staged publication and omitted-widget retirement must finish after commit.
+test.each([false, true])("SDK reload contains widget disposal failures (omitted: %s)", async (omitted) => {
 	const dir = await mkdtemp(join(tmpdir(), "reload-widget-publication-"));
 	const source = new EventEmitter();
 	const timers = new Set<ReturnType<typeof setInterval>>();
 	const lifecycle: string[] = [];
 	const frames: string[] = [];
 	const errors: ExtensionError[] = [];
+	const disposed: string[] = [];
 	let starts = 0;
 	let cleaningUp = false;
 	const load = () =>
@@ -38,15 +39,19 @@ test("SDK reload contains each synchronous widget publication failure and comple
 						timers.add(timer);
 						source.on("update", listener);
 						for (const key of ["workflow.run", "second", "healthy"]) {
+							if (omitted && generation > 1) continue;
 							ctx.ui.setWidget(key, () => ({
 								render: () => [`${key}:${generation}`],
 								invalidate() {},
 								dispose() {
+									disposed.push(`${key}:${generation}`);
 									if (!cleaningUp && generation === 1 && key !== "healthy")
 										throw new Error(`dispose failed: ${key}`);
 								},
 							}));
 						}
+						if (omitted)
+							ctx.ui.setWidget("replacement", () => ({ render: () => [`live:${generation}`], invalidate() {} }));
 						if (generation > 1)
 							pi.sendMessage({ customType: "released", content: "after retirement", display: false });
 					});
@@ -102,7 +107,9 @@ test("SDK reload contains each synchronous widget publication failure and comple
 				},
 			},
 		});
-		await vi.waitFor(() => assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, 3));
+		await vi.waitFor(() =>
+			assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, omitted ? 4 : 3),
+		);
 		const retiring = session.extensionRunner;
 		await session.reload({ failOnExtensionErrors: true });
 		assert.notEqual(session.extensionRunner, retiring);
@@ -113,12 +120,36 @@ test("SDK reload contains each synchronous widget publication failure and comple
 		assert.deepEqual(
 			errors.map(({ extensionPath, event, error }) => ({ extensionPath, event, error })),
 			[
-				{ extensionPath: "<runtime>", event: "session_start", error: "dispose failed: workflow.run" },
-				{ extensionPath: "<runtime>", event: "session_start", error: "dispose failed: second" },
+				{
+					extensionPath: "<runtime>",
+					event: omitted ? "session_shutdown" : "session_start",
+					error: "dispose failed: workflow.run",
+				},
+				{
+					extensionPath: "<runtime>",
+					event: omitted ? "session_shutdown" : "session_start",
+					error: "dispose failed: second",
+				},
 			],
 		);
-		await vi.waitFor(() => assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, 4));
-		assert.ok(frames.at(-1)?.includes('"widgetKey":"healthy"'));
+		assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+		await vi.waitFor(() =>
+			assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, omitted ? 5 : 4),
+		);
+		const lastOpen = frames.filter((line) => line.includes('"engine_custom_open"')).at(-1)!;
+		assert.ok(lastOpen.includes(omitted ? '"widgetKey":"replacement"' : '"widgetKey":"healthy"'));
+		const afterReload = [...frames];
+		retiring.invalidate();
+		retiring.invalidate();
+		assert.deepEqual(frames, afterReload);
+		assert.equal(errors.length, 2);
+		assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+		assert.throws(() => retiring.createContext().ui, /no longer active|stale|reload/i);
+		const { componentId } = JSON.parse(lastOpen) as { componentId: string };
+		engine.handleLine(
+			JSON.stringify({ type: "engine_custom_render", componentId, requestId: 1, width: 120, rows: 40 }),
+		);
+		await vi.waitFor(() => assert.ok(frames.some((line) => line.includes(omitted ? "live:2" : "healthy:2"))));
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		assert.equal(source.listenerCount("update"), 0);
 		assert.equal(timers.size, 0);
