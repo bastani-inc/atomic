@@ -186,8 +186,14 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 	const placement = options?.placement ?? "aboveEditor";
 	const removeExisting = (map: Map<string, Component & { dispose?(): void }>) => {
 		const existing = map.get(key);
-		if (existing?.dispose) existing.dispose();
+		// Detach before user disposal: a retired owner cannot retry, and disposal may reenter.
 		map.delete(key);
+		try {
+			existing?.dispose?.();
+		} catch (error) {
+			this.renderWidgets();
+			throw error;
+		}
 	};
 
 	removeExisting(this.extensionWidgetsAbove);
@@ -229,19 +235,22 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 };
 
 InteractiveModeBase.prototype.clearExtensionWidgets = function (this: InteractiveModeBase): void {
-	const releasedKeys = new Set<string>();
-	for (const [key, widget] of this.extensionWidgetsAbove) {
-		widget.dispose?.();
-		releasedKeys.add(key);
-	}
-	for (const [key, widget] of this.extensionWidgetsBelow) {
-		widget.dispose?.();
-		releasedKeys.add(key);
-	}
+	const widgets = [...this.extensionWidgetsAbove, ...this.extensionWidgetsBelow];
+	// Snapshot and detach the whole retiring batch before invoking user callbacks.
 	this.extensionWidgetsAbove.clear();
 	this.extensionWidgetsBelow.clear();
+	const errors: unknown[] = [];
+	for (const [, widget] of widgets) {
+		try {
+			widget.dispose?.();
+		} catch (error) {
+			errors.push(error);
+		}
+	}
 	this.renderWidgets();
-	for (const key of releasedKeys) this.notifyExtensionWidgetRelease(key);
+	for (const key of new Set(widgets.map(([key]) => key))) this.notifyExtensionWidgetRelease(key);
+	// Match the engine host: complete cleanup and release notification before reporting failure.
+	if (errors.length > 0) throw errors[0];
 };
 
 InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveModeBase): void {
