@@ -305,7 +305,19 @@ export class ExtensionRunner {
 		const pending = this.pendingWidgets;
 		this.pendingWidgets = undefined;
 		for (const [ui, widgets] of pending ?? []) {
-			for (const args of widgets.values()) this.setOwnedWidget(ui, ...args);
+			for (const args of widgets.values()) {
+				try {
+					this.setOwnedWidget(ui, ...args);
+				} catch (error) {
+					// Like other deferred startup effects, publication cannot undo the committed runner.
+					// Report each failure without skipping later widgets or retiring lifecycle cleanup.
+					this.emitError({
+						extensionPath: "<runtime>",
+						event: "session_start",
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
 		}
 	}
 
