@@ -79,12 +79,15 @@ test("allocated dock geometry clips full content with multiline editor and anoth
 	const position = widget.scrollTop;
 	wheel(65, 0);
 	assert.equal(widget.scrollTop, position);
-	const transcriptPosition = context.transcriptScrollView?.scrollTop;
+	const transcriptPosition = 15;
+	context.transcriptScrollView?.scrollTo(15);
+	tui.renderNow();
 	for (let i = 0; i < 40; i++) wheel(65, box.rect.y);
 	assert.equal(widget.scrollTop, 30 - widget.viewportHeight);
 	assert.equal(context.transcriptScrollView?.scrollTop, transcriptPosition);
 	for (let i = 0; i < 40; i++) wheel(64, box.rect.y);
 	assert.equal(widget.scrollTop, 0);
+	assert.equal(context.transcriptScrollView?.scrollTop, transcriptPosition);
 	assert.equal(tui.getFocusedComponent(), focused);
 });
 
@@ -104,6 +107,17 @@ test("no overflow hides scrollbar; resize clamps state and unchanged requests do
 	assert.ok(widget instanceof ScrollWidget);
 	assert.equal(widget.isScrollbarVisible, false);
 	assert.equal(widget.scrollTop, 0);
+	const transcript = context.transcriptScrollView;
+	assert.ok(transcript);
+	transcript.scrollTo(15);
+	tui.renderNow();
+	const box = boxFor(getLayoutFrame(tui).root, widget);
+	assert.ok(box);
+	for (const code of [64, 65]) {
+		terminal.input(`\x1b[<${code};2;${box.rect.y + 1}M`);
+		tui.renderNow();
+		assert.equal(transcript.scrollTop, 15, "non-overflowing widget contains both wheel directions");
+	}
 	lines = Array.from({ length: 20 }, (_, i) => `line ${i}`);
 	tui.renderNow();
 	widget.scrollBy(3);
@@ -130,6 +144,7 @@ test("remote wire transports full content, requests and allocated scroll state a
 	const messages: InteractiveEngineMessage[] = [];
 	const states: WidgetScrollState[] = [];
 	let request = { version: 1, scrollTop: 2 };
+	let contentHeight = 20;
 	const service = new EngineCustomUiService((line) => {
 		const message = parseInteractiveEngineMessage(line);
 		assert.ok(message);
@@ -162,7 +177,7 @@ test("remote wire transports full content, requests and allocated scroll state a
 		service.setWidget(
 			"remote",
 			() => ({
-				render: (width) => Array.from({ length: 20 }, (_, i) => ` ${i} width ${width} `),
+				render: (width) => Array.from({ length: contentHeight }, (_, i) => ` ${i} width ${width} `),
 				getScrollRequest: () => request,
 				onScroll: (state: WidgetScrollState) => states.push(state),
 				invalidate() {},
@@ -204,6 +219,36 @@ test("remote wire transports full content, requests and allocated scroll state a
 		const resized = messages.findLast((message) => message.type === "engine_custom_frame");
 		assert.ok(resized?.type === "engine_custom_frame");
 		assert.equal(resized.lines[0], " 0 width 35 ");
+		terminal.resize(60, 24);
+		await settle();
+		const transcript = context.transcriptScrollView;
+		assert.ok(transcript);
+		for (const scenario of [
+			{ name: "top", rows: 20, position: 0, code: 64 },
+			{ name: "bottom", rows: 20, position: 15, code: 65 },
+			{ name: "no overflow up", rows: 1, position: 0, code: 64 },
+			{ name: "no overflow down", rows: 1, position: 0, code: 65 },
+		]) {
+			contentHeight = scenario.rows;
+			request = { version: request.version + 1, scrollTop: scenario.position };
+			service.requestRender();
+			await settle();
+			transcript.scrollTo(15);
+			await settle();
+			assert.equal(transcript.scrollTop, 15);
+			const allocated = boxFor(getLayoutFrame(tui).root, widget);
+			assert.ok(allocated && allocated.rect.height > 0);
+			terminal.input(`\x1b[<${scenario.code};2;${allocated.rect.y + 1}M`);
+			await settle();
+			assert.equal(transcript.scrollTop, 15, scenario.name);
+			assert.equal(widget.scrollTop, scenario.position, scenario.name);
+			assert.equal(states.at(-1)?.scrollTop, scenario.position);
+			// Outside the widget, the same native input still scrolls the transcript.
+			terminal.input(`\x1b[<${scenario.code};2;1M`);
+			await settle();
+			assert.equal(transcript.scrollTop, scenario.code === 64 ? 14 : 16);
+			assert.equal(widget.scrollTop, scenario.position);
+		}
 	} finally {
 		controller.dispose();
 		service.dispose();

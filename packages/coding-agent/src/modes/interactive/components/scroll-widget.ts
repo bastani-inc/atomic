@@ -16,6 +16,13 @@ export class ScrollWidget extends ScrollView {
 		this.maxHeight = maxHeight;
 	}
 
+	override scrollBy(lines: number): number {
+		super.scrollBy(lines);
+		// Native wheel routing forwards unused delta to the transcript even with contain.
+		// This opt-in viewport consumes it after native hit-testing and clamping.
+		return 0;
+	}
+
 	override get isScrollbarVisible(): boolean {
 		return this.viewportHeight > 0 && (this.lastState?.contentHeight ?? 0) > this.viewportHeight;
 	}
