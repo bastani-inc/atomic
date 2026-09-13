@@ -16,6 +16,7 @@ import type { GraphTheme } from "./graph-theme.js";
 import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
 import type { GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
+import { nodeCardHeight } from "./node-card.js";
 import { createPromptCardState, type PromptCardState } from "./prompt-card.js";
 import type { SwitcherState } from "./switcher.js";
 
@@ -52,6 +53,7 @@ interface GraphLayoutBand {
 interface GraphRenderEdge {
 	parentX: number;
 	parentY: number;
+	parentHeight: number;
 	childX: number;
 	childY: number;
 	top: number;
@@ -177,11 +179,29 @@ export abstract class GraphViewState {
 		return this.promptState !== null || this.hasAnimatingStages;
 	}
 
+	private _nodeHeight(stage: StageSnapshot): number {
+		const baseHeight = nodeCardHeight(stage);
+		// A badge that fits existing space cannot affect layout. Keep queue reads
+		// viewport-bound for those cards instead of fetching them during sizing.
+		if (!this.getStageQueuedMessageCount || nodeCardHeight(stage, { queuedMessageCount: 1 }) === baseHeight) {
+			return baseHeight;
+		}
+		return nodeCardHeight(stage, { queuedMessageCount: this._stageQueuedMessageCount(stage) });
+	}
+
+	protected _refreshQueuedNodeHeights(): void {
+		if (!this.getStageQueuedMessageCount) return;
+		if (!this.cachedLayout.some((node) => (node.height ?? NODE_H) !== this._nodeHeight(node.stage))) return;
+		this.lastBuiltSnapshotVersion = null;
+		this._rebuildLayout();
+	}
+
 	protected _rebuildLayout(): void {
 		const version = this.currentSnapshot?.version ?? null;
 		// Overlay adapter calls `invalidate()` after GraphView's own store
 		// subscriber already rebuilt for this snapshot — skip the duplicate.
 		if (version !== null && version === this.lastBuiltSnapshotVersion) {
+			this._refreshQueuedNodeHeights();
 			return;
 		}
 
@@ -212,6 +232,7 @@ export abstract class GraphViewState {
 			this.cachedLayout.every((node, index) => {
 				const next = graphStages[index];
 				if (!next || node.stage.id !== next.id || node.stage.nodeKind !== next.nodeKind) return false;
+				if ((node.height ?? NODE_H) !== this._nodeHeight(next)) return false;
 				if (node.stage.parentIds.length !== next.parentIds.length) return false;
 				return node.stage.parentIds.every((parentId, parentIndex) => parentId === next.parentIds[parentIndex]);
 			});
@@ -230,7 +251,10 @@ export abstract class GraphViewState {
 			return;
 		}
 
-		const nextLayout = computeLayout(graphStages, { orientation: "vertical" });
+		const nextLayout = computeLayout(graphStages, {
+			orientation: "vertical",
+			nodeHeight: (stage) => this._nodeHeight(stage),
+		});
 		this.cachedLayout = nextLayout;
 		this.cachedDisplayStages = nextLayout.map((node) => node.stage);
 		this.cachedRenderGeometry = this._buildRenderGeometry(nextLayout);
@@ -252,11 +276,14 @@ export abstract class GraphViewState {
 		for (let index = 0; index < layout.length; index++) {
 			const node = layout[index]!;
 			canvasWidth = Math.max(canvasWidth, node.x + NODE_W);
-			totalRows = Math.max(totalRows, node.y + NODE_H);
+			const bottom = node.y + (node.height ?? NODE_H);
+			totalRows = Math.max(totalRows, bottom);
 			nodeByStageId.set(node.stage.id, node);
 			const band = bandsByTop.get(node.y);
-			if (band) band.nodeIndices.push(index);
-			else bandsByTop.set(node.y, { top: node.y, bottom: node.y + NODE_H, nodeIndices: [index] });
+			if (band) {
+				band.nodeIndices.push(index);
+				band.bottom = Math.max(band.bottom, bottom);
+			} else bandsByTop.set(node.y, { top: node.y, bottom, nodeIndices: [index] });
 		}
 
 		const edges: GraphRenderEdge[] = [];
@@ -269,9 +296,10 @@ export abstract class GraphViewState {
 				edges.push({
 					parentX: parent.x,
 					parentY: parent.y,
+					parentHeight: parent.height ?? NODE_H,
 					childX: node.x,
 					childY: node.y,
-					top: parent.y + NODE_H,
+					top: parent.y + (parent.height ?? NODE_H),
 					bottom: node.y,
 					left: Math.min(parentCol, childCol),
 					right: Math.max(parentCol, childCol) + 1,

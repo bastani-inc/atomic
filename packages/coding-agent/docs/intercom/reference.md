@@ -53,6 +53,8 @@ Sent and received messages are recorded in session history as `intercom_sent` / 
 
 Live-session lookup accepts only an exact full Intercom session ID or an exact case-insensitive session name. Workflow stages use the canonical `workflow:<rootRunId>/<segment>[/<segment>...]` path printed by `intercom list` and workflow status surfaces; an exact target works while the row is `PENDING` and after it becomes `RUNNING`. Each segment may be a stage name, run id, or glob: `*` matches one segment and may be embedded, while `**` matches any depth. Status surfaces label pending stages whose pre-start delivery capability is unavailable without presenting a usable target and never advertise a retained pending stage after its run terminates. The `sessionId` shown by `workflow status` belongs to the workflow SDK and is **not** an Intercom target.
 
+Agent list rows put the copyable exact ID or canonical workflow path first, followed by status and working directory. Meaningful names remain secondary metadata; redundant generated aliases are hidden only in the list, not removed from lookup. Pending and future workflow rows retain lifecycle and queued counts. Copy the target rather than reconstructing it from a name.
+
 Known non-agent IDs, names, and workflow paths are refused rather than delivered or queued for a future agent. This includes run-level `ctx.ui` prompts, synthetic prompt stages (including retained completed prompts), and `ctx.tool` nodes. Knowing an internal connection's ID does not bypass this broker policy, and supervisor delivery cannot bypass it either. Workflow patterns and `workflow:<rootRunId>/**` still queue for future agent stages, but never deliver to prompt/tool nodes or routing connections.
 
 This refusal also covers nested paths using boundary-stage names or IDs, mixed with materialized run-ID segments. The same spellings still resolve genuine agent stages.
@@ -99,6 +101,8 @@ An `idle` registration does not guarantee reply capability. Completed, failed, i
 **`contact_supervisor`** keeps a narrower policy: one blocking decision/interview wait per child may coexist with ordinary peer asks, but a second concurrent supervisor wait receives `Already waiting for a supervisor reply`. Claimed foreground handoffs allocate no waiter. Mutual peer asks are supported, although both sessions must process inbound work to reply; the per-waiter timeout remains the backstop.
 
 **`reply`** is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom message, `intercom({ action: "reply", message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask; with multiple pending asks, use `pending` and pass `to`, or pass the listed message ID as `replyTo` to disambiguate multiple asks from the same sender. Under the hood this is still a normal `send` with the exact `replyTo` value.
+
+Explicit selectors override the active turn: `to` selects a pending ask from that exact name/full session ID, and `replyTo` selects only that pending ask or the exact active ordinary message. Stale, unknown, or empty thread IDs fail without falling back. If both selectors are supplied, the sender must match the thread. If an asker is still waiting, inspect `pending` and reply using its exact message ID rather than replying implicitly to an unrelated notification. Multiple asks from the same sender require `replyTo`.
 
 ### Attachments
 

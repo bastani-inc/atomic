@@ -12,6 +12,7 @@ import type {
 	WorkflowTaskResult,
 	WorkflowTaskStep,
 } from "../../packages/workflows/src/shared/types.js";
+import { createStore, mockSession, run, workflow } from "./executor-shared.js";
 
 const criterionA = { id: "correctness", name: "Correctness", description: "The candidate is correct." };
 const criterionB = { id: "evidence", name: "Evidence", description: "The candidate cites evidence." };
@@ -195,4 +196,132 @@ describe("prompt-layout", () => {
 		);
 		assert.deepEqual(calls, [["a-1", "b-1"], ["a-2"]]);
 	});
+
+	// Regression #3001: discovery metadata must not alter the warm/rest state transitions.
+	test("#3001 metadata preserves warm barrier, result identity, caps and rest-error precedence", async () => {
+		const input = steps("a-1", "a-2", "b-1", "b-2");
+		const reports = input.map((step) => result(step.name));
+		const calls: string[][] = [];
+		let releaseWarm!: () => void;
+		const warmBarrier = new Promise<void>((resolve) => {
+			releaseWarm = resolve;
+		});
+		const ctx = {
+			parallel: async (phase: readonly WorkflowTaskStep[], options: WorkflowParallelOptions = {}) => {
+				calls.push(phase.map((step) => step.name));
+				assert.equal(options.concurrency, 1);
+				if (calls.length === 1) {
+					assert.equal(options.failFast, false);
+					await warmBarrier;
+				}
+				return phase.map((step) => reports[input.indexOf(step)]!);
+			},
+		};
+		const pending = warm_first_fan_out(ctx, input, (step) => step.prompt, {
+			concurrency: 1,
+			possibleStageNames: ["a-*", "b-*"],
+		});
+		assert.deepEqual(calls, [["a-1", "b-1"]]);
+		releaseWarm();
+		const output = await pending;
+		assert.deepEqual(calls, [
+			["a-1", "b-1"],
+			["a-2", "b-2"],
+		]);
+		output.forEach((report, index) => {
+			assert.equal(report, reports[index]);
+		});
+		const restError = new Error("rest failed");
+		let phase = 0;
+		await assert.rejects(
+			warm_first_fan_out(
+				{
+					parallel: async () => {
+						phase += 1;
+						throw phase === 1 ? new Error("warm failed") : restError;
+					},
+				},
+				input,
+				(step) => step.prompt,
+				{ possibleStageNames: ["a-*", "b-*"] },
+			),
+			(error) => error === restError,
+		);
+		assert.equal(phase, 2);
+		assert.deepEqual(await warm_first_fan_out(ctx, [], (step) => step.prompt, { possibleStageNames: [] }), []);
+	});
+});
+
+// Regression #3001: exercise the actual workflow engine and parallel scheduler, not only a helper stub.
+test("#3001 engine executes annotated warm/rest groups at the same concurrency", async () => {
+	const names = ["a-1", "a-2", "b-1", "b-2"];
+	const started: string[] = [];
+	let active = 0;
+	let peak = 0;
+	let releaseWarm!: () => void;
+	let markWarmReady!: () => void;
+	const warmBarrier = new Promise<void>((resolve) => {
+		releaseWarm = resolve;
+	});
+	const warmReady = new Promise<void>((resolve) => {
+		markWarmReady = resolve;
+	});
+	const definition = workflow({
+		name: "issue-3001-runtime",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const results = await warm_first_fan_out(
+				ctx,
+				names.map((name) => ({ name, prompt: name })),
+				(step) => step.name[0],
+				{
+					concurrency: 2,
+					possibleStageNames: ["a-*", "b-*"],
+				},
+			);
+			assert.deepEqual(
+				results.map((report) => report.name),
+				names,
+			);
+			return {};
+		},
+	});
+	const execution = run(
+		definition,
+		{},
+		{
+			store: createStore(),
+			adapters: {
+				agentSession: {
+					create: async () => ({
+						...mockSession(),
+						prompt: async (text) => {
+							const name = names.find((candidate) => text.includes(candidate));
+							assert.ok(name);
+							started.push(name);
+							active += 1;
+							peak = Math.max(peak, active);
+							if (name.endsWith("-1")) {
+								if (started.length === 2) markWarmReady();
+								await warmBarrier;
+							}
+							active -= 1;
+						},
+					}),
+				},
+			},
+		},
+	);
+	await warmReady;
+	try {
+		assert.deepEqual(started, ["a-1", "b-1"]);
+	} finally {
+		releaseWarm();
+	}
+	const completed = await execution;
+	assert.equal(completed.status, "completed", completed.error);
+	assert.deepEqual(started, ["a-1", "b-1", "a-2", "b-2"]);
+	assert.equal(peak, 2);
 });

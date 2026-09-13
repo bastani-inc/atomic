@@ -5,7 +5,7 @@
 import type { StageSnapshot } from "../shared/store-types.js";
 
 export const NODE_W = 24;
-export const NODE_H = 6;
+export const NODE_H = 5;
 
 export interface LayoutNode {
 	stage: StageSnapshot;
@@ -13,11 +13,13 @@ export interface LayoutNode {
 	row: number;
 	x: number;
 	y: number;
+	height?: number;
 }
 
 export interface LayoutOpts {
 	colGap?: number;
 	rowGap?: number;
+	nodeHeight?: (stage: StageSnapshot) => number;
 	/**
 	 * `horizontal` (default): depth flows left → right. `col → x`, `row → y`.
 	 * `vertical`: depth flows top → bottom. `col → y`, `row → x`.
@@ -136,14 +138,32 @@ export function computeLayout(stages: readonly StageSnapshot[], opts: LayoutOpts
 		}
 	}
 
+	const heights = new Map(stages.map((stage) => [stage.id, opts.nodeHeight?.(stage) ?? NODE_H]));
+	const verticalOffsets = new Map<number, number>();
+	const horizontalOffsets = new Map<string, number>();
+	let depthY = 0;
+	for (const depth of [...colGroups.keys()].sort((a, b) => a - b)) {
+		const ids = colGroups.get(depth)!;
+		verticalOffsets.set(depth, depthY);
+		let siblingY = 0;
+		let tallest = 0;
+		for (const id of ids) {
+			const height = heights.get(id)!;
+			horizontalOffsets.set(id, siblingY);
+			siblingY += height + rowGap;
+			tallest = Math.max(tallest, height);
+		}
+		depthY += tallest + rowGap;
+	}
+
 	const nodes: LayoutNode[] = [];
 	for (const s of stages) {
 		const col = colMap.get(s.id) ?? 0;
 		const row = rowIndex.get(s.id) ?? 0;
 		const x =
 			orientation === "vertical" ? row * (NODE_W + colGap) + (centreShift.get(col) ?? 0) : col * (NODE_W + colGap);
-		const y = orientation === "vertical" ? col * (NODE_H + rowGap) : row * (NODE_H + rowGap);
-		nodes.push({ stage: s, col, row, x, y });
+		const y = orientation === "vertical" ? verticalOffsets.get(col)! : horizontalOffsets.get(s.id)!;
+		nodes.push({ stage: s, col, row, x, y, ...(opts.nodeHeight ? { height: heights.get(s.id)! } : {}) });
 	}
 
 	return nodes;

@@ -69,12 +69,23 @@ test("replyTo selects an exact ask when one sender has concurrent pending questi
 	assert.throws(() => tracker.resolveReplyTarget({ to: "another-session", replyTo: "message-1" }), /not from/);
 });
 
-test("a non-pending replyTo falls back to the active turn context", () => {
+test("explicit reply targets fail closed without redirecting the active ordinary thread", () => {
 	const tracker = new ReplyTracker();
 	const context = tracker.recordIncomingMessage(sender, { ...message, id: "plain", expectsReply: false });
 	tracker.queueTurnContext(context);
 	tracker.beginTurn();
-	assert.equal(tracker.resolveReplyTarget({ replyTo: "stale-thread" }), context);
+	tracker.recordIncomingMessage(sender, message);
+	for (const replyTo of ["stale-thread", ""]) {
+		assert.throws(() => tracker.resolveReplyTarget({ replyTo }), /No .*reply context/);
+	}
+	assert.throws(() => tracker.resolveReplyTarget({ to: "" }), /No pending ask/);
+	assert.throws(() => tracker.resolveReplyTarget({ to: "other", replyTo: "plain" }), /not from/);
+	assert.equal(tracker.resolveReplyTarget({ replyTo: "plain" }), context);
+	assert.equal(tracker.resolveReplyTarget({}), context);
+	assert.deepEqual(
+		tracker.listPending().map((pending) => pending.message.id),
+		[message.id],
+	);
 });
 
 test("parallel children keep every parent-targeted ask independently addressable", () => {

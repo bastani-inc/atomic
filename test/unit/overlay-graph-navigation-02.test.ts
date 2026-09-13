@@ -5,6 +5,7 @@ import { describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { GraphViewLayout, graphLayoutBodyRows } from "../../packages/workflows/src/tui/graph-view-layout.js";
+import { NODE_H } from "../../packages/workflows/src/tui/layout.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
@@ -158,7 +159,8 @@ describe("GraphView keyboard navigation", () => {
 		const stages = [makeStage("A"), makeStage("B", ["A"])] as const;
 		const view = makeView([...stages]);
 		const lines = view.render(96);
-		assert.equal(lines.length, 23);
+		// Two card tiers, three connector rows, and eight header/footer/margin rows.
+		assert.equal(lines.length, 2 * NODE_H + 3 + 8);
 		assert.ok(lines.length < 32, "a short graph must not use the old fixed rectangle");
 		view.dispose();
 	});
@@ -179,7 +181,7 @@ describe("GraphView keyboard navigation", () => {
 		const view = makeView([...stages]);
 		const lines = view.render(96);
 		assert.equal(lines[0], " ".repeat(96));
-		assert.equal(lines.length, 23);
+		assert.equal(lines.length, 2 * NODE_H + 3 + 8);
 		assert.equal(lines.at(-1), " ".repeat(96));
 		assert.match(visibleText(lines.slice(1, 4)), /ORCHESTRATOR/);
 		assert.match(visibleText(lines.slice(-4, -1)), /GRAPH/);

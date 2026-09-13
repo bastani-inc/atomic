@@ -67,6 +67,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	/** Render to string lines. width = terminal columns. */
 	render(width: number): string[] {
 		if (this.mode === "widget") return this._renderWidget(width);
+		this._refreshQueuedNodeHeights();
 		return this._renderOverlay(width);
 	}
 
@@ -217,7 +218,8 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			if (node) {
 				let next = scrollView.scrollTop;
 				if (node.y < next) next = node.y;
-				else if (node.y + NODE_H > next + viewportRows) next = node.y + NODE_H - viewportRows;
+				else if (node.y + (node.height ?? NODE_H) > next + viewportRows)
+					next = node.y + (node.height ?? NODE_H) - viewportRows;
 				scrollView.scrollTo(next);
 
 				const graphInner = Math.max(1, width - 4);

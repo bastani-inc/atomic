@@ -4,10 +4,29 @@
 
 ### Fixed
 
-- Reduced CPU work in long `/tasks` live transcripts on Windows by reusing unchanged message rendering during streaming, without dropping history or delaying live updates.
 - Agent questionnaires retain unsubmitted answers, partial multiselect choices, inline text, notes, and editing position when a workflow stage is detached and reattached. A new questionnaire starts unanswered; cancellation remains a cancellation ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Questionnaire questions, choices, inline text, and answer reviews escape terminal controls before display without changing submitted answers ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Option previews escape terminal controls before Markdown rendering, including inside code fences, without changing the original preview returned with a selected answer ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+
+## [0.9.19-alpha.9] - 2026-09-12
+
+### Breaking Changes
+
+- Explicit Intercom `action: "reply"` selectors reject stale, unknown, empty, or sender-mismatched threads instead of falling back. Use `action: "pending"` and `replyTo: "<pending-ask-id>"` for unresolved questions.
+
+### Changed
+
+- Intercom agent lists put exact copyable session IDs and workflow paths first, with useful metadata and meaningful names secondary rather than redundant generated aliases.
+
+### Fixed
+
+- Intercom targeted replies now complete the requested ask when an unrelated message is active, rather than delivering a response with the wrong thread ID or refusing it.
+
+## [0.9.19-alpha.7] - 2026-09-12
+
+### Fixed
+
+- Reduced CPU work in long `/tasks` live transcripts on Windows by reusing unchanged message rendering during streaming, without dropping history or delaying live updates.
 
 ## [0.9.19-alpha.6] - 2026-09-11
 

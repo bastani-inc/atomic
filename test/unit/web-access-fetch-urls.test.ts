@@ -80,6 +80,14 @@ const registrations = {
 		),
 };
 
+test("lazy and loaded fetch_content expose the same argument guidance", () => {
+	const lazy = registrations.lazy();
+	const heavy = registrations.heavy();
+	assert.equal(lazy.description, heavy.description);
+	assert.equal(lazy.promptSnippet, heavy.promptSnippet);
+	assert.deepEqual(lazy.parameters, heavy.parameters);
+});
+
 for (const [name, register] of Object.entries(registrations)) {
 	test(`${name} fetch_content requires one nonempty urls array`, () => {
 		const { parameters } = register();

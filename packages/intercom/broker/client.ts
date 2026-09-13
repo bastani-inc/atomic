@@ -38,6 +38,8 @@ export interface SendOptions {
   logicalTarget?: string;
   /** Public reply must use the broker's exact pending reverse question route. */
   requirePendingReply?: true;
+  /** An explicit reply selector must resolve to this frozen recipient, never a namesake. */
+  expectedRecipientId?: string;
   /** Broker-authorized identity for a canonical-path ask, delivered before its recipient can reply. */
   onReplyTarget?: (sessionId: string) => void;
 }
@@ -1004,6 +1006,7 @@ export class IntercomClient extends EventEmitter {
 			transportTarget: to,
 			logicalSignature: buildSendSignature(options.logicalTarget ?? to, options),
 			requirePendingReply: options.requirePendingReply ?? false,
+			...(options.expectedRecipientId === undefined ? {} : { expectedRecipientId: options.expectedRecipientId }),
 		});
 		acquired = this.pendingSends.acquire(messageId, pendingSignature, 10000);
     } catch (error) {
@@ -1028,6 +1031,7 @@ export class IntercomClient extends EventEmitter {
 			to,
 			...(options.logicalTarget === undefined ? {} : { logicalTarget: options.logicalTarget }),
 			...(options.requirePendingReply === undefined ? {} : { requirePendingReply: options.requirePendingReply }),
+			...(options.expectedRecipientId === undefined ? {} : { expectedRecipientId: options.expectedRecipientId }),
       ...(options.onReplyTarget === undefined ? {} : { resolveReplyTarget: true as const }),
 			message,
 			attemptId: acquired.attempt.attemptId,

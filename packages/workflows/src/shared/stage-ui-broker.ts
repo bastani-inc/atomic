@@ -208,9 +208,9 @@ export class StageUiBroker {
 		options?: PiCustomOverlayOptions,
 		signal?: AbortSignal,
 	): Promise<T> {
-		if (options?.signal !== undefined) {
-			signal = signal === undefined ? options.signal : AbortSignal.any([signal, options.signal]);
-		}
+		// Session pause aborts the tool, not the stage (which remains resumable).
+		// Either owner must be able to dismiss its outstanding custom UI request.
+		signal = options?.signal ? (signal ? AbortSignal.any([signal, options.signal]) : options.signal) : signal;
 		if (signal?.aborted) {
 			return Promise.reject(signal.reason ?? new Error("atomic-workflows: stage UI request aborted"));
 		}

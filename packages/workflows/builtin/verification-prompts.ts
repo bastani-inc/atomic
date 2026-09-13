@@ -177,6 +177,7 @@ export async function warm_first_fan_out<K>(
 					inheritedConcurrency,
 				),
 				failFast: false,
+				possibleStageNames: options.possibleStageNames,
 			});
 			for (const [resultIndex, result] of warmResults.entries()) {
 				const originalIndex = warmIndices[resultIndex];
@@ -192,6 +193,7 @@ export async function warm_first_fan_out<K>(
 		const restResults = await ctx.parallel(restSteps, {
 			...parallelOptions,
 			concurrency: boundedConcurrency(restSteps.length, undefined, inheritedConcurrency),
+			possibleStageNames: options.possibleStageNames,
 		});
 		for (const [resultIndex, result] of restResults.entries()) {
 			const originalIndex = restIndices[resultIndex];

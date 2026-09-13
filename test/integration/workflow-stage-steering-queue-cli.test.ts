@@ -483,6 +483,7 @@ describe("issue #2074 — stage steering and queued-message state through the re
 	test("a node with nothing queued on it carries no badge", () => {
 		assert.equal(evidence.graphBeforeQueue.includes(STAGE_NAME), true);
 		assert.equal(evidence.graphBeforeQueue.includes("queued"), false);
+		assert.equal(evidence.graphBeforeQueue.includes("✉"), false);
 	});
 
 	test("the detached stage node badges the messages still queued on its session", () => {

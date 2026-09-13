@@ -190,10 +190,18 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 	 * and crossings produce stable orthogonal junctions instead of
 	 * stacked rounded corners.
 	 */
-	protected _plotEdge(canvas: GraphCanvas, px: number, py: number, cx: number, cy: number, color: string): void {
+	protected _plotEdge(
+		canvas: GraphCanvas,
+		px: number,
+		py: number,
+		cx: number,
+		cy: number,
+		color: string,
+		parentHeight = NODE_H,
+	): void {
 		const parentCol = px + Math.floor(NODE_W / 2);
 		const childCol = cx + Math.floor(NODE_W / 2);
-		const parentExitRow = py + NODE_H; // first row below parent's bottom border
+		const parentExitRow = py + parentHeight; // first row below parent's bottom border
 		const childEntryRow = cy - 1; // last row above child's top border
 		if (childEntryRow < parentExitRow) return;
 

@@ -2401,10 +2401,10 @@ test("an invocation controls pending and live delivery into an owned isolated st
 						);
 						const stageList = await executeIntercom(fixture, { action: "list" });
 						assert.equal(stageList.isError, false);
-						assert.match(stageList.content[0]?.text ?? "", /isolated-peer \([^)]+\)/);
+						assert.match(stageList.content[0]?.text ?? "", /^- `[^`]+` \[[^\n]+\].* name: isolated-peer$/m);
 						assert.doesNotMatch(stageList.content[0]?.text ?? "", /isolated-owner/);
 						const peerList = await executeIntercom(peer, { action: "list" });
-						assert.match(peerList.content[0]?.text ?? "", /isolated-stage \([^)]+\)/);
+						assert.match(peerList.content[0]?.text ?? "", /^- `[^`]+` \[[^\n]+\].* name: isolated-stage$/m);
 
 						const sent = await executeIntercom(fixture, {
 							action: "send",
@@ -2495,16 +2495,17 @@ test("an invocation controls pending and live delivery into an owned isolated st
 		assert.equal(store.runs()[0]?.stages[0]?.intercomGroup, isolatedGroup);
 		assert.equal(store.pendingStageMessagesFor(runId, "reviewer").length, 1);
 		assert.equal(backend.getWorkflow(runId)?.pendingStageMessages?.length, 1);
-		let roster: Array<{ target: string; group: string }> = [];
-		for (let attempt = 0; attempt < 20 && roster.length === 0; attempt += 1) {
-			const listed = await executeIntercom(workflowSender, { action: "list" });
-			if ((listed.content[0]?.text ?? "").includes(`target: \`workflow:${runId}/`)) {
-				roster = [{ target: `workflow:${runId}/${store.runs()[0]?.stages[0]?.id}`, group: isolatedGroup }];
-			}
-			if (roster.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
-		}
+		// PR #3018: list rows lead with the canonical target, not a trailing target label.
 		const stageTarget = `workflow:${runId}/${store.runs()[0]?.stages[0]?.id}`;
-		assert.deepEqual(roster, [{ target: stageTarget, group: isolatedGroup }]);
+		const pendingRow = `- \`${stageTarget}\` [PENDING] workflow stage: `;
+		let rosterText = "";
+		for (let attempt = 0; attempt < 20 && !rosterText.includes(pendingRow); attempt += 1) {
+			const listed = await executeIntercom(workflowSender, { action: "list" });
+			assert.equal(listed.isError, false);
+			rosterText = listed.content[0]?.text ?? "";
+			if (!rosterText.includes(pendingRow)) await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.ok(rosterText.includes(pendingRow), rosterText);
 
 		releaseStageInitialization.resolve();
 		await stageReadyForInvocationAsk.promise;
@@ -2875,7 +2876,7 @@ test("route-neutral store churn preserves durable queueing and live delivery for
 		const pendingList = await executeIntercom(sender, { action: "list" });
 		assert.equal(pendingList.isError, false);
 		assert.equal(
-			(pendingList.content[0]?.text ?? "").includes(`[PENDING] — target: \`${idTarget}\``),
+			(pendingList.content[0]?.text ?? "").includes(`- \`${idTarget}\` [PENDING] workflow stage: reviewer`),
 			true,
 			pendingList.content[0]?.text,
 		);

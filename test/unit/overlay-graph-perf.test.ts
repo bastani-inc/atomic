@@ -331,7 +331,8 @@ describe("GraphView many-stage performance (#2100)", () => {
 		const small = renderPairGraph(100);
 		const large = renderPairGraph(1_000);
 		for (const result of [small, large]) {
-			assert.equal(result.composed, 15); // NODE_H 5→6 (model row) adds one card row → +2 composed viewport rows
+			// Both card tiers and their three connector rows fit in the 16-row body.
+			assert.equal(result.composed, 2 * NODE_H + 3);
 			assert.ok(result.cards <= 8, `painted ${result.cards} cards`);
 			assert.ok(result.edges <= 4, `plotted ${result.edges} off-screen edges`);
 			assert.doesNotMatch(result.text, /root-50|child-50/);

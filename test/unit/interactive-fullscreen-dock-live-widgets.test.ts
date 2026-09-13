@@ -1,4 +1,4 @@
-import type { Component } from "@earendil-works/pi-tui";
+import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, expect, test, vi } from "vitest";
 import {
 	createProductionFullscreenContext,
@@ -7,7 +7,7 @@ import {
 } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { installStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.js";
+import { installStoreWidget, scrollStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.js";
 
 const BASE_NOW = 1_700_000_000_000;
 
@@ -137,5 +137,43 @@ test("keeps the workflow live widget rendered in the production sticky dock", as
 	} finally {
 		disposeWorkflowWidget();
 		now.mockRestore();
+	}
+});
+
+// #3015: exercise the real fullscreen dock's measurement, not just renderer rows.
+test("many workflow runs leave the editor usable through narrow and short resizes", async () => {
+	activeContext = createProductionFullscreenContext();
+	const { context, terminal, tui } = activeContext;
+	const store = createStore();
+	const dispose = installStoreWidget({ ui: makeHostUi(context) }, store, makeTimers());
+	try {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		for (let i = 0; i < 15; i++) store.recordRunStart(makeRun(`dock-${i}`, `dummy-${i}`, BASE_NOW + i));
+		await Promise.resolve();
+		tui.renderNow();
+		const mounted = context.extensionWidgetsBelow.get("workflow.run");
+		context.editor.setText("editor input retained");
+		for (const [width, rows] of [
+			[120, 40],
+			[27, 12],
+			[80, 12],
+			[79, 16],
+			[81, 24],
+			[27, 8],
+			[120, 40],
+		]) {
+			terminal.resize(width!, rows!);
+			tui.renderNow();
+			const frame = getLayoutFrame(tui);
+			expect(frame.lines.length).toBeLessThanOrEqual(rows!);
+			expect(frame.lines.every((line) => visibleWidth(line) <= width!)).toBe(true);
+			expect(frame.lines.some((line) => line.includes("editor input retained"))).toBe(true);
+			expect(context.extensionWidgetsBelow.get("workflow.run")).toBe(mounted);
+			scrollStoreWidget(store, 1);
+			tui.renderNow();
+			expect(getLayoutFrame(tui).lines.some((line) => line.includes("editor input retained"))).toBe(true);
+		}
+	} finally {
+		dispose();
 	}
 });

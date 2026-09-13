@@ -428,6 +428,8 @@ export interface WorkflowChainOptions extends WorkflowSharedTaskDefaults {
 export interface WorkflowParallelOptions extends WorkflowSharedTaskDefaults {
 	readonly concurrency?: number;
 	readonly failFast?: boolean;
+	/** Static discovery only: literal conservative stage names/globs for an otherwise opaque step array. */
+	readonly possibleStageNames?: readonly string[];
 }
 
 export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionFields;

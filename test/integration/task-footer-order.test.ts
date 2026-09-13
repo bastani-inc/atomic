@@ -63,7 +63,12 @@ test.each(["main", "stage", "engine-workflow-first", "engine-tasks-first"] as co
 								factory
 									? (tui, theme) => {
 											const widget = factory(tui, theme);
-											return { ...widget, invalidate: () => widget.invalidate?.() };
+											// #3015: viewport methods live on the prototype and need their receiver.
+											return {
+												render: (width) => widget.render(width),
+												invalidate: () => widget.invalidate?.(),
+												dispose: () => widget.dispose?.(),
+											};
 										}
 									: undefined,
 								{ placement: "belowEditor" },

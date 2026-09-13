@@ -107,7 +107,7 @@ describe("graph queued-message badge", () => {
 			},
 		});
 		const rendered = stripAnsi(view.render(120).join("\n"));
-		assert.match(rendered, /2 queued/);
+		assert.match(rendered, /✉ 2/);
 		assert.deepEqual(requests, [{ runId: "run-1", stageId: "stage-a" }]);
 		view.dispose();
 	});
@@ -122,7 +122,7 @@ describe("graph queued-message badge", () => {
 			graphTheme: deriveGraphTheme({}),
 			getStageQueuedMessageCount: () => 0,
 		});
-		assert.doesNotMatch(stripAnsi(view.render(120).join("\n")), /queued/);
+		assert.doesNotMatch(stripAnsi(view.render(120).join("\n")), /✉/);
 		view.dispose();
 	});
 
@@ -226,24 +226,24 @@ describe("WorkflowAttachPane queued-message badge", () => {
 			stageControlRegistry: registry,
 			onClose: () => {},
 		});
-		assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /queued/);
+		assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /✉/);
 
 		emit({ type: "queue_update", steering: ["redirect"], followUp: [] } as unknown as AgentSessionEvent);
-		assert.match(stripAnsi(pane.render(120).join("\n")), /1 queued/);
+		assert.match(stripAnsi(pane.render(120).join("\n")), /✉ 1/);
 
 		emit({
 			type: "queue_update",
 			steering: ["redirect"],
 			followUp: ["afterwards"],
 		} as unknown as AgentSessionEvent);
-		assert.match(stripAnsi(pane.render(120).join("\n")), /2 queued/);
+		assert.match(stripAnsi(pane.render(120).join("\n")), /✉ 2/);
 
 		// Consumption publishes a reduced snapshot before the user message starts.
 		emit({ type: "queue_update", steering: [], followUp: ["afterwards"] } as unknown as AgentSessionEvent);
-		assert.match(stripAnsi(pane.render(120).join("\n")), /1 queued/);
+		assert.match(stripAnsi(pane.render(120).join("\n")), /✉ 1/);
 
 		emit({ type: "queue_update", steering: [], followUp: [] } as unknown as AgentSessionEvent);
-		assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /queued/);
+		assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /✉/);
 		pane.dispose();
 	});
 
@@ -259,7 +259,7 @@ describe("WorkflowAttachPane queued-message badge", () => {
 			stageControlRegistry: registry,
 			onClose: () => {},
 		});
-		assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /queued/);
+		assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /✉/);
 		pane.dispose();
 	});
 });

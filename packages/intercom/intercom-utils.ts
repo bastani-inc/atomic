@@ -407,14 +407,15 @@ export function formatSessionLabel(session: SessionInfo, duplicates: Set<string>
     : session.name;
 }
 export function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: boolean): string {
-  const name = session.name || "Unnamed session";
+  const name = session.name && session.name !== session.id && session.name !== resolveIntercomPresenceName(undefined, session.id)
+    ? ` name: ${session.name}` : "";
   const normalizedGroup = normalizeGroup(session.group);
   const groupTag = normalizedGroup !== DEFAULT_GROUP ? `group: ${normalizedGroup}` : undefined;
   const capabilityTag = session.replyCapability === undefined ? undefined : `replyCapability: ${session.replyCapability}`;
   const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, session.status, capabilityTag, groupTag]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
-  return `• ${name} (${session.id}) — ${session.cwd} (${session.model})${suffix}`;
+  return `- \`${session.id}\`${suffix} ${session.cwd} (${session.model})${name}`;
 }
 export function previewText(value: unknown, maxLength = 72): string | undefined {
   if (typeof value !== "string") {

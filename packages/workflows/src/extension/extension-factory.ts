@@ -7,7 +7,7 @@ import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
-import { installStoreWidget, installToolExecutionHooks } from "../tui/store-widget-installer.js";
+import { installStoreWidget, installToolExecutionHooks, scrollStoreWidget } from "../tui/store-widget-installer.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
@@ -56,6 +56,14 @@ function registerWorkflowShortcut(pi: ExtensionAPI, overlay: GraphOverlayPort): 
 	pi.registerShortcut("F2", {
 		description: "Open workflow orchestrator pane",
 		handler: openPane,
+	});
+	pi.registerShortcut("alt+pageUp", {
+		description: "Scroll background workflows up",
+		handler: () => scrollStoreWidget(store, -1),
+	});
+	pi.registerShortcut("alt+pageDown", {
+		description: "Scroll background workflows down",
+		handler: () => scrollStoreWidget(store, 1),
 	});
 }
 

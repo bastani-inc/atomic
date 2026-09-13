@@ -798,6 +798,114 @@ function collectDefinitionName(
 	return undefined;
 }
 
+/** Explicit metadata is intentionally literal and call-scoped, not a warning override. */
+function discoveryField(object: readonly Token[] | undefined): readonly Token[] | undefined {
+	if (object?.[0]?.value !== "{" || object.at(-1)?.value !== "}") return undefined;
+	let value: readonly Token[] | undefined;
+	for (const field of arrayElements(object)) {
+		// Accessors and prefixed methods can replace a data property just like computed keys.
+		let key = field;
+		while (["get", "set", "async", "*"].includes(key[0]?.value ?? "")) key = key.slice(1);
+		if (key[0]?.value === "[" || (key !== field && key[0]?.value === "possibleStageNames")) return undefined;
+		if (field[0]?.value === ".") {
+			if (value !== undefined) return undefined;
+			continue;
+		}
+		if (field[0]?.value !== "possibleStageNames") continue;
+		if (value !== undefined || field[1]?.value !== ":") return undefined;
+		value = field.slice(2);
+	}
+	return value;
+}
+
+function literalDiscoveryNames(value: readonly Token[] | undefined): readonly string[] | undefined {
+	if (value?.[0]?.value !== "[" || value.at(-1)?.value !== "]") return undefined;
+	const names: string[] = [];
+	for (const element of arrayElements(value)) {
+		if (element.length !== 1 || element[0]?.kind !== "string") return undefined;
+		names.push(element[0].value);
+	}
+	return names.length > 0 ? names : undefined;
+}
+
+interface DiscoveryHelper {
+	readonly name: string;
+	readonly nameIndex: number;
+	readonly params: readonly (readonly Token[])[];
+	readonly bodyOpen: number;
+	readonly bodyClose: number;
+	readonly declaration: boolean;
+}
+
+/** Named declarations only. Arrow helpers and further forwarding remain unsupported. */
+function discoveryHelpers(tokens: readonly Token[]): DiscoveryHelper[] {
+	const helpers: DiscoveryHelper[] = [];
+	for (let index = 0; index < tokens.length; index += 1) {
+		if (tokens[index]?.value !== "function" || tokens[index + 1]?.kind !== "ident") continue;
+		let open = index + 2;
+		if (tokens[open]?.value === "<") open = (matchBracket(tokens, open, "<", ">") ?? tokens.length) + 1;
+		if (tokens[open]?.value !== "(") continue;
+		const close = matchBracket(tokens, open, "(", ")");
+		if (close === undefined) continue;
+		let bodyOpen = close + 1;
+		while (bodyOpen < tokens.length && tokens[bodyOpen]?.value !== "{") bodyOpen += 1;
+		const bodyClose = matchBracket(tokens, bodyOpen, "{", "}");
+		if (bodyClose === undefined) continue;
+		const preceding = tokens[index - (tokens[index - 1]?.value === "async" ? 2 : 1)]?.value;
+		helpers.push({
+			name: tokens[index + 1]!.value,
+			nameIndex: index + 1,
+			params: splitTopLevelArguments({ method: "parallel", argsOpen: open }, tokens),
+			bodyOpen,
+			bodyClose,
+			declaration: preceding === undefined || ["export", ";", "{", "}"].includes(preceding),
+		});
+	}
+	return helpers;
+}
+
+/** An enclosing destructuring target can write a property far from its assignment token. */
+function hasDiscoveryDestructuringWrite(tokens: readonly Token[], parameter: string): boolean {
+	for (let index = 0; index < tokens.length; index += 1) {
+		const open = tokens[index]?.value;
+		if (open !== "[" && open !== "{") continue;
+		const close = matchBracket(tokens, index, open, open === "[" ? "]" : "}");
+		if (close === undefined || !["=", "of", "in"].includes(tokens[close + 1]?.value ?? "")) continue;
+		if (tokens.slice(index + 1, close).some((token) => token.kind === "ident" && token.value === parameter))
+			return true;
+	}
+	return false;
+}
+
+/** Fail closed on aliases, rebindings and shadowed names rather than borrowing another scope's metadata. */
+function discoveryCalls(tokens: readonly Token[], name: string, declaration?: number): number[] | undefined {
+	const calls: number[] = [];
+	for (let index = 0; index < tokens.length; index += 1) {
+		if (tokens[index]?.value === "import") {
+			while (index < tokens.length && tokens[index]?.kind !== "string") index += 1;
+			continue;
+		}
+		if (tokens[index]?.value === "export" && tokens[index + 1]?.value === "{") {
+			const close = matchBracket(tokens, index + 1, "{", "}") ?? tokens.length;
+			const exported = tokens.slice(index + 2, close);
+			if (
+				exported.some(
+					(token, offset) =>
+						token.value === name && (declaration === undefined || exported[offset + 1]?.value === "as"),
+				)
+			)
+				return undefined;
+			index = close;
+			continue;
+		}
+		if (tokens[index]?.kind !== "ident" || tokens[index]?.value !== name || index === declaration) continue;
+		if (tokens[index + 1]?.value !== "(" || [".", "?.", "function"].includes(tokens[index - 1]?.value ?? ""))
+			return undefined;
+		calls.push(index + 1);
+	}
+	return calls;
+}
+
 // ---------------------------------------------------------------------------
 // Scanner
 // ---------------------------------------------------------------------------
@@ -811,6 +919,7 @@ class PossibleStagesScanner {
 	/** Context-like aliases (e.g. `designContext`) seen anywhere in this scan, so helper
 	 * modules that receive the context under another name still resolve its stage calls. */
 	private readonly aliasPool = new Set<string>();
+	private closure: readonly string[] = [];
 
 	constructor(maxDepth: number) {
 		this.maxDepth = maxDepth;
@@ -861,10 +970,16 @@ class PossibleStagesScanner {
 				this.aliasPool.add(alias);
 			}
 		}
-		for (const path of ordered) {
-			const unit = this.units.get(path);
-			if (unit === undefined) continue;
-			this.scanUnit(unit, path, boundaryPrefix, depth, ancestorStack);
+		const previousClosure = this.closure;
+		this.closure = ordered;
+		try {
+			for (const path of ordered) {
+				const unit = this.units.get(path);
+				if (unit === undefined) continue;
+				this.scanUnit(unit, path, boundaryPrefix, depth, ancestorStack);
+			}
+		} finally {
+			this.closure = previousClosure;
 		}
 	}
 
@@ -1024,8 +1139,164 @@ class PossibleStagesScanner {
 		return resolveRelativeSpecifier(specifier, importingFile);
 	}
 
+	/** Caller options must expose ordinary own data fields, not executable members or a custom prototype. */
+	private hasDataOnlyDiscoveryOptions(argument: readonly Token[] | undefined): boolean {
+		if (argument?.[0]?.value !== "{" || argument.at(-1)?.value !== "}") return false;
+		return arrayElements(argument).every(
+			(field) =>
+				(field[0]?.kind === "ident" || field[0]?.kind === "string") &&
+				field[0].value !== "__proto__" &&
+				field[1]?.value === ":",
+		);
+	}
+
+	private discoveryNames(call: CtxCall, unit: FileUnit, path: string): readonly string[] | undefined {
+		if (call.method !== "parallel") return undefined;
+		const value = discoveryField(splitTopLevelArguments(call, unit.tokens)[1]);
+		const literal = literalDiscoveryNames(value);
+		if (literal !== undefined) return literal;
+		if (
+			value?.length !== 3 ||
+			value[0]?.kind !== "ident" ||
+			value[1]?.value !== "." ||
+			value[2]?.value !== "possibleStageNames"
+		)
+			return undefined;
+		const owner = discoveryHelpers(unit.tokens)
+			.filter((helper) => helper.bodyOpen < call.argsOpen && helper.bodyClose > call.argsOpen)
+			.at(-1);
+		if (owner === undefined || !owner.declaration) return undefined;
+		const parameter = owner.params.findIndex((param) => param[0]?.value === value[0]?.value);
+		if (parameter < 0) return undefined;
+		// Parameter initializers execute before the body. Only inert defaults are supported.
+		for (const param of owner.params) {
+			if (param[0]?.kind !== "ident") return undefined;
+			const assignment = param.findIndex((token) => token.value === "=");
+			if (assignment < 0) continue;
+			const initial = param.slice(assignment + 1);
+			const emptyObject = initial.length === 2 && initial[0]?.value === "{" && initial[1]?.value === "}";
+			const scalar =
+				initial.length === 1 &&
+				(initial[0]?.kind === "string" || ["true", "false", "null", "undefined"].includes(initial[0]?.value ?? ""));
+			if (!emptyObject && !scalar) return undefined;
+		}
+		// A property read may be repeated, but rebinding/shadowing the options parameter is not supported.
+		const body = unit.tokens.slice(owner.bodyOpen, owner.bodyClose);
+		// The arguments object exposes parameter aliases outside the supported named forwarding shape.
+		if (body.some((token) => token.kind === "ident" && token.value === "arguments")) return undefined;
+		if (hasDiscoveryDestructuringWrite(body, value[0].value)) return undefined;
+		// Only direct parallel-option forwarding is proven safe; aliases, escapes and
+		// chained array operations can mutate the caller's literal metadata.
+		const forwarded = new Set<Token>();
+		const spreadOptions = new Set<Token>();
+		for (let index = 0; index < body.length; index += 1) {
+			const parallel = matchCtxCall(body, index, this.aliasPool);
+			if (parallel?.method !== "parallel") continue;
+			const parallelOptions = splitTopLevelArguments(parallel, body)[1];
+			const field = discoveryField(parallelOptions);
+			if (parallelOptions?.[0]?.value === "{") {
+				for (const entry of arrayElements(parallelOptions)) {
+					if (entry.length === 4 && entry.slice(0, 3).every((token) => token.value === "."))
+						spreadOptions.add(entry[3]!);
+				}
+			}
+			if (
+				field?.length === 3 &&
+				field[0]?.value === value[0].value &&
+				field[1]?.value === "." &&
+				field[2]?.value === "possibleStageNames"
+			)
+				forwarded.add(field[0]);
+		}
+		for (let index = 0; index < body.length; index += 1) {
+			if (body[index]?.value !== value[0]?.value) continue;
+			if (body[index + 2]?.value === "possibleStageNames" && !forwarded.has(body[index]!)) return undefined;
+			const destructured =
+				body[index - 2]?.value === "}" && body[index - 1]?.value === "=" && body[index + 1]?.value === ";";
+			if (destructured) {
+				let matched = false;
+				for (let open = 0; open < index - 2; open += 1) {
+					if (body[open]?.value !== "{" || matchBracket(body, open, "{", "}") !== index - 2) continue;
+					if (body[open - 1]?.value !== "const") return undefined;
+					matched = true;
+					for (const entry of arrayElements(body.slice(open, index - 1))) {
+						if (entry.length === 1 && entry[0]?.kind === "ident" && entry[0].value !== "possibleStageNames")
+							continue;
+						// A rest copy still aliases the metadata array. Only inert concurrency
+						// extraction and direct parallel-option spreads are supported uses.
+						if (
+							entry.length !== 4 ||
+							!entry.slice(0, 3).every((token) => token.value === ".") ||
+							entry[3]?.kind !== "ident"
+						)
+							return undefined;
+						const rest = entry[3];
+						for (let use = 0; use < body.length; use += 1) {
+							const token = body[use];
+							if (token?.kind !== "ident" || token.value !== rest.value || token === rest) continue;
+							if (spreadOptions.has(token)) continue;
+							if (
+								body[use - 3]?.value === "const" &&
+								body[use - 2]?.kind === "ident" &&
+								body[use - 1]?.value === "=" &&
+								body[use + 1]?.value === "." &&
+								body[use + 2]?.value === "concurrency" &&
+								body[use + 3]?.value === ";"
+							)
+								continue;
+							return undefined;
+						}
+					}
+				}
+				if (!matched) return undefined;
+			}
+			// Support only the two authored shapes: direct metadata forwarding and
+			// destructuring plain caller fields. Other member uses may execute or escape.
+			if (!destructured && !forwarded.has(body[index]!)) return undefined;
+		}
+		const names: string[] = [];
+		for (const callerPath of this.closure) {
+			const caller = this.units.get(callerPath);
+			if (caller === undefined) continue;
+			if (
+				[...caller.imports.values()].some(
+					(binding) =>
+						binding.importedName === undefined &&
+						resolveRelativeSpecifier(binding.specifier, callerPath) === path,
+				)
+			)
+				return undefined;
+			const references =
+				callerPath === path
+					? [owner.name]
+					: [...caller.imports]
+							.filter(
+								([, binding]) =>
+									binding.importedName === owner.name &&
+									resolveRelativeSpecifier(binding.specifier, callerPath) === path,
+							)
+							.map(([local]) => local);
+			for (const reference of references) {
+				const calls = discoveryCalls(caller.tokens, reference, callerPath === path ? owner.nameIndex : undefined);
+				if (calls === undefined) return undefined;
+				for (const argsOpen of calls) {
+					const argument = splitTopLevelArguments({ method: "parallel", argsOpen }, caller.tokens)[parameter];
+					if (!this.hasDataOnlyDiscoveryOptions(argument)) return undefined;
+					const declared = literalDiscoveryNames(discoveryField(argument));
+					if (declared === undefined) return undefined;
+					names.push(...declared);
+				}
+			}
+		}
+		// Importing a module for another export does not invoke this annotated helper.
+		// Every reference above was checked; an opaque caller would already have bailed out.
+		return names.length > 0 || this.closure[0] !== path ? names : undefined;
+	}
+
 	/** Step `name:` patterns for a `chain`/`parallel` call's first argument. */
 	private stepNamesForStepsCall(call: CtxCall, unit: FileUnit, path: string): readonly string[] {
+		const declared = this.discoveryNames(call, unit, path);
+		if (declared !== undefined) return declared;
 		const first = firstArgumentTokens(call, unit.tokens);
 		if (first === undefined || first.length === 0) return [];
 		const head = first[0]!;

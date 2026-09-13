@@ -23,6 +23,9 @@ export interface LiveStageMutableState {
 	chatAnswerObservedThisTurn: boolean;
 	resumeContinuationPending: false | ResumeContinuationReason;
 	suppressQueuedUserMessageContinuation: boolean;
+	/** Transient readiness attempt, cancelled by stage pause without aborting the stage lifetime. */
+	readinessController?: AbortController;
+	readinessPauseVersion?: number;
 	waitingForStageChatTurn: boolean;
 	/** Wakes the executor so a paused idle stage-chat can drain released work. */
 	wakeWaitingForStageChatTurn: (() => void) | undefined;

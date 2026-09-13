@@ -58,22 +58,23 @@ export class ReplyTracker {
 
 	resolveReplyTarget(options: { to?: string; replyTo?: string }, now = Date.now()): IntercomContext {
 		this.pruneExpired(now);
-		if (options.replyTo) {
-			const exact = this.pendingAsks.get(options.replyTo);
-			if (exact) {
-				if (options.to) {
-					const resolution = resolveSessionTarget([exact.from], options.to);
-					if (resolution.kind !== "resolved") throw new Error(`Pending ask "${options.replyTo}" is not from "${options.to}"`);
-				}
-				return exact;
+		if (options.replyTo !== undefined) {
+			const exact = this.pendingAsks.get(options.replyTo) ??
+				(this.currentTurnContext?.message.id === options.replyTo && !this.currentTurnContext.message.expectsReply
+					? this.currentTurnContext : undefined);
+			if (!exact) throw new Error(`No reply context for "${options.replyTo}"`);
+			if (options.to !== undefined) {
+				const resolution = resolveSessionTarget([exact.from], options.to);
+				if (resolution.kind !== "resolved") throw new Error(`Reply context "${options.replyTo}" is not from "${options.to}"`);
 			}
+			return exact;
 		}
-    if (this.currentTurnContext) {
+    if (options.to === undefined && this.currentTurnContext) {
       return this.currentTurnContext;
     }
 
     const pending = Array.from(this.pendingAsks.values());
-    if (options.to) {
+    if (options.to !== undefined) {
       const senders = [...new Map(
         pending.map((context) => [context.from.id, context.from] as const),
       ).values()];

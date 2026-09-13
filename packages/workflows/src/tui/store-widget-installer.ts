@@ -48,7 +48,15 @@ import {
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
-import { buildThemedWidgetLines, nextWidgetRefreshDelayMs } from "./widget.js";
+import { buildThemedWidgetLines, nextWidgetRefreshDelayMs, type WorkflowWidgetRowLayout } from "./widget.js";
+import { WorkflowWidgetViewport } from "./widget-viewport.js";
+
+const widgetViewports = new WeakMap<Store, WorkflowWidgetViewport>();
+
+/** Routed by extension shortcuts, including across the isolated-engine bridge. */
+export function scrollStoreWidget(storeInstance: Store, direction: -1 | 1): void {
+	widgetViewports.get(storeInstance)?.scroll(direction);
+}
 
 export interface PiTheme {
 	fg(color: string, text: string): string;
@@ -122,9 +130,30 @@ export function installStoreWidget(
 
 	const requestRender = ui.requestRender;
 	const onWidgetRelease = ui.onWidgetRelease;
+	const layout: WorkflowWidgetRowLayout = { runs: [] };
 	const controller = installReactiveWidget<StoreSnapshot, unknown>({
 		ui: {
-			setWidget: (key, factory, opts) => setWidget.call(ui, key, factory, opts),
+			setWidget: (key, factory, opts) => {
+				if (!factory) widgetViewports.delete(storeInstance);
+				setWidget.call(
+					ui,
+					key,
+					factory
+						? (tui, theme) => {
+								const host = tui as { terminal?: { rows: number }; requestRender?: () => void } | undefined;
+								const viewport = new WorkflowWidgetViewport(
+									factory(tui, theme),
+									() => host?.terminal?.rows ?? 30,
+									() => (requestRender ? requestRender.call(ui) : host?.requestRender?.()),
+									() => layout.runs,
+								);
+								widgetViewports.set(storeInstance, viewport);
+								return viewport;
+							}
+						: undefined,
+					opts,
+				);
+			},
 			...(requestRender ? { requestRender: () => requestRender.call(ui) } : {}),
 			...(onWidgetRelease ? { onWidgetRelease: (key, listener) => onWidgetRelease.call(ui, key, listener) } : {}),
 		},
@@ -134,7 +163,8 @@ export function installStoreWidget(
 		getSnapshot: () => liveWidgetSnapshot(storeInstance),
 		subscribe: (listener) => subscribeStoreInvalidation(storeInstance, listener),
 		getPreviewLines: (snap, now) => buildThemedWidgetLines(snap, undefined, 120, now),
-		render: (snap, { theme, width, now }) => buildThemedWidgetLines(snap, theme as PiTheme | undefined, width, now),
+		render: (snap, { theme, width, now }) =>
+			buildThemedWidgetLines(snap, theme as PiTheme | undefined, width, now, layout),
 		getNextRefreshDelayMs: (snap, now) => nextWidgetRefreshDelayMs(snap, now),
 		// #1856: a store mutation that leaves the rendered card byte-identical
 		// must not broadcast a host-wide render (each one becomes terminal
@@ -146,7 +176,10 @@ export function installStoreWidget(
 		},
 	});
 
-	return () => controller.dispose();
+	return () => {
+		widgetViewports.delete(storeInstance);
+		controller.dispose();
+	};
 }
 
 interface ToolExecutionStartPayload {

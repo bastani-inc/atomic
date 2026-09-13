@@ -43,6 +43,58 @@ function setupStage() {
 }
 
 describe("StageUiBroker", () => {
+	test.each(["request", "stage", "request-only", "pre-request", "pre-stage", "during-show"] as const)(
+		"custom UI observes %s cancellation without resolving an answer",
+		async (mode) => {
+			const { broker, store } = setupStage();
+			const stage = new AbortController();
+			const request = new AbortController();
+			const reason = new Error(mode);
+			let shown: StageCustomUiRequest | undefined;
+			let hidden = 0;
+			let answers = 0;
+			const options = { overlay: true, signal: request.signal };
+			broker.onStagePromptResolved(() => {
+				answers++;
+			});
+			broker.registerHost("run-1", "stage-1", {
+				showCustomUi(value) {
+					shown = value;
+					assert.equal(value.options, options, "forward raw options unchanged");
+					if (mode === "during-show") request.abort(reason);
+				},
+				hideCustomUi() {
+					hidden++;
+				},
+			});
+			if (mode === "pre-request") request.abort(reason);
+			if (mode === "pre-stage") stage.abort(reason);
+			const pending = broker.requestCustomUi(
+				"run-1",
+				"stage-1",
+				() => ({ render: () => [] }),
+				options,
+				mode === "request-only" ? undefined : stage.signal,
+			);
+			const rejected = assert.rejects(pending, (error) => error === reason);
+			if (mode === "stage") stage.abort(reason);
+			else request.abort(reason);
+			await rejected;
+			assert.equal(hidden, mode.startsWith("pre-") ? 0 : 1);
+			assert.equal(shown === undefined, mode.startsWith("pre-"));
+			assert.equal(store.runs()[0]?.stages[0]?.status, "running");
+			assert.equal(answers, 0);
+			if (shown) broker.resolve(shown, "late answer");
+			assert.equal(answers, 0);
+			// A fresh prompt is not poisoned by an old signal or a late callback.
+			broker.registerHost("run-1", "stage-1", {
+				showCustomUi(value) {
+					broker.resolve(value, "ordinary");
+				},
+			});
+			assert.equal(await broker.requestCustomUi("run-1", "stage-1", () => ({ render: () => [] })), "ordinary");
+		},
+	);
 	test("uses collision-resistant request ids", async () => {
 		const { broker } = setupStage();
 		let requestId = "";

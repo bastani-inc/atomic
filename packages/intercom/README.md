@@ -57,7 +57,7 @@ A session becomes intercom-connected when all of these are true:
 
 The session list, ALT+M picker, and group counts include connected agent sessions only. Internal workflow routing/control connections, model-less `ctx.ui` prompts, and `ctx.tool` nodes are hidden and cannot receive ordinary messages, even by a known ID or through a supervisor route. This includes run-level prompts and retained completed synthetic prompt stages. An agent executing a tool, including `tool:workflow`, or awaiting human input remains visible and messageable.
 
-If a session is unnamed, intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d-1111-4222-8333-123456789abc` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers can keep showing the transcript snippet instead of a generic `session-...` name.
+Unnamed sessions retain a runtime-only alias such as `subagent-chat-1a2b3c4d-1111-4222-8333-123456789abc` for name lookup. Agent lists omit this redundant alias and lead with the copyable full session ID. Meaningful names remain secondary metadata; resume titles are unchanged.
 
 ## Quick Start
 
@@ -76,10 +76,10 @@ The agent can list sessions and send messages using the `intercom` tool. Tool ca
 ```typescript
 // List active sessions
 intercom({ action: "list" })
-// → **Current session:**
-// → • executor (20d43841-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [self, idle]
-// → **Other sessions:**
-// → • research (6332faab-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
+// → **Current session** (groups: default):
+// → - `20d43841-1111-4222-8333-123456789abc` [self, idle] ~/projects/api (claude-sonnet-4) name: executor
+// → **Other visible sessions and workflow stages:**
+// → - `6332faab-1111-4222-8333-123456789abc` [same cwd, thinking] ~/projects/api (claude-sonnet-4) name: research
 
 // Add a named membership (it is created if no session is there yet)
 intercom({ action: "join", group: "api-review" })
@@ -156,7 +156,7 @@ Verify they see each other from either session:
 
 ```typescript
 intercom({ action: "list" })
-// → • worker — ~/projects/api (claude-sonnet-4) [idle]
+// → - `6332faab-1111-4222-8333-123456789abc` [same cwd, idle] ~/projects/api (claude-sonnet-4) name: worker
 ```
 
 ### The Conversation
@@ -383,7 +383,7 @@ When multiple live agent stages share a name, `ask` refuses the ambiguous target
 
 **`ask`** — Sends a message and waits for a live recipient to reply (10-minute timeout). Invocation control supports a live ask into an owned isolated subgroup, and the exact broker-recorded reply resolves the waiting tool call at the asker without opening reverse or lateral group access. Ask to an uninitialized stage remains refused with `pending_stage_ask_unsupported`; use queued `send` instead, because holding a reply waiter until a stage eventually starts would be unbounded. A recipient disconnect after live delivery fails only that peer's exact wait promptly; the timeout remains the backstop while the recipient stays connected. Up to `maxPendingAsks` blocking asks (default: 6) may run concurrently, including same-target and mixed-target fan-out. Replies resolve by exact sender and message ID, so out-of-order replies cannot cross-settle another call. When capacity is full, new asks receive a structured refusal.
 
-**`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass an exact name/full session ID in `to`, or the listed message ID in `replyTo`; use `pending` to inspect them first. `replyTo` also disambiguates multiple asks from the same sender. Under the hood this is still a normal `send` with the exact `replyTo` value.
+**`reply`** without selectors replies to the current intercom-triggered message, or otherwise the single unresolved inbound ask. Explicit `to` selects a pending ask from that exact name/full session ID, even during another sender's turn. If that sender has multiple asks, use `pending` and pass the exact message ID as `replyTo`. Explicit `replyTo` selects only that pending ask or the exact active ordinary message; stale, unknown, or empty IDs fail instead of falling back. When both selectors are supplied, the sender must match the selected thread. A successful reply keeps that sender/thread pair across internal retries.
 
 **`pending`** — Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. Useful when replying after the original triggered turn.
 

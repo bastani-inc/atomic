@@ -81,10 +81,10 @@ The agent can list sessions and send messages using the `intercom` tool. Tool ca
 ```typescript
 // List active sessions
 intercom({ action: "list" })
-// → **Current session:**
-// → • executor (20d43841-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [self, idle]
-// → **Other sessions:**
-// → • research (6332faab-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
+// → **Current session** (groups: default):
+// → - `20d43841-1111-4222-8333-123456789abc` [self, idle] ~/projects/api (claude-sonnet-4) name: executor
+// → **Other visible sessions and workflow stages:**
+// → - `6332faab-1111-4222-8333-123456789abc` [same cwd, thinking] ~/projects/api (claude-sonnet-4) name: research
 
 // Send a message
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })

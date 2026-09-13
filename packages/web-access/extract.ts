@@ -145,12 +145,14 @@ export async function extractContent(
 		return { url, title: "", content: "", error: "Aborted" };
 	}
 
-	const frameResult = await extractRequestedFrames(url, options, signal);
-	if (frameResult) return frameResult;
-
 	const localVideo = safeVideoInfo(url);
 	if (localVideo.error) {
 		return { url, title: "", content: "", error: localVideo.error };
+	}
+	// Batch options apply per input: stray video options must not block ordinary URLs.
+	if (localVideo.info || isYouTubeURL(url).isYouTube) {
+		const frameResult = await extractRequestedFrames(url, options, signal);
+		if (frameResult) return frameResult;
 	}
 	if (localVideo.info) {
 		try {

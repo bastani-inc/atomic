@@ -664,7 +664,11 @@ test("a running workflow stage regains list visibility and both route aliases af
 
 		const baselineList = await sender.execute({ action: "list" });
 		assert.equal(baselineList.isError, false);
-		assert.match(baselineList.content[0]?.text ?? "", new RegExp(`workflow stage \\[RUNNING\\].*${stageTarget}`));
+		assert.ok(
+			(baselineList.content[0]?.text ?? "").includes(
+				`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``,
+			),
+		);
 		for (const target of [stageTarget, stageNameTarget]) {
 			const sent = await sender.execute({ action: "send", to: target, message: `baseline to ${target}` });
 			assert.equal(sent.details.delivered, true, `baseline send to ${target} must be delivered live`);
@@ -691,9 +695,9 @@ test("a running workflow stage regains list visibility and both route aliases af
 		const recoveredList = await waitFor("the stage to return to the intercom roster", async () => {
 			const listed = await sender.execute({ action: "list" });
 			const text = listed.content[0]?.text ?? "";
-			return text.includes(`target: \`${stageTarget}\``) && text.includes("intercom session:") ? text : undefined;
+			return text.includes(`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``) ? text : undefined;
 		});
-		assert.match(recoveredList, new RegExp(`workflow stage \\[RUNNING\\].*${stageTarget}`));
+		assert.ok(recoveredList.includes(`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``));
 		assert.equal(forced.failures(), 1, "exactly one stage reconnect attempt must have been forced to fail");
 		assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
 

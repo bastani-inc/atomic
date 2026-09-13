@@ -6,6 +6,7 @@
  */
 
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { describe, test } from "vitest";
 import type { RunDetail } from "../../packages/workflows/src/runs/background/status.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/status.js";
@@ -14,6 +15,7 @@ import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/sh
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
+import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -114,6 +116,64 @@ describe("inspectRun", () => {
 // renderRunDetail
 // ---------------------------------------------------------------------------
 
+// Issue #3008: set TZ only on a fresh process, never on a parallel test worker.
+for (const [tz, startedAt, started, ended] of [
+	["UTC", 1789202285073, "08:38:05", "08:38:57"],
+	["Europe/Zurich", 1789202285073, "10:38:05", "10:38:57"],
+	["Europe/Zurich", Date.parse("2026-01-12T08:38:05.073Z"), "09:38:05", "09:38:57"],
+	["Asia/Kathmandu", 1789202285073, "14:23:05", "14:23:57"],
+	// Spring-forward changes wall-clock hours, not the 52-second elapsed interval.
+	["Europe/Zurich", Date.parse("2026-03-29T00:59:30.000Z"), "01:59:30", "03:00:22"],
+] as const) {
+	test(`run detail uses system local time in ${tz} at ${startedAt}`, () => {
+		const originalTZ = process.env.TZ;
+		const renderer = fileURLToPath(new URL("../../packages/workflows/src/tui/run-detail.ts", import.meta.url));
+		const themes = fileURLToPath(new URL("../../packages/workflows/src/tui/graph-theme.ts", import.meta.url));
+		const details = [
+			detailFromRun(makeRun({ startedAt })),
+			detailFromRun(makeRun({ startedAt, status: "paused", pausedAt: startedAt + 32_000 })),
+			detailFromRun(makeRun({ startedAt, status: "completed", endedAt: startedAt + 52_000 })),
+			detailFromRun(makeRun({ startedAt, status: "failed", endedAt: startedAt + 52_000, durationMs: 42_000 })),
+		];
+		const child = spawnSyncCollect(
+			[
+				bunExecutable(),
+				"-e",
+				`
+			import { renderRunDetail } from ${JSON.stringify(renderer)};
+			import { deriveGraphTheme } from ${JSON.stringify(themes)};
+			const details = ${JSON.stringify(details)};
+			const output = details.map(detail => [undefined, deriveGraphTheme({})].map(theme =>
+				renderRunDetail(detail, { theme, width: 100, now: ${startedAt + 52_000} })));
+			console.log(JSON.stringify({ output, details }));
+		`,
+			],
+			{ env: { ...process.env, TZ: tz } },
+		);
+		assert.equal(child.exitCode, 0, child.stderr.toString());
+		const result = JSON.parse(child.stdout.toString()) as { output: string[][]; details: RunDetail[] };
+		assert.deepEqual(
+			result.details,
+			JSON.parse(JSON.stringify(details)),
+			"rendering preserves raw timestamps and duration",
+		);
+		for (const [index, outputs] of result.output.entries()) {
+			for (const output of outputs) {
+				const plain = stripAnsi(output);
+				assert.match(plain, new RegExp(`started\\s+${started}\\s`));
+				if (index < 2) {
+					assert.doesNotMatch(plain, /ended\s/);
+					assert.match(plain, new RegExp(`elapsed\\s+${index === 0 ? 52 : 32}s\\s`));
+				} else {
+					assert.match(plain, new RegExp(`ended\\s+${ended}\\s`));
+					assert.match(plain, new RegExp(`duration\\s+${index === 2 ? 52 : 42}s\\s`));
+				}
+			}
+		}
+		assert.equal(process.env.TZ, originalTZ);
+	});
+}
+
 // PR #2973: the resumable action must not be described as cancellation.
 test("active run detail labels its pause action consistently across rendering modes", () => {
 	const detail = detailFromRun(makeRun({ id: "aaaaaaaa-1111-4111-8111-111111111111" }));
@@ -193,7 +253,8 @@ describe("renderRunDetail — themed", () => {
 	});
 
 	test("ended non-resumable run offers read-only inspection and reports duration", () => {
-		const now = 1_000_000;
+		// Local wall-clock fixture; the explicit TZ regressions above fix the offsets.
+		const now = new Date(2026, 0, 12, 0, 16, 40).getTime();
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const detail = detailFromRun(
 			makeRun({

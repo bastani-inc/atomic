@@ -321,3 +321,38 @@ test("a host release remounts through the engine transport with a fresh open", a
 	assert.deepEqual(openIds(), ["remote_widget_1", "remote_widget_2"], "teardown must not resurrect the widget");
 	remoteController.dispose();
 });
+
+test("remote custom UI cancellation closes only the owned component once", async () => {
+	const lines: string[] = [];
+	const service = new EngineCustomUiService((line) => lines.push(line), new KeybindingsManager());
+	const controller = new AbortController();
+	let disposed = 0;
+	let lateDone: ((value: string) => void) | undefined;
+	const pending = service.custom<string>(
+		(_tui, _theme, _keys, done) => {
+			lateDone = done;
+			return {
+				render: () => ["Question"],
+				invalidate: () => {},
+				dispose: () => {
+					disposed++;
+				},
+			};
+		},
+		{ signal: controller.signal, overlay: true },
+	);
+	const sibling = service.custom(() => stubComponent(), { overlay: true });
+	await Promise.resolve();
+	controller.abort();
+	await pending;
+	assert.equal(disposed, 1);
+	lateDone?.("late answer");
+	const messages = lines.map(parseInteractiveEngineMessage);
+	const opened = messages.filter((message) => message?.type === "engine_custom_open");
+	const closed = messages.filter((message) => message?.type === "engine_custom_done");
+	assert.equal(opened.length, 2);
+	assert.equal(closed.length, 1);
+	assert.equal(closed[0]?.componentId, opened[0]?.componentId);
+	service.dispose();
+	await sibling;
+});

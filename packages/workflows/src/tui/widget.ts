@@ -47,6 +47,7 @@ import { renderRunIdentityRows, wrapIdentifierLines } from "./run-identity-rows.
 import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
+import type { WorkflowWidgetRunRows } from "./widget-viewport.js";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -491,6 +492,11 @@ function plainCollapsed(counts: RunCounts, activeTools: number): string {
 // Public entry points
 // ---------------------------------------------------------------------------
 
+/** Optional identity metadata, replaced on each render without altering its text. */
+export interface WorkflowWidgetRowLayout {
+	runs: WorkflowWidgetRunRows[];
+}
+
 /**
  * Build the widget lines for the current store snapshot.
  *
@@ -506,7 +512,9 @@ export function buildThemedWidgetLines(
 	piTheme: PiTheme | undefined,
 	width = 120,
 	now = Date.now(),
+	layout?: WorkflowWidgetRowLayout,
 ): string[] {
+	if (layout) layout.runs = [];
 	const display = selectDisplayRuns(snap, now);
 	if (display.length === 0) return [];
 
@@ -534,7 +542,13 @@ export function buildThemedWidgetLines(
 	// Collapsed single-line form for narrow terminals.
 	if (width < COLLAPSED_BREAKPOINT_COLS) {
 		return [
-			themed ? themedCollapsed(visibleCounts, activeTools, graphTheme) : plainCollapsed(visibleCounts, activeTools),
+			truncateToWidth(
+				themed
+					? themedCollapsed(visibleCounts, activeTools, graphTheme)
+					: plainCollapsed(visibleCounts, activeTools),
+				width,
+				"…",
+			),
 		];
 	}
 
@@ -566,6 +580,11 @@ export function buildThemedWidgetLines(
 					? themedRunLines(run, now, graphTheme, snap.runs, width, expandGraph)
 					: plainRunLines(run, now, snap.runs, width, expandGraph);
 		body.push(...runLines);
+		layout?.runs.push({
+			id: run.id,
+			start: body.length - runLines.length + 1,
+			end: body.length + (i === display.length - 1 ? 2 : 1),
+		});
 		if (i < display.length - 1) body.push("");
 	}
 

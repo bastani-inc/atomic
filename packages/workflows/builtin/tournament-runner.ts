@@ -233,7 +233,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 			ctx,
 			stages.map((stage) => stage.step),
 			(_step, index) => `${stages[index]!.slot1}:${stages[index]!.slot2}`,
-			{ concurrency: maxConcurrency, failFast: false },
+			{ concurrency: maxConcurrency, failFast: false, possibleStageNames: ["judge-*-*-*-r*"] },
 		);
 		const phaseResults = [...results];
 		for (const stage of stages) {

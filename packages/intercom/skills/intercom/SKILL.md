@@ -67,11 +67,11 @@ intercom({
 
 ### Pattern 2: Quick Status Check
 
-Before sending, verify who's connected. The full session ID printed by `list` is directly usable by `send`, `ask`, and targeted `reply`:
+Before sending, verify who's connected. Each list row leads with a copyable full session ID or canonical workflow path. Names are secondary; redundant generated aliases are omitted from the list but remain valid targets.
 
 ```typescript
 intercom({ action: "list" })
-// → • planner (6332faab-1111-4222-8333-123456789abc) — /workspace (model) [idle]
+// → - `6332faab-1111-4222-8333-123456789abc` [idle] /workspace (model) name: planner
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
@@ -128,7 +128,7 @@ intercom({ action: "pending" })
 intercom({ action: "reply", to: "planner", message: "Use exponential backoff starting at 100ms." })
 ```
 
-`reply` still preserves exact threading under the hood by sending the response with the original `replyTo` value.
+Explicit `to` selects that sender's pending ask even if another message triggered the current turn. Use `pending` and an exact `replyTo` when the sender has several asks. Stale, unknown, empty, or sender-mismatched explicit selectors fail without replying to another thread. Omit both selectors only when you intend to reply to the active message, or otherwise the single pending ask.
 
 ### Pattern 4: Broadcast to Multiple Workers
 

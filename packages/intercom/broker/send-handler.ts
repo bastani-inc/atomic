@@ -143,6 +143,12 @@ export function handleBrokerSend(
     return;
   }
   const requirePendingReply = clientMessage.requirePendingReply === true;
+  const hasExpectedRecipientId = Object.prototype.hasOwnProperty.call(clientMessage, "expectedRecipientId");
+  if (hasExpectedRecipientId && (typeof clientMessage.expectedRecipientId !== "string" || !clientMessage.expectedRecipientId.trim())) {
+    write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid expectedRecipientId format" });
+    return;
+  }
+  const expectedRecipientId = hasExpectedRecipientId ? clientMessage.expectedRecipientId as string : undefined;
   if (Object.prototype.hasOwnProperty.call(clientMessage, "channel")) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Invalid channel" });
     return;
@@ -150,6 +156,10 @@ export function handleBrokerSend(
   const supervisorSend = clientMessage.type === "supervisor_send";
   if (requirePendingReply && (supervisorSend || message.replyTo === undefined || message.expectsReply === true)) {
     write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid requirePendingReply message" });
+    return;
+  }
+  if (expectedRecipientId !== undefined && (supervisorSend || message.replyTo === undefined || message.expectsReply === true)) {
+    write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid expectedRecipientId message" });
     return;
   }
 
@@ -161,7 +171,8 @@ export function handleBrokerSend(
   }
 	const senderIdentity = fromSession.registrationReturnAddress ?? fromSession.info.id;
 	const logicalTarget = typeof clientMessage.logicalTarget === "string" ? clientMessage.logicalTarget : clientMessage.to;
-	const baseSignature = buildMessageSendSignature(logicalTarget, message, senderIdentity);
+	const messageSignature = buildMessageSendSignature(logicalTarget, message, senderIdentity);
+	const baseSignature = expectedRecipientId === undefined ? messageSignature : JSON.stringify({ expectedRecipientId, messageSignature });
 	const signature = requirePendingReply
 		? JSON.stringify({
 				requirePendingReply: true,
@@ -221,6 +232,12 @@ export function handleBrokerSend(
   const resolution = exactIdTarget
     ? ({ kind: "resolved", session: exactIdTarget.info } as const)
     : resolveSessionTarget(candidates, trimmedTo);
+  if (expectedRecipientId !== undefined && (resolution.kind !== "resolved" || resolution.session.id !== expectedRecipientId)) {
+    write(socket, { type: "delivery_failed", messageId, attemptId,
+      reason: resolution.kind === "resolved" ? "Reply target does not match the expected recipient" : sessionTargetFailureReason(clientMessage.to, resolution),
+    });
+    return;
+  }
   if (resolution.kind === "resolved") {
     const target = sessions.get(resolution.session.id);
     if (!target) {

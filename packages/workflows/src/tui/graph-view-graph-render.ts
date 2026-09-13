@@ -71,7 +71,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 			) {
 				continue;
 			}
-			this._plotEdge(edgeCanvas, edge.parentX, edge.parentY, edge.childX, edge.childY, edgeColor);
+			this._plotEdge(edgeCanvas, edge.parentX, edge.parentY, edge.childX, edge.childY, edgeColor, edge.parentHeight);
 		}
 		const edgeLines = edgeCanvas.toLines();
 		const placements = new Map<number, Placement[]>();
@@ -83,7 +83,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 				if (node.x + NODE_W <= viewportLeft || node.x >= viewportRight) continue;
 				const cardLines = renderNodeCard(node.stage, {
 					width: NODE_W,
-					height: NODE_H,
+					height: node.height ?? NODE_H,
 					focused: ni === this.focusedIndex,
 					pulsePhase,
 					theme: this.graphTheme,
@@ -141,7 +141,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 			for (const index of band.nodeIndices) {
 				const node = this.cachedLayout[index]!;
 				const top = graphStartRow + node.y - viewportTop;
-				const bottom = top + NODE_H;
+				const bottom = top + (node.height ?? NODE_H);
 				const left = viewport.leftMargin + node.x - this.graphScrollColOffset;
 				const right = left + NODE_W;
 				const clippedTop = Math.max(visibleTop, top);

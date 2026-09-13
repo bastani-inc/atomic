@@ -743,6 +743,8 @@ readonly failFast?: boolean;
 
 `WorkflowParallelOptions` uses `concurrency` to bound active tasks in an authored `ctx.parallel(...)`. When omitted, the runtime uses the workflow's `defaultConcurrency` setting, which defaults to `3`; explicit configuration and per-call concurrency remain honored. Parallel execution is fail-fast unless `failFast` is explicitly `false`.
 
+For a dynamic parallel step array that cannot be scanned, set `possibleStageNames: ["review-*"]` in the call's options. Supply a literal array covering every possible step name; `*` matches a varying name component. This metadata only controls advance stage discovery, not execution or concurrency. Named helpers can forward `options.possibleStageNames` directly to their parallel calls when every direct caller supplies a literal array, including through named relative imports. Use plain data properties in those caller options; options methods/getters, mutation, and side-effecting parameter defaults are not supported for discovery. Opaque forwarding and unannotated dynamic calls still produce discovery warnings.
+
 ### Stage prompt options (`StagePromptOptions`)
 
 ```typescript

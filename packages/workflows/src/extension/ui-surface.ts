@@ -107,7 +107,7 @@ export interface PiHostCustomUiState {
 export type PiHostCustomUiStateListener = (state: PiHostCustomUiState) => void;
 
 export interface PiCustomOverlayOptions {
-	/** Cancels this custom UI request when its owning SDK turn is aborted. */
+	/** AbortSignal to dismiss this request independently of its owning stage. */
 	signal?: AbortSignal;
 	/** Atomic lifecycle classification; navigation does not request approval. */
 	purpose?: "prompt" | "navigation";

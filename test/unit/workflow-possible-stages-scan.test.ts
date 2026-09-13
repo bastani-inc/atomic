@@ -25,6 +25,398 @@ function scanFile(name: string, source: string, options?: { readonly maxDepth?: 
 	return scanPossibleStagesFromSource(writeFixture(name, source), options);
 }
 
+// Regression #3001: warm/rest indexed maps must advertise names, not just hide warnings.
+test("#3001 builtin warm-first groups expose conservative names", () => {
+	for (const [name, expected] of [
+		["adversarial-verification", "verifier-*-*-*"],
+		["tournament", "judge-*-*-*-r*"],
+	]) {
+		const result = scanPossibleStagesFromSource(join(BUILTIN_DIR, `${name}.ts`));
+		assert.ok(result.stages.includes(expected!), JSON.stringify(result));
+		assert.equal(
+			result.warnings.some((warning) => /"(?:warmSteps|restSteps)"/.test(warning)),
+			false,
+		);
+	}
+});
+
+describe("#3001 call-scoped discovery metadata", () => {
+	for (const extension of ["ts", "js"]) {
+		for (const group of ["warmSteps", "restSteps"]) {
+			// Regression #3001: test each indexed group independently, including stripped non-null assertions.
+			test(`${extension} ${group} follows a named import alias without inventing other names`, () => {
+				const stem = `metadata-${extension}-${group}`;
+				writeFixture(
+					`${stem}-helper.${extension}`,
+					`
+					export async function fanOut(ctx, steps, options = {}) {
+						const ${group} = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+						await ctx.parallel(${group}, { possibleStageNames: options.possibleStageNames });
+						await ctx.parallel(unsupported);
+					}
+				`,
+				);
+				const result = scanFile(
+					`${stem}.${extension}`,
+					`
+					import { fanOut as launch } from "./${stem}-helper.js"
+					export default workflow({ name: "metadata", run: async ctx => {
+						await launch(ctx, opaque(), { possibleStageNames: ["review-a", "review-*", "review-a", " raw "] });
+					}});
+				`,
+				);
+				assert.deepEqual(result.stages, [" raw ", "review-*", "review-a"]);
+				assert.equal(result.warnings.length, 1);
+				assert.match(result.warnings[0]!, /steps argument "unsupported"/);
+			});
+		}
+	}
+	// Regression #3001: one annotated call cannot cover another opaque caller or a shadowed binding.
+	for (const extra of [
+		`await launch(ctx, opaque(), {});`,
+		`await launch(ctx, opaque(), { possibleStageNames: [] });`,
+		`await launch(ctx, opaque(), { possibleStageNames: dynamic });`,
+		`const alias = launch; await alias(ctx, opaque(), { possibleStageNames: ["wrong"] });`,
+		`function nested(launch) { launch(ctx, opaque(), { possibleStageNames: ["wrong"] }); }`,
+	]) {
+		test(`unproven helper caller retains diagnostics: ${extra}`, () => {
+			writeFixture(
+				"opaque-helper.ts",
+				`export async function fanOut(ctx, steps, options) {
+				const warmSteps = indices.map(index => steps[index]!);
+				await ctx.parallel(warmSteps, { possibleStageNames: options.possibleStageNames });
+			}`,
+			);
+			const result = scanFile(
+				"opaque-caller.ts",
+				`
+				import { fanOut as launch } from "./opaque-helper.js";
+				export default workflow({ name: "opaque", run: async ctx => {
+					await launch(ctx, opaque(), { possibleStageNames: ["review-*"] });
+					${extra}
+				}});
+			`,
+			);
+			assert.deepEqual(result.stages, []);
+			assert.ok(result.warnings.some((warning) => warning.includes('"warmSteps"')));
+		});
+	}
+	// Regression #3001: renamed exports are not proof that all calls carry the named import's metadata.
+	test("#3001 renamed helper exports do not borrow another caller's metadata", () => {
+		writeFixture(
+			"export-helper.ts",
+			`export async function fanOut(ctx, steps, options) {
+			await ctx.parallel(opaque, { possibleStageNames: options.possibleStageNames });
+		}
+		export { fanOut as another };
+		`,
+		);
+		const result = scanFile(
+			"export-caller.ts",
+			`
+			import { fanOut, another } from "./export-helper.js";
+			export default workflow({ name: "export-alias", run: async ctx => {
+				await fanOut(ctx, [], { possibleStageNames: ["known"] });
+				await another(ctx, opaque(), {});
+			}});
+		`,
+		);
+		assert.deepEqual(result.stages, []);
+		assert.equal(result.warnings.length, 1);
+	});
+	// Regression #3001: a namespace use cannot be covered by another caller's literal list.
+	test("#3001 namespace helper calls retain diagnostics beside an annotated named import", () => {
+		writeFixture(
+			"namespace-helper.ts",
+			`export async function fanOut(ctx, steps, options) {
+			await ctx.parallel(opaque, { possibleStageNames: options.possibleStageNames });
+		}`,
+		);
+		const result = scanFile(
+			"namespace-caller.ts",
+			`
+			import { fanOut as launch } from "./namespace-helper.js";
+			import * as helpers from "./namespace-helper.js";
+			export default workflow({ name: "namespace", run: async ctx => {
+				await launch(ctx, [], { possibleStageNames: ["known"] });
+				await helpers.fanOut(ctx, opaque(), {});
+			}});
+		`,
+		);
+		assert.deepEqual(result.stages, []);
+		assert.equal(result.warnings.length, 1);
+	});
+	// Regression #3001: an options alias must not make stale caller metadata authoritative.
+	test("#3001 options alias mutation retains the opaque-array warning", () => {
+		const result = scanFile(
+			"metadata-mutation.ts",
+			`
+			async function fanOut(ctx, steps, options) {
+				const alias = options;
+				alias.possibleStageNames = ["changed"];
+				await ctx.parallel(opaque, { possibleStageNames: options.possibleStageNames });
+			}
+			export default workflow({ name: "mutation", run: async ctx => {
+				await fanOut(ctx, [], { possibleStageNames: ["stale"] });
+			}});
+		`,
+		);
+		assert.deepEqual(result.stages, []);
+		assert.equal(result.warnings.length, 1);
+	});
+});
+
+// Regression #3001: arguments exposes a second reference to the caller options object.
+for (const extension of ["ts", "js"]) {
+	for (const access of [
+		"arguments[2].possibleStageNames = ['actual-*'];",
+		"const alias = arguments[2]; alias.possibleStageNames = ['actual-*'];",
+	]) {
+		test(`#3001 ${extension} arguments alias retains both warnings: ${access}`, () => {
+			const result = scanFile(
+				`arguments-${extension}-${access.length}.${extension}`,
+				`
+				async function fan(ctx, steps, options) {
+					${access}
+					const warmSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					const restSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					await ctx.parallel(warmSteps, { possibleStageNames: options.possibleStageNames });
+					await ctx.parallel(restSteps, { possibleStageNames: options.possibleStageNames });
+				}
+				export default workflow({ name: 'arguments', async run(ctx) {
+					await fan(ctx, opaque(), { possibleStageNames: ['stale-*'] });
+				} });
+			`,
+			);
+			assert.deepEqual(result.stages, []);
+			assert.equal(result.warnings.length, 2);
+			for (const group of ["warmSteps", "restSteps"])
+				assert.ok(result.warnings.some((warning) => warning.includes(`"${group}"`)));
+		});
+	}
+}
+
+// Regression #3001: parameter initialization runs before body-only provenance checks.
+for (const extension of ["ts", "js"]) {
+	for (const initializer of [
+		"ignored = (options.possibleStageNames = ['actual-*'])",
+		"ignored = options.possibleStageNames.splice(0, 1, 'actual-*')",
+		"{ ignored = (options.possibleStageNames = ['actual-*']) } = {}",
+	]) {
+		test(`#3001 ${extension} parameter side effect retains both warnings: ${initializer}`, () => {
+			const result = scanFile(
+				`parameter-${extension}-${initializer.length}.${extension}`,
+				`
+				async function fan(ctx, steps, options, ${initializer}) {
+					const warmSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					const restSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					await ctx.parallel(warmSteps, { possibleStageNames: options.possibleStageNames });
+					await ctx.parallel(restSteps, { possibleStageNames: options.possibleStageNames });
+				}
+				export default workflow({ name: 'parameter', async run(ctx) {
+					await fan(ctx, opaque(), { possibleStageNames: ['stale-*'] });
+				} });
+			`,
+			);
+			assert.deepEqual(result.stages, []);
+			assert.equal(result.warnings.length, 2);
+			for (const group of ["warmSteps", "restSteps"])
+				assert.ok(result.warnings.some((warning) => warning.includes(`"${group}"`)));
+		});
+	}
+}
+
+// Regression #3001: caller methods/getters must not mutate metadata behind a member read.
+for (const extension of ["ts", "js"]) {
+	for (const [access, field] of [
+		["options.mutate();", "mutate() { this.possibleStageNames = ['actual-*']; }"],
+		["const cap = options.concurrency;", "get concurrency() { this.possibleStageNames = ['actual-*']; return 2; }"],
+		["const { concurrency } = options;", "get concurrency() { this.possibleStageNames = ['actual-*']; return 2; }"],
+		["options.mutate?.();", "mutate: () => sideEffect()"],
+		["options.reset`x`;", "reset: function() { this.possibleStageNames = ['actual-*']; }"],
+		[`options.reset\`\${1}\`;`, "reset: function() { this.possibleStageNames = ['actual-*']; }"],
+		["const reset = options.reset; reset();", "reset: () => sideEffect()"],
+	]) {
+		test(`#3001 ${extension} options side effect retains both warnings: ${access}`, () => {
+			const result = scanFile(
+				`side-effect-${extension}-${access.length}.${extension}`,
+				`
+				async function fan(ctx, steps, options) {
+					${access}
+					const warmSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					const restSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					await ctx.parallel(warmSteps, { possibleStageNames: options.possibleStageNames });
+					await ctx.parallel(restSteps, { possibleStageNames: options.possibleStageNames });
+				}
+				export default workflow({ name: 'side-effect', async run(ctx) {
+					await fan(ctx, opaque(), { possibleStageNames: ['stale-*'], ${field} });
+				} });
+			`,
+			);
+			assert.deepEqual(result.stages, []);
+			assert.equal(result.warnings.length, 2);
+			for (const group of ["warmSteps", "restSteps"])
+				assert.ok(result.warnings.some((warning) => warning.includes(`"${group}"`)));
+		});
+	}
+}
+
+// Regression #3001: writes through destructuring and other property-write forms invalidate caller metadata.
+for (const extension of ["ts", "js"]) {
+	for (const [variant, mutation] of [
+		["array", "[options.possibleStageNames] = [unknownNames];"],
+		["nested-array", "[[options.possibleStageNames]] = [[unknownNames]];"],
+		["object", "({ names: options.possibleStageNames } = source);"],
+		["nested-object", "({ names: [options.possibleStageNames] } = source);"],
+		["rest", "[...options.possibleStageNames] = source;"],
+		["loop", "for ([options.possibleStageNames] of source) {}"],
+		["logical", "options.possibleStageNames ||= unknownNames;"],
+		["delete", "delete options.possibleStageNames;"],
+		["prefix", "++options.possibleStageNames;"],
+		["element", "options.possibleStageNames[0] = 'actual';"],
+		["length", "options.possibleStageNames.length = 0;"],
+		["splice", "options.possibleStageNames.splice(0, 1, 'actual');"],
+		["push", "options.possibleStageNames.push('actual');"],
+		["fill", "options.possibleStageNames.fill('actual');"],
+		["computed-method", "options.possibleStageNames['splice'](0, 1, 'actual');"],
+		["optional-method", "options.possibleStageNames?.splice(0, 1, 'actual');"],
+		["array-alias", "const names = options.possibleStageNames; names[0] = 'actual';"],
+		["array-escape", "mutate(options.possibleStageNames);"],
+		["destructured-array-alias", "const { possibleStageNames: names } = options; names[0] = 'actual';"],
+		["rest-array-alias", "const { concurrency, ...rest } = options; rest.possibleStageNames.splice(0, 1, 'actual');"],
+		[
+			"computed-array-alias",
+			"const key = 'possibleStageNames'; const { [key]: names } = options; names[0] = 'actual';",
+		],
+		["rest-alias-escape", "const { concurrency, ...rest } = options; mutate(rest);"],
+		[
+			"rest-alias-rebind",
+			"const { concurrency, ...rest } = options; const copy = rest; copy.possibleStageNames[0] = 'actual';",
+		],
+	]) {
+		test(`#3001 ${extension} ${variant} metadata write retains both warnings`, () => {
+			const result = scanFile(
+				`write-${extension}-${variant}.${extension}`,
+				`
+				async function fan(ctx, steps, options) {
+					${mutation}
+					const warmSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					const restSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					await ctx.parallel(warmSteps, { possibleStageNames: options.possibleStageNames });
+					await ctx.parallel(restSteps, { possibleStageNames: options.possibleStageNames });
+				}
+				export default workflow({ name: "write", async run(ctx) {
+					await fan(ctx, opaque(), { possibleStageNames: ['a-*'] });
+				} });
+			`,
+			);
+			assert.deepEqual(result.stages, []);
+			assert.equal(result.warnings.length, 2);
+			for (const group of ["warmSteps", "restSteps"])
+				assert.ok(result.warnings.some((w) => w.includes(`"${group}"`)));
+		});
+	}
+}
+
+// Regression #3001: an unknown computed key can replace earlier literal metadata.
+for (const extension of ["ts", "js"]) {
+	for (const override of [
+		"['possibleStageNames']: unknownNames",
+		"[key]: unknownNames",
+		"get ['possibleStageNames']() { return unknownNames; }",
+		"get possibleStageNames() { return unknownNames; }",
+		"set possibleStageNames(value) {}",
+		"async possibleStageNames() {}",
+		"*possibleStageNames() {}",
+		"async *possibleStageNames() {}",
+	]) {
+		test(`#3001 ${extension} computed override retains both warnings: ${override}`, () => {
+			const result = scanFile(
+				`computed-${extension}-${override.length}.${extension}`,
+				`
+				async function fan(ctx, steps, options) {
+					const warmSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					const restSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					await ctx.parallel(warmSteps, { possibleStageNames: options.possibleStageNames });
+					await ctx.parallel(restSteps, { possibleStageNames: options.possibleStageNames });
+				}
+				export default workflow({ name: "computed", async run(ctx) {
+					await fan(ctx, opaque(), { possibleStageNames: ['a-*'], ${override} });
+				} });
+			`,
+			);
+			assert.deepEqual(result.stages, []);
+			assert.equal(result.warnings.length, 2);
+			for (const group of ["warmSteps", "restSteps"])
+				assert.ok(result.warnings.some((w) => w.includes(`"${group}"`)));
+		});
+	}
+}
+
+// Regression #3001: expression-local names do not prove an imported helper is unused.
+for (const extension of ["ts", "js"]) {
+	for (const bound of [false, true]) {
+		test(`#3001 ${extension} ${bound ? "bound" : "exported"} function expressions retain both warnings`, () => {
+			const stem = `expression-${extension}-${bound}`;
+			writeFixture(
+				`${stem}-helper.${extension}`,
+				`
+				${bound ? "const impl" : "export const fan"} = async function internalFan(ctx, steps, options) {
+					const warmSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					const restSteps = indices.map(index => steps[index]${extension === "ts" ? "!" : ""});
+					await ctx.parallel(warmSteps, { possibleStageNames: options.possibleStageNames });
+					await ctx.parallel(restSteps, { possibleStageNames: options.possibleStageNames });
+				};
+				${bound ? "export const fan = impl;" : ""}
+			`,
+			);
+			const result = scanFile(
+				`${stem}.${extension}`,
+				`
+				import { fan } from "./${stem}-helper.js";
+				export default workflow({ name: "expression", async run(ctx) { await fan(ctx, opaque(), {}); } });
+			`,
+			);
+			assert.deepEqual(result.stages, []);
+			assert.equal(result.warnings.length, 2);
+			for (const group of ["warmSteps", "restSteps"])
+				assert.ok(result.warnings.some((w) => w.includes(`"${group}"`)));
+		});
+	}
+}
+
+// Regression #3001: use real package build output, not a hand-written JavaScript proxy.
+test("#3001 packaged builtin JavaScript discovers warm/rest names", () => {
+	const bundled = join(BUILTIN_DIR, "..", "..", "coding-agent", "dist", "builtin", "workflows", "builtin");
+	for (const [name, patterns] of [
+		["adversarial-verification", ["verifier-*-*-*", "verifier-*-*-*-reask-*"]],
+		["tournament", ["judge-*-*-*-r*"]],
+	] as const) {
+		const entry = join(bundled, `${name}.js`);
+		assert.ok(existsSync(entry), "Run npm run build before the unit suite");
+		const result = scanPossibleStagesFromSource(entry);
+		for (const pattern of patterns) assert.ok(result.stages.includes(pattern), JSON.stringify(result));
+		assert.equal(
+			result.warnings.some((warning) => /"(?:warmSteps|restSteps)"/.test(warning)),
+			false,
+		);
+	}
+});
+
+// Regression #3001: goal imports scoring prompts, not the warm-first helper from that same module.
+test("#3001 source and bundled goal do not warn on an unused annotated helper or invent its stages", () => {
+	const bundled = join(BUILTIN_DIR, "..", "..", "coding-agent", "dist", "builtin", "workflows", "builtin");
+	for (const entry of [join(BUILTIN_DIR, "goal.ts"), join(bundled, "goal.js")]) {
+		const result = scanPossibleStagesFromSource(entry);
+		assert.ok(result.stages.includes("orchestrator-*"));
+		assert.deepEqual(result.warnings, []);
+		assert.equal(
+			result.stages.some((name) => /(?:verifier-|judge-)/.test(name)),
+			false,
+		);
+	}
+});
+
 // ---------------------------------------------------------------------------
 // D2 — stage-name pattern extraction
 // ---------------------------------------------------------------------------

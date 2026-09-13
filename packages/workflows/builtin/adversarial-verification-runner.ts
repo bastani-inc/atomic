@@ -276,7 +276,7 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
 				ctx,
 				pending.map((cell) => scoreStep(cell, reaskWave, scoringHead, criteriaPath)),
 				() => scoringHead,
-				{ concurrency: Math.min(pending.length, 4), failFast: false },
+				{ concurrency: Math.min(pending.length, 4), failFast: false, possibleStageNames: ["verifier-*-*-*", "verifier-*-*-*-reask-*"] },
 			);
 			const byName = new Map<string, (typeof reports)[number]>();
 			for (const report of reports) {
