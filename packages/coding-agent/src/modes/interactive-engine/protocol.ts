@@ -1,4 +1,5 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
+import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import type { HostInputFormField, HostSessionPickerRow } from "../../core/extensions/ui-types.ts";
 import type { KeyId } from "../../core/keybindings.ts";
 
@@ -79,9 +80,16 @@ export type InteractiveEngineMessage =
 			overlayOptions?: SerializableOverlayOptions;
 			widgetKey?: string;
 			widgetPlacement?: "aboveEditor" | "belowEditor";
+			widgetScroll?: { maxHeight: number };
 	  }
 	| { type: "engine_custom_close"; componentId: string }
-	| { type: "engine_custom_frame"; componentId: string; requestId: number; lines: string[] }
+	| {
+			type: "engine_custom_frame";
+			componentId: string;
+			requestId: number;
+			lines: string[];
+			scrollRequest?: WidgetScrollRequest;
+	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
 	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
@@ -110,6 +118,7 @@ export type InteractiveEngineCommand =
 	| { type: "engine_project_trust_end"; componentId: string }
 	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
+	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
 	| { type: "engine_custom_dispose"; componentId: string }
 	| {
 			type: "engine_tool_render";
@@ -372,6 +381,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 							? (value.overlayOptions as SerializableOverlayOptions)
 							: undefined,
 						widgetKey: typeof value.widgetKey === "string" ? value.widgetKey : undefined,
+						...(isJsonObject(value.widgetScroll) && typeof value.widgetScroll.maxHeight === "number"
+							? { widgetScroll: { maxHeight: value.widgetScroll.maxHeight } }
+							: {}),
 						widgetPlacement:
 							value.widgetPlacement === "belowEditor"
 								? "belowEditor"
@@ -389,7 +401,22 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				typeof value.requestId === "number" &&
 				Array.isArray(value.lines) &&
 				value.lines.every((entry) => typeof entry === "string")
-				? { type: value.type, componentId: value.componentId, requestId: value.requestId, lines: value.lines }
+				? {
+						type: value.type,
+						componentId: value.componentId,
+						requestId: value.requestId,
+						lines: value.lines,
+						...(isJsonObject(value.scrollRequest) &&
+						typeof value.scrollRequest.version === "number" &&
+						typeof value.scrollRequest.scrollTop === "number"
+							? {
+									scrollRequest: {
+										version: value.scrollRequest.version,
+										scrollTop: value.scrollRequest.scrollTop,
+									},
+								}
+							: {}),
+					}
 				: undefined;
 		case "engine_custom_input_result":
 			return typeof value.componentId === "string" &&
@@ -476,6 +503,23 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		typeof value.title === "string"
 	) {
 		return { type: value.type, componentId: value.componentId, kind: value.kind, title: value.title };
+	}
+	if (
+		value.type === "engine_custom_scroll" &&
+		isJsonObject(value.state) &&
+		typeof value.state.scrollTop === "number" &&
+		typeof value.state.viewportHeight === "number" &&
+		typeof value.state.contentHeight === "number"
+	) {
+		return {
+			type: value.type,
+			componentId: value.componentId,
+			state: {
+				scrollTop: value.state.scrollTop,
+				viewportHeight: value.state.viewportHeight,
+				contentHeight: value.state.contentHeight,
+			},
+		};
 	}
 	if (
 		value.type === "engine_custom_render" &&

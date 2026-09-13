@@ -1,5 +1,6 @@
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
+import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
@@ -37,6 +38,14 @@ interface PendingInput {
 }
 
 class RemoteComponent implements Component {
+	private scrollRequest: WidgetScrollRequest | undefined;
+	getScrollRequest(): WidgetScrollRequest | undefined {
+		return this.scrollRequest;
+	}
+	onScroll(state: WidgetScrollState): void {
+		if (!this.disposed)
+			this.runtime.sendEngineCommand({ type: "engine_custom_scroll", componentId: this.componentId, state });
+	}
 	wantsKeyRelease = true;
 	readonly handlesInternalUiAction: boolean;
 	private lines = ["Loading remote component…"];
@@ -130,10 +139,11 @@ class RemoteComponent implements Component {
 		this.dirty = true;
 	}
 
-	applyFrame(requestId: number, lines: string[]): void {
+	applyFrame(requestId: number, lines: string[], scrollRequest?: WidgetScrollRequest): void {
 		if (this.disposed || requestId < this.appliedRequestId) return;
 		this.appliedRequestId = requestId;
 		this.lines = lines;
+		this.scrollRequest = scrollRequest;
 		this.requestRender();
 	}
 
@@ -316,13 +326,16 @@ export class RemoteComponentController {
 					message.handlesInternalUiAction === true,
 					message.reserveTranscriptRows === true,
 					message.purpose,
+					message.widgetScroll,
 				);
 				break;
 			case "engine_custom_close":
 				this.close(message.componentId);
 				break;
 			case "engine_custom_frame":
-				this.mounted.get(message.componentId)?.component.applyFrame(message.requestId, message.lines);
+				this.mounted
+					.get(message.componentId)
+					?.component.applyFrame(message.requestId, message.lines, message.scrollRequest);
 				break;
 			case "engine_custom_input_result":
 				this.mounted.get(message.componentId)?.component.resolveInput(message.requestId, message.handled);
@@ -358,15 +371,16 @@ export class RemoteComponentController {
 		handlesInternalUiAction = false,
 		reserveTranscriptRows = false,
 		purpose?: "prompt" | "navigation",
+		widgetScroll?: { maxHeight: number },
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
-			let rows = 24;
+			let getRows = () => 24;
 			const component = new RemoteComponent(
 				componentId,
 				this.runtime,
 				() => this.ui.requestRender(),
-				() => rows,
+				() => getRows(),
 				handlesInternalUiAction,
 			);
 			const unsubscribeWidgetRelease = this.ui.onWidgetRelease?.(widgetKey, () => this.releaseWidget(widgetKey));
@@ -382,10 +396,10 @@ export class RemoteComponentController {
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
-					rows = tui.terminal.rows;
+					getRows = () => tui.terminal.rows;
 					return component;
 				},
-				{ placement: widgetPlacement },
+				{ placement: widgetPlacement, ...(widgetScroll ? { scroll: widgetScroll } : {}) },
 			);
 			return;
 		}

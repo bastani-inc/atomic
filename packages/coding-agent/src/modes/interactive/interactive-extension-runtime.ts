@@ -2,6 +2,7 @@ import { copyScopedModels } from "../../core/extensions/runner-context.ts";
 import { ModelRegistry } from "../../core/model-registry.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { ScrollWidget } from "./components/scroll-widget.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	AssistantMessageComponent,
@@ -202,10 +203,10 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 	if (Array.isArray(content)) {
 		// Wrap string array in a Container with Text components
 		const container = new Container();
-		for (const line of content.slice(0, InteractiveModeBase.MAX_WIDGET_LINES)) {
+		for (const line of options?.scroll ? content : content.slice(0, InteractiveModeBase.MAX_WIDGET_LINES)) {
 			container.addChild(new Text(line, 1, 0));
 		}
-		if (content.length > InteractiveModeBase.MAX_WIDGET_LINES) {
+		if (!options?.scroll && content.length > InteractiveModeBase.MAX_WIDGET_LINES) {
 			container.addChild(new Text(theme.fg("muted", "... (widget truncated)"), 1, 0));
 		}
 		component = container;
@@ -213,6 +214,7 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 		// Factory function - create component
 		component = content(this.ui, theme);
 	}
+	if (options?.scroll) component = new ScrollWidget(component, options.scroll.maxHeight);
 
 	const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
 	targetMap.set(key, component);

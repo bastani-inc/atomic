@@ -216,6 +216,7 @@ export function createRpcExtensionUIContext({
 					widgetKey: key,
 					widgetLines: content as string[],
 					widgetPlacement: options?.placement,
+					...(options?.scroll ? { widgetScroll: options.scroll } : {}),
 				});
 				return;
 			}
@@ -225,6 +226,7 @@ export function createRpcExtensionUIContext({
 					key,
 					content as (tui: TUI, theme: Theme) => Component & { dispose?(): void },
 					options?.placement,
+					options?.scroll,
 				);
 				return;
 			}
