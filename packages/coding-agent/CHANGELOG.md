@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow model fallback cleans up the failed attempt's Intercom ownership before registering its replacement, preventing duplicate live-stage ownership warnings without weakening route protections ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
+
 ## [0.9.19-alpha.9] - 2026-09-12
 
 ### Breaking Changes

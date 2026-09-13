@@ -14,15 +14,27 @@ function stageSessionExtensionRunner(current: StageSessionRuntime): StageSession
 	return undefined;
 }
 
+const shutdowns = new WeakMap<StageSessionRuntime, Promise<void>>();
+
+/** Release extension ownership before a fallback binds, retaining queued deliveries until transfer. */
+export function shutdownStageSession(current: StageSessionRuntime | undefined): Promise<void> {
+	if (!current) return Promise.resolve();
+	const existing = shutdowns.get(current);
+	if (existing) return existing;
+	const shutdown = Promise.resolve().then(async () => {
+		const runner = stageSessionExtensionRunner(current);
+		if (runner?.hasHandlers("session_shutdown")) await runner.emit({ type: "session_shutdown", reason: "quit" });
+	});
+	shutdowns.set(current, shutdown);
+	return shutdown;
+}
+
 export async function disposeStageSession(current: StageSessionRuntime | undefined): Promise<void> {
 	if (!current) return;
-	const runner = stageSessionExtensionRunner(current);
-	if (runner?.hasHandlers("session_shutdown")) {
-		try {
-			await runner.emit({ type: "session_shutdown", reason: "quit" });
-		} catch (error) {
-			console.error("atomic-workflows: stage session_shutdown handler failed", error);
-		}
+	try {
+		await shutdownStageSession(current);
+	} catch (error) {
+		console.error("atomic-workflows: stage session_shutdown handler failed", error);
 	}
 	await current.dispose();
 }

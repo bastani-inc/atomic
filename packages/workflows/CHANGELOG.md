@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Model fallback releases the failed attempt's Intercom ownership before initializing its replacement, avoiding duplicate live-stage ownership warnings while retaining queued delivery handoff. Cancellation during cleanup no longer starts a replacement session, and failed extension initialization cleans up its session ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
+
 ## [0.9.19-alpha.9] - 2026-09-12
 
 ### Fixed

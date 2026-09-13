@@ -11,6 +11,7 @@ import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import { isRecoverableIntercomDisconnect } from "../../packages/intercom/recoverable-disconnect.js";
 import type { BrokerMessage, ClientMessage, Message } from "../../packages/intercom/types.js";
+import { createStageContext, type InternalStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
@@ -1560,6 +1561,7 @@ test("broker rejects an attacker-first live route without the workflow capabilit
 		false,
 	);
 });
+// #3020: fixing fallback cleanup must not permit a genuine duplicate live owner.
 test("broker rejects a different active session taking over a live composite route", async () => {
 	const owner = new WireClient();
 	const legitimate = new WireClient();
@@ -1929,4 +1931,76 @@ test("a member of an owned subgroup sees the invocation's future rows; a lateral
 	assert.deepEqual((await lateral.listDirectory()).workflowFutureStages, []);
 	// Peeking the invocation group from the subgroup keeps the rows visible.
 	assert.equal((await subgroupMember.listDirectory(`workflow:${runId}`)).workflowFutureStages.length, 2);
+});
+
+// #3020: replacement must release the failed attempt's real broker ownership before binding its successor.
+test("unknown-model fallback releases its live stage route before replacement registration", async () => {
+	const runId = crypto.randomUUID();
+	const group = `workflow:${runId}`;
+	const capability = "fallback-route-capability";
+	const owner = new IntercomClient();
+	realClients.add(owner);
+	owner.on("error", () => {});
+	await owner.connect(productionRegistration("fallback-owner", group));
+	owner.registerPendingStageRoute(runId, group, capability, [
+		{
+			stageId: "probe",
+			stageName: "probe",
+			target: `workflow:${runId}/probe`,
+			lifecycle: "running",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await owner.listDirectory();
+	const attempts: string[] = [];
+	const ctx = createStageContext(
+		makeOpts({
+			runId,
+			stageId: "probe",
+			stageName: "probe",
+			stageOptions: { model: "absent/primary", fallbackModels: ["available/fallback"] },
+			adapters: {
+				agentSession: {
+					async create(options) {
+						const model = String(options.model);
+						attempts.push(model);
+						const client = new IntercomClient();
+						realClients.add(client);
+						client.on("error", () => {});
+						await client.connect(productionRegistration(model, group));
+						await client.registerLiveWorkflowStageRoute(runId, ["probe"], capability);
+						const { session } = makeMockSession({
+							async prompt() {
+								if (model === "absent/primary")
+									throw new Error("Unknown model: absent/primary did not resolve to an available provider");
+							},
+							getLastAssistantText: () => "fallback completed",
+						});
+						return Object.assign(session, {
+							extensionRunner: {
+								hasHandlers: (event: string) => event === "session_shutdown",
+								emit: async () => {
+									await client.disconnect();
+								},
+							},
+						});
+					},
+				},
+			},
+		}),
+	) as InternalStageContext;
+	try {
+		assert.equal(await ctx.prompt("go"), "fallback completed");
+		assert.deepEqual(attempts, ["absent/primary", "available/fallback"]);
+		assert.deepEqual(
+			ctx.__modelFallbackMeta().modelAttempts?.map(({ success }) => success),
+			[false, true],
+		);
+		const live = (await owner.listDirectory()).workflowStages.find((stage) => stage.runId === runId);
+		assert.equal(live?.lifecycle, "running");
+		assert.ok(live?.sessionId);
+	} finally {
+		await ctx.__dispose();
+	}
 });

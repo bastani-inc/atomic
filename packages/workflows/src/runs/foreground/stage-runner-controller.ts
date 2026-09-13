@@ -45,6 +45,7 @@ import {
 	attachCreatedStageSession,
 	disposeStageSession,
 	normalizeSessionCreateResult,
+	shutdownStageSession,
 } from "./stage-runner-session.js";
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import {
@@ -1374,6 +1375,7 @@ export class StageSessionController {
 	}
 
 	private async disposeCurrentSession(): Promise<void> {
+		const startGeneration = this.abortGeneration;
 		this.abortThrownErrorRetries(new Error(`atomic-workflows: stage "${this.opts.stageName}" session was replaced`));
 		const current = this.session;
 		this.messageAdmission.reset();
@@ -1390,6 +1392,11 @@ export class StageSessionController {
 		this.unsubscribeTerminateWatcher?.();
 		this.unsubscribeTerminateWatcher = undefined;
 		this.terminatingToolCallIds.clear();
+		// #3020: creation binds Intercom before adopt() can transfer deliveries.
+		// Retain the runtime for that transfer, but release its live ownership now.
+		await shutdownStageSession(current);
+		if (this.disposed || this.opts.signal?.aborted === true || this.abortGeneration !== startGeneration)
+			throw this.staleCreationReason(startGeneration);
 	}
 
 	private async promptWithPauseResume(
