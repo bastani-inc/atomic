@@ -63,7 +63,7 @@ export class WorkflowWidgetViewport implements ReactiveWidgetComponent {
 		const visible = this.lines.slice(first - 1, first - 1 + Math.max(1, cap - 1));
 		// At a one-row budget retain content rather than only chrome.
 		if (cap === 1) return visible;
-		const hint = ` ${first}–${first + visible.length - 1}/${this.lines.length} · Alt+PgUp/PgDn scroll workflows`;
+		const hint = " Alt+PgUp/PgDn scroll workflows";
 		return [...visible, truncateToWidth(hint, width, "…")];
 	}
 

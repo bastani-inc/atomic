@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import type { StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { buildThemedWidgetLines } from "../../packages/workflows/src/tui/widget.js";
+import { WorkflowWidgetViewport } from "../../packages/workflows/src/tui/widget-viewport.js";
 
 const now = 1_700_000_000_000;
 const snap: StoreSnapshot = {
@@ -136,4 +138,22 @@ test("mounted workflow list caps rows and keeps offscreen runs reachable without
 	} finally {
 		dispose();
 	}
+});
+
+test("workflow scroll hint keeps keyboard help without a numeric range or separator", () => {
+	const content = ["first", "second", "third", "fourth"];
+	const viewport = new WorkflowWidgetViewport(
+		{ render: () => content },
+		() => 30,
+		() => {},
+	);
+	const hint = " Alt+PgUp/PgDn scroll workflows";
+	assert.deepEqual(viewport.render(120), [...content, hint]);
+	viewport.scroll(1);
+	assert.deepEqual(viewport.render(120), [...content.slice(1), hint]);
+	viewport.scroll(-1);
+	assert.deepEqual(viewport.render(120), [...content, hint]);
+	assert.equal(stripVTControlCharacters(viewport.render(10).at(-1)!), " Alt+PgUp…");
+	for (let i = 0; i < 10; i++) viewport.scroll(1);
+	assert.deepEqual(viewport.render(120), ["fourth", hint]);
 });
