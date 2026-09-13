@@ -39,6 +39,8 @@ export interface ExtensionFlag {
 export interface ExtensionShortcut {
 	shortcut: KeyId;
 	description?: string;
+	keybinding?: import("../keybindings.js").Keybinding;
+	preferEditor?: boolean;
 	handler: (ctx: ExtensionContext) => Promise<void> | void;
 	extensionPath: string;
 }

@@ -371,7 +371,7 @@ export class RemoteComponentController {
 		handlesInternalUiAction = false,
 		reserveTranscriptRows = false,
 		purpose?: "prompt" | "navigation",
-		widgetScroll?: { maxHeight: number },
+		widgetScroll?: { maxHeight: number; maxHeightFraction?: number },
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {

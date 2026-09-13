@@ -630,6 +630,8 @@ The listener runs after the host removes that key, so the extension can reset lo
 
 Opt in with `scroll: { maxHeight: 6 }` to give a widget its own fullscreen viewport. The host may allocate fewer rows when the editor or other widgets need space. Render the full content, not a pre-clipped slice. Wheel input over the widget scrolls only that widget, including at either end. A one-column scrollbar appears only while content overflows. Scrolling does not take editor focus or register keyboard shortcuts.
 
+For a cap that follows terminal resizing, use `scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 }`. The fraction is applied to live terminal rows, rounded down with a one-row minimum, then limited by `maxHeight`. Actual allocation may still be zero when other dock content uses all available rows. Omitting the fraction retains the fixed cap. The same options work for isolated-engine widgets.
+
 ```typescript
 import type { ScrollableWidgetComponent, WidgetScrollRequest } from "@bastani/atomic";
 import { truncateToWidth } from "@earendil-works/pi-tui";

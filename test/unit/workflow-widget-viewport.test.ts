@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import type { StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { buildThemedWidgetLines } from "../../packages/workflows/src/tui/widget.js";
 import { WorkflowWidgetViewport } from "../../packages/workflows/src/tui/widget-viewport.js";
+import { nativeWorkflowViewport } from "../helpers/workflow-native-viewport.js";
 
 const now = 1_700_000_000_000;
 const snap: StoreSnapshot = {
@@ -92,7 +92,9 @@ test("mounted workflow list caps rows and keeps offscreen runs reachable without
 				setWidget(_key, factory) {
 					if (factory) {
 						mounts++;
-						component = factory(host, undefined);
+						component = nativeWorkflowViewport(factory(host, undefined), () =>
+							Math.max(1, Math.min(10, Math.floor(host.terminal.rows / 3))),
+						);
 					}
 				},
 				requestRender() {},
@@ -140,20 +142,19 @@ test("mounted workflow list caps rows and keeps offscreen runs reachable without
 	}
 });
 
-test("workflow scroll hint keeps keyboard help without a numeric range or separator", () => {
+test("workflow producer preserves full source text without a numeric range and native clipping reaches its last row", () => {
 	const content = ["first", "second", "third", "fourth"];
 	const viewport = new WorkflowWidgetViewport(
 		{ render: () => content },
 		() => 30,
 		() => {},
 	);
-	const hint = " Alt+PgUp/PgDn scroll workflows";
-	assert.deepEqual(viewport.render(120), [...content, hint]);
-	viewport.scroll(1);
-	assert.deepEqual(viewport.render(120), [...content.slice(1), hint]);
-	viewport.scroll(-1);
-	assert.deepEqual(viewport.render(120), [...content, hint]);
-	assert.equal(stripVTControlCharacters(viewport.render(10).at(-1)!), " Alt+PgUp…");
-	for (let i = 0; i < 10; i++) viewport.scroll(1);
-	assert.deepEqual(viewport.render(120), ["fourth", hint]);
+	const native = nativeWorkflowViewport(viewport, () => 1);
+	assert.deepEqual(viewport.render(120), content);
+	for (const row of content) {
+		assert.deepEqual(native.render(120), [row]);
+		viewport.scroll(1);
+	}
+	assert.deepEqual(native.render(120), ["fourth"]);
+	assert.deepEqual(viewport.render(120), content);
 });

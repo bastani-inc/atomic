@@ -214,7 +214,14 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 		// Factory function - create component
 		component = content(this.ui, theme);
 	}
-	if (options?.scroll) component = new ScrollWidget(component, options.scroll.maxHeight);
+	if (options?.scroll) {
+		const { maxHeight, maxHeightFraction } = options.scroll;
+		component = new ScrollWidget(component, maxHeight, () =>
+			maxHeightFraction === undefined
+				? maxHeight
+				: Math.min(maxHeight, Math.max(1, Math.floor(this.ui.terminal.rows * maxHeightFraction))),
+		);
+	}
 
 	const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
 	targetMap.set(key, component);

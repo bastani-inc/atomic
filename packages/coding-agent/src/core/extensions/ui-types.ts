@@ -47,7 +47,7 @@ export interface ExtensionWidgetOptions {
 	/** Where the widget is rendered. Defaults to "aboveEditor". */
 	placement?: WidgetPlacement;
 	/** Opt in to a host-owned viewport. Height is a cap, not a guaranteed allocation. */
-	scroll?: { maxHeight: number };
+	scroll?: { maxHeight: number; maxHeightFraction?: number };
 }
 
 /** Raw terminal input listener for extensions. */

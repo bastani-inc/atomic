@@ -117,7 +117,7 @@ export class EngineCustomUiService {
 		key: string,
 		factory: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined,
 		placement?: "aboveEditor" | "belowEditor",
-		scroll?: { maxHeight: number },
+		scroll?: { maxHeight: number; maxHeightFraction?: number },
 	): void {
 		const previous = this.widgetIds.get(key);
 		if (previous) this.disposeComponent(previous, false, false);

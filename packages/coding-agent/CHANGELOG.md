@@ -5,6 +5,7 @@
 ### Added
 
 - Extension widgets can opt into a height-capped fullscreen viewport with widget-local wheel scrolling, an overflow-only scrollbar, and scroll-position feedback in both in-process and isolated-engine sessions. Existing widgets retain their default behavior.
+- The main-chat workflow list supports local wheel scrolling with an overflow-only slim scrollbar and configurable Alt+K/J shortcuts, labeled Option on macOS. Alt+PageUp/PageDown remain aliases, configured editor bindings take precedence, and the list keeps its row cap and run anchors through clipping and resize.
 
 ### Fixed
 

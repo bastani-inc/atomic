@@ -305,3 +305,23 @@ test("default widget stacks retain prefix clipping rather than redistributing ro
 	assert.ok(visible.includes("FIRST 0"));
 	assert.equal(visible.includes("SECOND MUST STAY CLIPPED"), false);
 });
+
+test("terminal fraction cap follows resize without replacing the native widget", async () => {
+	const { context, tui, terminal } = await setup(36);
+	context.setExtensionWidget(
+		"fraction",
+		() => new Text(Array.from({ length: 40 }, (_, i) => `row ${i}`).join("\n"), 0, 0),
+		{
+			placement: "belowEditor",
+			scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 },
+		},
+	);
+	tui.renderNow();
+	const widget = context.extensionWidgetsBelow.get("fraction");
+	assert.ok(widget instanceof ScrollWidget);
+	assert.equal(widget.maxHeight, 10);
+	terminal.rows = 18;
+	tui.renderNow();
+	assert.equal(widget.maxHeight, 6);
+	assert.equal(context.extensionWidgetsBelow.get("fraction"), widget);
+});

@@ -59,10 +59,14 @@ function registerWorkflowShortcut(pi: ExtensionAPI, overlay: GraphOverlayPort): 
 	});
 	pi.registerShortcut("alt+pageUp", {
 		description: "Scroll background workflows up",
+		keybinding: "app.workflows.scrollUp",
+		preferEditor: true,
 		handler: () => scrollStoreWidget(store, -1),
 	});
 	pi.registerShortcut("alt+pageDown", {
 		description: "Scroll background workflows down",
+		keybinding: "app.workflows.scrollDown",
+		preferEditor: true,
 		handler: () => scrollStoreWidget(store, 1),
 	});
 }

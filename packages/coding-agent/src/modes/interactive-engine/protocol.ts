@@ -80,7 +80,7 @@ export type InteractiveEngineMessage =
 			overlayOptions?: SerializableOverlayOptions;
 			widgetKey?: string;
 			widgetPlacement?: "aboveEditor" | "belowEditor";
-			widgetScroll?: { maxHeight: number };
+			widgetScroll?: { maxHeight: number; maxHeightFraction?: number };
 	  }
 	| { type: "engine_custom_close"; componentId: string }
 	| {
@@ -382,7 +382,14 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 							: undefined,
 						widgetKey: typeof value.widgetKey === "string" ? value.widgetKey : undefined,
 						...(isJsonObject(value.widgetScroll) && typeof value.widgetScroll.maxHeight === "number"
-							? { widgetScroll: { maxHeight: value.widgetScroll.maxHeight } }
+							? {
+									widgetScroll: {
+										maxHeight: value.widgetScroll.maxHeight,
+										...(typeof value.widgetScroll.maxHeightFraction === "number"
+											? { maxHeightFraction: value.widgetScroll.maxHeightFraction }
+											: {}),
+									},
+								}
 							: {}),
 						widgetPlacement:
 							value.widgetPlacement === "belowEditor"

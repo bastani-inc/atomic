@@ -8,12 +8,15 @@ export class ScrollWidget extends ScrollView {
 	private requestVersion: number | undefined;
 
 	private readonly widget: ScrollableWidgetComponent;
-	readonly maxHeight: number;
+	private readonly heightCap: () => number;
+	get maxHeight(): number {
+		return this.heightCap();
+	}
 
-	constructor(widget: ScrollableWidgetComponent, maxHeight: number) {
+	constructor(widget: ScrollableWidgetComponent, maxHeight: number, heightCap: () => number = () => maxHeight) {
 		super(widget, { overscroll: "contain", scrollbar: "auto" });
 		this.widget = widget;
-		this.maxHeight = maxHeight;
+		this.heightCap = heightCap;
 	}
 
 	override scrollBy(lines: number): number {

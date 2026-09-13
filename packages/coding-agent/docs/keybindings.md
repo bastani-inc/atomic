@@ -8,6 +8,21 @@ Older configs using pre-namespaced ids such as `cursorUp` or `expandTools` are m
 
 After editing `keybindings.json`, run `/reload` in Atomic to apply the changes without restarting the session.
 
+## Workflow widget scrolling
+
+`app.workflows.scrollUp` defaults to `["alt+k", "alt+pageUp"]`; `app.workflows.scrollDown` defaults to `["alt+j", "alt+pageDown"]`. These scroll the main-chat workflow list without leaving the editor. Any other configured editor binding takes precedence, including the Vim Alt+J/K cursor bindings. Alt+Up remains available for queued messages.
+
+For example, replace both defaults and their aliases:
+
+```json
+{
+  "app.workflows.scrollUp": ["ctrl+alt+k"],
+  "app.workflows.scrollDown": ["ctrl+alt+j"]
+}
+```
+
+Use `[]` to disable an action, then `/reload`. On macOS, the widget labels Alt as Option; enable Option-as-Alt/Meta in your terminal. If a shortcut produces a character or is intercepted by your terminal or multiplexer, use the Page aliases or choose another binding. Wheel scrolling over the widget is independent of these shortcuts and requires fullscreen mouse reporting.
+
 ## Key Format
 
 `modifier+key` where modifiers are `ctrl`, `shift`, `alt`, or `super` (combinable) and keys are:
