@@ -41,6 +41,8 @@ export type EngineTerminalControl = { kind: "autowrap"; enabled: boolean };
 export interface EngineExtensionShortcut {
 	key: string;
 	description?: string;
+	/** Editor-owned input exclusions resolved in the engine and matched by the host. */
+	editorKeys?: KeyId[];
 }
 
 export type SerializableKeybindingsConfig = Record<string, KeyId | KeyId[]>;
@@ -317,12 +319,15 @@ function parseKeybindingState(value: JsonValue | undefined): EngineKeybindingSta
 		if (
 			!isJsonObject(shortcut) ||
 			typeof shortcut.key !== "string" ||
-			(shortcut.description !== undefined && typeof shortcut.description !== "string")
+			(shortcut.description !== undefined && typeof shortcut.description !== "string") ||
+			(shortcut.editorKeys !== undefined &&
+				(!Array.isArray(shortcut.editorKeys) || shortcut.editorKeys.some((key) => typeof key !== "string")))
 		)
 			return undefined;
 		shortcuts.push({
 			key: shortcut.key,
 			...(typeof shortcut.description === "string" ? { description: shortcut.description } : {}),
+			...(Array.isArray(shortcut.editorKeys) ? { editorKeys: shortcut.editorKeys as KeyId[] } : {}),
 		});
 	}
 	return { userBindings, effectiveBindings, shortcuts };

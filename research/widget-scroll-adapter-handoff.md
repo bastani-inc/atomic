@@ -132,3 +132,63 @@ These are injected terminal bytes, not physical keyboard/mouse or OS-forwarding 
 ### Exact-commit gate record
 
 Per the parent amendment, after the signed repair commit the same root/package gates, independent geometry probe, `npm run check` and `npm run build` must run on the exact final SHA. Post-commit logs are reserved as `/tmp/repair-post-{focused,package,geometry,check,build,docs}.log`; `/tmp/repair-post-result.md` records the actual SHA and outcomes after execution without changing that verified commit. This pre-commit note does not claim those future runs passed. Parent owns the subsequent independent recheck, exact-head CI/no-feedback merge gate and latest-main alpha.10 release; this writer performs none of those publication actions.
+
+## Consolidated shared-encoding correction (after d350cbc)
+
+**Earlier readiness is withdrawn.** All three entries in `consolidated_findings` (completion, evidence and risk reviewers; latest review artifact lines 519–582) report the same P2 defect. Semantic spelling identity is not accepted-input identity: BS can match both `ctrl+h` and `backspace`; Tab and Return similarly overlap Ctrl+I and Ctrl+M. The historical `/tmp/widget-risk-editor.ts` reproduced `draft` unchanged and workflow scroll 0→1. This section supersedes the earlier claim that spelling normalization alone establishes configured-editor precedence. Parent independent review is still required; this writer does not assert reviewer quorum.
+
+### Full batch closure and acceptance matrix amendment
+
+The shared root cause is repaired for all three findings. Resolved opt-in shortcuts now carry editor-owned keys, and both production native dispatch and the isolated host bridge call the real `matchesKey` on **each received input** before invoking a workflow shortcut. The optional exclusion list is serialized and validated in the existing keybinding-state message. Identity-based registration filtering remains for identical key IDs; partial overlap does not remove the registration or erase distinct CSI-u/modifyOtherKeys input. Raw configurations, modifier order/case spelling, return/escape aliases, action omissions/empties/remaps and unrelated literal extension policy are preserved.
+
+Hints test parser acceptance of raw ASCII and ESC-prefixed ASCII, rather than declaring ad hoc aliases equivalent. These cover the cross-ID legacy collisions in the installed pi-tui parser: BS (including Windows Terminal's Ctrl+Backspace heuristic and SSH exception), Tab, CR/LF (Kitty-dependent Shift+Enter), Escape/Ctrl+[, Ctrl+-/Ctrl+_, ESC+BS/CR, and Alt+B/F/P/N versus Alt+Left/Right/Up/Down. Explicit enhanced events are evaluated at dispatch, including the parser's modifier, keypad and alternate-layout rules; no broader equivalence class is invented. One actionable keybindings-guide paragraph explains ambiguous legacy hints, enhanced-protocol distinctions and portable remapping. Existing Unreleased scrolling notes already promise editor precedence; no duplicate changelog entry was added.
+
+| Frozen acceptance clause | Current repair evidence |
+| --- | --- |
+| Configured editor wins shared input; editor focus and typing preserved | Required input gate: production CustomEditor, production native shortcut setup, serialized keybinding-state parsing and actual isolated-host bridge, real workflow factory handlers; BS deletion, Tab completion, no-model Enter submission, raw config preservation and distinct enhanced scrolling controls |
+| Modifier-order/return/escape repair, Alt+K/J/Page aliases, Alt+Up, disabled/remapped actions, literal opt-in and unrelated legacy policy | All earlier tests retained; actual-input matrix adds equivalent spellings and legacy literal override controls |
+| Actual allocation, ten/short-terminal cap, multiline clipping, run-ID anchors, wheel bounds, slim overflow-only scrollbar, native/remote resize and legacy/default compatibility, numeric-counter seed | Same full root/package and mixed-geometry commands rerun; no viewport/cap/anchor/lifecycle code changed in this correction |
+| Real CLI/RPC and platform limits | Dedicated macOS tmux scenario below; injected hex BS/Tab/CR, explicit CSI-u control; physical Mac input and live Linux/Windows remain unverified |
+| Exact signed final SHA and clean tree | Post-commit repeat below is mandatory; results written outside the repository so the verified SHA remains exact |
+
+### Red/green and checks
+
+- Production native BS test failed with `draft !== draf` before dispatch repair (`/tmp/overlap-red-input.log`); then nine tests passed (`/tmp/overlap-green-input.log`). Adding the hint assertion failed with `ctrl+h · Wheel scroll workflows`, then passed (`/tmp/overlap-{red,green}-hint.log`). The serialized remote counterpart failed with `draft !== draf`, then passed after transport/host repair (`/tmp/overlap-{red,green}-remote.log`).
+- Incremental matrix expansion passed **60 tests** in the required `workflow-widget-scroll-input.test.ts` (`/tmp/overlap-input-final.log`). It includes raw and enhanced controls, Kitty on/off, simulated Windows Terminal/SSH parser environments, default bindings, literal opt-in/legacy controls and actual completion/submission. These simulated environments are not physical OS verification.
+- The original `/tmp/widget-risk-editor.ts` is preserved unchanged. Its hand-written `matchesKey`-only dispatch still fails by construction because it ignores resolved exclusions (`/tmp/overlap-original-shim.log`). Per parent clarification, `/tmp/widget-risk-editor-production.ts` replaces only that shim with production `setupExtensionShortcuts`: `bun /tmp/widget-risk-editor-production.ts` passes, showing `{draft:"draft",scroll:0}` → BS `{draft:"draf",scroll:0}` → explicit Ctrl+H `{draft:"draf",scroll:1}`, plus a wheel-only hint (`/tmp/overlap-production-repro.log`). The durable gate exercises the same production path, not the stale shim.
+- `bash /tmp/overlap-gates.sh overlap` ran the full handoff root command plus `interactive-engine-host-disposal.test.ts`: **17 files / 215 tests**; package **6 files / 19 tests**. Mixed geometry passed legacy/two fractional widgets, all earlier resize steps, boundary containment and disappearing overflow. `npm run check`, `npm run build`, package `docs:check` (**91 pages**) and `git diff --check` all exited 0. Commands and outcomes: `/tmp/overlap-gates.log`; individual logs `/tmp/overlap-{focused,package,geometry,check,build,docs,diff}.log`.
+- Qlty 0.642.0 used unchanged `.qlty/qlty.toml`. Scoped `check` exited 0 (`No issues`), but this config has no lint plugins; scoped Biome plus `npm run check` is authoritative lint evidence. Before/after `metrics --functions` and `smells` cover resolver, identity helper and hint. Existing resolver function complexity rose 25→28; `buildBuiltinKeybindings` stays 19; resolver total complexity is now 53. These remain disclosed complexity findings, not a clean-smells claim; no unrelated refactor/config churn was introduced. Logs `/tmp/overlap-qlty-{before-metrics,before-smells,check,metrics,smells}.log`.
+
+### Dedicated actual CLI/RPC terminal
+
+Candidate: d350cbc plus this correction, successfully built before launch. Environment: Darwin arm64, Node v26.8.2, Bun 1.4.2, tmux 3.7c, 100×30. Agent config `/tmp/widget-overlap-terminal/agent/keybindings.json`:
+
+```json
+{"app.workflows.scrollUp":[],"app.workflows.scrollDown":["ctrl+h","ctrl+i","ctrl+m"],"tui.editor.deleteCharBackward":"backspace","tui.input.newLine":"enter","tui.input.submit":"ctrl+super+enter"}
+```
+
+Enter intentionally inserts a newline, preventing a model call. Launch and relevant input:
+
+```sh
+tmux new-session -d -s widget-overlap-proof -x 100 -y 30 -c "$PWD" 'ATOMIC_CODING_AGENT_DIR=/tmp/widget-overlap-terminal/agent ATOMIC_OFFLINE=1 bun packages/coding-agent/src/cli.ts --approve --no-session --no-extensions -e ./test/fixtures/workflow-widget-scroll-extension.ts'
+# Poll capture-pane for fixture text, then Ctrl+U and type draft.
+tmux send-keys -t widget-overlap-proof:0.0 -H 08
+tmux send-keys -t widget-overlap-proof:0.0 -l -- $'\033[104;5u'
+# Restore draft for before/after capture at the selected workflow position.
+tmux send-keys -t widget-overlap-proof:0.0 -l -- t
+tmux send-keys -t widget-overlap-proof:0.0 -H 08
+tmux send-keys -t widget-overlap-proof:0.0 C-u
+tmux send-keys -t widget-overlap-proof:0.0 -l -- /hotk
+tmux send-keys -t widget-overlap-proof:0.0 -H 09
+tmux send-keys -t widget-overlap-proof:0.0 -H 0d
+tmux send-keys -t widget-overlap-proof:0.0 -l -- second
+tmux send-keys -t widget-overlap-proof:0.0 C-c C-c
+```
+
+Bounded polling asserted each visible state. Real RPC child PID 53513, parent 53498, loaded this checkout's fixture (`rpc.txt`). Hex BS changed `draft` to `draf`; diff of the final ten workflow rows is empty (`bs-before.txt`, `bs-after.txt`). Explicit CSI-u Ctrl+H moved the workflow one row while preserving `draf` (`hex-bs.txt`, `enhanced.txt`). Hex Tab completed `/hotk` to `/hotkeys` with identical widget rows (`tab-before.txt`, `tab-after.txt`). Hex CR followed by `second` produced two editor lines (`/hotkeys` and `second`), again with identical widget rows (`enter-after.txt`). `tmux has-session` returned 1 after the two Ctrl+C inputs. An initial literal-control send did not establish deletion; the retained `bs.txt` is not passing BS evidence. The asserted hex-byte captures are authoritative for this run.
+
+All captures are local under `/tmp/widget-overlap-terminal/`. No model calls, production credentials or Herdr operations were used. Existing Intercom startup stack and `[Herdr] protocol_rejected` notice were observed but left unchanged. No other checkout writes, lifecycle changes, worktrees, push/PR/merge/tag/publication, or prior release/workflow resumption occurred. The original uncommitted release preparation remains outside this stage's scope.
+
+### Mandatory post-commit repeat
+
+After the normally configured signed conventional commit, run `bash /tmp/overlap-gates.sh overlap-post` and `bun /tmp/widget-risk-editor-production.ts` on its exact SHA. Record SHA, results and porcelain status in `/tmp/overlap-post-result.md`, without changing the committed handoff. This sentence reserves the gate, not a claim that it has already passed. Parent owns independent review, exact-head green CI/no-addressable-feedback merge and latest-origin/main alpha.10 publication.

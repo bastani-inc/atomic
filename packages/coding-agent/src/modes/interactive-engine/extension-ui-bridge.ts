@@ -48,7 +48,10 @@ export function attachInteractiveEngineHost(
 	const dialogs = new EngineDialogHostController(runtime, ui);
 	let shortcuts: EngineExtensionShortcut[] = [];
 	const dispatchShortcut = (data: string): boolean => {
-		const shortcut = shortcuts.find(({ key }) => matchesKey(data, key as KeyId));
+		const shortcut = shortcuts.find(
+			({ key, editorKeys }) =>
+				matchesKey(data, key as KeyId) && !editorKeys?.some((editorKey) => matchesKey(data, editorKey)),
+		);
 		if (!shortcut) return false;
 		void runtime
 			.invokeRemoteShortcut(shortcut.key)

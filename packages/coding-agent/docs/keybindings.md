@@ -23,6 +23,8 @@ For example, replace both defaults and their aliases:
 
 Use `[]` to disable an action, then `/reload`. On macOS, the widget labels Alt as Option; enable Option-as-Alt/Meta in your terminal. If a shortcut produces a character or is intercepted by your terminal or multiplexer, use the Page aliases or choose another binding. Wheel scrolling over the widget is independent of these shortcuts and requires fullscreen mouse reporting.
 
+Some differently named keys share terminal input: for example, Ctrl+H and Backspace, Ctrl+I and Tab, or Ctrl+M and Enter. Shared input stays with the editor, and ambiguous legacy shortcuts are omitted from the widget hint. A terminal sending distinct enhanced-protocol input may still use the workflow binding. For consistent behavior across terminals, choose an unambiguous binding or use the Page aliases rather than relying on that distinction.
+
 ## Key Format
 
 `modifier+key` where modifiers are `ctrl`, `shift`, `alt`, or `super` (combinable) and keys are:

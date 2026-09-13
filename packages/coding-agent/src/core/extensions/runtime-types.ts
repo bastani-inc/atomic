@@ -41,6 +41,8 @@ export interface ExtensionShortcut {
 	description?: string;
 	keybinding?: import("../keybindings.js").Keybinding;
 	preferEditor?: boolean;
+	/** Resolved editor-owned keys; dispatch must yield only for input these keys accept. */
+	editorKeys?: KeyId[];
 	handler: (ctx: ExtensionContext) => Promise<void> | void;
 	extensionPath: string;
 }

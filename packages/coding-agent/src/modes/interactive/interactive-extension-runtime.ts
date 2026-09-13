@@ -69,7 +69,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 	this.defaultEditor.onExtensionShortcut = (data: string) => {
 		for (const [shortcutStr, shortcut] of shortcuts) {
 			// Cast to KeyId - extension shortcuts use the same format
-			if (matchesKey(data, shortcutStr as KeyId)) {
+			if (matchesKey(data, shortcutStr as KeyId) && !shortcut.editorKeys?.some((key) => matchesKey(data, key))) {
 				// Run handler async, don't block input
 				Promise.resolve(shortcut.handler(createContext())).catch((err) => {
 					this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);

@@ -54,20 +54,30 @@ export interface ExtensionShortcutResolution {
 	diagnostics: ResourceDiagnostic[];
 }
 
-function configuredShortcutKeys(shortcut: ExtensionShortcut, bindings: KeybindingsConfig): KeyId[] {
+function editorKeysForShortcut(shortcut: ExtensionShortcut, bindings: KeybindingsConfig): KeyId[] {
+	return Object.entries(bindings).flatMap(([action, keys]) => {
+		if (
+			keys === undefined ||
+			action === shortcut.keybinding ||
+			WORKFLOW_SCROLL_ACTIONS.includes(action) ||
+			!(
+				shortcut.preferEditor ||
+				(RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]).includes(action)
+			)
+		)
+			return [];
+		return Array.isArray(keys) ? keys : [keys];
+	});
+}
+
+function configuredShortcutKeys(
+	shortcut: ExtensionShortcut,
+	bindings: KeybindingsConfig,
+	editorKeys: KeyId[],
+): KeyId[] {
 	const configured = bindings[shortcut.keybinding!] ?? [];
 	return (Array.isArray(configured) ? configured : [configured]).filter(
-		(key) =>
-			!Object.entries(bindings).some(
-				([action, keys]) =>
-					action !== shortcut.keybinding &&
-					!WORKFLOW_SCROLL_ACTIONS.includes(action) &&
-					(shortcut.preferEditor ||
-						(RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]).includes(action)) &&
-					(Array.isArray(keys) ? keys : [keys]).some(
-						(value) => value !== undefined && keybindingIdentity(value) === keybindingIdentity(key),
-					),
-			),
+		(key) => !editorKeys.some((value) => keybindingIdentity(value) === keybindingIdentity(key)),
 	);
 }
 
@@ -90,8 +100,9 @@ export function resolveExtensionShortcuts(
 	for (const ext of extensions) {
 		for (const [key, shortcut] of ext.shortcuts) {
 			if (shortcut.keybinding) {
-				for (const binding of configuredShortcutKeys(shortcut, resolvedKeybindings)) {
-					extensionShortcuts.set(binding.toLowerCase() as KeyId, { ...shortcut, shortcut: binding });
+				const editorKeys = editorKeysForShortcut(shortcut, resolvedKeybindings);
+				for (const binding of configuredShortcutKeys(shortcut, resolvedKeybindings, editorKeys)) {
+					extensionShortcuts.set(binding.toLowerCase() as KeyId, { ...shortcut, shortcut: binding, editorKeys });
 				}
 				continue;
 			}
@@ -124,7 +135,12 @@ export function resolveExtensionShortcuts(
 					shortcut.extensionPath,
 				);
 			}
-			extensionShortcuts.set(normalizedKey, shortcut);
+			extensionShortcuts.set(
+				normalizedKey,
+				shortcut.preferEditor
+					? { ...shortcut, editorKeys: editorKeysForShortcut(shortcut, resolvedKeybindings) }
+					: shortcut,
+			);
 		}
 	}
 	return { shortcuts: extensionShortcuts, diagnostics };
