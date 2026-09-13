@@ -9,7 +9,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added a live needs-input affordance to the wide `BACKGROUND` panel for a visible run tree with exactly one displayable human-in-the-loop prompt. The card preserves the full workflow identity and width-bounded pending-stage/tool metadata, shows a bounded, terminal-control-stripped question and exact `Answer: /workflow connect <full-run-id>` action without a duplicate F2 hint, and repaints back to the ordinary row when the exact prompt clears. The header keeps generic connect guidance whenever any visible workflow needing attention lacks its own answer action. Interactive users answer through F2 or the connected workflow, while agents retain the exact `workflow answer` run/stage/prompt path; promptless, multi-question, or ambiguous trees remain status-only, and the live affordance itself stays outside parent chat and model context without changing existing answer notices ([#2700](https://github.com/bastani-inc/atomic/pull/2700) by [@Shreyasd10](https://github.com/Shreyasd10), related to [#2529](https://github.com/bastani-inc/atomic/issues/2529)).
-- Main-chat workflow cards now scroll with the wheel over their actual allocated viewport, with a slim scrollbar only when content overflows. Configurable Alt+K/J shortcuts, labeled Option on macOS, retain Alt+PageUp/PageDown aliases and yield to configured editor bindings. The ten-row/short-terminal cap, multiline-draft reachability and run-ID anchors remain intact across insertion, deletion, collapse and resize, including isolated-engine sessions.
 
 ### Fixed
 
@@ -21,8 +20,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Quit preserves the final durable paused state when an earlier resume has already acknowledged locally but is still saving or flushing its running state. A superseded queued resume cannot overwrite that quit; independent workflows remain unblocked ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - HIL ANSWERED notices now escape terminal controls in questions, answers, selected choices, and workflow attribution, including reopened notices, without changing stored prompt or answer data ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Reloading extensions no longer duplicates previously delivered HIL answer notices when another workflow starts; new answers still produce their normal notice ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+
+## [0.9.19-alpha.10] - 2026-09-13
+
+### Added
+
+- Main-chat workflow cards now scroll with the wheel over their actual allocated viewport, with a slim scrollbar only when content overflows. Configurable Alt+K/J shortcuts, labeled Option on macOS, retain Alt+PageUp/PageDown aliases and yield to configured editor bindings. The ten-row/short-terminal cap, multiline-draft reachability and run-ID anchors remain intact across insertion, deletion, collapse and resize, including isolated-engine sessions.
+
+### Fixed
+
 - Model fallback releases the failed attempt's Intercom ownership before initializing its replacement, avoiding duplicate live-stage ownership warnings while retaining queued delivery handoff. Concurrent attachment and steering wait for cleanup and share successor creation. Cancellation during cleanup no longer starts a replacement session, and failed extension initialization cleans up its session. If that cleanup fails, the stage stops rather than retrying or creating another session, preserving both the initialization and cleanup errors for diagnosis ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
-- Removed the confusing visible-row counter from the main-chat workflow widget hint; the final hint now shows available scrolling shortcuts and wheel help.
+- Removed the confusing visible-row counter from the main-chat workflow widget hint; the final hint now reads `↑↓ scroll` followed by available scrolling shortcuts, matching the `/tasks` hint style.
 
 ## [0.9.19-alpha.9] - 2026-09-12
 

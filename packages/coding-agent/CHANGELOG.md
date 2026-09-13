@@ -2,11 +2,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- Extension widgets can opt into a height-capped fullscreen viewport with widget-local wheel scrolling, an overflow-only scrollbar, and scroll-position feedback in both in-process and isolated-engine sessions. Existing widgets retain their default behavior.
-- The main-chat workflow list supports local wheel scrolling with an overflow-only slim scrollbar and configurable Alt+K/J shortcuts, labeled Option on macOS. Alt+PageUp/PageDown remain aliases, configured editor bindings take precedence, and the list keeps its row cap and run anchors through clipping and resize.
-
 ### Fixed
 
 - Agent questionnaires retain unsubmitted answers, partial multiselect choices, inline text, notes, and editing position when a workflow stage is detached and reattached. A new questionnaire starts unanswered; cancellation remains a cancellation ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
@@ -15,8 +10,18 @@
 - Background widgets now follow the live terminal height after resizing without needing a reload ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Completed tool results and reopened transcripts strip terminal control strings and nonprinting control characters before display, without changing stored results or model context ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Tool results containing repeated unterminated terminal control strings no longer stall display or transcript replay ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
-- Workflow model fallback cleans up the failed attempt's Intercom ownership before registering its replacement, preventing duplicate live-stage ownership warnings without weakening route protections ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
 - Background workflow cards and pending-input actions remain visible and scrollable after `/reload`; failed reloads preserve the existing widget, and retiring extensions no longer remove their replacements ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+
+## [0.9.19-alpha.10] - 2026-09-13
+
+### Added
+
+- Extension widgets can opt into a height-capped fullscreen viewport with widget-local wheel scrolling, an overflow-only scrollbar, and scroll-position feedback in both in-process and isolated-engine sessions. Existing widgets retain their default behavior.
+- The main-chat workflow list supports local wheel scrolling with an overflow-only slim scrollbar and configurable Alt+K/J shortcuts, labeled Option on macOS. Alt+PageUp/PageDown remain aliases, configured editor bindings take precedence, and the list keeps its row cap and run anchors through clipping and resize.
+
+### Fixed
+
+- Workflow model fallback cleans up the failed attempt's Intercom ownership before registering its replacement, preventing duplicate live-stage ownership warnings without weakening route protections ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
 
 ## [0.9.19-alpha.9] - 2026-09-12
 
