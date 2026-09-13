@@ -134,6 +134,21 @@ describe("feedback privacy core", () => {
 		assert.equal(displayed.includes(accountName), false);
 		assert.deepEqual(result.replacements, [{ category: "home-directory", count: 5 }]);
 	});
+	// #2799: a later home segment must not retain a second account name.
+	test("scrubs repeated home-directory segments in one path in a single pass", () => {
+		for (const [path, expected] of [
+			["/Users/bob/home/alice/x", "~/x"],
+			["/home/alice/Users/bob", "~"],
+			["C:\\Users\\bob\\home\\alice\\x", "~\\x"],
+			["/Users/bob/home/alice/home/carol/file.log", "~/file.log"],
+		]) {
+			const result = scrubFeedback("safe", path);
+			assert.equal(result.body, expected);
+			assert.doesNotMatch(JSON.stringify(result), /alice|bob|carol/u);
+			assert.deepEqual(result.replacements, [{ category: "home-directory", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body), { ...result, replacements: [] });
+		}
+	});
 	test("scrubs prefixed and suffixed credential names and credentials in any URL scheme", () => {
 		const secrets = [
 			"G".repeat(40),

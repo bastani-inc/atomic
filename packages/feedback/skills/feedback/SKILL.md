@@ -24,3 +24,5 @@ If `worktree.truncated` or `createdPathsTruncated` is true, state in the draft's
 If `subagent` or `debugger` is unavailable, interrupted, fails, or is inconclusive, continue to an honest editable draft. For unavailable or failed investigation, say `Investigation unavailable`, record the failure as supported evidence, leave the cause in unknowns, and do not invent findings.
 
 Never launch a debugger for an enhancement. After displaying the exact prepared draft, wait for ordinary user approval. Only then call `feedback_submit_issue` exactly once with the same reviewed kind, title, and body. Relay refusals and failures as ordinary text, never retry without fresh approval, and never invent an issue URL.
+
+Post only through `feedback_submit_issue`; never post through shell commands, `gh`, or any other tool.

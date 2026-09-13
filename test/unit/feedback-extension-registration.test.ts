@@ -49,6 +49,13 @@ test("bundled feedback skill collects and prepares bug reports", async () => {
 	assert.match(instructions, /(?:Display|display) the (?:tool's )?exact prepared (?:title and body|Markdown)/);
 });
 
+// #2799: drafting must not bypass the approval gate through unrestricted shell access.
+test("bundled feedback skill posts only through the approval-gated submission tool", async () => {
+	const instructions = await readText("packages/feedback/skills/feedback/SKILL.md");
+	assert.match(instructions, /Post only through `feedback_submit_issue`/u);
+	assert.match(instructions, /never post through shell commands, `gh`, or any other tool/u);
+});
+
 function prepareTool(): ToolDefinition {
 	let preparedTool: ToolDefinition | undefined;
 	feedback({
