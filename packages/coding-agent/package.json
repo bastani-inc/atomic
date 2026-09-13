@@ -90,6 +90,7 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@mozilla/readability": "^0.6.0",
     "@silvia-odwyer/photon-node": "0.3.4",
+    "@sinclair/typebox": "0.34.52",
     "chalk": "6.0.0",
     "cross-spawn": "7.0.6",
     "diff": "8.0.4",
