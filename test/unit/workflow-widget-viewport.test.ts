@@ -137,3 +137,41 @@ test("mounted workflow list caps rows and keeps offscreen runs reachable without
 		dispose();
 	}
 });
+
+// PR #2700: shutdown of an overlapping installer must not remove the successor's scroll target.
+test("replacement viewport remains scrollable after retiring installer cleanup and delayed factory", async () => {
+	const { createStore } = await import("../../packages/workflows/src/shared/store.js");
+	const { installStoreWidget, scrollStoreWidget } = await import(
+		"../../packages/workflows/src/tui/store-widget-installer.js"
+	);
+	const store = createStore();
+	for (let i = 0; i < 20; i++)
+		store.recordRunStart({
+			...snap.runs[0]!,
+			id: `reload-${i}`,
+			name: `workflow-${i}`,
+			status: "paused",
+			startedAt: now + i,
+		});
+	const factories: import("../../packages/workflows/src/tui/store-widget-installer.js").WidgetFactory[] = [];
+	const ui = {
+		setWidget(_key: string, factory: (typeof factories)[number] | undefined) {
+			if (factory) factories.push(factory);
+		},
+		requestRender() {},
+	};
+	const host = { terminal: { rows: 18 }, requestRender() {} };
+	const a = installStoreWidget({ ui }, store);
+	const b = installStoreWidget({ ui }, store);
+	const replacement = factories[1]!(host, undefined);
+	const before = replacement.render(120);
+	a();
+	// A host can finish queued work after shutdown; it must not steal the viewport mapping.
+	factories[0]!(host, undefined);
+	scrollStoreWidget(store, 1);
+	assert.notDeepEqual(replacement.render(120), before);
+	b();
+	const after = replacement.render(120);
+	scrollStoreWidget(store, 1);
+	assert.deepEqual(replacement.render(120), after);
+});

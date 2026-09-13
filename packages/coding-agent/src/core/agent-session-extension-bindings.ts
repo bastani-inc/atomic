@@ -469,6 +469,7 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 	let rollbackPreparedResources: (() => void) | undefined;
 	try {
 		this._bindExtensionCore(candidateRunner, publication);
+		candidateRunner.stageWidgets();
 		candidateRunner.setUIContext(this._extensionUIContext, this._extensionMode);
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
 		await options?.beforeSessionStart?.();
@@ -490,6 +491,7 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 	} catch (error) {
 		rollbackPreparedResources?.();
 		publication.discard();
+		await emitSessionShutdownEvent(candidateRunner, { type: "session_shutdown", reason: "reload" });
 		candidateRunner.invalidate();
 		throw error;
 	}
@@ -516,6 +518,7 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 	});
 	// Publish reporter claims only after fallible preparation, before old shutdown or queued user effects.
 	await publication.activateStarts();
+	candidateRunner.commitWidgets();
 	if (reason === "reload") await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 	oldRunner.invalidate();
 	await publication.release();

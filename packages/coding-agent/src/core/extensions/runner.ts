@@ -119,6 +119,12 @@ export async function emitSessionShutdownEvent(
 	return false;
 }
 
+type WidgetArguments = [
+	key: string,
+	content: string[] | Parameters<ExtensionUIContext["setWidget"]>[1],
+	options?: Parameters<ExtensionUIContext["setWidget"]>[2],
+];
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
@@ -285,6 +291,74 @@ export class ExtensionRunner {
 		this.reloadHandler = async () => {};
 	}
 
+	// Shared host identity, not the prompt wrapper recreated on each binding.
+	private static readonly widgetOwners = new WeakMap<ExtensionUIContext, Map<string, object>>();
+	private readonly widgetRegistrations = new Map<ExtensionUIContext, Map<string, object>>();
+	private pendingWidgets: Map<ExtensionUIContext, Map<string, WidgetArguments>> | undefined;
+
+	/** Defer candidate widget effects until fallible reload preparation succeeds. */
+	stageWidgets(): void {
+		this.pendingWidgets = new Map();
+	}
+
+	commitWidgets(): void {
+		const pending = this.pendingWidgets;
+		this.pendingWidgets = undefined;
+		for (const [ui, widgets] of pending ?? []) {
+			for (const args of widgets.values()) this.setOwnedWidget(ui, ...args);
+		}
+	}
+
+	private setOwnedWidget(ui: ExtensionUIContext, ...[key, content, options]: WidgetArguments): void {
+		if (this.staleMessage) return;
+		if (this.pendingWidgets) {
+			let widgets = this.pendingWidgets.get(ui);
+			if (!widgets) {
+				widgets = new Map();
+				this.pendingWidgets.set(ui, widgets);
+			}
+			widgets.set(key, [key, content, options]);
+			return;
+		}
+		let owners = ExtensionRunner.widgetOwners.get(ui);
+		if (!owners) {
+			owners = new Map();
+			ExtensionRunner.widgetOwners.set(ui, owners);
+		}
+		let registrations = this.widgetRegistrations.get(ui);
+		if (!registrations) {
+			registrations = new Map();
+			this.widgetRegistrations.set(ui, registrations);
+		}
+		// Once superseded, a retiring runner's queued updates cannot reclaim the key.
+		const previousRegistration = registrations.get(key);
+		if (previousRegistration && owners.get(key) !== previousRegistration) return;
+		if (content === undefined) {
+			const registration = registrations.get(key);
+			if (!registration || owners.get(key) !== registration) return;
+			owners.delete(key);
+			registrations.delete(key);
+			ui.setWidget(key, undefined, options);
+			return;
+		}
+		const registration = {};
+		owners.set(key, registration);
+		registrations.set(key, registration);
+		if (typeof content === "function") {
+			ui.setWidget(
+				key,
+				(tui, theme) => {
+					// The host may invoke a queued factory after replacement or invalidation.
+					if (this.staleMessage || owners.get(key) !== registration) return { render: () => [], invalidate() {} };
+					return content(tui, theme);
+				},
+				options,
+			);
+		} else {
+			ui.setWidget(key, content, options);
+		}
+	}
+
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
 		this.endActiveUIPrompt();
 		const binding = ++this.uiPromptBinding;
@@ -295,6 +369,16 @@ export class ExtensionRunner {
 	private wrapUIPromptContext(ui: ExtensionUIContext, binding: number): ExtensionUIContext {
 		return {
 			...ui,
+			setWidget: (...args) => this.setOwnedWidget(ui, ...args),
+			...(ui.onWidgetRelease
+				? {
+						onWidgetRelease: (key: string, listener: () => void) =>
+							ui.onWidgetRelease!(key, () => {
+								const registration = this.widgetRegistrations.get(ui)?.get(key);
+								if (registration && ExtensionRunner.widgetOwners.get(ui)?.get(key) === registration) listener();
+							}),
+					}
+				: {}),
 			select: (title, options, opts) =>
 				this.withUIPrompt(binding, "select", title, () => ui.select(title, options, opts)),
 			confirm: (title, message, opts) =>
@@ -458,6 +542,11 @@ export class ExtensionRunner {
 
 	invalidate(message = STALE_EXTENSION_CONTEXT_MESSAGE): void {
 		if (!this.staleMessage) {
+			this.pendingWidgets = undefined;
+			for (const [ui, registrations] of this.widgetRegistrations) {
+				for (const key of registrations.keys()) this.setOwnedWidget(ui, key, undefined);
+			}
+			this.widgetRegistrations.clear();
 			this.staleMessage = message;
 			this.runtime.invalidate(message);
 		}

@@ -118,6 +118,8 @@ export class EngineCustomUiService {
 		placement?: "aboveEditor" | "belowEditor",
 	): void {
 		const previous = this.widgetIds.get(key);
+		// Pending factories have no active component yet; invalidate their registration too.
+		this.widgetIds.delete(key);
 		if (previous) this.disposeComponent(previous, false, false);
 		if (!factory) return;
 		const componentId = `remote_widget_${++this.nextId}`;
@@ -148,7 +150,8 @@ export class EngineCustomUiService {
 				});
 			})
 			.catch((error: Error) => {
-				if (this.widgetIds.get(key) === componentId) this.widgetIds.delete(key);
+				if (this.widgetIds.get(key) !== componentId) return;
+				this.widgetIds.delete(key);
 				this.send({
 					type: "engine_custom_frame",
 					componentId,
@@ -333,6 +336,7 @@ export class EngineCustomUiService {
 	}
 
 	dispose(): void {
+		this.widgetIds.clear();
 		for (const componentId of [...this.active.keys()]) this.disposeComponent(componentId, true, false);
 	}
 	private disposeComponent(componentId: string, resolve: boolean, notifyWidgetRelease = true): void {

@@ -306,6 +306,7 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 					(pi) => {
 						pi.on("session_start", (event, ctx) => {
 							if (event.reason === "reload") candidateContext = ctx;
+							ctx.ui.setWidget("workflow.run", [event.reason === "reload" ? "candidate" : "live"]);
 						});
 						pi.on("resources_discover", (event) =>
 							event.reason === "reload" && failure === "extendResources"
@@ -385,7 +386,19 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 						}))
 					: undefined;
 			try {
-				await session.bindExtensions({ mode: "tui", uiContext: { ...noOpUIContext } });
+				// PR #2700: rejected startup must not replace the surviving widget.
+				let widget: string[] | undefined;
+				await session.bindExtensions({
+					mode: "tui",
+					uiContext: {
+						...noOpUIContext,
+						setWidget: (_key, content) => {
+							assert.ok(content === undefined || Array.isArray(content));
+							widget = content;
+						},
+					},
+				});
+				assert.deepEqual(widget, ["live"]);
 				const live = session.extensionRunner;
 				await fake.waitFor(1);
 				await live.emit({ type: "ui_prompt_start", reason: "ui_prompt", kind: "confirm" });
@@ -395,6 +408,7 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 					new RegExp(`${failure} rejected`),
 				);
 				assert.equal(session.extensionRunner, live);
+				assert.deepEqual(widget, ["live"]);
 				assert.deepEqual(
 					(await fake.calls()).filter((call) => call.phase === "start").map((call) => call.args[1]),
 					["report-agent", "report-agent"],
