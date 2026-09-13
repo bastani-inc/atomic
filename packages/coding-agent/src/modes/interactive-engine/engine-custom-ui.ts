@@ -337,7 +337,16 @@ export class EngineCustomUiService {
 
 	dispose(): void {
 		this.widgetIds.clear();
-		for (const componentId of [...this.active.keys()]) this.disposeComponent(componentId, true, false);
+		const errors: unknown[] = [];
+		for (const componentId of [...this.active.keys()]) {
+			try {
+				this.disposeComponent(componentId, true, false);
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		// Preserve the first disposal error, but only after all owned components are retired.
+		if (errors.length > 0) throw errors[0];
 	}
 	private disposeComponent(componentId: string, resolve: boolean, notifyWidgetRelease = true): void {
 		const record = this.active.get(componentId);
@@ -345,14 +354,18 @@ export class EngineCustomUiService {
 		this.active.delete(componentId);
 		// Claim cancellation before user disposal code can call done() reentrantly.
 		if (resolve) record.resolve(undefined);
-		record.component.dispose?.();
-		record.tui.stop();
-		if (record.widgetKey) {
-			if (this.widgetIds.get(record.widgetKey) === componentId) this.widgetIds.delete(record.widgetKey);
-			this.send({ type: "engine_custom_close", componentId });
-			if (notifyWidgetRelease) this.notifyWidgetRelease(record.widgetKey);
+		try {
+			record.component.dispose?.();
+		} finally {
+			// Owned widget disposal must not leave a stale viewport or release lease behind.
+			record.tui.stop();
+			if (record.widgetKey) {
+				if (this.widgetIds.get(record.widgetKey) === componentId) this.widgetIds.delete(record.widgetKey);
+				this.send({ type: "engine_custom_close", componentId });
+				if (notifyWidgetRelease) this.notifyWidgetRelease(record.widgetKey);
+			}
+			this.notifyState();
 		}
-		this.notifyState();
 	}
 	private notifyWidgetRelease(key: string): void {
 		for (const listener of this.widgetReleaseListeners.get(key) ?? []) {

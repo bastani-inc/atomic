@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
-import type { ExtensionError } from "../src/core/extensions/types.js";
+import type { ExtensionContext, ExtensionError } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -14,8 +14,19 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
-// PR #2700: both staged publication and omitted-widget retirement must finish after commit.
-test.each([false, true])("SDK reload contains widget disposal failures (omitted: %s)", async (omitted) => {
+// PR #2700: one exception-path matrix for replacement, omission, rollback and startup release.
+test.each([
+	"replacement",
+	"omitted",
+	"startup replacement",
+	"startup omitted",
+	"rejected",
+	"host release",
+	"engine shutdown",
+])("SDK widget cleanup exception matrix: %s", async (scenario) => {
+	const omitted = scenario.includes("omitted");
+	const startup = scenario.startsWith("startup");
+	const rejected = scenario === "rejected";
 	const dir = await mkdtemp(join(tmpdir(), "reload-widget-publication-"));
 	const source = new EventEmitter();
 	const timers = new Set<ReturnType<typeof setInterval>>();
@@ -23,6 +34,7 @@ test.each([false, true])("SDK reload contains widget disposal failures (omitted:
 	const frames: string[] = [];
 	const errors: ExtensionError[] = [];
 	const disposed: string[] = [];
+	const contexts: ExtensionContext[] = [];
 	let starts = 0;
 	let cleaningUp = false;
 	const load = () =>
@@ -33,6 +45,7 @@ test.each([false, true])("SDK reload contains widget disposal failures (omitted:
 					const listener = () => {};
 					let generation = 0;
 					pi.on("session_start", (_event, ctx) => {
+						contexts.push(ctx);
 						generation = ++starts;
 						lifecycle.push(`start:${generation}`);
 						timer = setInterval(() => {}, 60_000);
@@ -45,6 +58,11 @@ test.each([false, true])("SDK reload contains widget disposal failures (omitted:
 								invalidate() {},
 								dispose() {
 									disposed.push(`${key}:${generation}`);
+									if (key === "healthy") {
+										clearInterval(timer);
+										timers.delete(timer);
+										source.off("update", listener);
+									}
 									if (!cleaningUp && generation === 1 && key !== "healthy")
 										throw new Error(`dispose failed: ${key}`);
 								},
@@ -60,6 +78,7 @@ test.each([false, true])("SDK reload contains widget disposal failures (omitted:
 						clearInterval(timer);
 						timers.delete(timer);
 						source.off("update", listener);
+						if (rejected && generation > 1) throw new Error("candidate shutdown disposal failed");
 					});
 				},
 			],
@@ -74,6 +93,16 @@ test.each([false, true])("SDK reload contains widget disposal failures (omitted:
 			return {
 				loader: createTestResourceLoader({ extensionsResult: candidate }),
 				activate() {},
+				prepareCommit() {
+					if (rejected) throw new Error("candidate rejected");
+					return {
+						commit() {
+							loaded = candidate;
+							lifecycle.push("commit");
+						},
+						rollback() {},
+					};
+				},
 				commit() {
 					loaded = candidate;
 					lifecycle.push("commit");
@@ -111,9 +140,77 @@ test.each([false, true])("SDK reload contains widget disposal failures (omitted:
 			assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, omitted ? 4 : 3),
 		);
 		const retiring = session.extensionRunner;
-		await session.reload({ failOnExtensionErrors: true });
+		const oldOpens = frames.filter((line) => line.includes('"engine_custom_open"'));
+		if (scenario === "host release" || scenario === "engine shutdown") {
+			const releases: string[] = [];
+			const unsubscribes = ["workflow.run", "second", "healthy"].map((key) =>
+				engine.onWidgetRelease(key, () => releases.push(key)),
+			);
+			try {
+				if (scenario === "engine shutdown") {
+					assert.throws(() => engine.dispose(), /dispose failed: workflow.run/);
+					assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+					engine.dispose();
+				} else {
+					for (const open of oldOpens) {
+						const { componentId, widgetKey } = JSON.parse(open) as { componentId: string; widgetKey: string };
+						const release = () =>
+							engine.handleLine(JSON.stringify({ type: "engine_custom_dispose", componentId }));
+						if (widgetKey === "healthy") release();
+						else assert.throws(release, /dispose failed/);
+						release();
+					}
+					assert.deepEqual(releases, ["workflow.run", "second", "healthy"]);
+				}
+				retiring.invalidate();
+				retiring.invalidate();
+				assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+				assert.equal(source.listenerCount("update"), 0);
+				assert.equal(timers.size, 0);
+				for (const open of oldOpens) {
+					const { componentId } = JSON.parse(open) as { componentId: string };
+					assert.equal(
+						frames.filter((line) => line.includes('"engine_custom_close"') && line.includes(componentId)).length,
+						1,
+					);
+				}
+			} finally {
+				for (const unsubscribe of unsubscribes) unsubscribe();
+			}
+			return;
+		}
+		if (rejected) {
+			await assert.rejects(() => session.reload({ failOnExtensionErrors: true }), /candidate rejected/);
+			assert.equal(session.extensionRunner, retiring);
+			assert.deepEqual(lifecycle, ["start:1", "start:2", "shutdown:2"]);
+			assert.equal(source.listenerCount("update"), 1);
+			assert.equal(timers.size, 1);
+			assert.deepEqual(disposed, [], "staged candidate factories never acquire live components");
+			assert.deepEqual(frames, oldOpens, "rollback must not touch the old owner's widgets");
+			assert.throws(() => contexts[1].ui, /no longer active|stale|reload/i);
+			retiring.invalidate();
+			retiring.invalidate();
+			assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+			assert.equal(source.listenerCount("update"), 0);
+			assert.equal(timers.size, 0);
+			assert.throws(() => retiring.createContext().ui, /no longer active|stale|reload/i);
+			for (const open of oldOpens) {
+				const { componentId } = JSON.parse(open) as { componentId: string };
+				assert.equal(
+					frames.filter((line) => line.includes('"engine_custom_close"') && line.includes(componentId)).length,
+					1,
+				);
+			}
+			return;
+		}
+		await session.reload({ reason: startup ? "startup" : "reload", failOnExtensionErrors: true });
 		assert.notEqual(session.extensionRunner, retiring);
-		assert.deepEqual(lifecycle, ["start:1", "start:2", "commit", "shutdown:1", "release"]);
+		assert.deepEqual(
+			lifecycle,
+			startup
+				? ["start:1", "start:2", "commit", "release"]
+				: ["start:1", "start:2", "commit", "shutdown:1", "release"],
+		);
 		assert.equal(source.listenerCount("update"), 1);
 		assert.equal(timers.size, 1);
 		assert.throws(() => retiring.createContext().ui, /no longer active|stale|reload/i);
@@ -133,6 +230,13 @@ test.each([false, true])("SDK reload contains widget disposal failures (omitted:
 			],
 		);
 		assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+		for (const open of oldOpens) {
+			const { componentId } = JSON.parse(open) as { componentId: string };
+			assert.equal(
+				frames.filter((line) => line.includes('"engine_custom_close"') && line.includes(componentId)).length,
+				1,
+			);
+		}
 		await vi.waitFor(() =>
 			assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, omitted ? 5 : 4),
 		);
