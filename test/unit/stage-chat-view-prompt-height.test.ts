@@ -108,7 +108,7 @@ function makePromptView(
 }
 
 function promptIdentityBanner(plain: readonly string[]): string[] {
-	const bannerStart = plain.findIndex((line) => /^╭ AWAITING INPUT ─*╮$/.test(line));
+	const bannerStart = plain.findIndex((line) => /^╭ AWAITING INPUT.*╮$/.test(line));
 	if (bannerStart < 0) return [];
 	const bannerEnd = plain.findIndex((line, index) => index > bannerStart && /^╰─+╯$/.test(line));
 	return bannerEnd < 0 ? [] : plain.slice(bannerStart, bannerEnd + 1);

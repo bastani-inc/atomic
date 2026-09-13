@@ -34,6 +34,7 @@ import {
 } from "./stage-chat-view-archive-history.js";
 import { renderCustomUi } from "./stage-chat-view-custom-ui.js";
 import {
+	injectStageLabelIntoEditorTopRule,
 	renderFooterWithOrchestratorReturnHint,
 	renderHeader,
 	renderReadOnlyArchiveFooter,
@@ -140,7 +141,9 @@ export class StageChatView implements Component, Focusable {
 		const pendingLines = chatChromeHidden ? [] : this.chatHost.renderPendingMessages(w);
 		const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
 		const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
-		const editorLines = chatChromeHidden ? [] : this.chatHost.renderEditor(w);
+		const editorLines = chatChromeHidden
+			? []
+			: injectStageLabelIntoEditorTopRule(ctx, currentStage(ctx)?.name, this.chatHost.renderEditor(w));
 		const footerLines = customUiActive
 			? []
 			: promptActive

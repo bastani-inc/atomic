@@ -16,6 +16,7 @@ import {
 	setEditorBorderColor,
 	setEditorFocused,
 } from "./stage-chat-view-render-helpers.js";
+import { currentStage } from "./stage-chat-view-state.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
 function postMortemUnavailableMessage(reason: StageChatViewContext["postMortemUnavailableReason"]): string | undefined {
@@ -258,7 +259,7 @@ export function renderPromptBody(ctx: StageChatViewContext, width: number, budge
 		theme: ctx.theme,
 		width,
 		cursorOn: ctx.focused,
-		identity: { runId: ctx.runId, name: ctx.workflowName },
+		identity: { runId: ctx.runId, name: ctx.workflowName, stageName: currentStage(ctx)?.name },
 		maxRows: budget,
 		messageOffset: ctx.promptScrollOffset,
 	});
@@ -289,7 +290,7 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, bud
 	const responseLines = new Text(paint("response", ctx.theme.textMuted, { bold: true }), 2, 0).render(innerWidth);
 	const editorLines = editor.render(Math.max(20, innerWidth - 4)).map((line) => `  ${line}`);
 	const hintLines = new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth);
-	const identity = { runId: ctx.runId, name: ctx.workflowName };
+	const identity = { runId: ctx.runId, name: ctx.workflowName, stageName: currentStage(ctx)?.name };
 	const unattributed = renderPrimitivePromptBlockLayout(
 		ctx,
 		width,
