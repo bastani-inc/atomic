@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import {
 	type ConfiguredDbosDurability,
 	DbosDurableBackend,
@@ -12,7 +13,11 @@ import { dbosLifecycleState, resetDbosLifecycleForTests } from "../../packages/w
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { registerWorkflowLifecycleHandlers } from "../../packages/workflows/src/extension/extension-lifecycle.js";
 import type { WorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
-import { createWorkflowHilAnswerNotificationState } from "../../packages/workflows/src/extension/hil-answer-notifications.js";
+import {
+	createWorkflowHilAnswerNotificationState,
+	HIL_ANSWER_NOTICE_CUSTOM_TYPE,
+	installWorkflowHilAnswerNotifications,
+} from "../../packages/workflows/src/extension/hil-answer-notifications.js";
 import { createWorkflowLifecycleNotificationState } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { inspectRun, statusRuns } from "../../packages/workflows/src/runs/background/status.js";
@@ -79,7 +84,7 @@ async function readyDurability() {
 	return harness;
 }
 
-function captureHandlers(): Map<string, SessionEventHandler> {
+function captureHandlers(overrides: Partial<WorkflowExtensionRuntimeState> = {}): Map<string, SessionEventHandler> {
 	const handlers = new Map<string, SessionEventHandler>();
 	registerWorkflowLifecycleHandlers(
 		{
@@ -97,6 +102,7 @@ function captureHandlers(): Map<string, SessionEventHandler> {
 				startWorkflowDiscoveryWarmup() {},
 				setNotificationsActive() {},
 				updateHostStageSessionDir() {},
+				...overrides,
 			} as unknown as WorkflowExtensionRuntimeState,
 			storeWidgetRef: { current: null },
 			intercomControlRef: { current: null },
@@ -191,6 +197,66 @@ afterEach(() => {
 	store.clear();
 	setDurableBackend(undefined);
 	resetDbosLifecycleForTests();
+});
+
+// #2700: reload must reconstruct delivery from the parent transcript, not replay retained answers.
+test("reload with three old primitive answers and an unrelated launch delivers only the fresh answer", async () => {
+	const sessionManager = SessionManager.inMemory();
+	let unsubscribe = () => {};
+	const activate = (state: ReturnType<typeof createWorkflowHilAnswerNotificationState>) => {
+		unsubscribe = installWorkflowHilAnswerNotifications({
+			store,
+			state,
+			sendMessage(message, options) {
+				sessionManager.appendCustomMessageEntry(
+					message.customType,
+					message.content,
+					message.display ?? false,
+					message.details,
+					options?.excludeFromContext,
+				);
+			},
+		});
+	};
+	const answer = (id: string, kind: "input" | "confirm" | "select", value: string | boolean) => {
+		startBareRun(id, id);
+		store.recordStageStart(id, { id: "stage", name: "stage", status: "running", parentIds: [], toolEvents: [] });
+		assert.equal(
+			store.recordStagePendingPrompt(id, "stage", { id: `prompt-${id}`, kind, message: "Continue?", createdAt: 2 }),
+			true,
+		);
+		assert.equal(store.resolveStagePendingPrompt(id, "stage", `prompt-${id}`, value), true);
+	};
+	const notices = () =>
+		sessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === HIL_ANSWER_NOTICE_CUSTOM_TYPE);
+	try {
+		activate(createWorkflowHilAnswerNotificationState());
+		answer("old-input", "input", "literal");
+		answer("old-confirm", "confirm", false);
+		answer("old-select", "select", "Second");
+		const original = structuredClone(notices());
+		assert.equal(original.length, 3);
+		unsubscribe();
+		const replacementState = createWorkflowHilAnswerNotificationState();
+		const start = captureHandlers({
+			hilAnswerNotificationState: replacementState,
+			setNotificationsActive(active) {
+				if (active) activate(replacementState);
+			},
+		}).get("session_start");
+		assert.ok(start);
+		await start({ reason: "reload" }, { sessionManager });
+		startBareRun("unrelated", "unrelated");
+		assert.deepEqual(notices(), original);
+		answer("fresh", "input", "new answer");
+		assert.equal(notices().length, 4);
+		assert.deepEqual(notices().slice(0, 3), original);
+		assert.ok(notices().every((entry) => entry.type === "custom_message" && entry.excludeFromContext === true));
+	} finally {
+		unsubscribe();
+	}
 });
 
 describe("process-preserving session boundaries leave in-flight runs intact", () => {

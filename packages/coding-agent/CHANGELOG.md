@@ -7,6 +7,8 @@
 - Agent questionnaires retain unsubmitted answers, partial multiselect choices, inline text, notes, and editing position when a workflow stage is detached and reattached. A new questionnaire starts unanswered; cancellation remains a cancellation ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Questionnaire questions, choices, inline text, and answer reviews escape terminal controls before display without changing submitted answers ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Option previews escape terminal controls before Markdown rendering, including inside code fences, without changing the original preview returned with a selected answer ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Background widgets now follow the live terminal height after resizing without needing a reload ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Completed tool results and reopened transcripts strip terminal control strings and nonprinting control characters before display, without changing stored results or model context ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 
 ## [0.9.19-alpha.9] - 2026-09-12
 

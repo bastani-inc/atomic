@@ -361,12 +361,12 @@ export class RemoteComponentController {
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
-			let rows = 24;
+			let host: TUI | undefined;
 			const component = new RemoteComponent(
 				componentId,
 				this.runtime,
 				() => this.ui.requestRender(),
-				() => rows,
+				() => host?.terminal.rows ?? 24,
 				handlesInternalUiAction,
 			);
 			const unsubscribeWidgetRelease = this.ui.onWidgetRelease?.(widgetKey, () => this.releaseWidget(widgetKey));
@@ -382,7 +382,7 @@ export class RemoteComponentController {
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
-					rows = tui.terminal.rows;
+					host = tui;
 					return component;
 				},
 				{ placement: widgetPlacement },

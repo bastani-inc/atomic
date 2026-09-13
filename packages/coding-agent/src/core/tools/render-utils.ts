@@ -48,6 +48,13 @@ export function normalizeDisplayText(text: string): string {
 	return text.replace(/\r/g, "");
 }
 
+// Untrusted generic tool text is a display projection, never a storage/model rewrite.
+// Remove whole OSC/DCS/SOS/PM/APC strings before stripping their introducers.
+function sanitizeToolResultDisplay(text: string): string {
+	const withoutStrings = text.replace(/(?:\x1b[\]PX^_]|[\x90\x98\x9d-\x9f])[\s\S]*?(?:\x07|\x1b\\|\x9c)/g, "");
+	return sanitizeBinaryOutput(stripAnsi(withoutStrings)).replace(/[\r\x7f-\x9f]/g, "");
+}
+
 export function getTextOutput(
 	result: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> } | undefined,
 	showImages: boolean,
@@ -57,7 +64,7 @@ export function getTextOutput(
 	const textBlocks = result.content.filter((c) => c.type === "text");
 	const imageBlocks = result.content.filter((c) => c.type === "image");
 
-	let output = textBlocks.map((c) => sanitizeBinaryOutput(stripAnsi(c.text || "")).replace(/\r/g, "")).join("\n");
+	let output = textBlocks.map((c) => sanitizeToolResultDisplay(c.text || "")).join("\n");
 
 	const caps = getCapabilities();
 	if (imageBlocks.length > 0 && (!caps.images || !showImages)) {

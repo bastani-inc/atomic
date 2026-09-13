@@ -4,8 +4,10 @@ import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import { buildQuestionnaireResponse } from "../src/core/tools/ask-user-question/tool/response-envelope.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
+import { getTextOutput } from "../src/core/tools/render-utils.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -33,6 +35,52 @@ function createFakeTui(): TUI {
 describe("ToolExecutionComponent parity", () => {
 	beforeAll(() => {
 		initTheme("dark");
+	});
+
+	// #2700: completed results and JSONL replay share the generic display boundary.
+	test("completed questionnaire and transcript replay strip terminal controls without changing model data", () => {
+		const payload =
+			"C3 SAFE" +
+			"\x1b[2J\x1b]0;C3_OSC_TITLE\x07\x1bPC3_DCS\x1b\\\x1bXC3_SOS\x1b\\" +
+			"\x1b^C3_PM\x1b\\\x1b_C3_APC\x1b\\\x9d0;C3_C1OSC\x9c\x90C3_C1DCS\x9c" +
+			"\x98C3_C1SOS\x9c\x9eC3_C1PM\x9c\x9fC3_C1APC\x9c\x7f\x80\x85 QUESTION?";
+		const result = buildQuestionnaireResponse(
+			{ answers: [{ questionIndex: 0, question: payload, kind: "option", answer: "Alpha" }], cancelled: false },
+			{
+				questions: [
+					{
+						question: payload,
+						header: "Choice",
+						options: [
+							{ label: "Alpha", description: "A" },
+							{ label: "Beta", description: "B" },
+						],
+					},
+				],
+			},
+		);
+		const stored = JSON.stringify(result);
+		for (const envelope of [result, JSON.parse(stored) as typeof result]) {
+			const projection = getTextOutput(envelope, false);
+			expect(projection).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+			expect(projection).toContain("C3 SAFE QUESTION?");
+			expect(projection).not.toMatch(/C3_(?:OSC|DCS|SOS|PM|APC|C1)/);
+			const component = new ToolExecutionComponent(
+				"ask_user_question",
+				"hil-control",
+				{},
+				{},
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ ...envelope, isError: false }, false);
+			const display = stripAnsi(component.render(240).join("\n"));
+			expect(display).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+			expect(display).toContain("C3 SAFE QUESTION?");
+			expect(JSON.stringify(envelope)).toBe(stored);
+			expect(envelope.content[0]?.text).toContain(payload);
+		}
 	});
 
 	test("stacks custom call and result renderers like the old implementation", () => {

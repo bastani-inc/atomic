@@ -1,3 +1,4 @@
+import type { SessionEntry } from "../shared/persistence-restore.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -59,8 +60,28 @@ export function createWorkflowHilAnswerNotificationState(): WorkflowHilAnswerNot
 	};
 }
 
-export function resetWorkflowHilAnswerNotificationState(state: WorkflowHilAnswerNotificationState): void {
+export function resetWorkflowHilAnswerNotificationState(
+	state: WorkflowHilAnswerNotificationState,
+	entries: readonly SessionEntry[] = [],
+): void {
 	state.deliveredAnswerPrompts.clear();
+	// Reload creates a new extension state while retaining answered workflow prompts.
+	// Reconstruct delivery from this parent's transcript before subscribing again.
+	for (const entry of entries) {
+		if (entry.type !== "custom_message" || entry.customType !== HIL_ANSWER_NOTICE_CUSTOM_TYPE) continue;
+		const details = readHilAnswerNoticeDetails(entry);
+		if (
+			details?.kind !== "hil_answered" ||
+			typeof details.runId !== "string" ||
+			typeof details.stageId !== "string" ||
+			(details.promptId !== undefined && typeof details.promptId !== "string") ||
+			(details.promptKind !== undefined && typeof details.promptKind !== "string")
+		)
+			continue;
+		state.deliveredAnswerPrompts.add(
+			answerNoticeKey(details.runId, details.stageId, details.promptId, details.promptKind),
+		);
+	}
 }
 
 export function installWorkflowHilAnswerNotifications(options: WorkflowHilAnswerNotificationOptions): () => void {

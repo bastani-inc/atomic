@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Active workflow prompt choices and input/editor drafts now escape terminal controls before rendering, including compact responses, while preserving selection, editing, and submitted values ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - Quit preserves the final durable paused state when an earlier resume has already acknowledged locally but is still saving or flushing its running state. A superseded queued resume cannot overwrite that quit; independent workflows remain unblocked ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 - HIL ANSWERED notices now escape terminal controls in questions, answers, selected choices, and workflow attribution, including reopened notices, without changing stored prompt or answer data ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Reloading extensions no longer duplicates previously delivered HIL answer notices when another workflow starts; new answers still produce their normal notice ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 
 ## [0.9.19-alpha.9] - 2026-09-12
 
