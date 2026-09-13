@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.19-alpha.10] - 2026-09-13
+
 ### Added
 
 - Main-chat workflow cards now scroll with the wheel over their actual allocated viewport, with a slim scrollbar only when content overflows. Configurable Alt+K/J shortcuts, labeled Option on macOS, retain Alt+PageUp/PageDown aliases and yield to configured editor bindings. The ten-row/short-terminal cap, multiline-draft reachability and run-ID anchors remain intact across insertion, deletion, collapse and resize, including isolated-engine sessions.
