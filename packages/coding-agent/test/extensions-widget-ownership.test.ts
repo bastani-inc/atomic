@@ -87,6 +87,60 @@ test("retired runner cleanup leaves replacement reactive widget mounted across s
 	b.invalidate();
 });
 
+// PR #2700: old shutdown can yield after its widget hid but before runner invalidation.
+test("self-cleared runner cannot reclaim a committed replacement, while live owners can hide and remount", async () => {
+	const { frames, service, ui, runner } = setup();
+	const a = runner();
+	const b = runner();
+	const factory = (label: string) => () => ({ render: () => [label], invalidate() {} });
+	const mount = async (owner: ExtensionRunner, label: string) => {
+		owner.getUIContext().setWidget("workflow.run", factory(label));
+		await flush();
+		return frames.filter((frame) => frame.type === "engine_custom_open").at(-1)!.componentId;
+	};
+	const render = async (id: string, label: string) => {
+		frames.length = 0;
+		service.handleLine(
+			JSON.stringify({ type: "engine_custom_render", componentId: id, requestId: 1, width: 120, rows: 40 }),
+		);
+		await flush();
+		assert.deepEqual(frames.find((frame) => frame.type === "engine_custom_frame")?.lines, [label]);
+	};
+	try {
+		await mount(a, "A");
+		a.getUIContext().setWidget("workflow.run", undefined);
+		a.setUIContext(ui, "tui");
+		await render(await mount(a, "A remounted"), "A remounted");
+		a.getUIContext().setWidget("workflow.run", undefined);
+		b.stageWidgets();
+		b.getUIContext().setWidget("workflow.run", factory("B"));
+		b.commitWidgets();
+		await flush();
+		const replacementId = frames.filter((frame) => frame.type === "engine_custom_open").at(-1)!.componentId;
+		frames.length = 0;
+		await Promise.resolve().then(() => a.getUIContext().setWidget("workflow.run", factory("late A")));
+		await flush();
+		a.invalidate();
+		assert.equal(
+			frames.some((frame) => frame.type === "engine_custom_close" && frame.componentId === replacementId),
+			false,
+		);
+		await render(replacementId, "B");
+		const updatedId = await mount(b, "B updated");
+		await render(updatedId, "B updated");
+		b.getUIContext().setWidget("workflow.run", undefined);
+		assert.equal(
+			frames.filter((frame) => frame.type === "engine_custom_close" && frame.componentId === updatedId).length,
+			1,
+		);
+		await render(await mount(b, "B remounted"), "B remounted");
+	} finally {
+		a.invalidate();
+		b.invalidate();
+		service.dispose();
+	}
+});
+
 // PR #2700: a clear or service shutdown can race the asynchronous renderer callback.
 test("clearing pending factories and disposing the engine cannot resurrect widgets", async () => {
 	const { frames, service, runner } = setup();
@@ -285,4 +339,75 @@ test("late factory failure is isolated from the replacement registration", async
 		["engine_custom_open"],
 	);
 	service.dispose();
+});
+
+// PR #2700: retained clear history must not keep factories or release listeners active.
+test("cleared ownership history isolates queued factories and forwards releases only for the live owner", () => {
+	const queued: Exclude<Parameters<ExtensionUIContext["setWidget"]>[1], string[] | undefined>[] = [];
+	const listeners = new Set<() => void>();
+	const visible = new Map<string, string[] | undefined>();
+	const host: ExtensionUIContext = {
+		...noOpUIContext,
+		setWidget: (key, content) => {
+			if (typeof content === "function") queued.push(content);
+			else visible.set(key, content);
+		},
+		onWidgetRelease: (_key, listener) => {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+	};
+	const make = () => {
+		const runner = new ExtensionRunner([], createExtensionRuntime(), process.cwd(), {} as never, {} as never);
+		runner.setUIContext(host, "tui");
+		return runner;
+	};
+	const a = make();
+	const b = make();
+	let factoryCalls = 0;
+	let aReleases = 0;
+	let bReleases = 0;
+	const stopA = a.getUIContext().onWidgetRelease!("workflow.run", () => {
+		aReleases++;
+	});
+	const stopB = b.getUIContext().onWidgetRelease!("workflow.run", () => {
+		bReleases++;
+	});
+	const release = () => {
+		for (const listener of listeners) listener();
+	};
+	a.getUIContext().setWidget("workflow.run", () => {
+		factoryCalls++;
+		return { render: () => ["A"], invalidate() {} };
+	});
+	a.getUIContext().setWidget("workflow.run", undefined);
+	assert.deepEqual(queued[0]!({} as never, undefined as never).render(120), []);
+	assert.equal(factoryCalls, 0);
+	release();
+	assert.deepEqual([aReleases, bReleases], [0, 0]);
+	a.getUIContext().setWidget("workflow.run", ["A remounted"]);
+	release();
+	assert.deepEqual([aReleases, bReleases], [1, 0]);
+	b.getUIContext().setWidget("workflow.run", ["B"]);
+	release();
+	assert.deepEqual([aReleases, bReleases], [1, 1]);
+	b.getUIContext().setWidget("workflow.run", undefined);
+	a.getUIContext().setWidget("workflow.run", ["late A after B clear"]);
+	assert.equal(visible.get("workflow.run"), undefined);
+	release();
+	assert.deepEqual([aReleases, bReleases], [1, 1]);
+	b.getUIContext().setWidget("workflow.run", ["B remounted"]);
+	a.invalidate();
+	release();
+	assert.deepEqual([aReleases, bReleases], [1, 2]);
+	assert.deepEqual(visible.get("workflow.run"), ["B remounted"]);
+	b.invalidate();
+	assert.equal(visible.get("workflow.run"), undefined);
+	release();
+	assert.deepEqual([aReleases, bReleases], [1, 2]);
+	stopA();
+	stopB();
+	assert.equal(listeners.size, 0);
 });

@@ -293,7 +293,7 @@ export class ExtensionRunner {
 
 	// Shared host identity, not the prompt wrapper recreated on each binding.
 	private static readonly widgetOwners = new WeakMap<ExtensionUIContext, Map<string, object>>();
-	private readonly widgetRegistrations = new Map<ExtensionUIContext, Map<string, object>>();
+	private readonly widgetRegistrations = new Map<ExtensionUIContext, Map<string, { active: boolean }>>();
 	private pendingWidgets: Map<ExtensionUIContext, Map<string, WidgetArguments>> | undefined;
 
 	/** Defer candidate widget effects until fallible reload preparation succeeds. */
@@ -334,14 +334,13 @@ export class ExtensionRunner {
 		const previousRegistration = registrations.get(key);
 		if (previousRegistration && owners.get(key) !== previousRegistration) return;
 		if (content === undefined) {
-			const registration = registrations.get(key);
-			if (!registration || owners.get(key) !== registration) return;
-			owners.delete(key);
-			registrations.delete(key);
+			if (!previousRegistration?.active) return;
+			// Keep ownership history across hide/remount, but retire factories and release callbacks.
+			previousRegistration.active = false;
 			ui.setWidget(key, undefined, options);
 			return;
 		}
-		const registration = {};
+		const registration = { active: true };
 		owners.set(key, registration);
 		registrations.set(key, registration);
 		if (typeof content === "function") {
@@ -349,7 +348,8 @@ export class ExtensionRunner {
 				key,
 				(tui, theme) => {
 					// The host may invoke a queued factory after replacement or invalidation.
-					if (this.staleMessage || owners.get(key) !== registration) return { render: () => [], invalidate() {} };
+					if (this.staleMessage || !registration.active || owners.get(key) !== registration)
+						return { render: () => [], invalidate() {} };
 					return content(tui, theme);
 				},
 				options,
@@ -375,7 +375,8 @@ export class ExtensionRunner {
 						onWidgetRelease: (key: string, listener: () => void) =>
 							ui.onWidgetRelease!(key, () => {
 								const registration = this.widgetRegistrations.get(ui)?.get(key);
-								if (registration && ExtensionRunner.widgetOwners.get(ui)?.get(key) === registration) listener();
+								if (registration?.active && ExtensionRunner.widgetOwners.get(ui)?.get(key) === registration)
+									listener();
 							}),
 					}
 				: {}),
@@ -544,7 +545,11 @@ export class ExtensionRunner {
 		if (!this.staleMessage) {
 			this.pendingWidgets = undefined;
 			for (const [ui, registrations] of this.widgetRegistrations) {
-				for (const key of registrations.keys()) this.setOwnedWidget(ui, key, undefined);
+				for (const key of registrations.keys()) {
+					this.setOwnedWidget(ui, key, undefined);
+					const owners = ExtensionRunner.widgetOwners.get(ui);
+					if (owners && owners.get(key) === registrations.get(key)) owners.delete(key);
+				}
 			}
 			this.widgetRegistrations.clear();
 			this.staleMessage = message;
