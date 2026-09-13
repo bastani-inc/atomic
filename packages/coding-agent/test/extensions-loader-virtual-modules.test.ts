@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -80,10 +81,10 @@ describe("extension loader pi-ai compat aliases", () => {
 			const specifier = "@earendil-works/pi-tui/dist/layout-node.js";
 			const native = await import("@earendil-works/pi-tui/dist/layout-node.js");
 			const aliases = extensionLoaderTestHooks.getAliases();
-			expect(aliases[specifier]).toMatch(/[\\/]dist[\\/]layout-node\.js$/);
-			expect(fs.existsSync(aliases[specifier]!)).toBe(true);
+			assert.match(aliases[specifier]!, /[\\/]dist[\\/]layout-node\.js$/);
+			assert.equal(fs.existsSync(aliases[specifier]!), true);
 			const modules = await extensionLoaderTestHooks.loadVirtualModules();
-			expect(modules[specifier]).toBe(native);
+			assert.equal(modules[specifier], native);
 		},
 		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 	);
