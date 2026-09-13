@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import feedback, { FEEDBACK_COMMAND_DESCRIPTION } from "@bastani/feedback";
+import { validateToolArguments } from "@bastani/pi-ai";
 import { test } from "vitest";
 import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
 import type { ExtensionAPI, RegisteredCommand, ToolDefinition } from "../../packages/coding-agent/src/index.js";
@@ -31,4 +32,72 @@ test("bundled feedback skill collects and prepares bug reports", async () => {
 	assert.match(instructions, /For a bug, collect a title, what happened, and reproduction steps/);
 	assert.match(instructions, /(?:Prepare the bug|When a bug is complete)[\s\S]*?`feedback_prepare_issue`/);
 	assert.match(instructions, /(?:Display|display) the (?:tool's )?exact prepared (?:title and body|Markdown)/);
+});
+
+function prepareTool(): ToolDefinition {
+	let preparedTool: ToolDefinition | undefined;
+	feedback({
+		registerCommand: () => {},
+		registerTool: (tool) => {
+			if (tool.name === "feedback_prepare_issue") preparedTool = tool;
+		},
+	} as Pick<ExtensionAPI, "registerCommand" | "registerTool"> as ExtensionAPI);
+	assert.ok(preparedTool);
+	return preparedTool;
+}
+
+// Regression for #2799, review 3998253205: direct package imports use the declared string contract.
+test("direct feedback schema rejects non-string titles with an actionable host validation error", () => {
+	const tool = prepareTool();
+	for (const title of [42, true, null, { nested: "title" }]) {
+		assert.throws(
+			() =>
+				validateToolArguments(tool, {
+					type: "toolCall",
+					id: "invalid-title",
+					name: tool.name,
+					arguments: { kind: "enhancement", title, change: "Add navigation", why: "Accessibility" },
+				}),
+			/Validation failed for tool "feedback_prepare_issue":[\s\S]*title: must be string/,
+		);
+	}
+});
+
+test("feedback schema preserves valid string fields and host optional-null normalization", () => {
+	const tool = prepareTool();
+	const drafts = [
+		{
+			kind: "bug",
+			title: "42",
+			description: "Editor loses input",
+			repro: "Resize the terminal",
+			expected: "Retain input",
+			version: "0.0.0",
+		},
+		{
+			kind: "enhancement",
+			title: "Navigation",
+			change: "Add keyboard navigation",
+			why: "Accessibility",
+			how: "Use arrow keys",
+		},
+	];
+	for (const draft of drafts) {
+		const call = { type: "toolCall", id: "valid", name: tool.name, arguments: draft } as const;
+		assert.deepEqual(validateToolArguments(tool, call), draft);
+		assert.deepEqual(
+			validateToolArguments(tool, { ...call, arguments: { ...draft, how: null } }),
+			Object.fromEntries(Object.entries(draft).filter(([field]) => field !== "how")),
+		);
+	}
+	assert.throws(
+		() =>
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "invalid-kind",
+				name: tool.name,
+				arguments: { ...drafts[0], kind: "question" },
+			}),
+		/Validation failed[\s\S]*kind:/,
+	);
 });

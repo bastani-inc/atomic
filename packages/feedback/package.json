@@ -18,14 +18,28 @@
     ".": "./index.ts",
     "./core": "./src/index.ts"
   },
-  "files": ["*.ts", "src/**/*.ts", "skills/**/*", "README.md", "CHANGELOG.md"],
+  "files": [
+    "*.ts",
+    "src/**/*.ts",
+    "skills/**/*",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "atomic": {
-    "extensions": ["./index.ts"],
-    "skills": ["./skills"]
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
   },
   "pi": {
-    "extensions": ["./index.ts"],
-    "skills": ["./skills"]
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
   },
   "peerDependencies": {
     "@bastani/atomic": "*"
@@ -36,6 +50,6 @@
     }
   },
   "dependencies": {
-    "typebox": "1.3.7"
+    "@sinclair/typebox": "0.34.52"
   }
 }

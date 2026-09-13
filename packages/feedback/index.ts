@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import { Type } from "typebox";
+import { Type } from "@sinclair/typebox";
 import {
 	FEEDBACK_REPOSITORY,
 	formatIssueBody,

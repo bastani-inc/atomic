@@ -8,6 +8,8 @@ This bundled extension provides a safe, ordinary-conversation workflow for draft
 
 Bug drafts require a title, what happened, and reproduction steps. Enhancement drafts require a title, the requested change, and why it helps. Missing required fields produce a tool error so you can correct the draft; prepared details are returned only for valid drafts.
 
+All draft fields use strings. Pass a numeric-looking title as `"42"`, not `42`. Direct package schemas reject non-string values with a field-level error such as `title: must be string`; correct the field and prepare again. Host loaders may normalize inputs, but automatic conversion of non-string fields is not part of the feedback contract.
+
 Posting is handled separately by the approval-gated feedback submission boundary.
 
 ## Privacy scrubbing
