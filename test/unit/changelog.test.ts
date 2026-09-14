@@ -23,6 +23,22 @@ function writeChangelog(content: string): string {
 
 const repoRoot = join(moduleDir(import.meta.url), "..", "..");
 
+/**
+ * `git show <tag>:<path>` has to fit in one buffer, and Node caps
+ * `execFileSync` at 1 MiB by default. `packages/coding-agent/CHANGELOG.md`
+ * crossed that line at tag 0.9.19: 1,045,781 bytes at 0.9.19-alpha.12, then
+ * 1,059,746 at 0.9.19.
+ *
+ * The overflow is not platform-specific — the cap is enforced everywhere — but
+ * it first appeared as a Windows-only `spawnSync git ENOBUFS` because this
+ * suite anchors on the newest tag the checkout can resolve. The 0.9.19 tag was
+ * pushed moments after the merge commit that triggered the run, so the Linux
+ * job checked out before it existed and anchored on 0.9.19-alpha.12, which
+ * still fit, while Windows checked out after and anchored on 0.9.19, which did
+ * not. Sized for a changelog that keeps growing, not for today's file.
+ */
+const GIT_OUTPUT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
 // Sanitize the Git environment: under a hook runner (e.g. prek) Git exports
 // GIT_DIR/GIT_WORK_TREE, which it honors over cwd (see git-env.ts).
 function git(args: string[]): string {
@@ -31,6 +47,7 @@ function git(args: string[]): string {
 		encoding: "utf-8",
 		env: createGitEnvironment(),
 		stdio: ["ignore", "pipe", "pipe"],
+		maxBuffer: GIT_OUTPUT_MAX_BUFFER_BYTES,
 	});
 }
 
@@ -197,8 +214,8 @@ describe("changelog parsing", () => {
 	});
 });
 
-// AGENTS.md: "Each version section is immutable once released" and "New entries ALWAYS go
-// under ## [Unreleased]". Once a version is tagged, its published notes are fixed, so the
+// AGENTS.md: "A released section (`## [0.12.2]`) is immutable" and "New entries go under
+// `## [Unreleased]`". Once a version is tagged, its published notes are fixed, so the
 // released tail of every package changelog must still read exactly as it did at that tag.
 describe("released changelog sections", () => {
 	const changelogPaths = packageChangelogPaths();

@@ -1,4 +1,5 @@
 import type { AgentSession, CreateAgentSessionOptions, PromptOptions, SettingsManager } from "@bastani/atomic";
+import type { WorkflowPendingStageRouteReadiness } from "../../shared/pending-stage-route-readiness.js";
 import type {
 	CompleteStageOpts,
 	StageContext,
@@ -155,6 +156,8 @@ export interface StageRunnerOpts {
 	onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
 	/** Internal: persist stage-session identity once the SDK has created its path. */
 	onSessionReady?: () => void | Promise<void>;
+	/** Internal: acknowledged owner authority required before session_start can register a live route. */
+	routeAuthorityReady?: () => WorkflowPendingStageRouteReadiness | undefined;
 	/** Internal durable pre-start message bridge consumed by the intercom extension. */
 	pendingStageDelivery?: WorkflowPendingStageDelivery;
 }

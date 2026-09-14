@@ -32,7 +32,9 @@ export default workflow({
 	outputs: {},
 	description: "Nested fallback ownership regression.",
 	run: async (ctx) => {
-		await ctx.stage("top-reviewer", options).prompt("fixture-complete");
+		await ctx
+			.stage("top-reviewer", options)
+			.prompt(process.env.NESTED_COLD_TOP_PROBE ? "fixture-top-hold" : "fixture-complete");
 		await Promise.all([ctx.workflow(child), ctx.workflow(child)]);
 		return {};
 	},

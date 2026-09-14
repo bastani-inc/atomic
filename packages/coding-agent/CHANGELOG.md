@@ -7,6 +7,80 @@
 - Added optional `pi.getLoadedExtensions()` and the exported `LoadedExtensionInfo` type so extensions can report loaded extension names and bundled provenance, including extensions without tools ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Added approval-gated feedback submission to `bastani-inc/atomic`, with exact draft review, direct conversational approval, pre-submission privacy checks, session duplicate protection, and safe GitHub failure messages. Submission uses GITHUB_TOKEN or GH_TOKEN with issue-creation permission ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 
+## [0.9.19] - 2026-09-13
+
+Cumulative release of the `0.9.19-alpha.1` through `0.9.19-alpha.12` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- Overwriting an existing file with `write` requires this session to have observed the exact content being replaced. Missing or stale observations return typed `FILE_MUTATION_CONFLICT` errors with requester identity and recovery guidance. Creating files and overwriting files the session has read, written or edited remain supported ([#2329](https://github.com/bastani-inc/atomic/issues/2329)).
+- `WriteOperations` requires `readFile`, returning `undefined` only for absence, and `writeFile` accepts optional `WriteFileOptions`. Custom/remote implementations supply reads for generated-file and observation checks; existing writers may ignore the options but lose exclusive-create semantics ([#2329](https://github.com/bastani-inc/atomic/issues/2329)).
+- Workflow controls use `/workflow pause`, `/workflow quit` and `/workflow resume`; lifecycle pause events use `action: "pause"`. The workflow tool supports run, stage and durable-tool pause targets.
+- Bundled subagent terminal control is now `kill`, not `interrupt`, including calls using `runId`. Killed children cannot resume; launch a fresh child for follow-up work.
+- Bundled `code_search` requires `repoName` in `owner/repo` format and uses DeepWiki MCP without an Exa fallback. `fetch_content` requires a nonempty `urls` array instead of singular `url`; update existing calls. `web_search` is unchanged.
+- Intercom removed model-facing `retryToken` fields and owns bounded reconnect retries. Explicit `replyTo` selectors reject invalid or stale threads rather than falling back; use `action: "pending"` to select an unresolved question.
+
+### Added
+
+- Added owner-bound background shell and agent tasks with one execution per admitted attempt, observation-only yielding, retained output/transcripts, owner-scoped cancellation and independent cleanup. SDK contexts expose trusted task adapters, snapshot subscriptions and replay-safe completion delivery ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Added per-call Bash/PowerShell foreground-first or background observation, `{ action: "wait", id, budgetMs }` for existing tasks, and `kill({ id })` for owned background shell tasks. Observation does not extend execution timeout or owner lifetime; unsupported background requests fail before execution.
+- Added shared `/tasks` inspection with a compact inline picker, fullscreen detail/transcript/input pages, paging, confirmed cancellation and stable selection. Main and attached stage chats show background counts below the composer and readable completion notifications.
+- Added a searchable `/agents` catalog with source grouping and configuration details.
+- Added supervised Windows ConPTY execution with Job Object containment before resume and confirmed cleanup, without an unsupervised fallback. The command SDK accepts direct-executable `shell: { program, args }` and `inheritEnv` controls.
+- Added workflow activity observers and typed lifecycle, activity, stage-completion and heartbeat hooks with ordered snapshots, bounded queues and reload-safe leases. The built-in Herdr reporter combines agent/task activity, workflow execution and approval waits, supports `herdr.enabled` opt-out, and reports parent session identity ([#2891](https://github.com/bastani-inc/atomic/issues/2891)).
+- Added `reason: "project_trust"` to UI prompt lifecycle events, including paired isolated-engine notifications, so integrations can observe trust decisions ([#2873](https://github.com/bastani-inc/atomic/issues/2873)).
+- Editable workflow-stage chats discover source-qualified skills and expand submissions once through stage admission. Graph cards show effective model/thinking identity, including fast suffixes and live fallbacks ([#1859](https://github.com/bastani-inc/atomic/pull/1859) by [@sina85](https://github.com/sina85)).
+- Added per-model compaction overrides for `reserveTokens` and `preserve_recent`, with non-negative safe-integer validation and fallback to ordinary settings/defaults across manual, automatic and post-tool compaction.
+- Extension widgets can opt into height-capped fullscreen viewports with local wheel scrolling, overflow-only scrollbars and scroll-position feedback. The workflow list uses local scrolling with configurable Alt+K/J shortcuts, labeled Option on macOS, while retaining Alt+PageUp/PageDown aliases and editor-binding precedence.
+
+### Changed
+
+- Built-in read, edit, write and shell tools prefer strict JSON-schema sampling where supported; other experimental hints remain opt-in.
+- Task receipts and details display resolved model/reasoning, grouped counts, themed status, recent activity, bounded previews and narrow-terminal layouts. Only active background work contributes to the footer; retained results remain in `/tasks`.
+- Native Windows owner-bound shell calls automatically yield after the owner's observation budget, normally ten seconds. PowerShell uses encoded transport; execution timeouts remain separate, and unsupported owned WSL bash stdin transport remains refused. Suspend opens a PowerShell subshell without freezing background tasks.
+- Guidance routes user questions through structured question tools when available, favors normal shell observation budgets over repeated short polls, and keeps blocking work local while overlapping independent delegation. Requests to work "quickly" select inline execution without hidden workflows or skipped validation.
+- Model-choice guidance consults eval documentation and Artificial Analysis; automation guidance uses PyAutoGUI for desktop, playwright-cli for browsers, and Herdr with supported fallbacks for terminals.
+- Open Claude Design starts with Fable 5.1 at medium, followed by Copilot Fable 5.1 and Astra at medium, with Fable-first OpenRouter fallbacks. Debugger uses Astra/Fable at medium and Sol at high; Goal/Ralph reviewers use Astra/Sol at high, and orchestration/research/design fallbacks use Fable at medium and Sol at high.
+- Intercom lists lead with exact session IDs and workflow paths. Sends and asks interrupt working recipients within the same task/generation, retaining ordered messages and completed side effects rather than restarting work.
+
+### Fixed
+
+- Restored offline embedded PostgreSQL discovery in compiled archives and all eight target-selected archive/npm runtimes, retaining scriptless installs and existing v18 clusters. Windows ARM64 still requires Windows 11 x64 emulation.
+- Embedded Postgres starts on Windows administrative accounts using restricted tokens while retaining exact-process shutdown. Early startup exit reports actual logs; Unicode environments, executable lookup, batch/explicit-command launchers and safe verbatim paths work without handle leaks or cross-process stream inheritance.
+- Rejected edits no longer authorize themselves on retry by recording a new snapshot tag. Drift, deletion, unreadable targets and permission changes return typed conflicts with exact requester identity and recovery guidance. Writes exclusively claim new paths, preserve observations after cancellation that follows a completed write, and retain standalone `local://` observations ([#2329](https://github.com/bastani-inc/atomic/issues/2329)).
+- Bounded noisy engine diagnostic history and routed stderr/MuPDF diagnostics through deferred, terminal-safe status output, preserving split Unicode and failure details without corrupting fullscreen or RPC JSON output ([#2964](https://github.com/bastani-inc/atomic/issues/2964)).
+- Fixed npm-installed task supervisor class initialization and missing upstream AI imports. First-load and Windows-reloaded TypeScript extensions share live host classes/singletons, including the upstream-compatible import, without losing dependency edits.
+- Workflow fallback releases failed-attempt Intercom ownership before replacement. Repeated nested workflow calls no longer collide during fallback ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
+- Foreground subagent waits yield to parent steering and Intercom messages without cancelling children. Parallel coordination preserves active/queued siblings, same-child messages precede completion, and queued-child cancellation cleans up unused worktrees and branches.
+- Task completion retries retain delivery identity without relaunching work, including restored outboxes, native shell settlement and `/tasks` cancellations. Foreground-only shells do not create duplicate background notifications or model turns.
+- Fixed yielded shell waits replaying the first output page, honored owner wait policies, disclosed retained output gaps, and bounded output pages to 1 MiB under a shared disk cap ([#2972](https://github.com/bastani-inc/atomic/pull/2972), [#2905](https://github.com/bastani-inc/atomic/pull/2905)).
+- Live transcripts stream updates without reopening, preserve historical paging and configured shortcuts, and reject stale task-detail results after selection changes. Long Windows transcripts reuse unchanged rendering to reduce CPU without dropping history.
+- Isolated sessions use the engine's task owner and inspector, with `/tasks` autocomplete and live metrics. Task rows reattach after transcript replacement, old owners clear on session switches, and inspection failures remain retryable instead of rejecting unhandled.
+- Stage pause cancels owned admitted/active tasks and waits for cleanup while preserving messages and sibling work; ordinary chat interruption leaves background tasks running. Explicit subagent kill and grouped cancellation outcomes remain consistent through parent-cancellation races.
+- Corrected SDK task Results, cursors, opaque leases, wait policies and cleanup races. Subscription disposal/overflow and throwing callbacks are contained; exact strings/numbers, bounded activity replay and protected settlement IDs survive native conversion, and NaN waits no longer panic ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Fixed macOS cleanup failing immediately on temporary unreaped process-group zombies while retaining bounded, confirmed cleanup.
+- Herdr registration survives reload and session replacement without stale runners or child shutdown clearing parent ownership. Failed identity reports retry, background tasks prevent false idle, output-cap continuations remain working, and settled workflow failures retain attention without a false active wait.
+- Navigation through `/tasks`, `/agents` and workflow graphs no longer creates false Herdr approval blocks. Answered prompts and acknowledged workflow blocks clear correctly even with slow observers; genuine pending approvals remain blocked.
+- Concurrent inline approvals retain the surviving prompt and input focus. Task navigation does not cancel queued questionnaires, isolated cancellation removes loading placeholders, and background counts coexist with questions and MCP context on narrow terminals.
+- Filled theme backgrounds survive nested resets and truncation, including completion cards. Workflow lists retain row caps and viewed-run anchors through clipping, live changes and resize.
+- Resume trust is prepared before disposing the outgoing session and retained on failed preflight. Startup and isolated trust waits reach eligible lifecycle observers without loading untrusted extensions or replaying dialogs ([#2873](https://github.com/bastani-inc/atomic/issues/2873)).
+- Internal-URL expansion rejects unsafe shell syntax while safely quoting bare resolved URLs; PowerShell apostrophes remain literal. Commands without resolved URLs are unchanged.
+- Intercom excludes non-agent routing/prompt/tool connections without hiding busy agents or invalidating connected aliases. Roster updates synchronize with broker acceptance; targeted replies keep exact correlation, and delivery retries preserve FIFO order without duplicate cards ([#2895](https://github.com/bastani-inc/atomic/pull/2895)).
+- Capped retry backoff with `retry.maxAgentDelayMs`, defaulting to 60 seconds, while preserving provider limits. Retry countdowns use Atomic's themed indicator ([#8826](https://github.com/earendil-works/pi/issues/8826)).
+- Fixed Anthropic object-union schemas and Grok acceptance of the bundled bash command/wait schema while local validation still rejects mixed inputs. Extension registration rejects missing or nonobject schema containers ([#2190](https://github.com/bastani-inc/atomic/pull/2190) by [@elefthei](https://github.com/elefthei), [#3031](https://github.com/bastani-inc/atomic/issues/3031), [#9300](https://github.com/earendil-works/pi/issues/9300)).
+- Updated patched Hono/js-yaml dependencies and provider SDKs; Google's consecutive tool-call limit returns an error. Extension model registries expose authenticated custom-provider streams, and Radius login chooses an available discovered model.
+- Settings writes preserve inherited `.pi` provenance, concurrent primary edits and explicit Atomic overrides instead of copying inherited values into `.atomic` ([#2299](https://github.com/bastani-inc/atomic/issues/2299)).
+- Direct steering/follow-up calls run extension input handlers before admission, preserving transformed text/images and RPC attribution. Tree navigation refuses active compaction/summarization without disturbing the current branch.
+- Stage skill autocomplete reuses shared attachment without repeated checkpoints, ended recoverable blocks resume rather than return snapshot-only success, and cancelled stage-chat pause avoids unhandled rejection.
+- Released unused alternate-folder Git watchers and timers without disturbing other chat footers ([#2926](https://github.com/bastani-inc/atomic/pull/2926)).
+- Restored the Gondolin example after legacy grep API removal, keeping search on the host and guest-only searches in the routed shell ([#2482](https://github.com/bastani-inc/atomic/pull/2482)).
+
+## [0.9.19-alpha.12] - 2026-09-13
+
+### Fixed
+
+- Grok accepts the bundled bash tool schema for command execution and task waits, while local validation still rejects mixed inputs ([#3031](https://github.com/bastani-inc/atomic/issues/3031)).
+
 ## [0.9.19-alpha.11] - 2026-09-13
 
 ### Fixed
