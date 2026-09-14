@@ -11,7 +11,7 @@ import type {
 	WorkflowChildReplaySnapshot,
 	WorkflowChildRunRef,
 } from "../../shared/store-types.js";
-import { elapsedStageMs } from "../../shared/timing.js";
+import { elapsedStageMs, stageTimingFields } from "../../shared/timing.js";
 import type { WorkflowChildResult, WorkflowSerializableValue } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { makeParentWorkflowExitAbortReason } from "./executor-abort.js";
@@ -110,7 +110,7 @@ export function createWorkflowBoundaryFactory(input: {
 			replayKey,
 			status: replayedChild !== undefined ? "completed" : "running",
 			parentIds: Object.freeze([...parentIds]),
-			startedAt,
+			...(replayedChild === undefined ? { startedAt } : stageTimingFields(replaySource)),
 			toolEvents: [],
 			attachable: false,
 			...(replaySource !== undefined
@@ -118,8 +118,6 @@ export function createWorkflowBoundaryFactory(input: {
 				: {}),
 			...(replayedChild !== undefined && replayChildSnapshot !== undefined
 				? {
-						endedAt: startedAt,
-						durationMs: 0,
 						...(replayDecision.kind === "replay" && replayDecision.source.result !== undefined
 							? { result: replayDecision.source.result }
 							: {}),
@@ -139,7 +137,7 @@ export function createWorkflowBoundaryFactory(input: {
 				name,
 				parentIds: stageSnapshot.parentIds,
 				...stageReplayFields(stageSnapshot),
-				ts: startedAt,
+				ts: stageSnapshot.startedAt,
 			});
 		};
 
@@ -150,6 +148,7 @@ export function createWorkflowBoundaryFactory(input: {
 				stageId,
 				status: stageSnapshot.status,
 				durationMs: stageSnapshot.durationMs,
+				endedAt: stageSnapshot.endedAt,
 				...(stageSnapshot.error !== undefined ? { error: stageSnapshot.error } : {}),
 				...(stageSnapshot.failureKind !== undefined ? { failureKind: stageSnapshot.failureKind } : {}),
 				...(stageSnapshot.failureCode !== undefined ? { failureCode: stageSnapshot.failureCode } : {}),
@@ -199,8 +198,10 @@ export function createWorkflowBoundaryFactory(input: {
 				clearBoundaryChildMetadata();
 				applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(failureError));
 			}
-			stageSnapshot.endedAt = Date.now();
-			stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
+			if (replayedChild === undefined) {
+				stageSnapshot.endedAt = Date.now();
+				stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
+			}
 			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 			input.opts.onStageEnd?.(input.runId, stageSnapshot);
 			appendStageEndForSnapshot();

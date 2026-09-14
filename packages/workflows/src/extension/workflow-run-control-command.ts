@@ -1,3 +1,5 @@
+import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { DbosNotReadyError } from "../durable/dbos-lifecycle.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
@@ -317,7 +319,21 @@ export async function handleRunControlCommand(
 			if (picked.kind !== (action === "attach" ? "connect" : action)) return true;
 			runId = picked.runId;
 		} else if (action === "resume") {
-			const backend = getDurableBackend();
+			let backend: DurableWorkflowBackend;
+			try {
+				try {
+					backend = getDurableBackend();
+				} catch (error) {
+					if (!(error instanceof DbosNotReadyError)) throw error;
+					// Fresh CLI sessions have no backend until a durable operation prepares it.
+					await ensureWorkflowResourcesVisible();
+					await deps.runtimeForContext(ctx).prepareDurableResumable(target);
+					backend = getDurableBackend();
+				}
+			} catch (error) {
+				fail(`Failed to resolve workflow resume target: ${error instanceof Error ? error.message : String(error)}`);
+				return true;
+			}
 			const localResolution = resolveRunId(target);
 			const localBeforePreparation =
 				localResolution.kind === "exact" ? store.runs().find((run) => run.id === localResolution.runId) : undefined;

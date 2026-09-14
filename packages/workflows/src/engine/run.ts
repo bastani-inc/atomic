@@ -551,6 +551,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	};
 	// Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
 	const resolvePromptNodeTopology = createDurableStageTopologyResolver(durableBackend, runId);
+	const priorPromptStageCheckpoints = durableBackend
+		.listCheckpoints(runId)
+		.filter((checkpoint) => checkpoint.kind === "stage");
 	let promptNodeUi: ReturnType<typeof buildPromptNodeUiAdapter> | undefined;
 	const getPromptNodeUi = (): ReturnType<typeof buildPromptNodeUiAdapter> => {
 		promptNodeUi ??= buildPromptNodeUiAdapter({
@@ -567,6 +570,13 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			workflowExitSkippedReason: exit.workflowExitSkippedReason,
 			preserveWorkflowExitSkippedReason: exit.preserveWorkflowExitSkippedReason,
 			durableTopologyForReplayKey: resolvePromptNodeTopology,
+			durableTimingForStageId: (stageId) =>
+				priorPromptStageCheckpoints.find(
+					(checkpoint) =>
+						checkpoint.topology?.stageId === stageId &&
+						checkpoint.topology.status === "completed" &&
+						(checkpoint.topology.run === undefined || checkpoint.topology.run.runId === runId),
+				),
 			onPendingStage: async (pendingRunId, snapshot) =>
 				pendingRunId === runId ? void (await recordDurableActiveStage(durableStageDeps, snapshot)) : undefined,
 		});

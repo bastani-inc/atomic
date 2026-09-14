@@ -9,7 +9,7 @@ import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
-import { elapsedStageMs } from "../../shared/timing.js";
+import { elapsedStageMs, stageTimingFields } from "../../shared/timing.js";
 import type { StageOptions, WorkflowArtifact } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
@@ -137,9 +137,7 @@ export function createWorkflowStageFactory(input: {
 			pendingStageDeliveryAvailable,
 			...(shouldReplay
 				? {
-						startedAt: Date.now(),
-						endedAt: Date.now(),
-						durationMs: 0,
+						...stageTimingFields(replaySource),
 						...(replaySource.result !== undefined ? { result: replaySource.result } : {}),
 						...(replaySource.sessionId !== undefined ? { sessionId: replaySource.sessionId } : {}),
 						...(replaySource.sessionFile !== undefined ? { sessionFile: replaySource.sessionFile } : {}),
@@ -214,6 +212,13 @@ export function createWorkflowStageFactory(input: {
 			models: input.opts.models,
 			executionMode: input.opts.executionMode,
 			defaultSessionDir: input.opts.defaultSessionDir,
+			onStartupChange(startup) {
+				// Never add a retired stage to a replacement run with the same identity.
+				const current = input.activeStore.runs().find((run) => run.id === input.runId);
+				if (!current?.stages.includes(stageSnapshot)) return;
+				stageSnapshot.startup = startup;
+				input.activeStore.recordStageStart(input.runId, stageSnapshot);
+			},
 			onModelFallbackMetaChange(meta) {
 				applyModelFallbackMeta(meta);
 				if (stageSnapshot.status === "running") input.activeStore.recordStageStart(input.runId, stageSnapshot);
@@ -387,6 +392,7 @@ export function createWorkflowStageFactory(input: {
 					stageId,
 					status: stageSnapshot.status,
 					durationMs: stageSnapshot.durationMs,
+					endedAt: stageSnapshot.endedAt,
 					...(stageSnapshot.error !== undefined ? { error: stageSnapshot.error } : {}),
 					...(stageSnapshot.failureKind !== undefined ? { failureKind: stageSnapshot.failureKind } : {}),
 					...(stageSnapshot.failureCode !== undefined ? { failureCode: stageSnapshot.failureCode } : {}),

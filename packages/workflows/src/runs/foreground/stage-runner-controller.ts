@@ -6,6 +6,7 @@ import {
 	type StructuredOutputCapture,
 } from "@bastani/atomic";
 import { raceAbort } from "../../shared/abort.js";
+import type { StageStartupPhase, StageStartupSnapshot } from "../../shared/stage-startup.js";
 import type {
 	StageContext,
 	StageExecutionMeta,
@@ -44,6 +45,7 @@ import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
 import {
 	asAgentSession,
 	attachCreatedStageSession,
+	cleanupFailedStageSessionBinding,
 	disposeStageSession,
 	normalizeSessionCreateResult,
 	StageSessionBindingCleanupFailure,
@@ -73,6 +75,7 @@ import {
 	unresolvedContextOverflowFailure,
 	unresolvedContextOverflowMessage,
 } from "./stage-runner-unresolved-overflow.js";
+import { waitForStageStartup } from "./stage-startup-wait.js";
 
 type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"]>>;
 
@@ -214,6 +217,9 @@ export class StageSessionController {
 	private ownedCreationPromise: Promise<StageSessionRuntime> | undefined;
 	private abortGeneration = 0;
 	private routeAuthorityWait: AbortController | undefined;
+	/** Consumer cancellation never releases the underlying creation owner. */
+	private startupWait = new AbortController();
+	private startup: StageStartupSnapshot | undefined;
 	private abortReason: Error | DOMException | string | undefined;
 	private abortReasonGeneration = 0;
 	private sessionPromise: Promise<StageSessionRuntime> | undefined;
@@ -418,28 +424,33 @@ export class StageSessionController {
 				throw this.staleCreationReason(generation);
 		}
 		if (this.disposed) throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
-		if (this.session !== undefined) return this.session;
+		this.opts.signal?.throwIfAborted();
+		if (this.session !== undefined && this.activeCreation === undefined) return this.session;
 		if (!this.sessionPromise) {
+			this.beginStartup();
 			const pending = this.createInitialSession(consumer);
 			this.sessionPromise = pending;
 			// One creation gate: the walk owns this promise while it advances
 			// candidates, so a concurrent caller joins it instead of racing it.
 			this.ownedCreationPromise = pending;
-			const release = (): void => {
+			const release = (failed = false): void => {
 				if (this.ownedCreationPromise === pending) this.ownedCreationPromise = undefined;
+				this.settleStartup(failed);
 			};
 			// Ordinary creation failures may be retried by a later caller; failed
 			// binding cleanup is separately sticky. Clear by identity so a walk that
-			// replaced the promise, or cancellation that cleared it, is left alone.
-			pending.then(release, () => {
-				release();
-				if (this.sessionPromise === pending) {
-					this.sessionPromise = undefined;
-					this.activeCandidateIndex = undefined;
-				}
-			});
+			pending.then(
+				() => release(),
+				() => {
+					release(true);
+					if (this.sessionPromise === pending) {
+						this.sessionPromise = undefined;
+						this.activeCandidateIndex = undefined;
+					}
+				},
+			);
 		}
-		return this.sessionPromise;
+		return waitForStageStartup(this.sessionPromise, this.startupWait.signal);
 	}
 
 	async ensureSessionFromFile(
@@ -526,6 +537,15 @@ export class StageSessionController {
 		sdkOptions: PromptOptions | undefined,
 		consumer: AgentSessionConsumer = "prompt",
 	): Promise<void> {
+		if (
+			this.session !== undefined &&
+			this.activeCreation === undefined &&
+			this.ownedCreationPromise === undefined &&
+			this.startupWait.signal.aborted
+		) {
+			this.opts.signal?.throwIfAborted();
+			this.startupWait = new AbortController();
+		}
 		if (!this.hasExplicitModelFallbackConfig) {
 			try {
 				const activeSession = await this.ensureSession(consumer);
@@ -548,7 +568,14 @@ export class StageSessionController {
 			return;
 		}
 
-		const candidates = await this.modelCandidates();
+		// An attached session is not usable until its creation/readiness owner
+		// settles. Join before every explicit-model reuse path, including resume.
+		const readinessOwner = this.ownedCreationPromise ?? this.activeCreation;
+		if (readinessOwner !== undefined) await waitForStageStartup(readinessOwner, this.startupWait.signal);
+
+		if (this.session === undefined) this.beginStartup();
+		const startupSignal = this.startupWait.signal;
+		const candidates = await waitForStageStartup(this.modelCandidates(), startupSignal);
 		if (candidates.length === 0) {
 			try {
 				const activeSession = await this.ensureSession(consumer);
@@ -567,15 +594,8 @@ export class StageSessionController {
 		// A creation already in flight — an eager walk, or a concurrent caller —
 		// owns the candidate chain. Join it rather than starting a second walk that
 		// would duplicate provider work and leak whichever session lost the race.
-		if (this.session === undefined && this.sessionPromise !== undefined) {
-			try {
-				await this.sessionPromise;
-			} catch (error) {
-				if (error instanceof StageSessionCreationCancelled) return;
-				// The exhausted walk cleared its own promise by identity; fall through
-				// and let the walk below report the failure for this prompt.
-			}
-		}
+		const creationOwner = this.ownedCreationPromise ?? this.activeCreation;
+		if (creationOwner !== undefined) await waitForStageStartup(creationOwner, startupSignal);
 
 		// A paused creation resumed with a replacement objective: that text is
 		// authoritative for this prompt and must not be dropped here.
@@ -588,9 +608,9 @@ export class StageSessionController {
 			// Attachment may have acquired the creation walk while shutdown drained.
 			// Join that entire walk, including its failures, rather than accounting
 			// for the same successor attempt twice or restarting a rejected candidate.
-			if (this.session === undefined && this.ownedCreationPromise !== undefined) {
+			if (this.ownedCreationPromise !== undefined || this.activeCreation !== undefined) {
 				try {
-					await this.ownedCreationPromise;
+					await waitForStageStartup(this.ownedCreationPromise ?? this.activeCreation!, startupSignal);
 				} catch (error) {
 					if (error instanceof StageSessionCreationCancelled) return;
 					throw error;
@@ -604,7 +624,10 @@ export class StageSessionController {
 				const created =
 					this.session && this.activeCandidateIndex === index
 						? this.session
-						: await this.createSessionWithThrownErrorRetry(candidate, consumer);
+						: await waitForStageStartup(
+								this.createSessionWithThrownErrorRetry(candidate, consumer),
+								startupSignal,
+							);
 				if (isSessionCreationPauseResult(created)) {
 					if (created.resumeMessage === undefined) return;
 					promptText = created.resumeMessage;
@@ -633,7 +656,10 @@ export class StageSessionController {
 			} catch (err) {
 				const failure = await this.handleCandidateFailure(err, candidate, candidates, index);
 				if (failure === "handled") return;
-				if (failure === "throw") throw err;
+				if (failure === "throw") {
+					this.settleStartup(true);
+					throw err;
+				}
 				index += 1;
 			}
 		}
@@ -677,7 +703,9 @@ export class StageSessionController {
 		this.messageAdmission.dispose();
 		this.deliveryActivity.dispose();
 		await this.replacement.dispose();
-		await disposeStageSession(this.session);
+		// The creation owner also owns any attached-but-not-ready session. It
+		// disposes that session only after its final readiness callback settles.
+		if (this.activeCreation === undefined) await disposeStageSession(this.session);
 	}
 
 	/**
@@ -764,6 +792,11 @@ export class StageSessionController {
 		this.abortReason = reason;
 		this.abortReasonGeneration = this.abortGeneration;
 		this.routeAuthorityWait?.abort(reason);
+		this.startupWait.abort(reason);
+		if (this.startup?.state === "active") {
+			this.startup = { ...this.startup, state: "cancelled" };
+			this.opts.onStartupChange?.(this.startup);
+		}
 		this.abortThrownErrorRetries(reason);
 	}
 
@@ -1082,12 +1115,15 @@ export class StageSessionController {
 	}
 
 	private async createInitialSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
+		const generation = this.abortGeneration;
 		if (!this.hasExplicitModelFallbackConfig) {
 			return this.createSessionObservingPause(undefined, consumer).catch((error) =>
 				this.createInitialSessionWithRetry(undefined, consumer, { error }),
 			);
 		}
 		const candidates = await this.modelCandidates();
+		if (this.abortGeneration !== generation || this.opts.signal?.aborted || this.disposed)
+			throw this.staleCreationReason(generation);
 		const initialIndex = this.activeCandidateIndex ?? 0;
 		const first = candidates[initialIndex];
 		if (first === undefined) {
@@ -1254,6 +1290,7 @@ export class StageSessionController {
 					decision === undefined ||
 					this.disposed ||
 					this.opts.signal?.aborted === true ||
+					this.startupWait.signal.aborted ||
 					this.capturedStructuredOutputForAttempt()
 				) {
 					throw error;
@@ -1298,14 +1335,55 @@ export class StageSessionController {
 		}
 		if (this.activeCreation !== undefined) return this.activeCreation;
 		if (this.session !== undefined) return Promise.resolve(this.session);
+		this.startupWait.signal.throwIfAborted();
 		const creation = this.createSessionAttempt(candidate, consumer, resumeOptions);
 		this.activeCreation = creation;
 		void creation
 			.finally(() => {
 				if (this.activeCreation === creation) this.activeCreation = undefined;
+				this.settleStartup();
 			})
 			.catch(() => {});
 		return creation;
+	}
+
+	private settleStartup(failed = false): void {
+		if (this.activeCreation !== undefined || this.ownedCreationPromise !== undefined || this.startup === undefined)
+			return;
+		if (this.startup.state === "dispatched" || this.startup.phase === "ready") return;
+		if (this.startup.state === "active" && !failed && this.bindingCleanupFailure === undefined) return;
+		this.startup = {
+			...this.startup,
+			state: this.startup.state === "active" ? "failed" : this.startup.state,
+			ownershipPending: this.bindingCleanupFailure !== undefined,
+			...(this.bindingCleanupFailure === undefined ? { settledAt: Date.now() } : {}),
+		};
+		this.opts.onStartupChange?.(this.startup);
+	}
+
+	private beginStartup(): void {
+		if (
+			this.activeCreation !== undefined ||
+			this.ownedCreationPromise !== undefined ||
+			this.sessionPromise !== undefined
+		)
+			return;
+		this.opts.signal?.throwIfAborted();
+		if (this.startupWait.signal.aborted) this.startupWait = new AbortController();
+		this.reportStartupPhase("model-resolution", true);
+	}
+
+	private reportStartupPhase(phase: StageStartupPhase, reset = false): void {
+		if (!reset && this.startup !== undefined && this.startup.state !== "active") return;
+		const now = Date.now();
+		this.startup = {
+			phase,
+			startedAt: reset ? now : (this.startup?.startedAt ?? now),
+			phaseStartedAt: now,
+			state: phase === "first-dispatch" ? "dispatched" : "active",
+			ownershipPending: phase !== "first-dispatch" && phase !== "ready",
+		};
+		this.opts.onStartupChange?.(this.startup);
 	}
 
 	private async createSessionAttempt(
@@ -1315,6 +1393,7 @@ export class StageSessionController {
 	): Promise<StageSessionRuntime> {
 		const startGeneration = this.abortGeneration;
 		if (this.disposed || this.opts.signal?.aborted) throw this.staleCreationReason(startGeneration);
+		this.reportStartupPhase("route-authority");
 		const authority = this.opts.routeAuthorityReady?.();
 		if (authority !== undefined) {
 			const wait = new AbortController();
@@ -1328,6 +1407,7 @@ export class StageSessionController {
 				if (this.routeAuthorityWait === wait) this.routeAuthorityWait = undefined;
 			}
 		}
+		this.reportStartupPhase("resource-preparation");
 		this.applyCandidateThinking(candidate);
 		const stageOptions = buildStageSessionOptions({
 			effectiveStageOptions: this.effectiveStageOptions,
@@ -1348,6 +1428,10 @@ export class StageSessionController {
 						) as StageSessionCreateOptions,
 						{
 							...this.meta,
+							startupSignal: this.startupWait.signal,
+							onStartupPhase: (phase) => {
+								if (this.abortGeneration === startGeneration) this.reportStartupPhase(phase);
+							},
 							stageOptions,
 							...(this.sharedOrchestrationContext !== undefined
 								? { orchestrationContext: this.sharedOrchestrationContext }
@@ -1372,26 +1456,30 @@ export class StageSessionController {
 				throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
 			throw this.staleCreationReason(startGeneration);
 		}
+		this.reportStartupPhase("session-attachment");
 		const session = attachCreatedStageSession(created, this.disposed, this.opts.stageName, (result) =>
 			this.attachSession(result),
 		);
 		const attachedSession = session instanceof Promise ? await session : session;
-		const pendingStageDeliveryReady = this.sharedOrchestrationContext?.pendingStageDelivery?.ready();
-		if (pendingStageDeliveryReady !== undefined) {
+		this.reportStartupPhase("delivery-readiness");
+		try {
+			await this.sharedOrchestrationContext?.pendingStageDelivery?.ready();
+			await this.opts.onSessionReady?.();
+			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
+				throw this.staleCreationReason(startGeneration);
+		} catch (reason) {
+			// Attachment is not readiness. The retained creation owns cleanup on
+			// both rejection and cancellation; never expose this identity for reuse.
+			if (this.session === attachedSession) this.session = undefined;
 			try {
-				await pendingStageDeliveryReady;
+				await cleanupFailedStageSessionBinding(attachedSession, reason);
 			} catch (error) {
-				// `attachSession` has already published this session, and
-				// `ensureSession()` returns `this.session` when it is set — so leaving
-				// it attached would let a later caller prompt a stage that skipped the
-				// queued instructions it was refused. Detach and dispose, mirroring the
-				// stale-creation branch above, then let the failure decide the stage.
-				if (this.session === attachedSession) this.session = undefined;
-				await disposeStageSession(attachedSession).catch(() => {});
+				if (error instanceof StageSessionBindingCleanupFailure) this.bindingCleanupFailure = error;
 				throw error;
 			}
+			throw reason;
 		}
-		await this.opts.onSessionReady?.();
+		this.reportStartupPhase("ready");
 		return attachedSession;
 	}
 
@@ -1491,6 +1579,7 @@ export class StageSessionController {
 			this.lastPromptStartIndex = promptStartIndex;
 			this.unresolvedContextOverflowMessage = undefined;
 			try {
+				this.reportStartupPhase("first-dispatch");
 				await activeSession.prompt(nextText, sdkOptions);
 				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
@@ -1628,6 +1717,7 @@ export class StageSessionController {
 		});
 		if (
 			this.opts.signal?.aborted ||
+			this.startupWait.signal.aborted ||
 			terminalStageDelivery ||
 			!isRetryableModelFailure(err) ||
 			index === candidates.length - 1

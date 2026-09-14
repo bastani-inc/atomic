@@ -80,7 +80,15 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 				(checkpoint) =>
 					checkpoint.kind === "stage" &&
 					checkpoint.replayKey === stage.replayKey &&
-					checkpoint.output !== undefined,
+					(checkpoint.output !== undefined ||
+						// Prompt output is in the separately keyed UI checkpoint. Exact cache-hit
+						// validation happens before the completed prompt can expose a live wait.
+						(["input", "confirm", "select", "editor", "custom"].includes(stage.name) &&
+							stage.replayKey?.startsWith(`prompt:${stage.name}:`) === true &&
+							checkpoint.name === stage.name &&
+							checkpoint.topology?.stageId === stage.id &&
+							checkpoint.topology.status === "completed" &&
+							checkpoint.topology.run?.runId === source.id)),
 			)
 		)
 			return fail(`unfinished or missing completed stage checkpoint ${stage.id}`);

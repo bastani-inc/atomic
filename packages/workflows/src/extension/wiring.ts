@@ -125,6 +125,8 @@ export interface RuntimeWiringSurface {
 export interface RuntimeAdapterBuildOptions {
 	/** Test seam for SDK session creation. */
 	createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<StageSessionCreateResult>;
+	/** Test seam: exercise production preparation and binding with an injected SDK. */
+	sdk?: PiCodingAgentSdk;
 	/** Broker that routes stage-local custom UI into attached workflow nodes. */
 	stageUiBroker?: StageUiBroker;
 }
@@ -170,8 +172,9 @@ function attachSettingsManager(error: unknown, settingsManager: StageSettingsMan
 async function createPiSdkAgentSession(
 	options?: CreateAgentSessionOptions,
 	prepareOptions?: PrepareAtomicStageSessionOptions,
+	injectedSdk?: PiCodingAgentSdk,
 ): Promise<StageSessionCreateResult> {
-	const sdk = (await import("@bastani/atomic")) as PiCodingAgentSdk;
+	const sdk = injectedSdk ?? ((await import("@bastani/atomic")) as PiCodingAgentSdk);
 	let settingsManager: ReturnType<PiCodingAgentSdk["SettingsManager"]["create"]> | undefined;
 	try {
 		const sessionOptions = await prepareAtomicStageSessionOptions(options, sdk, {
@@ -182,6 +185,8 @@ async function createPiSdkAgentSession(
 			},
 		});
 		settingsManager = sessionOptions?.settingsManager ?? settingsManager;
+		prepareOptions?.signal?.throwIfAborted();
+		prepareOptions?.onStartupPhase?.("sdk-creation");
 		const result = await sdk.createAgentSession(sessionOptions);
 		// `CreateAgentSessionResult` is `{ session, extensionsResult, modelFallbackMessage? }`;
 		// workflow stages only consume `.session` (structurally an `AgentSession`,
@@ -460,12 +465,17 @@ export function buildRuntimeAdapters(
 	const createSession =
 		options.createAgentSession ??
 		pi.createAgentSession ??
-		(isTestContext()
+		(isTestContext() && options.sdk === undefined
 			? createTestAgentSession
-			: (sessionOptions?: CreateAgentSessionOptions) =>
-					createPiSdkAgentSession(sessionOptions, {
-						resourceLoaderInheritanceSnapshot: pi.getResourceLoaderInheritanceSnapshot?.(),
-					}));
+			: (sessionOptions?: CreateAgentSessionOptions, prepareOptions?: PrepareAtomicStageSessionOptions) =>
+					createPiSdkAgentSession(
+						sessionOptions,
+						{
+							resourceLoaderInheritanceSnapshot: pi.getResourceLoaderInheritanceSnapshot?.(),
+							...prepareOptions,
+						},
+						options.sdk,
+					));
 	const broker = options.stageUiBroker ?? stageUiBroker;
 	const adapters: StageAdapters = {
 		agentSession: {
@@ -485,9 +495,12 @@ export function buildRuntimeAdapters(
 					meta,
 					pi,
 				);
-				const result = await createSession(sessionOptions);
+				const signal = meta?.startupSignal ?? meta?.signal;
+				const result = await createSession(sessionOptions, { signal, onStartupPhase: meta?.onStartupPhase });
 				const bindable = result.session as BindableStageSession;
 				try {
+					signal?.throwIfAborted();
+					meta?.onStartupPhase?.("extension-binding");
 					if (typeof bindable.bindExtensions === "function") {
 						await bindable.bindExtensions(
 							shouldBindStageUiContext(pi, meta)
@@ -495,6 +508,7 @@ export function buildRuntimeAdapters(
 								: {},
 						);
 					}
+					signal?.throwIfAborted();
 				} catch (error) {
 					// #3020: the controller cannot clean a session that never leaves this adapter.
 					await cleanupFailedStageSessionBinding(result.session, error);
