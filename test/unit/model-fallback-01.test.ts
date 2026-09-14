@@ -115,6 +115,30 @@ describe("model fallback helpers", () => {
 		);
 	});
 
+	// Regression #3031: an empty list alone does not disable implicit current-model fallback.
+	test("outer fallback chain retains the current model unless it matches the primary", () => {
+		for (const fallbackModels of [undefined, []]) {
+			assert.deepEqual(
+				buildModelCandidateIds({
+					primaryModel: "anthropic/claude-sonnet-4",
+					fallbackModels,
+					currentModel: "openai/gpt-5-mini",
+					availableModels: models,
+				}),
+				["anthropic/claude-sonnet-4", "openai/gpt-5-mini"],
+			);
+		}
+		assert.deepEqual(
+			buildModelCandidateIds({
+				primaryModel: "openai/gpt-5-mini",
+				fallbackModels: [],
+				currentModel: "openai/gpt-5-mini",
+				availableModels: models,
+			}),
+			["openai/gpt-5-mini"],
+		);
+	});
+
 	test("fallbackThinkingLevels maps positionally only when fallback lacks suffix", () => {
 		assert.deepEqual(
 			buildModelCandidates({

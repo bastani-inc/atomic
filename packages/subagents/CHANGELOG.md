@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-09-13
+
+Cumulative release of the `0.9.19-alpha.2` through `0.9.19-alpha.6` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- Renamed terminal control action `interrupt` to `kill`, including calls using `runId`. Replace `subagent({ action: "interrupt", id })` with `subagent({ action: "kill", id })`. The old action is rejected; killed children cannot resume and follow-up work requires a fresh launch.
+
+### Added
+
+- Added a searchable `/agents` catalog grouped by source with model, tool, description and prompt details.
+- Added the builtin Herdr skill from upstream v0.9.0 with managed-pane safety checks and CLI guidance.
+
+### Changed
+
+- Session-bound launches return owner-bound task observations immediately by default. Explicit foreground observation and `action: "wait"` observe the same execution; yielding does not cancel children or consume additional execution slots ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Reduced default top-level parallel concurrency from 4 to 3. Explicit overrides remain honored; the per-parent native turn cap remains 4.
+- Launch receipts, compact themed status cards and task details show readable outcomes, activity, elapsed time, tool/token counts and resolved model/reasoning settings, retaining identity through fallback and completion. Live transcripts subscribe to session events.
+- Locator and pattern-finding agents use GPT-5.6 Luna at xhigh with Grok fallbacks at medium. Other agents explicitly select xhigh for OpenRouter Grok fallbacks. Debugger uses Astra and Fable at medium and Sol at high, preserving its fallback order.
+- Delegation guidance keeps immediately blocking work local unless specialist expertise, isolation or an explicit request warrants a child. Parents overlap independent work and wait on dependencies rather than poll. Requests to work "quickly" select inline execution without hidden workflows or skipped validation.
+
+### Fixed
+
+- Intercom sends and asks interrupt working children and handle input in the same execution, including startup, preflight and settlement races, without relaunching or losing messages. Explicit abort and owner cancellation remain terminal.
+- Parallel requests wait for correlated replies in the original requester without ending siblings or discarding queued work. Parent observation yielding does not change execution concurrency; exact group commits release foreground observations without replacing executions ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Published terminal state before child disposal so completed children reject asks they cannot answer. Bound transcripts retain exact Intercom targets, and same-child messages precede completion delivery.
+- Fixed queued-child worktree and branch cleanup on cancellation or owner closure without removing live siblings' worktrees early.
+- Preserved explicit kill during capacity waiting and parent-cancellation races, including grouped Intercom status. Status and kill accept returned owner-bound task IDs.
+- Background cards display known model/reasoning settings at admission without guessing unresolved values. Browsing `/agents` is navigation and no longer reports a false approval or Herdr block.
+
 ## [0.9.19-alpha.6] - 2026-09-11
 
 ### Changed

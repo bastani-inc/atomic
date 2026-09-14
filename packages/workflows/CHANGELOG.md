@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Cold-start workflow stages wait for acknowledged Intercom route authority before connecting, preventing spurious ownership and heavy-initialization failures without weakening route ownership checks.
+
+## [0.9.19] - 2026-09-13
+
+Cumulative release of the `0.9.19-alpha.1` through `0.9.19-alpha.11` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- Workflow control uses `pause` across slash commands, tool actions, runtime APIs and lifecycle events. Run-level pause preserves resumable work, nested checkpoint tails and executor-only waits; targeted stage pause retains queued messages, and targeted `ctx.tool` pause cancels only that call. Use `resume` to continue eligible work.
+
+### Added
+
+- Connected workflow activity to host observers and the built-in Herdr reporter, with root snapshots that distinguish execution, human waits, pauses, recovery and acknowledged failures. Typed lifecycle, activity, completion and heartbeat hooks preserve canonical nested identities without synthesizing completions during restore ([#2891](https://github.com/bastani-inc/atomic/issues/2891)).
+- Added source-qualified stage-local `/skill:` discovery and one-time expansion for idle, steering and follow-up submissions, retaining Enter/Ctrl+F intent and human-input ownership. Editable post-mortem chats can use skills without restarting execution; `StageSendUserMessageOptions.expandPromptTemplates` opts programmatic delivery into expansion.
+- Added bound owner-task inspection to stage chats with compact background counts below the composer, shared `/tasks` navigation and readable shaded completion cards ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Graph node cards show effective model and thinking identity, preserving canonical fast suffixes, updating on fallback and restoring through durable resume ([#1859](https://github.com/bastani-inc/atomic/pull/1859) by [@sina85](https://github.com/sina85)).
+- Main-chat workflow cards support viewport-local wheel scrolling and an overflow-only scrollbar. Configurable Alt+K/J shortcuts, labeled Option on macOS, retain Alt+PageUp/PageDown aliases and yield to editor bindings. Ten-row and short-terminal caps preserve multiline-draft access and run anchors through live changes and resize.
+
+### Changed
+
+- Incoming Intercom sends and asks cancel a live stage's current model call or cancellable tool and process messages in the same generation. Ordered delivery survives preflight and persistence races without replaying completed tools or cancelling a child that is asking its parent.
+- Reduced default stage and authored parallel concurrency from 4 to 3, preserving explicit overrides.
+- Open Claude Design starts with Fable 5.1 at medium, then Copilot Fable 5.1 and Astra at medium, with Fable-first OpenRouter fallbacks. Goal and Ralph orchestration, Ralph research and design use Fable fallbacks at medium and Sol at high; Goal/Ralph reviewers use Astra/Sol at high. Ralph prompt refinement remains at high, and OpenRouter Grok fallbacks explicitly use xhigh.
+- Guidance uses project CI timing to plan critical-path work, avoids redundant full-suite runs without skipping gates, and routes user questions through structured question tools when available. Requests to work "quickly" select inline execution; launches inherit configured limits without routine budget questions while preserving approval before raising exhausted budgets.
+- Graph cards omit generated dependency labels and extra padding, leave absent models blank, and show queued-message counts on a separate row. Status detail uses local time rather than UTC ([#3008](https://github.com/bastani-inc/atomic/issues/3008)).
+
+### Fixed
+
+- Model fallback releases failed-attempt Intercom ownership before replacement, shares concurrent attachment/steering setup, and stops on cleanup failure. Repeated nested `ctx.workflow()` calls use unambiguous boundary identities instead of colliding during fallback ([#3020](https://github.com/bastani-inc/atomic/issues/3020)).
+- Unchanged stage routes are no longer republished on every store update, avoiding redundant broker traffic and `List sessions timeout`. Genuine changes publish immediately, and rejected or unacknowledged announcements remain retryable.
+- Restored embedded Postgres discovery in Bun-compiled and nested npm installations. Early exit reports the retained server's log instead of a readiness timeout; competing listeners and process-query failures cannot masquerade as readiness.
+- Reduced checkpoint-heavy durable resume latency, especially on Windows, without changing decoded values or original errors. Ended recoverable blocks resume through continuation rather than reporting snapshot-only success.
+- Initialization cancellation no longer leaves uncontrollable empty runs. Whole-run pause retains live executors and nested owners until resume, while quit retires them; durable resume replaces abandoned executors without replacing surviving paused owners. Original tool failures, closed-admission errors and child cleanup survive cancellation races.
+- Stage pause cancels owned active and admitted queued agents and commands and waits for admission and cleanup; resume permits fresh work without reviving cancelled executions or affecting siblings. Durable tool callbacks wait for admitted agent tasks to settle before checkpointing, preserving commit/cancellation fences ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Quit and pause dismiss owned active-tool and readiness questions, reject late answers, and ask readiness again on resume. Failed cancellation releases only its temporary hold instead of stranding a running stage ([#2897](https://github.com/bastani-inc/atomic/issues/2897)).
+- Completed stages retain their late-message routing for post-mortem asks. Non-agent prompt/tool names do not invalidate genuine duplicate-agent routing ([#2895](https://github.com/bastani-inc/atomic/pull/2895)).
+- Preserved complete stage artifacts across follow-up clarification, compaction and fallback. Failed retries discard provisional answers without losing earlier accepted reports; typed child workflows can receive structured output without graph projection freezing it ([#2936](https://github.com/bastani-inc/atomic/issues/2936)).
+- Local stage listing and background counts include recursively nested stages without duplicate boundaries. Warm-first verifier and tournament groups declare possible-stage names without spurious builtin discovery warnings ([#3001](https://github.com/bastani-inc/atomic/issues/3001)).
+- Skill autocomplete shares lazy attachment without checkpointing on every keystroke. Unsupported custom hosts report unavailable invocation rather than bypassing admission.
+- Stage `/tasks` stays local, retains model/reasoning/cwd/branch/MCP context, and keeps counts visible beside questions on narrow terminals. Detail pages remain fullscreen, and navigation does not create false input notices or approval waits.
+- Workflow graph interiors and autocomplete use the terminal background; themed chrome and focused tabs retain fill and styling through truncation. Graph/picker navigation no longer falsely marks Herdr blocked.
+- Live continuation prevents brief false idle reports. Settled failures retain attention without reporting an active decision wait; genuine questions and exhausted budgets remain blocked. Already-aborted lifecycle kill events and checkpoint interrupt outcomes remain accurate ([#2891](https://github.com/bastani-inc/atomic/issues/2891), [#2912](https://github.com/bastani-inc/atomic/pull/2912)).
+- Workflow summaries fit narrow terminals, keep the viewed run anchored across insertion/removal and collapse/resize, and use a concise `↑↓ scroll` hint without a redundant visible-row counter ([#3015](https://github.com/bastani-inc/atomic/issues/3015), [#3017](https://github.com/bastani-inc/atomic/pull/3017)).
+
 ## [0.9.19-alpha.11] - 2026-09-13
 
 ### Fixed

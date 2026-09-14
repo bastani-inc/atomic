@@ -4,6 +4,25 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-09-13
+
+Cumulative release of the `0.9.19-alpha.2` through `0.9.19-alpha.4` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Added
+
+- Enabled native deferred tool loading for Fireworks Messages models through `ToolSearch` or `tool_search` ([#9323](https://github.com/earendil-works/pi/issues/9323)).
+
+### Fixed
+
+- Fixed Anthropic object-union tool schemas, including own property names such as `__proto__` and explicitly nonobject branches, without changing authored schemas or local validation ([#2190](https://github.com/bastani-inc/atomic/pull/2190) by [@elefthei](https://github.com/elefthei), [#2189](https://github.com/bastani-inc/atomic/issues/2189)).
+- Capped shared assistant and summary retry backoff with `RetryPolicy.maxAgentDelayMs`, defaulting to 60 seconds ([#8826](https://github.com/earendil-works/pi/issues/8826)).
+- Updated Anthropic, Bedrock, Google and HTTP proxy SDKs; Google's consecutive tool-call limit now returns an error stop reason. GitHub Copilot GPT models use the Responses API ([#9209](https://github.com/earendil-works/pi/issues/9209)).
+- Fixed quadratic CPU usage when draining buffered `EventStream` events ([#9055](https://github.com/earendil-works/pi/issues/9055)).
+- Fixed OpenAI Codex Off reasoning requests and removed unavailable GPT-5.4 and GPT-5.4 mini catalog entries ([#9191](https://github.com/earendil-works/pi/issues/9191), [#9394](https://github.com/earendil-works/pi/issues/9394)).
+- Fixed Fireworks unsigned thinking replay and catalog-based reasoning selection, including DeepSeek V4 and Qwen3.8 fallbacks. Refreshed DeepSeek V4.1 Flash identity and pricing ([#9323](https://github.com/earendil-works/pi/issues/9323), [#9423](https://github.com/earendil-works/pi/issues/9423)).
+- Fixed OpenRouter prompt-cached requests sending `x-session-id` for Chat Completions and Anthropic Messages ([#9102](https://github.com/earendil-works/pi/issues/9102)).
+- Fixed Mistral Medium aliases and Mistral-hosted GLM-5.2 using `reasoning_effort` instead of unsupported or ignored `prompt_mode` ([#8700](https://github.com/earendil-works/pi/issues/8700), [#9375](https://github.com/earendil-works/pi/issues/9375)).
+
 ## [0.9.19-alpha.4] - 2026-09-10
 
 ### Added
