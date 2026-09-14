@@ -29,6 +29,16 @@ function captureSessionShutdown(): SessionShutdownHandler {
 	return shutdown!;
 }
 
+/** Bounded wait for the creation owner's late cleanup; a timeout fails the test. */
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+	const deadline = Date.now() + 5_000;
+	while (Date.now() < deadline) {
+		if (predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(predicate(), true, `timed out waiting for ${label}`);
+}
+
 afterEach(() => stageControlRegistry.clear());
 
 test("every non-quit session shutdown invalidates a post-mortem prompt whose session creation is pending", async () => {
@@ -102,6 +112,9 @@ test("every non-quit session shutdown invalidates a post-mortem prompt whose ses
 
 			await assert.rejects(submittedPrompt, /session has been disposed/);
 			assert.equal(promptCalls, 0);
+			// #3040: shutdown releases the pending prompt immediately; the creation
+			// owner still disposes the late session once it arrives, exactly once.
+			await waitFor(() => disposeCalls > 0, `late ${reason} session disposal`);
 			assert.equal(disposeCalls, 1);
 			assert.equal(result.handle.isDisposed, true);
 			assert.equal(stageControlRegistry.get("run-1", "stage-1"), undefined);

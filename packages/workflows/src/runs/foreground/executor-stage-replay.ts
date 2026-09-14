@@ -4,7 +4,6 @@ import { appendStageEnd, appendStageStart } from "../../shared/persistence-sessi
 import type { Store } from "../../shared/store.js";
 import { workflowObservationRuntime } from "../../shared/store-factory.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
-import { elapsedStageMs } from "../../shared/timing.js";
 import { workflowActivityNodeKey } from "../../shared/workflow-activity.js";
 import { stageReplayFields } from "./executor-lifecycle.js";
 import type { WorkflowExitCleanup } from "./executor-types.js";
@@ -38,7 +37,7 @@ export function createReplayStageContext(input: {
 			name,
 			parentIds: stageSnapshot.parentIds,
 			...stageReplayFields(stageSnapshot),
-			ts: stageSnapshot.startedAt ?? Date.now(),
+			ts: stageSnapshot.startedAt,
 		});
 	};
 
@@ -48,7 +47,8 @@ export function createReplayStageContext(input: {
 			runId,
 			stageId,
 			status: stageSnapshot.status,
-			durationMs: stageSnapshot.durationMs ?? 0,
+			durationMs: stageSnapshot.durationMs,
+			endedAt: stageSnapshot.endedAt,
 			...(stageSnapshot.status === "completed" && stageSnapshot.result !== undefined
 				? { summary: stageSnapshot.result }
 				: {}),
@@ -68,8 +68,6 @@ export function createReplayStageContext(input: {
 			delete stageSnapshot.result;
 			stageSnapshot.skippedReason = input.workflowExitSkippedReason(reason);
 		}
-		stageSnapshot.endedAt = Date.now();
-		stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
 		input.activeStore.recordStageEnd(runId, stageSnapshot);
 		input.opts.onStageEnd?.(runId, stageSnapshot);
 		appendReplayStageEnd();

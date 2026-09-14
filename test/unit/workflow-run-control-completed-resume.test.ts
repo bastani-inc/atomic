@@ -11,6 +11,7 @@ import {
 	seedWorkflowLifecycleNotificationState,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createDurableResumeRuntime } from "../../packages/workflows/src/extension/runtime-durable-resume.js";
 import {
 	handleDurableResume,
 	prepareWorkflowResumeCatalog,
@@ -121,6 +122,104 @@ async function resume(
 }
 
 describe("/workflow resume completed target", () => {
+	// #3038: a fresh CLI must initialize before resolving a durable resume target.
+	test("cold exact resume initializes and opens the retained workflow without a prior status command", async () => {
+		const backend = new InMemoryDurableBackend();
+		const id = testRunId("cold-completed-command-target");
+		registerCompleted(backend, id);
+		const baseRuntime = createExtensionRuntime({ store });
+		let initializations = 0;
+		const runtime: ExtensionRuntime = {
+			...baseRuntime,
+			...createDurableResumeRuntime({
+				registry: baseRuntime.registry,
+				store,
+				runtimeCwd: tempDir,
+				baseRunOpts: () => ({}),
+				ensureReady: async () => {
+					initializations += 1;
+					setDurableBackend(backend);
+					return backend;
+				},
+			}),
+		};
+		setDurableBackend(undefined);
+		const opened: string[] = [];
+		const result = await resume(id, runtime, opened);
+		assert.ok(initializations > 0);
+		assert.deepEqual(result.errors, []);
+		assert.deepEqual(opened, [id]);
+		assert.equal(store.runs().find((run) => run.id === id)?.status, "completed");
+		assert.equal(backend.getWorkflow(id)?.status, "completed");
+	});
+
+	// #3038: initialization failure must be visible, not an unhandled slash rejection.
+	test("cold exact resume reports preparation failure without dispatching", async () => {
+		const id = testRunId("cold-preparation-failure");
+		setDurableBackend(undefined);
+		const opened: string[] = [];
+		const runtime: ExtensionRuntime = {
+			...createExtensionRuntime({ store }),
+			prepareDurableResumable: async (target) => {
+				assert.equal(target, id);
+				throw new Error("controlled durability initialization failure");
+			},
+			resumeDurableWorkflow: async () => {
+				assert.fail("must not dispatch after failed initialization");
+			},
+		};
+		const result = await resume(id, runtime, opened);
+		assert.deepEqual(result.messages, []);
+		assert.deepEqual(result.errors, [
+			"Failed to resolve workflow resume target: controlled durability initialization failure",
+		]);
+		assert.deepEqual(opened, []);
+		assert.deepEqual(store.runs(), []);
+	});
+
+	// #3038: cold durable recovery must reach dispatch with the original identity.
+	test("cold exact resume dispatches a failed durable workflow", async () => {
+		const backend = new InMemoryDurableBackend();
+		const id = testRunId("cold-failed-command-target");
+		registerCompleted(backend, id);
+		backend.setWorkflowStatus(id, "failed", 0, true);
+		backend.recordCheckpoint({
+			kind: "tool",
+			workflowId: id,
+			checkpointId: "tool-failure:1",
+			name: "frontier",
+			argsHash: "frontier-hash",
+			output: null,
+			throwingFailureError: "controlled frontier failure",
+			completedAt: 3,
+		});
+		const baseRuntime = createExtensionRuntime({ store });
+		const dispatches: string[] = [];
+		const runtime: ExtensionRuntime = {
+			...baseRuntime,
+			...createDurableResumeRuntime({
+				registry: baseRuntime.registry,
+				store,
+				runtimeCwd: tempDir,
+				baseRunOpts: () => ({}),
+				ensureReady: async () => {
+					setDurableBackend(backend);
+					return backend;
+				},
+			}),
+			registry: { ...baseRuntime.registry, has: (name) => name === `${id}-flow` },
+			resumeDurableWorkflow: async (target) => {
+				dispatches.push(target);
+				return { ok: true, workflowId: target, runId: target, name: `${id}-flow`, message: "Recovered" };
+			},
+		};
+		setDurableBackend(undefined);
+		const result = await resume(id, runtime);
+		assert.deepEqual(result.errors, []);
+		assert.deepEqual(dispatches, [id]);
+		assert.deepEqual(result.messages, ["Recovered"]);
+	});
+
 	test("opens an exact completed id without invoking durable resume dispatch", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);

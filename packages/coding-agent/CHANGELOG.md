@@ -1,7 +1,6 @@
 # Changelog
 
 ## [Unreleased]
-
 ### Added
 
 - Added optional `pi.getLoadedExtensions()` and the exported `LoadedExtensionInfo` type so extensions can report loaded extension names and bundled provenance, including extensions without tools ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
@@ -11,6 +10,7 @@
 ### Fixed
 
 - Fixed `/feedback` follow-ups to re-prepare and privacy-scrub requested bug and enhancement revisions before fresh approval. Submission refusals and failures now produce error tool results while preserving the editable draft ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+- Workflow startup now reports its phase and age, and explicit cancellation releases waiting callers while retaining unfinished creation ownership. Cancelled queued reloads cannot start later; late SDK/binding results cannot attach or dispatch ([#3040](https://github.com/bastani-inc/atomic/issues/3040)).
 
 ## [0.9.19] - 2026-09-13
 

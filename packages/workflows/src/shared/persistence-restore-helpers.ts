@@ -97,6 +97,7 @@ export function _buildStageSnapshots(
 			if (snap) {
 				snap.status = restoreStageStatus(status);
 				if (typeof durationMs === "number") snap.durationMs = durationMs;
+				if (typeof entry.payload.endedAt === "number") snap.endedAt = entry.payload.endedAt;
 				if (typeof summary === "string") snap.result = summary;
 				if (typeof error === "string") snap.error = error;
 				if (typeof failureKind === "string" && isWorkflowFailureKind(failureKind)) snap.failureKind = failureKind;

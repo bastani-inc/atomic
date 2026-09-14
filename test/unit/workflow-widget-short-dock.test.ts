@@ -91,7 +91,9 @@ test("registered workflow shortcuts reach every run in a clipped dock without st
 			for (const key of ["\x1b[6;3~", "\x1b[5;3~"]) {
 				const seen = new Set<string>();
 				for (let n = 0; n < 50; n++) {
-					for (const id of ids) if (frame().some((line) => line.includes(id))) seen.add(id);
+					// All IDs are inspected in the same keyboard state; paint it only once.
+					const lines = frame();
+					for (const id of ids) if (lines.some((line) => line.includes(id))) seen.add(id);
 					terminal.input(key);
 				}
 				assert.equal(seen.size, ids.length, `${width}x${height}: every UUID reachable in either direction`);
