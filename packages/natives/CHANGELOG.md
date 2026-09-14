@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-09-13
+
+Cumulative release of the `0.9.19-alpha.2` through `0.9.19-alpha.4` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Added
+
+- Added an environment-local `TaskSupervisor` with owner-sealed admission, stable task identities, replay-safe reports, observation waits, cancellation, independent cleanup acknowledgement and byte-bounded snapshot subscriptions ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Added supervised Unix pipe/PTY and Windows pipe/ConPTY commands with retained output, execution deadlines and confirmed process-group or Job Object cleanup. Windows containment happens before execution resumes and has no unsupervised fallback ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Added replay-safe byte-credit stdin, resize, output paging, retained model/reasoning reports, and `taskSettlement` receipt lookup for recovering completion delivery. Snapshots retain `wasBackground` after settlement.
+- Added optional direct-executable `CommandIntent.shell: { program, args }` and `inheritEnv` controls, both included in operation replay identity.
+
+### Changed
+
+- Raised the minimum supported Bun runtime to 1.4.2.
+
+### Fixed
+
+- Embedded Postgres starts on Windows administrative accounts using a restricted token while retaining the exact process handle for shutdown and retry ownership. Regular Windows and Unix privilege behavior is unchanged.
+- Preserved Windows Postgres logs, closed stdin, Unicode environment overrides, `PATH` and relative executable lookup, batch launcher quoting, explicit command interpreters and safe verbatim working directories. Invalid NUL-containing inputs fail before launch; restricted children inherit only selected streams, and partial failures and repeated launches release handles correctly.
+- Enforced a shared supervised-output file cap across streams and descendants and clamped output pages to 1 MiB ([#2905](https://github.com/bastani-inc/atomic/pull/2905)).
+- Preserved large and fractional wait budgets, exact numeric exit codes and metric replay, signed zero, NaN and lossless UTF-16 strings. NaN waits no longer panic scheduling ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Bounded activity replay to 256 hashed identities per task while retaining terminal receipts. Caller IDs cannot consume internal settlement identities or prevent cleanup ([#2884](https://github.com/bastani-inc/atomic/pull/2884)).
+- Retry transient macOS process-group permission errors within the cleanup deadline, so unreaped zombies do not cause immediate failure; persistent refusals still fail closed.
+
 ## [0.9.19-alpha.4] - 2026-09-10
 
 ### Fixed

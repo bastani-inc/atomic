@@ -254,23 +254,29 @@ Use these sections under `## [Unreleased]`:
 
 ### Rules
 
-- Package changelogs are user-facing release notes. Add entries only for changes to shipped package behavior, APIs, features, or user-visible fixes.
-- CI configuration, release/publish pipelines, repository automation, maintainer scripts, and agent-instruction changes are infrastructure-level changes. Do **not** add them to `packages/*/CHANGELOG.md` unless they also change the behavior of a shipped package for users.
-- In particular, changing how a release is tagged, dispatched, built, verified, or published does not itself warrant a package changelog entry.
-- Before adding entries, read the full `[Unreleased]` section to see which subsections already exist
-- New entries ALWAYS go under `## [Unreleased]` section
-- Append to existing subsections (e.g., `### Fixed`), do not create duplicates
-- NEVER modify already-released version sections (e.g., `## [0.12.2]`)
-- Each version section is immutable once released
-- When updating the changelog entry you should:
-    1. Carefully note key features that were added for a particular `prerelease` revision and for each `release` version changelog you should note every key feature that was introduced in the cumulative `prerelease`(s) that led up to the `release`.
-    2. Do NOT be lazy and avoid saying something like: "Bumped package version for the Atomic prerelease." That is not helpful to users and does not provide any information on what was actually changed.
-    3. The changelog should be a comprehensive and detailed summary of all the key features, bug fixes, breaking changes, and other relevant information about the `release`/`prerelease` that would be helpful for users.
+- Changelogs are user-facing release notes. Record only changes to shipped package
+  behavior: APIs, features, user-visible fixes. CI, release/publish pipelines,
+  repository automation, maintainer scripts, and agent instructions are infrastructure
+  and get no entry unless they also change what users get.
+- New entries go under `## [Unreleased]`, appended to the existing subsection for their
+  kind. Read the whole section first; do not create a second `### Fixed`.
+- A released section (`## [0.12.2]`) is immutable. Do not edit, append to, or delete
+  one. `test/unit/changelog.test.ts` compares each against its tag.
+- A release section (`## [0.9.19]`) lists every entry from the prereleases that led to
+  it (`0.9.19-alpha.1` through `0.9.19-alpha.12`), grouped under the standard
+  subsections. It must stand alone: the GitHub release page shows only that section.
+- Do not open a section with a preamble that names the prereleases it covers and
+  redirects the reader, e.g. "Cumulative release of the `0.9.19-alpha.1` through
+  `0.9.19-alpha.12` prereleases. Per-change details remain in the prerelease sections
+  below." `scripts/build-release-notes.ts` merges one preamble per package, so this
+  stacks eight redirections above the first real entry.
+- Each entry says what changed for the user. "Bumped package version for the Atomic
+  prerelease" is not an entry.
 
 ### Attribution
 
-- **Internal changes (from issues)**: `Fixed foo bar ([#123](https://github.com/earendil-works/pi-mono/issues/123))`
-- **External contributions**: `Added feature X ([#456](https://github.com/earendil-works/pi-mono/pull/456) by [@username](https://github.com/username))`
+- **From an issue**: `Fixed foo bar ([#123](https://github.com/bastani-inc/atomic/issues/123))`
+- **External contribution**: `Added feature X ([#456](https://github.com/bastani-inc/atomic/pull/456) by [@username](https://github.com/username))`
 
 ## Versionless release bases & bumping
 

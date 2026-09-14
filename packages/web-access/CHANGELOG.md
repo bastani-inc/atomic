@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-09-13
+
+Cumulative release of the `0.9.19-alpha.6` through `0.9.19-alpha.9` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- `fetch_content` requires a nonempty `urls` array of nonempty strings. Replace `{ url: "..." }` with `{ urls: ["..."] }`. Invalid shapes and unrecognized fields are rejected before fetching; `get_search_content` selectors are unchanged.
+- `code_search` requires `repoName` in `owner/repo` format alongside `query` and uses DeepWiki MCP for public-repository questions instead of Exa. Update query-only calls to include the repository. No API key is required and there is no Exa fallback; `maxTokens` remains a best-effort output bound and `web_search` is unchanged.
+
+### Fixed
+
+- Failed `fetch_content` batches show each URL's error and recovery steps. Retained partial content is labeled incomplete rather than absent.
+- Video frame options are ignored for non-video inputs, preventing video-only errors for webpages and mixed batches. Tool descriptions distinguish page fetching, video analysis and frame extraction.
+
 ## [0.9.19-alpha.9] - 2026-09-12
 
 ### Fixed
