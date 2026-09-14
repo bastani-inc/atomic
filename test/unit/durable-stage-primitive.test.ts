@@ -85,6 +85,30 @@ describe("recordStageCheckpoint", () => {
 		assert.equal(backend.getStageOutput(WORKFLOW_ID, "rk-1"), "analysis output");
 	});
 
+	// #3038: preserving timing must not overwrite execution metadata on replay.
+	test("keeps original metadata and records repeated replay metadata idempotently", async () => {
+		const stage = makeStage({ replayKey: "same-timing", durationMs: 1000 });
+		await recordStageCheckpoint(deps(), stage, { metadataOnly: true });
+		const original = backend.listCheckpoints(WORKFLOW_ID)[0]!;
+		const originalBytes = JSON.stringify(original);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			await recordStageCheckpoint(deps(), { ...stage, replayed: true }, { metadataOnly: true });
+		}
+		const checkpoints = backend.listCheckpoints(WORKFLOW_ID);
+		assert.equal(checkpoints.length, 2);
+		assert.equal(
+			JSON.stringify(checkpoints.find((entry) => entry.checkpointId === original.checkpointId)),
+			originalBytes,
+		);
+		for (const checkpoint of checkpoints) {
+			assert.equal(checkpoint.kind, "stage");
+			if (checkpoint.kind !== "stage") assert.fail("expected stage metadata");
+			assert.equal(checkpoint.replayKey, stage.replayKey);
+			assert.equal(checkpoint.topology?.stageId, stage.id);
+			assert.deepEqual([checkpoint.startedAt, checkpoint.endedAt, checkpoint.durationMs], [1000, 2000, 1000]);
+		}
+	});
+
 	test("falls back to status marker when result is empty", async () => {
 		const stage = makeStage({ result: undefined, replayKey: "rk-2" });
 		await recordStageCheckpoint(deps(), stage);

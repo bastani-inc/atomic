@@ -129,6 +129,7 @@ type StageListItem = {
 	pendingPrompt?: PendingPrompt;
 	inputRequest?: StageInputRequest;
 	promptFootprint?: PendingPrompt;
+	startup?: StageSnapshot["startup"];
 };
 type StageListResult = { action: "stages"; runId: string; filter: string; stages: StageListItem[]; error?: string };
 type StageDetailItem = StageSnapshot & { transcriptPath?: string };

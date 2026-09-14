@@ -239,6 +239,10 @@ export interface StageExecutionMeta {
 	executionMode?: WorkflowExecutionMode;
 	/** Internal stage-generation context reused across model-fallback sessions. */
 	orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
+	/** Internal startup observation; does not authorize delivery or release ownership. */
+	onStartupPhase?: (phase: import("./stage-startup.js").StageStartupPhase) => void;
+	/** Creation-generation cancellation, separate from the session's lifetime signal. */
+	startupSignal?: AbortSignal;
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {

@@ -29,6 +29,7 @@ import {
   createIncomingMessageSender,
   frameDeliveryFeedback,
   isDeliveryFeedback,
+  frameHistoricalSupervisorUpdate,
   framePreStartPendingStageMessage,
 } from "./incoming-message-delivery.js";
 import { InboundIdleQueue } from "./inbound-idle-queue.js";
@@ -351,7 +352,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
     const rawEntry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
-    const framedEntry = isDeliveryFeedback(message) ? frameDeliveryFeedback(rawEntry) : rawEntry;
+    const framedEntry = isDeliveryFeedback(message) ? frameDeliveryFeedback(rawEntry) : frameHistoricalSupervisorUpdate(rawEntry);
     const entry = receivedBeforeStageStart ? framePreStartPendingStageMessage(framedEntry) : framedEntry;
     if (receivedBeforeStageStart) {
       return sendIncomingMessage(entry, "prelude", messageGeneration, false);

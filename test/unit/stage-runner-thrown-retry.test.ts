@@ -1,4 +1,4 @@
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import { nextRetryDecision as codingAgentNextRetryDecision } from "../../packages/coding-agent/src/core/retry-policy.js";
 import type {
 	AgentSessionAdapter,
@@ -576,7 +576,7 @@ describe("createStageContext — thrown model failure retry", () => {
 			}),
 		) as InternalStageContext;
 		const prompt = ctx.prompt("go");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(calls, 1), { interval: 1 });
 		assert.equal(calls, 1);
 		signalController.abort(workflowError);
 		await assert.rejects(prompt, workflowError);
@@ -598,7 +598,7 @@ describe("createStageContext — thrown model failure retry", () => {
 			makeOpts({ adapters: { agentSession }, stageOptions: { model: "anthropic/primary" } }),
 		) as InternalStageContext;
 		const prompt = ctx.prompt("go");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(calls, 1), { interval: 1 });
 		await ctx.abort();
 		await assert.rejects(prompt, /stage aborted/);
 		assert.equal(calls, 1);
@@ -626,12 +626,12 @@ describe("createStageContext — thrown model failure retry", () => {
 			makeOpts({ adapters: { agentSession }, stageOptions: { model: "anthropic/primary" } }),
 		) as InternalStageContext;
 		const prompt = ctx.prompt("first");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(calls, 1), { interval: 1 });
 		await ctx.__requestPause();
 		await new Promise((resolve) => setTimeout(resolve, 15));
 		assert.equal(calls, 1);
 		await ctx.__resume("resumed");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(calls, 2), { interval: 1 });
 		assert.equal(calls, 2);
 		assert.equal(await prompt, "resumed answer");
 		assert.deepEqual(promptTexts, ["first", "resumed"]);
@@ -686,10 +686,10 @@ describe("createStageContext — thrown model failure retry", () => {
 			makeOpts({ adapters: { agentSession }, stageOptions: { model: "anthropic/primary" } }),
 		) as InternalStageContext;
 		const firstPrompt = ctx.prompt("first");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(calls, 1), { interval: 1 });
 		await ctx.__requestPause();
 		await ctx.__resume("stale-resume");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(calls, 2), { interval: 1 });
 		assert.equal(calls, 2);
 		await ctx.abort();
 		await assert.rejects(firstPrompt, /stage aborted/);
@@ -885,7 +885,7 @@ describe("createStageContext — continuation eligibility across admitted orderi
 		) as InternalStageContext;
 
 		const prompt = ctx.prompt("do it");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.deepEqual(probe.promptTexts, ["do it"]), { interval: 1 });
 		await ctx.__requestPause();
 		await new Promise((resolve) => setTimeout(resolve, 15));
 		await ctx.__resume("resumed");
@@ -909,7 +909,7 @@ describe("createStageContext — continuation eligibility across admitted orderi
 		) as InternalStageContext;
 
 		const prompt = ctx.prompt("do it");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.deepEqual(probe.promptTexts, ["do it"]), { interval: 1 });
 		await ctx.abort();
 
 		await assert.rejects(prompt, /stage aborted/);

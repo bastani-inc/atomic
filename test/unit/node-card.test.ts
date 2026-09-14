@@ -794,6 +794,13 @@ describe("renderNodeCard — duration line", () => {
 		assert.match(body, /—/);
 	});
 
+	// #3038: an incomplete historical clock must not grow during hydration.
+	test("replayed legacy start-only timing stays unknown while recorded zero remains zero", () => {
+		const legacy = { ...makeStage({ status: "completed", startedAt: 1_000 }), replayed: true };
+		assert.match(stripAnsi(renderNodeCard(legacy, { theme })[1]!), /—/);
+		assert.match(stripAnsi(renderNodeCard({ ...legacy, durationMs: 0 }, { theme })[1]!), /0s/);
+	});
+
 	test("renders fmtDuration output when durationMs is present", () => {
 		const lines = renderNodeCard(makeStage({ status: "completed", durationMs: 65_000 }), { theme });
 		const body = stripAnsi(lines[1]!);

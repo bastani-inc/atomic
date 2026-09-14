@@ -23,6 +23,7 @@ import type {
 	WorkflowBoundarySegmentsResolver,
 } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
+import { formatStageStartup } from "../shared/stage-startup.js";
 import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -318,6 +319,14 @@ function pendingStageRows(
 	);
 }
 
+function startupRows(stage: StageSnapshot, now: number, width: number, theme?: GraphTheme): string[] {
+	if (stage.startup === undefined) return [];
+	return wrapIdentifierLines(formatStageStartup(stage.startup, now), Math.max(1, width - 2), "   ", "   ").map(
+		({ prefix, chunk }) =>
+			theme === undefined ? `${prefix}${chunk}` : `${prefix}${hexToAnsi(theme.textMuted)}${chunk}${RESET}`,
+	);
+}
+
 function renderStageRowsPlain(
 	runId: string,
 	rootRunId: string | undefined,
@@ -330,6 +339,7 @@ function renderStageRowsPlain(
 ): string[] {
 	const rows = [
 		` ${stageLinePlain(stage, now, Math.max(1, width - 2))} `,
+		...startupRows(stage, now, width),
 		...pendingStageRows(
 			runId,
 			rootRunId,
@@ -360,6 +370,7 @@ function renderStageRowsThemed(
 ): string[] {
 	const rows = [
 		` ${stageLineThemed(stage, now, theme, Math.max(1, width - 2))} `,
+		...startupRows(stage, now, width, theme),
 		...pendingStageRows(
 			runId,
 			rootRunId,
