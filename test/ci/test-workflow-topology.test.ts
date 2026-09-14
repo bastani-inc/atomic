@@ -156,7 +156,13 @@ test("each split job retains its measured timeout hang detector", async () => {
 		assert.match(block, /timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}/u, job);
 		assert.match(block, /fail-fast: false/u, job);
 	}
-	assert.match(blocks.get("static-checks") as string, /^[ \t]+timeout-minutes: 3$/mu);
+	// Run 34873678170 / job 104075487913: all steps passed, but finalization hit the 3-minute cap at 182s.
+	const staticChecksTimeoutMinutes = Math.ceil((182 * 1.5) / 60);
+	// Match the job key, not Mintlify's separately indented five-minute step limit.
+	assert.match(
+		blocks.get("static-checks") as string,
+		new RegExp(`^ {4}timeout-minutes: ${staticChecksTimeoutMinutes}$`, "mu"),
+	);
 	assert.match(blocks.get("test") as string, /^[ \t]+timeout-minutes: 1$/mu);
 	// A cap is still a hang detector: it must bound a stuck job to minutes rather
 	// than GitHub's six-hour default. The bound is the largest cap the current

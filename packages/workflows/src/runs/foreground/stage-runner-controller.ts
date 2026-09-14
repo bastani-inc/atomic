@@ -5,6 +5,7 @@ import {
 	type PromptOptions,
 	type StructuredOutputCapture,
 } from "@bastani/atomic";
+import { raceAbort } from "../../shared/abort.js";
 import type {
 	StageContext,
 	StageExecutionMeta,
@@ -212,6 +213,7 @@ export class StageSessionController {
 	/** The creation promise a candidate walk still owns, if one is advancing. */
 	private ownedCreationPromise: Promise<StageSessionRuntime> | undefined;
 	private abortGeneration = 0;
+	private routeAuthorityWait: AbortController | undefined;
 	private abortReason: Error | DOMException | string | undefined;
 	private abortReasonGeneration = 0;
 	private sessionPromise: Promise<StageSessionRuntime> | undefined;
@@ -761,6 +763,7 @@ export class StageSessionController {
 		this.abortGeneration += 1;
 		this.abortReason = reason;
 		this.abortReasonGeneration = this.abortGeneration;
+		this.routeAuthorityWait?.abort(reason);
 		this.abortThrownErrorRetries(reason);
 	}
 
@@ -1311,6 +1314,20 @@ export class StageSessionController {
 		resumeOptions?: { restoreSavedModel?: boolean },
 	): Promise<StageSessionRuntime> {
 		const startGeneration = this.abortGeneration;
+		if (this.disposed || this.opts.signal?.aborted) throw this.staleCreationReason(startGeneration);
+		const authority = this.opts.routeAuthorityReady?.();
+		if (authority !== undefined) {
+			const wait = new AbortController();
+			this.routeAuthorityWait = wait;
+			try {
+				await raceAbort(authority.completion, wait.signal);
+				authority.assertCurrent();
+				if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
+					throw this.staleCreationReason(startGeneration);
+			} finally {
+				if (this.routeAuthorityWait === wait) this.routeAuthorityWait = undefined;
+			}
+		}
 		this.applyCandidateThinking(candidate);
 		const stageOptions = buildStageSessionOptions({
 			effectiveStageOptions: this.effectiveStageOptions,

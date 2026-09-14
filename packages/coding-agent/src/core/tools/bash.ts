@@ -96,9 +96,15 @@ const bashSchema = Type.Unsafe<ShellCommandInput | ShellWaitInput>({
 		},
 	},
 	required: [],
+	// xAI requires explicit object types on root union branches (see #3031).
 	anyOf: [
-		{ required: ["command"], not: { anyOf: ["action", "id", "budgetMs"].map((key) => ({ required: [key] })) } },
 		{
+			type: "object",
+			required: ["command"],
+			not: { anyOf: ["action", "id", "budgetMs"].map((key) => ({ required: [key] })) },
+		},
+		{
+			type: "object",
 			required: ["action", "id"],
 			not: { anyOf: Object.keys(bashBaseSchema.properties).map((key) => ({ required: [key] })) },
 		},

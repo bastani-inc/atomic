@@ -4,6 +4,30 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-09-13
+
+Cumulative release of the `0.9.19-alpha.2` through `0.9.19-alpha.9` prereleases. Per-change details remain in the unchanged prerelease sections below.
+
+### Breaking Changes
+
+- Removed the model-facing `retryToken` parameter and result field. Intercom owns bounded reconnect retries; each new tool call remains a distinct operation, including identical messages.
+- Explicit `replyTo` selectors reject stale, unknown, empty or sender-mismatched threads instead of falling back. Use `pending` to select the exact unresolved question.
+
+### Changed
+
+- Agent lists lead with copyable full session IDs and canonical workflow paths, followed by meaningful names, status, working directory and future queued counts. Live/terminal reply capability is separate from idle activity; closed workflow generations report post-mortem-only or unavailable routing.
+
+### Fixed
+
+- `send` and `ask` interrupt a working subagent or live workflow stage's current model call or cancellable tool and process messages in the same execution. Arrival order, persistence retries, duplicate suppression and exact reply correlation survive cancellation without replaying completed side effects.
+- Targeted replies complete the requested ask even when an unrelated message is active. Cancelled turns without a reply retain the pending ask's context.
+- Recoverable disconnects retry up to three times within one invocation with the same delivery identity. Cancellation stops retries; unresolved outcomes warn against automatic resending, and client retry state is released on exit.
+- Broker refusals reject outstanding registered-client requests with the actual reason instead of timing out or reporting a generic disconnect. Lazy initialization, relay and cleanup diagnostics use the owning interactive session's notifications rather than raw console output.
+- Recipient discovery excludes workflow routing/control connections and model-less prompt/tool nodes. Malformed purposes are rejected, legacy omitted purposes remain supported, and roster updates wait for broker processing. Same-name non-agent nodes do not hide genuine duplicate agents or invalidate connected aliases ([#2895](https://github.com/bastani-inc/atomic/pull/2895)).
+- Terminal noninteractive children reject asks promptly, including socket-write races. Retained connected workflow stages preserve reply correlation after leaving the active roster; closed stages without post-mortem routing return lifecycle guidance.
+- Busy noninteractive refusals return correlated delivery errors without starting another parent turn. Owner-bound completion waits for same-child messages in order, retries failed delivery, and never repeats task execution.
+- Parallel child-to-parent requests use correlated replies without ending siblings, preserving empty questions, omitted decision notes and ordered attachments. Sends and progress remain nonblocking; single-child claimed handoffs are unchanged.
+
 ## [0.9.19-alpha.9] - 2026-09-12
 
 ### Breaking Changes

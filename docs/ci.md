@@ -42,132 +42,16 @@ The release build downloads checksum-pinned PostgreSQL artifacts while preparing
 
 ## Tests (`test.yml`)
 
-The test workflow runs on pushes to `main` and on every pull request. Release
-branches carry no push trigger: `release/**` and `prerelease/**` always reach CI
-through their pull request, so listing those globs made one SHA run the whole
-workflow twice — two sets of runners competing for the same pool, and two
-competing check runs per required context. GitHub keeps the latest result per
-context name, so a spurious failure in either copy blocked the pull request even
-when the other copy was fully green. Runs `31047506585` (push, Linux `suites`
-cancelled on its cap) and `31047542976` (pull_request, every job green) on the
-same sha `772a373` are the worked example.
+The workflow runs on pushes to `main` and every pull request. Release branches
+reach CI through their PRs, without duplicate push runs. There is no
+`concurrency:` cancellation group: cancelling an in-flight run can leave a
+required context cancelled without a successful replacement for that SHA.
 
-There is deliberately no `concurrency:` block. A group that cancels an
-in-flight run can kill a run that has already published `test (...)`, leaving a
-cancelled required context on a SHA with no superseding successful run — the
-failure above, not a fix for it.
+Five independent job definitions expand to nine work-job instances and two
+result gates. Unit and integration suites run on separate Linux/Windows VMs,
+each building its own prerequisites. This duplicates setup cost but avoids
+serial dependencies between suites; it does not shard or remove tests.
 
-Its work runs as five independent job definitions (nine work-job instances plus two result gates). Unit and integration tests each build their own prerequisites and run on separate Linux/Windows VMs, so integration no longer waits for unit tests or their retries. This adds two VM jobs and duplicates setup/build cost; it does not shard or remove tests. Removing the roughly 1–2-minute Windows integration tail is a projection dependent on runner availability, not a measured gain from this split.
-
-### Current critical path, measured September 5, 2026
-
-A pre-split sample of 32 completed PR-triggered `Tests` runs created September 4–5 puts
-the critical path on the former combined `suites` job, usually Windows. These job execution times retain
-failed, retried and cancelled runs; they are not sums of concurrent jobs:
-
-| Job | Linux p50 / p90 | Windows p50 / p90 |
-| --- | ---: | ---: |
-| `suites` | 475 / 779.9 s | 726 / 1202.8 s |
-| `agent-suite` | 217.5 / 264.6 s | 340 / 472.9 s |
-| `release-archive` | 77 / 90.9 s | 142.5 / 188.2 s |
-| `static-checks` | 94 / 104.8 s | not run |
-
-Creation-to-result-gate wall time was 737 s median and 840.2 s p90 for the 15
-successful runs without internal retry. The 14 completed runs classified as
-retried measured 1131 / 1401.8 s; two failed and one cancelled run remain in
-the sample separately. There were 21 wrapper retry events across 15 runs,
-including the cancelled run. These include four coding-agent retries omitted by
-the original root-suite-only summary. Three older whole-workflow reruns were
-collected separately, not pooled into these PR-run distributions. Queue-to-first-work was
-10 s median; the gate tail was 13.5 s. Retry and unit execution dominate, not npm
-installation. The Windows unit step measured 493 s median across 31 executed
-primary-sample steps, including retries and failed attempts.
-
-The per-file durable setup now imports the in-memory backend and process owner
-directly instead of eagerly loading the DBOS factory and its aliased host graph.
-It still installs a fresh backend before every test, preserves other owner state,
-and leaves both global setups and test isolation unchanged. Tests needing host
-prototype installers import those real modules explicitly. The import-graph
-guard follows the actual Vitest aliases and compiler setting: statement-level
-`import type` erases, but `import { type T }` still evaluates its dependency under
-`verbatimModuleSyntax`. A real Vite transform/runtime regression covers that distinction.
-
-Local full-unit measurements on macOS arm64, Node 22.23.2 and Bun 1.4.2 were
-137.08 s before and 118.61 s after, a 13.5% wall reduction and 14.8% CPU reduction.
-A reverse-order runtime comparison on the same updated test inventory measured
-140.00 s for the original setup versus 119.53 s for the new setup, reducing wall
-time by 14.6% and CPU by 14.9%. Every original case identity, multiplicity and
-status was retained; those timing runs included four new regression cases. Both retained
-23 existing skips and the same pre-existing `extension.test.ts` validation-warning
-failure; they are performance measurements, not an all-green suite claim.
-A fifth regression covering actual transform/runtime behavior was added during review.
-Current local validation with a fresh, command-scoped `ATOMIC_CODING_AGENT_DIR`
-passed all 7,589 active tests with the same 23 skips. This excludes ambient personal
-resources while retaining project, bundled and explicit package fixtures; the
-pre-existing one-second polling assumption remains unfixed. That environment's
-timing must not be mixed into the before/after comparison. Most of the apparent
-setup-phase reduction moves to test-module import; only the whole-run wall and
-CPU differences above are claimed as savings.
-
-Applying the local wall range to the 493 s Windows unit median projects roughly
-66–72 s saved per attempt, not a measured hosted gain. Linux/Windows A/B timing
-and the restored artifact upload still need a normal authorized CI run. The
-fastest successful sampled gate was 687 s: this change does not demonstrate
-sub-five-minute CI. Investigating recurring retry causes is the next priority;
-native caching needs a deliberate cache-policy amendment and trust validation,
-and larger runners need measured billing tradeoffs rather than linear vCPU claims.
-
-### Historical split-job estimates
-
-| Job | Platforms | Chain | Linux | Windows |
-| --- | --- | --- | ---: | ---: |
-| `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
-| `agent-suite` | both | build native bindings -> coding-agent vitest (Node), then its Bun-hosted SQLite selector project | 126 s | 232 s |
-| `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s warm / 4m04s healthy p100 |
-| `static-checks` | Linux only | typecheck, docs links, Mintlify, Alpine/Debian installer smoke, CI contracts | 30 s | – |
-| `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
-
-The release-archive Windows samples above are warm-toolchain measurements. A cold
-run reached 6m12s and 6m13s before cancellation: `rust-toolchain` took 152s and
-140s (versus 12s and 36s warm), checkout took 71s and 64s, and the native build
-and archive smoke add roughly 110s and 40s. The 9-minute cap covers that observed
-near-6m50s tail rather than only the healthy 4m04s p100.
-
-Those are the per-step costs sampled from four sequential-job runs, which put the critical path on the Windows `agent-suite` chain at about 247 s against the 452 s (434–483 s, n=3 healthy) the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
-
-### Observed on the first two split runs (30527771985, 30528920082)
-
-| Job | run 1 | run 2 |
-| --- | ---: | ---: |
-| `static-checks (linux-x64)` | 32 s | 50 s |
-| `release-archive` Linux / Windows | 84 s / 162 s (warm) | 83 s / 175 s (warm) |
-| `suites` Linux / Windows | 230 s / 348 s | 147 s / 238 s |
-| `agent-suite` Linux / Windows | 138 s / **349 s** | 203 s / **380 s** |
-| `test` gate, both legs | 3 s / 4 s | 4 s / 5 s |
-| **whole run** | **433 s** | **440 s** |
-
-The older split-run release-archive values in this table are warm samples; later
-healthy Windows runs reached 4m04s, while two cold runs reached 6m12s and 6m13s
-and were cancelled by the former 6-minute cap. The Windows cap is therefore 9
-minutes to cover the cold toolchain and checkout tail.
-
-Read this carefully before planning further work, because it says two different things.
-
-The topology behaves exactly as designed. All seven work jobs started within 68 s of run creation, so Blacksmith does not cap concurrency below seven and the queueing risk did not materialize. `static-checks` was green in 32–50 s, giving feedback on typecheck that used to arrive only at the end of a 257 s job. The gate costs 3–5 s. Both required contexts appear with byte-identical names.
-
-The saving is nevertheless about 15 s, not the estimated 205 s, because the sequential-job sampling that produced the table above understated the Windows steps by roughly 1.5x:
-
-| step | sampled | run 1 | run 2 |
-| --- | ---: | ---: | ---: |
-| Windows `coding-agent vitest` | 142 s | 221 s | 237 s |
-| Windows native binding build | 42 s | 63 s | 72 s |
-| Linux `coding-agent vitest` | 70 s | 78 s | 126 s |
-| Windows unit step | 127 s | 267 s (retried) | 150 s |
-| Linux unit step | 84 s | 190 s (retried) | 101 s |
-
-On both runs the critical path was Windows `agent-suite`, whose real cost is 349–380 s rather than the 232 s the estimate assumed. Run 1 also fired the unit step's one bounded flake retry on both platforms, from two different pre-existing flakes that each passed on the retry.
-
-These initial split-run samples explain the topology change, not today's bottleneck. The current critical-path measurements above supersede the earlier recommendation to shard `agent-suite`; sharding is not permitted by the current testing contract.
 
 ### Why steps are grouped this way
 
@@ -200,242 +84,59 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 
 ### Per-job time limits
 
-The initial job caps used the latest two completed CI runs available at calibration time:
-[33997174167](https://github.com/bastani-inc/atomic/actions/runs/33997174167)
-(main, `c77de93380`) and
-[33997819241](https://github.com/bastani-inc/atomic/actions/runs/33997819241)
-(PR, `bafc6ebd17`). Both succeeded. Run `33998194502` was still in progress
-and was excluded rather than treating unfinished durations as measurements.
-Those samples and caps remain unchanged except for unit tests, agent suites,
-release archives and integration tests, recalibrated using the runs below.
+Current whole-job caps include setup, execution, retries and teardown. Queue
+time before a runner starts is excluded. Step limits never extend the enclosing
+job deadline.
 
-Except for integration's retry-inclusive caps and the Linux archive projection below,
-the cap in minutes is `ceil(max(run_1_seconds, run_2_seconds) × 1.5 / 60)`. Durations come from
-GitHub's job `completedAt - startedAt`, including setup and teardown but not
-time queued for a runner. Whole-minute rounding provides at least 50% headroom
-over the observed duration, not over an unobserved completion after a timeout.
+| Job | Linux | Windows | Calibration source |
+| --- | ---: | ---: | --- |
+| Unit tests | 22 min | 22 min | [Observed timeout boundaries](https://github.com/bastani-inc/atomic/actions/runs/34270757695) |
+| Integration tests | 10 min | 14 min | [Linux setup](https://github.com/bastani-inc/atomic/actions/runs/34652319107/job/103437056550), [Windows retry](https://github.com/bastani-inc/atomic/actions/runs/34275410217/job/102227085985) |
+| Agent suite | 10 min | 14 min | [Observed timeout boundaries](https://github.com/bastani-inc/atomic/actions/runs/34270757695) |
+| Release archive | 4 min | 7 min | [Linux build](https://github.com/bastani-inc/atomic/actions/runs/34653564242/job/103440964907), [Windows finalization](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122) |
+| Static checks | 5 min | not run | [182-second finalization timeout](https://github.com/bastani-inc/atomic/actions/runs/34873678170/job/104075487913) |
+| Result gate | 1 min | 1 min | Both labeled legs execute on Linux |
 
-| Job | Platform | Sample 1 (33997174167 unless noted) | Sample 2 (33997819241 unless noted) | Timeout |
-| --- | --- | ---: | ---: | ---: |
-| Unit tests | Linux | 869 s (34270757695; timeout-censored, both attempts failed) | 371 s | 22 min |
-| Unit tests | Windows | 870 s (34270757695; timeout-censored during retry) | 511 s | 22 min |
-| Integration tests | Linux | 257 s (34652319107; timeout-censored) | 135 s setup + 2 × 116 s attempts + 7 s teardown, projected | 10 min |
-| Integration tests | Windows | 501 s (34275410217; timeout-censored during retry) | 147 s setup + 2 × 186.92 s attempts + 7 s teardown, projected | 14 min |
-| Agent suite | Linux | 382 s (34270757695; job timeout, test step succeeded) | 216 s | 10 min |
-| Agent suite | Windows | 552 s (34270757695; job timeout, test step succeeded) | 327 s | 14 min |
-| Release archive | Linux | 137 s (34653564242; timeout-censored) | 49 s setup + 84 s partial build + 15 s packaging + 5 s smoke + 5 s tail, projected | 4 min |
-| Release archive | Windows | 244 s (34035777039; timeout-censored) | 149 s (34037177374; success) | 7 min |
-| Static checks | Linux | 78 s | 88 s | 3 min |
-| Final test gate | Linux matrix label | 4 s | 3 s | 1 min |
-| Final test gate | Windows matrix label | 4 s | 5 s | 1 min |
+The default calibration is `ceil(observed job seconds × 1.5 / 60)`. Integration
+caps instead reserve setup plus two full test attempts and teardown; the Linux
+archive cap includes projected packaging and smoke work. The exact formulas
+are pinned in [`test-workflow-topology.test.ts`](../test/ci/test-workflow-topology.test.ts).
 
-Both final gate legs execute on Linux. The topology contract pins the caps and
-the sampled matrix-job maxima used to calculate them.
+Recalibrate from fresh job and step evidence, separating successful completion
+from timeout-censored runs, projected retries and cold-cache assumptions. A
+timeout boundary is not a measured completion or an upper bound. Static checks
+hit the old three-minute cap at 182 seconds despite every step succeeding;
+`ceil(182 × 1.5 / 60) = 5` leaves finalization headroom. Three recent successful
+samples were [150 s](https://github.com/bastani-inc/atomic/actions/runs/34867753417/job/104055765352),
+[93 s](https://github.com/bastani-inc/atomic/actions/runs/34811244121/job/103872866251) and
+[106 s](https://github.com/bastani-inc/atomic/actions/runs/34809819763/job/103868771048),
+all on Blacksmith 4-vCPU Linux. These are a small observational sample, not
+controlled cache or runner comparisons. Keep detailed incident history in PRs
+and linked runs rather than growing this guide with each calibration.
 
-#### Linux setup and retry headroom, September 11, 2026
+Do not raise per-test budgets or duration-score thresholds to repair a job cap.
+The shared test default remains 30000 ms, with warnings at 40% and failure at
+70% of each test's effective budget. The flaky-suite wrapper permits one bounded
+retry. npm's request policy allows at most 85 seconds for one stalled request
+and two retries; that is less than the smallest npm-installing job cap, but does
+not guarantee a whole install fits. Rust installation and its retry each have
+a four-minute step cap; PR-only Mintlify validation has a five-minute step cap.
 
-The annotations for [integration job 103437056550](https://github.com/bastani-inc/atomic/actions/runs/34652319107/job/103437056550)
-and [archive job 103440964907](https://github.com/bastani-inc/atomic/actions/runs/34653564242/job/103440964907)
-explicitly report maximum execution times of **4m0s** and **2m0s**. Integration
-setup ran 22:04:24–22:06:39 UTC (135 s), including an 80 s native-build step;
-its first test attempt was cancelled at 22:08:37 without a completed JSON report.
-Archive setup ran 22:20:47–22:21:36 (49 s), then its build was cancelled at
-22:23:00 after 84 s, before smoke. The archive log shows native compilation
-finished at 22:22:54 and binary packaging began at 22:22:55; the job deadline
-interrupted remaining payload/archive work, not a failed compiler or smoke assertion.
-The 257 s / 137 s job durations include cancellation/teardown and are censored,
-not successful completion measurements.
+### Diagnostics and smoke coverage
 
-The five latest successful completed `Tests` runs before the integration failure
-provide this small sample (Blacksmith 4-vCPU Linux, Node 22, Bun 1.4.2). Each link
-identifies the exact job. Setup is job start to suite/binary-build step start;
-tail is the last work step's end to job completion, including upload/cleanup.
-All values are seconds from the Actions jobs API; skipped steps are excluded.
+Suite jobs upload `.ci-diagnostics/` under unique
+`test-diagnostics-<job>-<binary_platform>` artifact names. Preserve `always()`,
+`include-hidden-files: true`, the narrow upload path, 14-day retention and
+`if-no-files-found: ignore`. Jobs failing before test execution may have no
+diagnostic artifact. Inspect all attempts, not only the successful retry.
 
-| Run | Integration job: total = setup + test step + tail | Archive job: total = setup + binary build + smoke + tail |
-| --- | --- | --- |
-| 34646389961 | [103418078846](https://github.com/bastani-inc/atomic/actions/runs/34646389961/job/103418078846): 218 = 98 + 114 + 6 | [103418078959](https://github.com/bastani-inc/atomic/actions/runs/34646389961/job/103418078959): 113 = 36 + 68 + 5 + 4 |
-| 34648403746 | [103424602203](https://github.com/bastani-inc/atomic/actions/runs/34648403746/job/103424602203): 164 = 75 + 83 + 6 | [103424602069](https://github.com/bastani-inc/atomic/actions/runs/34648403746/job/103424602069): 94 = 32 + 55 + 3 + 4 |
-| 34650527115 | [103431358756](https://github.com/bastani-inc/atomic/actions/runs/34650527115/job/103431358756): 172 = 76 + 90 + 6 | [103431358750](https://github.com/bastani-inc/atomic/actions/runs/34650527115/job/103431358750): 112 = 37 + 66 + 5 + 4 |
-| 34650725978 | [103432003585](https://github.com/bastani-inc/atomic/actions/runs/34650725978/job/103432003585): 203 = 81 + 116 + 6 | [103432003438](https://github.com/bastani-inc/atomic/actions/runs/34650725978/job/103432003438): 96 = 34 + 54 + 4 + 4 |
-| 34652199575 | [103436681134](https://github.com/bastani-inc/atomic/actions/runs/34652199575/job/103436681134): 199 = 92 + 101 + 6 | [103436681082](https://github.com/bastani-inc/atomic/actions/runs/34652199575/job/103436681082): 96 = 33 + 55 + 4 + 4 |
+Archive smoke tests check bundled builtins, native modules, runtime dependencies,
+`--version` and startup without extension-load failures. The static job also runs
+`scripts/test-installers-containers.sh` with a restricted PATH and local release
+fixtures in Alpine BusyBox `sh` and Debian slim. Neither fixture supplies a
+JavaScript runtime or package manager; Alpine also omits `ldd` to exercise musl
+detection through `/etc/alpine-release`.
 
-The logs show one completed integration attempt per success, no Rust-install
-retry, and Bun/npm cache hits in these ten jobs and both reported failures.
-The first four runs restored npm key suffix `3cea014a…`; the latest success and
-failures restored `bfde1d78…`. Native code was rebuilt, not restored from a Cargo
-target cache. Native integration steps took 41–58 s in the successes versus
-80 s in the reported failure. Cache hits do not make setup/build costs constant;
-these are neither cold-cache samples nor measurements of a successful full retry.
-Success selection under the old deadlines also truncates the sample's slow tail.
-
-- **Integration: 10 minutes**, `ceil((135 + 2 × 116 + 7) × 1.5 / 60)`.
-  Combine the slow observed setup with two complete maximum sampled test-step
-  durations and a 7 s tail allowance (observed 6 s plus 1 s rounding margin).
-  The 374 s retry-inclusive projection becomes 561 s, rounded to 600 s.
-  The second attempt is projected, not observed. The later main-run
-  [integration job 103440964881](https://github.com/bastani-inc/atomic/actions/runs/34653564242/job/103440964881)
-  also cancelled, after 148 s in its test step: longer than the 116 s successful
-  maximum but below its 174 s allowance with 50% headroom. This is another
-  censored observation, not proof that its attempt would finish in 174 s.
-- **Archive: 4 minutes**, `ceil((49 + 84 + 15 + 5 + 5) × 1.5 / 60)`.
-  Retain the full 84 s partial build and conservatively reserve an entire
-  packaging phase again. Successful log intervals from `Building binaries...`
-  to `Archives available` were 14.15, 11.05, 12.42, 12.83 and 12.02 s in table
-  order: round their maximum to 15 s. Smoke's maximum is 5 s; the 5 s tail
-  allowance is the observed 4 s plus 1 s margin. This projects 158 s, then
-  237 s with headroom, rounded to 240 s. The incomplete build is not treated
-  as a finished sample; remaining packaging at sampled cost is an assumption.
-
-Only these two Linux job caps change. All eleven contexts, Windows caps, result
-gates, test/smoke coverage, 30000 ms default, 40%/70% duration scoring, retry
-policy and concurrency stay unchanged. The caps cover the projected work at
-observed costs, not arbitrary downloads or two full four-minute Rust installs;
-in particular the four-minute archive job cannot guarantee the Rust retry fits.
-The enclosing deadline still wins. Exact-head hosted CI must confirm completion;
-no speedup or full-platform local execution is claimed.
-
-#### Prerelease 0.9.19-alpha.2 repair, September 8, 2026
-
-[Run 34270757695](https://github.com/bastani-inc/atomic/actions/runs/34270757695)
-at `b6f5b01fa5fdc9cf40ad95e72a35d69409aeb6b6` cancelled four work jobs.
-The job annotations, full cancelled-job logs and all six diagnostic artifacts
-were inspected, not just the aggregate failed-check log.
-
-| Job ID | Platform / suite | Job start to completion, UTC | Test execution | Old cap | New cap |
-| --- | --- | --- | --- | ---: | ---: |
-| 102211457492 | Linux unit | 19:45:13 to 19:59:42, 869 s | 400.58 s then 381.56 s; same three failures in both attempts | 14 min | 22 min |
-| 102211457215 | Windows unit | 19:45:39 to 20:00:09, 870 s | 631.86 s first attempt; retry cancelled without a second JSON report | 14 min | 22 min |
-| 102211457418 | Linux agent | 19:45:13 to 19:51:35, 382 s | 305.36 s, first attempt passed | 6 min | 10 min |
-| 102211457032 | Windows agent | 19:45:52 to 19:55:04, 552 s | 420.83 s, first attempt passed | 9 min | 14 min |
-
-All four annotations explicitly report that the job exceeded its execution
-limit. These are timeout-affected job observations, including cancellation and
-teardown, not successful uncapped job durations. Both agent test steps and their
-diagnostic uploads succeeded despite the job-level cancellations: Linux passed
-4,365 tests with 40 existing skips, Windows passed 4,341 with 64 existing skips.
-Their test durations are complete observations, but their cancelled job results
-do not establish a successful end-to-end completion under the old caps.
-
-Linux unit diagnostics show 7,905 passed, 3 failed and 20 existing skips on each
-attempt. Windows recorded 7,849 passed, the same 3 failed and 72 existing skips
-on its first attempt. The failures were stale `skill: "tmux"` assertions in
-`builtin-workflows-goal-01.test.ts`, `builtin-workflows-goal-02.test.ts` and
-`builtin-workflows-ralph-01.test.ts`. PR #2932 intentionally changed the shared
-terminal guidance to prefer Herdr and retain tmux/psmux as fallback. The repair
-asserts that preference, fallback and explicit-request/`HERDR_ENV=1` safeguards
-in the rendered stage prompts. It does not roll back the prompt change or drop
-any test. A timeout increase alone would leave both unit jobs failing.
-
-Applying `ceil(sample_seconds × 1.5 / 60)` gives 22, 22, 10 and 14 minutes.
-The largest measured cap is now 22 minutes, replacing the former 14-minute
-hang-detector ceiling that clipped the Linux unit formula to 14. This grants
-50% headroom over observed job time, not an unobserved full Windows retry:
-120 s of setup plus two 631.86 s attempts would already exceed 22 minutes.
-The stale assertions are repaired rather than budgeting for their guaranteed
-retry. An authorized exact-head Linux/Windows CI run must confirm completion;
-cold setup and a future full retry are still not guaranteed to fit.
-Required contexts, suite inventory and duplicate executions, default workers,
-bounded retry count, shared per-test budget and duration thresholds are unchanged.
-
-The remaining failure in [run 34275410217, job 102227085985](https://github.com/bastani-inc/atomic/actions/runs/34275410217/job/102227085985)
-at repair head `2894d78b7f3ed2b589892dec3e93928759b2b588` was Windows integration.
-Setup ran from 20:34:01 to 20:36:28 UTC, 147 s. The first attempt took
-186.92 s and recorded 787 passed, one failed and 23 existing skips. Its
-zero-budget task wait had already expired on the native timer thread when the
-test demanded a foreground snapshot. The retry passed that file but was
-cancelled before producing a second JSON report. Job completion at 20:42:22
-includes seven seconds after the cancelled test step ended at 20:42:15.
-The 501 s job duration is censored, not an observed full retry completion.
-
-The regression now checks synchronous WaitId registration through the real
-observation call, including a 50 ms synchronous JS pause while native timers
-continue. It checks elapsed yield, matching wait identity, registry removal,
-background projection and a still-running execution. The peer-facade test uses
-an until-settled wait to inspect foreground designation and then explicitly
-yields it. Neither assertion depends on winning a race against a zero-budget
-native timer. Runtime observation semantics are unchanged.
-
-Windows integration now reserves two complete attempts rather than multiplying
-a cancelled job duration: `ceil((147 + 2 × 186.92 + 7) × 1.5 / 60) = 14` minutes.
-The retry-inclusive estimate is 527.84 s before headroom, already beyond the old
-480 s cap. This is one hosted Windows sample on the Blacksmith 4-vCPU runner,
-with a 70 s native build and no Rust-install retry. The second full attempt is
-a projection at the first attempt's duration, not a measured successful retry.
-The allowance covers setup plus a bounded suite retry at those measured costs;
-it cannot guarantee arbitrary cold-download delays. Linux integration and all
-other caps, required checks, suite parallelism, per-test budgets and duration
-thresholds are unchanged.
-
-For the S1 task supervisor suites in PR #2902, run `34142104101` measured
-[Linux integration job 101806128732](https://github.com/bastani-inc/atomic/actions/runs/34142104101/job/101806128732)
-at 145 s and
-[Windows integration job 101806127937](https://github.com/bastani-inc/atomic/actions/runs/34142104101/job/101806127937)
-at 305 s. The Windows first attempt failed the callback fixture's wake/poll
-ordering assertion; its bounded retry then exceeded the 5-minute job cap.
-That fixture ordering is repaired separately without changing runtime behavior
-or per-test budgets. That earlier policy gave 4 minutes for Linux and
-8 minutes for Windows, superseded by the retry-inclusive Windows cap above.
-That Windows sample is timeout-censored, like the
-release-archive sample below; it does not establish an uncapped completion time
-or guarantee retry headroom. Both result-gate failures came from this cancelled
-Windows work job, not separate Linux and Windows test assertions.
-
-The Windows release-archive cap previously used 138 s / 135 s samples, yielding
-4 minutes. In PR #2887, [run 34035777039, job 101493452122](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122)
-(`fe3263c73`) was cancelled after 244 s against that 240 s cap, despite every
-recorded step succeeding. The base [run 34021439230](https://github.com/bastani-inc/atomic/actions/runs/34021439230)
-(main, `e9faa47f9`) took 147 s. The step-level comparison is:
-
-| Windows step | Base run 34021439230 | PR run 34035777039 | Repair run 34037177374 |
-| --- | ---: | ---: | ---: |
-| Build native release binary | 75 s | 124 s | 73 s |
-| Smoke test Windows release archive | 17 s | 36 s | 18 s |
-
-Each archive now stages and validates its own pinned PostgreSQL payload; the
-Windows smoke also executes the SQL persistence/restart gate. The cancelled
-run's final smoke step succeeded from `2026-09-06T13:24:01Z` to
-`2026-09-06T13:24:37Z`. After recalibration, [run 34037177374, job 101497265311](https://github.com/bastani-inc/atomic/actions/runs/34037177374/job/101497265311)
-at `e113615a0` completed successfully in 149 s, including its unchanged Windows
-smoke from `2026-09-06T13:50:27Z` to `2026-09-06T13:50:45Z`. The faster build
-and smoke show that the earlier step deltas were not fixed intrinsic costs of
-the added work; runner/setup/download variance matters too.
-
-Retaining both latest observations gives `ceil(max(244, 149) × 1.5 / 60) = 7`
-minutes for Windows only. The successful run demonstrates completion with
-headroom; it does not erase the slower observation or prove cold-cache/retry
-headroom. The 244 s sample remains timeout-censored, not a successful uncapped
-duration. That release-archive recalibration left Linux's 2-minute cap, the
-other job caps, the 14-minute hang-detector ceiling, required contexts, smoke
-tests and per-test thresholds unchanged.
-
-Except for integration's explicit retry-inclusive allowances and the Linux archive
-projection above, these are two-run wall-clock limits, not a guarantee that a full suite retry or
-a cold-cache toolchain download will fit. Bounded retries remain enabled but
-share the job's remaining time. Recalibrate with fresh evidence if those paths
-exceed the limits. No test coverage, retry count, or per-test timeout changes.
-
-The unchanged npm policy allows 85 seconds for one stalled request and its two
-retries: `3 × 25 s + 2 × 5 s` maximum backoff. The contract checks that this is
-less than the smallest **npm-installing** job cap (180 seconds, static checks);
-the 60-second result gate never runs npm. The former one-third-of-a-job
-guarantee no longer applies: 255 seconds cannot fit into 180 seconds.
-Even one 85-second allowance may not fit after setup and other work, and an install
-may make multiple requests. The job deadline wins; this
-contract does not guarantee that npm retries or the install will finish.
-
-Existing individual step limits remain unchanged: Rust installation and its
-retry each allow 4 minutes, and PR-only Mintlify validation allows 5 minutes.
-The enclosing job deadline always wins, even when a step's own limit is longer.
-The main-branch sample skipped Mintlify; the PR sample ran it in 10 seconds.
-Skipped steps are not zero-duration performance samples. Publish and CodeQL
-workflow limits are outside this calibration.
-
-Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name. All three upload steps explicitly set `include-hidden-files: true`, producing six platform-specific artifacts: files inside a dot-prefixed directory are hidden on Linux and Windows, and the default previously excluded every diagnostic. Keep `path: .ci-diagnostics/` narrow rather than enabling hidden uploads across the workspace. The `always()` condition, 14-day retention and `if-no-files-found: ignore` remain, so a job failing before test execution need not produce an artifact. Restoring uploads may add a small upload cost; it is an observability fix, not a speedup.
-
-Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
-
-The static job also runs `scripts/test-installers-containers.sh`. It executes `install.sh` with a restricted PATH and local release fixture inside `alpine:3.22` BusyBox `sh` and `debian:bookworm-slim`, checks the full payload and launcher, and gives the installer no JavaScript runtime or package manager. The Alpine fixture omits `ldd` from `PATH`, proving the `/etc/alpine-release` musl path.
 
 ## Direct release trigger and recovery
 
@@ -508,86 +209,58 @@ The native job always rebuilds and uploads one artifact for each shipped `@basta
 | Windows x64 | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-pc-windows-msvc` |
 | Windows arm64 | `blacksmith-4vcpu-ubuntu-2404` | `aarch64-pc-windows-msvc` |
 
-The old publisher built both Linux GNU bindings directly on Ubuntu 24.04, so its shipped cdylibs could acquire that runner's newer glibc symbol floor. The new pipeline fixes that portability bug: workflow-level `GLIBC_FLOOR=2.17` leaves rustup on each bare Linux target but passes `x86_64-unknown-linux-gnu.2.17` or `aarch64-unknown-linux-gnu.2.17` to `packages/natives/scripts/build-native.ts`. Only GNU Linux targets receive that suffix; musl targets stay bare and use NAPI-RS's `--cross-compile` path. That script invokes cargo-zigbuild for GNU builds and copies the cdylib from Cargo's bare-target output directory, explicitly handling the bare-vs-glibc-suffixed target split. Windows targets use LLVM and cargo-xwin. Darwin x64 and arm64 build on real Intel and Apple Silicon macOS runners. The matrix has `fail-fast: false`, names artifacts with distinct platform/libc slugs, and never downloads native artifacts from another run.
+GNU Linux builds use `GLIBC_FLOOR=2.17`: rustup installs the bare target while
+`build-native.ts` passes the glibc-suffixed target to cargo-zigbuild and copies
+the result from Cargo's bare-target output directory. Musl targets stay bare
+and use NAPI-RS `--cross-compile`; Windows uses LLVM and cargo-xwin. Both Darwin
+targets build on their native architecture. The matrix uses `fail-fast: false`,
+distinct platform/libc artifact names and only same-run native artifacts.
 
 The build job downloads the eight same-run bindings, generates the eight platform npm packages, and populates the root native package's exact-version optional dependencies without publishing during preparation.
 
 ### Dependency-fetch bounds in the native matrix
 
-`native-artifacts` compiles for 20–30 s on Linux and Windows. Everything else in
-its budget is a third-party download, and two releases have been damaged by one.
-The native compile now has one bounded retry: the first attempt is allowed to
-finish with an error so the retry can run, while a second failure remains fatal.
+Step bounds detect stalled downloads; job caps bound the full attempt/retry
+chain. Each native compile has one bounded retry, with a second failure fatal.
 
-| Release | Run | Leg | Stall |
-| --- | --- | --- | --- |
-| `0.9.11-alpha.7` (2026-07-29) | `30416909872` | Native linux x64 | `zigmirror.hryx.net` held a TCP connect open for **437.6 s**, then the next mirror served the tarball in 5.2 s |
-| `0.9.11-alpha.8` (2026-07-30) | `30517879019` | Native linux arm64 | `zig.bcr.ist` trickled for **795.9 s** and then succeeded; the job was cancelled by its 15-minute cap 8 s after `actions/upload-artifact` had already succeeded, and `build`, `stage-github-release`, `publish-npm`, and `publish-github-release` were all skipped, so the tag shipped nothing |
+| Acquisition or check | Step limit |
+| --- | --- |
+| `mlugg/setup-zig`, plus one retry | 2 min each |
+| `dtolnay/rust-toolchain` | 4 min |
+| `taiki-e/install-action` | 3 min |
+| Verify installed LLVM 18 | 1 min |
+| `cargo-xwin xwin cache xwin` | 8 min |
 
-`mlugg/setup-zig` fetches the community mirror list at run time and shuffles it,
-and applies no per-mirror deadline, so before this change the only bound on a
-stalled mirror was the job budget.
+| Native leg | Compile limit per attempt | Whole-job cap |
+| --- | ---: | ---: |
+| linux-x64-gnu | 5 min | 16 min |
+| linux-arm64-gnu | 5 min | 17 min |
+| linux-x64-musl | 5 min | 17 min |
+| linux-arm64-musl | 5 min | 18 min |
+| darwin-x64 | 8 min | 19 min |
+| darwin-arm64 | 5 min | 12 min |
+| win32-x64-msvc | 5 min | 20 min |
+| win32-arm64-msvc | 5 min | 20 min |
 
-**Step bounds are the stall detector; job caps are only hang detectors.** A job
-cap cannot distinguish a stall from slow work, and cancelling a job silently
-skips every job that `needs` it. Each acquisition or compile attempt therefore
-carries its own `timeout-minutes`:
-
-| Step | Bound | Basis |
-| --- | --- | --- |
-| `mlugg/setup-zig`, plus one retry | 2 min each | 3.2× the worst healthy acquisition over eight releases (37 s); the retry re-shuffles the 16-mirror list, so a stall costs at most 4 min and fails loudly |
-| `dtolnay/rust-toolchain` | 4 min | one rustup fetch took 135 s against a 4–14 s norm |
-| `taiki-e/install-action` | 3 min | |
-| Verify installed LLVM 18 | 1 min | Local executable checks; no apt downloads |
-| `cargo-xwin xwin cache xwin` | 8 min | 1.27× the worst measured full CRT/SDK download (6 m 19 s) |
-| `Build native binding`, plus one retry | `matrix.build_timeout_minutes` each | each attempt keeps the leg's measured p100 compile bound; a stall costs at most two bounds and the retry fails loudly if needed |
-
-The former blanket 15-minute job cap is replaced by per-leg caps. A cap has to
-contain every bounded recovery path the leg owns, not the time a green run
-happened to take: a cap sized on observed setup cancels the job part-way through
-the retry, which is the exact failure the retry exists to survive. Two steps are
-therefore reserved at their bound rather than at their measurement — both
-`setup-zig` attempts (2 + 2 min, Linux) and `cargo-xwin xwin cache xwin` (8 min,
-Windows, whose measured cost is its cache-miss path) — and every leg reserves one
-minute for `upload-artifact`, measured at 4 s or less.
-
-We measured setup from job start to `Build native binding` over six successful
-publishes (`31689424903`, `31634036246`, `31060235600`, `30892885915`,
-`30889823603`, `30835115933`). The cap arithmetic is `ceil(measured setup minus
-the steps reserved at their bound) + those bounds + 2 x build_timeout_minutes +
-1 upload`:
-
-| Leg | Setup p100 (excl. reserved) | Reserved at bound | Build timeout | Cap arithmetic | Job cap |
-| --- | ---: | ---: | ---: | --- | ---: |
-| linux-x64-gnu | 46 − 18 = 28 s | zig 4 min | 5 min | 1 + 4 + 2 x 5 + 1 = 16 | 16 min |
-| linux-arm64-gnu | 128 − 8 = 120 s | zig 4 min | 5 min | 2 + 4 + 2 x 5 + 1 = 17 | 17 min |
-| linux-x64-musl | 107 − 3 = 104 s | zig 4 min | 5 min | 2 + 4 + 2 x 5 + 1 = 17 | 17 min |
-| linux-arm64-musl | 142 − 5 = 137 s | zig 4 min | 5 min | 3 + 4 + 2 x 5 + 1 = 18 | 18 min |
-| darwin-x64 | 98 s | — | 8 min | 2 + 2 x 8 + 1 = 19 | 19 min |
-| darwin-arm64 | 26 s | — | 5 min | 1 + 2 x 5 + 1 = 12 | 12 min |
-| win32-x64-msvc | 291 − 249 = 42 s | xwin 8 min | 5 min | 1 + 8 + 2 x 5 + 1 = 20 | 20 min |
-| win32-arm64-msvc | 384 − 343 = 41 s | xwin 8 min | 5 min | 1 + 8 + 2 x 5 + 1 = 20 | 20 min |
-
-`native-artifacts` sets an explicit `name:`, so these matrix columns do not
-rename its jobs. Re-measure before tightening any of them further, and never
-tighten a leg on fewer than five samples: a cap below a real p100 turns a slow
-but healthy run into the cancellation this section exists to prevent.
+These caps reserve measured setup, both compile attempts, bounded Zig or xwin
+acquisition and one minute for artifact upload. Re-measure before tightening
+them, using at least five samples and including recovery paths. Keep the
+explicit job names so matrix budget changes do not rename check contexts.
 
 ### Windows host LLVM
 
 Both Windows targets build on x64 Ubuntu runners. The publisher selects `/usr/lib/llvm-18/bin`, verifies `clang`, `clang-cl`, `lld-link`, `llvm-ar`, `llvm-lib`, `llvm-dlltool`, and `llvm-ml`, logs compiler/linker versions, and prepends that directory through `GITHUB_PATH`. Missing tools fail the job rather than silently selecting another compiler version.
 
-This uses the runner image's versioned LLVM installation instead of installing the unversioned `clang lld llvm` apt metapackages. The old apt step failed twice during `0.9.19-alpha.4` publication because Ubuntu HTTP mirror downloads stalled. Compiler patch versions remain image-provided, not independently pinned. Preserve both Windows build checks when changing the runner image or LLVM major version.
+LLVM comes from the runner image rather than apt downloads. Patch versions are
+image-provided; preserve both Windows build checks when changing the image or LLVM major.
 
 The x64 and ARM64 Alpine smoke jobs and the payload job likewise verify the image-provided `patchelf` with `command -v` and `--version` instead of refreshing apt indexes. These checks have a one-minute bound and fail on missing tooling. Validate ELF editing on both host architectures when changing the runner image.
 
 ### MSVC CRT cache epoch
 
-Both Windows legs cross-compile with `cargo-xwin`, which downloaded the MSVC CRT
-and Windows SDK on every release: 3 m 46 s to 6 m 19 s per leg, for a ~25 s
-compile. That download now happens in its own bounded step behind an
-`actions/cache` entry keyed `xwin-v1-<arch>-17`, and each leg sets `XWIN_ARCH` so
-it stops downloading the architecture it does not link.
+Both Windows legs use cargo-xwin and a bounded CRT/SDK acquisition step backed
+by `actions/cache`, keyed `xwin-v1-<arch>-17`. Each leg sets `XWIN_ARCH` to avoid
+downloading an architecture it does not link.
 
 `XWIN_SDK_VERSION` and `XWIN_CRT_VERSION` default to `latest`, so the key cannot
 express the content version: a cache hit pins the leg to whichever SDK was first
@@ -600,44 +273,24 @@ trailing `17` is `XWIN_VERSION`, the Visual Studio major version.
 
 ### Warming the release toolchain caches
 
-`actions/cache` entries are scoped per branch or tag with a read fallback to the
-default branch. `publish.yml` only ever runs on `refs/tags/*` and nothing on
-`main` writes the Zig or CRT keys, so every release tag has been a guaranteed
-cold fetch on both Linux legs (six of six observed misses; a re-run of the *same*
-tag hits).
+Cache entries are scoped by branch or tag, with a default-branch read fallback.
+`warm-toolchain-cache.yml` acquires Zig and the CRT/SDK on `main` so release tags
+can reuse those entries. It is dispatch-only; cross-ref reuse on Blacksmith is
+not established by this guide.
 
-`.github/workflows/warm-toolchain-cache.yml` performs only those two
-acquisitions so the default-branch scope holds fresh entries. It is
-**dispatch-only and deliberately not yet scheduled**: whether a `refs/tags/*` run
-can read a `refs/heads/main` entry on Blacksmith's colocated cache is documented
-but unverified here. Verify it before relying on it:
-
-1. Dispatch `warm-toolchain-cache.yml` on `main` and confirm the
-   `setup-zig-tarball-zig-x86_64-linux-0.16.0` save.
-2. Dispatch `publish.yml` against an existing tag with `source_ref` set.
-3. Check whether the Linux legs log `Cache hit for: setup-zig-tarball-…`.
-
-A hit justifies adding a daily `schedule:` trigger, which is what keeps the
-entries alive (they evict after 7 days of inactivity). A miss means the warm
-workflow buys nothing and should be deleted; the step bounds above, not the
-cache, are what hold the line.
+Before relying on warming, dispatch it on `main`, confirm the expected key was
+saved, then inspect an authorized release/recovery run for a matching cache hit.
+Do not dispatch publication solely to test a cache. Schedule warming only after
+cross-ref reuse is demonstrated; bounded acquisition steps must remain safe on
+a miss. Cache entries expire after seven days without access.
 
 ### Sticky-disk checkout is Linux-only
 
-`useblacksmith/checkout@v1` consumes a Blacksmith sticky disk. Sticky disks are
-ext4 block devices, so they exist only on Blacksmith **Linux** runners. On
-`blacksmith-4vcpu-windows-2025` the action warns (`sticky disks are not supported
-on Windows runners`) and falls back to a standard clone; on
-`blacksmith-6vcpu-macos-26` it blocked 78 s on a gRPC connect timeout in eight of
-eight releases before falling back. The warning's advice to "remove the sticky
-disk step" is misleading — there is no sticky-disk step, the checkout action is
-the consumer.
-
-Both workflows therefore use `useblacksmith/checkout` behind
-`if: runner.os == 'Linux'` and `actions/checkout` otherwise. The two `win32` legs
-of `native-artifacts` cross-compile on Linux and keep the git mirror. Do not
-remove the mirror from a Linux leg: `test.yml` checks out with `fetch-depth: 0`
-and `lfs: true`, which the mirror serves in about 8 s.
+`useblacksmith/checkout` uses ext4 sticky disks and is restricted to Linux.
+Both workflows select it with `if: runner.os == 'Linux'` and use
+`actions/checkout` otherwise. The Windows native cross-compilation legs run on
+Linux and retain the mirror. Test checkouts preserve `fetch-depth: 0` and
+`lfs: true`.
 
 ### Pinned actions and build tools
 
@@ -655,10 +308,8 @@ build toolchain of a published, provenance-signed native artifact with no diff.
 cached by `setup-bun` and left the suite testing a different Bun from the one
 that builds the shipped artifact.
 
-A SHA pin would not have prevented either Zig stall: `mlugg/setup-zig@v2`
-resolved to the same commit in the failing attempt and the succeeding re-run, and
-the mirror list is fetched at run time rather than shipped in the action. The
-pins are supply-chain hygiene, not a fix for this incident.
+Action pins do not bound remote downloads; preserve acquisition deadlines even
+when the action commit is pinned.
 
 ### Binary smoke tests
 
@@ -675,7 +326,7 @@ After native and smoke jobs pass, `build`:
 3. Hydrates `@bastani/pi-ai` model data from models.dev, then runs `scripts/build-binaries.sh --skip-install --offline-model-data` for all eight archives. The script uses the just-staged `packages/natives/native/*.node` artifacts and does not `npm install` `@bastani/atomic-natives-*@$VERSION` from the registry (those packages are what this release publishes). If a registry install is attempted and fails, restore is `npm ci --ignore-scripts` followed by re-aliasing `@earendil-works/pi-ai` onto `packages/ai` and rebuilding `@bastani/pi-ai`.
    Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
-5. Packs exactly ten npm tarballs.
+5. Packs exactly eleven npm tarballs.
 6. Extracts release notes from `packages/coding-agent/CHANGELOG.md`.
 7. Creates `SHA256SUMS` for the eight binary archives.
 8. Uploads the npm tarballs and GitHub Release assets as one same-run artifact.
@@ -745,4 +396,4 @@ Both polling doors run through durable `ctx.tool` nodes, forward their `AbortSig
 3. From a clean checkout, run `bun run scripts/cut-release.ts <version> --base <base> --push`.
 4. Inspect the single `Publish <version>` push run. Do not start a duplicate manual run during normal publication.
 5. If recovery is required, manually dispatch `publish.yml` with the original `tag`; set `source_ref` to the exact recovery ref whose package version still matches that tag.
-6. Confirm all ten npm packages and the public GitHub Release exist with the expected dist-tag and assets.
+6. Confirm all eleven npm packages and the public GitHub Release exist with the expected dist-tag and assets.

@@ -1,5 +1,5 @@
 /** Deterministic model only: real CLI sessions, workflow tools and Intercom transport remain intact. */
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CreateAgentSessionOptions, ExtensionAPI } from "@bastani/atomic";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
@@ -120,6 +120,11 @@ export default function (pi: ExtensionAPI): void {
 					stream.push({ type: "error", reason: "error", error: output });
 					stream.end();
 					return;
+				}
+				if (text === "fixture-top-hold") {
+					writeFileSync(join(stateDir, "top-hold"), "started\n");
+					while (!existsSync(join(stateDir, "top-release")))
+						await new Promise((resolve) => setTimeout(resolve, 20));
 				}
 				if (isHold) {
 					appendFileSync(join(stateDir, "holds.jsonl"), "started\n");
