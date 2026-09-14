@@ -422,6 +422,8 @@ export interface StageSnapshot {
 	 */
 	sessionId?: string;
 	sessionFile?: string;
+	/** Live startup phase/age. Historical snapshots do not prove an active owner. */
+	startup?: import("./stage-startup.js").StageStartupSnapshot;
 	/** Effective model id selected for this stage after fallback resolution. */
 	model?: string;
 	/**

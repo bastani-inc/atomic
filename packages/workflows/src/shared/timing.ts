@@ -4,6 +4,18 @@ interface StageTimerSnapshot {
 	readonly durationMs?: number;
 	readonly pausedDurationMs?: number;
 	readonly pausedAt?: number;
+	readonly replayed?: boolean;
+}
+
+/** Copy recorded execution timing without measuring hydration or filling legacy gaps. */
+export function stageTimingFields(
+	stage: StageTimerSnapshot = {},
+): Pick<StageTimerSnapshot, "startedAt" | "endedAt" | "durationMs"> {
+	return {
+		...(stage.startedAt !== undefined ? { startedAt: stage.startedAt } : {}),
+		...(stage.endedAt !== undefined ? { endedAt: stage.endedAt } : {}),
+		...(stage.durationMs !== undefined ? { durationMs: stage.durationMs } : {}),
+	};
 }
 
 interface RunTimerSnapshot {
@@ -57,6 +69,7 @@ export function accumulatePausedDurationMs(
 export function elapsedStageMs(stage: StageTimerSnapshot, now = Date.now()): number | undefined {
 	if (stage.durationMs !== undefined) return nonNegative(stage.durationMs);
 	if (stage.startedAt === undefined) return undefined;
+	if (stage.replayed && stage.endedAt === undefined) return undefined;
 	const effectiveNow = stage.endedAt ?? now;
 	return elapsedFromStart(stage.startedAt, effectiveNow, stage.pausedDurationMs, stage.pausedAt);
 }

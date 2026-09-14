@@ -7,6 +7,10 @@
 - Added optional `pi.getLoadedExtensions()` and the exported `LoadedExtensionInfo` type so extensions can report loaded extension names and bundled provenance, including extensions without tools ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 - Added approval-gated feedback submission to `bastani-inc/atomic`, with exact draft review, direct conversational approval, pre-submission privacy checks, session duplicate protection, and safe GitHub failure messages. Submission uses GITHUB_TOKEN or GH_TOKEN with issue-creation permission ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
 
+### Fixed
+
+- Workflow startup now reports its phase and age, and explicit cancellation releases waiting callers while retaining unfinished creation ownership. Cancelled queued reloads cannot start later; late SDK/binding results cannot attach or dispatch ([#3040](https://github.com/bastani-inc/atomic/issues/3040)).
+
 ## [0.9.19] - 2026-09-13
 
 Cumulative release of the `0.9.19-alpha.1` through `0.9.19-alpha.12` prereleases. Per-change details remain in the unchanged prerelease sections below.

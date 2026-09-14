@@ -67,6 +67,15 @@ export function frameDeliveryFeedback(entry: InboundMessageEntry): InboundMessag
   };
 }
 
+/** Supervisor notifications are send-time snapshots, even when delivery precedes completion. */
+export function frameHistoricalSupervisorUpdate(entry: InboundMessageEntry): InboundMessageEntry {
+	if (entry.channel !== "supervisor" || entry.message.expectsReply === true || entry.message.replyTo) return entry;
+	return {
+		...entry,
+		bodyText: `**Historical supervisor update — snapshot at send time**\n\nSent: ${framePendingStageTimestamp(entry.message.timestamp)}\n\nThis is not current task status; a later correction or final result supersedes this update.\n\n${entry.bodyText}`,
+	};
+}
+
 export function buildIncomingCustomMessage(entry: InboundMessageEntry) {
   const senderDisplay = entry.from.name || entry.from.id;
   const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
