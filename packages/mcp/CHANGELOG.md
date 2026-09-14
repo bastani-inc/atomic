@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-09-13
+
+Cumulative release of the `0.9.19-alpha.2` prerelease. Per-change details remain in the unchanged prerelease section below.
+
+### Fixed
+
+- MCP call headers identify the server before results arrive, including pending direct tools and gateway calls with explicit or unambiguous targets.
+
 ## [0.9.19-alpha.2] - 2026-09-08
 
 ### Fixed

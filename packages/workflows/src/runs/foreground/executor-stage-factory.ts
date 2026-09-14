@@ -3,6 +3,7 @@ import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
 import { resolveStageGroup, stageCanUseWorkflowPendingStageRoute } from "../../shared/intercom-group.js";
+import { workflowPendingStageRouteReady } from "../../shared/pending-stage-route-readiness.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
@@ -201,6 +202,7 @@ export function createWorkflowStageFactory(input: {
 			stageOptions: stageOptionsForContext,
 			...(pendingStageDeliveryAvailable
 				? {
+						routeAuthorityReady: () => workflowPendingStageRouteReady(input.activeStore, input.runId),
 						pendingStageDelivery: createWorkflowPendingStageDelivery(
 							input.activeStore,
 							input.runId,
