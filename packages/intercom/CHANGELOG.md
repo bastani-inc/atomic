@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Supervisor progress updates show their original send timestamp and are labelled historical snapshots, so delayed hypotheses cannot be mistaken for current activity after a correction or final result ([#3039](https://github.com/bastani-inc/atomic/issues/3039)).
+
 ## [0.9.19] - 2026-09-13
 
 Cumulative release of the `0.9.19-alpha.2` through `0.9.19-alpha.9` prereleases. Per-change details remain in the unchanged prerelease sections below.

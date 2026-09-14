@@ -341,11 +341,15 @@ export function mergeStageDraft(
 		...valueOrExisting("thinkingLevel", checkpoint, existing),
 		...valueOrExisting("attemptedModels", checkpoint, existing),
 		...valueOrExisting("modelAttempts", checkpoint, existing),
-		...(checkpoint.topology !== undefined
-			? { topology: checkpoint.topology }
-			: existing?.topology !== undefined
-				? { topology: existing.topology }
-				: {}),
+		// A task result can settle after its stage checkpoint with only the
+		// envelope's synthetic root topology. It must not erase owning-run identity.
+		...(existing?.topology?.run !== undefined && checkpoint.topology?.run === undefined
+			? { topology: existing.topology }
+			: checkpoint.topology !== undefined
+				? { topology: checkpoint.topology }
+				: existing?.topology !== undefined
+					? { topology: existing.topology }
+					: {}),
 	};
 }
 

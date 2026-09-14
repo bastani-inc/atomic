@@ -6,6 +6,7 @@ import type {
 	SubagentChildPolicy,
 } from "@bastani/atomic";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
+import type { StageStartupPhase } from "../shared/stage-startup.js";
 
 export interface PiSdkSettingsManager {
 	getRetrySettings?(): { readonly enabled: boolean; readonly maxRetries: number; readonly baseDelayMs: number };
@@ -47,6 +48,9 @@ export type AtomicCreateAgentSessionOptions = Omit<
 export interface PrepareAtomicStageSessionOptions {
 	resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
 	onSettingsManager?: (settingsManager: PiSdkSettingsManager) => void;
+	/** Cancellation is cooperative; an active reload keeps the queue until it settles. */
+	signal?: AbortSignal;
+	onStartupPhase?: (phase: StageStartupPhase) => void;
 }
 /**
  * Workflow stages are top-level sessions that carry a policy object; they are
@@ -84,6 +88,8 @@ export async function prepareAtomicStageSessionOptions(
 	sdk: PiCodingAgentSdk,
 	prepareOptions: PrepareAtomicStageSessionOptions = {},
 ): Promise<AtomicCreateAgentSessionOptions | undefined> {
+	prepareOptions.signal?.throwIfAborted();
+	prepareOptions.onStartupPhase?.("resource-preparation");
 	const atomicOptions = options as AtomicCreateAgentSessionOptions | undefined;
 	if (atomicOptions?.resourceLoader !== undefined) return atomicOptions;
 
@@ -113,7 +119,8 @@ export async function prepareAtomicStageSessionOptions(
 		resourceLoaderInheritanceSnapshot: inheritanceSnapshot,
 		builtinPackagePaths: stageBuiltinPackagePaths(builtinPackagePaths),
 	});
-	await reloadWorkflowStageResources(resourceLoader);
+	await reloadWorkflowStageResources(resourceLoader, prepareOptions);
+	prepareOptions.signal?.throwIfAborted();
 
 	return {
 		...atomicOptions,
@@ -160,8 +167,16 @@ function stageBuiltinPackagePaths(paths: readonly PackageSource[]): PackageSourc
 
 let workflowStageResourceReloadQueue: Promise<void> = Promise.resolve();
 
-async function reloadWorkflowStageResources(resourceLoader: PiSdkResourceLoader): Promise<void> {
-	const queuedReload = workflowStageResourceReloadQueue.then(() => resourceLoader.reload());
+async function reloadWorkflowStageResources(
+	resourceLoader: PiSdkResourceLoader,
+	options: PrepareAtomicStageSessionOptions,
+): Promise<void> {
+	options.onStartupPhase?.("reload-queued");
+	const queuedReload = workflowStageResourceReloadQueue.then(() => {
+		options.signal?.throwIfAborted();
+		options.onStartupPhase?.("reload-active");
+		return resourceLoader.reload();
+	});
 	workflowStageResourceReloadQueue = queuedReload.catch(() => undefined);
 	return queuedReload;
 }

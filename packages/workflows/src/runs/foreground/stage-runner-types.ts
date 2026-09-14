@@ -156,6 +156,8 @@ export interface StageRunnerOpts {
 	onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
 	/** Internal: persist stage-session identity once the SDK has created its path. */
 	onSessionReady?: () => void | Promise<void>;
+	/** Internal phase/age observation, including cancellation with retained ownership. */
+	onStartupChange?: (snapshot: import("../../shared/stage-startup.js").StageStartupSnapshot) => void;
 	/** Internal: acknowledged owner authority required before session_start can register a live route. */
 	routeAuthorityReady?: () => WorkflowPendingStageRouteReadiness | undefined;
 	/** Internal durable pre-start message bridge consumed by the intercom extension. */

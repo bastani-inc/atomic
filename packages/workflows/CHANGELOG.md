@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Cold-start workflow stages wait for acknowledged Intercom route authority before connecting, preventing spurious ownership and heavy-initialization failures without weakening route ownership checks.
+- Completed stages retain their original start, end, and duration through workflow resume and repeated replay, without rerunning completed work or displaying missing legacy timing as a new zero-duration execution ([#3038](https://github.com/bastani-inc/atomic/issues/3038)).
+- Explicit workflow resume now initializes durability in a fresh CLI session instead of silently failing before dispatch, and reports initialization failures ([#3038](https://github.com/bastani-inc/atomic/issues/3038)).
 
 ## [0.9.19] - 2026-09-13
 
