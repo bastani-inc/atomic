@@ -280,6 +280,14 @@ Control behavior:
 
 Use slash commands for graph connect and stage attach because those are interactive TUI surfaces. When a run needs user input or attention, tell the user instead of polling silently.
 
+### Diagnosing a stage with an empty history
+
+Inspect `/workflow status <run-id>` or the workflow tool's `stage` / `stages` output. Live stages report `startup` with the current phase, total startup age, and seconds on the current step, for example `startup reload-active (45s total, 45s on current step; active)`. Phases are model resolution, route authority, resource preparation, queued/active resource reload, SDK creation, extension binding, attachment, delivery readiness, and first dispatch. An allocated session ID is not proof of attachment; first dispatch is not proof of a provider response or reviewer approval.
+
+Slow startup is not automatically killed. Pause and graceful quit retain their resumable hold semantics; resume may still join the same pending creation and does not reset its age. Repeated pause/resume is not a startup restart.
+
+Explicit stage `abort()` or execution-owner cancellation rejects startup callers promptly. A cancelled stage may still show `ownershipPending: true`: non-cancellable resource loading, SDK creation, or binding must finish before its owner can be released. Cancelled queued siblings never begin their reload. Do not retry in-process while cleanup remains pending. If the operation never settles, stop the owning Atomic process before starting fresh execution; reconcile external effects first. Fresh execution is not a resumed reviewer approval, and a zero-progress run may have no usable durable continuation.
+
 ### Pausing, quitting, and resuming
 
 If a stage is waiting on `ask_user_question`, `/workflow quit <run-id>` or `workflow({ action: "quit", runId: "<run-id>" })` cancels and dismisses that question without requiring an answer. This includes the “Are you ready to move on to the next stage?” question and questions in nested stages. Quit leaves the run paused under the usual resume rules; it does not approve the question or advance downstream work. Questions belonging to other runs are unaffected. After resuming a cancelled readiness question, answer the new question; an old answer cannot restart the run.
