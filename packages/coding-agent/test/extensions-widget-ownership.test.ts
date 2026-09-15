@@ -305,6 +305,74 @@ test("queued old factories cannot reacquire a replacement key or affect unrelate
 	assert.equal(visible.get("workflow.run"), undefined);
 });
 
+test("same-runner replacement and hide/remount leave queued factories inert", () => {
+	const queued: Exclude<Parameters<ExtensionUIContext["setWidget"]>[1], string[] | undefined>[] = [];
+	const host: ExtensionUIContext = {
+		...noOpUIContext,
+		setWidget: (_key, content) => {
+			if (typeof content === "function") queued.push(content);
+		},
+	};
+	const runner = new ExtensionRunner([], createExtensionRuntime(), process.cwd(), {} as never, {} as never);
+	runner.setUIContext(host, "tui");
+	const ui = runner.getUIContext();
+	let staleCalls = 0;
+	const factory = () => {
+		staleCalls++;
+		return { render: () => ["old"], invalidate() {} };
+	};
+	ui.setWidget("workflow.run", factory);
+	ui.setWidget("workflow.run", () => ({ render: () => ["replacement"], invalidate() {} }));
+	assert.deepEqual(queued[0]!({} as never, undefined as never).render(120), []);
+	assert.equal(staleCalls, 0);
+	ui.setWidget("workflow.run", undefined);
+	ui.setWidget("workflow.run", ["remounted"]);
+	assert.deepEqual(queued[0]!({} as never, undefined as never).render(120), []);
+	assert.deepEqual(queued[1]!({} as never, undefined as never).render(120), []);
+	assert.equal(staleCalls, 0);
+	runner.invalidate();
+});
+
+test("invalidation rechecks ownership before deleting a later key", () => {
+	const visible = new Map<string, string[] | undefined>();
+	const mounted = new Map<string, { dispose?(): void }>();
+	const host: ExtensionUIContext = {
+		...noOpUIContext,
+		setWidget: (key, content) => {
+			const previous = mounted.get(key);
+			if (content === undefined) {
+				mounted.delete(key);
+				visible.delete(key);
+				previous?.dispose?.();
+				return;
+			}
+			const widget =
+				typeof content === "function" ? content({} as never, undefined as never) : { render: () => content };
+			mounted.set(key, widget);
+			visible.set(key, widget.render(120));
+			previous?.dispose?.();
+		},
+	};
+	const make = () => {
+		const runner = new ExtensionRunner([], createExtensionRuntime(), process.cwd(), {} as never, {} as never);
+		runner.setUIContext(host, "tui");
+		return runner;
+	};
+	const retiring = make();
+	const live = make();
+	retiring.getUIContext().setWidget("first", () => ({
+		render: () => ["first"],
+		invalidate() {},
+		dispose() {
+			live.getUIContext().setWidget("second", ["replacement"]);
+		},
+	}));
+	retiring.getUIContext().setWidget("second", ["old second"]);
+	retiring.invalidate();
+	assert.deepEqual(visible.get("second"), ["replacement"]);
+	live.invalidate();
+});
+
 test("late factory failure is isolated from the replacement registration", async () => {
 	const { frames, service } = setup();
 	service.setWidget("workflow.run", () => {
