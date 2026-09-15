@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Container } from "@earendil-works/pi-tui";
 import { test } from "vitest";
+import type { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
-import type { ExtensionError, ExtensionUIContext } from "../src/core/extensions/types.js";
+import type { ExtensionContext, ExtensionError, ExtensionUIContext } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
@@ -17,10 +18,14 @@ import { createWidgetReloadResourceLoader, createWidgetReloadSession } from "./h
 import { createTestExtensionsResult } from "./utilities.js";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+const KEYS = ["workflow.run", "second", "healthy"] as const;
 
 function createHost(kind: "local" | "engine") {
 	type Widget = { render(width: number): string[]; invalidate(): void; dispose?(): void };
 	const reported: string[] = [];
+	const opened: string[] = [];
+	const openedIds: string[] = [];
+	const closed: string[] = [];
 	const local = {
 		extensionWidgetsAbove: new Map<string, Widget>(),
 		extensionWidgetsBelow: new Map<string, Widget>(),
@@ -40,8 +45,15 @@ function createHost(kind: "local" | "engine") {
 	const engine = new EngineCustomUiService(
 		(line) => {
 			const frame = JSON.parse(line) as { type: string; componentId: string; widgetKey: string; lines: string[] };
-			if (frame.type === "engine_custom_open") active.set(frame.componentId, frame.widgetKey);
-			if (frame.type === "engine_custom_close") active.delete(frame.componentId);
+			if (frame.type === "engine_custom_open") {
+				active.set(frame.componentId, frame.widgetKey);
+				opened.push(frame.widgetKey);
+				openedIds.push(frame.componentId);
+			}
+			if (frame.type === "engine_custom_close") {
+				active.delete(frame.componentId);
+				closed.push(frame.componentId);
+			}
 			if (frame.type === "engine_custom_frame") rendered.set(frame.componentId, frame.lines);
 		},
 		new KeybindingsManager(),
@@ -64,6 +76,9 @@ function createHost(kind: "local" | "engine") {
 	return {
 		ui,
 		reported,
+		opened,
+		openedIds,
+		closed,
 		async snapshot() {
 			await flush();
 			if (kind === "local") {
@@ -93,7 +108,159 @@ function createHost(kind: "local" | "engine") {
 			if (kind === "local") InteractiveModeBase.prototype.clearExtensionWidgets.call(local);
 			else engine.dispose();
 		},
+		disposeRemote(componentId: string) {
+			if (kind !== "engine") return false;
+			return engine.handleLine(JSON.stringify({ type: "engine_custom_dispose", componentId }));
+		},
 	};
+}
+
+type RetirementFixture = {
+	kind: "local" | "engine";
+	host: ReturnType<typeof createHost>;
+	session: Awaited<ReturnType<typeof createWidgetReloadSession>>["session"];
+	held: ExtensionUIContext[];
+	contexts: ExtensionContext[];
+	disposed: string[];
+	errors: ExtensionError[];
+	lifecycle: string[];
+	subscriptions: Set<number>;
+	timers: Map<number, ReturnType<typeof setInterval>>;
+	keys: string[];
+	dispose(): Promise<void>;
+};
+
+async function createRetirementFixture(
+	kind: "local" | "engine",
+	options: {
+		omitted?: boolean;
+		throwingDispose?: boolean;
+		reentrantKey?: "workflow.run" | "new";
+		rejectCandidate?: boolean;
+	} = {},
+): Promise<RetirementFixture> {
+	const omitted = options.omitted ?? false;
+	const throwingDispose = options.throwingDispose ?? true;
+	const reentrantKey = options.reentrantKey;
+	const rejectCandidate = options.rejectCandidate ?? false;
+	const host = createHost(kind);
+	const dir = await mkdtemp(join(tmpdir(), "widget-host-retirement-"));
+	const held: ExtensionUIContext[] = [];
+	const contexts: ExtensionContext[] = [];
+	const disposed: string[] = [];
+	const errors: ExtensionError[] = [];
+	const lifecycle: string[] = [];
+	const subscriptions = new Set<number>();
+	const timers = new Map<number, ReturnType<typeof setInterval>>();
+	const keys = [...KEYS];
+	let generation = 0;
+	let cleanup = false;
+	const load = () =>
+		createTestExtensionsResult(
+			[
+				(pi) => {
+					let current = 0;
+					pi.on("session_start", (_event, ctx) => {
+						current = ++generation;
+						const id = current;
+						const ui = ctx.ui;
+						held.push(ui);
+						contexts.push(ctx);
+						lifecycle.push(`start:${id}`);
+						subscriptions.add(id);
+						timers.set(
+							id,
+							setInterval(() => {}, 60_000),
+						);
+						for (const key of id > 1 && omitted ? ["candidate"] : keys) {
+							ui.setWidget(
+								key,
+								() => ({
+									render: () => [`${key}:${id}`],
+									invalidate() {},
+									dispose() {
+										disposed.push(`${key}:${id}`);
+										if (key === "healthy" || key === "candidate") {
+											clearInterval(timers.get(id));
+											timers.delete(id);
+											subscriptions.delete(id);
+										}
+										if (cleanup || id !== 1) return;
+										if (reentrantKey && key === "workflow.run")
+											ui.setWidget(reentrantKey, () => ({
+												render: () => ["resurrected"],
+												invalidate() {},
+											}));
+										if (key !== "healthy" && throwingDispose) throw new Error(`dispose failed: ${key}`);
+									},
+								}),
+								{ placement: key === "second" ? "belowEditor" : "aboveEditor" },
+							);
+						}
+						if (id > 1) pi.sendMessage({ customType: "released", content: "after retirement", display: false });
+					});
+					pi.on("session_shutdown", () => {
+						lifecycle.push(`stop:${current}`);
+						clearInterval(timers.get(current));
+						timers.delete(current);
+						subscriptions.delete(current);
+						if (rejectCandidate && current > 1) throw new Error("candidate shutdown failed");
+					});
+				},
+			],
+			dir,
+		);
+	const loader = createWidgetReloadResourceLoader({
+		loaded: await load(),
+		load,
+		beforePrepareCommit: () => {
+			if (rejectCandidate) throw new Error("candidate rejected");
+		},
+		onCommit: () => {
+			lifecycle.push("commit");
+		},
+	});
+	const { session } = await createWidgetReloadSession({
+		dir,
+		resourceLoader: loader,
+		sessionManager: SessionManager.inMemory(),
+	});
+	const unsubscribe = session.subscribe((event) => {
+		if (event.type === "message_end" && event.message.role === "custom") lifecycle.push("release");
+	});
+	await session.bindExtensions({ mode: "tui", uiContext: host.ui, onError: (error) => errors.push(error) });
+	return {
+		kind,
+		host,
+		session,
+		held,
+		contexts,
+		disposed,
+		errors,
+		lifecycle,
+		subscriptions,
+		timers,
+		keys,
+		async dispose() {
+			cleanup = true;
+			unsubscribe();
+			session.dispose();
+			host.release();
+			for (const timer of timers.values()) clearInterval(timer);
+			await rm(dir, { recursive: true, force: true });
+		},
+	};
+}
+
+async function expectRetiredOwnerSilenced(fixture: RetirementFixture, retiring: ExtensionRunner): Promise<void> {
+	retiring.invalidate();
+	retiring.invalidate();
+	assert.throws(() => retiring.createContext().ui, /no longer active|stale|reload/i);
+	fixture.held[0].setWidget("workflow.run", () => ({ render: () => ["stale"], invalidate() {} }));
+	fixture.held[0].setWidget("new", () => ({ render: () => ["stale"], invalidate() {} }));
+	const after = await fixture.host.snapshot();
+	assert.ok([...after.values()].every((lines) => lines?.every((line) => line.endsWith(":2"))));
+	assert.deepEqual([...fixture.disposed].sort(), fixture.keys.map((key) => `${key}:1`).sort());
 }
 
 // PR #2700: the original SDK exception matrix covered only the engine host.
@@ -179,178 +346,255 @@ for (const kind of ["local", "engine"] as const) {
 	);
 
 	test.each([
-		"replacement",
-		"omitted",
-		"startup replacement",
-		"startup omitted",
-		"rejected",
-		"clear retry",
-		"host release",
-		"old-owner invalidation",
-		"reentrant same key",
-		"reentrant same key throwing",
-		"reentrant new key",
-		"reentrant new key throwing",
-	])(`${kind} widget retirement: %s`, async (scenario) => {
-		const host = createHost(kind);
-		const dir = await mkdtemp(join(tmpdir(), "widget-host-retirement-"));
-		const held: ExtensionUIContext[] = [];
-		const disposed: string[] = [];
-		const releases: string[] = [];
-		const errors: ExtensionError[] = [];
-		const lifecycle: string[] = [];
-		const subscriptions = new Set<number>();
-		const timers = new Map<number, ReturnType<typeof setInterval>>();
-		const omitted = scenario.includes("omitted");
-		const reentrant = scenario.startsWith("reentrant");
-		let generation = 0;
-		let cleanup = false;
-		const keys = ["workflow.run", "second", "healthy"];
-		const load = () =>
-			createTestExtensionsResult(
-				[
-					(pi) => {
-						let current = 0;
-						pi.on("session_start", (_event, ctx) => {
-							current = ++generation;
-							const id = current;
-							const ui = ctx.ui;
-							held.push(ui);
-							lifecycle.push(`start:${id}`);
-							subscriptions.add(id);
-							timers.set(
-								id,
-								setInterval(() => {}, 60_000),
-							);
-							for (const key of id > 1 && omitted ? ["candidate"] : keys) {
-								ui.setWidget(
-									key,
-									() => ({
-										render: () => [`${key}:${id}`],
-										invalidate() {},
-										dispose() {
-											disposed.push(`${key}:${id}`);
-											if (key === "healthy" || key === "candidate") {
-												clearInterval(timers.get(id));
-												timers.delete(id);
-												subscriptions.delete(id);
-											}
-											if (cleanup || id !== 1) return;
-											if (reentrant && key === "workflow.run")
-												ui.setWidget(scenario.includes("new key") ? "new" : key, () => ({
-													render: () => ["resurrected"],
-													invalidate() {},
-												}));
-											if (key !== "healthy" && (!reentrant || scenario.endsWith("throwing")))
-												throw new Error(`dispose failed: ${key}`);
-										},
-									}),
-									{ placement: key === "second" ? "belowEditor" : "aboveEditor" },
-								);
-							}
-						});
-						pi.on("session_shutdown", () => {
-							lifecycle.push(`stop:${current}`);
-							clearInterval(timers.get(current));
-							timers.delete(current);
-							subscriptions.delete(current);
-							if (scenario === "rejected" && current > 1) throw new Error("candidate shutdown failed");
-						});
-					},
-				],
-				dir,
-			);
-		const loader = createWidgetReloadResourceLoader({
-			loaded: await load(),
-			load,
-			beforePrepareCommit: () => {
-				if (scenario === "rejected") throw new Error("candidate rejected");
-			},
-			onCommit: () => {
-				lifecycle.push("commit");
-			},
-		});
-		const { session } = await createWidgetReloadSession({
-			dir,
-			resourceLoader: loader,
-			sessionManager: SessionManager.inMemory(),
-		});
-		try {
-			await session.bindExtensions({ mode: "tui", uiContext: host.ui, onError: (error) => errors.push(error) });
-			const before = await host.snapshot();
-			assert.equal(before.size, 3);
-			const retiring = session.extensionRunner;
-			if (scenario === "clear retry") {
-				assert.throws(() => held[0].setWidget("workflow.run", undefined), /dispose failed/);
-				held[0].setWidget("workflow.run", undefined);
+		{
+			name: "replacement",
+			reason: "reload" as const,
+			omitted: false,
+			expectedKeys: new Map([
+				["workflow.run", ["workflow.run:2"]],
+				["second", ["second:2"]],
+				["healthy", ["healthy:2"]],
+			]),
+			expectedLifecycle: ["start:1", "start:2", "commit", "stop:1", "release"],
+			disposalEvent: "session_start",
+		},
+		{
+			name: "omitted",
+			reason: "reload" as const,
+			omitted: true,
+			expectedKeys: new Map([["candidate", ["candidate:2"]]]),
+			expectedLifecycle: ["start:1", "start:2", "commit", "stop:1", "release"],
+			disposalEvent: "session_shutdown",
+		},
+		{
+			name: "startup replacement",
+			reason: "startup" as const,
+			omitted: false,
+			expectedKeys: new Map([
+				["workflow.run", ["workflow.run:2"]],
+				["second", ["second:2"]],
+				["healthy", ["healthy:2"]],
+			]),
+			expectedLifecycle: ["start:1", "start:2", "commit", "release"],
+			disposalEvent: "session_start",
+		},
+		{
+			name: "startup omitted",
+			reason: "startup" as const,
+			omitted: true,
+			expectedKeys: new Map([["candidate", ["candidate:2"]]]),
+			expectedLifecycle: ["start:1", "start:2", "commit", "release"],
+			disposalEvent: "session_shutdown",
+		},
+	])(
+		`${kind} committed reload: $name`,
+		async ({ reason, omitted, expectedKeys, expectedLifecycle, disposalEvent }) => {
+			const fixture = await createRetirementFixture(kind, { omitted });
+			try {
+				const retiring = fixture.session.extensionRunner;
+				await fixture.session.reload({ reason, failOnExtensionErrors: true });
+				assert.notEqual(fixture.session.extensionRunner, retiring);
+				assert.deepEqual(fixture.lifecycle, expectedLifecycle);
+				assert.deepEqual(await fixture.host.snapshot(), expectedKeys);
+				assert.deepEqual([...fixture.subscriptions], [2]);
+				assert.equal(fixture.timers.size, 1);
 				assert.deepEqual(
-					await host.snapshot(),
-					new Map([
-						["second", ["second:1"]],
-						["healthy", ["healthy:1"]],
-					]),
+					fixture.errors.map(({ extensionPath, event, error }) => ({ extensionPath, event, error })),
+					[
+						{ extensionPath: "<runtime>", event: disposalEvent, error: "dispose failed: workflow.run" },
+						{ extensionPath: "<runtime>", event: disposalEvent, error: "dispose failed: second" },
+					],
 				);
-			} else if (scenario === "host release") {
-				for (const key of keys) host.ui.onWidgetRelease!(key, () => releases.push(key));
-				host.release();
-				assert.deepEqual(host.reported, ["dispose failed: workflow.run", "dispose failed: second"]);
-				host.release();
-				assert.equal(host.reported.length, 2);
-				assert.equal((await host.snapshot()).size, 0);
-				if (kind === "local") assert.deepEqual(releases.sort(), [...keys].sort());
-			} else if (scenario === "rejected") {
-				await assert.rejects(() => session.reload({ failOnExtensionErrors: true }), /candidate rejected/);
-				assert.equal(session.extensionRunner, retiring);
-				assert.deepEqual(await host.snapshot(), before);
-				assert.deepEqual(disposed, []);
-				assert.deepEqual(lifecycle, ["start:1", "start:2", "stop:2"]);
-				assert.deepEqual([...subscriptions], [1]);
-				assert.equal(timers.size, 1);
-				held[1].setWidget("candidate resurrection", () => ({ render: () => ["stale"], invalidate() {} }));
-			} else if (!reentrant && scenario !== "old-owner invalidation") {
-				const startup = scenario.startsWith("startup");
-				await session.reload({ reason: startup ? "startup" : "reload", failOnExtensionErrors: true });
-				assert.deepEqual(
-					lifecycle,
-					startup ? ["start:1", "start:2", "commit"] : ["start:1", "start:2", "commit", "stop:1"],
-				);
-				assert.deepEqual(
-					await host.snapshot(),
-					new Map(
-						omitted
-							? [["candidate", ["candidate:2"]]]
-							: [
-									["workflow.run", ["workflow.run:2"]],
-									["second", ["second:2"]],
-									["healthy", ["healthy:2"]],
-								],
-					),
-				);
-				assert.deepEqual([...subscriptions], [2]);
-				assert.equal(timers.size, 1);
-				assert.equal(errors.length, 2);
+				const openedAfterReload = fixture.host.opened.length;
+				const closedAfterReload = fixture.host.closed.length;
+				if (kind === "engine") {
+					assert.deepEqual(fixture.host.opened, [...fixture.keys, ...expectedKeys.keys()]);
+					for (const id of fixture.host.openedIds.slice(0, 3)) {
+						assert.equal(fixture.host.closed.filter((componentId) => componentId === id).length, 1);
+					}
+				}
+				await expectRetiredOwnerSilenced(fixture, retiring);
+				if (kind === "engine") {
+					assert.equal(fixture.host.opened.length, openedAfterReload);
+					assert.equal(fixture.host.closed.length, closedAfterReload);
+				}
+				await fixture.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+				assert.equal(fixture.subscriptions.size, 0);
+				assert.equal(fixture.timers.size, 0);
+			} finally {
+				await fixture.dispose();
 			}
-			retiring.invalidate();
-			retiring.invalidate();
-			assert.throws(() => retiring.createContext().ui, /no longer active|stale|reload/i);
-			if (reentrant) assert.equal(errors.length, scenario.endsWith("throwing") ? 2 : 0);
-			if (scenario === "old-owner invalidation") assert.equal(errors.length, 2);
-			held[0].setWidget("workflow.run", () => ({ render: () => ["stale"], invalidate() {} }));
-			held[0].setWidget("new", () => ({ render: () => ["stale"], invalidate() {} }));
-			const after = await host.snapshot();
-			assert.ok([...after.values()].every((lines) => lines?.every((line) => line.endsWith(":2"))));
-			assert.deepEqual([...disposed].sort(), keys.map((key) => `${key}:1`).sort());
-			if (session.extensionRunner === retiring) {
-				assert.equal(after.size, 0);
-				assert.equal(timers.size, 0);
-				assert.equal(subscriptions.size, 0);
+		},
+	);
+
+	test(`${kind} rejected candidate keeps the retiring owner live`, async () => {
+		const fixture = await createRetirementFixture(kind, { rejectCandidate: true });
+		try {
+			const before = await fixture.host.snapshot();
+			assert.equal(before.size, 3);
+			const retiring = fixture.session.extensionRunner;
+			const openedBefore = [...fixture.host.opened];
+			const closedBefore = [...fixture.host.closed];
+			await assert.rejects(() => fixture.session.reload({ failOnExtensionErrors: true }), /candidate rejected/);
+			assert.equal(fixture.session.extensionRunner, retiring);
+			assert.deepEqual(await fixture.host.snapshot(), before);
+			assert.deepEqual(fixture.disposed, []);
+			assert.deepEqual(fixture.lifecycle, ["start:1", "start:2", "stop:2"]);
+			assert.deepEqual([...fixture.subscriptions], [1]);
+			assert.equal(fixture.timers.size, 1);
+			fixture.held[1].setWidget("candidate resurrection", () => ({ render: () => ["stale"], invalidate() {} }));
+			assert.throws(() => fixture.contexts[1].ui, /no longer active|stale|reload/i);
+			if (kind === "engine") {
+				assert.deepEqual(fixture.host.opened, openedBefore);
+				assert.deepEqual(fixture.host.closed, closedBefore);
+			}
+			await expectRetiredOwnerSilenced(fixture, retiring);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
+	test(`${kind} hide retry after a throwing dispose releases the key once`, async () => {
+		const fixture = await createRetirementFixture(kind);
+		try {
+			assert.equal((await fixture.host.snapshot()).size, 3);
+			const retiring = fixture.session.extensionRunner;
+			assert.throws(() => fixture.held[0].setWidget("workflow.run", undefined), /dispose failed/);
+			fixture.held[0].setWidget("workflow.run", undefined);
+			assert.deepEqual(
+				await fixture.host.snapshot(),
+				new Map([
+					["second", ["second:1"]],
+					["healthy", ["healthy:1"]],
+				]),
+			);
+			await expectRetiredOwnerSilenced(fixture, retiring);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
+	test(`${kind} host release reports throwing disposals once`, async () => {
+		const fixture = await createRetirementFixture(kind);
+		try {
+			assert.equal((await fixture.host.snapshot()).size, 3);
+			const retiring = fixture.session.extensionRunner;
+			const releases: string[] = [];
+			for (const key of fixture.keys) fixture.host.ui.onWidgetRelease!(key, () => releases.push(key));
+			fixture.host.release();
+			assert.deepEqual(fixture.host.reported, ["dispose failed: workflow.run", "dispose failed: second"]);
+			if (kind === "engine") {
+				assert.deepEqual(fixture.disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+			}
+			fixture.host.release();
+			assert.equal(fixture.host.reported.length, 2);
+			assert.equal((await fixture.host.snapshot()).size, 0);
+			if (kind === "local") assert.deepEqual(releases.sort(), [...fixture.keys].sort());
+			await expectRetiredOwnerSilenced(fixture, retiring);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
+	test.each([
+		{ name: "no reentry", reentrantKey: undefined, throwingDispose: true, expectedErrors: 2 },
+		{
+			name: "reentrant same key",
+			reentrantKey: "workflow.run" as const,
+			throwingDispose: false,
+			expectedErrors: 0,
+		},
+		{
+			name: "reentrant same key throwing",
+			reentrantKey: "workflow.run" as const,
+			throwingDispose: true,
+			expectedErrors: 2,
+		},
+		{ name: "reentrant new key", reentrantKey: "new" as const, throwingDispose: false, expectedErrors: 0 },
+		{
+			name: "reentrant new key throwing",
+			reentrantKey: "new" as const,
+			throwingDispose: true,
+			expectedErrors: 2,
+		},
+	])(`${kind} old-owner invalidation: $name`, async ({ reentrantKey, throwingDispose, expectedErrors }) => {
+		const fixture = await createRetirementFixture(kind, { reentrantKey, throwingDispose });
+		try {
+			assert.equal((await fixture.host.snapshot()).size, 3);
+			const retiring = fixture.session.extensionRunner;
+			const openedIds = [...fixture.host.openedIds];
+			await expectRetiredOwnerSilenced(fixture, retiring);
+			assert.equal(fixture.errors.length, expectedErrors);
+			assert.deepEqual(fixture.disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+			assert.throws(() => fixture.contexts[0].ui, /no longer active|stale|reload/i);
+			if (kind === "engine") {
+				for (const id of openedIds) {
+					assert.equal(fixture.host.closed.filter((componentId) => componentId === id).length, 1);
+				}
+				const closed = fixture.host.closed.length;
+				retiring.invalidate();
+				assert.equal(fixture.host.closed.length, closed);
 			}
 		} finally {
-			cleanup = true;
-			session.dispose();
-			host.release();
-			for (const timer of timers.values()) clearInterval(timer);
-			await rm(dir, { recursive: true, force: true });
+			await fixture.dispose();
 		}
 	});
 }
+
+test("engine host release through engine_custom_dispose reports each throwing disposal once and releases keys in order", async () => {
+	const fixture = await createRetirementFixture("engine");
+	try {
+		assert.equal((await fixture.host.snapshot()).size, 3);
+		const retiring = fixture.session.extensionRunner;
+		const releases: string[] = [];
+		const openedIds = [...fixture.host.openedIds];
+		for (const key of fixture.keys) fixture.host.ui.onWidgetRelease!(key, () => releases.push(key));
+		for (const componentId of openedIds) {
+			assert.equal(fixture.host.disposeRemote(componentId), true);
+			fixture.host.disposeRemote(componentId);
+		}
+		assert.deepEqual(fixture.host.reported, ["dispose failed: workflow.run", "dispose failed: second"]);
+		assert.deepEqual(releases, [...fixture.keys]);
+		await expectRetiredOwnerSilenced(fixture, retiring);
+		assert.deepEqual(fixture.disposed, ["workflow.run:1", "second:1", "healthy:1"]);
+		for (const id of openedIds) {
+			assert.equal(fixture.host.closed.filter((componentId) => componentId === id).length, 1);
+		}
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+// PR #2700: engine.dispose() clears widgetIds before pending factories settle, so a throwing
+// dispose on the never-opened component must still reach the extension error sink.
+test("engine shutdown reports disposal errors from widgets that never opened", async () => {
+	const frames: string[] = [];
+	const disposed: string[] = [];
+	const reported: ExtensionError[] = [];
+	const engine = new EngineCustomUiService(
+		(line) => frames.push(line),
+		new KeybindingsManager(),
+		(error) => reported.push(error),
+	);
+	engine.setWidget("pending", () => ({
+		render: () => ["pending"],
+		invalidate() {},
+		dispose() {
+			disposed.push("pending");
+			throw new Error("dispose failed: pending");
+		},
+	}));
+	engine.dispose();
+	assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, 0);
+	assert.deepEqual(disposed, []);
+	assert.deepEqual(reported, []);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.deepEqual(disposed, ["pending"]);
+	assert.deepEqual(
+		reported.map(({ extensionPath, event, error }) => ({ extensionPath, event, error })),
+		[{ extensionPath: "<runtime>", event: "session_shutdown", error: "dispose failed: pending" }],
+	);
+	assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, 0);
+	engine.dispose();
+	assert.equal(reported.length, 1);
+});
