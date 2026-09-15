@@ -19,7 +19,7 @@ import { WorkflowWidgetViewport } from "../../packages/workflows/src/tui/widget-
 import { sleep } from "../helpers/runtime.js";
 import { nativeWorkflowViewport } from "../helpers/workflow-native-viewport.js";
 
-// #2700: a mounted workflow widget must receive resize rows, not the mount-time snapshot.
+// Regression coverage for 89671c231 (native scrollable widget viewports). PR #2700 carries no source change for this.
 test("remote workflow widget follows live terminal row budgets without remount", async () => {
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const commands: InteractiveEngineCommand[] = [];
