@@ -431,7 +431,7 @@ for (const kind of ["local", "engine"] as const) {
 	])(
 		`${kind} committed reload: $name`,
 		async ({ reason, omitted, expectedKeys, expectedLifecycle, disposalEvent, expectedDisposed }) => {
-			const fixture = await createRetirementFixture(kind, { omitted });
+			const fixture = await createRetirementFixture(kind, { omitted, throwingDispose: true });
 			try {
 				const retiring = fixture.session.extensionRunner;
 				await fixture.session.reload({ reason, failOnExtensionErrors: true });
@@ -471,7 +471,7 @@ for (const kind of ["local", "engine"] as const) {
 	);
 
 	test(`${kind} rejected candidate keeps the retiring owner live`, async () => {
-		const fixture = await createRetirementFixture(kind, { rejectCandidate: true });
+		const fixture = await createRetirementFixture(kind, { rejectCandidate: true, throwingDispose: true });
 		try {
 			const before = await fixture.host.snapshot();
 			assert.equal(before.size, 3);
@@ -499,7 +499,7 @@ for (const kind of ["local", "engine"] as const) {
 	});
 
 	test(`${kind} hide retry after a throwing dispose releases the key once`, async () => {
-		const fixture = await createRetirementFixture(kind);
+		const fixture = await createRetirementFixture(kind, { throwingDispose: true });
 		try {
 			assert.equal((await fixture.host.snapshot()).size, 3);
 			const retiring = fixture.session.extensionRunner;
@@ -519,7 +519,7 @@ for (const kind of ["local", "engine"] as const) {
 	});
 
 	test(`${kind} host release reports throwing disposals once`, async () => {
-		const fixture = await createRetirementFixture(kind);
+		const fixture = await createRetirementFixture(kind, { throwingDispose: true });
 		try {
 			assert.equal((await fixture.host.snapshot()).size, 3);
 			const retiring = fixture.session.extensionRunner;
@@ -584,7 +584,7 @@ for (const kind of ["local", "engine"] as const) {
 }
 
 test("engine host release through engine_custom_dispose reports each throwing disposal once and releases keys in order", async () => {
-	const fixture = await createRetirementFixture("engine");
+	const fixture = await createRetirementFixture("engine", { throwingDispose: true });
 	try {
 		assert.equal((await fixture.host.snapshot()).size, 3);
 		const retiring = fixture.session.extensionRunner;
