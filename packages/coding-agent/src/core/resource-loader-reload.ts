@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath, resolvePath } from "../utils/paths.ts";
 import { getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
+import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
 import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
@@ -127,10 +128,14 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	state.workflowResources = workflowResources;
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
-	const extensionPaths = mergeResourcePaths(
-		state.cwd,
-		cliEnabledExtensions,
-		state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+	// The builtin Herdr reporter supersedes the installed file integration in a
+	// Herdr pane; see extensions/herdr-file-integration.ts.
+	const extensionPaths = filterSupersededHerdrIntegrationPaths(
+		mergeResourcePaths(
+			state.cwd,
+			cliEnabledExtensions,
+			state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+		),
 	);
 	const extensionsResult = await loadExtensionsCached(
 		extensionPaths,
@@ -295,10 +300,14 @@ export async function prepareDefaultResourceLoaderReload(
 		state.workflowResources = workflowResources;
 		const workflowResourceProvider = createWorkflowResourceProvider(loader);
 
-		const extensionPaths = mergeResourcePaths(
-			state.cwd,
-			cliEnabledExtensions,
-			state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+		// The builtin Herdr reporter supersedes the installed file integration in a
+		// Herdr pane; see extensions/herdr-file-integration.ts.
+		const extensionPaths = filterSupersededHerdrIntegrationPaths(
+			mergeResourcePaths(
+				state.cwd,
+				cliEnabledExtensions,
+				state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+			),
 		);
 
 		const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);

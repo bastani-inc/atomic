@@ -44,7 +44,8 @@ If Atomic does not appear in Herdr:
 
 - Make sure you launched Atomic inside a Herdr pane, rather than in a separate terminal.
 - Check that Herdr is running and reporting has not been disabled in Atomic's settings.
-- Check for a loaded `herdr-atomic-reporter` or legacy Pi `herdr-agent-state` extension. Atomic defers to these reporters to avoid conflicts; disable the extra extension and reload to use the built-in integration.
+- Inside a Herdr pane, Atomic reports the pane itself and skips Herdr's installed Pi integration (`herdr-agent-state.ts`, usually in `~/.pi/agent/extensions`), so you do not need to disable it. Outside a Herdr pane that file still loads normally.
+- A `herdr-atomic-reporter` extension, if you installed one, reports the pane in addition to Atomic's built-in integration. Disable one of the two if the pane's status flickers.
 
 For custom launchers, Herdr must provide `HERDR_ENV=1` and nonempty `HERDR_BIN_PATH`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH` values. See [Herdr's integration guide](https://herdr.dev/docs/integrations/#integrate-your-own-agent).
 

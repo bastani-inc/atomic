@@ -89,7 +89,12 @@ test("invalid environment and inherited child/headless modes never acquire repor
 });
 
 // #2891: shipped metadata and loaded paths, not filesystem package discovery.
-test("built-in registration keeps llama first and defers once to loaded legacy/community reporters", async () => {
+// #2416: supersession is a load-time decision now — the resource loader skips
+// Herdr's installed `herdr-agent-state` files inside a Herdr pane (see
+// herdr-supersession.test.ts), so a loaded path carrying that basename must not
+// silence the builtin. Blind deferral is what left the pane reported by nobody
+// when the installed asset loaded but silently failed.
+test("built-in registration keeps llama first and reports alongside loaded legacy/community reporter paths", async () => {
 	assert.equal(builtInExtensions[0].name, "llama.cpp");
 	assert.deepEqual(
 		builtInExtensions.find((entry) => entry.factory === herdrExtension),
@@ -97,6 +102,7 @@ test("built-in registration keeps llama first and defers once to loaded legacy/c
 	);
 	const fake = await fakeHerdr();
 	try {
+		let reported = 0;
 		for (const path of ["/loaded/herdr-atomic-reporter/index.ts", "C:\\loaded\\herdr-agent-state.ts"]) {
 			const runtime = createExtensionRuntime();
 			const diagnostics: HerdrDiagnostic[] = [];
@@ -124,12 +130,24 @@ test("built-in registration keeps llama first and defers once to loaded legacy/c
 			await runner.emit({ type: "session_start" });
 			await runner.emit({ type: "agent_start" });
 			await runner.emit({ type: "session_shutdown", reason: "quit" });
-			assert.deepEqual(diagnostics, [{ kind: "unsupported", owner: path }]);
+			assert.deepEqual(
+				diagnostics.filter((entry) => entry.kind === "unsupported"),
+				[],
+				`a loaded ${path} must not stand the builtin down`,
+			);
 			assert.deepEqual(runner.createContext().getExtensionPaths?.(), ["herdr", path]);
-			assert.deepEqual(runtime.workflowActivityHub.diagnostics(), []);
+			// An active builtin takes a workflow-activity lease, and this harness
+			// supplies no workflow store, so the hub reports only that the source is
+			// absent and the observer was torn down. Nothing else may appear.
+			assert.deepEqual([...new Set(runtime.workflowActivityHub.diagnostics().map((entry) => entry.kind))].sort(), [
+				"ObserverDisposed",
+				"SourceUnavailable",
+			]);
 			runner.invalidate();
+			await fake.waitFor(reported + 1);
+			reported = (await fake.calls()).filter((call) => call.phase === "end").length;
 		}
-		assert.deepEqual(await fake.calls(), []);
+		assert.ok(reported > 0, "the builtin is the pane's reporter in both cases");
 	} finally {
 		await fake.dispose();
 	}

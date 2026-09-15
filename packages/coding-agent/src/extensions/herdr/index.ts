@@ -84,13 +84,6 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			const environment = captureHerdrEnvironment(options.env ?? process.env);
 			if (!environment || ctx.mode !== "tui" || !ctx.hasUI || ctx.subagentPolicy || ctx.orchestrationContext) return;
 			if (!(options.enabled ?? enabled)(ctx)) return;
-			const conflict = ctx
-				.getExtensionPaths?.()
-				.find((path) => /herdr-atomic-reporter|herdr-agent-state/.test(path));
-			if (conflict) {
-				diagnostic({ kind: "unsupported", owner: conflict });
-				return;
-			}
 			if (boundRunner && boundRunner !== runner) retiredRunners.add(boundRunner);
 			boundRunner = runner;
 			boundSessionManager = ctx.sessionManager;
