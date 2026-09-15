@@ -305,6 +305,37 @@ test("queued old factories cannot reacquire a replacement key or affect unrelate
 	assert.equal(visible.get("workflow.run"), undefined);
 });
 
+test("older generation cannot update a still-owned key after a later runner publishes on the same host", () => {
+	const visible = new Map<string, string[] | undefined>();
+	const host: ExtensionUIContext = {
+		...noOpUIContext,
+		setWidget: (key, content) => {
+			if (content === undefined) visible.delete(key);
+			else {
+				assert.ok(Array.isArray(content));
+				visible.set(key, content);
+			}
+		},
+	};
+	const make = () => {
+		const runner = new ExtensionRunner([], createExtensionRuntime(), process.cwd(), {} as never, {} as never);
+		runner.setUIContext(host, "tui");
+		return runner;
+	};
+	const a = make();
+	const b = make();
+	a.getUIContext().setWidget("a-only", ["A original"]);
+	b.getUIContext().setWidget("b-only", ["B original"]);
+	a.getUIContext().setWidget("a-only", ["A updated"]);
+	assert.deepEqual(visible.get("a-only"), ["A original"]);
+	b.getUIContext().setWidget("b-only", ["B updated"]);
+	assert.deepEqual(visible.get("b-only"), ["B updated"]);
+	a.invalidate();
+	assert.equal(visible.get("a-only"), undefined);
+	assert.deepEqual(visible.get("b-only"), ["B updated"]);
+	b.invalidate();
+});
+
 test("same-runner replacement and hide/remount leave queued factories inert", () => {
 	const queued: Exclude<Parameters<ExtensionUIContext["setWidget"]>[1], string[] | undefined>[] = [];
 	const host: ExtensionUIContext = {

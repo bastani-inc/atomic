@@ -395,6 +395,7 @@ for (const kind of ["local", "engine"] as const) {
 			]),
 			expectedLifecycle: ["start:1", "start:2", "commit", "stop:1", "release"],
 			disposalEvent: "session_start",
+			expectedDisposed: ["workflow.run:1", "second:1", "healthy:1"],
 		},
 		{
 			name: "omitted",
@@ -403,6 +404,7 @@ for (const kind of ["local", "engine"] as const) {
 			expectedKeys: new Map([["candidate", ["candidate:2"]]]),
 			expectedLifecycle: ["start:1", "start:2", "commit", "stop:1", "release"],
 			disposalEvent: "session_shutdown",
+			expectedDisposed: ["workflow.run:1", "second:1", "healthy:1"],
 		},
 		{
 			name: "startup replacement",
@@ -415,6 +417,7 @@ for (const kind of ["local", "engine"] as const) {
 			]),
 			expectedLifecycle: ["start:1", "start:2", "commit", "release"],
 			disposalEvent: "session_start",
+			expectedDisposed: ["workflow.run:1", "second:1", "healthy:1"],
 		},
 		{
 			name: "startup omitted",
@@ -423,10 +426,11 @@ for (const kind of ["local", "engine"] as const) {
 			expectedKeys: new Map([["candidate", ["candidate:2"]]]),
 			expectedLifecycle: ["start:1", "start:2", "commit", "release"],
 			disposalEvent: "session_shutdown",
+			expectedDisposed: ["workflow.run:1", "second:1", "healthy:1"],
 		},
 	])(
 		`${kind} committed reload: $name`,
-		async ({ reason, omitted, expectedKeys, expectedLifecycle, disposalEvent }) => {
+		async ({ reason, omitted, expectedKeys, expectedLifecycle, disposalEvent, expectedDisposed }) => {
 			const fixture = await createRetirementFixture(kind, { omitted });
 			try {
 				const retiring = fixture.session.extensionRunner;
@@ -443,6 +447,7 @@ for (const kind of ["local", "engine"] as const) {
 						{ extensionPath: "<runtime>", event: disposalEvent, error: "dispose failed: second" },
 					],
 				);
+				assert.deepEqual(fixture.disposed, expectedDisposed);
 				if (kind === "engine") {
 					assert.deepEqual(fixture.host.opened, [...fixture.keys, ...expectedKeys.keys()]);
 					for (const id of fixture.host.openedIds.slice(0, 3)) {
@@ -455,6 +460,7 @@ for (const kind of ["local", "engine"] as const) {
 					timers: 1,
 					expectNoNewEngineCloses: true,
 				});
+				assert.deepEqual(fixture.disposed, expectedDisposed);
 				await fixture.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 				assert.equal(fixture.subscriptions.size, 0);
 				assert.equal(fixture.timers.size, 0);

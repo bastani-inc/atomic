@@ -112,9 +112,7 @@ function gondolinFixture() {
 						input: options?.stdin,
 						encoding: "utf8",
 					});
-					// noclobber can reject before cat reads stdin. spawnSync then reports EPIPE
-					// alongside the real exit status; throwing that error is load-sensitive.
-					if (result.error && result.status === null) throw result.error;
+					if (result.error) throw result.error;
 					if (result.status === 44 && guest.race) {
 						guest.race = false;
 						if (guest.dangling) await symlink("missing-referent", local(args[4]));
