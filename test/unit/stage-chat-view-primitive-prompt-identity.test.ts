@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { PendingPrompt } from "../../packages/workflows/src/shared/store-types.js";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import {
 	createStore,
 	deriveGraphTheme,
@@ -15,6 +16,39 @@ import {
 
 const RUN_ID = "339e05a4-2289-408e-9076-d1a348f582ae";
 const WORKFLOW_NAME = "primitive-attribution";
+const STAGE_NAME = "review-a";
+const AWAITING_INPUT_TOP = /^╭ AWAITING INPUT(?: {2}\[stage: [^\]]+\])? ─*╮$/;
+
+const PERMITTED_AWAITING_TITLE = /^ AWAITING INPUT(?: · [^─[]+)?(?: {2}\[stage: [^\]]+\])? $/;
+
+function assertWellFormedTopBorder(line: string, width: number, context: string): void {
+	assert.equal(visibleWidth(line), width, `${context} display width`);
+	assert.ok(line.startsWith("╭") && line.endsWith("╮"), `${context} missing corners: ${line}`);
+	const inner = line.slice(1, -1);
+	assert.ok(!inner.includes("╭") && !inner.includes("╮"), `${context} extra corners: ${line}`);
+	const fillStart = inner.search(/─/);
+	const title = fillStart < 0 ? inner : inner.slice(0, fillStart);
+	const fill = fillStart < 0 ? "" : inner.slice(fillStart);
+	assert.match(fill, /^─*$/, `${context} malformed fill: ${line}`);
+	assert.equal(visibleWidth(fill), fill.length, `${context} fill cells are not width 1: ${line}`);
+	assert.equal(
+		visibleWidth("╭") + visibleWidth(title) + visibleWidth(fill) + visibleWidth("╮"),
+		width,
+		`${context} title/fill geometry: ${line}`,
+	);
+	if (title.length === 0) return;
+	assert.match(title, PERMITTED_AWAITING_TITLE, `${context} unexpected title/label: ${line}`);
+	const names = [...title.matchAll(/\[stage: ([^\]]*)\]/g)].map((match) => match[1] ?? "");
+	assert.equal(names.length, title.includes("[stage:") ? 1 : 0, `${context} duplicate labels: ${line}`);
+	if (names.length === 1) {
+		assert.ok(names[0]!.trim().length > 0, `${context} empty stage name: ${line}`);
+		assert.ok(visibleWidth(names[0]!) > 0, `${context} zero-width stage name: ${line}`);
+	}
+}
+
+function countStageLabels(text: string, stageName = STAGE_NAME): number {
+	return text.split(`[stage: ${stageName}]`).length - 1;
+}
 
 for (const kind of ["input", "editor"] as const satisfies readonly PendingPrompt["kind"][]) {
 	test(`attached-stage ${kind} prompt renders the full run identity above the primitive editor`, () => {
@@ -45,9 +79,15 @@ for (const kind of ["input", "editor"] as const satisfies readonly PendingPrompt
 		const lines = view.render(100).map((line) => stripAnsi(line));
 		view.dispose();
 		const bannerStarts = lines
-			.map((line, index) => (/^╭ AWAITING INPUT ─*╮$/.test(line) ? index : -1))
+			.map((line, index) => (AWAITING_INPUT_TOP.test(line) ? index : -1))
 			.filter((index) => index >= 0);
 		assert.equal(bannerStarts.length, 1, `${kind} must render exactly one AWAITING INPUT title`);
+		assertWellFormedTopBorder(lines[bannerStarts[0]!]!, 100, `${kind} identity banner`);
+		assert.equal(
+			countStageLabels(lines[bannerStarts[0]!]!),
+			1,
+			`${kind} identity banner must include the stage label`,
+		);
 		const bannerStart = bannerStarts[0]!;
 		const bannerEnd = lines.findIndex((line, index) => index > bannerStart && /^╰─+╯$/.test(line));
 		assert.ok(bannerEnd > bannerStart, `${kind} attribution banner must have a bottom border`);
@@ -100,7 +140,7 @@ test("primitive prompt row budgets emit only complete attribution and editor box
 			for (const line of lines) {
 				if (line.startsWith("╭")) {
 					assert.equal(boxOpen, false, `${kind} rows=${viewportRows} opens a box before closing the previous one`);
-					assert.match(line, /^╭(?: AWAITING INPUT )?─+╮$/);
+					assertWellFormedTopBorder(line, 100, `${kind} rows=${viewportRows}`);
 					boxOpen = true;
 				}
 				if (line.startsWith("╰")) {
@@ -138,7 +178,91 @@ test("primitive prompt row budgets emit only complete attribution and editor box
 				);
 				assert.ok(rendered.includes("Budgeted question"), `${kind} question must survive attribution omission`);
 				assert.ok(rendered.includes("fake-pi-editor:"), `${kind} editor must survive attribution omission`);
+				assert.equal(
+					countStageLabels(rendered),
+					1,
+					`${kind} must keep one stage label on the remaining AWAITING INPUT box`,
+				);
+			}
+			for (const line of lines) {
+				if (line.startsWith("╭") && line.includes("AWAITING INPUT")) {
+					assert.ok(
+						countStageLabels(line) >= 1,
+						`${kind} rows=${viewportRows} unlabeled boxed AWAITING INPUT: ${line}`,
+					);
+				}
 			}
 		}
 	}
+});
+
+test("primitive prompt stage labels truncate wide Unicode names without overflowing", () => {
+	const unicodeName = `${"审".repeat(40)}-é-👩‍💻`;
+	for (const width of [40, 60, 80, 100, 120] as const) {
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: WORKFLOW_NAME,
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: Date.now(),
+		});
+		store.recordStageStart(RUN_ID, {
+			id: "stage-a",
+			name: unicodeName,
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		const prompt = makePendingPrompt({ kind: "input", message: "Budgeted question" });
+		assert.equal(store.recordStagePendingPrompt(RUN_ID, "stage-a", prompt), true);
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: RUN_ID,
+			stageId: "stage-a",
+			workflowName: WORKFLOW_NAME,
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: {
+				requestRender: () => {},
+				terminal: { rows: 32, columns: width },
+			} as never,
+			piTheme: {},
+			piKeybindings: makeFakeKeybindings(),
+			piEditorFactory: () => new FakePromptEditor(),
+		});
+		const lines = view.render(width).map((line) => stripAnsi(line));
+		view.dispose();
+		const top = lines.find((line) => line.startsWith("╭") && line.includes("AWAITING INPUT"));
+		assert.ok(top, `width=${width} missing AWAITING INPUT top`);
+		assertWellFormedTopBorder(top!, Math.max(40, width), `unicode width=${width}`);
+		assert.match(top!, /\[stage: /);
+		if (width <= 80) assert.ok(top!.includes("…"), `width=${width} should truncate a wide name`);
+	}
+});
+
+test("awaiting-input border assertions reject extra title garbage", () => {
+	const title = " AWAITING INPUT  [stage: review-a] garbage ";
+	const malformed = `╭${title}${"─".repeat(100 - 2 - visibleWidth(title))}╮`;
+	assert.equal(visibleWidth(malformed), 100);
+	assert.throws(() => assertWellFormedTopBorder(malformed, 100, "malformed-title"));
+
+	const emptyLabel = `╭ AWAITING INPUT  [stage: ] ${"─".repeat(70)}╮`;
+	assert.throws(() => assertWellFormedTopBorder(emptyLabel, visibleWidth(emptyLabel), "empty-label"));
+
+	const whitespaceName = `╭ AWAITING INPUT  [stage:   ] ${"─".repeat(68)}╮`;
+	assert.throws(() => assertWellFormedTopBorder(whitespaceName, visibleWidth(whitespaceName), "whitespace-name"));
+
+	const unclosed = `╭ AWAITING INPUT  [stage: review-a ${"─".repeat(60)}╮`;
+	assert.throws(() => assertWellFormedTopBorder(unclosed, visibleWidth(unclosed), "unclosed-label"));
+
+	const wideName = " AWAITING INPUT  [stage: 审] ";
+	const charLengthBorder = `╭${wideName}${"─".repeat(100 - 2 - wideName.length)}╮`;
+	assert.equal(charLengthBorder.length, 100, "trap uses string length, not terminal cells");
+	assert.ok(visibleWidth(charLengthBorder) > 100);
+	assert.throws(() => assertWellFormedTopBorder(charLengthBorder, 100, "display-width"));
 });

@@ -1,6 +1,10 @@
 import { mountStageCustomUi, type StageCustomUiRequest } from "../shared/stage-ui-broker.js";
-import { embedOrchestratorReturnHintInWidget } from "./stage-chat-view-footer-status.js";
+import {
+	embedOrchestratorReturnHintInWidget,
+	embedStageLabelInWidgetTopRule,
+} from "./stage-chat-view-footer-status.js";
 import { setComponentFocused } from "./stage-chat-view-render-helpers.js";
+import { currentStage } from "./stage-chat-view-state.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
 export async function showCustomUi(ctx: StageChatViewContext, request: StageCustomUiRequest): Promise<void> {
@@ -72,7 +76,11 @@ export function renderCustomUi(ctx: StageChatViewContext, width: number): string
 	const component = ctx.mountedCustomUi?.component;
 	if (!component) return [];
 	setComponentFocused(component, ctx.focused);
-	return embedOrchestratorReturnHintInWidget(ctx, component.render(width), width);
+	const rendered = component.render(width);
+	// Case 2 of #2886: inject [stage: name] into the widget's top rule, then
+	// merge the ctrl+x hint on the last content line (independent passes).
+	const withLabel = embedStageLabelInWidgetTopRule(ctx, currentStage(ctx)?.name, rendered, width);
+	return embedOrchestratorReturnHintInWidget(ctx, withLabel, width);
 }
 
 export function hideMountedCustomUi(ctx: StageChatViewContext, request: StageCustomUiRequest): void {

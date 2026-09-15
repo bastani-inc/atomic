@@ -13,7 +13,46 @@ import {
 	widgetHintTargetLineIndex,
 } from "./stage-chat-view-render-helpers.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
+import { applyStageLabelToEditorTopRule, applyStageLabelToWidgetTopRule } from "./stage-input-label.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
+
+/**
+ * Pass-through rule callback for chatHostStyle (Case 1 of issue #2886).
+ *
+ * Label injection for the editor top rule happens AFTER CustomEditor has
+ * finished wrapping — see injectStageLabelIntoEditorTopRule(). Injecting
+ * inside the rule() callback breaks CustomEditor.isEditorBorderLine(), which
+ * uses a pattern match to detect borders and would incorrectly treat a
+ * label-decorated line as content, prepending ❯ instead of extending the
+ * border.
+ */
+export function stageLabelRule(
+	_ctx: StageChatViewContext,
+	_stageName: string | undefined,
+	hex: string,
+	text: string,
+): string {
+	return hexToAnsi(hex) + text + RESET;
+}
+
+/**
+ * Post-process rendered editor lines to inject `[stage: name]` into the top
+ * rule line (Case 1 of issue #2886).
+ *
+ * Uses the first rendered editor line only, including a scrolled `↑ N more`
+ * top border, and never a later bottom rule. Duplicate detection ignores
+ * draft content. Runs AFTER CustomEditor.render() so ❯ stays on the content
+ * line.
+ *
+ * Styling: `[stage: ` in textMuted, name in bold text, 40-column minimum floor.
+ */
+export function injectStageLabelIntoEditorTopRule(
+	ctx: StageChatViewContext,
+	stageName: string | undefined,
+	editorLines: readonly string[],
+): string[] {
+	return applyStageLabelToEditorTopRule(ctx.theme, stageName, editorLines);
+}
 
 export function renderHeader(ctx: StageChatViewContext, width: number, stage: StageSnapshot | undefined): string[] {
 	const t = ctx.theme;
@@ -105,6 +144,22 @@ export function renderReadOnlyArchiveFooter(ctx: StageChatViewContext, width: nu
 			minimumPrefixWidth: visibleWidth(closeHint) + 1,
 		}),
 	];
+}
+
+/**
+ * Inject `[stage: name]` into the widget top rule (Case 2 of issue #2886).
+ *
+ * Accepts a pure `─` DynamicBorder and empty boxed fill. Titled boxes and
+ * unrelated first rows are left unchanged. The ctrl+x hint is merged
+ * separately by embedOrchestratorReturnHintInWidget.
+ */
+export function embedStageLabelInWidgetTopRule(
+	ctx: StageChatViewContext,
+	stageName: string | undefined,
+	widgetLines: readonly string[],
+	width: number,
+): string[] {
+	return applyStageLabelToWidgetTopRule(ctx.theme, stageName, widgetLines, width);
 }
 
 export function embedOrchestratorReturnHintInWidget(

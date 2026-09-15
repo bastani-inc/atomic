@@ -300,6 +300,7 @@ describe("renderPromptCard", () => {
 		assert.ok(banner.includes("build-check"), "banner keeps the workflow name");
 		assert.doesNotMatch(banner, /Ship this change\?/);
 		assert.equal(plain.filter((line) => line.startsWith("╭ AWAITING INPUT ")).length, 1);
+		assert.doesNotMatch(banner, /\[stage:/);
 		assert.ok(
 			lines[1]?.includes(`${hexToAnsi(statusColor("awaiting_input", theme))}${statusIcon("awaiting_input")}`),
 		);
@@ -416,5 +417,65 @@ describe("renderPromptCard", () => {
 
 		assert.ok(!lines[0]!.startsWith("\x1b[48;"));
 		assert.ok(!lines.at(-1)!.startsWith("\x1b[48;"));
+	});
+
+	test("labels the awaiting-input banner with the current stage name", () => {
+		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		const state = createPromptCardState(makePrompt({ message: "Ship this change?" }));
+		const lines = renderPromptCard({
+			state,
+			theme,
+			width: 80,
+			cursorOn: false,
+			identity: { runId, name: "build-check", stageName: "review-a" },
+		});
+		const plain = lines.map(stripAnsi);
+		const bannerEnd = plain.findIndex((line) => line.startsWith("╰"));
+		const bannerTop = plain[0] ?? "";
+		assert.match(bannerTop, /^╭ AWAITING INPUT {2}\[stage: review-a\] ─+╮$/);
+		assert.equal(visibleWidth(bannerTop), 80);
+		assert.equal((plain.join("\n").match(/\[stage: review-a\]/g) ?? []).length, 1);
+		assert.ok(
+			plain
+				.slice(0, bannerEnd + 1)
+				.join("\n")
+				.includes(runId),
+		);
+	});
+
+	test("keeps the stage label on compact unlabeled awaiting-input boxes", () => {
+		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		const state = createPromptCardState(makePrompt({ kind: "confirm", message: "Continue?" }));
+		const lines = renderPromptCard({
+			state,
+			theme,
+			width: 72,
+			cursorOn: false,
+			identity: { runId, name: "build-check", stageName: "review-a" },
+			maxRows: 8,
+		});
+		const plain = lines.map(stripAnsi);
+		const rendered = plain.join("\n");
+		assert.doesNotMatch(rendered, new RegExp(runId), "compact maxRows=8 must omit the identity banner");
+		const top = plain.find((line) => line.includes("AWAITING INPUT"));
+		assert.ok(top, "compact prompt must keep AWAITING INPUT");
+		assert.match(top!, /^╭ AWAITING INPUT {2}\[stage: review-a\] ─+╮$/);
+		assert.equal(visibleWidth(top!), 72);
+		assert.ok(rendered.includes("Continue?"), "compact prompt must keep the question reachable");
+	});
+
+	test("undefined and empty stage names leave awaiting-input unlabeled", () => {
+		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		const state = createPromptCardState(makePrompt({ message: "Ship this change?" }));
+		for (const stageName of [undefined, ""]) {
+			const lines = renderPromptCard({
+				state,
+				theme,
+				width: 80,
+				cursorOn: false,
+				identity: { runId, name: "build-check", ...(stageName === undefined ? {} : { stageName }) },
+			});
+			assert.doesNotMatch(lines.map(stripAnsi).join("\n"), /\[stage:/);
+		}
 	});
 });
