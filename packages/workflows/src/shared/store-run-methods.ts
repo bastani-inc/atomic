@@ -23,6 +23,7 @@ type RunStoreMethods = Pick<
 	| "notices"
 	| "activeRunId"
 	| "recordRunStart"
+	| "recordRunExecutionState"
 	| "reconcileRunParentStage"
 	| "recordRunEnd"
 	| "recordRunBlocked"
@@ -75,6 +76,14 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			context.bumpAndNotify();
 		},
 
+		recordRunExecutionState(runId, update): void {
+			const run = context.findRun(runId);
+			if (run === undefined || run.endedAt !== undefined) return;
+			if (update.phase !== undefined && update.phase !== run.phase) run.phaseStartedAt = Date.now();
+			Object.assign(run, update);
+			context.bumpAndNotify();
+		},
+
 		reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean {
 			const run = context.findRun(runId);
 			if (run?.parentStageId !== expectedParentStageId || parentStageId === expectedParentStageId) return false;
@@ -95,6 +104,10 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			run.status = status;
 			run.endedAt = Date.now();
+			if (run.phase !== undefined && run.phase !== "blocked_dependency") {
+				run.phase = "ended";
+				run.phaseStartedAt = run.endedAt;
+			}
 			if (run.pausedAt !== undefined) {
 				run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, run.endedAt);
 				run.pausedAt = undefined;

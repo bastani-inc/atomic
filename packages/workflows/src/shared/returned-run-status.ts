@@ -107,6 +107,8 @@ export function structuredRecoverableWorkflowFailureText(
 }
 
 export function effectiveRunStatus(run: RunSnapshot): RunStatus {
+	if (run.status === "running" && run.phase === "starting") return "pending";
+	if (run.status === "running" && run.phase === "blocked_dependency") return "blocked";
 	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (
 		(run.status === "running" || run.status === "completed") &&

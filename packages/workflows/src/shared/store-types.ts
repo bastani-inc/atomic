@@ -5,6 +5,7 @@
 
 import type { BudgetDimension, BudgetReport, DurationBudgetReport, UsageBudgetReport } from "./budget.js";
 import type { RunMeterCounters } from "./budget-meter.js";
+import type { RunExecutionState } from "./run-execution-state.js";
 import type {
 	WorkflowExitStatus,
 	WorkflowInputValues,
@@ -482,7 +483,7 @@ export type WorkflowActor = "user" | "agent";
  */
 export type RunResumeSource = "run_control" | "prompt_answer" | "stage_control" | "acknowledgement";
 
-export interface RunSnapshot {
+export interface RunSnapshot extends RunExecutionState {
 	readonly id: string;
 	readonly name: string;
 	readonly inputs: Readonly<WorkflowInputValues>;

@@ -26,6 +26,7 @@ import type {
 } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { observeRunExecution, type RunExecutionObservation } from "../shared/run-execution-state.js";
 import type {
 	PendingPrompt,
 	RunBudgetSnapshot,
@@ -91,7 +92,7 @@ export interface WorkflowStatusToolNode {
  * listing. `runId` feeds answer and pause/resume/quit directly;
  * `awaitingInput` entries carry the stage/prompt ids that `answer` accepts.
  */
-export interface WorkflowRunStatusSummary {
+export interface WorkflowRunStatusSummary extends RunExecutionObservation {
 	readonly runId: string;
 	/** Workflow/run name. */
 	readonly name: string;
@@ -255,6 +256,7 @@ export function summarizeRunSnapshot(
 	);
 	const strandedRoot = isImpossibleRootLiveness(run, now, { hasActiveControlNode });
 	return {
+		...observeRunExecution(run, now),
 		runId: run.id,
 		name: run.name,
 		status: effectiveRunStatus(run),

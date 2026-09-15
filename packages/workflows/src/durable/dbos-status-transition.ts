@@ -1,3 +1,4 @@
+import { dbosAdmissionContext } from "./dbos-admission.js";
 import type { DbosMetadataClassification } from "./dbos-metadata.js";
 import type { DurableWorkflowHandle, DurableWorkflowMetadata, DurableWorkflowStatus } from "./types.js";
 import { isAbsorbingDurableStatus } from "./workflow-status-transition.js";
@@ -23,8 +24,12 @@ interface DbosStatusTransitionInput {
  * first-writer-wins record before it may write.
  */
 export async function transitionDbosWorkflowStatus(input: DbosStatusTransitionInput): Promise<boolean> {
+	const signal = dbosAdmissionContext.getStore();
+	signal?.throwIfAborted();
 	await input.flush();
+	signal?.throwIfAborted();
 	const authoritative = await input.read();
+	signal?.throwIfAborted();
 	const local = input.local();
 	if (
 		local === undefined ||
@@ -35,8 +40,11 @@ export async function transitionDbosWorkflowStatus(input: DbosStatusTransitionIn
 		return false;
 	}
 
-	if (input.claim !== undefined && !(await input.claim(authoritative.metadata, authoritative.generation))) {
+	const claimed = input.claim === undefined || (await input.claim(authoritative.metadata, authoritative.generation));
+	signal?.throwIfAborted();
+	if (!claimed) {
 		const current = await input.read();
+		signal?.throwIfAborted();
 		if (current.kind === "current") input.reconcile(current.metadata);
 		return false;
 	}
@@ -44,7 +52,9 @@ export async function transitionDbosWorkflowStatus(input: DbosStatusTransitionIn
 	try {
 		await input.write();
 	} catch (error) {
+		signal?.throwIfAborted();
 		const persisted = await input.read();
+		signal?.throwIfAborted();
 		if (persisted.kind === "current" && persisted.metadata.status === input.status) {
 			input.reconcile(persisted.metadata);
 			return true;
@@ -58,7 +68,9 @@ export async function transitionDbosWorkflowStatus(input: DbosStatusTransitionIn
 		}
 		throw error;
 	}
+	signal?.throwIfAborted();
 	const persisted = await input.read();
+	signal?.throwIfAborted();
 	if (persisted.kind !== "current" || persisted.metadata.status !== input.status) {
 		if (persisted.kind === "current") input.reconcile(persisted.metadata);
 		return false;

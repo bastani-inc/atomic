@@ -20,6 +20,7 @@ import {
 	effectiveRunStatus,
 	structuredRecoverableWorkflowFailureText,
 } from "../../shared/returned-run-status.js";
+import { observeRunExecution, type RunExecutionObservation } from "../../shared/run-execution-state.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type { RunSnapshot, RunStatus } from "../../shared/store-types.js";
@@ -32,7 +33,7 @@ import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
  * resume snapshot carries, plus a normalised `mode` field derived from
  * stage shape so renderers don't have to recompute it.
  */
-export interface RunDetail {
+export interface RunDetail extends RunExecutionObservation {
 	readonly runId: string;
 	readonly rootRunId?: string;
 	readonly name: string;
@@ -109,6 +110,7 @@ export function inspectRun(
 	const strandedRoot = isImpossibleRootLiveness(copy, now, { hasActiveControlNode });
 
 	const detail: RunDetail = {
+		...observeRunExecution(copy, now),
 		runId: copy.id,
 		...(copy.rootRunId === undefined ? {} : { rootRunId: copy.rootRunId }),
 		name: copy.name,

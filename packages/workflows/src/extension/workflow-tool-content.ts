@@ -120,6 +120,13 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 		].join("  ");
 		lines.push(summaryLine);
 		lines.push(`    runId: ${run.runId}`);
+		if (run.phase !== undefined) {
+			lines.push(`    phase: ${run.phase}, age: ${run.phaseAgeMs ?? 0}ms, last progress: ${run.lastProgressAt}`);
+		}
+		if (run.dependencyError !== undefined) lines.push(`    dependency: ${run.dependencyError}`);
+		if (run.controlPersistence !== undefined) {
+			lines.push(`    control: ${run.controlRequestedStatus} (${run.controlPersistence})`);
+		}
 		for (const entry of run.awaitingInput) lines.push(statusAwaitingInputLine(entry));
 		for (const stage of run.pendingStages.slice(0, STATUS_PENDING_STAGE_LIMIT)) {
 			lines.push(statusPendingStageLine(stage));
