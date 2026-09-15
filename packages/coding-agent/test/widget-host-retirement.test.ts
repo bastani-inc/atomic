@@ -258,6 +258,22 @@ const EMPTY_HOST_CLEANUP = {
 	timers: 0,
 };
 
+/**
+ * PR #2700: the retired `reload-widget-publication` engine-shutdown test asserted that every
+ * opened component receives exactly one close frame. Keep that contract explicit: the snapshot
+ * and error-count assertions still pass when shutdown closes a component twice.
+ */
+function assertEngineClosedExactlyOnce(fixture: RetirementFixture): void {
+	if (fixture.kind !== "engine") return;
+	const counts = new Map<string, number>();
+	for (const componentId of fixture.host.closed) counts.set(componentId, (counts.get(componentId) ?? 0) + 1);
+	assert.deepEqual(
+		[...new Set(fixture.host.openedIds)].map((componentId) => [componentId, counts.get(componentId) ?? 0]),
+		[...new Set(fixture.host.openedIds)].map((componentId) => [componentId, 1]),
+		"each opened engine component must receive exactly one close frame",
+	);
+}
+
 async function expectRetiredOwnerSilenced(
 	fixture: RetirementFixture,
 	retiring: ExtensionRunner,
@@ -519,6 +535,7 @@ for (const kind of ["local", "engine"] as const) {
 			assert.equal((await fixture.host.snapshot()).size, 0);
 			if (kind === "local") assert.deepEqual(releases.sort(), [...fixture.keys].sort());
 			await expectRetiredOwnerSilenced(fixture, retiring, EMPTY_HOST_CLEANUP);
+			assertEngineClosedExactlyOnce(fixture);
 		} finally {
 			await fixture.dispose();
 		}
