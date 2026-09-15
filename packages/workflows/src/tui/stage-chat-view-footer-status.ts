@@ -39,9 +39,10 @@ export function stageLabelRule(
  * Post-process rendered editor lines to inject `[stage: name]` into the top
  * rule line (Case 1 of issue #2886).
  *
- * Finds the first all-`─` rule (the editor top border) and never a later
- * bottom rule, including when the transform is applied twice. Runs AFTER
- * CustomEditor.render() so ❯ stays on the content line.
+ * Uses the first rendered editor line only, including a scrolled `↑ N more`
+ * top border, and never a later bottom rule. Duplicate detection ignores
+ * draft content. Runs AFTER CustomEditor.render() so ❯ stays on the content
+ * line.
  *
  * Styling: `[stage: ` in textMuted, name in bold text, 40-column minimum floor.
  */

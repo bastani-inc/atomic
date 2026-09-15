@@ -53,9 +53,48 @@ function buildStageInputLabel(
 	};
 }
 
+const EDITOR_OVERFLOW_RE = /^(─*)( ↑ \d+ more )(─*)$/;
+
+function editorOverflowPlain(plain: string): string | undefined {
+	return EDITOR_OVERFLOW_RE.exec(plain)?.[2];
+}
+
+function decorateEditorTopLine(
+	theme: StageInputLabelTheme,
+	name: string,
+	line: string,
+	plain: string,
+	overflow: string | undefined,
+): string | undefined {
+	const width = visibleWidth(plain);
+	if (width < STAGE_INPUT_LABEL_MIN_COLUMNS) return undefined;
+	const overflowWidth = overflow === undefined ? 0 : visibleWidth(overflow);
+	const maxNameWidth = Math.max(
+		1,
+		width - overflowWidth - visibleWidth(EDITOR_PREFIX) - visibleWidth(EDITOR_SUFFIX) - 2,
+	);
+	const label = buildStageInputLabel(theme, name, maxNameWidth, EDITOR_PREFIX, EDITOR_SUFFIX);
+	if (!label) return undefined;
+	const labelWidth = visibleWidth(label.plain);
+	if (labelWidth + overflowWidth >= width) return undefined;
+	const fillWidth = Math.max(0, width - labelWidth - overflowWidth);
+	const openColor = leadingAnsi(line);
+	if (overflow === undefined) {
+		return openColor + RESET + label.styled + openColor + "─".repeat(fillWidth) + RESET;
+	}
+	const leftFill = Math.floor(fillWidth / 2);
+	const rightFill = fillWidth - leftFill;
+	return (
+		openColor + RESET + label.styled + openColor + "─".repeat(leftFill) + overflow + "─".repeat(rightFill) + RESET
+	);
+}
+
 /**
- * Inject `[stage: name]` into the first all-dash editor rule. Later dash rules
- * (the bottom border) are never selected, including on repeated transforms.
+ * Inject `[stage: name]` into the editor's current top border. Duplicate
+ * detection inspects that decorated rule only, so draft text containing
+ * `[stage:` cannot suppress the label. Scrolled `↑ N more` top borders keep
+ * their overflow indicator and receive the label in the leading dash run.
+ * Later rules, including the bottom border, are never selected.
  */
 export function applyStageLabelToEditorTopRule(
 	theme: StageInputLabelTheme,
@@ -64,24 +103,18 @@ export function applyStageLabelToEditorTopRule(
 ): string[] {
 	const name = resolvedStageName(stageName);
 	if (!name || editorLines.length === 0) return [...editorLines];
-	if (editorLines.some(lineHasStageLabel)) return [...editorLines];
+	const topLine = editorLines[0] ?? "";
+	if (lineHasStageLabel(topLine)) return [...editorLines];
 
-	for (let i = 0; i < editorLines.length; i++) {
-		const line = editorLines[i] ?? "";
-		const plain = stripAnsi(line).trim();
-		if (!/^─+$/.test(plain)) continue;
-		const width = visibleWidth(plain);
-		if (width < STAGE_INPUT_LABEL_MIN_COLUMNS) return [...editorLines];
-		const maxNameWidth = Math.max(1, width - visibleWidth(EDITOR_PREFIX) - visibleWidth(EDITOR_SUFFIX) - 2);
-		const label = buildStageInputLabel(theme, name, maxNameWidth, EDITOR_PREFIX, EDITOR_SUFFIX);
-		if (!label || visibleWidth(label.plain) >= width) return [...editorLines];
-		const openColor = leadingAnsi(line);
-		const fillWidth = Math.max(0, width - visibleWidth(label.plain));
-		const result = [...editorLines];
-		result[i] = openColor + RESET + label.styled + openColor + "─".repeat(fillWidth) + RESET;
-		return result;
-	}
-	return [...editorLines];
+	const plain = stripAnsi(topLine);
+	const overflow = editorOverflowPlain(plain);
+	if (!/^─+$/.test(plain) && overflow === undefined) return [...editorLines];
+
+	const decorated = decorateEditorTopLine(theme, name, topLine, plain, overflow);
+	if (decorated === undefined) return [...editorLines];
+	const result = [...editorLines];
+	result[0] = decorated;
+	return result;
 }
 
 type WidgetTopRule =
