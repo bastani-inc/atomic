@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `ui_prompt_start` and `ui_prompt_end` now carry a `title` for custom prompts that pass one through the new `ctx.ui.custom(factory, { title })` option, and the built-in `ask_user_question` dialog passes its first question. Prompt observers previously saw only `kind: "custom"` for every questionnaire and could not say what Atomic was waiting for ([#2345](https://github.com/bastani-inc/atomic/issues/2345)).
+
 ## [0.9.20-alpha.1] - 2026-09-14
 
 ### Fixed

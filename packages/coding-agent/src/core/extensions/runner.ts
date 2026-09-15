@@ -306,7 +306,7 @@ export class ExtensionRunner {
 			custom: (factory, options) =>
 				options?.purpose === "navigation"
 					? ui.custom(factory, options)
-					: this.withUIPrompt(binding, "custom", undefined, () => ui.custom(factory, options)),
+					: this.withUIPrompt(binding, "custom", options?.title, () => ui.custom(factory, options)),
 		};
 	}
 
