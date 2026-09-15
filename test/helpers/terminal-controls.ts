@@ -1,9 +1,11 @@
 /**
  * Shared oracle for display-escaping sinks.
  *
- * A raw tab is a control at every escaping sink. Only the generic tool-result
- * STRIP sink (`render-utils.ts`, out of scope) keeps tab as whitespace, and its
- * oracle says so with `allowTab: true`.
+ * The escaping sinks treat a raw tab as a control; that policy is pinned by
+ * `questionnaire-display-controls` through its literal `\x09` assertion rather
+ * than by every sink here. The generic tool-result STRIP sink
+ * (`render-utils.ts`, out of scope) keeps tab as whitespace, so its oracle
+ * opts out with `allowTab: true`.
  */
 import assert from "node:assert/strict";
 
@@ -17,7 +19,7 @@ export const HOSTILE_CONTROLS = [
 ] as const;
 
 export const RAW_CONTROL_PATTERN = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
-export const RAW_CONTROL_PATTERN_ALLOW_TAB = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/;
+const RAW_CONTROL_PATTERN_ALLOW_TAB = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/;
 
 export interface AssertNoRawControlsOptions {
 	readonly allowSgr?: boolean;

@@ -32,7 +32,7 @@ function makeUnownedWait(): { root: RunSnapshot; child: RunSnapshot } {
 	return { root, child };
 }
 
-// Status-only traversal is deliberately non-reciprocal: listings, restored
+// PR #2700: status-only traversal is deliberately non-reciprocal: listings, restored
 // `/workflow status` payloads and the picker lack a proven ownership chain, so
 // they accept rootRunId/parentRunId claims. The widget requires reciprocal
 // boundaries and live ancestry, and fails closed on a one-sided claimant.
@@ -72,7 +72,7 @@ test("status-only surfaces show a one-sided claimant's wait while the widget ind
 	assert.deepEqual(runs, before);
 });
 
-// A completed parent boundary revokes widget ownership (reciprocal + live
+// PR #2700: a completed parent boundary revokes widget ownership (reciprocal + live
 // ancestry) but not status-only attribution (rootRunId/parentRunId claims).
 test("a completed parent boundary revokes widget ownership but not status-only attribution", () => {
 	const { root, child } = makeUnownedWait();

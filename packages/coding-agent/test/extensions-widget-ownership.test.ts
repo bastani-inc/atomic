@@ -336,6 +336,51 @@ test("older generation cannot update a still-owned key after a later runner publ
 	b.invalidate();
 });
 
+// PR #2700: pins the rule documented at runner.ts's `generation !== host.current` guard, which is
+// stricter than the pre-reconciliation baseline in two load-bearing ways. A superseded runner is
+// refused a key it NEVER mounted (baseline only refused keys it had published), and the refusal is
+// permanent for that runner/host pair even after the successor invalidates and releases everything.
+// Relaxing the guard to the baseline per-key semantic must fail this test.
+test("superseded runner cannot publish a never-mounted key, permanently, even after the successor releases it", () => {
+	const visible = new Map<string, string[] | undefined>();
+	const host: ExtensionUIContext = {
+		...noOpUIContext,
+		setWidget: (key, content) => {
+			if (content === undefined) visible.delete(key);
+			else {
+				assert.ok(Array.isArray(content));
+				visible.set(key, content);
+			}
+		},
+	};
+	const make = () => {
+		const runner = new ExtensionRunner([], createExtensionRuntime(), process.cwd(), {} as never, {} as never);
+		runner.setUIContext(host, "tui");
+		return runner;
+	};
+	const superseded = make();
+	superseded.getUIContext().setWidget("owned", ["superseded original"]);
+	const successor = make();
+	successor.getUIContext().setWidget("owned", ["successor"]);
+
+	// A key the superseded runner never mounted is refused outright, so the successor's content stays.
+	superseded.getUIContext().setWidget("never-mounted", ["superseded never-mounted"]);
+	assert.equal(visible.get("never-mounted"), undefined);
+	successor.getUIContext().setWidget("never-mounted", ["successor never-mounted"]);
+	assert.deepEqual(visible.get("never-mounted"), ["successor never-mounted"]);
+	assert.deepEqual(visible.get("owned"), ["successor"]);
+
+	// The refusal outlives the successor releasing every key it holds: host.current only advances.
+	successor.invalidate();
+	assert.equal(visible.get("owned"), undefined);
+	assert.equal(visible.get("never-mounted"), undefined);
+	superseded.getUIContext().setWidget("never-mounted", ["superseded after release"]);
+	superseded.getUIContext().setWidget("owned", ["superseded after release"]);
+	assert.equal(visible.get("never-mounted"), undefined);
+	assert.equal(visible.get("owned"), undefined);
+	superseded.invalidate();
+});
+
 test("superseded but live runner can hide a key it still owns without removing a successor-owned key", () => {
 	const visible = new Map<string, string[] | undefined>();
 	const host: ExtensionUIContext = {

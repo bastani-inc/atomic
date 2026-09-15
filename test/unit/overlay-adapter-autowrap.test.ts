@@ -55,9 +55,9 @@ async function registerIsolatedTests(): Promise<void> {
 			assert.fail("graph overlay checks must not create skill completion"),
 		TranscriptFollowIndicator: TestComponent,
 		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
-		// escapeTerminalControls exists only to satisfy the wholesale module mock's import
-		// surface and must never be invoked on these adapter paths; hasTerminalControls is the
-		// real predicate, since these adapter paths do call it.
+		// Both names exist only to satisfy the wholesale @bastani/atomic mock's import surface.
+		// Neither is invoked on these adapter paths: escapeTerminalControls fails if called, and
+		// hasTerminalControls keeps the real predicate so an unexpected call behaves correctly.
 		escapeTerminalControls: () => assert.fail("graph overlay checks must not escape display text"),
 		hasTerminalControls: (t: string) => RAW_CONTROL_PATTERN.test(t),
 		keyHint: (key: string) => key,

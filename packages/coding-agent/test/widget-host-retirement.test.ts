@@ -293,10 +293,11 @@ async function expectRetiredOwnerSilenced(
 	fixture.held[0].setWidget("new", () => ({ render: () => ["stale"], invalidate() {} }));
 	assert.deepEqual(await fixture.host.snapshot(), expected.snapshot);
 	// Sorted because clearExtensionWidgets on the local host walks above-dock then below-dock, so
-	// `host release` disposes workflow.run, healthy, second rather than registration order; every
-	// per-call-site disposal assertion elsewhere (in "committed reload", "rejected candidate",
-	// "host release", "old-owner invalidation", and "engine host release through
-	// engine_custom_dispose") stays ordered.
+	// `host release` disposes workflow.run, healthy, second rather than registration order. The
+	// per-call-site assertions elsewhere stay ordered: "committed reload", "rejected candidate",
+	// "old-owner invalidation", and "engine host release through engine_custom_dispose" for both
+	// hosts, plus "host release" on the engine host only — the local host-release order is the
+	// dock-walk exception this sort exists for, and its keys are asserted below.
 	assert.deepEqual([...fixture.disposed].sort(), fixture.keys.map((key) => `${key}:1`).sort());
 	assert.deepEqual([...fixture.subscriptions], expected.subscriptions);
 	assert.equal(fixture.timers.size, expected.timers);
