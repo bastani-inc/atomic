@@ -5,6 +5,7 @@ import { describe, test } from "vitest";
 import type { PiCustomOverlayFactoryTui, PiOverlayHandle } from "../../packages/workflows/src/extension/wiring.js";
 import type { GraphOverlayPort, OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
 import { bunExecutable } from "../helpers/runtime.js";
+import { RAW_CONTROL_PATTERN } from "../helpers/terminal-controls.js";
 
 const ISOLATED_PROCESS_ENV = "ATOMIC_OVERLAY_AUTOWRAP_ISOLATED";
 
@@ -54,8 +55,10 @@ async function registerIsolatedTests(): Promise<void> {
 			assert.fail("graph overlay checks must not create skill completion"),
 		TranscriptFollowIndicator: TestComponent,
 		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
+		// escapeTerminalControls/hasTerminalControls exist only to satisfy the wholesale
+		// module mock's import surface; neither is invoked on these adapter paths.
 		escapeTerminalControls: (text: string) => text,
-		hasTerminalControls: (t: string) => /[\x00-\x09\x0b-\x1f\x7f-\x9f]/.test(t),
+		hasTerminalControls: (t: string) => RAW_CONTROL_PATTERN.test(t),
 		keyHint: (key: string) => key,
 		sessionScopedExtensionState: (_scope: object, _key: string, create: () => object) => create(),
 		keyText: (key: string) => key,

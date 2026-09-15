@@ -292,6 +292,9 @@ async function expectRetiredOwnerSilenced(
 	fixture.held[0].setWidget("workflow.run", () => ({ render: () => ["stale"], invalidate() {} }));
 	fixture.held[0].setWidget("new", () => ({ render: () => ["stale"], invalidate() {} }));
 	assert.deepEqual(await fixture.host.snapshot(), expected.snapshot);
+	// Sorted because clearExtensionWidgets on the local host walks above-dock then below-dock, so
+	// `host release` disposes workflow.run, healthy, second rather than registration order; every
+	// per-call-site disposal assertion elsewhere (lines 450/465/533/574/603) stays ordered.
 	assert.deepEqual([...fixture.disposed].sort(), fixture.keys.map((key) => `${key}:1`).sort());
 	assert.deepEqual([...fixture.subscriptions], expected.subscriptions);
 	assert.equal(fixture.timers.size, expected.timers);
@@ -494,6 +497,7 @@ for (const kind of ["local", "engine"] as const) {
 				assert.deepEqual(fixture.host.closed, closedBefore);
 			}
 			await expectRetiredOwnerSilenced(fixture, retiring, EMPTY_HOST_CLEANUP);
+			assert.equal(fixture.errors.length, 2);
 			assertEngineClosedExactlyOnce(fixture);
 		} finally {
 			await fixture.dispose();
@@ -515,6 +519,7 @@ for (const kind of ["local", "engine"] as const) {
 				]),
 			);
 			await expectRetiredOwnerSilenced(fixture, retiring, EMPTY_HOST_CLEANUP);
+			assertEngineClosedExactlyOnce(fixture);
 		} finally {
 			await fixture.dispose();
 		}
