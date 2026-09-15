@@ -301,3 +301,37 @@ test.each([
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+// PR #2700: engine.dispose() clears widgetIds before pending factories settle, so a throwing
+// dispose on the never-opened component must still reach the extension error sink.
+test("engine shutdown reports disposal errors from widgets that never opened", async () => {
+	const frames: string[] = [];
+	const disposed: string[] = [];
+	const reported: ExtensionError[] = [];
+	const engine = new EngineCustomUiService(
+		(line) => frames.push(line),
+		new KeybindingsManager(),
+		(error) => reported.push(error),
+	);
+	engine.setWidget("pending", () => ({
+		render: () => ["pending"],
+		invalidate() {},
+		dispose() {
+			disposed.push("pending");
+			throw new Error("dispose failed: pending");
+		},
+	}));
+	engine.dispose();
+	assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, 0);
+	assert.deepEqual(disposed, []);
+	assert.deepEqual(reported, []);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.deepEqual(disposed, ["pending"]);
+	assert.deepEqual(
+		reported.map(({ extensionPath, event, error }) => ({ extensionPath, event, error })),
+		[{ extensionPath: "<runtime>", event: "session_shutdown", error: "dispose failed: pending" }],
+	);
+	assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, 0);
+	engine.dispose();
+	assert.equal(reported.length, 1);
+});

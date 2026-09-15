@@ -140,7 +140,20 @@ export class EngineCustomUiService {
 		void runCallback({ kind: "renderer", name: `widget:${key}` }, () => factory(tui, theme))
 			.then((component) => {
 				if (this.widgetIds.get(key) !== componentId) {
-					component.dispose?.();
+					// Stale-component dispose is a widget disposal failure; report it.
+					// Stale factory rejections stay in the catch below and stay discarded so a
+					// superseded factory cannot resurrect a failed-widget frame.
+					try {
+						component.dispose?.();
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						this.onError?.({
+							extensionPath: "<runtime>",
+							event: "session_shutdown",
+							error: message,
+							stack: error instanceof Error ? error.stack : undefined,
+						});
+					}
 					return;
 				}
 				tui.addChild(component);
@@ -171,9 +184,10 @@ export class EngineCustomUiService {
 					lines: [`Widget ${key} failed: ${error.message}`],
 				});
 			});
-		// The replacement is mounted and the dock re-rendered before the outgoing widget's failure surfaces.
-		// This path throws rather than reporting because its owner — commitWidgets/invalidate in the runner —
-		// already catches and emits, and a direct extension caller must see its own widget's error.
+		// The replacement is registered and its factory scheduled before the outgoing widget's failure
+		// surfaces; the open frame follows when that factory settles. This path throws rather than
+		// reporting because its owner — commitWidgets/invalidate in the runner — already catches and
+		// emits, and a direct extension caller must see its own widget's error.
 		if (disposalError) throw disposalError.error;
 	}
 	constructor(
