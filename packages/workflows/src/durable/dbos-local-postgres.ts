@@ -12,8 +12,8 @@
  */
 
 import {
-	EMBEDDED_DBOS_SYSTEM_DATABASE_URL,
 	EmbeddedPostgresCleanupPendingError,
+	embeddedDbosSystemDatabaseUrl,
 	ensureEmbeddedDbosPostgres,
 	shutdownEmbeddedDbosPostgres,
 } from "./dbos-embedded-postgres.js";
@@ -67,6 +67,7 @@ export function resolveDbosSystemDatabaseUrl(): Promise<string | undefined> {
 /** Re-ensure the previously resolved local database (launch-retry safety net). */
 export async function provisionResolvedLocalDbos(): Promise<void> {
 	if (owner.provision !== provisionResolvedLocalDbos) return owner.provision();
+	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return;
 	await (resolvedProvider ?? embeddedProvider)();
 }
 
@@ -103,7 +104,7 @@ async function resolve(): Promise<string | undefined> {
 	try {
 		await embeddedProvider();
 		resolvedProvider = embeddedProvider;
-		return EMBEDDED_DBOS_SYSTEM_DATABASE_URL;
+		return embeddedDbosSystemDatabaseUrl();
 	} catch (embeddedError) {
 		if (embeddedError instanceof EmbeddedPostgresCleanupPendingError) {
 			// A second database must not hide the exact child lease whose startup

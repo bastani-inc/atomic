@@ -42,6 +42,8 @@ describe("resolveDbosSystemDatabaseUrl", () => {
 		);
 
 		assert.equal(await resolveDbosSystemDatabaseUrl(), undefined);
+		await provisionResolvedLocalDbos();
+		await shutdownResolvedLocalDbos();
 		assert.equal(provisioned, 0);
 	});
 

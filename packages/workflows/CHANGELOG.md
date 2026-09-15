@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - After DBOS initialization, bound database-dependent root admission to 10 seconds and stop cancelled admission writes from retrying or starting workflow code later. Database readiness lost during admission is rechecked before the next admission without switching existing durable runs to memory. First-time provisioning and initialization are outside this bound ([#3072](https://github.com/bastani-inc/atomic/issues/3072)).
 - Report root admission phases, dependency errors, phase age, and last progress without healthy-running heartbeats during blocked admission. Bound live executor control persistence, distinguish observed from durable acknowledgements, and retain paused admission for explicit same-owner recovery ([#3072](https://github.com/bastani-inc/atomic/issues/3072)).
 - Keep ready embedded PostgreSQL running when its starter exits or reloads, retain shared cluster identity and consumer leases outside installation directories, and preserve the original provider's cleanup across bundle reloads ([#3074](https://github.com/bastani-inc/atomic/issues/3074)).
+- Verify managed PostgreSQL SQL/data/process identity before attachment, support `ATOMIC_POSTGRES_PORT`, and atomically share the actual port after bounded start/bind retries without adopting foreign listeners or unregistered data ([#3074](https://github.com/bastani-inc/atomic/issues/3074)).
 
 ## [0.9.20-alpha.1] - 2026-09-14
 
