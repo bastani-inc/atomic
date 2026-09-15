@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
@@ -47,6 +48,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 	this.showSelector((done) => {
 		const component = new SettingsSelectorComponent(
 			{
+				keybindingsPath: join(this.runtimeHost.services.agentDir, "keybindings.json"),
 				autoCompact: this.session.autoCompactionEnabled,
 				showImages: this.settingsManager.getShowImages(),
 				imageWidthCells: this.settingsManager.getImageWidthCells(),

@@ -15,6 +15,10 @@ Saving an Atomic setting applies only the changed fields to the corresponding `.
 
 This page is the exhaustive settings reference: every field, its default, and its constraints. If you are writing your first settings file or setting up a project-scoped override, start with the [Configure Atomic](/guides/configuration) guide.
 
+## Keybindings
+
+`/settings` shows the active agent directory's `keybindings.json` path in its informational **Keybindings** row. This reflects custom agent directories and Windows paths instead of assuming `~/.atomic/agent/keybindings.json`. Edit that file and run `/reload` to apply the changes. `/hotkeys` shows common active and extension shortcuts; see [Keybindings](/keybindings) for the complete reference and configuration format.
+
 ## Project Trust
 
 On interactive startup, Atomic asks before trusting a project folder that contains trust-gated project inputs and has no saved decision for the folder or a parent folder in `~/.atomic/agent/trust.json`. Trusting a project allows Atomic to load project-local `.atomic/settings.json` and `.atomic` resources, legacy `.pi/settings.json` and `.pi` resources, project-local context files, install missing project packages, and execute project extensions.
