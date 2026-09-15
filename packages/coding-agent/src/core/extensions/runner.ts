@@ -301,6 +301,7 @@ export class ExtensionRunner {
 		{ current: number; owners: Map<string, number> }
 	>();
 	private readonly widgetGenerations = new Map<ExtensionUIContext, number>();
+	private readonly widgetPublications = new Map<ExtensionUIContext, Map<string, number>>();
 	private pendingWidgets: Map<ExtensionUIContext, Map<string, WidgetArguments>> | undefined;
 	private widgetsRetired = false;
 
@@ -363,13 +364,25 @@ export class ExtensionRunner {
 			ui.setWidget(key, undefined, options);
 			return;
 		}
+		let publications = this.widgetPublications.get(ui);
+		if (!publications) {
+			publications = new Map();
+			this.widgetPublications.set(ui, publications);
+		}
+		const publication = (publications.get(key) ?? 0) + 1;
+		publications.set(key, publication);
 		host.owners.set(key, generation);
 		if (typeof content === "function") {
 			ui.setWidget(
 				key,
 				(tui, theme) => {
 					// The host may invoke a queued factory after replacement or invalidation.
-					if (this.staleMessage || this.widgetsRetired || host.owners.get(key) !== generation)
+					if (
+						this.staleMessage ||
+						this.widgetsRetired ||
+						host.owners.get(key) !== generation ||
+						publications.get(key) !== publication
+					)
 						return { render: () => [], invalidate() {} };
 					return content(tui, theme);
 				},
@@ -572,6 +585,7 @@ export class ExtensionRunner {
 				if (!host) continue;
 				for (const [key, owner] of [...host.owners]) {
 					if (owner !== generation) continue;
+					if (host.owners.get(key) !== generation) continue;
 					try {
 						host.owners.delete(key);
 						ui.setWidget(key, undefined);
@@ -586,6 +600,7 @@ export class ExtensionRunner {
 				}
 			}
 			this.widgetGenerations.clear();
+			this.widgetPublications.clear();
 			this.runtime.invalidate(message);
 		}
 	}
