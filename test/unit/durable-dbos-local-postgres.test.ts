@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import type { RetainedPostgres } from "@bastani/atomic-natives";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { effectiveSystemDatabaseUrl } from "../../packages/workflows/src/durable/dbos-backend.js";
 import {
 	EMBEDDED_DBOS_SYSTEM_DATABASE_URL,
@@ -222,6 +222,34 @@ describe("resolveDbosSystemDatabaseUrl", () => {
 
 		assert.equal(shutdownCalls, 0);
 	});
+});
+
+// #3074: DBOS survives /reload, so teardown must retain the original provider closure.
+test("a reloaded bundle releases the original provider once and clears its resolution memo", async () => {
+	delete process.env.DBOS_SYSTEM_DATABASE_URL;
+	let starts = 0;
+	let stops = 0;
+	resetLocalDbosProvisioningForTests(
+		async () => {
+			starts++;
+		},
+		async () => {
+			throw new Error("must not use Docker");
+		},
+		async () => {
+			stops++;
+		},
+	);
+	await resolveDbosSystemDatabaseUrl();
+	vi.resetModules();
+	const reloaded = await import("../../packages/workflows/src/durable/dbos-local-postgres.js");
+	assert.notEqual(reloaded.shutdownResolvedLocalDbos, shutdownResolvedLocalDbos);
+	await Promise.all([reloaded.shutdownResolvedLocalDbos(), shutdownResolvedLocalDbos()]);
+	assert.equal(stops, 1);
+	await reloaded.resolveDbosSystemDatabaseUrl();
+	assert.equal(starts, 2);
+	await reloaded.shutdownResolvedLocalDbos();
+	assert.equal(stops, 2);
 });
 
 describe("shouldProvisionLocalDbos", () => {

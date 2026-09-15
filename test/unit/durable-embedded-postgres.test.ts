@@ -331,6 +331,16 @@ test("readiness accepts a live retained process and leaves attached servers unow
 	assert.equal(lease.releaseCalls, 1, "attached readiness creates no ownership or extra shutdown");
 });
 
+// #3074: readiness publishes a shared server; its starter is no longer its lifetime owner.
+test("orderly owner exit leaves a ready shared server running for attached consumers", async () => {
+	const lease = new FakeLease();
+	const cluster = embeddedPostgresTestHooks.setActiveCluster(lease);
+	await embeddedPostgresTestHooks.waitForClusterReadiness("/postgres.log", cluster, async () => true);
+	await shutdownEmbeddedDbosPostgres();
+	assert.deepEqual(lease.interruptCalls, [], "owner exit must not signal a published shared server");
+	assert.equal(lease.releaseCalls, 1);
+});
+
 // PR #2982: only the native zero-timeout result means an owned process is alive.
 for (const reachable of [false, true]) {
 	test(`readiness propagates lease-observation errors when TCP is ${reachable ? "reachable" : "unreachable"}`, async () => {

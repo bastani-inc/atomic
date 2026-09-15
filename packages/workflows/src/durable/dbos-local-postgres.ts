@@ -34,12 +34,29 @@ let dockerProvider: LocalDbosProvider = ensureDockerDbosPostgres;
 let shutdownEmbeddedProvider: LocalDbosShutdowner = shutdownEmbeddedDbosPostgres;
 let embeddedShutdown: Promise<void> | undefined;
 
+// The DBOS owner survives bundle reload. Keep its provider and cleanup closure
+// in the same process lifetime rather than selecting a fresh generation's memo.
+interface LocalDbosOwner {
+	resolve: typeof resolveDbosSystemDatabaseUrl;
+	provision: typeof provisionResolvedLocalDbos;
+	shutdown: typeof shutdownResolvedLocalDbos;
+}
+const ownerKey = Symbol.for("atomic-workflows/local-postgres-owner@1");
+const ownerBag = globalThis as typeof globalThis & Record<symbol, LocalDbosOwner | undefined>;
+const owner = ownerBag[ownerKey] ?? {
+	resolve: resolveDbosSystemDatabaseUrl,
+	provision: provisionResolvedLocalDbos,
+	shutdown: shutdownResolvedLocalDbos,
+};
+ownerBag[ownerKey] = owner;
+
 /**
  * Resolve the system database URL for this process and make its database
  * reachable. `undefined` defers to the environment/DBOS defaults (explicit
  * user URL or the Docker container that matches them).
  */
 export function resolveDbosSystemDatabaseUrl(): Promise<string | undefined> {
+	if (owner.resolve !== resolveDbosSystemDatabaseUrl) return owner.resolve();
 	resolution ??= resolve().catch((error: unknown) => {
 		resolution = undefined;
 		throw error;
@@ -49,15 +66,18 @@ export function resolveDbosSystemDatabaseUrl(): Promise<string | undefined> {
 
 /** Re-ensure the previously resolved local database (launch-retry safety net). */
 export async function provisionResolvedLocalDbos(): Promise<void> {
+	if (owner.provision !== provisionResolvedLocalDbos) return owner.provision();
 	await (resolvedProvider ?? embeddedProvider)();
 }
 
 /** Stop the local database only when the resolved provider was embedded. */
 export function shutdownResolvedLocalDbos(): Promise<void> {
+	if (owner.shutdown !== shutdownResolvedLocalDbos) return owner.shutdown();
 	if (resolvedProvider !== embeddedProvider) return Promise.resolve();
 	embeddedShutdown ??= shutdownEmbeddedProvider().then(
 		() => {
 			resolvedProvider = undefined;
+			resolution = undefined;
 			embeddedShutdown = undefined;
 		},
 		(error: unknown) => {
@@ -157,6 +177,11 @@ export function resetLocalDbosProvisioningForTests(
 	docker: LocalDbosProvider = ensureDockerDbosPostgres,
 	shutdownEmbedded: LocalDbosShutdowner = shutdownEmbeddedDbosPostgres,
 ): void {
+	Object.assign(owner, {
+		resolve: resolveDbosSystemDatabaseUrl,
+		provision: provisionResolvedLocalDbos,
+		shutdown: shutdownResolvedLocalDbos,
+	});
 	resolution = undefined;
 	resolvedProvider = undefined;
 	embeddedShutdown = undefined;
