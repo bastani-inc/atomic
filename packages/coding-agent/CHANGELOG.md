@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- After DBOS initialization, workflow root database registration now has a 10-second deadline instead of waiting for the request timeout. Cancelled admission cannot start workflow code later, and database loss invalidates admission readiness. First-time provisioning and initialization are outside this bound ([#3072](https://github.com/bastani-inc/atomic/issues/3072)).
+
 ## [0.9.20-alpha.2] - 2026-09-15
 
 ### Fixed

@@ -84,6 +84,12 @@ export interface DurableWorkflowBackend {
 	readonly persistent: boolean;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void;
+	/** Cancellable root persistence boundary. Child runs retain their root's queue. */
+	admitWorkflow?(
+		workflowId: string,
+		registration: WorkflowRegistrationInput | undefined,
+		signal: AbortSignal,
+	): Promise<void>;
 	/** Persist one logical run's pending-stage transition under its durable owner. */
 	persistPendingStageMessages(
 		workflowId: string,

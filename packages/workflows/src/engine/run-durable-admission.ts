@@ -7,6 +7,7 @@
  */
 
 import type { DurableWorkflowBackend, WorkflowRegistrationInput } from "../durable/backend.js";
+import { boundedAdmission } from "../durable/dbos-admission.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 
 /** Build the root registration handle, or `undefined` when the run must not (re-)register. */
@@ -42,11 +43,21 @@ export async function admitDurableRootRun(args: {
 	readonly runId: string;
 	readonly isChildRun: boolean;
 	readonly registration: WorkflowRegistrationInput | undefined;
+	readonly signal?: AbortSignal;
+	readonly timeoutMs?: number;
 }): Promise<void> {
-	if (args.registration !== undefined) {
-		args.backend.registerWorkflow(args.registration);
-	} else if (!args.isChildRun) {
-		args.backend.setWorkflowStatus(args.runId, "running");
-	}
-	if (!args.isChildRun) await args.backend.flush(args.runId);
+	if (args.isChildRun) return;
+	await boundedAdmission(
+		async (signal) => {
+			if (args.backend.admitWorkflow !== undefined) {
+				await args.backend.admitWorkflow(args.runId, args.registration, signal);
+				return;
+			}
+			if (args.registration !== undefined) args.backend.registerWorkflow(args.registration);
+			else args.backend.setWorkflowStatus(args.runId, "running");
+			await args.backend.flush(args.runId);
+		},
+		args.signal,
+		args.timeoutMs,
+	);
 }

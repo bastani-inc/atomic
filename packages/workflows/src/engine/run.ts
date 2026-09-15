@@ -1,6 +1,7 @@
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
+import { isDbosDependencyError } from "../durable/dbos-admission.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
@@ -76,7 +77,7 @@ import { createChildWorkflowRunner } from "./primitives/workflow.js";
 import { createContinuationReplayIndex } from "./replay.js";
 import { createRunBudgetController, WorkflowBudgetExceededError } from "./run-budget.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
-import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
+import { finalizeDurableTerminalStatus, finalizeUnadmittedDurableStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import {
 	createDurableCachedStageRecorder,
@@ -769,6 +770,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		},
 	});
 	terminalEvents.register();
+	let durableRootAdmitted = false;
+	let durableAdmissionFailure: { error: unknown } | undefined;
 	try {
 		workflowObservationRuntime(activeStore).startRun(runId);
 		activeStore.recordRunStart(runSnapshot);
@@ -805,6 +808,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				backend: durableBackend,
 				runId,
 				isChildRun: opts.parentRun !== undefined,
+				signal: ownController.signal,
 				registration:
 					durableRootRegistration === undefined
 						? undefined
@@ -817,9 +821,13 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 									runSnapshot.origin,
 								),
 							},
+			}).catch((error: unknown) => {
+				if (!isDbosDependencyError(error)) durableAdmissionFailure = { error };
+				throw error;
 			}),
 			ownController.signal,
 		);
+		durableRootAdmitted = true;
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
@@ -997,7 +1005,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			});
 		}
 
-		return finalizeTerminalFailure({
+		const failed = finalizeTerminalFailure({
 			runId,
 			runSnapshot,
 			store: activeStore,
@@ -1005,13 +1013,17 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			metadata,
 			onRunEnd: opts.onRunEnd,
 		});
+		// Preserve write rejection without retrying persistence in unadmitted cleanup.
+		if (durableAdmissionFailure !== undefined && Object.is(durableAdmissionFailure.error, err)) throw err;
+		return failed;
 	} finally {
 		callerSignal?.removeEventListener("abort", onCallerAbort);
 		workflowObservationRuntime(activeStore).finishRun(runId);
 		runtimeSettled.resolve();
 		unregisterRunControl();
 		try {
-			await finalizeDurableTerminalStatus({
+			const finalize = durableRootAdmitted ? finalizeDurableTerminalStatus : finalizeUnadmittedDurableStatus;
+			await finalize({
 				runId,
 				runSnapshot,
 				isRoot: opts.parentRun === undefined,

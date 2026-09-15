@@ -1,5 +1,6 @@
 /** DBOS-backed durable backend adapter. */
 
+import { raceAbort } from "../shared/abort.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
 	type DurableInactiveDeleteResult,
@@ -11,6 +12,7 @@ import {
 	type WorkflowRegistrationInput,
 } from "./backend.js";
 import { DurableNestedTopologyError } from "./boundary-topology.js";
+import { type DbosDependencyError, dbosAdmissionContext, isDbosDependencyError } from "./dbos-admission.js";
 import { classifyCheckpointPayload, encodeCheckpoint } from "./dbos-envelope.js";
 import {
 	claimMetadataStepName,
@@ -122,10 +124,13 @@ export async function configureDbosDurableBackend(config?: {
 	const sdk = await importDbosSdk();
 	const owner = getDbosProcessOwner();
 	const existing = owner.wrappers;
+	let launch = owner.active?.launch ?? (() => sdk.launch());
+	let checkReady: (() => Promise<void>) | undefined;
 	// The SDK forbids setConfig after launch. Recover original wrappers first.
 	if (existing === undefined) {
 		const url = effectiveSystemDatabaseUrl(config?.systemDatabaseUrl);
-		sdk.setConfig({
+		const { configureAdmissionDatabase } = await import("./dbos-admission-config.js");
+		const database = configureAdmissionDatabase(sdk, {
 			name: "atomic-workflows",
 			...(url === undefined ? {} : { systemDatabaseUrl: url }),
 			runAdminServer: false,
@@ -134,6 +139,8 @@ export async function configureDbosDurableBackend(config?: {
 			executorID: getAtomicExecutorId(),
 			logger: SILENT_DBOS_LOGGER,
 		});
+		launch = database.launch;
+		checkReady = database.checkReady;
 	}
 	const mainWorkflow =
 		existing?.mainWorkflow ??
@@ -150,8 +157,10 @@ export async function configureDbosDurableBackend(config?: {
 		owner.wrappers = { mainWorkflow, checkpointWorkflow };
 	}
 	return {
-		backend: new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow)),
-		launch: () => sdk.launch(),
+		backend: new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow), {
+			checkReady,
+		}),
+		launch,
 		shutdown: () => sdk.shutdown(),
 	};
 }
@@ -194,10 +203,22 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	private readonly executorId: string;
 	private readonly writeQueues = new Map<string, Promise<void>>();
 	private readonly writeErrors = new Map<string, Error[]>();
+	private readonly onUnavailable?: (error: DbosDependencyError) => void;
+	private readonly checkReady?: () => Promise<void>;
+	private admissionUnavailable = false;
 
-	constructor(sdk: DbosSdkHandle, options?: { readonly executorId?: string }) {
+	constructor(
+		sdk: DbosSdkHandle,
+		options?: {
+			readonly executorId?: string;
+			readonly onUnavailable?: (error: DbosDependencyError) => void;
+			readonly checkReady?: () => Promise<void>;
+		},
+	) {
 		this.sdk = sdk;
 		this.executorId = options?.executorId ?? getAtomicExecutorId();
+		this.onUnavailable = options?.onUnavailable;
+		this.checkReady = options?.checkReady;
 		this.promptReservations = new DbosPromptReservationTracker({
 			pendingPrompts: (workflowId) => this.mem.getWorkflow(workflowId)?.pendingPrompts ?? 0,
 			adjustPendingPrompts: (workflowId, delta) => this.mem.adjustPendingPrompts(workflowId, delta),
@@ -205,6 +226,36 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 				this.enqueueWrite(workflowId, () => this.sdk.recordStepOutput(workflowId, stepName, output));
 			},
 		});
+	}
+
+	async admitWorkflow(
+		workflowId: string,
+		registration: WorkflowRegistrationInput | undefined,
+		signal: AbortSignal,
+	): Promise<void> {
+		try {
+			await raceAbort(
+				dbosAdmissionContext.run(signal, async () => {
+					signal.throwIfAborted();
+					// Executor ownership stays ready for mirror-backed control and older
+					// generations' shutdown. Only new admission needs fresh SQL health.
+					if (this.admissionUnavailable) await this.checkReady?.();
+					signal.throwIfAborted();
+					if (registration !== undefined) this.registerWorkflow(registration);
+					else this.setWorkflowStatus(workflowId, "running");
+					await this.flush(workflowId);
+					signal.throwIfAborted();
+				}),
+				signal,
+			);
+			this.admissionUnavailable = false;
+		} catch (error) {
+			if (isDbosDependencyError(error)) {
+				this.admissionUnavailable = true;
+				this.onUnavailable?.(error);
+			}
+			throw error;
+		}
 	}
 
 	registerWorkflow(handle: WorkflowRegistrationInput): void {
@@ -221,7 +272,9 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		);
 		this.mem.registerWorkflow({ ...handle, pendingPrompts });
 		this.enqueueWrite(handle.workflowId, async () => {
+			dbosAdmissionContext.getStore()?.throwIfAborted();
 			await this.sdk.startWorkflow(handle.workflowId, handle.name, handle.inputs);
+			dbosAdmissionContext.getStore()?.throwIfAborted();
 			await this.writeMetadata(handle.workflowId);
 		});
 	}
@@ -620,8 +673,12 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	}
 
 	private enqueueWrite(workflowId: string, fn: () => Promise<void>): Promise<void> {
+		const signal = dbosAdmissionContext.getStore();
+		if (signal?.aborted) return Promise.resolve();
 		const previous = this.writeQueues.get(workflowId) ?? Promise.resolve();
-		const next = previous.then(fn, fn);
+		const next = previous.then(async () => {
+			if (!signal?.aborted) await fn();
+		});
 		const tracked = next.catch((err) => {
 			const error = err instanceof Error ? err : new Error(String(err));
 			const errors = this.writeErrors.get(workflowId) ?? [];

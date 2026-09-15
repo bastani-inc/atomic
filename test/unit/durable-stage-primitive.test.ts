@@ -376,8 +376,9 @@ describe("run durable flush", () => {
 
 	exTest("workflow completion fails when durable flush fails", async () => {
 		class FailingFlushBackend extends InMemoryDurableBackend {
+			failFlush = false;
 			async flush(): Promise<void> {
-				throw new Error("durable write failed");
+				if (this.failFlush) throw new Error("durable write failed");
 			}
 		}
 		const backend = new FailingFlushBackend();
@@ -402,13 +403,19 @@ describe("run durable flush", () => {
 			description: "",
 			inputs: {},
 			outputs: { result: Type.String() },
-			run: async (ctx) => ({ result: await ctx.stage("cached").complete("cached") }),
+			run: async (ctx) => {
+				const result = await ctx.stage("cached").complete("cached");
+				// #3072: admission must succeed before testing completion persistence.
+				backend.failFlush = true;
+				return { result };
+			},
 		});
 
 		await exAssert.rejects(
 			() => run(def, {}, { runId: "wf-flush-fail", store: createStore(), durableBackend: backend }),
 			/durable write failed/,
 		);
+		exAssert.equal(backend.failFlush, true, "the workflow must reach completion before flush fails");
 	});
 
 	exTest("ctx.chain and ctx.parallel replay completed task checkpoints", async () => {
