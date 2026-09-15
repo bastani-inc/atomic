@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Standalone installations include PostgreSQL library aliases and reject unusable database runtimes before installing or upgrading. macOS and Linux packaging includes the dependencies of bundled PostgreSQL modules and validates their complete library closure. A server left running by an older installation no longer hides an incomplete runtime. npm hydration preserves safe ordered alias chains ([#3073](https://github.com/bastani-inc/atomic/issues/3073)).
+
 ## [0.9.20-alpha.2] - 2026-09-15
 
 ### Fixed

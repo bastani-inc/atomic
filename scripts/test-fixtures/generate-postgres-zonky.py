@@ -18,7 +18,7 @@ binary = bytearray(128)
 binary[:6] = b"\x7fELF\x02\x01"
 binary[18:20] = (62).to_bytes(2, "little")
 loader = b"/lib/ld-musl-x86_64.so.1"
-binary[32:32 + len(loader)] = loader
+binary[64:64 + len(loader)] = loader
 archive = io.BytesIO()
 with tarfile.open(fileobj=archive, mode="w", format=tarfile.USTAR_FORMAT) as tar:
     for name, data, mode, link in [

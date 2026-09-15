@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { validateInstalledPostgres } from "../../../../scripts/validate-installed-postgres.mjs";
 import { markLifecycleTiming } from "../core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "../utils/agent-attribution.ts";
 import { stripBom } from "../utils/text.ts";
@@ -24,6 +25,17 @@ function readVersion(): string {
 		return typeof pkg.version === "string" ? pkg.version : "0.0.0";
 	} catch {
 		return "0.0.0";
+	}
+}
+
+if (args[0] === "--internal-validate-postgres-runtime") {
+	try {
+		if (args.length !== 2) throw new Error("runtime validation requires exactly one extracted runtime path");
+		validateInstalledPostgres(args[1]);
+		process.exit(0);
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		process.exit(1);
 	}
 }
 

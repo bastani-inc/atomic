@@ -77,8 +77,9 @@ set -eu
 source_runtime="/smoke/atomic/node_modules/@bastani/atomic-natives/postgres-runtime"
 runtime=/tmp/atomic-postgres-runtime
 cp -R "$source_runtime" "$runtime"
-awk -F '"' '/"source":/{source=$4} /"target":/{print source " " $4}' "$runtime/pg-symlinks.json" |
-    while read -r source target; do cp "$runtime/$source" "$runtime/$target"; done
+# The extracted standalone payload must already contain every runtime alias.
+"$runtime/bin/postgres" --version
+"$runtime/bin/pg_ctl" --version
 data=/tmp/atomic-postgres-smoke
 "$runtime/bin/initdb" -D "$data" -U postgres --auth=trust --no-locale >/tmp/initdb.log
 "$runtime/bin/pg_ctl" -D "$data" -o "-h 127.0.0.1 -p 55439" -w start

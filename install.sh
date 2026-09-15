@@ -843,6 +843,17 @@ if ! "$PAYLOAD_ROOT/atomic" --version >/dev/null; then
     fail "staged atomic --version check failed"
 fi
 
+# Verify the extracted runtime, not a server left running by an older version.
+POSTGRES_RUNTIME=$PAYLOAD_ROOT/node_modules/@bastani/atomic-natives/postgres-runtime
+if ! "$PAYLOAD_ROOT/atomic" --internal-validate-postgres-runtime "$POSTGRES_RUNTIME"; then
+    fail "incomplete PostgreSQL runtime: payload validation failed; installation was not promoted. Download a repaired release."
+fi
+for postgres_command in postgres pg_ctl initdb; do
+    if ! "$POSTGRES_RUNTIME/bin/$postgres_command" --version >/dev/null; then
+        fail "incomplete PostgreSQL runtime: $postgres_command --version failed; installation was not promoted. Download a repaired release; do not reuse libraries from another version."
+    fi
+done
+
 VERSIONS_DIR=$INSTALL_ROOT/versions
 CURRENT_PATH=$INSTALL_ROOT/current
 

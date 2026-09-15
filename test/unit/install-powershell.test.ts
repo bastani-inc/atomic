@@ -1297,6 +1297,12 @@ function New-FixtureRelease {
     Set-Content -LiteralPath (Join-Path $payloadDir "version.txt") -Value $Tag -Encoding ASCII -NoNewline
     Set-Content -LiteralPath (Join-Path $payloadDir "nested\full-payload.txt") -Value ("payload-" + $Tag) -Encoding ASCII -NoNewline
     New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+    $postgresBin = Join-Path $payloadDir "node_modules\@bastani\atomic-natives\postgres-runtime\bin"
+    New-Item -ItemType Directory -Path $postgresBin -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $postgresBin "version.txt") -Value $Tag -Encoding ASCII -NoNewline
+    foreach ($postgresCommand in @("postgres", "pg_ctl", "initdb")) {
+        Copy-Item -LiteralPath $fixtureExecutable -Destination (Join-Path $postgresBin ($postgresCommand + ".exe"))
+    }
 
     $rows = @()
     foreach ($assetName in @("atomic-windows-x64.zip", "atomic-windows-arm64.zip")) {

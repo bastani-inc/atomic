@@ -502,7 +502,7 @@ for platform in "${PLATFORMS[@]}"; do
     # Compiled builtins resolve this filesystem payload without a bare JS import.
     rm -rf "binaries/$platform/node_modules/@embedded-postgres"
     echo "==> Staging embedded PostgreSQL runtime for $platform..."
-    node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives"
+    node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives" --standalone
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
     find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
     atomic_native="$(atomic_native_filename "$platform")"
@@ -521,7 +521,7 @@ for platform in "${PLATFORMS[@]}"; do
         echo "==> Bundling musl C++ runtime for $platform..."
         stage_musl_runtime "$platform" "binaries/$platform"
     fi
-    node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives" --validate
+    node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives" --validate --standalone
 
     # Last gate before the archive is created: no package staged here may declare a platform
     # this archive cannot run. Atomic 0.9.12 shipped @esbuild/linux-x64 in the arm64 archives.
@@ -567,7 +567,7 @@ for platform in "${PLATFORMS[@]}"; do
         create_zip_archive "$platform"
     else
         echo "Creating atomic-$platform.tar.gz..."
-        mv "$platform" atomic && tar -czf "atomic-$platform.tar.gz" atomic && mv atomic "$platform"
+        mv "$platform" atomic && sh ../../../scripts/create-release-tar.sh "atomic-$platform.tar.gz" . atomic && mv atomic "$platform"
     fi
 done
 

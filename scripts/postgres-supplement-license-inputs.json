@@ -1,0 +1,12 @@
+{
+ "CURL-8.20.0": {"url":"https://raw.githubusercontent.com/curl/curl/curl-8_20_0/COPYING","sha256":"82f2f4427d6545ee5aaac4f0b80428da6cc8ba41c2cf5da3a03680ec327b9681"},
+ "LIBXSLT-1.1.45": {"url":"https://raw.githubusercontent.com/GNOME/libxslt/v1.1.45/Copyright","sha256":"7e48e290b6bfccc2ec1b297023a1d77f2fd87417f71fbb9f50aabef40a851819"},
+ "PERL-5.26.3-ARTISTIC": {"url":"https://raw.githubusercontent.com/Perl/perl5/v5.26.3/Artistic","sha256":"8e6beb9ca0ffbc4b9c6550d56f622ecd33d5635ee8af9a8f269fd81f40fb6801"},
+ "LIBFFI-3.2.1": {"url":"https://raw.githubusercontent.com/libffi/libffi/v3.2.1/LICENSE","sha256":"0f4d7a0bfb83c37465d42dc305f124189196cc0cc2cc8d6f8461103682aebbc5"},
+ "TCL-8.6.9": {"url":"https://raw.githubusercontent.com/tcltk/tcl/core-8-6-9/license.terms","sha256":"c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16"},
+ "EXPAT-2.2.8": {"url":"https://raw.githubusercontent.com/libexpat/libexpat/R_2_2_8/expat/COPYING","sha256":"46336ab2fec900803e2f1a4253e325ac01d998efb09bc6906651f7259e636f76"},
+ "NCURSES-6.1": {"url":"https://raw.githubusercontent.com/mirror/ncurses/bca50d0d8592defee6c584fdedd25f4b1a31345b/COPYING","sha256":"86106f0da1cf5ccfa0f0651665dd1b4515e8edad1c7972780155770548b317d9"},
+ "BZIP2-1.0.6": {"url":"https://raw.githubusercontent.com/libarchive/bzip2/bzip2-1.0.6/LICENSE","sha256":"4919cfb14a73cd64fcef67b107613970cf1659a09aa675dba31314f373bc7204"},
+ "XZ-5.2.4": {"url":"https://raw.githubusercontent.com/tukaani-project/xz/v5.2.4/COPYING","sha256":"bcb02973ef6e87ea73d331b3a80df7748407f17efdb784b61b47e0e610d3bb5c"},
+ "GPL-3.0": {"url":"https://raw.githubusercontent.com/NixOS/patchelf/0.18.0/COPYING","sha256":"8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"}
+}

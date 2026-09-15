@@ -375,7 +375,8 @@ function targetExecutable(target) {
 			: target.includes("x64")
 				? "/lib64/ld-linux-x86-64.so.2"
 				: "/lib/ld-linux-aarch64.so.1";
-		binary.write(loader, 32);
+		// Keep the ELF header intact now that dependency validation reads it.
+		binary.write(loader, 64);
 	}
 	return binary;
 }
@@ -414,6 +415,37 @@ function npmArtifact(root, target, mutate = () => {}) {
 	};
 }
 
+// #3073: optional modules must not bypass the producer's promotion gate.
+test("rejects an unresolved module dependency before replacing an installed payload", async () => {
+	const root = temporaryDirectory("atomic-pg-closure-");
+	const packageRoot = packageDirectory(root);
+	mkdirSync(join(packageRoot, "postgres-runtime"));
+	writeFileSync(join(packageRoot, "postgres-runtime", "old"), "preserved");
+	const fixture = npmArtifact(root, "darwin-arm64", (native) => {
+		const dependency = Buffer.from("@loader_path/missing.dylib\0");
+		const binary = Buffer.alloc(32 + 24 + dependency.length);
+		binary.writeUInt32LE(0xfeedfacf, 0);
+		binary.writeUInt32LE(0x0100000c, 4);
+		binary.writeUInt32LE(1, 16);
+		binary.writeUInt32LE(0xc, 32);
+		binary.writeUInt32LE(24 + dependency.length, 36);
+		binary.writeUInt32LE(24, 40);
+		dependency.copy(binary, 56);
+		writeFileSync(join(native, "lib/module.dylib"), binary);
+	});
+	await assert.rejects(
+		stagePostgresRuntime({
+			target: "darwin-arm64",
+			packageRoot,
+			artifactFile: fixture.path,
+			artifact: fixture.artifact,
+			standalone: true,
+		}),
+		/incomplete PostgreSQL dependency closure/u,
+	);
+	assert.equal(readFileSync(join(packageRoot, "postgres-runtime", "old"), "utf8"), "preserved");
+});
+
 test("ordinary target staging merges physical and inherited links after relocating native root", async (t) => {
 	const root = temporaryDirectory("atomic-pg-inherited-");
 	const packageRoot = packageDirectory(root);
@@ -437,6 +469,48 @@ test("ordinary target staging merges physical and inherited links after relocati
 	if (process.platform !== "win32") {
 		assert.equal(lstatSync(join(runtime, "bin", "initdb")).mode & 0o111, 0o111);
 	}
+});
+
+// #3073: resolve the complete physical link graph before removing any alias.
+test("standalone staging preserves chained aliases regardless of directory order", async () => {
+	const root = temporaryDirectory("atomic-pg-chain-");
+	const fixture = npmArtifact(root, "linux-x64", (native) => {
+		symlinkSync("library.1", join(native, "lib/a"));
+		symlinkSync("a", join(native, "lib/z"));
+	});
+	const runtime = await stagePostgresRuntime({
+		target: "linux-x64",
+		packageRoot: packageDirectory(root),
+		artifactFile: fixture.path,
+		artifact: fixture.artifact,
+		standalone: true,
+	});
+	assert.equal(readFileSync(join(runtime, "lib/z"), "utf8"), "library");
+});
+
+// #3073: standalone archives must work without npm's first-use hydration.
+test("standalone staging materializes aliases and validates them after extraction", async () => {
+	const root = temporaryDirectory("atomic-pg-standalone-");
+	const fixture = npmArtifact(root, "linux-x64");
+	await stagePostgresRuntime({
+		target: "linux-x64",
+		packageRoot: packageDirectory(root),
+		artifactFile: fixture.path,
+		artifact: fixture.artifact,
+		standalone: true,
+	});
+	const archive = "candidate.tgz";
+	execFileSync("tar", ["-czf", archive, "-C", "leaf/postgres-runtime", "."], { cwd: root });
+	const extracted = join(root, "extracted");
+	mkdirSync(extracted);
+	execFileSync("tar", ["-xzf", archive, "-C", "extracted"], { cwd: root });
+	assert.equal(readFileSync(join(extracted, "lib/library"), "utf8"), "library");
+	validatePostgresRuntime(extracted, "linux-x64", fixture.artifact, { standalone: true });
+	rmSync(join(extracted, "lib/library"));
+	assert.throws(
+		() => validatePostgresRuntime(extracted, "linux-x64", fixture.artifact, { standalone: true }),
+		/materialized runtime link/,
+	);
 });
 
 for (const [label, mutate] of [

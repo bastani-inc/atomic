@@ -51,6 +51,7 @@ export function stagePostgresRuntime(options: {
 	packageRoot: string;
 	artifactFile?: string;
 	artifact?: PostgresRuntimeArtifact;
+	standalone?: boolean;
 }): Promise<string>;
 
 /** Validate a produced runtime, including its pinned provenance and complete file inventory. */
@@ -58,4 +59,5 @@ export function validatePostgresRuntime(
 	root: string,
 	target: PostgresRuntimeTarget,
 	artifact?: PostgresRuntimeArtifact,
+	options?: { standalone?: boolean },
 ): void;

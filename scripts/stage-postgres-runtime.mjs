@@ -19,8 +19,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { validateRuntimeDependencies } from "./postgres-runtime-dependencies.mjs";
+import { validateRuntimeSupplement } from "./postgres-runtime-supplement.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const licenseDirectory = join(scriptDirectory, "postgres-runtime-licenses");
@@ -163,19 +165,21 @@ function copyTree(source, destination) {
 	chmodSync(destination, stat.mode & 0o777);
 }
 
-function replaceSymlinksWithManifest(root, directory, manifest) {
+function replaceSymlinksWithManifest(root, directory, manifest, pending = []) {
 	const canonicalRoot = realpathSync(root);
 	for (const name of readdirSync(directory)) {
 		const path = join(directory, name);
 		const stat = lstatSync(path);
-		if (stat.isDirectory()) replaceSymlinksWithManifest(root, path, manifest);
+		if (stat.isDirectory()) replaceSymlinksWithManifest(root, path, manifest, pending);
 		if (!stat.isSymbolicLink()) continue;
 		const source = relative(canonicalRoot, realpathSync(path)).split("\\").join("/");
 		const target = relative(root, path).split("\\").join("/");
-		if (source.startsWith("../")) throw new Error(`symlink escapes runtime: ${target}`);
+		if (isAbsolute(source) || source === ".." || source.startsWith("../"))
+			throw new Error(`symlink escapes runtime: ${target}`);
 		manifest.push({ source, target });
-		unlinkSync(path);
+		pending.push(path);
 	}
+	if (directory === root) for (const path of pending) unlinkSync(path);
 }
 
 function addPayloadToPackageFiles(packageRoot) {
@@ -289,7 +293,7 @@ function runtimePath(root, path) {
 	return join(root, path);
 }
 
-function validatePayload(root, target) {
+function validatePayload(root, target, standalone = false) {
 	const suffix = target.startsWith("windows-") ? ".exe" : "";
 	for (const name of ["postgres", "initdb", "pg_ctl"]) {
 		const path = join(root, "bin", `${name}${suffix}`);
@@ -305,18 +309,53 @@ function validatePayload(root, target) {
 	const targets = new Map();
 	for (const { source, target: link } of links) {
 		const sourcePath = runtimePath(root, source);
-		runtimePath(root, link);
+		const targetPath = runtimePath(root, link);
 		if (!existsSync(sourcePath) || !lstatSync(sourcePath).isFile()) throw new Error(`missing link source: ${source}`);
 		if (targets.has(link) && targets.get(link) !== source) throw new Error(`conflicting runtime link: ${link}`);
 		targets.set(link, source);
+		if (
+			standalone &&
+			(!existsSync(targetPath) || !lstatSync(targetPath).isFile() || digest(targetPath) !== digest(sourcePath))
+		)
+			throw new Error(`missing or invalid materialized runtime link: ${link}`);
+	}
+}
+
+function materializeRuntimeLinks(root) {
+	const links = JSON.parse(readFileSync(join(root, "pg-symlinks.json"), "utf8"));
+	const canonicalRoot = realpathSync(root);
+	for (const { source, target } of links) {
+		const sourcePath = runtimePath(root, source);
+		const targetPath = runtimePath(root, target);
+		for (const path of [sourcePath, dirname(targetPath)]) {
+			const contained = relative(canonicalRoot, realpathSync(path));
+			if (isAbsolute(contained) || contained === ".." || contained.startsWith("../") || contained.startsWith("..\\"))
+				throw new Error(`runtime link escapes payload: ${target}`);
+		}
+		if (existsSync(targetPath)) {
+			if (!lstatSync(targetPath).isFile() || digest(targetPath) !== digest(sourcePath))
+				throw new Error(`conflicting runtime link target: ${target}`);
+			continue;
+		}
+		copyFileSync(sourcePath, targetPath);
+		chmodSync(targetPath, lstatSync(sourcePath).mode & 0o777);
 	}
 }
 
 /** Producer-only validation; deliberately not applied to user/legacy runtime overrides. */
-export function validatePostgresRuntime(root, target, artifact = POSTGRES_RUNTIME_ARTIFACTS[target]) {
+export function validatePostgresRuntime(
+	root,
+	target,
+	artifact = POSTGRES_RUNTIME_ARTIFACTS[target],
+	{ standalone = false } = {},
+) {
 	if (!Object.hasOwn(POSTGRES_RUNTIME_ARTIFACTS, target))
 		throw new Error(`unsupported PostgreSQL runtime target: ${target}`);
-	validatePayload(root, target);
+	validatePayload(root, target, standalone);
+	if (target.startsWith("darwin-") || target.startsWith("linux-")) {
+		validateRuntimeDependencies(root, JSON.parse(readFileSync(join(root, "pg-symlinks.json"), "utf8")));
+		if (artifact.sha256 === POSTGRES_RUNTIME_ARTIFACTS[target].sha256) validateRuntimeSupplement(root, target);
+	}
 	const provenance = JSON.parse(readFileSync(join(root, "runtime-provenance.json"), "utf8"));
 	if (
 		provenance.target !== target ||
@@ -370,6 +409,7 @@ export async function stagePostgresRuntime({
 	packageRoot,
 	artifactFile,
 	artifact = POSTGRES_RUNTIME_ARTIFACTS[target],
+	standalone = false,
 }) {
 	if (!Object.hasOwn(POSTGRES_RUNTIME_ARTIFACTS, target) || artifact === undefined)
 		throw new Error(`unsupported PostgreSQL runtime target: ${target}`);
@@ -409,6 +449,15 @@ export async function stagePostgresRuntime({
 			upstreamLicense = license;
 		}
 
+		if (target.startsWith("darwin-") && artifact.sha256 === POSTGRES_RUNTIME_ARTIFACTS[target].sha256) {
+			const { supplementMacOSRuntime } = await import("./postgres-runtime-supplement.mjs");
+			await supplementMacOSRuntime(extracted, work, download);
+		}
+		if (target.startsWith("linux-") && artifact.sha256 === POSTGRES_RUNTIME_ARTIFACTS[target].sha256) {
+			const { supplementLinuxRuntime } = await import("./postgres-runtime-supplement.mjs");
+			await supplementLinuxRuntime(extracted, work, target, download);
+		}
+
 		// Validate all entrypoints, not just postgres: a mixed payload must fail here.
 		const manifestPath = join(extracted, "pg-symlinks.json");
 		const symlinks = existsSync(manifestPath)
@@ -421,8 +470,10 @@ export async function stagePostgresRuntime({
 		symlinks.sort((left, right) => left.target.localeCompare(right.target));
 		writeFileSync(join(extracted, "pg-symlinks.json"), `${JSON.stringify(symlinks, null, 2)}\n`);
 		validatePayload(extracted, target);
+		// npm retains its scriptless manifest; standalone executables need aliases immediately.
+		if (standalone) materializeRuntimeLinks(extracted);
 		writeLicensesAndProvenance(extracted, target, artifact, upstreamLicense);
-		validatePostgresRuntime(extracted, target, artifact);
+		validatePostgresRuntime(extracted, target, artifact, { standalone });
 
 		const destination = join(resolve(packageRoot), "postgres-runtime");
 		rmSync(destination, { recursive: true, force: true });
@@ -441,7 +492,9 @@ async function main(args) {
 		throw new Error("usage: stage-postgres-runtime.mjs <target> <native-package-root> [--artifact <path>]");
 	}
 	if (rest.includes("--validate")) {
-		validatePostgresRuntime(join(resolve(packageRoot), "postgres-runtime"), target);
+		validatePostgresRuntime(join(resolve(packageRoot), "postgres-runtime"), target, undefined, {
+			standalone: rest.includes("--standalone"),
+		});
 		return;
 	}
 	const artifactIndex = rest.indexOf("--artifact");
@@ -449,6 +502,7 @@ async function main(args) {
 		target,
 		packageRoot,
 		artifactFile: artifactIndex === -1 ? undefined : rest[artifactIndex + 1],
+		standalone: rest.includes("--standalone"),
 	});
 }
 

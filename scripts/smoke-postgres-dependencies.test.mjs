@@ -69,7 +69,14 @@ test("the smoke CLI reaches usage validation with npm's linked layout and an emp
 			JSON.stringify({ name: "other", dependencies: fixtureDependencies }),
 		);
 		mkdirSync(join(root, "scripts"));
-		for (const name of ["smoke-postgres-runtime.mjs", "smoke-postgres-process.mjs", "stage-postgres-runtime.mjs"]) {
+		for (const name of [
+			"smoke-postgres-runtime.mjs",
+			"smoke-postgres-process.mjs",
+			"stage-postgres-runtime.mjs",
+			"postgres-runtime-dependencies.mjs",
+			"postgres-runtime-supplement.mjs",
+			"relocate-postgres-macho.mjs",
+		]) {
 			copyFileSync(new URL(name, import.meta.url), join(root, "scripts", name));
 		}
 		execFileSync(

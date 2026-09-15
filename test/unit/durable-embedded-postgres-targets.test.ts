@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -268,6 +277,122 @@ describe("embedded PostgreSQL runtime resolution", () => {
 			},
 		);
 	});
+
+	// #3073: first hydration must check aliases created earlier in the same call.
+	test("rejects filesystem-equivalent conflicting targets on first hydration", () => {
+		const root = runtime();
+		try {
+			mkdirSync(join(root, "lib"));
+			writeFileSync(join(root, "lib/one"), "one");
+			writeFileSync(join(root, "lib/two"), "two");
+			const caseInsensitive = existsSync(join(root, "lib/ONE"));
+			writeFileSync(
+				join(root, "pg-symlinks.json"),
+				JSON.stringify([
+					{ source: "lib/one", target: "lib/Alias.dll" },
+					{ source: "lib/two", target: "lib/alias.dll" },
+				]),
+			);
+			if (caseInsensitive) {
+				assert.throws(() => hydrateBinaryLibraryLinks(join(root, "bin/pg_ctl")), /incomplete PostgreSQL runtime/u);
+			} else {
+				hydrateBinaryLibraryLinks(join(root, "bin/pg_ctl"));
+				assert.equal(readFileSync(join(root, "lib/Alias.dll"), "utf8"), "one");
+				assert.equal(readFileSync(join(root, "lib/alias.dll"), "utf8"), "two");
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// #3073: npm manifests may refer to an alias created by an earlier entry.
+	test("hydrates safe ordered alias chains with native links and copy fallback", () => {
+		for (const copies of [false, true]) {
+			const root = runtime();
+			try {
+				mkdirSync(join(root, "lib"));
+				writeFileSync(join(root, "lib/base library"), "library");
+				const manifest =
+					'[{"source":"lib/base library","target":"lib/first"},{"source":"lib/first","target":"lib/second"}]';
+				writeFileSync(join(root, "pg-symlinks.json"), manifest);
+				hydrateBinaryLibraryLinks(
+					join(root, "bin/pg_ctl"),
+					copies
+						? () => {
+								throw new Error("no symlinks");
+							}
+						: symlinkSync,
+				);
+				hydrateBinaryLibraryLinks(join(root, "bin/pg_ctl"));
+				assert.equal(readFileSync(join(root, "lib/first"), "utf8"), "library");
+				assert.equal(readFileSync(join(root, "lib/second"), "utf8"), "library");
+				assert.equal(readFileSync(join(root, "pg-symlinks.json"), "utf8"), manifest);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}
+	});
+
+	// #3073: hydration is idempotent and does not rewrite a permissive manifest.
+	test("preserves duplicate entries, order, extra fields and manifest raw text", () => {
+		const root = runtime();
+		try {
+			mkdirSync(join(root, "lib"));
+			writeFileSync(join(root, "lib/library"), "library");
+			const manifest =
+				'[ {"source":"lib/library","target":"lib/z", "extra":true},\n {"target":"lib/a","source":"lib/library"}, {"source":"lib/library","target":"lib/z"} ]\n';
+			writeFileSync(join(root, "pg-symlinks.json"), manifest);
+			hydrateBinaryLibraryLinks(join(root, "bin/pg_ctl"));
+			hydrateBinaryLibraryLinks(join(root, "bin/pg_ctl"));
+			assert.equal(readFileSync(join(root, "lib/z"), "utf8"), "library");
+			assert.equal(readFileSync(join(root, "lib/a"), "utf8"), "library");
+			assert.equal(readFileSync(join(root, "pg-symlinks.json"), "utf8"), manifest);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// #3073: reject a dangling target without following it in the copy fallback.
+	test("rejects dangling aliases without writing outside the runtime", () => {
+		const root = runtime();
+		try {
+			mkdirSync(join(root, "lib"));
+			writeFileSync(join(root, "lib/library"), "library");
+			symlinkSync("../missing", join(root, "lib/alias"));
+			writeFileSync(
+				join(root, "pg-symlinks.json"),
+				JSON.stringify([{ source: "lib/library", target: "lib/alias" }]),
+			);
+			assert.throws(() => hydrateBinaryLibraryLinks(join(root, "bin/pg_ctl")), /incomplete PostgreSQL runtime/u);
+			assert.equal(existsSync(join(root, "missing")), false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// #3073: malformed manifests must not silently leave a broken runtime usable.
+	test("rejects malformed library aliases before hydration", () => {
+		const root = runtime();
+		writeFileSync(join(root, "pg-symlinks.json"), "{broken");
+		assert.throws(() => hydrateBinaryLibraryLinks(join(root, "bin/pg_ctl")), /incomplete PostgreSQL runtime/u);
+	});
+
+	// #3073: no missing or unsafe alias may be silently accepted.
+	for (const alias of [
+		{ source: "lib/missing", target: "lib/alias" },
+		{ source: "../outside", target: "lib/alias" },
+		{ source: "lib/library", target: "../outside" },
+		{ source: "lib/library", target: "/absolute" },
+		{ source: "lib/library", target: "C:\\outside" },
+	]) {
+		test(`rejects incomplete or unsafe library alias ${JSON.stringify(alias)}`, () => {
+			const root = runtime();
+			mkdirSync(join(root, "lib"));
+			writeFileSync(join(root, "lib/library"), "library");
+			writeFileSync(join(root, "pg-symlinks.json"), JSON.stringify([alias]));
+			assert.throws(() => hydrateBinaryLibraryLinks(join(root, "bin/pg_ctl")), /incomplete PostgreSQL runtime/u);
+		});
+	}
 
 	test("hydrates a staged symlink manifest", () => {
 		const root = runtime();

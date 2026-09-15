@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Executable release gate: only the supplied package's runtime may back this cluster.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
@@ -48,7 +49,7 @@ try {
 	const modulePath = join(work, "resolver.mjs");
 	await build({
 		stdin: {
-			contents: `export { loadEmbeddedPostgresBinaries, hydrateBinaryLibraryLinks } from ${JSON.stringify(join(repository, "packages/workflows/src/durable/dbos-embedded-postgres.ts"))};`,
+			contents: `export { loadEmbeddedPostgresBinaries, hydrateBinaryLibraryLinks, embeddedPostgresRuntimeEnvironment } from ${JSON.stringify(join(repository, "packages/workflows/src/durable/dbos-embedded-postgres.ts"))};`,
 			resolveDir: repository,
 		},
 		bundle: true,
@@ -73,6 +74,7 @@ try {
 	}
 	console.log(`Resolved shipped runtime: ${binaries.postgres}`);
 	api.hydrateBinaryLibraryLinks(binaries.pg_ctl);
+	Object.assign(env, api.embeddedPostgresRuntimeEnvironment(binaries.postgres));
 	assert.match(command(binaries.postgres, ["--version"]), /PostgreSQL\) 18\./u);
 	command(binaries.initdb, ["-D", data, "-U", "postgres", "--auth=trust", "--no-locale", "--encoding=UTF8"]);
 	assert.equal(readFileSync(join(data, "PG_VERSION"), "utf8").trim(), "18");
@@ -118,6 +120,27 @@ try {
 		}
 	};
 	port = await startOnAvailablePort(start, () => stop(true));
+	if (existsSync(join(runtime, "language-runtime.json"))) {
+		await query(
+			"CREATE EXTENSION plperl; CREATE EXTENSION plperlu; CREATE EXTENSION plpython3u; CREATE EXTENSION pltcl",
+		);
+		// EDB's macOS Python ships no _lzma extension. Exercise the native modules
+		// actually supplied by each distribution, not optional upstream build features.
+		const pythonImports = `json, ssl, sqlite3, ctypes, math, bz2, xml.parsers.expat${target.startsWith("linux-") ? ", lzma" : ""}`;
+		await query(
+			`CREATE FUNCTION perl_probe() RETURNS int LANGUAGE plperlu AS $$ use POSIX; return 3073; $$; CREATE FUNCTION python_probe() RETURNS int LANGUAGE plpython3u AS $$ import ${pythonImports}; return json.loads('3073') $$; CREATE FUNCTION tcl_probe() RETURNS int LANGUAGE pltcl AS $$ return 3073 $$;`,
+		);
+		assert.deepEqual(
+			(await query("SELECT perl_probe() AS perl, python_probe() AS python, tcl_probe() AS tcl")).rows,
+			[{ perl: 3073, python: 3073, tcl: 3073 }],
+		);
+		const { postgresModules } = JSON.parse(readFileSync(join(runtime, "supplement-provenance.json"), "utf8"));
+		for (const module of postgresModules) {
+			assert.ok(module.startsWith("lib/postgresql/") && !module.includes(".."));
+			await query(`LOAD '${join(runtime, module).replaceAll("'", "''")}'`);
+		}
+		console.log(`Native Perl/Python/Tcl SQL and ${postgresModules.length} PostgreSQL module loads passed`);
+	}
 	await query(
 		"CREATE TABLE atomic_durability_probe (value text); INSERT INTO atomic_durability_probe VALUES ('persisted across restart')",
 	);
@@ -126,6 +149,19 @@ try {
 	assert.deepEqual((await query("SELECT value FROM atomic_durability_probe")).rows, [
 		{ value: "persisted across restart" },
 	]);
+	// Python must not rewrite precompiled standard-library files in an installed payload.
+	if (existsSync(join(runtime, "language-runtime.json"))) {
+		const inventory = JSON.parse(readFileSync(join(runtime, "payload-files.json"), "utf8"));
+		for (const { path, sha256 } of inventory) {
+			assert.equal(
+				createHash("sha256")
+					.update(readFileSync(join(runtime, path)))
+					.digest("hex"),
+				sha256,
+				`runtime mutated during use: ${path}`,
+			);
+		}
+	}
 	stop();
 	console.log("PostgreSQL 18 initdb/start/SQL insert/owned stop/restart/persisted row/final owned stop succeeded");
 } finally {

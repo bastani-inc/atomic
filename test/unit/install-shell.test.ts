@@ -18,8 +18,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "vitest";
-import { spawnSyncCollect } from "../helpers/runtime.js";
+import { afterAll, test } from "vitest";
+import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const installerPath = join(root, "install.sh");
@@ -134,6 +134,27 @@ function writeExecutable(path: string, source: string): void {
 	chmodSync(path, 0o755);
 }
 
+let validatorDirectory: string | undefined;
+function compiledValidator(): string {
+	if (!validatorDirectory) {
+		validatorDirectory = mkdtempSync(join(tmpdir(), "atomic-sh-validator-"));
+		const build = spawnSyncCollect([
+			bunExecutable(),
+			"build",
+			"--compile",
+			"--format=cjs",
+			join(root, "packages/coding-agent/src/bun/split-loader.ts"),
+			"--outfile",
+			join(validatorDirectory, "atomic"),
+		]);
+		assert.equal(build.exitCode, 0, build.stderr.toString());
+	}
+	return join(validatorDirectory, "atomic");
+}
+afterAll(() => {
+	if (validatorDirectory) rmSync(validatorDirectory, { recursive: true, force: true });
+});
+
 function createArchive(workspace: string, tag: string, asset: string): { path: string; checksum: string } {
 	const encodedTag = encodeURIComponent(tag);
 	const sourceRoot = join(workspace, `payload-${encodedTag}-${asset}`);
@@ -150,7 +171,35 @@ function createArchive(workspace: string, tag: string, asset: string): { path: s
 	for (const directory of directories) chmodSync(directory, 0o755);
 	writeExecutable(
 		join(payload, "atomic"),
-		`#!/bin/sh\nversion='${tag}'\nif [ "\${ATOMIC_FIXTURE_FAIL_STAGED_VERSION:-}" = "$version" ]; then exit 17; fi\ncase "$0" in\n  *atomic-install.*) ;;\n  *) if [ "\${ATOMIC_FIXTURE_FAIL_FINAL_VERSION:-}" = "$version" ]; then exit 23; fi ;;\nesac\nif [ "\${1:-}" = --version ]; then printf '%s\\n' "$version"; exit 0; fi\nprintf '%s\\n' "$version:$*"\n`,
+		`#!/bin/sh\nversion='${tag}'\nif [ "\${1:-}" = --internal-validate-postgres-runtime ]; then exec '${compiledValidator()}' "$@"; fi\nif [ "\${ATOMIC_FIXTURE_FAIL_STAGED_VERSION:-}" = "$version" ]; then exit 17; fi\ncase "$0" in\n  *atomic-install.*) ;;\n  *) if [ "\${ATOMIC_FIXTURE_FAIL_FINAL_VERSION:-}" = "$version" ]; then exit 23; fi ;;\nesac\nif [ "\${1:-}" = --version ]; then printf '%s\\n' "$version"; exit 0; fi\nprintf '%s\\n' "$version:$*"\n`,
+	);
+	const postgresBin = join(payload, "node_modules/@bastani/atomic-natives/postgres-runtime/bin");
+	mkdirSync(postgresBin, { recursive: true });
+	for (const binary of ["postgres", "pg_ctl", "initdb"]) {
+		writeExecutable(
+			join(postgresBin, binary),
+			`#!/bin/sh\n[ "\${ATOMIC_FIXTURE_FAIL_POSTGRES:-}" != '${tag}' ] || exit 134\nprintf 'PostgreSQL 18.4\\n'\n`,
+		);
+	}
+	const runtime = join(postgresBin, "..");
+	writeFileSync(join(runtime, "optional-library"), "optional library");
+	writeFileSync(join(runtime, "pg-symlinks.json"), "[]");
+	const inventory = ["bin/postgres", "bin/pg_ctl", "bin/initdb", "optional-library", "pg-symlinks.json"].map(
+		(path) => ({
+			path,
+			sha256: createHash("sha256")
+				.update(readFileSync(join(runtime, path)))
+				.digest("hex"),
+		}),
+	);
+	writeFileSync(join(runtime, "payload-files.json"), JSON.stringify(inventory));
+	writeFileSync(
+		join(runtime, "runtime-provenance.json"),
+		JSON.stringify({
+			payloadInventorySha256: createHash("sha256")
+				.update(readFileSync(join(runtime, "payload-files.json")))
+				.digest("hex"),
+		}),
 	);
 	const regularFiles = [
 		[join(payload, "package.json"), JSON.stringify({ name: "@bastani/atomic", version: tag })],
@@ -165,7 +214,9 @@ function createArchive(workspace: string, tag: string, asset: string): { path: s
 	}
 
 	const archive = join(workspace, `${encodedTag}-${asset}`);
-	const result = spawnSyncCollect([resolveExecutable("tar"), "-czf", archive, "-C", sourceRoot, "atomic"]);
+	const result = spawnSyncCollect([resolveExecutable("tar"), "-czf", archive, "-C", sourceRoot, "atomic"], {
+		env: { ...process.env, COPYFILE_DISABLE: "1", COPY_EXTENDED_ATTRIBUTES_DISABLE: "1" },
+	});
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	const checksum = createHash("sha256").update(readFileSync(archive)).digest("hex");
 	rmSync(sourceRoot, { recursive: true, force: true });
@@ -980,6 +1031,65 @@ unixTest("shell installer selects every Darwin and Linux archive, including Rose
 			assertSuccess(fixture.run({ ...host, args: ["--ref", "1.0.0"] }));
 			assert.equal(readFileSync(join(fixture.installRoot, "current", "asset.txt"), "utf8"), asset);
 			assert.match(readFileSync(fixture.requestLog, "utf8"), new RegExp(`${asset.replaceAll(".", "\\.")}$`, "mu"));
+		} finally {
+			fixture.cleanup();
+		}
+	}
+});
+
+// #3073: missing optional libraries are invisible to all entrypoint versions.
+unixTest("shell installer rejects checksum-valid missing inventory files before first install or upgrade", () => {
+	for (const upgrade of [false, true]) {
+		const fixture = createFixture();
+		try {
+			if (upgrade) assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			const release = fixture.releases.get("2.0.0")!;
+			const asset = "atomic-linux-x64.tar.gz";
+			const archive = release.assets.get(asset)!;
+			const extracted = join(fixture.workspace, "corrupt-payload");
+			mkdirSync(extracted);
+			assert.equal(spawnSyncCollect([resolveExecutable("tar"), "-xzf", archive, "-C", extracted]).exitCode, 0);
+			const runtime = join(extracted, "atomic/node_modules/@bastani/atomic-natives/postgres-runtime");
+			// The sealed inventory is unchanged; only the optional library disappears.
+			rmSync(join(runtime, "optional-library"), { force: true });
+			for (const binary of ["postgres", "pg_ctl", "initdb"])
+				assert.equal(spawnSyncCollect([join(runtime, "bin", binary), "--version"]).exitCode, 0);
+			assert.equal(
+				spawnSyncCollect([resolveExecutable("tar"), "-czf", archive, "-C", extracted, "atomic"], {
+					env: { ...process.env, COPYFILE_DISABLE: "1" },
+				}).exitCode,
+				0,
+			);
+			release.checksums = `${createHash("sha256").update(readFileSync(archive)).digest("hex")}  ${asset}\n`;
+			const result = fixture.run({ args: ["--ref", "2.0.0"] });
+			assert.notEqual(result.exitCode, 0, output(result));
+			assert.match(output(result), /incomplete PostgreSQL runtime/u);
+			assert.equal(existsSync(join(fixture.installRoot, "versions/2.0.0")), false);
+			if (upgrade) assert.equal(currentVersion(fixture), "1.0.0");
+			else assert.equal(existsSync(join(fixture.installRoot, "current")), false);
+			assertNoTemporaryState(fixture);
+		} finally {
+			fixture.cleanup();
+		}
+	}
+});
+
+// #3073: a runnable launcher must not promote an unusable database runtime.
+unixTest("shell installer rejects incomplete PostgreSQL on first install and upgrade before promotion", () => {
+	for (const upgrade of [false, true]) {
+		const fixture = createFixture();
+		try {
+			if (upgrade) assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			const result = fixture.run({
+				args: ["--ref", "2.0.0"],
+				environment: { ATOMIC_FIXTURE_FAIL_POSTGRES: "2.0.0" },
+			});
+			assert.notEqual(result.exitCode, 0, output(result));
+			assert.match(output(result), /incomplete PostgreSQL runtime/u);
+			assert.equal(existsSync(join(fixture.installRoot, "versions/2.0.0")), false);
+			if (upgrade) assert.equal(currentVersion(fixture), "1.0.0");
+			else assert.equal(existsSync(join(fixture.installRoot, "current")), false);
+			assertNoTemporaryState(fixture);
 		} finally {
 			fixture.cleanup();
 		}
