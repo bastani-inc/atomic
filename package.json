@@ -38,6 +38,7 @@
     "@biomejs/biome": "2.5.8",
     "@j178/prek": "0.4.11",
     "@types/bun": "1.4.1",
+    "@types/pg": "8.20.0",
     "@types/tar-stream": "3.1.4",
     "@xterm/headless": "6.0.0",
     "acorn": "8.18.0",
