@@ -54,6 +54,8 @@ async function registerIsolatedTests(): Promise<void> {
 			assert.fail("graph overlay checks must not create skill completion"),
 		TranscriptFollowIndicator: TestComponent,
 		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
+		escapeTerminalControls: (text: string) => text,
+		hasTerminalControls: () => false,
 		keyHint: (key: string) => key,
 		sessionScopedExtensionState: (_scope: object, _key: string, create: () => object) => create(),
 		keyText: (key: string) => key,
