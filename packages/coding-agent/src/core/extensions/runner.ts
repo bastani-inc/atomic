@@ -366,6 +366,9 @@ export class ExtensionRunner {
 		} else if (generation !== host.current) {
 			// Stricter than the pre-reconciliation baseline: the successor owns publication even
 			// for a key this superseded runner never mounted, not only keys it previously published.
+			// The rejection is permanent for this runner/host pair: host.current only ever advances
+			// and this runner's generation is fixed, so a superseded-but-live runner goes silent for
+			// good, even after the successor invalidates and releases every key it holds.
 			return;
 		}
 		let publications = this.widgetPublications.get(ui);

@@ -4,6 +4,7 @@ import {
 	hasPendingInput,
 	resolveRunIndicatorStatuses,
 	runIndicatorStatus,
+	stageHasPendingInput,
 	statusOnlyRunIndicator,
 	visibleRunTreeMembers,
 } from "../../packages/workflows/src/shared/run-indicator-status.js";
@@ -288,6 +289,41 @@ describe("hasPendingInput", () => {
 		run.pendingPrompt = { id: "run-prompt-id", kind: "confirm", message: "Continue?", createdAt: 1 };
 		assert.equal(hasPendingInput(run, { ignoreTerminalStages: true }), true);
 		assert.equal(hasPendingInput(run, { ignoreTerminalStages: false }), true);
+	});
+});
+
+describe("stageHasPendingInput", () => {
+	function nonTerminalStage(id: string, overrides: Partial<StageSnapshot> = {}): StageSnapshot {
+		return { id, name: id, status: "running", parentIds: [], toolEvents: [], ...overrides };
+	}
+
+	test("pins the awaitingInputSince-only clause", () => {
+		const stage = nonTerminalStage("since-only", { awaitingInputSince: 2 });
+		assert.equal(stage.status, "running");
+		assert.equal(stage.pendingPrompt, undefined);
+		assert.equal(stageHasPendingInput(stage), true);
+	});
+
+	test("pins the pendingPrompt-only clause", () => {
+		const stage = nonTerminalStage("prompt-only", {
+			pendingPrompt: { id: "prompt-only-prompt", kind: "confirm", message: "Continue?", createdAt: 1 },
+		});
+		assert.notEqual(stage.status, "awaiting_input");
+		assert.equal(stageHasPendingInput(stage), true);
+	});
+
+	test("pins the inputRequest-only clause", () => {
+		const stage = nonTerminalStage("request-only", {
+			inputRequest: {
+				id: "request-only-input-request",
+				kind: "ask_user_question",
+				questions: [{ question: "Pin me", options: [] }],
+				createdAt: 1,
+			},
+		});
+		assert.notEqual(stage.status, "awaiting_input");
+		assert.equal(stage.pendingPrompt, undefined);
+		assert.equal(stageHasPendingInput(stage), true);
 	});
 });
 

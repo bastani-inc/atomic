@@ -154,6 +154,11 @@ function stagePromptOccurrences(run: RunSnapshot): PendingInputOccurrence[] {
 
 		const request = stage.inputRequest;
 		if (request === undefined) {
+			// stage.pendingPrompt and stage.inputRequest are already undefined here (terminal
+			// stages continue'd at :143, a present prompt is handled and continue'd at :145-153,
+			// and request === undefined in this branch), so the shared four-clause predicate
+			// reduces to the previous two-clause expression: status === "awaiting_input" ||
+			// awaitingInputSince !== undefined.
 			if (stageHasPendingInput(stage)) {
 				occurrences.push({ message: "", displayable: false });
 			}

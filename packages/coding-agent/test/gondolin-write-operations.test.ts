@@ -112,8 +112,9 @@ function gondolinFixture() {
 						input: options?.stdin,
 						encoding: "utf8",
 					});
-					// noclobber can reject before cat reads stdin. spawnSync then reports EPIPE
-					// alongside the real exit status; throwing that error is load-sensitive.
+					// When spawnSync produced an exit status, the child ran: trust the status and return
+					// it. Only throw when the process never started (observed under noclobber as EPIPE,
+					// when cat's stdin write races the shell rejecting the redirect).
 					if (result.error && result.status === null) throw result.error;
 					if (result.status === 44 && guest.race) {
 						guest.race = false;
