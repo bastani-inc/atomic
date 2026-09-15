@@ -21,7 +21,7 @@ const config: WorkflowRuntimeConfig = {
 beforeEach(() => store.clear());
 afterEach(() => store.clear());
 
-test("displayed Workflow run and stage IDs remain full while typed prefixes stay actionable through the public tool", async () => {
+test("displayed workflow IDs remain full while unique 8-hex run prefixes are actionable", async () => {
 	const fixture = workflow({
 		name: "actionable-id-proof",
 		description: "Deterministic workflow identifier proof.",
@@ -50,13 +50,17 @@ test("displayed Workflow run and stage IDs remain full while typed prefixes stay
 	const listed = await execute({ action: "status" }, {} as never);
 	const rendered = renderResult(listed, { plain: true });
 	assert.ok(rendered.includes(completed.runId), `status should render the full run ID; output:\n${rendered}`);
-	// The contract is a round trip: the id the UI prints is exactly the id the
-	// tool accepts back. Nothing shorter is a valid target any more.
+	// The UI continues to print the canonical identity even though #2603 adds a
+	// fixed-length convenience selector for typed commands.
 	const displayedRunId = completed.runId;
 
 	const status = await execute({ action: "status", runId: displayedRunId }, {} as never);
 	assert.equal(status.action, "statusDetail");
 	assert.equal(status.runId, completed.runId);
+	// Regression: #2603 — public workflow tools accept a unique 8-hex run prefix.
+	const prefixedStatus = await execute({ action: "status", runId: completed.runId.slice(0, 8) }, {} as never);
+	assert.equal(prefixedStatus.action, "statusDetail");
+	assert.equal(prefixedStatus.runId, completed.runId);
 
 	const truncatedRun = await execute({ action: "status", runId: completed.runId.slice(0, 6) }, {} as never);
 	assert.equal(truncatedRun.action, "statusDetail");
@@ -66,7 +70,7 @@ test("displayed Workflow run and stage IDs remain full while typed prefixes stay
 	);
 	assert.match(
 		"error" in truncatedRun ? truncatedRun.error : "",
-		/must be a full 36-character UUID/,
+		/must be a full 36-character UUID or a unique 8-character hexadecimal prefix/,
 		"a truncated run id must be rejected as malformed rather than resolved by prefix",
 	);
 

@@ -4,6 +4,7 @@ import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
+import { resolveSessionTarget } from "../../packages/intercom/session-target.js";
 import type { Message, SessionInfo, WorkflowStageRosterEntry } from "../../packages/intercom/types.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -349,7 +350,7 @@ describe("Intercom full session ID targeting", () => {
 		assert.equal(typeof current.sent[0]?.messageId, "string");
 	});
 
-	test("an 8-character ID prefix is rejected for send", async () => {
+	test("a unique 8-character UUID prefix resolves for send", async () => {
 		const self = session("self-session-id", "self");
 		const recipient = session("de903b5c-1111-4222-8333-123456789abc", "recipient");
 		const current = toolFixture(new ReplyTracker(), [self, recipient]);
@@ -362,17 +363,55 @@ describe("Intercom full session ID targeting", () => {
 			context,
 		);
 
+		// Regression: #2603 — Intercom resolves within its current visible session set.
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(current.sent.length, 1);
+		assert.equal(current.sent[0]?.to, recipient.id);
+		assert.ok(current.sent[0]?.messageId);
+	});
+
+	test("an ambiguous 8-character UUID prefix lists the matching sessions", async () => {
+		// Regression: #2603 — Intercom must never select the first colliding session.
+		const first = session("2603abcd-1111-4222-8333-123456789abc", "first");
+		const second = session("2603abcd-9999-4222-8333-123456789abc", "second");
+		const current = toolFixture(new ReplyTracker(), [session("self-session-id", "self"), first, second]);
+
+		const result = await current.tool.execute(
+			"send-ambiguous-prefix",
+			{ action: "send", to: "2603abcd", message: "hello" },
+			undefined,
+			undefined,
+			context,
+		);
+
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /Session not found/);
+		assert.match(result.content[0]?.text ?? "", /ambiguous/);
+		assert.match(result.content[0]?.text ?? "", new RegExp(first.id));
+		assert.match(result.content[0]?.text ?? "", new RegExp(second.id));
 		assert.deepEqual(current.sent, []);
 	});
 
-	test("an 8-character ID prefix is rejected for blocking ask", async () => {
+	test("an exact 8-hex custom ID or session name keeps precedence", () => {
+		// Regression: #2603 — non-UUID Intercom identifiers retain their existing priority.
+		const uuid = session("2603abcd-1111-4222-8333-123456789abc", "uuid-session");
+		const customId = session("2603abcd", "custom-id");
+		const named = session("different-custom-id", "2603abcd");
+		assert.deepEqual(resolveSessionTarget([uuid, customId], "2603abcd"), {
+			kind: "resolved",
+			session: customId,
+		});
+		assert.deepEqual(resolveSessionTarget([uuid, named], "2603abcd"), {
+			kind: "resolved",
+			session: named,
+		});
+	});
+
+	test("a unique 8-character UUID prefix resolves for blocking ask", async () => {
 		const self = session("self-session-id", "self");
 		const recipient = session("df014c6d-1111-4222-8333-123456789abc", "recipient");
 		const current = toolFixture(new ReplyTracker(), [self, recipient]);
 
-		const result = await current.tool.execute(
+		const pending = current.tool.execute(
 			"ask-prefix",
 			{ action: "ask", to: recipient.id.slice(0, 8), message: "question" },
 			undefined,
@@ -380,12 +419,21 @@ describe("Intercom full session ID targeting", () => {
 			context,
 		);
 
-		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /Session not found/);
-		assert.deepEqual(current.sent, []);
+		await sleep(10);
+		const waiter = current.waiterSlot.pending()[0];
+		assert.ok(waiter);
+		waiter.resolve({
+			id: "prefix-answer",
+			timestamp: 2,
+			replyTo: waiter.replyTo,
+			content: { text: "answer" },
+		});
+		const result = await pending;
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(current.sent[0]?.to, recipient.id);
 	});
 
-	test("an 8-character ID prefix is rejected for targeted reply", async () => {
+	test("a unique 8-character UUID prefix resolves for targeted reply", async () => {
 		const sender = session("ee903b5c-1111-4222-8333-123456789abc", "sender");
 		const replies = new ReplyTracker();
 		replies.recordIncomingMessage(sender, ask("question-sender"));
@@ -399,9 +447,77 @@ describe("Intercom full session ID targeting", () => {
 			context,
 		);
 
-		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /No pending ask/);
-		assert.deepEqual(current.sent, []);
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(current.sent.length, 1);
+		assert.equal(current.sent[0]?.to, sender.id);
+		assert.equal(current.sent[0]?.replyTo, "question-sender");
+		assert.ok(current.sent[0]?.messageId);
+	});
+
+	test("targeted reply prefix refuses exact name, custom ID, and UUID collisions without consuming the ask", async () => {
+		// Regression: #2603 — explicit reply prefixes must not canonicalize against only the pending sender.
+		const sender = session("2603abcd-1111-4111-8111-111111111111", "peer");
+		const self = session("self-session-id", "self");
+		const conflicts: Array<{ name: string; extra: SessionInfo }> = [
+			{ name: "name", extra: session("other", "2603abcd") },
+			{ name: "custom-id", extra: session("2603abcd", "other") },
+			{ name: "uuid", extra: session("2603abcd-2222-4222-8222-222222222222", "other") },
+		];
+		for (const conflict of conflicts) {
+			const replies = new ReplyTracker();
+			replies.recordIncomingMessage(sender, ask("question"));
+			const current = toolFixture(replies, [self, sender, conflict.extra]);
+			const result = await current.tool.execute(
+				`reply-conflict-${conflict.name}`,
+				{ action: "reply", to: "2603abcd", replyTo: "question", message: "answer" },
+				undefined,
+				undefined,
+				context,
+			);
+			assert.equal(result.isError, true, conflict.name);
+			assert.deepEqual(current.sent, [], conflict.name);
+			assert.equal(replies.listPending().length, 1, conflict.name);
+		}
+	});
+
+	test("a unique reply prefix still canonicalizes when the sender is listed", async () => {
+		const sender = session("ee903b5c-1111-4222-8333-123456789abc", "sender");
+		const self = session("self-session-id", "self");
+		const replies = new ReplyTracker();
+		replies.recordIncomingMessage(sender, ask("question-sender"));
+		const current = toolFixture(replies, [self, sender]);
+		const result = await current.tool.execute(
+			"reply-prefix-listed",
+			{ action: "reply", to: sender.id.slice(0, 8), message: "answer" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(current.sent.length, 1);
+		assert.equal(current.sent[0]?.to, sender.id);
+		assert.equal(replies.listPending().length, 0);
+	});
+
+	test("explicit reply names and full IDs keep their original selector", async () => {
+		// Regression: #2603 — blanket canonicalization bypassed hidden broker collisions.
+		const sender = session("ee903b5c-1111-4222-8333-123456789abc", "Parent");
+		for (const to of [sender.id, "Parent", "parent"]) {
+			const replies = new ReplyTracker();
+			replies.recordIncomingMessage(sender, ask("question-sender"));
+			const current = toolFixture(replies);
+			const result = await current.tool.execute(
+				`reply-original-${to}`,
+				{ action: "reply", to, message: "answer" },
+				undefined,
+				undefined,
+				context,
+			);
+			assert.equal(result.isError, false, `${to}: ${result.content[0]?.text}`);
+			assert.equal(current.sent.length, 1, to);
+			assert.equal(current.sent[0]?.to, to);
+			assert.equal(replies.listPending().length, 0, to);
+		}
 	});
 
 	test("an unknown target is not found", async () => {

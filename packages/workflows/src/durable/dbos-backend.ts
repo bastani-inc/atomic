@@ -461,7 +461,12 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 
 	async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
 		await this.hydrateResumableWorkflows();
-		return { resumable: this.listResumableWorkflows(), completed: this.listCompletedWorkflows() };
+		const catalog = await this.mem.prepareWorkflowCatalog();
+		return {
+			resumable: this.listResumableWorkflows(),
+			completed: this.listCompletedWorkflows(),
+			inspectableIds: catalog.inspectableIds?.filter((id) => !this.invalid.has(id)),
+		};
 	}
 	async deleteWorkflow(workflowId: string): Promise<void> {
 		this.invalid.add(workflowId);

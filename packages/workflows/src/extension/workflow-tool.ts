@@ -12,7 +12,12 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
-import { isWorkflowStageToolContext, resolveRunId, topLevelExpandedSnapshots } from "./workflow-targets.js";
+import {
+	isResolvedRunId,
+	isWorkflowStageToolContext,
+	resolveRunId,
+	topLevelExpandedSnapshots,
+} from "./workflow-targets.js";
 import { workflowAnswerAction } from "./workflow-tool-answer.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
@@ -30,7 +35,7 @@ import {
 
 type DurableInspectionSourceResolution =
 	| { readonly kind: "local" }
-	| { readonly kind: "durable"; readonly source: WorkflowInspectionSource }
+	| { readonly kind: "durable"; readonly runId: string; readonly source: WorkflowInspectionSource }
 	| { readonly kind: "error"; readonly message: string };
 
 async function resolveDurableInspectionSource(
@@ -43,7 +48,7 @@ async function resolveDurableInspectionSource(
 	if (local.kind !== "not_found") return { kind: "local" };
 	const durable = await runtime.inspectDurableWorkflow(target);
 	if (durable.kind !== "found") return { kind: "error", message: durable.message };
-	return { kind: "durable", source: { store: durable.store, allowLiveHandles: false } };
+	return { kind: "durable", runId: durable.detail.runId, source: { store: durable.store, allowLiveHandles: false } };
 }
 
 function durableInspectionError(
@@ -137,14 +142,17 @@ export function makeExecuteWorkflowTool(
 				const target = args.runId;
 				if (target !== undefined) {
 					const resolved = resolveRunId(target);
-					if (resolved.kind === "malformed") {
+					if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 						return { action: "statusDetail", runId: target, error: resolved.message };
 					}
 					if (resolved.kind === "not_found") {
 						const durable = await awaitRequest(getRuntime().inspectDurableWorkflow(target));
 						return durable.kind === "found"
-							? { action: "statusDetail", runId: target, detail: durable.detail }
+							? { action: "statusDetail", runId: durable.detail.runId, detail: durable.detail }
 							: { action: "statusDetail", runId: target, error: durable.message };
+					}
+					if (!isResolvedRunId(resolved)) {
+						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
 					}
 					const inspected = inspectRun(resolved.runId, { toolControlRegistry });
 					if (!inspected.ok) {
@@ -185,9 +193,10 @@ export function makeExecuteWorkflowTool(
 				const resolved = await awaitRequest(resolveDurableInspectionSource(args, getRuntime()));
 				if (resolved.kind === "error") return durableInspectionError(action, args.runId ?? "", resolved.message);
 				const source = resolved.kind === "durable" ? resolved.source : undefined;
-				if (action === "stages") return workflowStagesResult(args, source);
-				if (action === "stage") return workflowStageResult(args, source);
-				return workflowTranscriptResult(args, source);
+				const canonicalArgs = resolved.kind === "durable" ? { ...args, runId: resolved.runId } : args;
+				if (action === "stages") return workflowStagesResult(canonicalArgs, source);
+				if (action === "stage") return workflowStageResult(canonicalArgs, source);
+				return workflowTranscriptResult(canonicalArgs, source);
 			}
 			case "answer":
 				return awaitRequest(workflowAnswerAction(args));

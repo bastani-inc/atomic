@@ -5,7 +5,15 @@ import {
 	expandWorkflowGraph,
 	stageMatchesExpandedIdentifier,
 } from "../shared/expanded-workflow-graph.js";
-import { isFullRunId, malformedRunIdMessage, RUN_ID_LENGTH } from "../shared/run-id.js";
+import {
+	isFullRunId,
+	isResolvedRunId,
+	isRunIdPrefix,
+	malformedRunIdMessage,
+	RUN_ID_LENGTH,
+	RUN_ID_PREFIX_LENGTH,
+	resolveRunIdTarget,
+} from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
@@ -80,18 +88,15 @@ export function isRunStatus(value: string): value is RunStatus {
 	}
 }
 
-export { isFullRunId, malformedRunIdMessage, RUN_ID_LENGTH };
+export { isFullRunId, isResolvedRunId, malformedRunIdMessage, RUN_ID_LENGTH, RUN_ID_PREFIX_LENGTH };
 
-export type RunIdResolution =
-	| { kind: "exact"; runId: string }
-	| { kind: "malformed"; message: string }
-	| { kind: "not_found" };
+export type RunIdResolution = ReturnType<typeof resolveRunIdTarget>;
 
 export function resolveRunId(target: string, activeStore: Store = store): RunIdResolution {
-	if (!isFullRunId(target)) return { kind: "malformed", message: malformedRunIdMessage(target) };
-	const exact = activeStore.runs().find((r) => r.id === target);
-	if (exact) return { kind: "exact", runId: exact.id };
-	return { kind: "not_found" };
+	return resolveRunIdTarget(
+		target,
+		activeStore.runs().map((run) => run.id),
+	);
 }
 
 export type ToolRunTarget =
@@ -110,8 +115,10 @@ export function resolveToolRunTarget(
 	const target = rawTarget || activeStore.activeRunId() || "";
 	if (!target) return { kind: "not_found", target: rawTarget, message: emptyMessage };
 	const resolved = resolveRunId(target, activeStore);
-	if (resolved.kind === "exact") return { kind: "run", runId: resolved.runId };
-	if (resolved.kind === "malformed") return { kind: "malformed", target, message: resolved.message };
+	if (isResolvedRunId(resolved)) return { kind: "run", runId: resolved.runId };
+	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
+		return { kind: "malformed", target, message: resolved.message };
+	}
 	return { kind: "not_found", target, message: `Run not found: ${target}` };
 }
 
@@ -130,6 +137,9 @@ export function resolveStageTarget(runId: string, stageTarget?: string, activeSt
 	const exactNames = graph.stages.filter((stage) => stage.name === target);
 	if (exactNames.length === 1) return resolvedStageTarget(exactNames[0]!);
 	if (exactNames.length > 1) return ambiguousStageTarget(target, exactNames);
+	const uuidMatches = matchingUuidStages(graph.stages, target);
+	if (uuidMatches.length === 1) return resolvedStageTarget(uuidMatches[0]!);
+	if (uuidMatches.length > 1) return ambiguousUuidStageTarget(target, uuidMatches);
 	const matches = graph.stages.filter((stage) => stageMatchesExpandedIdentifier(stage, target));
 	if (matches.length === 0) return { ok: false, message: `Stage not found in run ${runId}: ${target}` };
 	if (matches.length > 1) return ambiguousStageTarget(target, matches);
@@ -141,6 +151,24 @@ function resolvedStageTarget(stage: ExpandedWorkflowStage): ToolStageTarget {
 		ok: true,
 		runId: stage.workflowGraphTarget.runId,
 		stageId: stage.workflowGraphTarget.stageId,
+	};
+}
+
+function matchingUuidStages(stages: readonly ExpandedWorkflowStage[], target: string): ExpandedWorkflowStage[] {
+	if (!isRunIdPrefix(target)) return [];
+	return stages.filter((stage) => {
+		const id = stage.workflowGraphTarget.stageId;
+		return stage.nodeKind !== "tool" && isFullRunId(id) && id.slice(0, 8).toLowerCase() === target.toLowerCase();
+	});
+}
+
+function ambiguousUuidStageTarget(
+	target: string,
+	stages: readonly ExpandedWorkflowStage[],
+): { ok: false; message: string } {
+	return {
+		ok: false,
+		message: `Ambiguous stage UUID prefix "${target}" matches: ${stages.map((stage) => stage.workflowGraphTarget.stageId).join(", ")}. Use the full 36-character UUID.`,
 	};
 }
 
@@ -181,6 +209,7 @@ export function resolveControlNodeTarget(runId: string, stageTarget?: string): C
 		nodes.filter((node) => node.id === target),
 		nodes.filter((node) => node.workflowGraphTarget.stageId === target),
 		nodes.filter((node) => node.name === target),
+		matchingUuidStages(nodes, target),
 		nodes.filter((node) => stageMatchesExpandedIdentifier(node, target)),
 	];
 	for (const matches of candidates) {

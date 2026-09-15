@@ -304,6 +304,10 @@ for (const hidden of [false, true]) {
 					context,
 				);
 				assert.equal(result.isError, true, JSON.stringify(result));
+				// #2603: collision refusal must not disclose an unrelated private session UUID.
+				if (hidden && collision === "duplicate name") {
+					assert.doesNotMatch(JSON.stringify(result), new RegExp(selected.sessionId!));
+				}
 				assert.deepEqual(delivered, []);
 				assert.equal(tracker.listPending()[0]!.message.id, questionId);
 			}
@@ -991,6 +995,8 @@ test("a public reply reaches a retried cross-group ask after the asker reconnect
 	assert.equal(routeValidations, 1, "deduplication must not reroute the accepted question");
 	assert.equal(questions.length, 1, "the recipient sees exactly one question");
 	const imposter = await createClient("workflow-sender");
+	// #2603: only a visible same-name peer can make reply discovery ambiguous.
+	await imposter.joinGroup(stageGroup);
 	const imposterId = imposter.sessionId;
 	assert.ok(imposterId);
 	const ambiguousReply = await recipientTool.execute(

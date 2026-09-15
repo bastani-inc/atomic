@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Session, Workflow, and Intercom UUID selectors accept unique 8-character hexadecimal prefixes while preserving exact custom IDs and visibility boundaries ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+
+### Fixed
+
+- Stage-scoped durable workflow resume now refuses before dispatch instead of resuming the whole root, including restored local shadows of paused durable runs, and prefix resume no longer treats nested children as root candidates ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+
+- Explicit Intercom reply names and full session IDs keep their original identity through broker collision checks, unique UUID prefixes still canonicalize to the stored session ID, and hidden same-name collisions refuse regardless of letter case ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+
+- Canonicalized Intercom UUID-prefix sends revalidate the original selector against the broker's current authorized sessions, so a newly visible same-prefix UUID, exact name, or custom ID refuses instead of delivering to the previously unique identity ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+
+- Prefix ambiguity refusals no longer include unauthorized or hidden session names when a canonicalized UUID-prefix send is rejected ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+
 ## [0.9.20-alpha.2] - 2026-09-15
 
 ### Fixed

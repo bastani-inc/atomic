@@ -243,10 +243,10 @@ Sessions auto-save to `~/.atomic/agent/sessions/` organized by working directory
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
 atomic --no-session        # Ephemeral mode (don't save)
-atomic --session <path|id> # Use specific session file or partial ID
+atomic --session <path|id> # Use a file, exact ID, or unique 8-hex UUID prefix
 atomic --session-id <id>   # Use/create an exact project-local session ID
 atomic --name "Refactor"   # Set the session display name
-atomic --fork <path|id>    # Fork specific session file or ID into a new session
+atomic --fork <path|id>    # Fork a file, exact ID, or unique 8-hex UUID prefix
 ```
 
 Use `/session` in interactive mode to see the current session ID before reusing it with `--session <id>`, `--session-id <id>`, or `--fork <id>`.
@@ -546,9 +546,9 @@ cat README.md | atomic -p "Summarize this text"
 |--------|-------------|
 | `-c`, `--continue` | Continue most recent session |
 | `-r`, `--resume` | Browse and select session |
-| `--session <path\|id>` | Use specific session file or partial UUID |
+| `--session <path\|id>` | Use a session file, exact ID, or unique 8-hex UUID prefix |
 | `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
-| `--fork <path\|id>` | Fork specific session file or partial UUID into a new session |
+| `--fork <path\|id>` | Fork a session file, exact ID, or unique 8-hex UUID prefix |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | Ephemeral mode (don't save) |

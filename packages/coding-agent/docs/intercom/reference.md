@@ -10,10 +10,10 @@ description: The intercom tool contract and every intercom setting.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `action` | string | `"list"`, `"groups"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `to` | string | Exact session name/full session ID, or `workflow:<rootRunId>/<segment>[/<segment>...]`; `*` matches one segment and `**` any depth. Sends support pending/future patterns and broadcast; `ask` requires a live target. |
+| `to` | string | Exact session name/full session ID, unique 8-hex session UUID prefix, or `workflow:<rootRunId>/<segment>[/<segment>...]`; `*` matches one segment and `**` any depth. Sends support pending/future patterns and broadcast; `ask` requires a live target. |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
-| `replyTo` | string | Optional message ID for threading or replying to an `ask` |
+| `replyTo` | string | Exact message ID or unique 8-hex UUID prefix of an unresolved inbound ask; resolved before current-turn and pending-ask fallback |
 | `group` | string | Group name for `join` or an optional targeted `leave`; read-only group filter for `list`/`status`. `send`/`ask` remain limited to shared memberships. |
 
 ### Actions
@@ -51,7 +51,7 @@ Sent and received messages are recorded in session history as `intercom_sent` / 
 
 ### Targeting Sessions and Pending Workflow Stages
 
-Live-session lookup accepts only an exact full Intercom session ID or an exact case-insensitive session name. Workflow stages use the canonical `workflow:<rootRunId>/<segment>[/<segment>...]` path printed by `intercom list` and workflow status surfaces; an exact target works while the row is `PENDING` and after it becomes `RUNNING`. Each segment may be a stage name, run id, or glob: `*` matches one segment and may be embedded, while `**` matches any depth. Status surfaces label pending stages whose pre-start delivery capability is unavailable without presenting a usable target and never advertise a retained pending stage after its run terminates. The `sessionId` shown by `workflow status` belongs to the workflow SDK and is **not** an Intercom target.
+Live-session lookup accepts an exact full Intercom session ID, an exact case-insensitive session name, or a unique 8-character hexadecimal prefix of a UUID-backed session ID. Exact names and IDs take precedence. Ambiguous prefixes report only authorized candidates and require the full UUID; other truncations are rejected. An isolated child can select its authorized supervisor by a unique UUID prefix without gaining access to unrelated groups. Workflow stages use the canonical `workflow:<rootRunId>/<segment>[/<segment>...]` path printed by `intercom list` and workflow status surfaces; an exact target works while the row is `PENDING` and after it becomes `RUNNING`. Each segment may be a stage name, run id, or glob: `*` matches one segment and may be embedded, while `**` matches any depth. Status surfaces label pending stages whose pre-start delivery capability is unavailable without presenting a usable target and never advertise a retained pending stage after its run terminates. The `sessionId` shown by `workflow status` belongs to the workflow SDK and is **not** an Intercom target.
 
 Agent list rows put the copyable exact ID or canonical workflow path first, followed by status and working directory. Meaningful names remain secondary metadata; redundant generated aliases are hidden only in the list, not removed from lookup. Pending and future workflow rows retain lifecycle and queued counts. Copy the target rather than reconstructing it from a name.
 

@@ -83,6 +83,28 @@ function seedSiblingChildren(targetStore: Store = store): void {
 	);
 }
 
+test("bare UUID stage selectors resolve prefixes with exact-name precedence and collision rejection", () => {
+	// #2603: stage names and composite/tool IDs retain their existing rules.
+	const id = fixtureRunId("uuid-stages");
+	const first = "2603abcd-1111-4222-8333-123456789abc";
+	const second = "2603abcd-2222-4222-8333-123456789abc";
+	store.recordRunStart(run({ id, name: "uuid-stages", stages: [stage(first, "first")] }));
+	assert.deepEqual(resolveStageTarget(id, "2603ABCD"), { ok: true, runId: id, stageId: first });
+	assert.deepEqual(resolveControlNodeTarget(id, "2603abcd"), { ok: true, kind: "stage", runId: id, stageId: first });
+	store.recordRunStart(run({ id, name: "uuid-stages", stages: [stage(first, "first"), stage(second, "second")] }));
+	const ambiguous = resolveStageTarget(id, "2603abcd");
+	assert.equal(ambiguous.ok, false);
+	if (!ambiguous.ok) {
+		assert.match(ambiguous.message, new RegExp(first));
+		assert.match(ambiguous.message, new RegExp(second));
+		assert.match(ambiguous.message, /full 36-character UUID/);
+	}
+	assert.equal(resolveControlNodeTarget(id, "2603abcd").ok, false);
+	assert.equal(resolveStageTarget(id, "2603abc").ok, false);
+	store.recordRunStart(run({ id, name: "uuid-stages", stages: [stage(first, "first"), stage(second, "2603abcd")] }));
+	assert.deepEqual(resolveStageTarget(id, "2603abcd"), { ok: true, runId: id, stageId: second });
+});
+
 interface HandleCalls {
 	pauses: number;
 	resumes: string[];

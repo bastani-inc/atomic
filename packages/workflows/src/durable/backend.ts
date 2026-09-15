@@ -21,6 +21,7 @@ import type {
 	ResumableWorkflowEntry,
 } from "./types.js";
 export interface DurableWorkflowCatalogEntries {
+	readonly inspectableIds?: readonly string[];
 	readonly resumable: readonly ResumableWorkflowEntry[];
 	readonly completed: readonly ResumableWorkflowEntry[];
 	readonly completedAll?: readonly ResumableWorkflowEntry[];
@@ -435,7 +436,13 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 	async hydrateResumableWorkflows(): Promise<void> {}
 
 	async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
-		return { resumable: this.listResumableWorkflows(), completed: this.listCompletedWorkflows() };
+		return {
+			resumable: this.listResumableWorkflows(),
+			completed: this.listCompletedWorkflows(),
+			inspectableIds: [...this.workflows.values()]
+				.filter((rec) => isRootWorkflow(rec.handle))
+				.map((rec) => rec.handle.workflowId),
+		};
 	}
 
 	setWorkflowStatus(

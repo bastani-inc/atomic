@@ -59,9 +59,15 @@ export class ReplyTracker {
 	resolveReplyTarget(options: { to?: string; replyTo?: string }, now = Date.now()): IntercomContext {
 		this.pruneExpired(now);
 		if (options.replyTo !== undefined) {
-			const exact = this.pendingAsks.get(options.replyTo) ??
-				(this.currentTurnContext?.message.id === options.replyTo && !this.currentTurnContext.message.expectsReply
-					? this.currentTurnContext : undefined);
+			const contexts = new Map(this.pendingAsks);
+			if (this.currentTurnContext && !this.currentTurnContext.message.expectsReply) {
+				contexts.set(this.currentTurnContext.message.id, this.currentTurnContext);
+			}
+			const resolution = resolveSessionTarget(Array.from(contexts.keys(), (id) => ({ id })), options.replyTo);
+			if (resolution.kind === "ambiguous_id_prefix" || resolution.kind === "ambiguous_name") {
+				throw new Error(sessionTargetFailureReason(options.replyTo, resolution));
+			}
+			const exact = resolution.kind === "resolved" ? contexts.get(resolution.session.id) : undefined;
 			if (!exact) throw new Error(`No reply context for "${options.replyTo}"`);
 			if (options.to !== undefined) {
 				const resolution = resolveSessionTarget([exact.from], options.to);

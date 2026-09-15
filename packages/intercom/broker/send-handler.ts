@@ -224,11 +224,68 @@ export function handleBrokerSend(
   // supervisor frame or an exact recorded reply may resolve across groups.
 	const liveWorkflowTarget = sessions.has(trimmedTo) ? undefined : resolveLiveWorkflowStage?.(trimmedTo);
 	const exactIdTarget = sessions.get(trimmedTo) ?? liveWorkflowTarget;
-  const reachableAcrossGroups = supervisorSend || Boolean(message.replyTo);
   const visibleCandidates = Array.from(sessions.values(), (session) => session.info).filter(
-	(info) => reachableAcrossGroups || sessionsShareGroup(info, fromSession.info),
+	(info) => sessionsShareGroup(info, fromSession.info) ||
+      (supervisorSend && info.id === fromSession.supervisorId) ||
+      (message.replyTo !== undefined && (
+        pendingQuestions.matchesReply(fromSession.info.id, info.id, message.replyTo) ||
+        isVerticalBypass({ replyTo: message.replyTo, sender: fromSession.info, target: info, supervisorCache })
+      )),
   );
   const candidates = visibleCandidates.filter(isAgentRecipient);
+  // Preserve explicit named-reply collision rejection without exposing hidden identities (#2603).
+  const originalSelector = logicalTarget.trim();
+  const hiddenReplyCollision = (selector: string) =>
+    Array.from(sessions.values()).some(
+      ({ info }) =>
+        isAgentRecipient(info) &&
+        (info.id === selector || info.name?.toLowerCase() === selector.toLowerCase()) &&
+        !candidates.some((candidate) => candidate.id === info.id),
+    );
+  if (
+    expectedRecipientId !== undefined &&
+    ((!exactIdTarget && hiddenReplyCollision(trimmedTo)) ||
+      (originalSelector !== trimmedTo && hiddenReplyCollision(originalSelector)))
+  ) {
+    write(socket, { type: "delivery_failed", messageId, attemptId,
+      reason: "Reply target cannot be resolved safely; use the exact sender ID",
+    });
+    return;
+  }
+  // Canonicalized UUID prefixes must still mean the same identity against the
+  // current authorized catalog; a newly visible UUID, exact name, or custom ID
+  // must not inherit the previously unique transport ID (#2603). Name-fallback
+  // retries keep `to` as a display name, so they are not prefix canonicalization.
+  // Unauthorized exact transport targets stay out of prefix diagnostics so a
+  // formerly visible UUID cannot disclose a hidden peer's current name.
+  if (
+    originalSelector !== trimmedTo &&
+    exactIdTarget !== undefined &&
+    candidates.some((candidate) => candidate.id === exactIdTarget.info.id)
+  ) {
+    const originalResolution = resolveSessionTarget(candidates, originalSelector);
+    if (
+      originalResolution.kind !== "resolved" ||
+      originalResolution.session.id !== exactIdTarget.info.id ||
+      (expectedRecipientId !== undefined && originalResolution.session.id !== expectedRecipientId)
+    ) {
+      let reason: string;
+      if (originalResolution.kind !== "resolved") {
+        reason = sessionTargetFailureReason(originalSelector, originalResolution);
+      } else if (expectedRecipientId !== undefined) {
+        reason = "Reply target does not match the expected recipient";
+      } else {
+        reason = "Reply target cannot be resolved safely; use the exact sender ID";
+      }
+      write(socket, {
+        type: "delivery_failed",
+        messageId,
+        attemptId,
+        reason,
+      });
+      return;
+    }
+  }
   const resolution = exactIdTarget
     ? ({ kind: "resolved", session: exactIdTarget.info } as const)
     : resolveSessionTarget(candidates, trimmedTo);

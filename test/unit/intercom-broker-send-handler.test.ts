@@ -547,6 +547,218 @@ test("public reply metadata requires the exact broker-recorded reverse question 
 	assert.equal(pending.matchesReply(recipient.info.id, asker.info.id, "question"), true);
 });
 
+test("hidden same-name reply collisions refuse every letter case without disclosing the hidden id", () => {
+	// Regression: #2603 — session names resolve case-insensitively; hidden collision refusal must match.
+	for (const to of ["Parent", "parent", "PARENT"]) {
+		const selfSocket = {} as net.Socket;
+		const parentSocket = {} as net.Socket;
+		const hiddenSocket = {} as net.Socket;
+		const self = session("self", "self", selfSocket);
+		const parent = session("2603abcd-1111-4111-8111-111111111111", "Parent", parentSocket);
+		const hidden = session("hidden-private-id", "Parent", hiddenSocket);
+		self.info.group = "child";
+		parent.info.group = "parent";
+		hidden.info.group = "private";
+		const sessions = new Map<string, BrokerConnectedSession>([
+			[self.info.id, self],
+			[parent.info.id, parent],
+			[hidden.info.id, hidden],
+		]);
+		const pending = new PendingQuestionIndex();
+		pending.record(parent.info.id, self.info.id, "question");
+		const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+		handleBrokerSend(
+			selfSocket,
+			{
+				type: "send",
+				to,
+				expectedRecipientId: parent.info.id,
+				requirePendingReply: true,
+				message: { ...message("answer", "answer"), replyTo: "question" },
+			},
+			self.info.id,
+			sessions,
+			new DeliveredMessageCache(),
+			(socket, outgoing) => {
+				writes.push({ socket, message: outgoing });
+				return true;
+			},
+			new SupervisorChannelCache(),
+			pending,
+		);
+		assert.doesNotMatch(JSON.stringify(writes), /hidden-private-id/);
+		assert.equal(writes.filter((entry) => entry.message.type === "message").length, 0, to);
+		const ack = writes.at(-1)?.message;
+		assert.equal(ack?.type, "delivery_failed", to);
+		assert.equal(pending.matchesReply(self.info.id, parent.info.id, "question"), true, to);
+	}
+});
+
+test("canonicalized prefix replies still refuse a hidden exact name or custom ID", () => {
+	// Regression: #2603 — rewriting a unique prefix to the pending sender UUID
+	// must not skip broker validation of the original selector.
+	for (const hiddenIdentity of [
+		{ id: "hidden-private-id", name: "2603abcd" },
+		{ id: "2603abcd", name: "hidden-custom" },
+	]) {
+		const selfSocket = {} as net.Socket;
+		const parentSocket = {} as net.Socket;
+		const hiddenSocket = {} as net.Socket;
+		const self = session("self", "self", selfSocket);
+		const parent = session("2603abcd-1111-4111-8111-111111111111", "Parent", parentSocket);
+		const hidden = session(hiddenIdentity.id, hiddenIdentity.name, hiddenSocket);
+		self.info.group = "child";
+		parent.info.group = "parent";
+		hidden.info.group = "private";
+		const sessions = new Map<string, BrokerConnectedSession>([
+			[self.info.id, self],
+			[parent.info.id, parent],
+			[hidden.info.id, hidden],
+		]);
+		const pending = new PendingQuestionIndex();
+		pending.record(parent.info.id, self.info.id, "question");
+		const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+		handleBrokerSend(
+			selfSocket,
+			{
+				type: "send",
+				to: parent.info.id,
+				logicalTarget: "2603abcd",
+				expectedRecipientId: parent.info.id,
+				requirePendingReply: true,
+				message: { ...message("answer", "answer"), replyTo: "question" },
+			},
+			self.info.id,
+			sessions,
+			new DeliveredMessageCache(),
+			(socket, outgoing) => {
+				writes.push({ socket, message: outgoing });
+				return true;
+			},
+			new SupervisorChannelCache(),
+			pending,
+		);
+		assert.doesNotMatch(JSON.stringify(writes), /hidden-private-id/);
+		assert.equal(writes.filter((entry) => entry.message.type === "message").length, 0, hiddenIdentity.id);
+		const ack = writes.at(-1)?.message;
+		assert.equal(ack?.type, "delivery_failed", hiddenIdentity.id);
+		assert.equal(pending.matchesReply(self.info.id, parent.info.id, "question"), true, hiddenIdentity.id);
+	}
+});
+
+test("canonicalized prefix replies refuse a later visible UUID, name, or custom ID collision", () => {
+	// Regression: #2603 — rewriting a unique prefix to the pending sender UUID
+	// must revalidate the original selector against current authorized sessions.
+	for (const kind of ["unique", "uuid", "custom", "name"] as const) {
+		const selfSocket = {} as net.Socket;
+		const parentSocket = {} as net.Socket;
+		const self = session("self", "self", selfSocket);
+		const parent = session("2603abcd-1111-4111-8111-111111111111", "Parent", parentSocket);
+		self.info.group = "child";
+		parent.info.group = "parent";
+		const sessions = new Map<string, BrokerConnectedSession>([
+			[self.info.id, self],
+			[parent.info.id, parent],
+		]);
+		if (kind !== "unique") {
+			const collision =
+				kind === "uuid"
+					? session("2603abcd-2222-4222-8222-222222222222", "Other", {} as net.Socket)
+					: kind === "custom"
+						? session("2603abcd", "Other", {} as net.Socket)
+						: session("other", "2603ABCD", {} as net.Socket);
+			collision.info.group = "child";
+			sessions.set(collision.info.id, collision);
+		}
+		const pending = new PendingQuestionIndex();
+		pending.record(parent.info.id, self.info.id, "question");
+		const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+		handleBrokerSend(
+			selfSocket,
+			{
+				type: "send",
+				to: parent.info.id,
+				logicalTarget: "2603abcd",
+				expectedRecipientId: parent.info.id,
+				requirePendingReply: true,
+				message: { ...message(`answer-${kind}`, "private answer"), replyTo: "question" },
+			},
+			self.info.id,
+			sessions,
+			new DeliveredMessageCache(),
+			(socket, outgoing) => {
+				writes.push({ socket, message: outgoing });
+				return true;
+			},
+			new SupervisorChannelCache(),
+			pending,
+		);
+		const deliveries = writes.filter((entry) => entry.message.type === "message").length;
+		const ack = writes.at(-1)?.message;
+		if (kind === "unique") {
+			assert.equal(ack?.type, "delivered", kind);
+			assert.equal(deliveries, 1, kind);
+			assert.equal(pending.matchesReply(self.info.id, parent.info.id, "question"), false, kind);
+		} else {
+			assert.equal(ack?.type, "delivery_failed", kind);
+			assert.equal(deliveries, 0, kind);
+			assert.equal(pending.matchesReply(self.info.id, parent.info.id, "question"), true, kind);
+		}
+	}
+});
+
+test("unauthorized exact transport targets stay out of prefix ambiguity diagnostics", () => {
+	// Regression: #2603 — a sender who still knows a formerly visible UUID can
+	// submit that UUID as `to` and its prefix as logicalTarget. A visible
+	// same-prefix peer must not make the refusal disclose the hidden name.
+	const hiddenId = "2603abcd-2222-4222-8222-222222222222";
+	for (const logicalTarget of [hiddenId, "2603abcd"] as const) {
+		for (const replyTo of [undefined, "question"] as const) {
+			const senderSocket = {} as net.Socket;
+			const visibleSocket = {} as net.Socket;
+			const hiddenSocket = {} as net.Socket;
+			const sender = session("sender", "Sender", senderSocket);
+			const visible = session("2603abcd-1111-4111-8111-111111111111", "Visible", visibleSocket);
+			const hidden = session(hiddenId, "HIDDEN_PRIVATE_NAME", hiddenSocket);
+			sender.info.group = "visible";
+			visible.info.group = "visible";
+			hidden.info.group = "private";
+			const sessions = new Map([sender, visible, hidden].map((peer) => [peer.info.id, peer]));
+			const pending = new PendingQuestionIndex();
+			pending.record(visible.info.id, sender.info.id, "question");
+			const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+			handleBrokerSend(
+				senderSocket,
+				{
+					type: "send",
+					to: hidden.info.id,
+					logicalTarget,
+					message: {
+						...message(`probe-${logicalTarget}-${replyTo ?? "none"}`, "test"),
+						...(replyTo === undefined ? {} : { replyTo }),
+					},
+				},
+				sender.info.id,
+				sessions,
+				new DeliveredMessageCache(),
+				(socket, outgoing) => {
+					writes.push({ socket, message: outgoing });
+					return true;
+				},
+				new SupervisorChannelCache(),
+				pending,
+			);
+			assert.doesNotMatch(JSON.stringify(writes), /HIDDEN_PRIVATE_NAME/);
+			assert.equal(writes.filter((entry) => entry.message.type === "message").length, 0, logicalTarget);
+			assert.equal(writes.length, 1, logicalTarget);
+			assert.equal(writes[0]?.socket, senderSocket, logicalTarget);
+			const ack = writes[0]?.message;
+			assert.equal(ack?.type, "delivery_failed", logicalTarget);
+			assert.equal(pending.matchesReply(sender.info.id, visible.info.id, "question"), true, logicalTarget);
+		}
+	}
+});
+
 test("broker wire send keeps omitted retry fields compatible but rejects malformed present values", () => {
 	const sender = {} as net.Socket;
 	const recipient = {} as net.Socket;
@@ -741,7 +953,7 @@ test("broker routes the exact full session ID", () => {
 	);
 });
 
-test("broker rejects an 8-character session ID prefix", () => {
+test("broker routes a unique 8-character session UUID prefix", () => {
 	const sender = {} as net.Socket;
 	const recipient = {} as net.Socket;
 	const recipientId = "aa56071e-1111-4222-8333-123456789abc";
@@ -763,13 +975,55 @@ test("broker rejects an 8-character session ID prefix", () => {
 		},
 	);
 
+	// Regression: #2603 — broker-side targeting uses the same fixed prefix contract.
 	assert.equal(
-		writes.some((entry) => entry.message.type === "message"),
+		writes.some((entry) => entry.socket === recipient && entry.message.type === "message"),
+		true,
+	);
+	assert.equal(
+		writes.some((entry) => entry.socket === sender && entry.message.type === "delivered"),
+		true,
+	);
+});
+
+test("broker UUID prefix collisions remain isolated to the sender's intercom group", () => {
+	// Regression: #2603 — an unreachable same-prefix session must not create ambiguity or expand routing scope.
+	const senderSocket = {} as net.Socket;
+	const reachableSocket = {} as net.Socket;
+	const isolatedSocket = {} as net.Socket;
+	const sender = session("sender", "sender", senderSocket);
+	const reachable = session("2603abcd-1111-4222-8333-123456789abc", "reachable", reachableSocket);
+	const isolated = session("2603abcd-9999-4222-8333-123456789abc", "isolated", isolatedSocket);
+	sender.info.groups = ["alpha"];
+	reachable.info.groups = ["alpha"];
+	isolated.info.groups = ["beta"];
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[sender.info.id, sender],
+		[reachable.info.id, reachable],
+		[isolated.info.id, isolated],
+	]);
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: "2603abcd", message: message("group-prefix") },
+		sender.info.id,
+		sessions,
+		new DeliveredMessageCache(),
+		(socket, value) => {
+			writes.push({ socket, message: value });
+			return true;
+		},
+	);
+
+	assert.equal(
+		writes.some((entry) => entry.socket === reachableSocket && entry.message.type === "message"),
+		true,
+	);
+	assert.equal(
+		writes.some((entry) => entry.socket === isolatedSocket && entry.message.type === "message"),
 		false,
 	);
-	const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
-	assert.equal(failure?.type, "delivery_failed");
-	assert.match(failure?.reason ?? "", /Session not found/);
 });
 
 test("broker rejects an exact self session ID", () => {
@@ -799,7 +1053,7 @@ test("broker rejects an exact self session ID", () => {
 	assert.match(failure?.reason ?? "", /current session/i);
 });
 
-test("broker rejects an 8-character self ID prefix as not found", () => {
+test("broker resolves an 8-character self UUID prefix before rejecting self-delivery", () => {
 	const sender = {} as net.Socket;
 	const senderId = "aa56071e-1111-4222-8333-123456789abc";
 	const sessions = new Map<string, BrokerConnectedSession>([[senderId, session(senderId, "sender", sender)]]);
@@ -823,7 +1077,8 @@ test("broker rejects an 8-character self ID prefix as not found", () => {
 	);
 	const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
 	assert.equal(failure?.type, "delivery_failed");
-	assert.match(failure?.reason ?? "", /Session not found/);
+	// Regression: #2603 — prefix resolution must not bypass the existing self-send guard.
+	assert.match(failure?.reason ?? "", /current session/i);
 });
 
 test("broker records delivered questions and clears them only after routing the exact reply", () => {

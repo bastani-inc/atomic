@@ -16,8 +16,8 @@ import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-d
 import { mockSession } from "./executor-shared.js";
 import { buildCtx, registerWorkflowCommand } from "./slash-dispatch-utils.js";
 
-const ROOT_ID = testRunId("targeted-crashed-root");
-const CHILD_ID = testRunId("targeted-crashed-child");
+const ROOT_ID = "2603abcd-1111-4222-8333-123456789abc";
+const CHILD_ID = "2603abcd-2222-4222-8333-123456789abc";
 
 let savedStageSubagentGuard: string | undefined;
 
@@ -35,39 +35,118 @@ afterEach(() => {
 });
 
 describe("targeted durable workflow inspection", () => {
-	test("hydrates a stale running DBOS root on exact-id status without resuming or entering session status", async () => {
-		const sdk = createMockSdk();
-		const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;
-		seedMockWorkflow(sdk, {
-			workflowId: ROOT_ID,
-			name: "paper-writer",
-			status: "PENDING",
-			createdAt: staleAt,
-			inputs: { topic: "durability" },
-		});
-		seedMockCheckpoint(sdk, ROOT_ID, {
-			kind: "stage",
-			workflowId: ROOT_ID,
-			checkpointId: "boundary-start:phase-6",
-			name: "workflow:paper-writer-phase-6",
-			replayKey: "workflow:paper-writer-phase-6:1",
-			completedAt: staleAt,
-			topology: {
-				version: 1,
-				stageId: "phase-6-boundary",
-				parentIds: [],
-				sourceOrder: 0,
-				status: "running",
-				run: { runId: ROOT_ID, runName: "paper-writer" },
-				boundary: {
+	test("rejects malformed truncations before loading the durable catalog", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.prepareWorkflowCatalog = async () => {
+			throw new Error("malformed selectors must not load the durable catalog");
+		};
+
+		const result = await inspectTargetedDurableWorkflow(backend, "2603abcd-1111");
+		assert.equal(result.kind, "malformed");
+		assert.match(result.message, /full 36-character UUID or a unique 8-character hexadecimal prefix/);
+	});
+
+	test("resolves a unique 8-hex durable prefix and reports catalog collisions", async () => {
+		// Regression: #2603 — status/stage/transcript durable inspection shares the UUID-prefix contract.
+		const backend = new InMemoryDurableBackend();
+		const firstId = "2603abcd-1111-4222-8333-123456789abc";
+		const secondId = "2603abcd-9999-4222-8333-123456789abc";
+		const seed = (workflowId: string) => {
+			backend.registerWorkflow({
+				workflowId,
+				name: workflowId,
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+				completedCheckpoints: 1,
+			});
+			backend.recordCheckpoint({
+				kind: "tool",
+				workflowId,
+				checkpointId: `tool:${workflowId}`,
+				name: "proof",
+				argsHash: `proof:${workflowId}`,
+				output: true,
+				completedAt: 2,
+			});
+		};
+		seed(firstId);
+
+		const unique = await inspectTargetedDurableWorkflow(backend, "2603abcd");
+		assert.equal(unique.kind, "found");
+		if (unique.kind === "found") assert.equal(unique.detail.runId, firstId);
+
+		seed(secondId);
+		const ambiguous = await inspectTargetedDurableWorkflow(backend, "2603abcd");
+		assert.equal(ambiguous.kind, "malformed");
+		assert.match(ambiguous.message, /ambiguous/);
+		assert.match(ambiguous.message, new RegExp(firstId));
+		assert.match(ambiguous.message, new RegExp(secondId));
+	});
+
+	// #2603: resolve the durable root once even when its child shares the prefix.
+	test.each([ROOT_ID, ROOT_ID.slice(0, 8)])(
+		"hydrates a stale running DBOS root via %s without writes",
+		async (target) => {
+			const sdk = createMockSdk();
+			const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;
+			seedMockWorkflow(sdk, {
+				workflowId: ROOT_ID,
+				name: "paper-writer",
+				status: "PENDING",
+				createdAt: staleAt,
+				inputs: { topic: "durability" },
+			});
+			seedMockCheckpoint(sdk, ROOT_ID, {
+				kind: "stage",
+				workflowId: ROOT_ID,
+				checkpointId: "boundary-start:phase-6",
+				name: "workflow:paper-writer-phase-6",
+				replayKey: "workflow:paper-writer-phase-6:1",
+				completedAt: staleAt,
+				topology: {
 					version: 1,
-					event: "start",
+					stageId: "phase-6-boundary",
+					parentIds: [],
+					sourceOrder: 0,
 					status: "running",
-					replayScope: "workflow:paper-writer-phase-6:1",
-					alias: "paper-writer-phase-6",
-					workflow: "paper-writer-phase-6",
-					invocationFingerprint: "h00000000000000000000000000000000",
-					child: {
+					run: { runId: ROOT_ID, runName: "paper-writer" },
+					boundary: {
+						version: 1,
+						event: "start",
+						status: "running",
+						replayScope: "workflow:paper-writer-phase-6:1",
+						alias: "paper-writer-phase-6",
+						workflow: "paper-writer-phase-6",
+						invocationFingerprint: "h00000000000000000000000000000000",
+						child: {
+							runId: CHILD_ID,
+							runName: "paper-writer-phase-6",
+							parentRunId: ROOT_ID,
+							parentStageId: "phase-6-boundary",
+							rootRunId: ROOT_ID,
+						},
+					},
+				},
+			});
+			seedMockCheckpoint(sdk, ROOT_ID, {
+				kind: "stage",
+				workflowId: ROOT_ID,
+				checkpointId: "workflow:paper-writer-phase-6:1:stage-session:draft",
+				name: "draft",
+				replayKey: "workflow:paper-writer-phase-6:1:stage:draft:1",
+				sessionId: "phase-6-session",
+				sessionFile: "/tmp/retained-phase-6.jsonl",
+				startedAt: staleAt - 30_000,
+				durationMs: 30_000,
+				completedAt: staleAt,
+				topology: {
+					version: 1,
+					stageId: "draft",
+					parentIds: [],
+					sourceOrder: 0,
+					status: "running",
+					run: {
 						runId: CHILD_ID,
 						runName: "paper-writer-phase-6",
 						parentRunId: ROOT_ID,
@@ -75,87 +154,61 @@ describe("targeted durable workflow inspection", () => {
 						rootRunId: ROOT_ID,
 					},
 				},
-			},
-		});
-		seedMockCheckpoint(sdk, ROOT_ID, {
-			kind: "stage",
-			workflowId: ROOT_ID,
-			checkpointId: "workflow:paper-writer-phase-6:1:stage-session:draft",
-			name: "draft",
-			replayKey: "workflow:paper-writer-phase-6:1:stage:draft:1",
-			sessionId: "phase-6-session",
-			sessionFile: "/tmp/retained-phase-6.jsonl",
-			startedAt: staleAt - 30_000,
-			durationMs: 30_000,
-			completedAt: staleAt,
-			topology: {
-				version: 1,
-				stageId: "draft",
-				parentIds: [],
-				sourceOrder: 0,
-				status: "running",
-				run: {
-					runId: CHILD_ID,
-					runName: "paper-writer-phase-6",
-					parentRunId: ROOT_ID,
-					parentStageId: "phase-6-boundary",
-					rootRunId: ROOT_ID,
-				},
-			},
-		});
-		const backend = new DbosDurableBackend(sdk, { executorId: "inspection-session" });
-		const durableWritesBeforeInspection = sdk.state.steps.size;
-		setDurableBackend(backend);
-		const runtime = createExtensionRuntime({ store });
-		const execute = makeExecuteWorkflowTool(runtime, () => undefined);
+			});
+			const backend = new DbosDurableBackend(sdk, { executorId: "inspection-session" });
+			const durableWritesBeforeInspection = sdk.state.steps.size;
+			setDurableBackend(backend);
+			const runtime = createExtensionRuntime({ store });
+			const execute = makeExecuteWorkflowTool(runtime, () => undefined);
 
-		const result = await execute({ action: "status", runId: ROOT_ID }, {} as never);
+			const result = await execute({ action: "status", runId: target }, {} as never);
 
-		assert.equal(result.action, "statusDetail");
-		if (result.action !== "statusDetail" || "error" in result) assert.fail("expected durable run detail");
-		assert.equal(result.detail.status, "crashed");
-		assert.equal(result.detail.resumable, true);
-		assert.match(result.detail.resumeGuidance ?? "", new RegExp(`/workflow resume ${ROOT_ID}`));
-		assert.deepEqual(
-			result.detail.stages.map((stage) => [stage.name, stage.status, stage.sessionId, stage.sessionFile]),
-			[["draft", "running", "phase-6-session", "/tmp/retained-phase-6.jsonl"]],
-		);
-		const stages = await execute({ action: "stages", runId: ROOT_ID }, {} as never);
-		assert.equal(stages.action, "stages");
-		if (stages.action !== "stages") assert.fail("expected durable stage listing");
-		assert.deepEqual(
-			stages.stages.map((item) => [item.name, item.status]),
-			[["draft", "running"]],
-		);
-		const stage = await execute({ action: "stage", runId: ROOT_ID, stageId: "draft" }, {} as never);
-		assert.equal(stage.action, "stage");
-		if (stage.action !== "stage" || stage.stage === undefined) assert.fail("expected durable stage detail");
-		assert.equal(stage.runId, CHILD_ID);
-		assert.equal(stage.stage.sessionId, "phase-6-session");
+			assert.equal(result.action, "statusDetail");
+			if (result.action !== "statusDetail" || "error" in result) assert.fail("expected durable run detail");
+			assert.equal(result.detail.status, "crashed");
+			assert.equal(result.detail.resumable, true);
+			assert.match(result.detail.resumeGuidance ?? "", new RegExp(`/workflow resume ${ROOT_ID}`));
+			assert.deepEqual(
+				result.detail.stages.map((stage) => [stage.name, stage.status, stage.sessionId, stage.sessionFile]),
+				[["draft", "running", "phase-6-session", "/tmp/retained-phase-6.jsonl"]],
+			);
+			const stages = await execute({ action: "stages", runId: target }, {} as never);
+			assert.equal(stages.action, "stages");
+			if (stages.action !== "stages") assert.fail("expected durable stage listing");
+			assert.deepEqual(
+				stages.stages.map((item) => [item.name, item.status]),
+				[["draft", "running"]],
+			);
+			const stage = await execute({ action: "stage", runId: target, stageId: "draft" }, {} as never);
+			assert.equal(stage.action, "stage");
+			if (stage.action !== "stage" || stage.stage === undefined) assert.fail("expected durable stage detail");
+			assert.equal(stage.runId, CHILD_ID);
+			assert.equal(stage.stage.sessionId, "phase-6-session");
 
-		const transcript = await execute({ action: "transcript", runId: ROOT_ID, stageId: "draft" }, {} as never);
-		assert.equal(transcript.action, "transcript");
-		if (transcript.action !== "transcript") assert.fail("expected durable transcript detail");
-		assert.equal(transcript.runId, CHILD_ID);
-		assert.equal(transcript.source, "snapshot");
-		assert.equal(transcript.sessionFile, "/tmp/retained-phase-6.jsonl");
-		const canonicalId = stages.stages[0]!.id;
-		assert.equal(canonicalId, `${CHILD_ID}:draft`);
-		assert.deepEqual(await execute({ action: "stage", runId: ROOT_ID, stageId: canonicalId }, {} as never), stage);
-		assert.deepEqual(
-			await execute({ action: "transcript", runId: ROOT_ID, stageId: canonicalId }, {} as never),
-			transcript,
-		);
-		assert.deepEqual(store.runs(), [], "targeted durable inspection must not add foreign runs to session status");
-		assert.deepEqual(sdk.state.resumes, [], "inspection must not resume DBOS execution");
-		assert.deepEqual(sdk.state.cancels, [], "inspection must not transition DBOS execution");
-		assert.deepEqual(sdk.state.starts, [], "inspection must not claim DBOS ownership");
-		assert.equal(sdk.state.steps.size, durableWritesBeforeInspection, "inspection must not write DBOS records");
+			const transcript = await execute({ action: "transcript", runId: target, stageId: "draft" }, {} as never);
+			assert.equal(transcript.action, "transcript");
+			if (transcript.action !== "transcript") assert.fail("expected durable transcript detail");
+			assert.equal(transcript.runId, CHILD_ID);
+			assert.equal(transcript.source, "snapshot");
+			assert.equal(transcript.sessionFile, "/tmp/retained-phase-6.jsonl");
+			const canonicalId = stages.stages[0]!.id;
+			assert.equal(canonicalId, `${CHILD_ID}:draft`);
+			assert.deepEqual(await execute({ action: "stage", runId: target, stageId: canonicalId }, {} as never), stage);
+			assert.deepEqual(
+				await execute({ action: "transcript", runId: target, stageId: canonicalId }, {} as never),
+				transcript,
+			);
+			assert.deepEqual(store.runs(), [], "targeted durable inspection must not add foreign runs to session status");
+			assert.deepEqual(sdk.state.resumes, [], "inspection must not resume DBOS execution");
+			assert.deepEqual(sdk.state.cancels, [], "inspection must not transition DBOS execution");
+			assert.deepEqual(sdk.state.starts, [], "inspection must not claim DBOS ownership");
+			assert.equal(sdk.state.steps.size, durableWritesBeforeInspection, "inspection must not write DBOS records");
 
-		const listing = await execute({ action: "status" }, {} as never);
-		assert.equal(listing.action, "status");
-		if (listing.action === "status") assert.deepEqual(listing.runs, []);
-	});
+			const listing = await execute({ action: "status" }, {} as never);
+			assert.equal(listing.action, "status");
+			if (listing.action === "status") assert.deepEqual(listing.runs, []);
+		},
+	);
 
 	test("distinguishes absent, tombstoned, and malformed exact durable ids", async () => {
 		const absentId = testRunId("targeted-absent");
@@ -179,7 +232,8 @@ describe("targeted durable workflow inspection", () => {
 		assert.equal((await inspectTargetedDurableWorkflow(observer, orphanedId)).kind, "malformed");
 	});
 
-	test("protects a fresh foreign owner and reconstructs a terminal retained root without writes", async () => {
+	// #2603: read-only prefix inspection includes live runs owned by another session.
+	test.each([false, true])("protects a fresh foreign owner without writes (prefix: %s)", async (prefix) => {
 		const liveId = testRunId("targeted-foreign-live");
 		const terminalId = testRunId("targeted-terminal");
 		const sdk = createMockSdk();
@@ -210,7 +264,7 @@ describe("targeted durable workflow inspection", () => {
 		await owner.flush();
 		const writesBeforeInspection = sdk.state.steps.size;
 		const observer = new DbosDurableBackend(sdk, { executorId: "observer" });
-		const live = await inspectTargetedDurableWorkflow(observer, liveId);
+		const live = await inspectTargetedDurableWorkflow(observer, prefix ? liveId.slice(0, 8) : liveId);
 		const terminal = await inspectTargetedDurableWorkflow(observer, terminalId);
 
 		assert.equal(live.kind, "found");

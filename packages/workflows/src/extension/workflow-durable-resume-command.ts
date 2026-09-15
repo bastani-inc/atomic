@@ -5,7 +5,8 @@ import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
-import { isFullRunId, malformedRunIdMessage } from "../shared/run-id.js";
+import { resolveRunIdTarget } from "../shared/run-id.js";
+import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
@@ -41,7 +42,12 @@ export interface WorkflowResumeTarget {
 export type WorkflowResumeTargetResolution =
 	| WorkflowResumeTarget
 	| { readonly kind: "malformed"; readonly message: string }
+	| { readonly kind: "ambiguous"; readonly message: string }
 	| { readonly kind: "not_found" };
+
+export function stageScopedDurableResumeMessage(workflowId: string): string {
+	return `Stage-scoped resume is not supported for durable workflow ${workflowId}. Omit the stage selector to resume the whole run.`;
+}
 
 export async function prepareWorkflowResumeCatalog(
 	runtime: ExtensionRuntime,
@@ -105,7 +111,7 @@ export async function handleDurableResume(
 			// directory a second time for the same command invocation.
 			catalog.completed,
 		);
-		if (resolved.kind === "malformed") {
+		if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 			fail(resolved.message);
 			return true;
 		}
@@ -190,16 +196,19 @@ export function resolveWorkflowResumeTarget(
 			targets.set(entry.workflowId, { kind: "completed", workflowId: entry.workflowId, name: entry.name });
 		}
 	}
-	for (const run of liveRuns.filter(isExplicitResumeCandidate)) {
+	// Nested children stay reachable by exact id; prefix resume uses the top-level namespace.
+	for (const run of topLevelWorkflowRuns(liveRuns).filter(isExplicitResumeCandidate)) {
 		targets.set(run.id, {
 			kind: run.status === "completed" ? "completed" : "live",
 			workflowId: run.id,
 			name: run.name,
 		});
 	}
-	if (!isFullRunId(target)) return { kind: "malformed", message: malformedRunIdMessage(target) };
-	const exact = targets.get(target);
-	return exact ?? { kind: "not_found" };
+	const resolution = resolveRunIdTarget(target, targets.keys());
+	if (resolution.kind === "malformed" || resolution.kind === "ambiguous" || resolution.kind === "not_found") {
+		return resolution;
+	}
+	return targets.get(resolution.runId) ?? { kind: "not_found" };
 }
 
 function isExplicitResumeCandidate(run: RunSnapshot): boolean {

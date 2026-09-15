@@ -15,7 +15,7 @@ import {
   toError,
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.js";
-import { resolveSessionTargetId } from "./session-target.js";
+import { resolveSessionTarget, resolveSessionTargetId, sessionTargetFailureReason } from "./session-target.js";
 import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
@@ -197,7 +197,8 @@ Use this to communicate findings, request help, or coordinate work with other se
 Sessions belong to an intercom group and can ONLY message sessions in the same group;
 cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
 
-For send, live session names and exact full session IDs remain supported. Workflow-stage targets use
+For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes
+remain supported. Workflow-stage targets use
 \`workflow:<rootRunId>/<segment>[/<segment>...]\`; a segment may be a stage name, run id, or glob
 (\`*\` matches one segment and may be embedded, while \`**\` matches any depth). Use \`intercom list\`
 inside the invocation group to see live, pending, and possible future targets with queued counts.
@@ -232,7 +233,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Live session name, exact full session ID, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send queues sticky delivery for pending/future matches; `workflow:<rootRunId>/**` broadcasts to live and future stages. Use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')",
+        description: "Live session name, exact full session ID, unique 8-hex session UUID prefix, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send queues sticky delivery for pending/future matches; `workflow:<rootRunId>/**` broadcasts to live and future stages. Use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -244,7 +245,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         language: Type.Optional(Type.String()),
       }))),
       replyTo: Type.Optional(Type.String({
-        description: "Exact pending-ask message ID; disambiguates concurrent asks, including asks from one sender",
+        description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender",
       })),
       group: Type.Optional(Type.String({
         description: "Group name for 'join' or optional targeted 'leave'; read-only group filter for 'list'/'status'. 'send'/'ask' use shared memberships.",
@@ -979,7 +980,39 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             const route = retryIdentities.replyRoute(retryIdentity);
             if (route === undefined) throw new RetryTokenError("invalid");
-            const replySendTo = to ?? route.senderId;
+            let replySendTo = to ?? route.senderId;
+            if (to !== undefined) {
+              const listed = await connectedClient.listSessions();
+              const replyCandidates: Array<Pick<SessionInfo, "id" | "name">> = listed.some(
+                (session) => session.id === route.senderId,
+              )
+                ? listed
+                : [
+                    ...listed,
+                    {
+                      id: route.senderId,
+                      ...(route.senderName === undefined ? {} : { name: route.senderName }),
+                    },
+                  ];
+              const replyTarget = resolveSessionTarget(replyCandidates, to);
+              if (replyTarget.kind !== "resolved" && replyTarget.kind !== "not_found") {
+                throw new Error(sessionTargetFailureReason(to, replyTarget));
+              }
+              if (replyTarget.kind === "resolved" && replyTarget.session.id !== route.senderId) {
+                throw new Error("Reply target cannot be resolved safely; use the exact sender ID");
+              }
+              if (replyTarget.kind === "resolved") {
+                const trimmedTo = to.trim();
+                const exactId = replyTarget.session.id === trimmedTo;
+                const exactName =
+                  replyTarget.session.name !== undefined &&
+                  replyTarget.session.name.toLowerCase() === trimmedTo.toLowerCase();
+                // Exact IDs and names must reach the broker unchanged so hidden
+                // collisions can be refused. Genuine unique UUID prefixes still
+                // canonicalize to the stored session ID.
+                if (!exactId && !exactName) replySendTo = replyTarget.session.id;
+              }
+            }
             const replyLogicalTarget = to ?? route.senderId;
             const displayTarget = route.senderName || route.senderId;
             if (route.senderId === connectedClient.sessionId) {

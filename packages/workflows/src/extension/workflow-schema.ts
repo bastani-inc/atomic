@@ -84,7 +84,7 @@ export const WorkflowParametersSchema = Type.Object(
 		runId: Type.Optional(
 			Type.String({
 				description:
-					"Full 36-character run UUID for status/stages/stage/transcript/answer/pause/resume/quit. Prefixes are not accepted; pass the id exactly as displayed. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
+					"Full 36-character run UUID or unique 8-character hexadecimal UUID prefix for status/stages/stage/transcript/answer/pause/resume/quit. Other truncated forms are rejected; ambiguous prefixes require the full UUID. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
 			}),
 		),
 		all: Type.Optional(
@@ -96,7 +96,7 @@ export const WorkflowParametersSchema = Type.Object(
 		stageId: Type.Optional(
 			Type.String({
 				description:
-					"Exact stage id or exact stage name for stage-scoped inspection, transcript, answer, pause, or resume. Prefixes and partial names are not accepted. A nested stage id is the full 'runId:stageId' composite. For pause and quit it may also name an in-flight ctx.tool node by its exact tool:<argsHash> id or tool name, which aborts that single call.",
+					"Exact stage id/name or unique 8-character hexadecimal prefix of a bare stage UUID for stage-scoped inspection, transcript, answer, pause, or resume. Exact names take precedence; partial names are not accepted. A nested composite id must remain the full 'runId:stageId'. For pause and quit it may also name an in-flight ctx.tool node by its exact tool:<argsHash> id or tool name, which aborts that single call.",
 			}),
 		),
 		message: Type.Optional(
