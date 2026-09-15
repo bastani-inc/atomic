@@ -18,6 +18,7 @@ import {
 } from "./stage-chat-view-render-helpers.js";
 import { currentStage } from "./stage-chat-view-state.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
+import { applyStageLabelToAwaitingInputTopRule } from "./stage-input-label.js";
 
 function postMortemUnavailableMessage(reason: StageChatViewContext["postMortemUnavailableReason"]): string | undefined {
 	switch (reason) {
@@ -328,13 +329,24 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, bud
 		) {
 			continue;
 		}
-		return {
+		return withPrimitiveStageInputLabel(ctx, identity.stageName, {
 			lines: [...banner, ...attributed.lines],
 			totalQuestionRows: attributed.totalQuestionRows,
 			visibleQuestionRows: attributed.visibleQuestionRows,
-		};
+		});
 	}
-	return unattributed;
+	return withPrimitiveStageInputLabel(ctx, identity.stageName, unattributed);
+}
+
+function withPrimitiveStageInputLabel(
+	ctx: StageChatViewContext,
+	stageName: string | undefined,
+	layout: PromptCardLayout,
+): PromptCardLayout {
+	return {
+		...layout,
+		lines: applyStageLabelToAwaitingInputTopRule(ctx.theme, stageName, layout.lines),
+	};
 }
 
 function renderPrimitivePromptBlockLayout(

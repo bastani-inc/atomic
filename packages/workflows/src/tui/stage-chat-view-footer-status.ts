@@ -13,6 +13,7 @@ import {
 	widgetHintTargetLineIndex,
 } from "./stage-chat-view-render-helpers.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
+import { applyStageLabelToEditorTopRule, applyStageLabelToWidgetTopRule } from "./stage-input-label.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 /**
@@ -38,10 +39,9 @@ export function stageLabelRule(
  * Post-process rendered editor lines to inject `[stage: name]` into the top
  * rule line (Case 1 of issue #2886).
  *
- * Finds the first line whose stripped content is all `─` characters (the
- * editor top border), replaces leading dashes with the styled label, and
- * returns a new lines array. Runs AFTER CustomEditor.render() has completed
- * so ❯ is correctly on the content line and isEditorBorderLine checks are done.
+ * Finds the first all-`─` rule (the editor top border) and never a later
+ * bottom rule, including when the transform is applied twice. Runs AFTER
+ * CustomEditor.render() so ❯ stays on the content line.
  *
  * Styling: `[stage: ` in textMuted, name in bold text, 40-column minimum floor.
  */
@@ -50,42 +50,7 @@ export function injectStageLabelIntoEditorTopRule(
 	stageName: string | undefined,
 	editorLines: readonly string[],
 ): string[] {
-	if (!stageName || editorLines.length === 0) return [...editorLines];
-
-	const PREFIX = "[stage: ";
-	const SUFFIX = "] ";
-
-	for (let i = 0; i < editorLines.length; i++) {
-		const line = editorLines[i] ?? "";
-		const plain = stripAnsi(line).trim();
-		// Top rule: all dashes, at least 40 wide.
-		if (plain.length < 40 || !/^─+$/.test(plain)) continue;
-
-		const width = visibleWidth(plain);
-		const maxNameWidth = Math.max(1, width - visibleWidth(PREFIX) - visibleWidth(SUFFIX) - 2);
-		const truncatedName = truncateToWidth(stageName, maxNameWidth, "…");
-		const labelPlain = PREFIX + truncatedName + SUFFIX;
-		const labelWidth = visibleWidth(labelPlain);
-
-		if (labelWidth >= width) break;
-
-		const labelStyled =
-			paint(PREFIX, ctx.theme.textMuted) +
-			paint(truncatedName, ctx.theme.text, { bold: true }) +
-			paint(SUFFIX, ctx.theme.textMuted);
-
-		// Preserve the leading ANSI color from the original border line, inject
-		// the label, then fill the remaining columns with ─ in the same color.
-		const openColorMatch = line.match(/^(\x1b\[[0-9;]*m)/);
-		const openColor = openColorMatch?.[1] ?? "";
-		const fillWidth = Math.max(0, width - labelWidth);
-
-		const result = [...editorLines];
-		result[i] = openColor + RESET + labelStyled + openColor + "─".repeat(fillWidth) + RESET;
-		return result;
-	}
-
-	return [...editorLines];
+	return applyStageLabelToEditorTopRule(ctx.theme, stageName, editorLines);
 }
 
 export function renderHeader(ctx: StageChatViewContext, width: number, stage: StageSnapshot | undefined): string[] {
@@ -181,13 +146,11 @@ export function renderReadOnlyArchiveFooter(ctx: StageChatViewContext, width: nu
 }
 
 /**
- * Inject `[stage: name]` into the top rule of a widget (line 0), immediately
- * after the opening border character (e.g. `╭`).
+ * Inject `[stage: name]` into the widget top rule (Case 2 of issue #2886).
  *
- * Used for Case 2 of issue #2886: the ask_user_question widget hides the
- * editor, so the stage label moves to the widget's own top border line.
- * The ctrl+x hint is merged separately by embedOrchestratorReturnHintInWidget
- * and may land on a different line, so the two passes are independent.
+ * Accepts a pure `─` DynamicBorder and empty boxed fill. Titled boxes and
+ * unrelated first rows are left unchanged. The ctrl+x hint is merged
+ * separately by embedOrchestratorReturnHintInWidget.
  */
 export function embedStageLabelInWidgetTopRule(
 	ctx: StageChatViewContext,
@@ -195,49 +158,7 @@ export function embedStageLabelInWidgetTopRule(
 	widgetLines: readonly string[],
 	width: number,
 ): string[] {
-	if (!stageName || widgetLines.length === 0 || width < 40) return [...widgetLines];
-
-	const topLine = widgetLines[0] ?? "";
-	const plain = stripAnsi(topLine);
-	const chars = Array.from(plain);
-	// Must start with a box-drawing open char and contain ─ fill to inject into.
-	if (chars.length < 3 || !"╭┌+".includes(chars[0] ?? "")) return [...widgetLines];
-
-	const PREFIX = "[stage: ";
-	const SUFFIX = "]";
-	// Budget: opening char (1) + 1 ─ minimum on each side.
-	const maxNameWidth = width - 1 - visibleWidth(PREFIX) - visibleWidth(SUFFIX) - 2;
-	if (maxNameWidth < 1) return [...widgetLines];
-
-	const truncatedName = truncateToWidth(stageName, maxNameWidth, "…");
-	const labelPlain = PREFIX + truncatedName + SUFFIX;
-	const labelStyled =
-		paint(PREFIX, ctx.theme.textMuted) +
-		paint(truncatedName, ctx.theme.text, { bold: true }) +
-		paint(SUFFIX, ctx.theme.textMuted);
-
-	// Replace the top line: keep leading border char + color, insert label,
-	// fill remaining columns with ─, keep the trailing border char if present.
-	const trailingBorder = trailingWidgetBorderChar(topLine);
-	const trailingWidth = visibleWidth(trailingBorder);
-	const innerFillWidth = Math.max(0, width - 1 - visibleWidth(labelPlain) - trailingWidth);
-
-	// Extract the color applied to the opening border char.
-	const openColorMatch = topLine.match(/^(\x1b\[[0-9;]*m)/);
-	const openColor = openColorMatch?.[1] ?? "";
-	const openChar = chars[0] ?? "╭";
-
-	const newTopLine =
-		openColor +
-		openChar +
-		RESET +
-		labelStyled +
-		openColor +
-		"─".repeat(innerFillWidth) +
-		(trailingBorder ? trailingBorder : "") +
-		RESET;
-
-	return [newTopLine, ...widgetLines.slice(1)];
+	return applyStageLabelToWidgetTopRule(ctx.theme, stageName, widgetLines, width);
 }
 
 export function embedOrchestratorReturnHintInWidget(

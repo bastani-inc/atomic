@@ -7,6 +7,7 @@ import { createPromptSelectList } from "./prompt-card-select.js";
 import type { PromptCardState } from "./prompt-card-state.js";
 import { graphemeParts } from "./prompt-card-text.js";
 import { renderRunIdentityRows } from "./run-identity-rows.js";
+import { applyStageLabelToAwaitingInputTopRule } from "./stage-input-label.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 
 export interface PromptCardIdentity {
@@ -59,8 +60,16 @@ export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: 
 	const stageLabel =
 		identity.stageName !== undefined && identity.stageName.length > 0
 			? paint(" [stage: ", theme.textMuted) +
-			  paint(truncateToWidth(identity.stageName, Math.max(1, innerWidth - visibleWidth(" AWAITING INPUT  [stage: ]") - 1), "…"), theme.text, { bold: true }) +
-			  paint("] ", theme.textMuted)
+				paint(
+					truncateToWidth(
+						identity.stageName,
+						Math.max(1, innerWidth - visibleWidth(" AWAITING INPUT  [stage: ]") - 1),
+						"…",
+					),
+					theme.text,
+					{ bold: true },
+				) +
+				paint("] ", theme.textMuted)
 			: "";
 	const topBorderLabel = awaitingLabel + stageLabel;
 	return [
@@ -133,7 +142,7 @@ export function renderPromptCardLayout(opts: PromptCardRenderOpts): PromptCardLa
 				attributedPrompt.visibleQuestionRows >= unattributed.visibleQuestionRows);
 		if (!bannerFits) continue;
 
-		return {
+		return withStageInputLabel(opts.identity, theme, {
 			lines: [
 				...banner,
 				...attributedPrompt.lines.map((line, index) =>
@@ -142,9 +151,20 @@ export function renderPromptCardLayout(opts: PromptCardRenderOpts): PromptCardLa
 			],
 			totalQuestionRows: attributedPrompt.totalQuestionRows,
 			visibleQuestionRows: attributedPrompt.visibleQuestionRows,
-		};
+		});
 	}
-	return unattributed;
+	return withStageInputLabel(opts.identity, theme, unattributed);
+}
+
+function withStageInputLabel(
+	identity: PromptCardIdentity,
+	theme: GraphTheme,
+	layout: PromptCardLayout,
+): PromptCardLayout {
+	return {
+		...layout,
+		lines: applyStageLabelToAwaitingInputTopRule(theme, identity.stageName, layout.lines),
+	};
 }
 
 function renderPromptBodyBlock(
