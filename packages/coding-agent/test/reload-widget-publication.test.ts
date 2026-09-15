@@ -262,7 +262,7 @@ test.each([
 			);
 		}
 		await vi.waitFor(() =>
-			assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, omitted ? 5 : 4),
+			assert.equal(frames.filter((line) => line.includes('"engine_custom_open"')).length, omitted ? 5 : 6),
 		);
 		const lastOpen = frames.filter((line) => line.includes('"engine_custom_open"')).at(-1)!;
 		assert.ok(lastOpen.includes(omitted ? '"widgetKey":"replacement"' : '"widgetKey":"healthy"'));

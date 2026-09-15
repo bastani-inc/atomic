@@ -122,8 +122,16 @@ export class EngineCustomUiService {
 		const previous = this.widgetIds.get(key);
 		// Pending factories have no active component yet; invalidate their registration too.
 		this.widgetIds.delete(key);
-		if (previous) this.disposeComponent(previous, false, false);
-		if (!factory) return;
+		let disposalError: { error: unknown } | undefined;
+		try {
+			if (previous) this.disposeComponent(previous, false, false);
+		} catch (error) {
+			disposalError = { error };
+		}
+		if (!factory) {
+			if (disposalError) throw disposalError.error;
+			return;
+		}
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
@@ -162,6 +170,10 @@ export class EngineCustomUiService {
 					lines: [`Widget ${key} failed: ${error.message}`],
 				});
 			});
+		// The replacement is mounted and the dock re-rendered before the outgoing widget's failure surfaces.
+		// This path throws rather than reporting because its owner — commitWidgets/invalidate in the runner —
+		// already catches and emits, and a direct extension caller must see its own widget's error.
+		if (disposalError) throw disposalError.error;
 	}
 	constructor(write: (line: string) => void, keybindings: KeybindingsManager) {
 		this.write = write;

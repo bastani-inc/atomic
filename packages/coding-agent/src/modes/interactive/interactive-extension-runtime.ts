@@ -184,6 +184,7 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 	options?: ExtensionWidgetOptions,
 ): void {
 	const placement = options?.placement ?? "aboveEditor";
+	let disposalError: { error: unknown } | undefined;
 	const removeExisting = (map: Map<string, Component & { dispose?(): void }>) => {
 		const existing = map.get(key);
 		// Detach before user disposal: a retired owner cannot retry, and disposal may reenter.
@@ -191,8 +192,7 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 		try {
 			existing?.dispose?.();
 		} catch (error) {
-			this.renderWidgets();
-			throw error;
+			disposalError ??= { error };
 		}
 	};
 
@@ -201,6 +201,7 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 
 	if (content === undefined) {
 		this.renderWidgets();
+		if (disposalError) throw disposalError.error;
 		return;
 	}
 
@@ -232,6 +233,10 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 	const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
 	targetMap.set(key, component);
 	this.renderWidgets();
+	// The replacement is mounted and the dock re-rendered before the outgoing widget's failure surfaces.
+	// This path throws rather than reporting because its owner — commitWidgets/invalidate in the runner —
+	// already catches and emits, and a direct extension caller must see its own widget's error.
+	if (disposalError) throw disposalError.error;
 };
 
 InteractiveModeBase.prototype.clearExtensionWidgets = function (this: InteractiveModeBase): void {

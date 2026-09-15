@@ -305,7 +305,15 @@ for (const kind of ["local", "engine"] as const) {
 				);
 				assert.deepEqual(
 					await host.snapshot(),
-					new Map(omitted ? [["candidate", ["candidate:2"]]] : [["healthy", ["healthy:2"]]]),
+					new Map(
+						omitted
+							? [["candidate", ["candidate:2"]]]
+							: [
+									["workflow.run", ["workflow.run:2"]],
+									["second", ["second:2"]],
+									["healthy", ["healthy:2"]],
+								],
+					),
 				);
 				assert.deepEqual([...subscriptions], [2]);
 				assert.equal(timers.size, 1);
