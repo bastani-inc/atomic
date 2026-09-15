@@ -40,6 +40,8 @@ export interface ToolAdmissionBoundary {
 	 * were already open. Idempotent and safe to call concurrently.
 	 */
 	closeForQuit(reason: WorkflowGracefulQuitError): Promise<void>;
+	/** Reopen admissions when the retained executor explicitly resumes. */
+	resume(): void;
 	readonly closed: boolean;
 	/**
 	 * The reason a whole-run quit closed this workflow tree, when one did.
@@ -88,6 +90,10 @@ export function createToolAdmissionBoundary(): ToolAdmissionBoundary {
 					},
 				},
 			};
+		},
+		resume(): void {
+			closedReason = undefined;
+			drained = undefined;
 		},
 		async closeForQuit(reason: WorkflowGracefulQuitError): Promise<void> {
 			closedReason ??= reason;

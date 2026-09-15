@@ -67,7 +67,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
 	const signalCleanupHandlers: Array<() => void> = [];
 	const engineLiveness = startInteractiveEngineLiveness(writeRawStdout);
-	const customUi = keybindings ? new EngineCustomUiService(writeRawStdout, keybindings) : undefined;
+	const customUi = keybindings
+		? new EngineCustomUiService(writeRawStdout, keybindings, ({ extensionPath, event, error }) =>
+				output({ type: "extension_error", extensionPath, event, error }),
+			)
+		: undefined;
 	const renderService = interactiveEngineChild ? new EngineRenderService(writeRawStdout) : undefined;
 	const sessionPicker = interactiveEngineChild ? new EngineSessionPickerService(writeRawStdout) : undefined;
 	const inputForm = interactiveEngineChild ? new EngineInputFormService(writeRawStdout) : undefined;

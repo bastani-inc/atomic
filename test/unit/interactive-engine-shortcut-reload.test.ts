@@ -32,6 +32,7 @@ interface HarnessReport {
 	expandDisplay?: string;
 	toolsExpanded?: boolean;
 	streaming?: boolean;
+	inputHandlerReady?: boolean;
 }
 
 class InteractiveModeDriver {
@@ -217,6 +218,14 @@ async function reloadThroughExtensionContext(
 	sessionStartFile: string,
 	expectedBinding: string,
 ): Promise<void> {
+	// Engine binding precedes host input readiness. In this synthetic terminal,
+	// cooked startup recovery can consume a slash draft before a heartbeat sees it.
+	// Wait for recovery to finish before testing normal interactive reload input.
+	await driver.waitFor(
+		(report) => report.type === "heartbeat" && report.inputHandlerReady === true,
+		ENGINE_REPORT_TIMEOUT_MS,
+		"host input handler readiness before extension reload",
+	);
 	const from = driver.reports.length;
 	driver.send({ type: "input", data: "/reload-keybindings-fixture" });
 	await driver.waitForNext(

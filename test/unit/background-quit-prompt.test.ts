@@ -79,8 +79,11 @@ describe("graceful quit at user-input boundaries", () => {
 			outputs: { answer: Type.String() },
 			run: async (ctx) => {
 				const answer = await ctx.ui.input("Value?");
-				advancedPastPrompt = true;
-				return { answer };
+				// Regression for #2700: live resume must admit the next workflow tool.
+				return await ctx.tool("save-answer", {}, async () => {
+					advancedPastPrompt = true;
+					return { answer };
+				});
 			},
 		});
 		const execution = run(
@@ -138,8 +141,10 @@ describe("graceful quit at user-input boundaries", () => {
 			outputs: { answer: Type.String() },
 			run: async (ctx) => {
 				const answer = await ctx.ui.input("Value?");
-				advancedPastPrompt = true;
-				return { answer };
+				return await ctx.tool("save-answer", {}, async () => {
+					advancedPastPrompt = true;
+					return { answer };
+				});
 			},
 		});
 		const execution = run(

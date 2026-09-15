@@ -140,6 +140,49 @@ describe("StageUiBroker", () => {
 		unregister();
 	});
 
+	// Regression for #2700: graceful quit aborts the SDK turn, not the workflow.
+	test("SDK turn cancellation clears a questionnaire while the workflow remains live", async () => {
+		const { broker, store } = setupStage();
+		const turn = new AbortController();
+		const workflow = new AbortController();
+		const pending = broker.requestCustomUi(
+			"run-1",
+			"stage-1",
+			() => ({ render: () => [], invalidate() {} }),
+			{ overlay: true, signal: turn.signal },
+			workflow.signal,
+		);
+		const rejected = assert.rejects(pending, /turn paused/);
+		turn.abort(new Error("turn paused"));
+		assert.equal(store.runs()[0]?.stages[0]?.status, "running");
+		await rejected;
+		assert.equal(workflow.signal.aborted, false);
+	});
+
+	test.each(["workflow", "both-aborted", "aliased"])(
+		"custom UI preserves workflow cancellation (%s)",
+		async (mode) => {
+			const { broker, store } = setupStage();
+			const workflow = new AbortController();
+			const turn = mode === "aliased" ? workflow : new AbortController();
+			if (mode === "both-aborted") {
+				workflow.abort(new Error("workflow stopped"));
+				turn.abort(new Error("turn stopped"));
+			}
+			const pending = broker.requestCustomUi(
+				"run-1",
+				"stage-1",
+				() => ({ render: () => [], invalidate() {} }),
+				{ overlay: true, signal: turn.signal },
+				workflow.signal,
+			);
+			const rejected = assert.rejects(pending, /workflow stopped/);
+			workflow.abort(new Error("workflow stopped"));
+			await rejected;
+			assert.equal(store.runs()[0]?.stages[0]?.status, "running");
+		},
+	);
+
 	test("aborted requests reject, clear pending state, and notify mounted hosts", async () => {
 		const { broker, store } = setupStage();
 		const controller = new AbortController();

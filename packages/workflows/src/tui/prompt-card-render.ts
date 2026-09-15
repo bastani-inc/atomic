@@ -1,6 +1,7 @@
 import { keyHint, keyText, rawKeyHint } from "@bastani/atomic";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { PendingPrompt } from "../shared/store-types.js";
+import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
 import { BOLD, hexBg, hexToAnsi, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { createPromptSelectList } from "./prompt-card-select.js";
@@ -144,7 +145,7 @@ function renderPromptBodyBlock(
 	maxRows: number | undefined,
 	messageOffset: number,
 ): PromptCardLayout {
-	const messageRows = wrapText(state.prompt.message, innerWidth - 4);
+	const messageRows = wrapText(sanitizeToolDisplayText(state.prompt.message), innerWidth - 4);
 	const totalQuestionRows = messageRows.length;
 	if (maxRows !== undefined && maxRows === 0) {
 		return { lines: [], totalQuestionRows, visibleQuestionRows: 0 };
@@ -263,11 +264,15 @@ function renderReducedResponse(state: PromptCardState, theme: GraphTheme): strin
 		case "confirm":
 			return paint("response  yes / no", theme.textMuted, { bold: true });
 		case "select":
-			return paint(`response  ${state.prompt.choices?.[state.selectedIndex] ?? "(no choices)"}`, theme.textMuted, {
-				bold: true,
-			});
+			return paint(
+				`response  ${sanitizeToolDisplayText(state.prompt.choices?.[state.selectedIndex] ?? "(no choices)")}`,
+				theme.textMuted,
+				{
+					bold: true,
+				},
+			);
 		case "input":
-			return paint(`response  ❯ ${state.rawText}`, theme.textMuted, { bold: true });
+			return paint(`response  ❯ ${sanitizeToolDisplayText(state.rawText)}`, theme.textMuted, { bold: true });
 		case "editor":
 			return paint("response  editor", theme.textMuted, { bold: true });
 		case "custom":
@@ -345,12 +350,13 @@ function makeFieldRow(content: string, width: number, borderColor: string): stri
 	return paint("│", borderColor) + padded + paint("│", borderColor);
 }
 
-function renderResponseField(
+export function renderResponseField(
 	state: PromptCardState,
 	theme: GraphTheme,
 	usable: number,
 	cursorOn: boolean,
 	maxRows: number,
+	showEditorSubmit = true,
 ): string[] {
 	switch (state.prompt.kind) {
 		case "confirm":
@@ -360,7 +366,7 @@ function renderResponseField(
 		case "input":
 			return [renderInputRow(state, theme, usable, cursorOn)];
 		case "editor":
-			return renderEditorRows(state, theme, usable, cursorOn, maxRows);
+			return renderEditorRows(state, theme, usable, cursorOn, maxRows, showEditorSubmit);
 		case "custom":
 			return [padToUsable("", usable)];
 	}
@@ -406,13 +412,14 @@ function renderEditorRows(
 	usable: number,
 	cursorOn: boolean,
 	maxRows: number,
+	showSubmit: boolean,
 ): string[] {
 	const rowBudget = Math.max(1, Math.floor(maxRows));
-	if (rowBudget === 1 && state.editorSubmitFocused) {
+	if (showSubmit && rowBudget === 1 && state.editorSubmitFocused) {
 		return [padToUsable(renderEditorSubmitAction(true, theme), usable)];
 	}
-	const editorRows = rowBudget === 1 ? 1 : rowBudget - 1;
-	const includeSubmit = rowBudget > 1;
+	const includeSubmit = showSubmit && rowBudget > 1;
+	const editorRows = includeSubmit ? rowBudget - 1 : rowBudget;
 	const allLines = state.rawText.split("\n");
 	// Find the line + column the caret currently sits on.
 	let acc = 0;
@@ -460,6 +467,10 @@ function renderEditorSubmitAction(focused: boolean, theme: GraphTheme): string {
 }
 
 function clipToCaretWindow(value: string, caret: number, windowWidth: number): { text: string; caret: number } {
+	// Escape before ANSI-aware clipping, mapping the raw caret into the displayed text.
+	const rawCaret = Math.max(0, Math.min(caret, value.length));
+	caret = sanitizeToolDisplayText(value.slice(0, rawCaret)).length;
+	value = sanitizeToolDisplayText(value);
 	if (windowWidth <= 0) return { text: "", caret: 0 };
 	if (visibleWidth(value) <= windowWidth) {
 		return { text: value, caret: Math.max(0, Math.min(caret, value.length)) };

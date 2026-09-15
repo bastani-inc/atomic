@@ -1,3 +1,4 @@
+import type { SessionEntry } from "../shared/persistence-restore.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -10,6 +11,7 @@ import type {
 	StageSnapshot,
 	StoreSnapshot,
 } from "../shared/store-types.js";
+import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
 import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
 import { renderWorkflowNoticeCard } from "../tui/workflow-notice-card.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
@@ -58,8 +60,28 @@ export function createWorkflowHilAnswerNotificationState(): WorkflowHilAnswerNot
 	};
 }
 
-export function resetWorkflowHilAnswerNotificationState(state: WorkflowHilAnswerNotificationState): void {
+export function resetWorkflowHilAnswerNotificationState(
+	state: WorkflowHilAnswerNotificationState,
+	entries: readonly SessionEntry[] = [],
+): void {
 	state.deliveredAnswerPrompts.clear();
+	// Reload creates a new extension state while retaining answered workflow prompts.
+	// Reconstruct delivery from this parent's transcript before subscribing again.
+	for (const entry of entries) {
+		if (entry.type !== "custom_message" || entry.customType !== HIL_ANSWER_NOTICE_CUSTOM_TYPE) continue;
+		const details = readHilAnswerNoticeDetails(entry);
+		if (
+			details?.kind !== "hil_answered" ||
+			typeof details.runId !== "string" ||
+			typeof details.stageId !== "string" ||
+			(details.promptId !== undefined && typeof details.promptId !== "string") ||
+			(details.promptKind !== undefined && typeof details.promptKind !== "string")
+		)
+			continue;
+		state.deliveredAnswerPrompts.add(
+			answerNoticeKey(details.runId, details.stageId, details.promptId, details.promptKind),
+		);
+	}
 }
 
 export function installWorkflowHilAnswerNotifications(options: WorkflowHilAnswerNotificationOptions): () => void {
@@ -105,6 +127,16 @@ export function installWorkflowHilAnswerNotifications(options: WorkflowHilAnswer
 	);
 	const unsubscribeBroker = options.stageUiBroker?.onStagePromptResolved((event) => {
 		if (event.answerSource === "workflow_tool") return;
+		// Questionnaire cancellation can retain draft answers; those were never submitted.
+		if (
+			event.prompt.kind === "ask_user_question" &&
+			typeof event.answer === "object" &&
+			event.answer !== null &&
+			"cancelled" in event.answer &&
+			event.answer.cancelled === true
+		) {
+			return;
+		}
 		const answeredStage = findStageSnapshot(readGraphStoreSnapshot(options.store), event.runId, event.stageId);
 		if (answeredStage === undefined) return;
 
@@ -153,7 +185,9 @@ export function formatWorkflowHilAnswerNoticeText(details: WorkflowHilAnswerNoti
 	const location = `(run ${details.runId}, stage ${stage}${prompt})`;
 	const instruction =
 		"Do not ask the same question again. No main-chat action is needed; do not answer any other workflow human-in-the-loop prompt unless the user explicitly provides that answer.";
-	return `✓ ${subject} ${location}.${question} User responded with: ${details.answerSummary}. ${instruction}`;
+	return sanitizeToolDisplayText(
+		`✓ ${subject} ${location}.${question} User responded with: ${details.answerSummary}. ${instruction}`,
+	);
 }
 
 export function formatWorkflowHilAnswerInterruptAbortText(details: WorkflowHilAnswerNoticeDetails): string {
@@ -334,20 +368,28 @@ function makeNoticeComponent(
 	details: WorkflowHilAnswerNoticeDetails,
 	theme: GraphTheme | undefined,
 ): PiMessageRenderComponent {
+	// Sanitize only the display projection, including historical stored notices.
+	// Keep the original details and store values intact for ownership and replay.
+	const workflowName = sanitizeToolDisplayText(details.workflowName);
 	const text = formatWorkflowHilAnswerNoticeText(details);
 	return {
 		render(width: number): string[] {
 			return renderWorkflowNoticeCard({
 				title: "HIL ANSWERED",
 				glyph: "✓",
-				headline: `Workflow "${details.workflowName}" received the user's response`,
+				headline: `Workflow "${workflowName}" received the user's response`,
 				tone: "success",
 				fields: [
-					{ label: "workflow", value: details.workflowName },
-					{ label: "run", value: details.runId },
-					{ label: "stage", value: details.stageName ?? details.stageId },
-					{ label: "prompt", value: details.promptMessage, tone: "muted" },
-					{ label: "answer", value: details.answerSummary },
+					{ label: "workflow", value: workflowName },
+					{ label: "run", value: sanitizeToolDisplayText(details.runId) },
+					{ label: "stage", value: sanitizeToolDisplayText(details.stageName ?? details.stageId) },
+					{
+						label: "prompt",
+						value:
+							details.promptMessage === undefined ? undefined : sanitizeToolDisplayText(details.promptMessage),
+						tone: "muted",
+					},
+					{ label: "answer", value: sanitizeToolDisplayText(details.answerSummary) },
 				],
 				footer:
 					"No main-chat action is needed; do not answer other workflow prompts unless the user explicitly provides that answer.",

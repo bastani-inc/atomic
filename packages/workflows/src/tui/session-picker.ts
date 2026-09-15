@@ -20,7 +20,7 @@
 
 import { keyText } from "@bastani/atomic";
 import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
-import { runIndicatorStatus } from "../shared/run-indicator-status.js";
+import { statusOnlyRunIndicator } from "../shared/run-indicator-status.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -268,7 +268,7 @@ function renderRunRow(
 	const border = hexToAnsi(theme.border);
 	const panelBg = hexBg(theme.bg);
 	const run = row.run;
-	const indicatorStatus = isQuitRun(run) ? run.status : runIndicatorStatus(run, allRuns);
+	const indicatorStatus = isQuitRun(run) ? run.status : statusOnlyRunIndicator(run, allRuns);
 	const icon = statusIcon(indicatorStatus);
 	const iconColor = hexToAnsi(statusColor(indicatorStatus, theme));
 	const dim = hexToAnsi(theme.dim);

@@ -1,5 +1,7 @@
+import { hasTerminalControls } from "@bastani/atomic";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
+import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import {
@@ -7,6 +9,7 @@ import {
 	renderPromptCardLayout,
 	renderPromptIdentityBanner,
 	renderPromptRunIdBanner,
+	renderResponseField,
 } from "./prompt-card-render.js";
 import { bannerLines, embedOrchestratorReturnHintInWidget } from "./stage-chat-view-footer-status.js";
 import {
@@ -104,7 +107,7 @@ function renderReadOnlyPromptArchiveBody(
 	const innerWidth = Math.max(2, width - 2);
 	const bodyLines: string[] = [];
 	const messageBox = new Box(2, 1);
-	messageBox.addChild(new Text(paint(prompt.message, t.text), 0, 0));
+	messageBox.addChild(new Text(paint(sanitizeToolDisplayText(prompt.message), t.text), 0, 0));
 	bodyLines.push(...messageBox.render(innerWidth));
 	bodyLines.push(
 		...new Text(paint("prompt type", t.textMuted, { bold: true }) + paint(`  ${prompt.kind}`, t.text), 2, 0).render(
@@ -115,7 +118,9 @@ function renderReadOnlyPromptArchiveBody(
 	if (prompt.kind === "select" && prompt.choices && prompt.choices.length > 0) {
 		bodyLines.push(...new Text(paint("choices", t.textMuted, { bold: true }), 2, 0).render(innerWidth));
 		for (const choice of prompt.choices) {
-			bodyLines.push(...new Text(paint("• ", t.dim) + paint(choice, t.text), 4, 0).render(innerWidth));
+			bodyLines.push(
+				...new Text(paint("• ", t.dim) + paint(sanitizeToolDisplayText(choice), t.text), 4, 0).render(innerWidth),
+			);
 		}
 	} else if (prompt.kind === "confirm") {
 		bodyLines.push(
@@ -127,13 +132,17 @@ function renderReadOnlyPromptArchiveBody(
 
 	if ((prompt.kind === "input" || prompt.kind === "editor") && prompt.initial && prompt.initial.length > 0) {
 		bodyLines.push(...new Text(paint("initial value shown", t.textMuted, { bold: true }), 2, 0).render(innerWidth));
-		bodyLines.push(...new Text(paint(prompt.initial, t.dim), 4, 0).render(innerWidth));
+		bodyLines.push(...new Text(paint(sanitizeToolDisplayText(prompt.initial), t.dim), 4, 0).render(innerWidth));
 	}
 
 	const answer = readOnlyPromptAnswer(ctx, stage, prompt);
 	bodyLines.push("");
 	bodyLines.push(...new Text(paint("your response", t.textMuted, { bold: true }), 2, 0).render(innerWidth));
-	bodyLines.push(...new Text(paint(answer, answer.startsWith("(") ? t.dim : t.text), 4, 0).render(innerWidth));
+	bodyLines.push(
+		...new Text(paint(sanitizeToolDisplayText(answer), answer.startsWith("(") ? t.dim : t.text), 4, 0).render(
+			innerWidth,
+		),
+	);
 	bodyLines.push("");
 
 	const title = stage.status === "skipped" ? "QUESTION SKIPPED" : "QUESTION ASKED";
@@ -285,9 +294,37 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, bud
 	setEditorBorderColor(editor, (text) => hexToAnsi(ctx.theme.accent) + text + RESET);
 
 	const innerWidth = Math.max(2, width - 2);
-	const messageLines = new Text(paint(state.prompt.message, ctx.theme.text), 2, 0).render(innerWidth);
+	const messageLines = new Text(paint(sanitizeToolDisplayText(state.prompt.message), ctx.theme.text), 2, 0).render(
+		innerWidth,
+	);
 	const responseLines = new Text(paint("response", ctx.theme.textMuted, { bold: true }), 2, 0).render(innerWidth);
-	const editorLines = editor.render(Math.max(20, innerWidth - 4)).map((line) => `  ${line}`);
+	const rawText = editor.getText();
+	// Native Editor treats ANSI in its text as styling. Keep its editing state raw,
+	// but use our text-only response renderer when the draft contains controls.
+	const cursor = (editor as typeof editor & { getCursor?: () => { line: number; col: number } }).getCursor?.();
+	const caret = cursor
+		? rawText
+				.split("\n")
+				.slice(0, cursor.line)
+				.reduce((offset, line) => offset + line.length + 1, 0) + cursor.col
+		: state.caret;
+	const editorLines = (
+		hasTerminalControls(rawText)
+			? renderResponseField(
+					{
+						...state,
+						prompt: rawText.includes("\n") ? { ...state.prompt, kind: "editor" } : state.prompt,
+						rawText,
+						caret,
+					},
+					ctx.theme,
+					Math.max(20, innerWidth - 4),
+					ctx.focused,
+					6,
+					false,
+				)
+			: editor.render(Math.max(20, innerWidth - 4))
+	).map((line) => `  ${line}`);
 	const hintLines = new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth);
 	const identity = { runId: ctx.runId, name: ctx.workflowName };
 	const unattributed = renderPrimitivePromptBlockLayout(

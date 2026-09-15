@@ -83,23 +83,23 @@ Atomic chooses a complete execution shape, fills inputs from the request, and co
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, connect, pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
+Named workflow runs execute in the background. After launch you get the full 36-character run UUID shown by user-facing workflow surfaces. Every workflow command and action requires that full displayed ID; prefixes and 32-character dashless forms are rejected rather than resolved.
 
 ```text
-/workflow status <run-id>         # inspect one run's progress
-/workflow status                  # list this session's active and terminal runs
-/workflow connect <run-id>        # see agents working; chat with or steer each stage (F2 also opens latest)
-/workflow attach <run-id> <stage> # chat with one stage
-/workflow pause <run-id>          # pause resumably
-/workflow resume <run-id> "go"    # send a steer message and resume
-/workflow quit <run-id>           # pause gracefully and keep the run resumable
+/workflow status <full-run-id>         # inspect one run's progress
+/workflow status                       # list this session's active and terminal runs
+/workflow connect <full-run-id>        # see agents working; chat with or steer each stage (F2 also opens latest)
+/workflow attach <full-run-id> <stage> # chat with one stage
+/workflow pause <full-run-id>          # pause resumably
+/workflow resume <full-run-id> "go"    # send a steer message and resume
+/workflow quit <full-run-id>           # pause gracefully and keep the run resumable
 ```
 
-The below-editor `BACKGROUND` panel uses two lines per card at 80 columns and wider: the status glyph and full id are on the first line, and the workflow name plus mode/progress/elapsed metadata are on the second. Below 80 columns it collapses to a count-only line. In chat surfaces, a full id wraps onto continuation lines at narrow widths instead of being cut, and the surrounding border remains intact.
+At 80 columns and wider, each ordinary `BACKGROUND` card shows the full run ID plus workflow metadata. When its visible run tree has exactly one displayable human-in-the-loop request, the card adds one bounded, terminal-control-stripped question row and `Answer: /workflow connect <full-run-id>`, with the full ID wrapping rather than being cut. F2 still opens the active workflow, but is not repeated in the answer hint. Promptless, multiple, ambiguous, and custom-only waits remain status-only. The header retains its generic ``(attach to workflow with `/workflow connect`)`` guidance whenever any workflow needing attention lacks its own answer command; otherwise it shows only the attention count and glyphs. Below 80 columns the panel remains count-only, while full IDs in chat surfaces wrap rather than being cut.
 
-Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them.
+Interactive users answer through F2 or the connected workflow; agents use `workflow answer` with the full run ID and exact stage/prompt identity. The live affordance is widget-only, self-clears when the exact prompt resolves, and never enters the transcript or parent-model context.
 
-Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflow Operations](/workflows/operations) for the full run-control reference.
+Atomic posts main-chat lifecycle notices when a run completes or fails, but it does not post awaiting prompts into main chat. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflow Operations](/workflows/operations) for the full run-control reference.
 
 ### Top skills to invoke directly
 

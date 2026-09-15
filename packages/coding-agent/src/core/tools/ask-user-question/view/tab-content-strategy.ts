@@ -1,5 +1,6 @@
 import { type Component, Container, type Input, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
+import { escapeTerminalControls } from "../../../../utils/ansi.js";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
 import type { QuestionData } from "../tool/types.ts";
 import type { ChatRowView } from "./components/chat-row-view.ts";
@@ -72,11 +73,11 @@ export class QuestionTabStrategy implements TabContentStrategy {
 		const question = this.config.questions[state.currentTab];
 		// In multi-question mode the tab bar already shows the header; suppress the inline badge.
 		if (!this.config.isMulti && question?.header && question.header.length > 0) {
-			out.push(new Text(this.config.theme.bg("selectedBg", ` ${question.header} `), 1, 0));
+			out.push(new Text(this.config.theme.bg("selectedBg", ` ${escapeTerminalControls(question.header)} `), 1, 0));
 			out.push(new Spacer(1));
 		}
 		if (question) {
-			out.push(new Text(this.config.theme.bold(question.question), 1, 0));
+			out.push(new Text(this.config.theme.bold(escapeTerminalControls(question.question)), 1, 0));
 			out.push(new Spacer(1));
 		}
 		return out;
@@ -135,14 +136,14 @@ export class SubmitTabStrategy implements TabContentStrategy {
 			const q = this.config.questions[i];
 			const a = state.answers.get(i);
 			if (!a) continue;
-			const label = q.header && q.header.length > 0 ? q.header : `Q${i + 1}`;
-			const answerText = formatAnswerScalar(a, "summary");
+			const label = escapeTerminalControls(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`);
+			const answerText = escapeTerminalControls(formatAnswerScalar(a, "summary"));
 			c.addChild(new Text(this.config.theme.fg("muted", ` ● ${label}`), 1, 0));
 			c.addChild(
 				new Text(`   ${this.config.theme.fg("muted", "→")} ${this.config.theme.fg("text", answerText)}`, 1, 0),
 			);
 			if (a.notes && a.notes.length > 0) {
-				c.addChild(new Text(this.config.theme.fg("dim", `     notes: ${a.notes}`), 1, 0));
+				c.addChild(new Text(this.config.theme.fg("dim", `     notes: ${escapeTerminalControls(a.notes)}`), 1, 0));
 			}
 		}
 		return c;
@@ -161,7 +162,7 @@ export class SubmitTabStrategy implements TabContentStrategy {
 		for (let i = 0; i < this.config.questions.length; i++) {
 			const q = this.config.questions[i];
 			if (!state.answers.has(i)) {
-				missing.push(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`);
+				missing.push(escapeTerminalControls(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`));
 			}
 		}
 		const promptText =

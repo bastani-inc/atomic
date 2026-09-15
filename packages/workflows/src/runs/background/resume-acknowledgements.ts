@@ -39,11 +39,15 @@ export async function settleResumeAcknowledgements(
 	store: Store,
 	targets: readonly ResumeAcknowledgementTarget[],
 	message?: string,
+	beforeResume?: () => void,
+	beforeReconcile?: () => void,
 ): Promise<ResumeAcknowledgementResult> {
 	const attempted = targets.filter(
 		(target) => target.handle.status === "paused" && targetIsActuallyPaused(store, target),
 	);
-	const settled = await Promise.allSettled(attempted.map(({ handle }) => handle.resume(message)));
+	const settled = await Promise.allSettled(attempted.map(({ handle }) => handle.resume(message, beforeResume)));
+	// A newer quit may have re-paused an early success while another acknowledgement waited.
+	if (attempted.length > 0) beforeReconcile?.();
 	const resumed: StageSnapshot[] = [];
 	let acknowledged = 0;
 	const failures: string[] = [];

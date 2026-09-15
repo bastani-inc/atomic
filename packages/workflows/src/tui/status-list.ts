@@ -28,7 +28,7 @@ import type {
 import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
-import { runIndicatorStatus } from "../shared/run-indicator-status.js";
+import { statusOnlyRunIndicator } from "../shared/run-indicator-status.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -139,7 +139,7 @@ function renderRunEntry(
 ): string[] {
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
-	const indicatorStatus = indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, allRuns);
+	const indicatorStatus = indicatorStatuses?.[run.id] ?? statusOnlyRunIndicator(run, allRuns);
 	const glyph = statusIconForRun(run, indicatorStatus);
 	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, indicatorStatus)) : "";
 	const accent = theme ? hexToAnsi(theme.accent) : "";

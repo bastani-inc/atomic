@@ -112,6 +112,12 @@ In a real confirmation, identify the target PRs in the question or immediately p
 
 A cancelled or unanswered question is not approval. If no usable question tool is available, continue autonomously using best judgment and state evidence-backed assumptions rather than stopping just because the tool is missing. Preserve safety, authorization, and explicit approval gates. Workflow-authored `ctx.ui` gates and `workflow answer` for relaying actual user responses remain supported.
 
+Question text, option labels and descriptions, and the answer review display terminal control characters as printable escapes such as `\x1b`. Ordinary Unicode and line breaks remain readable; submitted answers retain their original text.
+
+Option previews apply the same escaping before Markdown rendering, including inside code fences. Preview tabs display as `\x09`; use spaces for visual indentation. Markdown line breaks and formatting remain supported, and submitted selections retain the original preview text.
+
+Workflow `HIL ANSWERED` notices also display terminal controls in questions, answers, selected choices, and workflow or stage labels as printable escapes. This applies when reopening saved notices too. Original prompt and answer data are unchanged; notices remain excluded from parent-model context, and cancelling a questionnaire does not produce a successful-answer notice.
+
 ## Persisted tool output
 
 Output that does not fit in a tool result is written to a file, and the result points at it — `Full output: <path>` for `bash`, `Full output saved to: <path>` for any tool result that crosses the persistence threshold. Those files are storage, so Atomic bounds where they go, how large they get, and how long they live.

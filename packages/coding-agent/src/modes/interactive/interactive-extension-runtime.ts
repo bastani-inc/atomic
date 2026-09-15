@@ -184,10 +184,16 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 	options?: ExtensionWidgetOptions,
 ): void {
 	const placement = options?.placement ?? "aboveEditor";
+	let disposalError: { error: unknown } | undefined;
 	const removeExisting = (map: Map<string, Component & { dispose?(): void }>) => {
 		const existing = map.get(key);
-		if (existing?.dispose) existing.dispose();
+		// Detach before user disposal: a retired owner cannot retry, and disposal may reenter.
 		map.delete(key);
+		try {
+			existing?.dispose?.();
+		} catch (error) {
+			disposalError ??= { error };
+		}
 	};
 
 	removeExisting(this.extensionWidgetsAbove);
@@ -195,6 +201,7 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 
 	if (content === undefined) {
 		this.renderWidgets();
+		if (disposalError) throw disposalError.error;
 		return;
 	}
 
@@ -226,22 +233,36 @@ InteractiveModeBase.prototype.setExtensionWidget = function (
 	const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
 	targetMap.set(key, component);
 	this.renderWidgets();
+	// The replacement is mounted and the dock re-rendered before the outgoing widget's failure surfaces.
+	// This path throws rather than reporting because its owner — commitWidgets/invalidate in the runner —
+	// already catches and emits, and a direct extension caller must see its own widget's error.
+	if (disposalError) throw disposalError.error;
 };
 
 InteractiveModeBase.prototype.clearExtensionWidgets = function (this: InteractiveModeBase): void {
-	const releasedKeys = new Set<string>();
-	for (const [key, widget] of this.extensionWidgetsAbove) {
-		widget.dispose?.();
-		releasedKeys.add(key);
-	}
-	for (const [key, widget] of this.extensionWidgetsBelow) {
-		widget.dispose?.();
-		releasedKeys.add(key);
-	}
+	const widgets = [...this.extensionWidgetsAbove, ...this.extensionWidgetsBelow];
+	// Snapshot and detach the whole retiring batch before invoking user callbacks.
 	this.extensionWidgetsAbove.clear();
 	this.extensionWidgetsBelow.clear();
+	const errors: unknown[] = [];
+	for (const [, widget] of widgets) {
+		try {
+			widget.dispose?.();
+		} catch (error) {
+			errors.push(error);
+		}
+	}
 	this.renderWidgets();
-	for (const key of releasedKeys) this.notifyExtensionWidgetRelease(key);
+	for (const key of new Set(widgets.map(([key]) => key))) this.notifyExtensionWidgetRelease(key);
+	// Batch teardown runs from /reload and session invalidation where no caller can retry,
+	// so every failure is reported through the TUI's extension error sink instead of aborting the reset.
+	for (const error of errors) {
+		this.showExtensionError(
+			"<runtime>",
+			error instanceof Error ? error.message : String(error),
+			error instanceof Error ? error.stack : undefined,
+		);
+	}
 };
 
 InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveModeBase): void {

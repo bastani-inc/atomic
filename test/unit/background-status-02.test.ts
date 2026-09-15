@@ -139,62 +139,85 @@ describe("pauseRun", () => {
 		if (!result.ok) assert.equal(result.reason, "no_active_stages");
 	});
 
-	test("pauses every running stage and marks the run paused", async () => {
-		const st = createStore();
-		st.recordRunStart(makeRun({ id: "r1" }));
-		st.recordStageStart("r1", {
-			id: "s-a",
-			name: "stage-s-a",
-			status: "running",
-			parentIds: [],
-			toolEvents: [],
-		});
-		st.recordStageStart("r1", {
-			id: "s-b",
-			name: "stage-s-b",
-			status: "running",
-			parentIds: [],
-			toolEvents: [],
-		});
-		const registry = createStageControlRegistry();
-		const a = { pauseCalls: 0, resumeCalls: 0 };
-		const b = { pauseCalls: 0, resumeCalls: 0 };
-		registerStageHandle(registry, "r1", "s-a", a);
-		registerStageHandle(registry, "r1", "s-b", b);
+	// Regression for #2700: a live questionnaire remains a pausable stage.
+	test.each(["running", "awaiting_input"] as const)(
+		"pauses every %s stage and marks the run paused",
+		async (status) => {
+			const st = createStore();
+			st.recordRunStart(makeRun({ id: "r1" }));
+			st.recordStageStart("r1", {
+				id: "s-a",
+				name: "stage-s-a",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+			st.recordStageStart("r1", {
+				id: "s-b",
+				name: "stage-s-b",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+			const registry = createStageControlRegistry();
+			const a = { pauseCalls: 0, resumeCalls: 0 };
+			const b = { pauseCalls: 0, resumeCalls: 0 };
+			registerStageHandle(registry, "r1", "s-a", a, status);
+			registerStageHandle(registry, "r1", "s-b", b, status);
 
-		const result = await pauseRun("r1", {
-			store: st,
-			stageControlRegistry: registry,
-		});
-		assert.equal(result.ok, true);
-		if (result.ok) assert.equal(result.paused.length, 2);
-		assert.equal(a.pauseCalls, 1);
-		assert.equal(b.pauseCalls, 1);
-		const run = st.runs().find((r) => r.id === "r1");
-		assert.equal(run?.status, "paused");
-	});
+			const result = await pauseRun("r1", {
+				store: st,
+				stageControlRegistry: registry,
+			});
+			assert.equal(result.ok, true);
+			if (result.ok) assert.equal(result.paused.length, 2);
+			assert.equal(a.pauseCalls, 1);
+			assert.equal(b.pauseCalls, 1);
+			const run = st.runs().find((r) => r.id === "r1");
+			assert.equal(run?.status, "paused");
+		},
+	);
 
-	test("stage-targeted pause only pauses the requested stage", async () => {
-		const st = createStore();
-		st.recordRunStart(makeRun({ id: "r1" }));
-		st.recordStageStart("r1", {
-			id: "s-a",
-			name: "stage-s-a",
-			status: "running",
-			parentIds: [],
-			toolEvents: [],
-		});
-		const registry = createStageControlRegistry();
-		const a = { pauseCalls: 0, resumeCalls: 0 };
-		registerStageHandle(registry, "r1", "s-a", a);
-		const result = await pauseRun("r1", {
-			store: st,
-			stageControlRegistry: registry,
-			stageId: "s-a",
-		});
-		assert.equal(result.ok, true);
-		assert.equal(a.pauseCalls, 1);
-	});
+	test.each(["running", "awaiting_input"] as const)(
+		"stage-targeted pause pauses the requested %s stage",
+		async (status) => {
+			const st = createStore();
+			st.recordRunStart(makeRun({ id: "r1" }));
+			st.recordStageStart("r1", {
+				id: "s-a",
+				name: "stage-s-a",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+			const registry = createStageControlRegistry();
+			const a = { pauseCalls: 0, resumeCalls: 0 };
+			registerStageHandle(registry, "r1", "s-a", a, status);
+			st.recordStageStart("r1", {
+				id: "s-b",
+				name: "waiting sibling",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+			st.recordStageAwaitingInput("r1", "s-b", true);
+			const result = await pauseRun("r1", {
+				store: st,
+				stageControlRegistry: registry,
+				stageId: "s-a",
+			});
+			assert.equal(result.ok, true);
+			assert.equal(a.pauseCalls, 1);
+			assert.equal(st.runs().find((run) => run.id === "r1")?.status, "running");
+			assert.equal(
+				st
+					.runs()
+					.find((run) => run.id === "r1")
+					?.stages.find((stage) => stage.id === "s-b")?.status,
+				"awaiting_input",
+			);
+		},
+	);
 });
 describe("resumeRun — live paused stages", () => {
 	test("resumes paused stages through the registry", async () => {

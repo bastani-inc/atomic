@@ -4,6 +4,7 @@ import {
 	getLoadableDurableWorkflow,
 	transitionDurableWorkflowStatus,
 } from "../../durable/workflow-status-transition.js";
+import { withDurableControlTransition } from "./durable-control-transition.js";
 
 const pendingRunningTransitions = new WeakMap<DurableWorkflowBackend, Set<string>>();
 
@@ -24,8 +25,19 @@ export function hasPendingDurableResumeTransition(runId: string): boolean {
 }
 
 /** Persist and flush the root running transition after visible local resume. */
-export async function markDurableResumed(runId: string): Promise<DurableResumeTransitionOutcome> {
+export async function markDurableResumed(
+	runId: string,
+	assertCurrent: () => void,
+): Promise<DurableResumeTransitionOutcome> {
 	const backend = getDurableBackend();
+	return withDurableControlTransition(backend, runId, () => persistDurableResumed(backend, runId, assertCurrent));
+}
+
+async function persistDurableResumed(
+	backend: DurableWorkflowBackend,
+	runId: string,
+	assertCurrent: () => void,
+): Promise<DurableResumeTransitionOutcome> {
 	const pending = transitionsFor(backend);
 	const handle = getLoadableDurableWorkflow(backend, runId);
 	if (handle === undefined) {
@@ -38,6 +50,8 @@ export async function markDurableResumed(runId: string): Promise<DurableResumeTr
 		pending.delete(runId);
 		return "refused";
 	}
+	// A queued resume may have been superseded while another control write flushed.
+	assertCurrent();
 	pending.add(runId);
 	try {
 		// Reissue even when an earlier failed flush already changed the local

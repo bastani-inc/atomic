@@ -55,12 +55,19 @@ function inlineInputHandles(data: string): boolean {
 	});
 }
 
+export interface QuestionnaireDraft {
+	readonly state: QuestionnaireState;
+	readonly notesCaret: number;
+}
+
 export interface QuestionnaireSessionConfig {
 	tui: { terminal: { columns: number }; requestRender(): void };
 	theme: Theme;
 	params: QuestionParams;
 	itemsByTab: WrappingSelectItem[][];
 	done: (result: QuestionnaireResult) => void;
+	/** Invocation-local draft retained when the host remounts this question. */
+	draft?: QuestionnaireDraft;
 	/** When true, Chat about this is a plain option and does not open an inline editor. */
 	chatAsOption?: boolean;
 }
@@ -123,7 +130,10 @@ export class QuestionnaireSession {
 		this.itemsByTab = config.itemsByTab;
 		this.chatAsOption = config.chatAsOption === true;
 		// Seed from the focused option at start; the reducer keeps it in sync via withFocusedOptionHasPreview.
-		this.state = { ...this.state, focusedOptionHasPreview: computeFocusedOptionHasPreview(this.questions, 0, 0) };
+		this.state = config.draft?.state ?? {
+			...this.state,
+			focusedOptionHasPreview: computeFocusedOptionHasPreview(this.questions, 0, 0),
+		};
 
 		const built = buildQuestionnaire({
 			tui: this.tui,
@@ -139,6 +149,19 @@ export class QuestionnaireSession {
 		this.notesInput = built.notesInput;
 		this.inlineInput = built.inlineInput;
 		this.viewAdapter = built.adapter;
+		if (config.draft) {
+			this.notesInput.setValue(this.state.notesDraft);
+			writeInputCursor(this.notesInput, config.draft.notesCaret);
+			this.notesInput.focused = this.state.notesVisible;
+			if (this.state.inlineInputOwner) {
+				const value = readInlineDraft(this.state, this.state.inlineInputOwner) ?? "";
+				this.inlineInput.setValue(value);
+				writeInputCursor(
+					this.inlineInput,
+					readInlineCaret(this.state, this.state.inlineInputOwner) ?? value.length,
+				);
+			}
+		}
 
 		this.component = {
 			render: built.render,
@@ -147,6 +170,13 @@ export class QuestionnaireSession {
 		};
 
 		this.viewAdapter.apply(this.state);
+	}
+
+	captureDraft(): QuestionnaireDraft {
+		return {
+			state: this.mirrorNotesDraft(this.mirrorInlineInputDraft(this.state)),
+			notesCaret: readInputCursor(this.notesInput),
+		};
 	}
 
 	dispatch(data: string): boolean {

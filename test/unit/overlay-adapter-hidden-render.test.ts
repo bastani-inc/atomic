@@ -21,6 +21,7 @@ import type { Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { GraphOverlayPort, OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
 import { bunExecutable } from "../helpers/runtime.js";
+import { RAW_CONTROL_PATTERN } from "../helpers/terminal-controls.js";
 
 const ISOLATED_PROCESS_ENV = "ATOMIC_OVERLAY_HIDDEN_RENDER_ISOLATED";
 
@@ -70,6 +71,11 @@ async function registerIsolatedTests(): Promise<void> {
 			assert.fail("graph overlay checks must not create skill completion"),
 		TranscriptFollowIndicator: TestComponent,
 		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
+		// Both names exist only to satisfy the wholesale @bastani/atomic mock's import surface.
+		// Neither is invoked on these adapter paths: escapeTerminalControls fails if called, and
+		// hasTerminalControls keeps the real predicate so an unexpected call behaves correctly.
+		escapeTerminalControls: () => assert.fail("graph overlay checks must not escape display text"),
+		hasTerminalControls: (t: string) => RAW_CONTROL_PATTERN.test(t),
 		keyHint: (key: string) => key,
 		sessionScopedExtensionState: (_scope: object, _key: string, create: () => object) => create(),
 		keyText: (key: string) => key,

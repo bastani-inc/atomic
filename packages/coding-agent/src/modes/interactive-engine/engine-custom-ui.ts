@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../config.js";
 import { runCallback } from "../../core/callback-activity.ts";
-import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
+import type { ExtensionError, HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
 import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.js";
@@ -110,6 +110,7 @@ export class EngineCustomUiService {
 	private nextId = 0;
 	private readonly write: (line: string) => void;
 	private readonly keybindings: KeybindingsManager;
+	private readonly onError: ((error: ExtensionError) => void) | undefined;
 	private readonly stateListeners = new Set<HostCustomUiStateListener>();
 	private readonly widgetReleaseListeners = new Map<string, Set<() => void>>();
 
@@ -120,8 +121,18 @@ export class EngineCustomUiService {
 		scroll?: { maxHeight: number; maxHeightFraction?: number },
 	): void {
 		const previous = this.widgetIds.get(key);
-		if (previous) this.disposeComponent(previous, false, false);
-		if (!factory) return;
+		// Pending factories have no active component yet; invalidate their registration too.
+		this.widgetIds.delete(key);
+		let disposalError: { error: unknown } | undefined;
+		try {
+			if (previous) this.disposeComponent(previous, false, false);
+		} catch (error) {
+			disposalError = { error };
+		}
+		if (!factory) {
+			if (disposalError) throw disposalError.error;
+			return;
+		}
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
@@ -129,7 +140,20 @@ export class EngineCustomUiService {
 		void runCallback({ kind: "renderer", name: `widget:${key}` }, () => factory(tui, theme))
 			.then((component) => {
 				if (this.widgetIds.get(key) !== componentId) {
-					component.dispose?.();
+					// Stale-component dispose is a widget disposal failure; report it.
+					// Stale factory rejections stay in the catch below and stay discarded so a
+					// superseded factory cannot resurrect a failed-widget frame.
+					try {
+						component.dispose?.();
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						this.onError?.({
+							extensionPath: "<runtime>",
+							event: "session_shutdown",
+							error: message,
+							stack: error instanceof Error ? error.stack : undefined,
+						});
+					}
 					return;
 				}
 				tui.addChild(component);
@@ -151,7 +175,8 @@ export class EngineCustomUiService {
 				});
 			})
 			.catch((error: Error) => {
-				if (this.widgetIds.get(key) === componentId) this.widgetIds.delete(key);
+				if (this.widgetIds.get(key) !== componentId) return;
+				this.widgetIds.delete(key);
 				this.send({
 					type: "engine_custom_frame",
 					componentId,
@@ -159,10 +184,20 @@ export class EngineCustomUiService {
 					lines: [`Widget ${key} failed: ${error.message}`],
 				});
 			});
+		// The replacement is registered and its factory scheduled before the outgoing widget's failure
+		// surfaces; the open frame follows when that factory settles. This path throws rather than
+		// reporting because its owner — commitWidgets/invalidate in the runner — already catches and
+		// emits, and a direct extension caller must see its own widget's error.
+		if (disposalError) throw disposalError.error;
 	}
-	constructor(write: (line: string) => void, keybindings: KeybindingsManager) {
+	constructor(
+		write: (line: string) => void,
+		keybindings: KeybindingsManager,
+		onError?: (error: ExtensionError) => void,
+	) {
 		this.write = write;
 		this.keybindings = keybindings;
+		this.onError = onError;
 	}
 
 	async custom<T>(
@@ -334,14 +369,37 @@ export class EngineCustomUiService {
 					);
 				break;
 			case "engine_custom_dispose":
-				this.disposeComponent(command.componentId, true);
+				try {
+					this.disposeComponent(command.componentId, true);
+				} catch (error) {
+					// Host /reload tears remote proxies down with this command before the child's
+					// session.reload() can report through commitWidgets/invalidate.
+					this.reportWidgetDisposalError(error);
+				}
 				break;
 		}
 		return true;
 	}
 
 	dispose(): void {
-		for (const componentId of [...this.active.keys()]) this.disposeComponent(componentId, true, false);
+		this.widgetIds.clear();
+		for (const componentId of [...this.active.keys()]) {
+			try {
+				this.disposeComponent(componentId, true, false);
+			} catch (error) {
+				// Shutdown cannot retry; report and keep retiring the remaining components.
+				this.reportWidgetDisposalError(error);
+			}
+		}
+	}
+	private reportWidgetDisposalError(error: unknown): void {
+		const message = error instanceof Error ? error.message : String(error);
+		this.onError?.({
+			extensionPath: "<runtime>",
+			event: "session_shutdown",
+			error: message,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 	}
 	private disposeComponent(componentId: string, resolve: boolean, notifyWidgetRelease = true): void {
 		const record = this.active.get(componentId);
@@ -349,14 +407,18 @@ export class EngineCustomUiService {
 		this.active.delete(componentId);
 		// Claim cancellation before user disposal code can call done() reentrantly.
 		if (resolve) record.resolve(undefined);
-		record.component.dispose?.();
-		record.tui.stop();
-		if (record.widgetKey) {
-			if (this.widgetIds.get(record.widgetKey) === componentId) this.widgetIds.delete(record.widgetKey);
-			this.send({ type: "engine_custom_close", componentId });
-			if (notifyWidgetRelease) this.notifyWidgetRelease(record.widgetKey);
+		try {
+			record.component.dispose?.();
+		} finally {
+			// Owned widget disposal must not leave a stale viewport or release lease behind.
+			record.tui.stop();
+			if (record.widgetKey) {
+				if (this.widgetIds.get(record.widgetKey) === componentId) this.widgetIds.delete(record.widgetKey);
+				this.send({ type: "engine_custom_close", componentId });
+				if (notifyWidgetRelease) this.notifyWidgetRelease(record.widgetKey);
+			}
+			this.notifyState();
 		}
-		this.notifyState();
 	}
 	private notifyWidgetRelease(key: string): void {
 		for (const listener of this.widgetReleaseListeners.get(key) ?? []) {
