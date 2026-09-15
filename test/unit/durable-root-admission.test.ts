@@ -8,6 +8,7 @@ import { resetDbosLifecycleForTests } from "../../packages/workflows/src/durable
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { admitDurableRootRun } from "../../packages/workflows/src/engine/run-durable-admission.js";
+import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
@@ -15,6 +16,43 @@ afterEach(() => {
 	vi.useRealTimers();
 	setDurableBackend(undefined);
 	resetDbosLifecycleForTests();
+});
+
+// #3072: local-only finalization must preserve immediate write rejection without a second flush.
+test("immediate non-dependency admission write failure rejects with the original error and cleans up", async () => {
+	const writeError = new Error("durable admission write failed");
+	let flushes = 0;
+	let executions = 0;
+	class FailingWriteBackend extends InMemoryDurableBackend {
+		override async flush(): Promise<void> {
+			flushes++;
+			throw writeError;
+		}
+	}
+	const backend = new FailingWriteBackend();
+	const store = createStore();
+	const controls = createToolControlRegistry();
+	const runId = "immediate-admission-failure";
+	const definition = workflow({
+		name: runId,
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async () => {
+			executions++;
+			return {};
+		},
+	});
+	await assert.rejects(
+		run(definition, {}, { runId, durableBackend: backend, store, toolControlRegistry: controls }),
+		(error) => error === writeError,
+	);
+	assert.equal(flushes, 1, "failure cleanup must not retry durable writes");
+	assert.equal(executions, 0);
+	assert.equal(store.runs()[0]?.status, "failed");
+	assert.equal(backend.getWorkflow(runId)?.status, "failed");
+	assert.equal(controls.runControl(runId), undefined);
+	assert.equal(controls.admissionBoundary(runId), undefined);
 });
 
 // #3072: a lost database must not pin root admission until the request deadline.

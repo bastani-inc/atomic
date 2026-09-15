@@ -198,45 +198,54 @@ describe("public workflow tool request deadline", () => {
 		blockedLoad.resolve();
 	});
 
-	test("returns the exact delayed run identity without retrying or stopping late execution", async () => {
+	test("returns the exact run identity when transport acknowledgement is delayed without retrying or stopping execution", async () => {
 		vi.useFakeTimers();
-		const admission = Promise.withResolvers<void>();
-		class DelayedAdmissionBackend extends InMemoryDurableBackend {
-			override async flush(): Promise<void> {
-				await admission.promise;
-			}
-		}
-		setDurableBackend(new DelayedAdmissionBackend());
+		const acknowledgement = Promise.withResolvers<void>();
+		const releaseBody = Promise.withResolvers<void>();
+		setDurableBackend(new InMemoryDurableBackend());
 		const bodyEntered = Promise.withResolvers<void>();
 		let bodyExecutions = 0;
 		const definition = workflow({
-			name: "public-timeout-delayed-admission",
+			name: "public-timeout-delayed-acknowledgement",
 			description: "",
 			inputs: {},
 			outputs: {},
 			run: async (ctx) => {
 				bodyExecutions += 1;
 				bodyEntered.resolve();
+				await releaseBody.promise;
 				await ctx.tool("tracked-work", {}, async () => "done");
 				return {};
 			},
 		});
 		const runtime = createExtensionRuntime({ definitions: [definition] });
-		const tool = registeredTool(makeExecuteWorkflowTool(runtime, () => undefined));
+		const execute = makeExecuteWorkflowTool(runtime, () => undefined);
+		let requests = 0;
+		const tool = registeredTool(async (...args) => {
+			if (args[0].action === "run") requests += 1;
+			const result = await execute(...args);
+			if (args[0].action === "run") {
+				// #3072: delay transport, not the separately bounded DB admission.
+				await acknowledgement.promise;
+			}
+			return result;
+		});
 
 		const pending = tool.execute(
-			"delayed-admission",
+			"delayed-acknowledgement",
 			{ action: "run", workflow: definition.name },
 			undefined,
 			undefined,
 			{},
 		);
 		await vi.advanceTimersByTimeAsync(0);
-		assert.equal(bodyExecutions, 0, "workflow code must remain behind startup admission");
+		await bodyEntered.promise;
+		assert.equal(bodyExecutions, 1, "durable admission must succeed before transport stalls");
+		assert.equal(requests, 1);
 		await vi.advanceTimersByTimeAsync(WORKFLOW_TOOL_REQUEST_TIMEOUT_MS);
 		const timeout = await pending;
 		assert.equal(timeout.details.action, "run");
-		assert.equal(timeout.details.status, "failed", "the deadline must not report startup success");
+		assert.equal(timeout.details.status, "failed", "the deadline must not report acknowledgement success");
 		assert.equal("code" in timeout.details ? timeout.details.code : undefined, "WORKFLOW_TIMEOUT");
 		assert.match("runId" in timeout.details ? (timeout.details.runId ?? "") : "", /^[0-9a-f-]{36}$/u);
 		const runId = "runId" in timeout.details ? timeout.details.runId : undefined;
@@ -247,7 +256,7 @@ describe("public workflow tool request deadline", () => {
 		assert.equal(workflowStore.runs()[0]?.id, runId);
 
 		const exactStatus = await tool.execute(
-			"inspect-delayed-admission",
+			"inspect-delayed-acknowledgement",
 			{ action: "status", runId },
 			undefined,
 			undefined,
@@ -259,10 +268,11 @@ describe("public workflow tool request deadline", () => {
 		const detachedJob = jobTracker.get(runId);
 		assert.ok(detachedJob, "the timed-out request must leave the exact detached job running");
 
-		admission.resolve();
+		acknowledgement.resolve();
+		releaseBody.resolve();
 		await detachedJob.promise;
-		await bodyEntered.promise;
-		assert.equal(bodyExecutions, 1, "the admitted detached run must execute once after the timed-out request");
+		assert.equal(requests, 1, "the timed-out request must not retry the run");
+		assert.equal(bodyExecutions, 1, "the admitted detached run must execute only once");
 		assert.equal(
 			workflowStore.runs()[0]?.status,
 			"completed",

@@ -1,6 +1,7 @@
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
+import { isDbosDependencyError } from "../durable/dbos-admission.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
@@ -770,6 +771,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	});
 	terminalEvents.register();
 	let durableRootAdmitted = false;
+	let durableAdmissionFailure: { error: unknown } | undefined;
 	try {
 		workflowObservationRuntime(activeStore).startRun(runId);
 		activeStore.recordRunStart(runSnapshot);
@@ -819,6 +821,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 									runSnapshot.origin,
 								),
 							},
+			}).catch((error: unknown) => {
+				if (!isDbosDependencyError(error)) durableAdmissionFailure = { error };
+				throw error;
 			}),
 			ownController.signal,
 		);
@@ -1000,7 +1005,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			});
 		}
 
-		return finalizeTerminalFailure({
+		const failed = finalizeTerminalFailure({
 			runId,
 			runSnapshot,
 			store: activeStore,
@@ -1008,6 +1013,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			metadata,
 			onRunEnd: opts.onRunEnd,
 		});
+		// Preserve write rejection without retrying persistence in unadmitted cleanup.
+		if (durableAdmissionFailure !== undefined && Object.is(durableAdmissionFailure.error, err)) throw err;
+		return failed;
 	} finally {
 		callerSignal?.removeEventListener("abort", onCallerAbort);
 		workflowObservationRuntime(activeStore).finishRun(runId);
