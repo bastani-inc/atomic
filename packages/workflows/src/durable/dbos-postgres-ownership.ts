@@ -11,12 +11,20 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+export interface ManagedPostgresServer {
+	readonly port: number;
+	readonly pid: number;
+	readonly started: number;
+	readonly systemIdentifier: string;
+}
+
 export interface ManagedPostgresMetadata {
 	readonly version: 1;
 	readonly clusterId: string;
 	readonly dataDir: string;
 	readonly directoryIdentity: string;
 	readonly major: number;
+	readonly server?: ManagedPostgresServer;
 }
 
 export interface PostgresConsumer {
@@ -85,11 +93,38 @@ export function managedPostgresMetadata(baseDir: string, major: number, create: 
 		!/^[0-9a-f-]{36}$/.test(record.clusterId) ||
 		record.dataDir !== dataDir ||
 		record.directoryIdentity !== directoryIdentity ||
-		record.major !== major
+		record.major !== major ||
+		(record.server !== undefined &&
+			(!Number.isInteger(record.server?.port) ||
+				record.server.port < 1 ||
+				record.server.port > 65535 ||
+				!Number.isSafeInteger(record.server.pid) ||
+				record.server.pid <= 0 ||
+				!Number.isSafeInteger(record.server.started) ||
+				record.server.started <= 0 ||
+				!/^\d+$/.test(record.server.systemIdentifier)))
 	) {
 		throw new Error(`Managed Postgres cluster identity mismatch: ${path}. Preserve the data and ownership records.`);
 	}
 	return record;
+}
+
+/** Publish only under the setup lock, after SQL and local identity agree. */
+export function publishPostgresServer(
+	baseDir: string,
+	metadata: ManagedPostgresMetadata,
+	server: ManagedPostgresServer,
+): void {
+	const current = managedPostgresMetadata(baseDir, metadata.major, false);
+	if (current.clusterId !== metadata.clusterId) throw new Error("Managed Postgres cluster identity changed.");
+	const path = join(postgresOwnershipDirectory(baseDir, metadata.major), "cluster.json");
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporary, JSON.stringify({ ...current, server }), { flag: "wx", mode: 0o600, flush: true });
+		renameSync(temporary, path);
+	} finally {
+		rmSync(temporary, { force: true });
+	}
 }
 
 /** Lifetime leases do not expire by age: a stalled event loop is still a consumer. */

@@ -113,20 +113,16 @@ test("Linux root ownership is passed to the direct native spawn", async () => {
 	assert.equal(options?.gid, 71);
 });
 
-test("a reachable competing server after spawn failure is attached without ownership", async () => {
+// #3074: a listening port is not managed-cluster identity.
+test("a reachable competing server after spawn failure is never adopted", async () => {
 	embeddedPostgresTestHooks.setRetainedPostgresSpawner(() => {
 		throw new Error("address already in use");
 	});
 
-	const lease = await embeddedPostgresTestHooks.startCluster(
-		"postgres",
-		"/data",
-		"/postgres.log",
-		context(),
-		async () => true,
+	await assert.rejects(
+		embeddedPostgresTestHooks.startCluster("postgres", "/data", "/postgres.log", context()),
+		/address already in use/,
 	);
-
-	assert.equal(lease, undefined);
 	await shutdownEmbeddedDbosPostgres();
 });
 
@@ -139,7 +135,7 @@ test("a spawn failure without a reachable competitor preserves the native error 
 	});
 	try {
 		await assert.rejects(
-			embeddedPostgresTestHooks.startCluster("postgres", root, logFile, context(), async () => false),
+			embeddedPostgresTestHooks.startCluster("postgres", root, logFile, context()),
 			/spawn denied[\s\S]*native postmaster detail/,
 		);
 	} finally {
