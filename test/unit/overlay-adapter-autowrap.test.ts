@@ -55,7 +55,7 @@ async function registerIsolatedTests(): Promise<void> {
 		TranscriptFollowIndicator: TestComponent,
 		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
 		escapeTerminalControls: (text: string) => text,
-		hasTerminalControls: () => false,
+		hasTerminalControls: (t: string) => /[\x00-\x09\x0b-\x1f\x7f-\x9f]/.test(t),
 		keyHint: (key: string) => key,
 		sessionScopedExtensionState: (_scope: object, _key: string, create: () => object) => create(),
 		keyText: (key: string) => key,

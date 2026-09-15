@@ -8,8 +8,10 @@ import {
 	isToolPayloadCallable,
 	isToolPayloadObject,
 	isToolPayloadObjectLike,
+	sanitizeToolDisplayText,
 	TOOL_PAYLOAD_MAX_KEYS,
 	TOOL_PAYLOAD_TRUNCATION_MARKER,
+	TOOL_TEXT_TAB_WIDTH,
 } from "../../packages/workflows/src/shared/tool-payload-bounds.js";
 
 const WIDE_KEY_COUNT = 200_000;
@@ -93,4 +95,10 @@ test("truncation marker never overwrites an emitted author key", () => {
 		assert.equal(record["…"], "author-value");
 		assert.equal(record["…1"], TOOL_PAYLOAD_TRUNCATION_MARKER);
 	}
+});
+
+test("sanitizeToolDisplayText expands a tab to the TOOL_TEXT_TAB_WIDTH column stop, not just any width", () => {
+	assert.equal(TOOL_TEXT_TAB_WIDTH, 4, "pin the configured stop so this test fails if it drifts");
+	assert.equal(sanitizeToolDisplayText("a\tb"), `a${" ".repeat(3)}b`);
+	assert.equal(sanitizeToolDisplayText("ab\tc"), `ab${" ".repeat(2)}c`);
 });

@@ -69,6 +69,9 @@ export function stripAnsi(value: string): string {
 /** C0 except LF, DEL, and C1. LF is layout; a tab is a control until a tabWidth expands it. */
 const TERMINAL_CONTROL = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
 
+/** Global form of TERMINAL_CONTROL for replace-all passes; keep the two in sync via .source. */
+const TERMINAL_CONTROL_GLOBAL = new RegExp(TERMINAL_CONTROL.source, "g");
+
 /** True when `text` contains a C0/C1 control other than LF. */
 export function hasTerminalControls(text: string): boolean {
 	return TERMINAL_CONTROL.test(text);
@@ -82,7 +85,7 @@ export function hasTerminalControls(text: string): boolean {
 export function escapeTerminalControls(text: string, options: { tabWidth?: number } = {}): string {
 	if (options.tabWidth === undefined) {
 		return text.replace(
-			/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g,
+			TERMINAL_CONTROL_GLOBAL,
 			(control) => `\\x${control.charCodeAt(0).toString(16).padStart(2, "0")}`,
 		);
 	}
@@ -102,7 +105,7 @@ export function escapeTerminalControls(text: string, options: { tabWidth?: numbe
 			column += pad;
 			continue;
 		}
-		if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+		if (hasTerminalControls(char)) {
 			const escaped = `\\x${code.toString(16).padStart(2, "0")}`;
 			out += escaped;
 			column += escaped.length;

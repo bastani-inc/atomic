@@ -134,13 +134,13 @@ async function createRetirementFixture(
 	kind: "local" | "engine",
 	options: {
 		omitted?: boolean;
-		throwingDispose?: boolean;
+		throwingDispose: boolean;
 		reentrantKey?: "workflow.run" | "new";
 		rejectCandidate?: boolean;
-	} = {},
+	},
 ): Promise<RetirementFixture> {
 	const omitted = options.omitted ?? false;
-	const throwingDispose = options.throwingDispose ?? true;
+	const throwingDispose = options.throwingDispose;
 	const reentrantKey = options.reentrantKey;
 	const rejectCandidate = options.rejectCandidate ?? false;
 	const host = createHost(kind);
@@ -450,7 +450,9 @@ for (const kind of ["local", "engine"] as const) {
 				assert.deepEqual(fixture.disposed, expectedDisposed);
 				if (kind === "engine") {
 					assert.deepEqual(fixture.host.opened, [...fixture.keys, ...expectedKeys.keys()]);
-					for (const id of fixture.host.openedIds.slice(0, 3)) {
+					// Only the retiring owner's three components (id 1) are expected closed at this point;
+					// the replacement owner's components from expectedKeys have not been retired yet.
+					for (const id of fixture.host.openedIds.slice(0, fixture.keys.length)) {
 						assert.equal(fixture.host.closed.filter((componentId) => componentId === id).length, 1);
 					}
 				}

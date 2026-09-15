@@ -14,7 +14,7 @@ import { getThemeByName, initTheme } from "../../packages/coding-agent/src/modes
 import { assertNoRawControls } from "../helpers/terminal-controls.js";
 
 const injectedSgr = "\x1b[38;2;1;2;3m";
-const payload = `Polaris 雪\x1b]0;PR2700\x07\x1b[2J\x9b2J\x00\x7f\x85${injectedSgr}Tail\nReadable`;
+const payload = `Polaris 雪\x1b]0;PR2700\x07\x1b[2J\x9b2J\x00\x7f\x85\t${injectedSgr}Tail\nReadable`;
 
 // #2700: attached questionnaire display must not execute supplied terminal controls.
 for (const multiSelect of [false, true]) {
@@ -90,6 +90,11 @@ for (const multiSelect of [false, true]) {
 					message: `${frame.where}@${frame.width}`,
 				});
 			}
+			// The questionnaire/preview sink has no tabWidth: a raw tab must escape to the literal `\x09`.
+			assert.ok(
+				frames.some((frame) => frame.raw.includes("\\x09")),
+				"raw tab must escape to literal \\x09",
+			);
 		});
 	}
 }

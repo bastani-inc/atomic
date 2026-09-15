@@ -364,6 +364,8 @@ export class ExtensionRunner {
 			generation = ++host.current;
 			this.widgetGenerations.set(ui, generation);
 		} else if (generation !== host.current) {
+			// Stricter than the pre-reconciliation baseline: the successor owns publication even
+			// for a key this superseded runner never mounted, not only keys it previously published.
 			return;
 		}
 		let publications = this.widgetPublications.get(ui);
