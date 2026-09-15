@@ -125,7 +125,14 @@ async function evaluateDurabilityGraph(sdk: SharedFakeDbos): Promise<DurableGrap
 		tryNative: false,
 		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
 		alias: aliases,
-		virtualModules: { "@bastani/atomic": atomic, "@dbos-inc/dbos-sdk": { DBOS: sdk } },
+		virtualModules: {
+			"@bastani/atomic": atomic,
+			"@dbos-inc/dbos-sdk": { DBOS: sdk },
+			"@dbos-inc/dbos-sdk/datasource": {
+				ensurePGDatabase: async () => ({ status: "success" }),
+				getPGClientConfig: (connectionString: string) => ({ connectionString }),
+			},
+		},
 	});
 	return (await jiti.import(url.href)) as DurableGraph;
 }

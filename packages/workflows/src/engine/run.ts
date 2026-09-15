@@ -76,7 +76,7 @@ import { createChildWorkflowRunner } from "./primitives/workflow.js";
 import { createContinuationReplayIndex } from "./replay.js";
 import { createRunBudgetController, WorkflowBudgetExceededError } from "./run-budget.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
-import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
+import { finalizeDurableTerminalStatus, finalizeUnadmittedDurableStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import {
 	createDurableCachedStageRecorder,
@@ -769,6 +769,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		},
 	});
 	terminalEvents.register();
+	let durableRootAdmitted = false;
 	try {
 		workflowObservationRuntime(activeStore).startRun(runId);
 		activeStore.recordRunStart(runSnapshot);
@@ -805,6 +806,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				backend: durableBackend,
 				runId,
 				isChildRun: opts.parentRun !== undefined,
+				signal: ownController.signal,
 				registration:
 					durableRootRegistration === undefined
 						? undefined
@@ -820,6 +822,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			}),
 			ownController.signal,
 		);
+		durableRootAdmitted = true;
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
@@ -1011,7 +1014,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		runtimeSettled.resolve();
 		unregisterRunControl();
 		try {
-			await finalizeDurableTerminalStatus({
+			const finalize = durableRootAdmitted ? finalizeDurableTerminalStatus : finalizeUnadmittedDurableStatus;
+			await finalize({
 				runId,
 				runSnapshot,
 				isRoot: opts.parentRun === undefined,
