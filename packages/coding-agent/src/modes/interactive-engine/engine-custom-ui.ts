@@ -369,7 +369,13 @@ export class EngineCustomUiService {
 					);
 				break;
 			case "engine_custom_dispose":
-				this.disposeComponent(command.componentId, true);
+				try {
+					this.disposeComponent(command.componentId, true);
+				} catch (error) {
+					// Host /reload tears remote proxies down with this command before the child's
+					// session.reload() can report through commitWidgets/invalidate.
+					this.reportWidgetDisposalError(error);
+				}
 				break;
 		}
 		return true;
@@ -382,15 +388,18 @@ export class EngineCustomUiService {
 				this.disposeComponent(componentId, true, false);
 			} catch (error) {
 				// Shutdown cannot retry; report and keep retiring the remaining components.
-				const message = error instanceof Error ? error.message : String(error);
-				this.onError?.({
-					extensionPath: "<runtime>",
-					event: "session_shutdown",
-					error: message,
-					stack: error instanceof Error ? error.stack : undefined,
-				});
+				this.reportWidgetDisposalError(error);
 			}
 		}
+	}
+	private reportWidgetDisposalError(error: unknown): void {
+		const message = error instanceof Error ? error.message : String(error);
+		this.onError?.({
+			extensionPath: "<runtime>",
+			event: "session_shutdown",
+			error: message,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 	}
 	private disposeComponent(componentId: string, resolve: boolean, notifyWidgetRelease = true): void {
 		const record = this.active.get(componentId);

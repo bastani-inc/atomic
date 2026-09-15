@@ -187,13 +187,16 @@ test.each([
 					assert.equal(reported.length, 2);
 				} else {
 					for (const open of oldOpens) {
-						const { componentId, widgetKey } = JSON.parse(open) as { componentId: string; widgetKey: string };
+						const { componentId } = JSON.parse(open) as { componentId: string };
 						const release = () =>
 							engine.handleLine(JSON.stringify({ type: "engine_custom_dispose", componentId }));
-						if (widgetKey === "healthy") release();
-						else assert.throws(release, /dispose failed/);
+						assert.equal(release(), true);
 						release();
 					}
+					assert.deepEqual(
+						reported.map(({ error }) => error),
+						["dispose failed: workflow.run", "dispose failed: second"],
+					);
 					assert.deepEqual(releases, ["workflow.run", "second", "healthy"]);
 				}
 				retiring.invalidate();
