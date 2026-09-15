@@ -109,7 +109,6 @@ test.each([
 		onCommit: () => {
 			lifecycle.push("commit");
 		},
-		publishOnFallbackCommit: true,
 	});
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json") });
 	const engine = new EngineCustomUiService((line) => frames.push(line), new KeybindingsManager());

@@ -12,13 +12,12 @@ export interface WidgetReloadLoaderOptions {
 	load: () => Promise<LoadExtensionsResult>;
 	beforePrepareCommit?: () => void;
 	onCommit?: () => void;
-	publishOnFallbackCommit?: boolean;
 }
 
 /**
  * Transactional test loader for widget-reload suites.
  * Callers keep hosts, factories, timers, and assertions; this only owns
- * candidate load, prepareCommit, and the optional fallback commit shape.
+ * candidate load and prepareCommit.
  */
 export function createWidgetReloadResourceLoader(options: WidgetReloadLoaderOptions): ResourceLoader {
 	let loaded = options.loaded;
@@ -40,11 +39,7 @@ export function createWidgetReloadResourceLoader(options: WidgetReloadLoaderOpti
 						rollback() {},
 					};
 				},
-				commit() {
-					if (!options.publishOnFallbackCommit) return;
-					loaded = candidate;
-					options.onCommit?.();
-				},
+				commit() {}, // unreachable: prepareCommit is always present
 			};
 		},
 	};
