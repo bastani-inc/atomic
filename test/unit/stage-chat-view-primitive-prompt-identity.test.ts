@@ -19,21 +19,27 @@ const WORKFLOW_NAME = "primitive-attribution";
 const STAGE_NAME = "review-a";
 const AWAITING_INPUT_TOP = /^╭ AWAITING INPUT(?: {2}\[stage: [^\]]+\])? ─*╮$/;
 
+const PERMITTED_AWAITING_TITLE = /^ AWAITING INPUT(?: · [^─[]+)?(?: {2}\[stage: [^\]]+\])? $/;
+
 function assertWellFormedTopBorder(line: string, width: number, context: string): void {
 	assert.equal(visibleWidth(line), width, `${context} display width`);
 	assert.ok(line.startsWith("╭") && line.endsWith("╮"), `${context} missing corners: ${line}`);
 	const inner = line.slice(1, -1);
 	const fillStart = inner.search(/─/);
 	const title = fillStart < 0 ? inner : inner.slice(0, fillStart);
-	if (fillStart >= 0) {
-		assert.match(inner.slice(fillStart), /^─+$/, `${context} malformed fill: ${line}`);
+	const fill = fillStart < 0 ? "" : inner.slice(fillStart);
+	if (fill.length > 0) {
+		assert.match(fill, /^─+$/, `${context} malformed fill: ${line}`);
 	}
+	assert.equal(
+		visibleWidth("╭") + visibleWidth(title) + visibleWidth(fill) + visibleWidth("╮"),
+		width,
+		`${context} title/fill geometry: ${line}`,
+	);
 	if (title.length === 0) return;
-	assert.match(title, /AWAITING INPUT/, `${context} unexpected title: ${line}`);
+	assert.match(title, PERMITTED_AWAITING_TITLE, `${context} unexpected title/label: ${line}`);
 	const labels = title.match(/\[stage: [^\]]+\]/g) ?? [];
-	assert.ok(labels.length <= 1, `${context} duplicate labels: ${line}`);
-	assert.doesNotMatch(title, /\[stage:\s*\]/, `${context} empty stage label: ${line}`);
-	assert.doesNotMatch(title, /\[stage:[^\]]*$/, `${context} unclosed stage label: ${line}`);
+	assert.equal(labels.length, title.includes("[stage:") ? 1 : 0, `${context} duplicate labels: ${line}`);
 }
 
 function countStageLabels(text: string, stageName = STAGE_NAME): number {
@@ -233,4 +239,17 @@ test("primitive prompt stage labels truncate wide Unicode names without overflow
 		assert.match(top!, /\[stage: /);
 		if (width <= 80) assert.ok(top!.includes("…"), `width=${width} should truncate a wide name`);
 	}
+});
+
+test("awaiting-input border assertions reject extra title garbage", () => {
+	const title = " AWAITING INPUT  [stage: review-a] garbage ";
+	const malformed = `╭${title}${"─".repeat(100 - 2 - visibleWidth(title))}╮`;
+	assert.equal(visibleWidth(malformed), 100);
+	assert.throws(() => assertWellFormedTopBorder(malformed, 100, "malformed-title"));
+
+	const emptyLabel = `╭ AWAITING INPUT  [stage: ] ${"─".repeat(70)}╮`;
+	assert.throws(() => assertWellFormedTopBorder(emptyLabel, visibleWidth(emptyLabel), "empty-label"));
+
+	const unclosed = `╭ AWAITING INPUT  [stage: review-a ${"─".repeat(60)}╮`;
+	assert.throws(() => assertWellFormedTopBorder(unclosed, visibleWidth(unclosed), "unclosed-label"));
 });

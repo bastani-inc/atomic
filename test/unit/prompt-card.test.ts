@@ -456,12 +456,12 @@ describe("renderPromptCard", () => {
 		});
 		const plain = lines.map(stripAnsi);
 		const rendered = plain.join("\n");
-		if (!rendered.includes(runId)) {
-			const top = plain.find((line) => line.includes("AWAITING INPUT"));
-			assert.ok(top, "compact prompt must keep AWAITING INPUT");
-			assert.match(top!, /\[stage: review-a\]/);
-			assert.equal(visibleWidth(top!), Math.max(22, 72));
-		}
+		assert.doesNotMatch(rendered, new RegExp(runId), "compact maxRows=8 must omit the identity banner");
+		const top = plain.find((line) => line.includes("AWAITING INPUT"));
+		assert.ok(top, "compact prompt must keep AWAITING INPUT");
+		assert.match(top!, /^╭ AWAITING INPUT {2}\[stage: review-a\] ─+╮$/);
+		assert.equal(visibleWidth(top!), 72);
+		assert.ok(rendered.includes("Continue?"), "compact prompt must keep the question reachable");
 	});
 
 	test("undefined and empty stage names leave awaiting-input unlabeled", () => {
