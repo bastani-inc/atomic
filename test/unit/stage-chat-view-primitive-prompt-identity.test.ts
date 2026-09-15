@@ -25,12 +25,12 @@ function assertWellFormedTopBorder(line: string, width: number, context: string)
 	assert.equal(visibleWidth(line), width, `${context} display width`);
 	assert.ok(line.startsWith("╭") && line.endsWith("╮"), `${context} missing corners: ${line}`);
 	const inner = line.slice(1, -1);
+	assert.ok(!inner.includes("╭") && !inner.includes("╮"), `${context} extra corners: ${line}`);
 	const fillStart = inner.search(/─/);
 	const title = fillStart < 0 ? inner : inner.slice(0, fillStart);
 	const fill = fillStart < 0 ? "" : inner.slice(fillStart);
-	if (fill.length > 0) {
-		assert.match(fill, /^─+$/, `${context} malformed fill: ${line}`);
-	}
+	assert.match(fill, /^─*$/, `${context} malformed fill: ${line}`);
+	assert.equal(visibleWidth(fill), fill.length, `${context} fill cells are not width 1: ${line}`);
 	assert.equal(
 		visibleWidth("╭") + visibleWidth(title) + visibleWidth(fill) + visibleWidth("╮"),
 		width,
@@ -38,8 +38,12 @@ function assertWellFormedTopBorder(line: string, width: number, context: string)
 	);
 	if (title.length === 0) return;
 	assert.match(title, PERMITTED_AWAITING_TITLE, `${context} unexpected title/label: ${line}`);
-	const labels = title.match(/\[stage: [^\]]+\]/g) ?? [];
-	assert.equal(labels.length, title.includes("[stage:") ? 1 : 0, `${context} duplicate labels: ${line}`);
+	const names = [...title.matchAll(/\[stage: ([^\]]*)\]/g)].map((match) => match[1] ?? "");
+	assert.equal(names.length, title.includes("[stage:") ? 1 : 0, `${context} duplicate labels: ${line}`);
+	if (names.length === 1) {
+		assert.ok(names[0]!.trim().length > 0, `${context} empty stage name: ${line}`);
+		assert.ok(visibleWidth(names[0]!) > 0, `${context} zero-width stage name: ${line}`);
+	}
 }
 
 function countStageLabels(text: string, stageName = STAGE_NAME): number {
@@ -250,6 +254,15 @@ test("awaiting-input border assertions reject extra title garbage", () => {
 	const emptyLabel = `╭ AWAITING INPUT  [stage: ] ${"─".repeat(70)}╮`;
 	assert.throws(() => assertWellFormedTopBorder(emptyLabel, visibleWidth(emptyLabel), "empty-label"));
 
+	const whitespaceName = `╭ AWAITING INPUT  [stage:   ] ${"─".repeat(68)}╮`;
+	assert.throws(() => assertWellFormedTopBorder(whitespaceName, visibleWidth(whitespaceName), "whitespace-name"));
+
 	const unclosed = `╭ AWAITING INPUT  [stage: review-a ${"─".repeat(60)}╮`;
 	assert.throws(() => assertWellFormedTopBorder(unclosed, visibleWidth(unclosed), "unclosed-label"));
+
+	const wideName = " AWAITING INPUT  [stage: 审] ";
+	const charLengthBorder = `╭${wideName}${"─".repeat(100 - 2 - wideName.length)}╮`;
+	assert.equal(charLengthBorder.length, 100, "trap uses string length, not terminal cells");
+	assert.ok(visibleWidth(charLengthBorder) > 100);
+	assert.throws(() => assertWellFormedTopBorder(charLengthBorder, 100, "display-width"));
 });
