@@ -1,7 +1,7 @@
 import { Markdown, type MarkdownTheme, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "../../../../../../modes/interactive/theme/theme.js";
+import { escapeTerminalControls } from "../../../../../../utils/ansi.js";
 import type { QuestionData } from "../../../tool/types.ts";
-import { escapeDisplayText } from "../../escape-display-text.js";
 import { stripFenceMarkers } from "./preview-box-renderer.ts";
 
 /** CC parity in side-by-side layout. */
@@ -34,7 +34,7 @@ export class MarkdownContentCache {
 		this.previewTexts = new Map();
 		for (let i = 0; i < question.options.length; i++) {
 			const raw = question.options[i]?.preview;
-			if (raw && raw.length > 0) this.previewTexts.set(i, escapeDisplayText(raw));
+			if (raw && raw.length > 0) this.previewTexts.set(i, escapeTerminalControls(raw));
 		}
 		this.markdownCache = new Map();
 	}

@@ -65,3 +65,51 @@ export function stripAnsi(value: string): string {
 	const end = controlStringTerminatorEnd(value);
 	return value.slice(0, end).replace(regex, "") + value.slice(end).replace(csiRegex, "");
 }
+
+/** C0 except LF, DEL, and C1. LF is layout; a tab is a control until a tabWidth expands it. */
+const TERMINAL_CONTROL = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
+
+/** True when `text` contains a C0/C1 control other than LF. */
+export function hasTerminalControls(text: string): boolean {
+	return TERMINAL_CONTROL.test(text);
+}
+
+/**
+ * Render C0/C1 controls as printable `\xNN` so untrusted text cannot emit live sequences.
+ * Without `tabWidth`, a tab becomes `\x09` (questionnaire/preview layout). With `tabWidth`,
+ * tabs expand to spaces at that stop (bordered tool boxes). LF is left as layout.
+ */
+export function escapeTerminalControls(text: string, options: { tabWidth?: number } = {}): string {
+	if (options.tabWidth === undefined) {
+		return text.replace(
+			/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g,
+			(control) => `\\x${control.charCodeAt(0).toString(16).padStart(2, "0")}`,
+		);
+	}
+	const stops = Math.max(1, Math.floor(options.tabWidth));
+	let out = "";
+	let column = 0;
+	for (const char of text) {
+		const code = char.codePointAt(0) ?? 0;
+		if (char === "\n") {
+			out += char;
+			column = 0;
+			continue;
+		}
+		if (char === "\t") {
+			const pad = stops - (column % stops);
+			out += " ".repeat(pad);
+			column += pad;
+			continue;
+		}
+		if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+			const escaped = `\\x${code.toString(16).padStart(2, "0")}`;
+			out += escaped;
+			column += escaped.length;
+			continue;
+		}
+		out += char;
+		column += 1;
+	}
+	return out;
+}

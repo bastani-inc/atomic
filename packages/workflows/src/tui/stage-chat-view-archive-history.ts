@@ -1,3 +1,4 @@
+import { hasTerminalControls } from "@bastani/atomic";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
@@ -308,7 +309,7 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, bud
 				.reduce((offset, line) => offset + line.length + 1, 0) + cursor.col
 		: state.caret;
 	const editorLines = (
-		/[\x00-\x09\x0b-\x1f\x7f-\x9f]/.test(rawText)
+		hasTerminalControls(rawText)
 			? renderResponseField(
 					{
 						...state,

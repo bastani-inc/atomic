@@ -1,6 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
-import { escapeDisplayText } from "../escape-display-text.js";
+import { escapeTerminalControls } from "../../../../../utils/ansi.js";
 import type { StatefulView } from "../stateful-view.ts";
 
 /**
@@ -40,7 +40,7 @@ export class TabBar implements StatefulView<TabBarProps> {
 
 		for (const tab of this.props.tabs) {
 			const box = tab.answered ? "■" : "□";
-			const rawSeg = ` ${box} ${escapeDisplayText(tab.label)} `;
+			const rawSeg = ` ${box} ${escapeTerminalControls(tab.label)} `;
 			const styled = tab.active
 				? this.theme.bg("selectedBg", this.theme.fg("text", rawSeg))
 				: this.theme.fg(tab.answered ? "success" : "muted", rawSeg);

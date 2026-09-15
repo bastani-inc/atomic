@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import {
+	hasPendingInput,
 	resolveRunIndicatorStatuses,
 	runIndicatorStatus,
 	visibleRunTreeMembers,
@@ -265,6 +266,27 @@ describe("runIndicatorStatus", () => {
 			run.pendingPrompt = { id: `${status}-prompt`, kind: "confirm", message: "Continue?", createdAt: 1 };
 			assert.equal(runIndicatorStatus(run), status);
 		}
+	});
+});
+
+describe("hasPendingInput", () => {
+	test("ignores terminal-stage residue when ignoreTerminalStages is true and counts it when false", () => {
+		for (const status of ["completed", "failed", "skipped"] as const) {
+			const residue: StageSnapshot = {
+				...awaitingStage(`${status}-residue`),
+				status,
+			};
+			const run = makeRun(`${status}-residue-run`, "running", [residue]);
+			assert.equal(hasPendingInput(run, { ignoreTerminalStages: true }), false);
+			assert.equal(hasPendingInput(run, { ignoreTerminalStages: false }), true);
+		}
+	});
+
+	test("counts a run-level prompt under both ignoreTerminalStages settings", () => {
+		const run = makeRun("run-prompt", "running");
+		run.pendingPrompt = { id: "run-prompt-id", kind: "confirm", message: "Continue?", createdAt: 1 };
+		assert.equal(hasPendingInput(run, { ignoreTerminalStages: true }), true);
+		assert.equal(hasPendingInput(run, { ignoreTerminalStages: false }), true);
 	});
 });
 

@@ -11,6 +11,7 @@ import type {
 import { validateQuestionnaire } from "../../packages/coding-agent/src/core/tools/ask-user-question/tool/validate-questionnaire.js";
 import { WrappingSelect } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/wrapping-select.js";
 import { getThemeByName, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { assertNoRawControls } from "../helpers/terminal-controls.js";
 
 const injectedSgr = "\x1b[38;2;1;2;3m";
 const payload = `Polaris 雪\x1b]0;PR2700\x07\x1b[2J\x9b2J\x00\x7f\x85${injectedSgr}Tail\nReadable`;
@@ -83,11 +84,11 @@ for (const multiSelect of [false, true]) {
 			for (const frame of frames) {
 				assert.ok(!frame.raw.includes(injectedSgr), `${frame.where}@${frame.width}: injected SGR`);
 				// Remove only trusted framework markers and styling, never general OSC/CSI.
-				const text = frame.raw
-					.replaceAll(CURSOR_MARKER, "")
-					.replaceAll(OVERLAY_ACTIVE_ROW_MARKER, "")
-					.replace(/\x1b\[[0-9;]*m/g, "");
-				assert.doesNotMatch(text, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/, `${frame.where}@${frame.width}`);
+				assertNoRawControls(frame.raw, {
+					markers: [CURSOR_MARKER, OVERLAY_ACTIVE_ROW_MARKER],
+					allowSgr: true,
+					message: `${frame.where}@${frame.width}`,
+				});
 			}
 		});
 	}
@@ -105,6 +106,6 @@ test("inline questionnaire editing escapes controls on both sides of the raw car
 		const rendered = select.render(width).join("\n").replaceAll(OVERLAY_ACTIVE_ROW_MARKER, "");
 		assert.ok(rendered.includes("雪\\x00\x1b[7m\\x1b\x1b[0mZ"));
 		assert.ok(rendered.includes("Tail"));
-		assert.doesNotMatch(rendered.replace(/\x1b\[[0-9;]*m/g, ""), /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+		assertNoRawControls(rendered, { allowSgr: true });
 	}
 });

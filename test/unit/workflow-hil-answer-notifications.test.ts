@@ -10,6 +10,7 @@ import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/sta
 import { type StageCustomUiRequest, StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { assertNoRawControls } from "../helpers/terminal-controls.js";
 
 interface SentMessage {
 	readonly customType: string;
@@ -121,13 +122,13 @@ describe("installWorkflowHilAnswerNotifications", () => {
 			const component = registered[0]!.renderer(message) as CardComponent;
 			for (const width of [160, 80, 32, 24, 1]) {
 				const output = component.render(width).join("\n");
-				assert.doesNotMatch(output, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/, `safe notice at width ${width}`);
+				assertNoRawControls(output, { message: `safe notice at width ${width}` });
 				if (width === 160) {
 					assert.ok(output.includes("Ω日本語\\x1b]0;TITLE\\x07"));
 					assert.ok(output.includes("\\x9b2J\\x08\\x00\\x7f\\x90DCS\\x9c"));
 				}
 			}
-			assert.doesNotMatch(message.content!, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+			assertNoRawControls(message.content!);
 			assert.deepEqual(message.details, originalDetails);
 		} finally {
 			unsubscribe();
@@ -178,9 +179,9 @@ describe("installWorkflowHilAnswerNotifications", () => {
 			);
 			const component = registered[0]!.renderer(message) as CardComponent;
 			for (const width of [160, 40, 24]) {
-				assert.doesNotMatch(component.render(width).join("\n"), /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+				assertNoRawControls(component.render(width).join("\n"));
 			}
-			assert.doesNotMatch(message.content!, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+			assertNoRawControls(message.content!);
 			assert.ok(message.content!.includes("Selected → Ω日本語\\x1b]0;CHOICE\\x07"));
 			assert.ok(message.content!.includes("Fallback → (Ω日本語\\x1b]0;CHOICE\\x07"));
 			assert.deepEqual(result, original);
@@ -225,7 +226,7 @@ describe("installWorkflowHilAnswerNotifications", () => {
 			const original = structuredClone(details);
 			const component = registered[0]!.renderer({ details, content: "old raw\x1b[2J" }) as CardComponent;
 			for (const width of [160, 80, 32, 24, 1]) {
-				assert.doesNotMatch(component.render(width).join("\n"), /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+				assertNoRawControls(component.render(width).join("\n"));
 			}
 			if (field !== "promptId") {
 				assert.ok(component.render(160).join("\n").includes("Ω日本語\\x1b]0;HISTORY\\x07"));

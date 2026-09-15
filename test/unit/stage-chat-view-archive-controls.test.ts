@@ -1,4 +1,5 @@
 import { test } from "vitest";
+import { assertNoRawControls } from "../helpers/terminal-controls.js";
 import {
 	assert,
 	createStore,
@@ -42,8 +43,7 @@ for (const kind of ["input", "editor", "select"] as const) {
 		try {
 			const raw = view.render(400).join("\n");
 			// Permit renderer-owned SGR only; OSC/CSI and C0/C1 are never stripped by the oracle.
-			const visible = raw.replace(/\x1b\[[0-9;]*m/g, "");
-			assert.doesNotMatch(visible, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+			const visible = assertNoRawControls(raw, { allowSgr: true });
 			for (const label of ["MESSAGE", kind === "select" ? "CHOICE" : "INITIAL", "ANSWER"]) {
 				assert.ok(visible.includes(`${label} Polaris 雪`));
 			}

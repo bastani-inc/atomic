@@ -492,6 +492,7 @@ export {
 } from "./modes/interactive/theme/theme.js";
 // Run modes for programmatic SDK usage
 export { pickWhimsicalWorkingMessage } from "./modes/interactive/whimsical-messages.ts";
+export { escapeTerminalControls, hasTerminalControls } from "./utils/ansi.ts";
 export { createChildProcessEnvironment } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";

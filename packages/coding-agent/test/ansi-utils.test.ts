@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { escapeTerminalControls, hasTerminalControls, stripAnsi } from "../src/utils/ansi.ts";
 
 function referenceAnsiRegex(): RegExp {
 	const ST = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
@@ -132,5 +132,24 @@ describe("stripAnsi", () => {
 	it("strips common ANSI sequences used in tool output", () => {
 		const input = "a\x1b[31mred\x1b[0m\x1b]8;;https://example.com\x07link\x1b]8;;\x07z";
 		expect(stripAnsi(input)).toBe("aredlinkz");
+	});
+});
+
+describe("escapeTerminalControls", () => {
+	it("renders C0/DEL/C1 as \\xNN, keeps LF, and maps tab to \\x09 without tabWidth", () => {
+		expect(escapeTerminalControls("a\x00b\x07c\x1bd\x7fe\x9bf\ng")).toBe("a\\x00b\\x07c\\x1bd\\x7fe\\x9bf\ng");
+		expect(escapeTerminalControls("a\tb")).toBe("a\\x09b");
+	});
+
+	it("expands tabs to the next stop and resets the column on LF when tabWidth is set", () => {
+		expect(escapeTerminalControls("a\tb", { tabWidth: 4 })).toBe("a   b");
+		expect(escapeTerminalControls("ab\nc\td", { tabWidth: 4 })).toBe("ab\nc   d");
+	});
+
+	it("hasTerminalControls is true for tab and \\x9b, false for LF and plain text", () => {
+		expect(hasTerminalControls("\t")).toBe(true);
+		expect(hasTerminalControls("\x9b")).toBe(true);
+		expect(hasTerminalControls("\n")).toBe(false);
+		expect(hasTerminalControls("plain")).toBe(false);
 	});
 });

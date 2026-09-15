@@ -32,8 +32,11 @@ function makeUnownedWait(): { root: RunSnapshot; child: RunSnapshot } {
 	return { root, child };
 }
 
-// #2700: status-only ancestry is not sufficient ownership for a widget prompt/action.
-test("retains a hidden wait's status glyph without granting a widget prompt to its claimed root", () => {
+// Status-only traversal is deliberately non-reciprocal: listings, restored
+// `/workflow status` payloads and the picker lack a proven ownership chain, so
+// they accept rootRunId/parentRunId claims. The widget requires reciprocal
+// boundaries and live ancestry, and fails closed on a one-sided claimant.
+test("status-only surfaces show a one-sided claimant's wait while the widget indicator and affordance fail closed", () => {
 	const { root, child } = makeUnownedWait();
 	const runs = [root, child];
 	const before = structuredClone(runs);
@@ -69,8 +72,9 @@ test("retains a hidden wait's status glyph without granting a widget prompt to i
 	assert.deepEqual(runs, before);
 });
 
-// #2700: status glyphs must never admit stale prompts through an inactive widget boundary.
-test("keeps widget ownership live across parent boundary completion without changing status-only attribution", () => {
+// A completed parent boundary revokes widget ownership (reciprocal + live
+// ancestry) but not status-only attribution (rootRunId/parentRunId claims).
+test("a completed parent boundary revokes widget ownership but not status-only attribution", () => {
 	const { root, child } = makeUnownedWait();
 	root.stages.push({
 		id: "child-boundary",
