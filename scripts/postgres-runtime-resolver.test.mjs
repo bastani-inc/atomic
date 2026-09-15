@@ -78,8 +78,9 @@ test("compiled Bun resolves relocated archive, nested native leaf and legacy dis
 	}
 });
 
-test("Node and compiled Bun load the real SDK from a relocated Bun-emitted builtin", () => {
+test("Node and compiled Bun load the real SDK and admission configuration from a relocated builtin", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-dbos-compiled-"));
+	const env = { ...process.env, HOME: root, USERPROFILE: root, ATOMIC_CODING_AGENT_DIR: join(root, "agent") };
 	try {
 		// No node_modules under this relocated root: the lazy SDK and its required
 		// JavaScript graph must be self-contained in the disk builtin.
@@ -87,7 +88,8 @@ test("Node and compiled Bun load the real SDK from a relocated Bun-emitted built
 		const entry = join(root, "entry.ts");
 		writeFileSync(
 			entry,
-			`export { importDbosSdk } from ${JSON.stringify(join(repository, "packages/workflows/src/durable/dbos-backend.ts"))};`,
+			`export { importDbosSdk } from ${JSON.stringify(join(repository, "packages/workflows/src/durable/dbos-backend.ts"))};
+			export { configureAdmissionDatabase } from ${JSON.stringify(join(repository, "packages/workflows/src/durable/dbos-admission-config.ts"))};`,
 		);
 		execFileSync(
 			"bun",
@@ -105,16 +107,23 @@ test("Node and compiled Bun load the real SDK from a relocated Bun-emitted built
 			{ stdio: "pipe" },
 		);
 		const launcher = join(root, "launcher.js");
+		// Construct and close the real pg pool, but never launch DBOS or open a socket.
 		writeFileSync(
 			launcher,
-			'const { pathToFileURL } = require("node:url"); (async () => { const m = await import(pathToFileURL(process.argv[2]).href); const sdk = await m.importDbosSdk(); if (typeof sdk.launch !== "function" || typeof sdk.registerWorkflow !== "function") throw Error("SDK missing"); console.log("DBOS SDK loaded"); })().catch(e => { console.error(e); process.exitCode = 1; });',
+			'const { pathToFileURL } = require("node:url"); (async () => { const m = await import(pathToFileURL(process.argv[2]).href); const sdk = await m.importDbosSdk(); if (typeof sdk.launch !== "function" || typeof sdk.registerWorkflow !== "function") throw Error("SDK missing"); let pool; const configured = m.configureAdmissionDatabase({setConfig(config) { pool = config.systemDatabasePool; }}, {name: "isolated-load-probe", systemDatabaseUrl: "postgresql://localhost:1/unused"}); if (typeof configured.launch !== "function" || typeof configured.checkReady !== "function" || typeof pool?.connect !== "function") throw Error("admission configuration missing"); await pool.end(); console.log("DBOS SDK and admission configuration loaded"); })().catch(e => { console.error(e); process.exitCode = 1; });',
 		);
-		assert.match(execFileSync(process.execPath, [launcher, disk], { encoding: "utf8" }), /DBOS SDK loaded/u);
+		assert.match(
+			execFileSync(process.execPath, [launcher, disk], { cwd: root, env, encoding: "utf8" }),
+			/DBOS SDK and admission configuration loaded/u,
+		);
 		const executable = join(root, process.platform === "win32" ? "probe.exe" : "probe");
 		execFileSync("bun", ["build", launcher, "--compile", "--bytecode", "--format=cjs", "--outfile", executable], {
 			stdio: "pipe",
 		});
-		assert.match(execFileSync(executable, [disk], { encoding: "utf8" }), /DBOS SDK loaded/u);
+		assert.match(
+			execFileSync(executable, [disk], { cwd: root, env, encoding: "utf8" }),
+			/DBOS SDK and admission configuration loaded/u,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

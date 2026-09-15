@@ -47,6 +47,7 @@ export interface DbosLogger {
 export interface DbosConfiguration {
 	readonly name: string;
 	readonly systemDatabaseUrl?: string;
+	readonly systemDatabasePool?: import("pg").Pool;
 	readonly runAdminServer: boolean;
 	readonly executorID: string;
 	readonly logger: DbosLogger;
