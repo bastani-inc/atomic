@@ -1,6 +1,6 @@
 import { effectiveRunStatus } from "./returned-run-status.js";
 import { isTerminalStageStatus } from "./store-internal.js";
-import type { RunSnapshot, RunStatus } from "./store-types.js";
+import type { RunSnapshot, RunStatus, StageSnapshot } from "./store-types.js";
 import { reciprocalWorkflowRootRunId } from "./workflow-run-ownership.js";
 
 /** The status represented by a run's primary indicator. */
@@ -29,9 +29,8 @@ function isTerminalOrBlockedRun(run: RunSnapshot): boolean {
 export function runIndicatorStatus(run: RunSnapshot, allRuns: readonly RunSnapshot[] = [run]): RunIndicatorStatus {
 	const status = effectiveRunStatus(run);
 	if (isTerminalOrBlockedRun(run)) return status;
-
 	for (const candidate of visibleRunTreeMembers(run, allRuns)) {
-		if (runHasPendingInput(candidate)) return "awaiting_input";
+		if (hasPendingInput(candidate, { ignoreTerminalStages: true })) return "awaiting_input";
 	}
 	return status;
 }
@@ -40,29 +39,26 @@ export function runIndicatorStatus(run: RunSnapshot, allRuns: readonly RunSnapsh
  * Preserve status-only attribution for listings, restored status entries and
  * the run picker. Their root/parent links need not establish prompt ownership;
  * only the live widget uses runIndicatorStatus and visibleRunTreeMembers.
+ *
+ * The status-only traversal is deliberately non-reciprocal: listings, restored
+ * `/workflow status` payloads and the picker lack a proven ownership chain, so
+ * they accept rootRunId/parentRunId claims. The widget requires reciprocal
+ * boundaries and live ancestry, and fails closed on a one-sided claimant.
+ * status-indicator-widget-isolation.test.ts pins that difference.
  */
 export function statusOnlyRunIndicator(run: RunSnapshot, allRuns: readonly RunSnapshot[] = [run]): RunIndicatorStatus {
 	const status = effectiveRunStatus(run);
 	if (isTerminalOrBlockedRun(run)) return status;
-	if (statusRunHasPendingInput(run)) return "awaiting_input";
+	if (hasPendingInput(run, { ignoreTerminalStages: false })) return "awaiting_input";
 
 	const runsById = new Map(allRuns.map((candidate) => [candidate.id, candidate]));
 	for (const candidate of allRuns) {
 		if (candidate.id === run.id || !runBelongsTo(candidate, run, runsById)) continue;
-		if (!isTerminalOrBlockedRun(candidate) && statusRunHasPendingInput(candidate)) return "awaiting_input";
+		if (!isTerminalOrBlockedRun(candidate) && hasPendingInput(candidate, { ignoreTerminalStages: false })) {
+			return "awaiting_input";
+		}
 	}
 	return status;
-}
-
-function statusRunHasPendingInput(run: RunSnapshot): boolean {
-	if (run.pendingPrompt !== undefined) return true;
-	return run.stages.some(
-		(stage) =>
-			stage.status === "awaiting_input" ||
-			stage.awaitingInputSince !== undefined ||
-			stage.pendingPrompt !== undefined ||
-			stage.inputRequest !== undefined,
-	);
 }
 
 function runBelongsTo(
@@ -99,15 +95,24 @@ export function resolveRunIndicatorStatuses(
 	return statuses;
 }
 
-function runHasPendingInput(run: RunSnapshot): boolean {
+/** Four-way pending-input marker on a stage, independent of terminal status. */
+export function stageHasPendingInput(stage: StageSnapshot): boolean {
+	return (
+		stage.status === "awaiting_input" ||
+		stage.awaitingInputSince !== undefined ||
+		stage.pendingPrompt !== undefined ||
+		stage.inputRequest !== undefined
+	);
+}
+
+/** Run-level prompt, then stages; optionally ignore residue on terminal stages. */
+export function hasPendingInput(
+	run: RunSnapshot,
+	{ ignoreTerminalStages }: { ignoreTerminalStages: boolean },
+): boolean {
 	if (run.pendingPrompt !== undefined) return true;
 	return run.stages.some(
-		(stage) =>
-			!isTerminalStageStatus(stage.status) &&
-			(stage.status === "awaiting_input" ||
-				stage.awaitingInputSince !== undefined ||
-				stage.pendingPrompt !== undefined ||
-				stage.inputRequest !== undefined),
+		(stage) => (!ignoreTerminalStages || !isTerminalStageStatus(stage.status)) && stageHasPendingInput(stage),
 	);
 }
 
@@ -137,10 +142,10 @@ function hasLiveAncestry(
 			parent === undefined ||
 			isTerminalOrBlockedRun(parent) ||
 			boundary === undefined ||
-			isTerminalStageStatus(boundary.status) ||
 			boundary.status !== "running"
-		)
+		) {
 			return false;
+		}
 		current = parent;
 	}
 	return true;

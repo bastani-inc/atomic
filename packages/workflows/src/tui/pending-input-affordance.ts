@@ -1,4 +1,4 @@
-import { visibleRunTreeMembers } from "../shared/run-indicator-status.js";
+import { stageHasPendingInput, visibleRunTreeMembers } from "../shared/run-indicator-status.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { PendingPrompt, RunSnapshot } from "../shared/store-types.js";
 
@@ -154,7 +154,7 @@ function stagePromptOccurrences(run: RunSnapshot): PendingInputOccurrence[] {
 
 		const request = stage.inputRequest;
 		if (request === undefined) {
-			if (stage.status === "awaiting_input" || stage.awaitingInputSince !== undefined) {
+			if (stageHasPendingInput(stage)) {
 				occurrences.push({ message: "", displayable: false });
 			}
 			continue;
