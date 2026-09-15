@@ -4,6 +4,7 @@ import {
 	hasPendingInput,
 	resolveRunIndicatorStatuses,
 	runIndicatorStatus,
+	statusOnlyRunIndicator,
 	visibleRunTreeMembers,
 } from "../../packages/workflows/src/shared/run-indicator-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -312,4 +313,29 @@ describe("resolveRunIndicatorStatuses", () => {
 		const statuses = resolveRunIndicatorStatuses([done], [done, hidden]);
 		assert.deepEqual(statuses, { done: "completed" });
 	});
+
+	// PR #2700: the shared hasPendingInput helper made the terminal-stage argument a
+	// per-caller decision. The widget passes ignoreTerminalStages: true and must ignore
+	// residue; both status-only entry points pass false and must keep reporting it.
+	// Helper-level options coverage does not pin that wiring, so assert it per call site.
+	test.each(["completed", "failed", "skipped"] as const)(
+		"status-only callers report %s stage residue that the widget ignores",
+		(residueStatus) => {
+			const residue: StageSnapshot = { ...awaitingStage(`${residueStatus}-residue`), status: residueStatus };
+
+			// Call site 1: the visible run itself carries the residue.
+			const own = makeRun("own-residue", "running", [residue]);
+			assert.equal(statusOnlyRunIndicator(own), "awaiting_input");
+			assert.deepEqual(resolveRunIndicatorStatuses([own], [own]), { "own-residue": "awaiting_input" });
+			assert.equal(runIndicatorStatus(own), "running");
+
+			// Call site 2: a running reciprocal child under a clean running root carries it.
+			const child = childRun("child-residue", "root-clean", "to-child", "root-clean", [residue]);
+			const root = makeRun("root-clean", "running", [workflowBoundary("to-child", child.id)]);
+			const allRuns = [root, child];
+			assert.equal(statusOnlyRunIndicator(root, allRuns), "awaiting_input");
+			assert.deepEqual(resolveRunIndicatorStatuses([root], allRuns), { "root-clean": "awaiting_input" });
+			assert.equal(runIndicatorStatus(root, allRuns), "running");
+		},
+	);
 });
