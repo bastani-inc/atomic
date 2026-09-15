@@ -336,6 +336,37 @@ test("older generation cannot update a still-owned key after a later runner publ
 	b.invalidate();
 });
 
+test("superseded but live runner can hide a key it still owns without removing a successor-owned key", () => {
+	const visible = new Map<string, string[] | undefined>();
+	const host: ExtensionUIContext = {
+		...noOpUIContext,
+		setWidget: (key, content) => {
+			if (content === undefined) visible.delete(key);
+			else {
+				assert.ok(Array.isArray(content));
+				visible.set(key, content);
+			}
+		},
+	};
+	const make = () => {
+		const runner = new ExtensionRunner([], createExtensionRuntime(), process.cwd(), {} as never, {} as never);
+		runner.setUIContext(host, "tui");
+		return runner;
+	};
+	const a = make();
+	const b = make();
+	a.getUIContext().setWidget("a-only", ["A original"]);
+	b.getUIContext().setWidget("b-only", ["B original"]);
+	a.getUIContext().setWidget("a-only", undefined);
+	assert.equal(visible.get("a-only"), undefined);
+	assert.deepEqual(visible.get("b-only"), ["B original"]);
+	a.getUIContext().setWidget("b-only", undefined);
+	assert.deepEqual(visible.get("b-only"), ["B original"]);
+	a.invalidate();
+	assert.deepEqual(visible.get("b-only"), ["B original"]);
+	b.invalidate();
+});
+
 test("same-runner replacement and hide/remount leave queued factories inert", () => {
 	const queued: Exclude<Parameters<ExtensionUIContext["setWidget"]>[1], string[] | undefined>[] = [];
 	const host: ExtensionUIContext = {

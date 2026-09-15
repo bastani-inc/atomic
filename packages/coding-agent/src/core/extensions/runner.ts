@@ -353,7 +353,7 @@ export class ExtensionRunner {
 		}
 		if (content === undefined) {
 			const generation = this.widgetGenerations.get(ui);
-			if (generation === undefined || generation !== host.current) return;
+			if (generation === undefined) return;
 			if (host.owners.get(key) !== generation) return;
 			host.owners.delete(key);
 			ui.setWidget(key, undefined, options);
