@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `escapeTerminalControls(text, { tabWidth? })` and `hasTerminalControls(text)` exported from `@bastani/atomic`; renders C0/C1 controls as printable `\xNN`, optionally expanding tabs to spaces.
+
 ### Fixed
 
 - Bundled integration documentation is discoverable under the same `docs/` root in npm and binary installations, including the MCP setup guide at `docs/mcp.md`.
