@@ -20,6 +20,7 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function createHost(kind: "local" | "engine") {
 	type Widget = { render(width: number): string[]; invalidate(): void; dispose?(): void };
+	const reported: string[] = [];
 	const local = {
 		extensionWidgetsAbove: new Map<string, Widget>(),
 		extensionWidgetsBelow: new Map<string, Widget>(),
@@ -30,15 +31,22 @@ function createHost(kind: "local" | "engine") {
 		renderWidgets: InteractiveModeBase.prototype.renderWidgets,
 		renderWidgetContainer: InteractiveModeBase.prototype.renderWidgetContainer,
 		notifyExtensionWidgetRelease: InteractiveModeBase.prototype.notifyExtensionWidgetRelease,
+		showExtensionError(_path: string, error: string) {
+			reported.push(error);
+		},
 	} as unknown as InteractiveModeBase;
 	const active = new Map<string, string>();
 	const rendered = new Map<string, string[]>();
-	const engine = new EngineCustomUiService((line) => {
-		const frame = JSON.parse(line) as { type: string; componentId: string; widgetKey: string; lines: string[] };
-		if (frame.type === "engine_custom_open") active.set(frame.componentId, frame.widgetKey);
-		if (frame.type === "engine_custom_close") active.delete(frame.componentId);
-		if (frame.type === "engine_custom_frame") rendered.set(frame.componentId, frame.lines);
-	}, new KeybindingsManager());
+	const engine = new EngineCustomUiService(
+		(line) => {
+			const frame = JSON.parse(line) as { type: string; componentId: string; widgetKey: string; lines: string[] };
+			if (frame.type === "engine_custom_open") active.set(frame.componentId, frame.widgetKey);
+			if (frame.type === "engine_custom_close") active.delete(frame.componentId);
+			if (frame.type === "engine_custom_frame") rendered.set(frame.componentId, frame.lines);
+		},
+		new KeybindingsManager(),
+		(error) => reported.push(error.error),
+	);
 	const ui: ExtensionUIContext = {
 		...noOpUIContext,
 		setWidget(key, content, options) {
@@ -55,6 +63,7 @@ function createHost(kind: "local" | "engine") {
 	};
 	return {
 		ui,
+		reported,
 		async snapshot() {
 			await flush();
 			if (kind === "local") {
@@ -283,8 +292,10 @@ for (const kind of ["local", "engine"] as const) {
 				);
 			} else if (scenario === "host release") {
 				for (const key of keys) host.ui.onWidgetRelease!(key, () => releases.push(key));
-				assert.throws(() => host.release(), /dispose failed: workflow.run/);
 				host.release();
+				assert.deepEqual(host.reported, ["dispose failed: workflow.run", "dispose failed: second"]);
+				host.release();
+				assert.equal(host.reported.length, 2);
 				assert.equal((await host.snapshot()).size, 0);
 				if (kind === "local") assert.deepEqual(releases.sort(), [...keys].sort());
 			} else if (scenario === "rejected") {

@@ -111,7 +111,12 @@ test.each([
 		},
 	});
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json") });
-	const engine = new EngineCustomUiService((line) => frames.push(line), new KeybindingsManager());
+	const reported: ExtensionError[] = [];
+	const engine = new EngineCustomUiService(
+		(line) => frames.push(line),
+		new KeybindingsManager(),
+		(error) => reported.push(error),
+	);
 	const { session } = await createWidgetReloadSession({
 		dir,
 		resourceLoader,
@@ -172,9 +177,14 @@ test.each([
 			);
 			try {
 				if (scenario === "engine shutdown") {
-					assert.throws(() => engine.dispose(), /dispose failed: workflow.run/);
+					engine.dispose();
+					assert.deepEqual(
+						reported.map(({ error }) => error),
+						["dispose failed: workflow.run", "dispose failed: second"],
+					);
 					assert.deepEqual(disposed, ["workflow.run:1", "second:1", "healthy:1"]);
 					engine.dispose();
+					assert.equal(reported.length, 2);
 				} else {
 					for (const open of oldOpens) {
 						const { componentId, widgetKey } = JSON.parse(open) as { componentId: string; widgetKey: string };

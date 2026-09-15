@@ -254,8 +254,15 @@ InteractiveModeBase.prototype.clearExtensionWidgets = function (this: Interactiv
 	}
 	this.renderWidgets();
 	for (const key of new Set(widgets.map(([key]) => key))) this.notifyExtensionWidgetRelease(key);
-	// Match the engine host: complete cleanup and release notification before reporting failure.
-	if (errors.length > 0) throw errors[0];
+	// Batch teardown runs from /reload and session invalidation where no caller can retry,
+	// so every failure is reported through the TUI's extension error sink instead of aborting the reset.
+	for (const error of errors) {
+		this.showExtensionError(
+			"<runtime>",
+			error instanceof Error ? error.message : String(error),
+			error instanceof Error ? error.stack : undefined,
+		);
+	}
 };
 
 InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveModeBase): void {

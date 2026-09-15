@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../config.js";
 import { runCallback } from "../../core/callback-activity.ts";
-import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
+import type { ExtensionError, HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
 import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.js";
@@ -110,6 +110,7 @@ export class EngineCustomUiService {
 	private nextId = 0;
 	private readonly write: (line: string) => void;
 	private readonly keybindings: KeybindingsManager;
+	private readonly onError: ((error: ExtensionError) => void) | undefined;
 	private readonly stateListeners = new Set<HostCustomUiStateListener>();
 	private readonly widgetReleaseListeners = new Map<string, Set<() => void>>();
 
@@ -175,9 +176,14 @@ export class EngineCustomUiService {
 		// already catches and emits, and a direct extension caller must see its own widget's error.
 		if (disposalError) throw disposalError.error;
 	}
-	constructor(write: (line: string) => void, keybindings: KeybindingsManager) {
+	constructor(
+		write: (line: string) => void,
+		keybindings: KeybindingsManager,
+		onError?: (error: ExtensionError) => void,
+	) {
 		this.write = write;
 		this.keybindings = keybindings;
+		this.onError = onError;
 	}
 
 	async custom<T>(
@@ -357,16 +363,20 @@ export class EngineCustomUiService {
 
 	dispose(): void {
 		this.widgetIds.clear();
-		const errors: unknown[] = [];
 		for (const componentId of [...this.active.keys()]) {
 			try {
 				this.disposeComponent(componentId, true, false);
 			} catch (error) {
-				errors.push(error);
+				// Shutdown cannot retry; report and keep retiring the remaining components.
+				const message = error instanceof Error ? error.message : String(error);
+				this.onError?.({
+					extensionPath: "<runtime>",
+					event: "session_shutdown",
+					error: message,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
 			}
 		}
-		// Preserve the first disposal error, but only after all owned components are retired.
-		if (errors.length > 0) throw errors[0];
 	}
 	private disposeComponent(componentId: string, resolve: boolean, notifyWidgetRelease = true): void {
 		const record = this.active.get(componentId);
