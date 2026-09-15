@@ -291,9 +291,16 @@ export class ExtensionRunner {
 		this.reloadHandler = async () => {};
 	}
 
-	// Shared host identity, not the prompt wrapper recreated on each binding.
-	private static readonly widgetOwners = new WeakMap<ExtensionUIContext, Map<string, object>>();
-	private readonly widgetRegistrations = new Map<ExtensionUIContext, Map<string, { active: boolean }>>();
+	// Keyed by the ExtensionUIContext the session passed to bindExtensions. Reload hands
+	// the same object to the candidate, so old and candidate resolve one host. A fresh
+	// bindExtensions (interactive rebindCurrentSession, RPC rebindSession) creates a new
+	// context and therefore a new host; cross-session isolation comes from dispose →
+	// invalidate, not from this map.
+	private static readonly widgetHosts = new WeakMap<
+		ExtensionUIContext,
+		{ current: number; owners: Map<string, number> }
+	>();
+	private readonly widgetGenerations = new Map<ExtensionUIContext, number>();
 	private pendingWidgets: Map<ExtensionUIContext, Map<string, WidgetArguments>> | undefined;
 	private widgetsRetired = false;
 
@@ -338,35 +345,31 @@ export class ExtensionRunner {
 			widgets.set(key, [key, content, options]);
 			return;
 		}
-		let owners = ExtensionRunner.widgetOwners.get(ui);
-		if (!owners) {
-			owners = new Map();
-			ExtensionRunner.widgetOwners.set(ui, owners);
+		let host = ExtensionRunner.widgetHosts.get(ui);
+		if (!host) {
+			host = { current: 0, owners: new Map() };
+			ExtensionRunner.widgetHosts.set(ui, host);
 		}
-		let registrations = this.widgetRegistrations.get(ui);
-		if (!registrations) {
-			registrations = new Map();
-			this.widgetRegistrations.set(ui, registrations);
+		let generation = this.widgetGenerations.get(ui);
+		if (generation === undefined) {
+			generation = ++host.current;
+			this.widgetGenerations.set(ui, generation);
+		} else if (generation !== host.current) {
+			return;
 		}
-		// Once superseded, a retiring runner's queued updates cannot reclaim the key.
-		const previousRegistration = registrations.get(key);
-		if (previousRegistration && owners.get(key) !== previousRegistration) return;
 		if (content === undefined) {
-			if (!previousRegistration?.active) return;
-			// Keep ownership history across hide/remount, but retire factories and release callbacks.
-			previousRegistration.active = false;
+			if (host.owners.get(key) !== generation) return;
+			host.owners.delete(key);
 			ui.setWidget(key, undefined, options);
 			return;
 		}
-		const registration = { active: true };
-		owners.set(key, registration);
-		registrations.set(key, registration);
+		host.owners.set(key, generation);
 		if (typeof content === "function") {
 			ui.setWidget(
 				key,
 				(tui, theme) => {
 					// The host may invoke a queued factory after replacement or invalidation.
-					if (this.staleMessage || this.widgetsRetired || !registration.active || owners.get(key) !== registration)
+					if (this.staleMessage || this.widgetsRetired || host.owners.get(key) !== generation)
 						return { render: () => [], invalidate() {} };
 					return content(tui, theme);
 				},
@@ -392,9 +395,9 @@ export class ExtensionRunner {
 				? {
 						onWidgetRelease: (key: string, listener: () => void) =>
 							ui.onWidgetRelease!(key, () => {
-								const registration = this.widgetRegistrations.get(ui)?.get(key);
-								if (registration?.active && ExtensionRunner.widgetOwners.get(ui)?.get(key) === registration)
-									listener();
+								const generation = this.widgetGenerations.get(ui);
+								const host = ExtensionRunner.widgetHosts.get(ui);
+								if (generation !== undefined && host?.owners.get(key) === generation) listener();
 							}),
 					}
 				: {}),
@@ -564,14 +567,14 @@ export class ExtensionRunner {
 			// Retire before user disposal can reenter registration or invalidation.
 			this.staleMessage = message;
 			this.pendingWidgets = undefined;
-			for (const [ui, registrations] of this.widgetRegistrations) {
-				for (const [key, registration] of registrations) {
-					const owners = ExtensionRunner.widgetOwners.get(ui);
+			for (const [ui, generation] of this.widgetGenerations) {
+				const host = ExtensionRunner.widgetHosts.get(ui);
+				if (!host) continue;
+				for (const [key, owner] of [...host.owners]) {
+					if (owner !== generation) continue;
 					try {
-						if (registration.active && owners?.get(key) === registration) {
-							registration.active = false;
-							ui.setWidget(key, undefined);
-						}
+						host.owners.delete(key);
+						ui.setWidget(key, undefined);
 					} catch (error) {
 						// A retiring-only widget must not prevent remaining cleanup or runtime invalidation.
 						this.emitError({
@@ -580,10 +583,9 @@ export class ExtensionRunner {
 							error: error instanceof Error ? error.message : String(error),
 						});
 					}
-					if (owners && owners.get(key) === registration) owners.delete(key);
 				}
 			}
-			this.widgetRegistrations.clear();
+			this.widgetGenerations.clear();
 			this.runtime.invalidate(message);
 		}
 	}
