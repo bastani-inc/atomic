@@ -222,6 +222,12 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 		["mode", detail.mode === "chain" ? `chain · ${detail.stages.length} stages` : "single"],
 		["started", formatTime(detail.startedAt)],
 	];
+	if (detail.phase !== undefined) rows.push(["phase", `${detail.phase} (${detail.phaseAgeMs ?? 0}ms)`]);
+	if (detail.lastProgressAt !== undefined) rows.push(["last progress", formatTime(detail.lastProgressAt)]);
+	if (detail.dependencyError !== undefined) rows.push(["dependency", detail.dependencyError]);
+	if (detail.controlPersistence !== undefined) {
+		rows.push(["control", `${detail.controlRequestedStatus} (${detail.controlPersistence})`]);
+	}
 	if (detail.endedAt !== undefined) {
 		rows.push(["ended", formatTime(detail.endedAt)]);
 		rows.push(["duration", fmtDuration(duration)]);

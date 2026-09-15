@@ -5,6 +5,7 @@ import type {
 	PendingStageQueueResult,
 	PendingStickyStageMessageInput,
 } from "./pending-stage-delivery.js";
+import type { RunExecutionState } from "./run-execution-state.js";
 import type {
 	LiveStageMessageValidationResult,
 	PendingPrompt,
@@ -109,6 +110,7 @@ export interface Store {
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;
+	recordRunExecutionState(runId: string, update: RunExecutionState): void;
 	/** Persist, then queue, an ordinary intercom message for an exact future-stage key. */
 	queueStageMessage(
 		input: PendingStageMessageInput,

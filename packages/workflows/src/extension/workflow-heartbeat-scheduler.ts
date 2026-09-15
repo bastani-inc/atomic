@@ -332,6 +332,7 @@ function nextRepresentableAfter(at: number): number | undefined {
  */
 export function isWorkflowHeartbeatEligibleRun(run: RunSnapshot): boolean {
 	if (!isTopLevelWorkflowRun(run)) return false;
+	if (run.phase === "starting" || run.phase === "blocked_dependency") return false;
 	if (run.status !== "running") return false;
 	if (run.pausedAt !== undefined) return false;
 	return !isTerminalRunStatus(effectiveRunStatus(run));

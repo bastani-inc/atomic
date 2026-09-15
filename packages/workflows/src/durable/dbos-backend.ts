@@ -464,6 +464,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			updatedAt: Date.now(),
 		};
 		await this.sdk.recordStepOutput(workflowId, stepName, encodeMetadata(claim));
+		dbosAdmissionContext.getStore()?.throwIfAborted();
 		const records = await this.sdk.listStepRecords(workflowId);
 		const record = records.find((candidate) => candidate.stepName === stepName);
 		if (record === undefined) return false;

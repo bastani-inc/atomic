@@ -249,6 +249,16 @@ export async function resumeRun(
 
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	workflowObservationRuntime(activeStore).control(runId, "resume", opts?.actor);
+	if (run.phase === "starting" && run.status !== "paused") {
+		return {
+			ok: true,
+			runId,
+			snapshot: structuredClone(run),
+			resumed: [],
+			mode: "snapshot",
+			message: "Database admission is pending; no execution was resumed.",
+		};
+	}
 
 	const runtimeControls =
 		opts?.stageId === undefined
@@ -269,7 +279,7 @@ export async function resumeRun(
 			snapshot: structuredClone(activeStore.runs().find((candidate) => candidate.id === runId) ?? run),
 			resumed: [],
 			mode: "paused",
-			message: `Resumed workflow runtime on ${runId}.`,
+			message: `Resumed workflow runtime on ${runId} (${run.controlPersistence ?? "observed"}). ${run.controlPersistence === "durable" ? "Database persistence confirmed." : "Local acknowledgement only; database persistence not confirmed."}`,
 		};
 	}
 	const resumed: StageSnapshot[] = [];
@@ -502,7 +512,7 @@ async function pauseRunWithAction(
 				ok: true,
 				runId,
 				paused: [],
-				message: `Run ${runId} paused. Resume with /workflow resume on this live process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume. Cross-process resume requires durable checkpoint or pending prompt progress.`,
+				message: `Run ${runId} paused (${run.controlPersistence ?? "observed"}). ${run.controlPersistence === "durable" ? "Database persistence confirmed." : "Pause observed locally, not confirmed persisted."} Resume with /workflow resume on this live process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume. Cross-process resume requires durable checkpoint or pending prompt progress.`,
 			};
 		}
 		return { ok: false, runId, reason: "no_active_stages" };

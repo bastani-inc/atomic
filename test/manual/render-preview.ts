@@ -190,6 +190,7 @@ const store: Store = {
 	notices: () => [],
 	activeRunId: () => run?.id ?? null,
 	recordRunStart: () => {},
+	recordRunExecutionState: () => {},
 	queueStageMessage: async () => undefined,
 	queueStickyStageMessage: async () => undefined,
 	recordPendingStageMessageDeliveries: async () => false,
