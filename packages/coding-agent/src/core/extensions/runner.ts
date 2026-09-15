@@ -351,17 +351,19 @@ export class ExtensionRunner {
 			host = { current: 0, owners: new Map() };
 			ExtensionRunner.widgetHosts.set(ui, host);
 		}
+		if (content === undefined) {
+			const generation = this.widgetGenerations.get(ui);
+			if (generation === undefined || generation !== host.current) return;
+			if (host.owners.get(key) !== generation) return;
+			host.owners.delete(key);
+			ui.setWidget(key, undefined, options);
+			return;
+		}
 		let generation = this.widgetGenerations.get(ui);
 		if (generation === undefined) {
 			generation = ++host.current;
 			this.widgetGenerations.set(ui, generation);
 		} else if (generation !== host.current) {
-			return;
-		}
-		if (content === undefined) {
-			if (host.owners.get(key) !== generation) return;
-			host.owners.delete(key);
-			ui.setWidget(key, undefined, options);
 			return;
 		}
 		let publications = this.widgetPublications.get(ui);
@@ -583,8 +585,9 @@ export class ExtensionRunner {
 			for (const [ui, generation] of this.widgetGenerations) {
 				const host = ExtensionRunner.widgetHosts.get(ui);
 				if (!host) continue;
-				for (const [key, owner] of [...host.owners]) {
-					if (owner !== generation) continue;
+				const publications = this.widgetPublications.get(ui);
+				if (!publications) continue;
+				for (const key of [...publications.keys()]) {
 					if (host.owners.get(key) !== generation) continue;
 					try {
 						host.owners.delete(key);

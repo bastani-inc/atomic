@@ -457,3 +457,90 @@ test("cleared ownership history isolates queued factories and forwards releases 
 	stopB();
 	assert.equal(listeners.size, 0);
 });
+
+test("old registration a,b then successor registration b,a disposes successor widgets as b,a", async () => {
+	const { service, runner } = setup();
+	const disposed: string[] = [];
+	const factory = (key: string, label: string) => () => ({
+		render: () => [label],
+		invalidate() {},
+		dispose() {
+			disposed.push(key);
+		},
+	});
+	const old = runner();
+	const successor = runner();
+	try {
+		old.getUIContext().setWidget("a", factory("a", "old-a"));
+		old.getUIContext().setWidget("b", factory("b", "old-b"));
+		await flush();
+		successor.stageWidgets();
+		successor.getUIContext().setWidget("b", factory("b", "new-b"));
+		successor.getUIContext().setWidget("a", factory("a", "new-a"));
+		successor.commitWidgets();
+		await flush();
+		disposed.length = 0;
+		successor.invalidate();
+		assert.deepEqual(disposed, ["b", "a"]);
+	} finally {
+		old.invalidate();
+		successor.invalidate();
+		service.dispose();
+	}
+});
+
+test("registration a,b then hide/remount a invalidates as a,b", async () => {
+	const { service, runner } = setup();
+	const disposed: string[] = [];
+	const factory = (key: string) => () => ({
+		render: () => [key],
+		invalidate() {},
+		dispose() {
+			disposed.push(key);
+		},
+	});
+	const owner = runner();
+	try {
+		const widgetUi = owner.getUIContext();
+		widgetUi.setWidget("a", factory("a"));
+		widgetUi.setWidget("b", factory("b"));
+		await flush();
+		widgetUi.setWidget("a", undefined);
+		await flush();
+		widgetUi.setWidget("a", factory("a"));
+		await flush();
+		disposed.length = 0;
+		owner.invalidate();
+		assert.deepEqual(disposed, ["a", "b"]);
+	} finally {
+		owner.invalidate();
+		service.dispose();
+	}
+});
+
+test("never-published runner hide of a live owner's key or an absent key does not block the live owner's update", async () => {
+	const { frames, service, runner } = setup();
+	const live = runner();
+	const stranger = runner();
+	const factory = (label: string) => () => ({ render: () => [label], invalidate() {} });
+	try {
+		live.getUIContext().setWidget("owned", factory("live"));
+		await flush();
+		stranger.getUIContext().setWidget("owned", undefined);
+		stranger.getUIContext().setWidget("absent", undefined);
+		frames.length = 0;
+		live.getUIContext().setWidget("owned", factory("updated"));
+		await flush();
+		const updatedId = frames.filter((frame) => frame.type === "engine_custom_open").at(-1)?.componentId;
+		assert.ok(updatedId);
+		service.handleLine(
+			JSON.stringify({ type: "engine_custom_render", componentId: updatedId, requestId: 1, width: 120, rows: 40 }),
+		);
+		await flush();
+		assert.deepEqual(frames.find((frame) => frame.type === "engine_custom_frame")?.lines, ["updated"]);
+	} finally {
+		live.invalidate();
+		stranger.invalidate();
+		service.dispose();
+	}
+});

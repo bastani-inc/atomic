@@ -281,7 +281,6 @@ async function expectRetiredOwnerSilenced(
 		snapshot: Map<string, string[]>;
 		subscriptions: number[];
 		timers: number;
-		expectNoNewEngineOpens?: boolean;
 		expectNoNewEngineCloses?: boolean;
 	},
 ): Promise<void> {
@@ -297,7 +296,7 @@ async function expectRetiredOwnerSilenced(
 	assert.deepEqual([...fixture.subscriptions], expected.subscriptions);
 	assert.equal(fixture.timers.size, expected.timers);
 	if (fixture.kind === "engine") {
-		if (expected.expectNoNewEngineOpens !== false) assert.deepEqual(fixture.host.opened, openedBefore);
+		assert.deepEqual(fixture.host.opened, openedBefore);
 		if (expected.expectNoNewEngineCloses) assert.equal(fixture.host.closed.length, closedBefore);
 	}
 }
@@ -454,7 +453,6 @@ for (const kind of ["local", "engine"] as const) {
 					snapshot: expectedKeys,
 					subscriptions: [2],
 					timers: 1,
-					expectNoNewEngineOpens: true,
 					expectNoNewEngineCloses: true,
 				});
 				await fixture.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -488,11 +486,7 @@ for (const kind of ["local", "engine"] as const) {
 				assert.deepEqual(fixture.host.closed, closedBefore);
 			}
 			await expectRetiredOwnerSilenced(fixture, retiring, EMPTY_HOST_CLEANUP);
-			if (kind === "engine") {
-				for (const id of fixture.host.openedIds) {
-					assert.equal(fixture.host.closed.filter((componentId) => componentId === id).length, 1);
-				}
-			}
+			assertEngineClosedExactlyOnce(fixture);
 		} finally {
 			await fixture.dispose();
 		}
@@ -567,15 +561,12 @@ for (const kind of ["local", "engine"] as const) {
 		try {
 			assert.equal((await fixture.host.snapshot()).size, 3);
 			const retiring = fixture.session.extensionRunner;
-			const openedIds = [...fixture.host.openedIds];
 			await expectRetiredOwnerSilenced(fixture, retiring, EMPTY_HOST_CLEANUP);
 			assert.equal(fixture.errors.length, expectedErrors);
 			assert.deepEqual(fixture.disposed, ["workflow.run:1", "second:1", "healthy:1"]);
 			assert.throws(() => fixture.contexts[0].ui, /no longer active|stale|reload/i);
+			assertEngineClosedExactlyOnce(fixture);
 			if (kind === "engine") {
-				for (const id of openedIds) {
-					assert.equal(fixture.host.closed.filter((componentId) => componentId === id).length, 1);
-				}
 				const closed = fixture.host.closed.length;
 				retiring.invalidate();
 				assert.equal(fixture.host.closed.length, closed);
@@ -602,9 +593,7 @@ test("engine host release through engine_custom_dispose reports each throwing di
 		assert.deepEqual(releases, [...fixture.keys]);
 		await expectRetiredOwnerSilenced(fixture, retiring, EMPTY_HOST_CLEANUP);
 		assert.deepEqual(fixture.disposed, ["workflow.run:1", "second:1", "healthy:1"]);
-		for (const id of openedIds) {
-			assert.equal(fixture.host.closed.filter((componentId) => componentId === id).length, 1);
-		}
+		assertEngineClosedExactlyOnce(fixture);
 	} finally {
 		await fixture.dispose();
 	}
