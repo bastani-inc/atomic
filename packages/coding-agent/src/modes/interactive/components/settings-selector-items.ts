@@ -220,7 +220,8 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 		{
 			id: "install-telemetry",
 			label: "Install telemetry",
-			description: "Send an anonymous version/update ping after changelog-detected updates",
+			description:
+				"Send a version-adoption ping on the first interactive launch with fresh settings or after an update with changelog entries",
 			currentValue: config.enableInstallTelemetry ? "true" : "false",
 			values: ["true", "false"],
 		},

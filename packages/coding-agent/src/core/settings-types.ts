@@ -135,7 +135,7 @@ export interface Settings {
 	search?: SearchSettings; // Context lines for search results; defaults: before=1, after=3
 	npmCommand?: string[]; // Command used for npm package lookup/install operations, argv-style (e.g., ["mise", "exec", "node@20", "--", "npm"])
 	collapseChangelog?: boolean; // Show condensed changelog after update (use /changelog for full)
-	enableInstallTelemetry?: boolean; // default: true - anonymous version/update ping after changelog-detected updates
+	enableInstallTelemetry?: boolean; // default: true - version-adoption ping on first interactive launch with fresh settings or after an update with changelog entries
 	packages?: PackageSource[]; // Array of npm/git package sources (string or object with filtering)
 	extensions?: string[]; // Array of local extension file paths or directories
 	skills?: string[]; // Array of local skill file paths or directories

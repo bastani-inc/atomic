@@ -231,7 +231,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and render the ordinary working identity as a static regular accent `∀` without a timer |
 | `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. This prevents the latest-version request |
-| `ATOMIC_TELEMETRY` | Override install/update telemetry: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks |
+| `ATOMIC_TELEMETRY` | Override version-adoption pings: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks (`PI_TELEMETRY` is a legacy alias) |
 | `NODE_COMPILE_CACHE` | Override the directory for Node's persistent compile cache, which Atomic enables automatically on Node >= 22.8 to speed up startup (most noticeable on Windows). Set `NODE_DISABLE_COMPILE_CACHE=1` to opt out |
 | `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported |
 | `ATOMIC_NO_PTY` | Set to `1` to disable PTY use for bash commands (`PI_NO_PTY` is a legacy alias) |

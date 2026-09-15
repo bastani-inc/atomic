@@ -60,6 +60,7 @@ export {
 	getEnvValue,
 	getShareViewerUrl,
 	VERSION,
+	VERSION_ADOPTION_ENDPOINT,
 } from "../../config.js";
 export { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
 export { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";

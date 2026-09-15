@@ -294,8 +294,16 @@ See [docs/settings.md](docs/settings.md) for all options.
 
 Atomic has two separate startup features:
 
-- **Update check:** checks whether a newer Atomic version exists. Disable it with `ATOMIC_SKIP_VERSION_CHECK=1` (`PI_SKIP_VERSION_CHECK=1` remains a legacy alias). Disabling update checks only turns off this check.
-- **Install/update telemetry:** after first install or a changelog-detected update, sends an anonymous version ping. Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `ATOMIC_TELEMETRY=0` (`PI_TELEMETRY=0` remains a legacy alias). This does not disable update checks; Atomic may still check for the latest version unless update checks are disabled or offline mode is enabled.
+- **Update check:** checks whether a newer Atomic version exists. Disable it with `ATOMIC_SKIP_VERSION_CHECK=1` (`PI_SKIP_VERSION_CHECK=1` remains a legacy alias). Disabling update checks only turns off this check. The update check is independent of version-adoption telemetry.
+- **Version-adoption telemetry:** measures whether releases reach real interactive launches and which versions stay in use. The metric is version-adoption pings / first-interactive-launch pings, not installs, users, MAU, or retention. Repeated eligible launches on several machines overcount. Opt-outs, offline mode, and dropped best-effort requests undercount.
+
+  Atomic sends one GET to `https://atomic-version-adoption.norin.workers.dev/v1/version-adoption` with the running version as the `version` query parameter and the existing `atomic/<version> (<platform>; <runtime>; <arch>)` User-Agent. There is no request body, UUID, cookie, auth header, or user content.
+
+  The ping fires only in interactive mode, and only on the first interactive launch with fresh settings (no recorded changelog version), or the first interactive launch after an update whose version has changelog entries. It does not fire on every launch, on npm install, on a reinstall that kept settings, or in `-p` / RPC modes.
+
+  Atomic stores only UTC date, version, and an aggregate count, retained as aggregates. Cloudflare, the hosting provider, necessarily processes transient connection metadata (IP, TLS) to serve the request. That is not a promise of platform-wide zero logging.
+
+  Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `ATOMIC_TELEMETRY=0` (`PI_TELEMETRY=0` remains a legacy alias). `ATOMIC_TELEMETRY=1`/`true`/`yes` forces the ping on. This does not disable update checks.
 
 Use `--offline` or `ATOMIC_OFFLINE=1` (`PI_OFFLINE=1` remains a legacy alias) to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
 
@@ -655,7 +663,7 @@ atomic --thinking high "Solve this complex problem"
 | `ATOMIC_PACKAGE_DIR` | Override package directory (useful for Nix/Guix where store paths tokenize poorly; `PI_PACKAGE_DIR` is a legacy alias) |
 | `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry (`PI_OFFLINE` is a legacy alias) |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. `PI_SKIP_VERSION_CHECK` is a legacy alias. |
-| `ATOMIC_TELEMETRY` | Override install/update telemetry. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks (`PI_TELEMETRY` is a legacy alias). |
+| `ATOMIC_TELEMETRY` | Override version-adoption pings. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks (`PI_TELEMETRY` is a legacy alias). |
 | `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and use a static working identity |
 | `ATOMIC_NO_PTY` | Set to `1` to disable PTY use for bash commands (`PI_NO_PTY` is a legacy alias) |
 | `NODE_COMPILE_CACHE` | Override Node's persistent compile-cache directory; set `NODE_DISABLE_COMPILE_CACHE=1` to opt out |

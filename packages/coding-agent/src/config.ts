@@ -290,6 +290,8 @@ export function expandTildePath(path: string): string {
 
 const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
 
+export const VERSION_ADOPTION_ENDPOINT = "https://atomic-version-adoption.norin.workers.dev/v1/version-adoption";
+
 /** Get the share viewer URL for a gist ID */
 export function getShareViewerUrl(gistId: string): string {
 	const baseUrl = getEnvValue(ENV_SHARE_VIEWER_URL) || DEFAULT_SHARE_VIEWER_URL;

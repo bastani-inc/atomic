@@ -46,6 +46,7 @@ import {
 	Text,
 	theme,
 	VERSION,
+	VERSION_ADOPTION_ENDPOINT,
 	visibleWidth,
 } from "./interactive-mode-deps.ts";
 import {
@@ -524,7 +525,7 @@ InteractiveModeBase.prototype.reportInstallTelemetry = function (this: Interacti
 		return;
 	}
 
-	void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
+	void fetch(`${VERSION_ADOPTION_ENDPOINT}?version=${encodeURIComponent(version)}`, {
 		headers: {
 			"User-Agent": getPiUserAgent(version),
 		},

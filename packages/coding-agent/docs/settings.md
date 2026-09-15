@@ -129,7 +129,7 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
-| `enableInstallTelemetry` | boolean | `true` | Send an anonymous install/update version ping after first install or changelog-detected updates. This does not control update checks |
+| `enableInstallTelemetry` | boolean | `true` | Send a version-adoption ping on the first interactive launch with fresh settings, and on the first interactive launch after an update whose version has changelog entries. This does not control update checks |
 | `firstRunOnboardingStartedVersion` | string | - | Internal first-run onboarding start marker used when no prior Atomic startup state identifies the user as returning |
 | `onboardedVersion` | string | - | Internal one-time first-run onboarding completion marker. Returning-user detection from prior startup state or displaying the first-run workflow-engine explanation sets it |
 | `enableAnalytics` | boolean | `false` | Opt in to analytics during first-run setup |
@@ -152,7 +152,22 @@ Ctrl+G in main chat, embedded chat, and extension editor dialogs uses one shared
 
 ### Telemetry and update checks
 
-`enableInstallTelemetry` only controls the anonymous install/update ping to `https://pi.dev/api/report-install`. Opting out of telemetry does not disable update checks; Atomic can still fetch the npm registry latest package metadata at `https://registry.npmjs.org/@bastani/atomic/latest` to look for the latest version.
+Version-adoption telemetry measures whether releases reach real interactive launches and which versions stay in use. The metric is version-adoption pings / first-interactive-launch pings, not installs, users, MAU, or retention. Repeated eligible launches on several machines overcount. Opt-outs, offline mode, and dropped best-effort requests undercount.
+
+`enableInstallTelemetry` controls this ping and Atomic's provider attribution headers; it does not control update checks. Atomic still fetches the npm registry latest package metadata at `https://registry.npmjs.org/@bastani/atomic/latest` unless update checks are disabled or offline mode is on.
+
+Atomic sends one GET to `https://atomic-version-adoption.norin.workers.dev/v1/version-adoption` with the running version as the `version` query parameter and the existing `atomic/<version> (<platform>; <runtime>; <arch>)` User-Agent. There is no request body, UUID, cookie, auth header, or user content.
+
+The ping fires only in interactive mode, and only on:
+
+- the first interactive launch with fresh settings (no recorded changelog version)
+- the first interactive launch after an update whose version has changelog entries
+
+It does not fire on every launch, on npm install, on a reinstall that kept settings, or in `-p` / RPC modes.
+
+Atomic stores only UTC date, version, and an aggregate count, retained as aggregates. Cloudflare, the hosting provider, necessarily processes transient connection metadata (IP, TLS) to serve the request. That is not a promise of platform-wide zero logging.
+
+Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `ATOMIC_TELEMETRY=0` (`PI_TELEMETRY=0` remains a legacy alias). `ATOMIC_TELEMETRY=1`/`true`/`yes` forces the ping on even when the setting is false. `ATOMIC_TELEMETRY` wins when both it and `PI_TELEMETRY` are set.
 
 Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Use `--offline` or `ATOMIC_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry. Legacy `PI_*` aliases are also supported for app-specific environment variables.
 
